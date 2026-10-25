@@ -15,10 +15,16 @@ use cookie_agent_protocol::{
 use serde_json::{Value, json};
 
 use super::{
-    Conversation, Inherited, MAX_REASON_CHARS, Verdict, agents_md_until, cap_tokens,
+    Bounds, Conversation, Inherited, MAX_REASON_CHARS, Verdict, agents_md_until, cap_tokens,
     delegation_prompt, parse_verdict, render, root_messages_until,
 };
 use crate::runtime::Event;
+
+/// Bounds no test conversation reaches.
+const ROOMY: Bounds = Bounds {
+    window: 1_000_000,
+    system_tokens: 0,
+};
 
 /// 2026-10-24T10:00:00Z.
 const BASE_SECOND: i64 = 1_792_836_000;
@@ -399,7 +405,7 @@ impl Log {
     }
 
     fn render(&self, current: ApprovalId) -> Conversation {
-        render(&self.events, None, current).expect("the request is in the log")
+        render(&self.events, None, current, ROOMY).expect("the request is in the log")
     }
 }
 
@@ -540,7 +546,10 @@ fn the_conversation_is_append_only_across_a_restart_and_a_revert() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(render(&restarted, None, last).unwrap(), log.render(last));
+    assert_eq!(
+        render(&restarted, None, last, ROOMY).unwrap(),
+        log.render(last)
+    );
 
     let revert_point = log
         .events
@@ -550,7 +559,7 @@ fn the_conversation_is_append_only_across_a_restart_and_a_revert() {
         })
         .unwrap();
     assert_eq!(
-        render(&log.events[..=revert_point], None, approvals[2].0).unwrap(),
+        render(&log.events[..=revert_point], None, approvals[2].0, ROOMY).unwrap(),
         log.render(approvals[2].0)
     );
 }
@@ -658,7 +667,7 @@ fn a_grandchild_inherits_the_root_task_and_each_delegation() {
         json!({"filePath": "src/args.rs", "oldString": "a", "newString": "b"}),
     );
     let approval = grandchild.request(run, call, PermissionAction::WRITE);
-    let request = render(&grandchild.events, Some(&inherited), approval)
+    let request = render(&grandchild.events, Some(&inherited), approval, ROOMY)
         .unwrap()
         .request;
     assert!(
@@ -817,4 +826,167 @@ fn a_verdict_renders_as_canonical_json() {
         parse_verdict(&verdict.render()).unwrap().reason,
         verdict.reason
     );
+}
+
+/// Over its 30% budget, a fresh context keeps the first three messages with
+/// the user's authority and the newest ones, dropping a block from the
+/// middle down to half the budget (section 6).
+#[test]
+fn the_message_budget_keeps_the_task_and_the_newest_messages() {
+    let mut log = Log::new();
+    let run = RunId::new_v7();
+    log.user(run, "engine:delegation", "parent instructions");
+    for index in 0..40 {
+        log.user(
+            run,
+            "client:tui",
+            &format!("message {index:02} {}", "x".repeat(800)),
+        );
+    }
+    let call = log.call(run, "bash", json!({"command": "ls"}));
+    let approval = log.request(run, call, PermissionAction::BASH);
+    let bounds = Bounds {
+        window: 20_000,
+        system_tokens: 0,
+    };
+    let request = render(&log.events, None, approval, bounds).unwrap().request;
+    for kept in [
+        "parent instructions",
+        "message 00 ",
+        "message 01 ",
+        "message 02 ",
+        "message 39 ",
+    ] {
+        assert!(request.contains(kept), "{kept}");
+    }
+    assert!(!request.contains("message 03 "));
+    let omitted = request
+        .split("[… ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|count| count.parse::<usize>().ok())
+        .expect("an omission marker");
+    let kept = (0..40)
+        .filter(|index| request.contains(&format!("message {index:02} ")))
+        .count();
+    assert_eq!(kept + omitted, 40);
+    // Down to half the 6,000-token budget, each message taking ~208.
+    assert!(kept * 208 <= 3_000 + 208, "{kept}");
+    assert!(
+        request.find("message 02 ").unwrap() < request.find("earlier messages omitted").unwrap()
+    );
+    assert!(
+        request.find("earlier messages omitted").unwrap() < request.find("message 39 ").unwrap()
+    );
+}
+
+/// Over its 50% budget, the trajectory drops its oldest half (section 6).
+#[test]
+fn the_trajectory_budget_drops_the_oldest_half() {
+    let mut log = Log::new();
+    let run = RunId::new_v7();
+    log.user(run, "client:tui", "Run the steps.");
+    for index in 0..16 {
+        let call = log.call(
+            run,
+            "bash",
+            json!({"command": format!("step {index:02} {}", "y".repeat(800))}),
+        );
+        log.end(run, call, ToolTerminationOutcome::Completed, "");
+    }
+    let call = log.call(run, "bash", json!({"command": "ls"}));
+    let approval = log.request(run, call, PermissionAction::BASH);
+    // 16 entries of ~210 tokens against a 2,000-token budget: one halving
+    // leaves eight.
+    let bounds = Bounds {
+        window: 4_000,
+        system_tokens: 0,
+    };
+    let request = render(&log.events, None, approval, bounds).unwrap().request;
+    assert!(request.contains("[… 8 earlier trajectory entries omitted …]"));
+    assert!(!request.contains("step 07 "));
+    for kept in 8..16 {
+        assert!(request.contains(&format!("step {kept:02} ")), "{kept}");
+    }
+    assert!(request.contains("Run the steps."));
+}
+
+/// When the next turn would not fit the window, the conversation starts
+/// over from a fresh render that carries the last five verdicts as
+/// trajectory entries; the boundary is the same after a restart (section
+/// 6).
+#[test]
+fn an_epoch_starts_over_with_the_last_five_verdicts() {
+    let mut log = Log::new();
+    let run = RunId::new_v7();
+    log.user(run, "client:tui", "Migrate the database.");
+    let mut approvals = Vec::new();
+    for index in 0..9 {
+        let call = log.call(
+            run,
+            "bash",
+            json!({"command": format!("migrate {index} {}", "z".repeat(600))}),
+        );
+        let approval = log.request(run, call, PermissionAction::BASH);
+        log.review(
+            run,
+            approval,
+            Some(("allow", Some(&*format!("Step {index} of the task.")))),
+        );
+        log.end(run, call, ToolTerminationOutcome::Completed, "");
+        approvals.push(approval);
+    }
+    let call = log.call(run, "bash", json!({"command": "migrate final"}));
+    let last = log.request(run, call, PermissionAction::BASH);
+    let bounds = Bounds {
+        window: 3_000,
+        system_tokens: 100,
+    };
+    let conversation = render(&log.events, None, last, bounds).unwrap();
+    let total = 100
+        + conversation
+            .reviews
+            .iter()
+            .map(|(turn, verdict)| super::estimate_tokens(turn) + super::estimate_tokens(verdict))
+            .sum::<usize>()
+        + super::estimate_tokens(&conversation.request);
+    assert!(total <= 3_000 || conversation.reviews.is_empty(), "{total}");
+    assert!(
+        conversation.reviews.len() < 9,
+        "the conversation started over at least once"
+    );
+    let first = conversation
+        .reviews
+        .first()
+        .map_or(&conversation.request, |(turn, _)| turn);
+    assert!(first.starts_with("<context>\n"));
+    assert!(first.contains("this conversation started over"));
+    let carried = first.matches("[your earlier verdict] on bash: ").count();
+    assert_eq!(carried, 5);
+    assert!(first.contains("Migrate the database."));
+
+    // The epoch's later turns still extend it, and a restart reproduces
+    // the boundary.
+    let restarted = log
+        .events
+        .iter()
+        .map(|event| {
+            Arc::new(
+                serde_json::from_value::<StoredEvent>(serde_json::to_value(&**event).unwrap())
+                    .unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        render(&restarted, None, last, bounds).unwrap(),
+        conversation
+    );
+    let previous = render(&log.events, None, approvals[8], bounds).unwrap();
+    if !conversation.reviews.is_empty() {
+        assert_eq!(
+            previous.reviews[..],
+            conversation.reviews[..conversation.reviews.len() - 1]
+        );
+        assert_eq!(conversation.reviews.last().unwrap().0, previous.request);
+    }
 }

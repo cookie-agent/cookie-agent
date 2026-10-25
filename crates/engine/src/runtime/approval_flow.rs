@@ -10,8 +10,10 @@ use tokio::sync::oneshot;
 
 use super::{
     ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
-    InternalAgentHistoryInput, approval_context, approval_projection::doom_loop_repetitions,
-    helpers::root_id, internal_agents::expand_internal_prompt,
+    InternalAgentHistoryInput, approval_context,
+    approval_projection::doom_loop_repetitions,
+    helpers::root_id,
+    internal_agents::{expand_internal_prompt, internal_agent_output_limit},
 };
 use crate::permissions::ApprovalStore;
 use crate::permissions::UNSCOPED_PERMISSION_RESOURCE_DISPLAY;
@@ -513,12 +515,26 @@ impl Engine {
         };
         let events = log.event_snapshot();
         let inherited = self.reviewer_inheritance(session);
+        let system = expand_internal_prompt(policy, DEFAULT_APPROVAL_PROMPT);
+        // The window of the reviewer's first model, the one a review runs
+        // on unless it falls back (approval reviewer spec section 6).
+        let bounds = approval_context::Bounds::new(
+            policy
+                .models
+                .first()
+                .and_then(|binding| binding.descriptor.capabilities.limits.context),
+            policy
+                .models
+                .first()
+                .and_then(|binding| internal_agent_output_limit(binding, policy)),
+            &system,
+        );
         let Some(conversation) =
-            approval_context::render(&events, inherited.as_ref(), request.approval_id())
+            approval_context::render(&events, inherited.as_ref(), request.approval_id(), bounds)
         else {
             return ReviewOutcome::Failed;
         };
-        let history = conversation.history(expand_internal_prompt(policy, DEFAULT_APPROVAL_PROMPT));
+        let history = conversation.history(system);
         let result = self
             .run_internal_history_agent(
                 active.session,

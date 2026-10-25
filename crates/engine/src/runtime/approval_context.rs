@@ -301,13 +301,75 @@ struct LogFacts {
     agents_md: Vec<(u64, Option<RunId>, String)>,
 }
 
+/// The token bounds of a conversation (section 6): the reviewer model's
+/// window, net of its output reserve and a margin, and what its system
+/// prompt takes of it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Bounds {
+    pub(super) window: usize,
+    pub(super) system_tokens: usize,
+}
+
+/// The context window assumed for a model the catalog gives none.
+pub(super) const UNKNOWN_CONTEXT_TOKENS: usize = 128_000;
+/// The output reserve of a reviewer whose agent sets no output cap.
+pub(super) const DEFAULT_OUTPUT_RESERVE: usize = 4_000;
+/// Tokens kept free beyond the output reserve.
+pub(super) const WINDOW_MARGIN: usize = 2_000;
+/// Verdicts a new epoch carries forward as trajectory entries.
+pub(super) const CARRIED_VERDICTS: usize = 5;
+/// User messages a budgeted context always keeps from the start: the task.
+const KEPT_FIRST_MESSAGES: usize = 3;
+
+impl Bounds {
+    /// The bounds of a reviewer model with `context` tokens (unknown:
+    /// [`UNKNOWN_CONTEXT_TOKENS`]) and an output cap of `output` (none:
+    /// [`DEFAULT_OUTPUT_RESERVE`]), whose system prompt is `system`.
+    pub(super) fn new(context: Option<u64>, output: Option<u64>, system: &str) -> Self {
+        let context = context.map_or(UNKNOWN_CONTEXT_TOKENS, |context| {
+            usize::try_from(context).unwrap_or(usize::MAX)
+        });
+        let output = output.map_or(DEFAULT_OUTPUT_RESERVE, |output| {
+            usize::try_from(output).unwrap_or(usize::MAX)
+        });
+        Self {
+            window: context.saturating_sub(output).saturating_sub(WINDOW_MARGIN),
+            system_tokens: estimate_tokens(system),
+        }
+    }
+
+    /// The user messages' share of the window: 30%.
+    fn messages(self) -> usize {
+        self.window / 10 * 3
+    }
+
+    /// The trajectory's share of the window: 50%.
+    fn trajectory(self) -> usize {
+        self.window / 2
+    }
+}
+
+/// How the request block names what arrived since the previous review.
+#[derive(Clone, Copy)]
+enum Since {
+    FirstReview,
+    StartedOver,
+    Delta(usize),
+}
+
 /// The session's reviewer conversation, up to and including the review of
-/// `current` (section 4.1). `inherited` is a delegated session's opening;
-/// a root's instructions come from its own log.
+/// `current` (sections 4.1 and 6). `inherited` is a delegated session's
+/// opening; a root's instructions come from its own log.
+///
+/// The conversation is an epoch: it starts over, from a fresh render of the
+/// log within the budgets, when the next review's turn would not fit the
+/// window. Epoch boundaries follow from the log and `bounds` alone, so a
+/// restart reproduces them.
 pub(super) fn render(
     events: &[Arc<StoredEvent>],
     inherited: Option<&Inherited>,
     current: ApprovalId,
+    bounds: Bounds,
 ) -> Option<Conversation> {
     let facts = gather(events, current);
     let current_cut = facts.requests.get(&current)?.0;
@@ -327,106 +389,301 @@ pub(super) fn render(
         Some(inherited) => inherited.agents_md.clone(),
         None => agents_md_before(&facts.agents_md, first_cut),
     };
-    let mut reviews = Vec::new();
+    let opening = Opening {
+        inherited,
+        agents_md: agents_md.as_deref(),
+    };
+    let mut reviews = Vec::<(String, String)>::new();
+    let mut tokens = bounds.system_tokens;
     let mut previous = 0;
-    let mut first = true;
-    for (approval_id, cut, verdict) in &completed {
-        reviews.push((
-            turn(
+    let mut epochs = 0;
+    let steps = completed
+        .iter()
+        .map(|(approval_id, cut, verdict)| (*approval_id, *cut, Some(*verdict)))
+        .chain(std::iter::once((current, current_cut, None)));
+    for (index, (approval_id, cut, verdict)) in steps.enumerate() {
+        let carried = || {
+            completed[index.saturating_sub(CARRIED_VERDICTS)..index]
+                .iter()
+                .map(|(approval_id, cut, verdict)| {
+                    (*cut, carried_verdict(&facts, *approval_id, verdict))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut text = if reviews.is_empty() {
+            fresh_turn(
                 &facts,
-                (previous, *cut),
-                *approval_id,
-                first.then_some((inherited, agents_md.as_deref())),
-            ),
-            verdict.render(),
-        ));
-        previous = *cut;
-        first = false;
+                cut,
+                approval_id,
+                opening,
+                &carried(),
+                bounds,
+                epochs > 0,
+            )
+        } else {
+            delta_turn(&facts, (previous, cut), approval_id)
+        };
+        if !reviews.is_empty() && tokens + estimate_tokens(&text) > bounds.window {
+            reviews.clear();
+            epochs += 1;
+            tokens = bounds.system_tokens;
+            text = fresh_turn(&facts, cut, approval_id, opening, &carried(), bounds, true);
+        }
+        tokens += estimate_tokens(&text);
+        previous = cut;
+        match verdict {
+            Some(verdict) => {
+                let verdict = verdict.render();
+                tokens += estimate_tokens(&verdict);
+                reviews.push((text, verdict));
+            }
+            None => {
+                return Some(Conversation {
+                    reviews,
+                    request: text,
+                });
+            }
+        }
     }
-    let request = turn(
-        &facts,
-        (previous, current_cut),
-        current,
-        first.then_some((inherited, agents_md.as_deref())),
-    );
-    Some(Conversation { reviews, request })
+    None
 }
 
-/// The `user` turn of the review whose call is `approval_id`: the entries
-/// after `range.0` up to `range.1`, then the request block. The first turn
-/// opens with `opening`.
-fn turn(
+/// What opens the first turn of every epoch.
+#[derive(Clone, Copy)]
+struct Opening<'a> {
+    inherited: Option<&'a Inherited>,
+    agents_md: Option<&'a str>,
+}
+
+/// An earlier verdict as a new epoch carries it: a trajectory entry.
+fn carried_verdict(facts: &LogFacts, approval_id: ApprovalId, verdict: &Verdict) -> String {
+    let name = facts
+        .requests
+        .get(&approval_id)
+        .and_then(|(_, request)| facts.calls.get(&request.tool_call_id()))
+        .and_then(|call| call.name.as_deref())
+        .unwrap_or("a tool");
+    let mut text = format!("[your earlier verdict] on {name}: {}", verdict.render());
+    text = escape_untrusted(&cap_tokens(&text, TRAJECTORY_TOKEN_CAP)).into_owned();
+    text
+}
+
+/// Whether a rendered message carries the user's authority.
+fn has_authority(text: &str) -> bool {
+    text.starts_with("[user] ") || text.starts_with("[scheduled prompt ")
+}
+
+/// The first turn of an epoch: the opening, then every entry up to `cut`
+/// within the budgets, the carried verdicts among them, then the request
+/// block (section 6).
+fn fresh_turn(
     facts: &LogFacts,
-    range: (u64, u64),
+    cut: u64,
     approval_id: ApprovalId,
-    opening: Option<(Option<&Inherited>, Option<&str>)>,
+    opening: Opening<'_>,
+    carried: &[(u64, String)],
+    bounds: Bounds,
+    started_over: bool,
 ) -> String {
-    let delta = facts
+    // Inherited messages come first, at position zero.
+    let inherited = opening
+        .inherited
+        .map(|inherited| inherited.entries.as_slice())
+        .unwrap_or_default();
+    let mut messages = inherited
+        .iter()
+        .map(|text| (0, text.as_str()))
+        .chain(
+            facts
+                .entries
+                .iter()
+                .filter(|entry| entry.message && entry.seq <= cut)
+                .map(|entry| (entry.seq, entry.text.as_str())),
+        )
+        .collect::<Vec<_>>();
+    let omitted_messages = budget_messages(&mut messages, bounds.messages());
+    let mut trajectory = facts
         .entries
         .iter()
-        .filter(|entry| entry.seq > range.0 && entry.seq <= range.1)
+        .filter(|entry| !entry.message && entry.seq <= cut)
+        .map(|entry| (entry.seq, entry.text.as_str()))
+        .chain(carried.iter().map(|(seq, text)| (*seq, text.as_str())))
         .collect::<Vec<_>>();
-    let mut text = String::new();
-    let (open, close) = if opening.is_some() {
-        ("<context>\n", "</context>\n")
-    } else {
-        ("<context_delta>\n", "</context_delta>\n")
-    };
-    text.push_str(open);
+    trajectory.sort_by_key(|(seq, _)| *seq);
+    let omitted_calls = budget_trajectory(&mut trajectory, bounds.trajectory());
+
+    let mut text = String::from("<context>\n");
     let mut wrote = false;
-    if let Some((inherited, agents_md)) = opening {
-        if let Some(agents_md) = agents_md {
-            text.push_str("[project instructions]\n");
-            text.push_str(agents_md);
-            text.push_str("\n\n");
-            wrote = true;
-        }
-        for entry in inherited
-            .map(|inherited| inherited.entries.as_slice())
-            .unwrap_or_default()
-        {
-            text.push_str(entry);
-            text.push_str("\n\n");
-            wrote = true;
-        }
-    }
-    for entry in &delta {
-        text.push_str(&entry.text);
+    let mut push = |text: &mut String, entry: &str| {
+        text.push_str(entry);
         text.push_str("\n\n");
         wrote = true;
+    };
+    if let Some(agents_md) = opening.agents_md {
+        push(&mut text, &format!("[project instructions]\n{agents_md}"));
     }
-    if !wrote {
-        text.push_str("[nothing new]\n");
-    } else {
+    // Messages and trajectory interleave by position; an omission marker
+    // stands where it dropped entries.
+    let mut merged = messages
+        .iter()
+        .map(|(seq, entry)| (*seq, Cow::Borrowed(*entry)))
+        .chain(
+            trajectory
+                .iter()
+                .map(|(seq, entry)| (*seq, Cow::Borrowed(*entry))),
+        )
+        .collect::<Vec<_>>();
+    if let Some((at, count)) = omitted_messages {
+        merged.push((
+            at,
+            Cow::Owned(format!("[… {count} earlier messages omitted …]")),
+        ));
+    }
+    if let Some((at, count)) = omitted_calls {
+        merged.push((
+            at,
+            Cow::Owned(format!("[… {count} earlier trajectory entries omitted …]")),
+        ));
+    }
+    merged.sort_by_key(|(seq, _)| *seq);
+    for (_, entry) in &merged {
+        push(&mut text, entry);
+    }
+    if wrote {
         text.pop();
+    } else {
+        text.push_str("[nothing new]\n");
     }
-    text.push_str(close);
-    text.push('\n');
-    let messages = delta.iter().filter(|entry| entry.message).count();
+    text.push_str("</context>\n\n");
     text.push_str(&request_block(
         facts,
         approval_id,
-        if opening.is_some() {
-            None
+        if started_over {
+            Since::StartedOver
         } else {
-            Some(messages)
+            Since::FirstReview
         },
     ));
     text
 }
 
-/// The request block of the call `approval_id` (section 4.6). `messages`
-/// is how many messages arrived since the previous review; `None` for the
-/// first review.
-fn request_block(facts: &LogFacts, approval_id: ApprovalId, messages: Option<usize>) -> String {
+/// Keeps `messages` within `budget`: the first [`KEPT_FIRST_MESSAGES`]
+/// messages with the user's authority, the first instructions from a
+/// parent agent, and the newest messages, dropping a
+/// block from the middle down to half the budget, so it happens rarely.
+/// Returns where the omission marker goes and how many it stands for.
+fn budget_messages(messages: &mut Vec<(u64, &str)>, budget: usize) -> Option<(u64, usize)> {
+    let total = messages
+        .iter()
+        .map(|(_, text)| estimate_tokens(text))
+        .sum::<usize>();
+    if total <= budget {
+        return None;
+    }
+    let target = budget / 2;
+    let mut keep = vec![false; messages.len()];
+    let mut used = 0;
+    let mut first = 0;
+    let mut instructions = false;
+    for (index, (_, text)) in messages.iter().enumerate() {
+        // A delegated session's own instructions are its task too: the
+        // first of them stays beside the root's first messages.
+        let task = if has_authority(text) && first < KEPT_FIRST_MESSAGES {
+            first += 1;
+            true
+        } else if !instructions && text.starts_with("[instructions from the parent agent]") {
+            instructions = true;
+            true
+        } else {
+            false
+        };
+        if task {
+            keep[index] = true;
+            used += estimate_tokens(text);
+        }
+    }
+    let last_first = keep.iter().rposition(|kept| *kept);
+    for index in (0..messages.len()).rev() {
+        if keep[index] || last_first.is_some_and(|last| index < last) {
+            continue;
+        }
+        let cost = estimate_tokens(messages[index].1);
+        if used + cost > target {
+            break;
+        }
+        keep[index] = true;
+        used += cost;
+    }
+    let dropped = keep.iter().filter(|kept| !**kept).count();
+    let at = messages
+        .iter()
+        .zip(&keep)
+        .find(|(_, kept)| !**kept)
+        .map_or(0, |((seq, _), _)| *seq);
+    let mut kept = keep.into_iter();
+    messages.retain(|_| kept.next().unwrap_or(false));
+    (dropped > 0).then_some((at, dropped))
+}
+
+/// Keeps `trajectory` within `budget` by dropping its oldest half, as
+/// often as it takes. Returns where the omission marker goes and how many
+/// entries it stands for.
+fn budget_trajectory(trajectory: &mut Vec<(u64, &str)>, budget: usize) -> Option<(u64, usize)> {
+    let mut dropped = 0;
+    let mut at = 0;
+    while trajectory
+        .iter()
+        .map(|(_, text)| estimate_tokens(text))
+        .sum::<usize>()
+        > budget
+        && !trajectory.is_empty()
+    {
+        let half = trajectory.len().div_ceil(2);
+        at = trajectory[half - 1].0;
+        trajectory.drain(..half);
+        dropped += half;
+    }
+    (dropped > 0).then_some((at, dropped))
+}
+
+/// A later turn of an epoch: the entries after `range.0` up to `range.1`,
+/// then the request block of `approval_id`.
+fn delta_turn(facts: &LogFacts, range: (u64, u64), approval_id: ApprovalId) -> String {
+    let delta = facts
+        .entries
+        .iter()
+        .filter(|entry| entry.seq > range.0 && entry.seq <= range.1)
+        .collect::<Vec<_>>();
+    let mut text = String::from("<context_delta>\n");
+    for entry in &delta {
+        text.push_str(&entry.text);
+        text.push_str("\n\n");
+    }
+    if delta.is_empty() {
+        text.push_str("[nothing new]\n");
+    } else {
+        text.pop();
+    }
+    text.push_str("</context_delta>\n\n");
+    let messages = delta.iter().filter(|entry| entry.message).count();
+    text.push_str(&request_block(facts, approval_id, Since::Delta(messages)));
+    text
+}
+
+/// The request block of the call `approval_id` (section 4.6), saying what
+/// arrived since the previous review.
+fn request_block(facts: &LogFacts, approval_id: ApprovalId, since: Since) -> String {
     let mut text = String::from(REQUEST_OPEN);
-    match messages {
-        None => text.push_str("Messages since the previous review: none, this is the first review.\n"),
-        Some(0) => text.push_str("Messages since the previous review: none.\n"),
-        Some(1) => text.push_str(
+    match since {
+        Since::FirstReview => text.push_str("Messages since the previous review: none, this is the first review.\n"),
+        Since::StartedOver => text.push_str(
+            "Messages since the previous review: this conversation started over, so the context above is the session so far, within its budgets.\n",
+        ),
+        Since::Delta(0) => text.push_str("Messages since the previous review: none.\n"),
+        Since::Delta(1) => text.push_str(
             "Messages since the previous review: 1, the last message entry in the context delta above.\n",
         ),
-        Some(count) => {
+        Since::Delta(count) => {
             let _ = writeln!(
                 text,
                 "Messages since the previous review: {count}, the last {count} message entries in the context delta above."
