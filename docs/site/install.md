@@ -181,6 +181,7 @@ services above. Deleting it is **permanent and cannot be undone**:
 - `providers/`, your connected providers' credentials;
 - `mcp-oauth.json`, the OAuth credentials of remote MCP servers;
 - `acp-agents.json`, what ACP agents last offered (options, file kinds), which drafts show;
+- `native-compaction.json`, the providers native compaction stopped being tried for;
 - `sessions/`, every session's history;
 - `memory/`, `projects/`, and `machines.json`;
 - `agents/` and `skills/` you wrote there;

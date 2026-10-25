@@ -3,8 +3,9 @@
 Compaction reduces a long session history to a checkpoint. Internal compaction
 keeps a budgeted tail of recent messages unchanged and summarizes everything
 before it; the summary replaces those older messages in model context, and the
-original saved log is preserved. Provider-native compaction instead stores an
-opaque provider window.
+original saved log is preserved. On a Responses provider, provider-native
+compaction runs beside it and the checkpoint also stores the opaque window the
+provider returned.
 
 Active history means the currently assembled context before compaction, including
 any existing summary and the messages after it. It does not reload historical
@@ -12,32 +13,79 @@ events already replaced by earlier checkpoints.
 
 ## Native provider compaction
 
-OpenAI Responses and Azure OpenAI Responses models can opt into provider-native
-compaction. The native operation runs first. If the adapter rejects the
-assembled request, the provider call fails, or the returned opaque window is
-invalid, Cookie Agent automatically runs the existing internal compaction agent.
+Every model on a Responses adaptor compacts natively by default: OpenAI
+Responses, whether the managed `openai` provider, an OpenAI-compatible gateway,
+or a credential-less endpoint, and Azure OpenAI Responses when the provider's
+`setup` table has `model`, `version`, and `deployment_type`, which scope the
+window to an explicit deployment. Azure without them, and every other adaptor,
+compacts with the summary alone. Set `compaction = "unsupported"` on a
+[model override](../extend/providers.md#provider-fields), or on a custom model's
+capabilities, to turn native compaction off for that model.
 
-Enable it on a managed provider model override with
-`compaction = "openai-responses-compact"` or
-`compaction = "azure-responses-compact"`. Cookie Agent derives the native model
-capability from that setting. Other adaptors reject the setting. Azure also
-requires the managed provider identity `azure.openai` plus `model`, `version`,
-and `deployment_type` in the provider `setup` table so the window is scoped to
-an explicit deployment.
+**Native compaction runs beside the summary.** When a checkpoint is due, the
+engine calls the provider's compact endpoint and the internal compaction agent
+at the same time:
 
-This deployment-metadata requirement is specific to native compaction, not
-ordinary Azure replay. Native windows retain their exact scope checks; the
-[portable-block replay rules](../extend/providers.md#replay-and-cancellation) do not permit
-moving a compaction window to an incompatible provider or deployment.
+- both succeed: the checkpoint holds the summary and the window;
+- native fails: the checkpoint holds the summary alone, and the failure may mark
+  the provider (below);
+- the summary fails: nothing is committed, even when native succeeded. Every
+  checkpoint carries a summary.
 
-A native checkpoint stores a bounded opaque provider window rather than summary
-text. Events through the checkpoint boundary are omitted from normal history,
-no framed summary message is inserted, and the window is attached to the next
-request. Later native compactions are seeded with the previous window. The
-window has a 32 MiB cap; `max_summary_bytes` applies only to text summaries.
-Native windows remain unchanged by recent-history retention: the engine does not
-append an independent recent-message tail to them. Neither native nor internal
+A failed native call costs only its own time, which overlaps the summary.
+Cancelling compaction cancels both calls, and compaction hooks see one
+compaction.
+
+**The window serves only its own model.** A request whose model has the same
+provider ID and model ID as the window, on the same adaptor, sends the window
+with the messages after it. A variant change keeps the window. Every other
+request, on another model, another provider, or a provider marked as rejecting
+windows, uses the summary and its recent messages instead. Switching models in
+the picker, or a fallback chain moving to its next model, therefore continues
+on the summary. The window also keeps its exact scope (its endpoint and
+account): a window whose scope the adaptor no longer accepts, after an endpoint
+change for example, is passed over for the summary too.
+
+A window has a 32 MiB cap; `max_summary_bytes` applies only to the summary. A
+window keeps no independent recent-message tail. The next native compaction is
+seeded with the window when the model can use it. Neither native nor internal
 compaction rereads files.
+
+**Older sessions.** Builds before client protocol 1.29.0 stored a window without
+a summary. Such a checkpoint still serves its own model. On any other model the
+engine first summarizes the events it covers from the saved log, once, and
+commits that as a new checkpoint; the request then proceeds on it.
+
+### The provider record
+
+The daemon remembers, per provider ID, what native compaction answered, in
+`native-compaction.json` in its data folder (`~/.cookie-agent` by default):
+
+- **`unsupported`**: the compact endpoint answered definitively that the
+  provider has no native compaction: HTTP 404, 405, or 501, or a refusal naming
+  the compaction item (an adaptor that cannot build the compact request counts
+  too). Native compaction is not attempted; stored windows still serve.
+- **`rejects_windows`**: the provider refused a request that carried a window
+  (below). Native compaction is not attempted, and requests use the summary
+  instead of stored windows.
+
+Transient failures (timeouts, rate limits, 5xx other than 501, network errors)
+and authentication errors mark nothing. An entry expires after 7 days, and is
+dropped when the provider's configuration (its source, endpoint, recipe, setup,
+or authentication method) changes. There is no option to force native
+compaction past an entry: delete the file, or change the provider's
+configuration. The configuration status (`/config` in the TUI, `cookie config`,
+and the web client's configuration view) lists each entry with its reason and
+age.
+
+**A window refused at request time.** When the provider answers a request that
+carried a window with a 400 or 422 naming the compaction item or its encrypted
+content (OpenAI answers an unusable compaction item with
+`invalid_encrypted_content`; a gateway without compaction support typically
+names the `compaction` item type or the `encrypted_content` field), that request
+fails with the provider's error, as any refusal does, and the provider is
+marked `rejects_windows`. The next request, in that session or any other, uses
+the summary. A refusal that names neither marks nothing.
 
 ## The trigger threshold
 
@@ -92,12 +140,13 @@ retries.
 
 ## What happens when it triggers
 
-1. **Native attempt.** An opted-in Responses model first attempts native
-   compaction. A successful native window goes directly to checkpoint commit,
-   without selecting independent recent messages. Otherwise, or after any native
-   failure, the engine uses internal summarization. Native compaction uses the
-   bound model's context limit minus the effective compaction output allowance.
-   If that allowance is unknown, the engine reserves 20,000 tokens as conservative
+1. **Native call.** On a model that compacts natively and a provider the
+   record does not mark, the native call starts beside the summary below and
+   compacts the whole active history, without selecting recent messages.
+   Native compaction uses the bound model's context limit minus the effective
+   compaction output allowance; when the history exceeds it, bulky tool outputs
+   are elided in the saved log first (`tool_output_elided`). If that allowance
+   is unknown, the engine reserves 20,000 tokens as conservative
    summary-output headroom.
 2. **Recent-history selection.** For internal summarization, the engine first
    selects a contiguous suffix of original messages to keep unchanged. Its
@@ -158,9 +207,10 @@ retries.
    honored exactly, while zero or omission uses the 30-second internal-agent
    default.
 6. **Checkpoint commit.** A `context_checkpoint_committed` event records the
-   text summary or opaque native window, source and recent-suffix boundaries,
-   and the budget math, including the effective recent-history token budget.
-   Retained messages come from saved history, not new file reads.
+   text summary, the native window beside it when the native call succeeded,
+   source and recent-suffix boundaries, and the budget math, including the
+   effective recent-history token budget. Retained messages come from saved
+   history, not new file reads.
 
 ## Context after an internal checkpoint
 
@@ -175,9 +225,8 @@ The next request assembles context in this order:
 Pinned context is preserved separately from the suffix. With retention disabled,
 or when the newest complete group cannot fit, the recent suffix is absent and
 only the summary remains alongside pinned context. The summary and the retained
-suffix do not overlap. Native
-checkpoints continue to use their opaque provider windows rather than this
-summary-and-tail layout.
+suffix do not overlap. A request on the window's own model uses the window
+and the messages after it instead of this summary-and-tail layout.
 
 ## Configuration
 
@@ -211,6 +260,23 @@ same over the protocol. A cancelled compaction commits no checkpoint.
 compaction follows the same recent-history selection, replaced-span trial, and
 context-fit retry rules.
 
+## Troubleshooting
+
+- **Native compaction stopped being used for a provider.** The provider record
+  marked it. The configuration status (`/config` in the TUI, `cookie config`,
+  or the web client's configuration view) names the provider, its state, the
+  answer that marked it, and when. `unsupported` means the compact endpoint
+  answered that it has none (for example HTTP 404 from a gateway that does not
+  implement `/responses/compact`); `rejects_windows` means the provider refused
+  a request that carried a compacted window, and requests now use the summary.
+  The mark lifts after 7 days, when the provider's configuration changes, or
+  when you delete `native-compaction.json` from the data folder (or its entry);
+  compaction keeps working on the summary meanwhile.
+- **A request failed with an encrypted-content error.**
+  That request carried a window its provider refused; the provider is now
+  marked `rejects_windows`, so send the message again and it goes out on the
+  summary.
+
 ## Events
 
 Compaction produces these event payloads:
@@ -223,10 +289,9 @@ Compaction produces these event payloads:
 
 While compaction runs, the TUI shows a `🧹 compacting context…` row and the
 bottom bar reads `compacting`. Expanded, the row streams the summary, or reads
-`calling native compaction endpoint (model)` during a native call. When
-compaction finishes, the row is replaced by the `context compacted` checkpoint
-row, or removed if compaction failed. A failed native call hands the row to the
-summarizer fallback.
+`calling native compaction endpoint (model)` while the native call runs beside
+it. When compaction finishes, the row is replaced by the `context compacted`
+checkpoint row, or removed if compaction failed.
 - `context_checkpoint_committed` — the checkpoint with boundaries and budgets
 
 The internal summarizer's in-memory pruning retry does not produce

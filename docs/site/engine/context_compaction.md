@@ -16,7 +16,9 @@ and uses defaults for omitted fields. Unknown fields fail; see
 [config.toml](configuration.md).
 
 Controls the automatic context-limit behavior documented in
-[Compaction](../sessions/compaction.md).
+[Compaction](../sessions/compaction.md). Native compaction has no setting here: it runs beside the
+summary on every Responses model unless the model sets
+`compaction = "unsupported"` (see [native compaction](../sessions/compaction.md#native-provider-compaction)).
 
 The built-in compaction agent has a flat 3-minute timeout. An authored
 `compaction.md` can override `limits.timeout_ms`, which is honored exactly;

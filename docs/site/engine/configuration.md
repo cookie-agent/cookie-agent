@@ -154,6 +154,32 @@ not TOML, such as a bare URL, is a string. It edits only that key, keeping the
 rest of the file and its comments. `edit` asks to edit again when the daemon
 refuses the result.
 
+## State kept beside the configuration
+
+Some files in the data folder are what the daemon learned, not configuration:
+they are not validated as authored files, and an unreadable one counts as empty
+and is written again. `native-compaction.json` is the record of providers the
+daemon stopped attempting [native compaction](../sessions/compaction.md#the-provider-record)
+for, one entry per provider ID:
+
+```json
+{
+  "providers": {
+    "my-gateway": {
+      "state": "unsupported",
+      "since": "2026-10-24T12:00:00Z",
+      "reason": "the compact endpoint answered HTTP 404",
+      "config_digest": "sha256:…"
+    }
+  }
+}
+```
+
+`state` is `unsupported` or `rejects_windows`. An entry expires 7 days after
+`since`, and is dropped when the provider's configuration no longer matches
+`config_digest`. Delete the file, or an entry, to try native compaction again.
+The daemon writes the file through a temporary file and a rename.
+
 ## Strictness and limits
 
 Every authored file is parsed strictly. Unknown keys, leftover `schema` or

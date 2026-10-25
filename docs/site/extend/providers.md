@@ -120,21 +120,23 @@ stored); unconfigured providers report counts alone.
 |---|---|---|---|
 | `source` | string | *(required)* | Must be `"models_dev"`. |
 | `base_url` | string | *(none)* | Override of the provider-level API URL; per-model catalog endpoints follow the rules above. Must be `https`, or `http` to `localhost`, `127.0.0.1`, or `::1`. Requires same-definition auth (`api_key` or `auth_override`) unless it is such a loopback URL, and never inherits provider-store setup or credentials. Forbidden for families that compute their endpoint from setup (Vertex, Bedrock, Azure). |
-| `setup` | map of string values | empty | Setup fields the provider recipe requires (for example `project`, `location`, `region`, `resource_name`). Native Azure Responses compaction also requires `model`, `version`, and `deployment_type`. Interpolates `${env:NAME}`. |
+| `setup` | map of string values | empty | Setup fields the provider recipe requires (for example `project`, `location`, `region`, `resource_name`). Azure Responses compacts natively only with `model`, `version`, and `deployment_type`. Interpolates `${env:NAME}`. |
 | `api_key` | string | *(none)* | Single-secret default auth. Allowed only for providers whose default method is an unambiguous single API key. Interpolates `${env:NAME}`. |
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
 | `cache` | table | family default | [Prompt-cache policy](#prompt-caching) matching the resolved adaptor family. |
 | `headers` | map of strings | empty | Provider request-header overrides. |
 | `models` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `model_id`, `generation_options`, `adaptor_options`, `variants`, `default_variant`, `compaction`, `headers`, `pricing`. Unmentioned catalog models remain available. Cannot invent models or directly change catalog capabilities. |
 
-Within a model override, `compaction` defaults to `"unsupported"`. Set it to
-`"openai-responses-compact"` for the OpenAI Responses recipe or
-`"azure-responses-compact"` for the Azure Responses recipe. The compiler derives
-the native capability from this setting and rejects it for other recipes. The
-Azure provider identity must be `azure.openai` to match Oven's native scope.
+Every model on a Responses adaptor compacts natively by default (see
+[native compaction](../sessions/compaction.md#native-provider-compaction)):
+OpenAI Responses, official, compatible, or credential-less, and Azure OpenAI
+Responses when `setup` has `model`, `version`, and `deployment_type`. Within a
+model override, `compaction = "unsupported"` turns native compaction off for that
+model. `"openai-responses-compact"` and `"azure-responses-compact"` are still
+accepted and redundant: they mean the default, on any recipe. A variant that
+switches `request_endpoint` compacts natively when its own adaptor does.
 Frozen manifests store the compiled native/unsupported capability, not this
-setting string, so they never contain the retired `"v1"` value. Authored `"v1"`
-fails with a migration error naming the adapter-specific replacement.
+setting string. The removed `"v1"` fails with an error.
 
 `auth_override`:
 
@@ -169,8 +171,7 @@ generation_options = { max_output_tokens = 4096 }
 
 Model overrides accept `enabled`, `display_name`, `model_id`, `generation_options`,
 `adaptor_options`, `pricing`, `variants`, `default_variant`, `compaction`, and
-`headers`. Except for the explicit compaction policy described above, omitted
-fields retain catalog/base values. Display names and generation settings have
+`headers`. Omitted fields retain catalog/base values. Display names and generation settings have
 the same constraints as custom definitions. Variant and pricing rules are below.
 
 ### Catalog reasoning variants
@@ -393,7 +394,7 @@ Custom fields are required unless a default or omission rule is stated below.
 | `temperature` | boolean | Temperature parameter support. |
 | `top_p` | boolean | Top-p parameter support. |
 | `seed` | boolean | Seed parameter support. |
-| `compaction` | string | Defaults to `"unsupported"`, the only accepted custom capability value. Native opt-in is managed-model configuration. |
+| `compaction` | string | Optional; `"unsupported"` is the only accepted value and turns native compaction off. Omitted, a model on a Responses adaptor (or an `openai-compatible` adaptor with `request_endpoint = "responses"`) compacts natively, and Azure Responses does so with `model`, `version`, and `deployment_type` in `setup`. |
 | `native_replay` | string | Optional `"unsupported"`, `"optional"`, or `"required"`; omission derives supported replay from the resolved adaptor and endpoint. |
 | `media` | map | Per-kind (`image`, `audio`, `pdf`, `video`) input limits: nonempty `mime_types` string array, positive `max_bytes` and `max_count`. `max_count` is per request: when the history holds more parts of a kind, the oldest are replaced by a text placeholder in the outgoing request (see [media reads](../reference/tools.md#media-reads)). Exactly the non-text input modalities need entries; text-only models use `{}`. |
 
@@ -431,7 +432,8 @@ or billing stops, and `capabilities.cancellation` is rejected.
 All integrated SDK codecs support replay. Automatic replay is optional except
 Anthropic reasoning, which requires native state. Azure ordinary replay does
 not require deployment revision metadata; `model`, `version`, and
-`deployment_type` remain required for native compaction. Azure Chat supports
+`deployment_type` remain required for native compaction, which Azure Responses
+skips without them. Azure Chat supports
 native text/tool replay, not provider-authoritative reasoning replay.
 Explicit replay declarations remain authoritative and fail when incompatible;
 `native_replay = "unsupported"` disables replay. Automatic replay is recomputed
@@ -470,7 +472,8 @@ is not automatically recovered by stripping reasoning and resending. Errors
 follow the normal [retry and fallback policy](../engine/model_retry.md).
 Replay neither enables prompt caching nor guarantees cache hits or live backend
 acceptance. Cache policy and [native compaction](../sessions/compaction.md#native-provider-compaction)
-retain their separate scope and validation rules.
+retain their separate scope and validation rules: a compacted window serves
+only its own provider and model, and other requests use the summary.
 
 ## Generation options
 

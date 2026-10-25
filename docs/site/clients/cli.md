@@ -308,6 +308,9 @@ Reads and changes the daemon's configuration documents, `config.toml` and the
 agent documents, through the daemon, which applies each change live or says
 what needs a restart. See
 [config.toml](../engine/configuration.md#changes-while-the-daemon-runs).
+Its status notes also name the providers
+[native compaction](../sessions/compaction.md#the-provider-record) is off for,
+with why and since when.
 
 #### `cookie config edit`
 
