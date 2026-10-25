@@ -126,7 +126,7 @@ Discussed 2026-10-24:
 3. A scheduled prompt carries user authority (section 4.2).
 4. The reviewer's cache TTL gets its own setting (section 5). It applies to
    the reviewer model's own provider, which may differ from the session's.
-   Its values are `1h`, `30m`, `5m`, `provider` (the reviewer model's
+   Its values are `1h`, `30m`, `12h`, `5m`, `provider` (the reviewer model's
    provider's own cache configuration) and `off`. The per-provider mapping is
    the table in section 5.
 5. No reviewer variant is set in the starter kit:
@@ -291,38 +291,48 @@ strings. The current flow does not escape the user message (section 10, d).
 
   ```toml
   [approval]
-  cache_ttl = "1h"    # "1h" (the default), "30m", "5m", "provider", or "off"
+  cache_ttl = "1h"    # "1h" (the default), "30m", "12h", "5m", "provider", or "off"
   ```
 
   `provider` means the reviewer model's own provider's cache configuration:
   its authored `cache` table, or that provider's defaults. It never means the
-  session's.
+  session's. Where those defaults depend on the session layer (Anthropic and
+  Bedrock: root sessions default to system 1h, tools 1h, rolling 1h;
+  subagents to system 1h, tools 1h, rolling 5m), the reviewer uses the
+  defaults of the layer of the session it reviews.
 
   When a provider does not offer the TTL asked for, the reviewer uses the
-  nearest offered TTL that is at least as long. If none is longer, it uses
-  the longest offered. Config status notes every substitution, and every
-  "no effect" cell when the reviewer runs on that provider.
+  nearest offered TTL by ratio (on a log scale), with ties going to the
+  longer TTL:
+  - on OpenAI GPT-5.6 controls (`30m`, `12h`), `1h` maps to `30m`, and so
+    does `5m`;
+  - on Anthropic and Bedrock (`5m`, `1h`), `30m` maps to `1h`, and so does
+    `12h`.
 
-  | Reviewer's provider | `1h` | `30m` | `5m` | `provider` | `off` |
-  |---|---|---|---|---|---|
-  | Anthropic | rolling 1h; system and tools raised to 1h (a one-hour marker cannot follow a five-minute one); 5m when the model's `beta` options lack `extended-cache-ttl-2025-04-11` | 1h under the same rule, else 5m | rolling 5m; system and tools as configured | the provider's `cache` table (default system 1h, tools 1h, rolling 5m) | no markers |
-  | Bedrock | rolling 1h on models that support it, system and tools raised to 1h; else 5m | 1h where supported, else 5m | rolling 5m | the provider's `cache` table (default all 5m) | no cache points |
-  | OpenAI, Azure (GPT-5.6 controls) | rolling placement at 30m, the longest offered | rolling placement at 30m | 30m, the only TTL offered | the provider's `cache` table (controls off by default: automatic caching) | `mode = "explicit"` with no placements: no cache writes |
-  | OpenAI, Azure (other models) | automatic caching; no effect | no effect | no effect | no effect | no effect (cannot be turned off) |
-  | OpenAI-compatible | provider-managed automatic caching; no effect | no effect | no effect | no effect | no effect |
-  | Gemini, Vertex | implicit caching; no effect | no effect | no effect | no effect | no effect |
-  | Cohere | server-side automatic caching; no effect | no effect | no effect | no effect | no effect |
+  Config status notes every substitution, and every "no effect" cell when
+  the reviewer runs on that provider.
+
+  | Reviewer's provider | `1h` | `30m` | `12h` | `5m` | `provider` | `off` |
+  |---|---|---|---|---|---|---|
+  | Anthropic | rolling 1h; system and tools raised to 1h (a one-hour marker cannot follow a five-minute one) | 1h under the same rule | 1h under the same rule | rolling 5m; system and tools as configured | the provider's `cache` table, unset fields from the reviewed session's layer (root: system 1h, tools 1h, rolling 1h; subagent: system 1h, tools 1h, rolling 5m) | no markers |
+  | Bedrock | rolling 1h on models that support it, system and tools raised to 1h; else 5m | 1h where supported, else 5m | 1h where supported, else 5m | rolling 5m | the provider's `cache` table, unset fields from the reviewed session's layer (root: system 1h, tools 1h, rolling 1h; subagent: system 1h, tools 1h, rolling 5m), each 1h only on models that support it, else 5m | no cache points |
+  | OpenAI, Azure (GPT-5.6 controls) | rolling placement at 30m | rolling placement at 30m | rolling placement at 12h (writes cost 2.5× input, reads 0.1×) | rolling placement at 30m | the provider's `cache` table (controls off by default: automatic caching) | `mode = "explicit"` with no placements: no cache writes |
+  | OpenAI, Azure (other models) | automatic caching; no effect | no effect | no effect | no effect | no effect | no effect (cannot be turned off) |
+  | OpenAI-compatible | provider-managed automatic caching; no effect | no effect | no effect | no effect | no effect | no effect |
+  | Gemini, Vertex | implicit caching; no effect | no effect | no effect | no effect | no effect | no effect |
+  | Cohere | server-side automatic caching; no effect | no effect | no effect | no effect | no effect | no effect |
 
   Further rules:
-  - **Rolling 1h:** the Anthropic and Bedrock strategy type gains a one-hour
-    rolling marker for internal agents. Authored provider configuration keeps
-    `rolling = "5m" | "off"`. Cookie never adds the Anthropic beta flag
-    itself.
+  - **Rolling 1h:** the Anthropic and Bedrock strategy type already takes a
+    one-hour rolling marker, and authored provider configuration accepts
+    `rolling = "1h" | "5m" | "off"`. The one-hour TTL needs no Anthropic
+    beta header, and Cookie never adds one itself.
   - **Fallback model:** a reviewer that falls back from `${small_model}` to
     `${parent_model}` on another provider follows that model's row.
-  - **Verify the OpenAI row:** check it against OpenAI's official
-    prompt-caching documentation before relying on it, since it comes from
-    oven-sdk.
+  - **The OpenAI row** was checked against OpenAI's documentation on
+    2026-10-24: on GPT-5.6 and later, `prompt_cache_options.ttl` is `"30m"`
+    or `"12h"`, and a breakpoint can carry its own `ttl`. oven-sdk support
+    for `12h` and per-breakpoint TTLs is a separate change.
 
   The knob is read at each review, so a config apply takes effect at the
   next one. The title agent keeps `rolling = None`.
@@ -473,10 +483,12 @@ All additive. Client and plugin minors are bumped together in one commit.
   readers skip it.
 - **Tool-denial `source: "approval_reviewer"`:** this is model-facing text,
   not a wire schema.
-- **`[approval] cache_ttl`:** `"1h"` (the default), `"30m"`, `"5m"`, `"provider"`, or `"off"`.
+- **`[approval] cache_ttl`:** `"1h"` (the default), `"30m"`, `"12h"`, `"5m"`, `"provider"`, or `"off"`.
   It maps onto the reviewer model's own provider by the table in section 5.
   Unknown values fail, as for every config key.
-- **Internal agents' cache strategy:** gains a one-hour rolling marker.
+- **Internal agents' cache strategy:** already takes a one-hour rolling
+  marker; internal agents resolve their cache defaults by the layer of the
+  run they serve.
 - **The starter kit's `explore`** uses `${default_model}` (already done,
   with this spec).
 - **No change to `ApprovalRequest`.** Moving `expires_at` (section 10, b)
