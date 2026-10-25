@@ -1597,6 +1597,80 @@ fn pruned_compaction_history(
     Ok(history)
 }
 
+/// What an elision marker adds when the retained content was not plain
+/// text: how [`line_structured_content`] lays it out.
+const LINE_STRUCTURED_NOTE: &str = " Stored as text: a `[tool content: ...]` header line, then each part under its own `[part N: kind]` line, text with its own line breaks and JSON pretty-printed.";
+
+/// Tool content that is not plain text, laid out so `read_artifact` pages
+/// it line by line: a header line naming its kind, then each part under a
+/// `[part N: kind]` line, text with its own newlines, JSON pretty-printed
+/// over several lines, and a file by its media type and name (its bytes
+/// are not kept). Earlier builds stored such content as one line of
+/// serialized JSON, which a page cuts after 4 KiB.
+fn line_structured_content(content: &oven_sdk::ToolContent) -> serde_json::Result<String> {
+    fn push_section(text: &mut String, header: &str, body: &str) {
+        text.push_str(header);
+        text.push('\n');
+        text.push_str(body);
+        if !body.is_empty() && !body.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    let mut text = String::new();
+    match content {
+        oven_sdk::ToolContent::Text(body) => text.push_str(body),
+        oven_sdk::ToolContent::Json(value) => {
+            push_section(
+                &mut text,
+                "[tool content: json]",
+                &serde_json::to_string_pretty(value)?,
+            );
+        }
+        oven_sdk::ToolContent::Denied { reason } => {
+            push_section(
+                &mut text,
+                "[tool content: denied]",
+                reason.as_deref().unwrap_or(""),
+            );
+        }
+        oven_sdk::ToolContent::Mixed(parts) => {
+            text.push_str(&format!(
+                "[tool content: mixed, {} part{}]\n",
+                parts.len(),
+                if parts.len() == 1 { "" } else { "s" }
+            ));
+            for (index, part) in parts.iter().enumerate() {
+                let number = index + 1;
+                match part {
+                    oven_sdk::ContentValue::Text(body) => {
+                        push_section(&mut text, &format!("[part {number}: text]"), body);
+                    }
+                    oven_sdk::ContentValue::Json(value) => push_section(
+                        &mut text,
+                        &format!("[part {number}: json]"),
+                        &serde_json::to_string_pretty(value)?,
+                    ),
+                    oven_sdk::ContentValue::File(file) => {
+                        let name = match &file.filename {
+                            Some(name) => format!(" {}", serde_json::to_string(name)?),
+                            None => String::new(),
+                        };
+                        push_section(
+                            &mut text,
+                            &format!(
+                                "[part {number}: file {}{name}; its bytes are not kept here]",
+                                file.media_type
+                            ),
+                            "",
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(text)
+}
+
 fn prune_compaction_result(
     result: &mut oven_sdk::ToolResultPart,
     retrieval_calls: &HashSet<String>,
@@ -1608,15 +1682,15 @@ fn prune_compaction_result(
         "[artifact read output omitted for compaction]".to_owned()
     } else {
         let content = match &result.content {
-            oven_sdk::ToolContent::Text(text) => text.as_bytes().to_vec(),
-            content => serde_json::to_vec(content)
+            oven_sdk::ToolContent::Text(text) => text.clone(),
+            content => line_structured_content(content)
                 .map_err(|error| ModelError::invalid_request(error.to_string()))?,
         };
-        let (_, artifact_id) = store.retain(session, &content)?;
+        let (_, artifact_id) = store.retain(session, content.as_bytes())?;
         let mut marker =
             model_history::tool_output_elision_marker(&artifact_id, content.len() as u64, 0);
         if !matches!(result.content, oven_sdk::ToolContent::Text(_)) {
-            marker.push_str(" Stored as serialized tool content (JSON).");
+            marker.push_str(LINE_STRUCTURED_NOTE);
         }
         let read_more = serde_json::json!({
             "read_more": {

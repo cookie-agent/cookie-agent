@@ -363,23 +363,17 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                     .expect("public readback using only the marker hint");
                 assert_eq!(page.source, "artifact");
                 assert!(page.page.text.starts_with("1: "));
-                assert!(text.contains("serialized tool content (JSON)"));
-                // The serialized content is one line, which a page cuts
-                // after 4 KiB as `read` would: check it whole in the store.
-                let raw = fixture
-                    .engine
-                    .inner
-                    .artifacts
-                    .read_paged(session.session_id, artifact_path, 0, 10)
-                    .unwrap();
-                let oven_sdk::ToolContent::Mixed(values) =
-                    serde_json::from_str(&raw.content).unwrap()
-                else {
-                    panic!("retry artifact preserves serialized tool content");
-                };
+                assert!(text.contains("each part under its own `[part N: kind]` line"));
+                // The content is laid out line by line: a header, then each
+                // part, its text keeping its own line breaks.
+                let content = unnumbered(&page);
                 assert!(
-                    matches!(&values[0], oven_sdk::ContentValue::Text(text) if text.contains(marker))
+                    content.starts_with("[tool content: mixed, ")
+                        && content.contains("\n[part 1: text]\n"),
+                    "{content}"
                 );
+                assert!(content.contains(marker), "{content}");
+                assert!(content.contains("\n[part 2: json]\n{\n"), "{content}");
             }
             for result in [results[2], results[3]] {
                 assert_eq!(

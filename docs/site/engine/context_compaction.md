@@ -47,8 +47,12 @@ pruned normally. The pruned retry also drops the session tool definitions:
 cache affinity is already lost once tool outputs are rewritten, so fewer tools
 means less to send. Markers include a `read_artifact` hint with `artifact="<digest>"`;
 internal stored references retain their URI format. The session tree reads that
-artifact back with `read_artifact`. Non-text tool content is retained
-as serialized tool-content JSON and the marker identifies this format. It emits no
+artifact back with `read_artifact`. Text content is retained as it was, so it
+pages line by line. Non-text tool content is retained line-structured, a
+`[tool content: <kind>]` header and each part under a `[part N: kind]` line
+with its text's own line breaks and JSON pretty-printed, and the marker
+describes this layout; artifacts earlier builds stored keep their one line
+of serialized JSON. It emits no
 durable `tool_output_elided` events and preserves the original saved log and
 recent retained message contents even if the retry fails.
 After compaction, model context contains the summary and retained recent messages

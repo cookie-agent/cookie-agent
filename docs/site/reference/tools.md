@@ -929,9 +929,15 @@ filesystem.
 
 Artifact reads return the stored content without unwrapping JSON. Normal
 single-output artifacts contain the original full text. Named-stream artifacts
-contain their complete individual text. Compaction retry artifacts may contain serialized
-tool-content JSON, including output text and metadata. Their markers identify
-this format and expose usable IDs without requiring durable elision events.
+contain their complete individual text. A compaction retry artifact holds the
+elided result's text as it was, or, for content that is not plain text, a
+line-structured form: a `[tool content: <kind>]` header line, then each part
+under its own `[part N: text|json|file ...]` line, text keeping its own line
+breaks, JSON pretty-printed over several lines, and a file named by its media
+type and filename without its bytes. Its marker says so and exposes a usable
+ID without requiring durable elision events. Artifacts earlier builds stored
+are read as they are: their non-text content is one line of serialized
+tool-content JSON, of which a page shows the first 4 KiB.
 
 Without `stream`, `read_artifact` reads stored text as-is, including manifest
 JSON; it does not merge streams. `stream` selects a declared name from the generic
@@ -948,10 +954,8 @@ stopped before it passes the result size limit, and a continuation marker
 (`[N more lines; continue with offset=M]`, or `[page cut at the result size
 limit; continue with offset=M]`) when lines follow it, reported again as the
 1-based `next_offset` in the metadata. An `offset` past the last line is an
-error. Bytes that are not UTF-8 show as replacement characters. Because of
-the line cut, a single line longer than 4 KiB, such as serialized tool-content
-JSON, can be read only up to its first 4 KiB. Missing and corrupt artifacts
-produce tool errors.
+error. Bytes that are not UTF-8 show as replacement characters. Missing and
+corrupt artifacts produce tool errors.
 
 ```json
 {"artifact":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream":"results","offset":1,"limit":200}

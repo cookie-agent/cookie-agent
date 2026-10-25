@@ -20,9 +20,9 @@ use super::{
     VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input, compaction_gate, compaction_history,
     compaction_input_fits, compaction_instruction, default_compaction_prompt,
     effective_recent_budget, elidable_bytes, estimated_request_tokens, fit_part_bytes,
-    native_compaction_input_budget, raw_fit_from_real_usage, resolve_compaction_trigger,
-    select_recent_tail, serialized_fit_request_bytes, should_elide_tool_output,
-    usage_reaches_compaction_trigger,
+    native_compaction_input_budget, prune_compaction_result, raw_fit_from_real_usage,
+    resolve_compaction_trigger, select_recent_tail, serialized_fit_request_bytes,
+    should_elide_tool_output, usage_reaches_compaction_trigger,
 };
 use crate::{
     model_history::assemble_model_context,
@@ -850,4 +850,82 @@ fn remove_tool_content_parts(content: &mut oven_sdk::ToolContent) -> usize {
         }
         oven_sdk::ToolContent::Json(_) | oven_sdk::ToolContent::Denied { .. } => 0,
     }
+}
+
+/// A tool result the compaction retry elides, `content`, is retained so a
+/// model that follows its marker pages through every line of it with
+/// `read_artifact`, whatever its shape.
+async fn elided_content_pages_to_its_last_line(content: ToolContent, last_line: &str) {
+    let temporary = tempfile::TempDir::new().expect("temp directory");
+    let artifacts = crate::ArtifactRouter::open_flat(temporary.path().join("artifacts"))
+        .expect("artifact store");
+    let session = crate::test_session_id();
+    let mut result = ToolResultPart::new("call-1", content);
+    prune_compaction_result(&mut result, &HashSet::new(), &artifacts, session).expect("elided");
+    let ToolContent::Text(marker) = &result.content else {
+        panic!("an elided result is its marker");
+    };
+    let hint: serde_json::Value =
+        serde_json::from_str(marker.split_once('\n').expect("hint line").1).expect("hint");
+    let artifact = hint["read_more"]["arguments"]["artifact"]
+        .as_str()
+        .expect("artifact");
+    let mut offset = 1;
+    let mut pages = 0;
+    let last = loop {
+        let page = crate::runtime::read_artifact_async(
+            artifacts.clone(),
+            session,
+            cookie_agent_protocol::ArtifactReadTarget::parse(artifact, None).unwrap(),
+            cookie_agent_runtime_api::text_tools::LineWindow::new(Some(offset), Some(1_000))
+                .unwrap(),
+        )
+        .await
+        .expect("a page");
+        pages += 1;
+        assert!(
+            !page.page.text.contains("[line truncated"),
+            "no line is cut"
+        );
+        match page.page.next_offset {
+            Some(next) => offset = next,
+            None => break page.page.text.lines().last().expect("a line").to_owned(),
+        }
+    };
+    assert!(pages >= 3, "{pages} pages");
+    assert!(last.ends_with(last_line), "{last}");
+}
+
+fn long_output() -> String {
+    (1..=3_000)
+        .map(|line| format!("{line:05} {}\n", "x".repeat(94)))
+        .collect()
+}
+
+#[tokio::test]
+async fn elided_text_pages_line_by_line_to_its_last_line() {
+    let output = long_output();
+    assert!(output.len() >= 300_000);
+    elided_content_pages_to_its_last_line(
+        ToolContent::Text(output),
+        &format!("03000 {}", "x".repeat(94)),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn elided_mixed_content_pages_line_by_line_to_its_last_line() {
+    let content = ToolContent::Mixed(vec![
+        oven_sdk::ContentValue::Text(long_output()),
+        oven_sdk::ContentValue::Json(serde_json::json!({"exit": 0, "lines": [1, 2, 3]})),
+        oven_sdk::ContentValue::File(FilePart::new(
+            "image/png",
+            FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 4])),
+        )),
+    ]);
+    elided_content_pages_to_its_last_line(
+        content,
+        "[part 3: file image/png; its bytes are not kept here]",
+    )
+    .await;
 }
