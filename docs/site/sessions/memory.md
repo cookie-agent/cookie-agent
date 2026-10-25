@@ -128,9 +128,12 @@ saved is not a valid memory, `e` reopens it as you left it; when the memory
 changed since you opened it, nothing is overwritten: `r` reloads the current
 version into the editor, and `o` overwrites it with your edit. The panel
 refreshes when a memory changes through the daemon, by you, another client,
-or the agent. An agent's change also shows in the transcript as one line,
-such as `Saved project://web/build`; clicking it opens `/memory` at that
-memory. The web client's Memory view shows the same ages, sizes, and lines.
+or the agent. An agent's memory tool call is one row in the transcript,
+such as `Edit memory project://web/build`: expanding it shows the change as
+a diff, like an edit's, and clicking its URL opens `/memory` at that
+memory; a search's results open theirs the same way. The web client's
+Memory view shows the same ages and sizes, and its rows the same diffs and
+links.
 
 From a terminal, `cookie memory` lists, edits, and deletes memories through
 the daemon, so it works against a remote daemon as well (`--url` and

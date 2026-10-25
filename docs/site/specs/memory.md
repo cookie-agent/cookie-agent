@@ -1811,9 +1811,21 @@ This replaces section 8.1's scoring.
 
 #### 16.9.10 Every change is visible
 
-- **Events.** Each write, edit or delete a model makes is a one-line
-  transcript event, such as `Saved project://cookie-agent/release`, which
-  links to the Memory view in the web client and the TUI.
+- **The tool row is the record** (revised 2026-10-24). Each write, edit
+  or delete a model makes is its memory tool call's one row: expanded, it
+  shows the change as a diff built as the coding runtime's `edit` and
+  `write` build theirs (five lines of context, without the stamp lines),
+  and the memory's URL in its header links to the Memory view in the web
+  client and the TUI. A write, edit or delete previews its diff before it
+  runs, so an approval shows it too.
+  - *Before 2026-10-24* each change was also a one-line transcript event,
+    `memory_changed`, such as `Saved project://cookie-agent/release`,
+    which drew a second row under the call. The memory tools no longer
+    record it; clients fold one an older log holds into the call it
+    directly follows (the running call naming its URL, or the call of the
+    same run terminated just before it), and draw it as its own line only
+    when it follows none. The event is queued for removal at the next
+    major ([compatibility spec](compatibility-v1.md) section 3.4).
 - **No undo, no trash** (decided 2026-10-22). A delete deletes and a
   replaced body is gone, as with any file.
 
@@ -2106,7 +2118,8 @@ Deviations and details decided:
 
 **Phase 2, the clients**, landed 2026-10-22, with no protocol change:
 
-- **Change lines.** The shared reducer turns `memory_changed` into
+- **Change lines** (superseded 2026-10-24 by the tool row, section
+  16.9.10). The shared reducer turns `memory_changed` into
   `TranscriptItem::MemoryChange { seq, change, url }` in place of an info
   row, so no level filter hides it. Like a skill load, it splits the run's
   block: it sits below the call that made the change, and what the run does

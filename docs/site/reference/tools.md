@@ -1729,6 +1729,28 @@ Only when `memory_read` is sent too and some memory URL is both readable (an `al
 
 <!-- /generated -->
 
+### Display
+
+Each memory tool call is one row. Its title names the memory's URL, which
+the TUI and the web client draw as a link that opens the memory in the
+Memory panel or view, a click target of its own; the rest of the row
+expands and collapses it. A write's, an edit's, and a delete's diff is
+built as `write`'s and `edit`'s are (five lines of context, real line
+numbers), labelled with the memory's URL, in `markdown`, over the memory
+file without the `created` and `modified` stamp lines the daemon rewrites
+on every save, as the memory editors show it.
+
+| | `memory_search` | `memory_read` | `memory_write` | `memory_edit` | `memory_delete` |
+|---|---|---|---|---|---|
+| Hint | `search` | `file_read` | `file_write` | `file_edit` | `file_write` |
+| Title | `Search memory` | `Read memory <url>` | `Write memory <url>` | `Edit memory <url>` | `Delete memory <url>` |
+| Arguments | `key_value` of `query`, `layer`, and `limit` | – | `key_value` of `reason` when given; without a preview, also `description`, `keywords`, and `body` | – ; without a preview, `key_value` of `old` and `new` | – |
+| Preview | – | – | `diff` against the memory preparation finds (`created` when there is none) | `diff` of the replacement applied to the memory preparation read, when `old` occurs once | `diff` of the memory's removed text (`deleted`), when it exists |
+| Result | a `link` per memory found, its URL with its description as the label, or `No memories match.` | the body as `markdown` | `diff` against the memory the write replaced (`created` for a new one) | `diff` built from the range the edit replaced, or a line diff of the whole file when the daemon also rewrote its frontmatter (an `agent://` file, a project's overview) | `diff` of the text the memory held (`deleted`) |
+
+A `link` block whose `url` is a memory URL (`user://`, `agent://`,
+`machine://`, or `project://`) opens that memory in the clients.
+
 ## Runtime tools
 
 ### `list_runtimes`
