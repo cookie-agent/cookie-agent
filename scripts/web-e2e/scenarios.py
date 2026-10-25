@@ -2012,39 +2012,89 @@ def shown(browser, selector):
     )
 
 
+def memory_rows(browser, title):
+    """How many tool rows' headers read `title`."""
+    return browser.script(
+        "return [...document.querySelectorAll('#transcript [data-tool]')]"
+        "  .filter(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0])).length",
+        title,
+    )
+
+
+def open_memory_diff(browser, title):
+    """Opens the memory tool row whose header reads `title` and returns its
+    diff's summary line and its changed lines."""
+    browser.script(
+        "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
+        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "row.querySelector('[data-action=\"toggle-tool\"]').click()",
+        title,
+    )
+    browser.wait("the diff of %r" % title, lambda: browser.script(
+        "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
+        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "return !!row.querySelector('[data-tool-body] [data-kind=\"diff\"] table.diff')",
+        title,
+    ))
+    return browser.script(
+        "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
+        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "const diff = row.querySelector('[data-tool-body] [data-kind=\"diff\"]');"
+        "return [diff.firstElementChild.innerText.trim(),"
+        "  [...diff.querySelectorAll('tr.bg-red-100, tr.bg-green-100')].map(r => r.lastElementChild.innerText),"
+        "  diff.querySelectorAll('tr').length]",
+        title,
+    )
+
+
+def click_memory_link(browser, title):
+    """Clicks the memory link in the header of the tool row whose header
+    reads `title`."""
+    browser.script(
+        "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
+        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "row.querySelector('[data-memory-link]').click()",
+        title,
+    )
+
+
 def memory_changes(browser):
-    """A model's memory change is one transcript line that opens the Memory
-    view at that memory, its row marked, with when it was modified and its
-    size against its limit; the editor shows its stamps read-only and leaves
-    their lines out of the text, and a save keeps when it was created. A
-    memory over its limit is marked, and a line about a deleted memory says
-    it is gone. test-web-page.sh gives this group's agent memory, each user
-    memory at most 1 KB."""
+    """A model's memory change is one tool row: its header links to the
+    memory, and opening the row shows the change as a diff, as an edit's
+    row does. The link opens the Memory view at that memory, its row
+    marked, with when it was modified and its size against its limit; the
+    editor shows its stamps read-only and leaves their lines out of the
+    text, and a save keeps when it was created. A memory over its limit is
+    marked, and the link of a deleted memory's row says it is gone.
+    test-web-page.sh gives this group's agent memory, each user memory at
+    most 1 KB."""
     browser.resize(1280, 900)
     url = "user://e2e-build"
     path = os.path.join(HOME, ".cookie-agent", "memory", "user", "e2e-build.md")
     row = '#page [data-memory="%s"]' % url
     new_session(browser)
     send(browser, "remember how the build works")
-    browser.wait("the change line", lambda: count(browser, "#transcript [data-memory-change]") == 1, timeout=40)
+    browser.wait("the write row", lambda: memory_rows(browser, "Write memory user://e2e-build") == 1, timeout=40)
     idle(browser)
-    line = browser.text("#transcript [data-memory-change]")
-    assert re.fullmatch(r"\s*Saved\s+user://e2e-build\s*", line), line
-    # The line sits between the call that made the change and the answer
-    # after it.
-    order = browser.script(
-        "const line = document.querySelector('#transcript [data-memory-change]');"
-        " const tool = [...document.querySelectorAll('#transcript [data-tool]')]"
-        "   .find(e => e.innerText.includes('Write memory user://e2e-build'));"
-        " const answer = [...document.querySelectorAll('#transcript .markdown')]"
-        "   .find(e => e.innerText.includes('The tool ran.'));"
-        " const after = (a, b) => !!a && !!b && !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);"
-        " return [after(tool, line), after(line, answer)]"
-    )
-    assert order == [True, True], order
-    browser.shot("memory-change-line")
+    # One block per call: no line of its own under the row.
+    assert count(browser, "#transcript [data-memory-change]") == 0
+    assert memory_rows(browser, "Write memory user://e2e-build") == 1
+    # The link is its own target: the row stays folded until toggled.
+    links = browser.script("return [...document.querySelectorAll('#transcript [data-memory-link]')].map(e => e.innerText.trim())")
+    assert links == [url], links
+    assert count(browser, "#transcript [data-tool-body]") == 0, "the row starts folded"
+    summary, changed, _ = open_memory_diff(browser, "Write memory user://e2e-build")
+    assert re.fullmatch(r"user://e2e-build · created · \+5 −0", summary), summary
+    assert changed == [
+        "+---",
+        "+description: The browser scenario builds with trunk",
+        "+keywords: [e2e-scenario]",
+        "+---",
+        "+The user said the browser scenario builds with trunk.",
+    ], changed
+    browser.shot("memory-write-row")
 
-    browser.click("#transcript [data-memory-change] button")
+    click_memory_link(browser, "Write memory user://e2e-build")
     browser.wait("the Memory view at the memory", lambda: page_view(browser) == "memory"
                  and count(browser, row + "[data-memory-focused]") == 1)
     stamps = browser.text(row + " [data-memory-stamps]")
@@ -2075,7 +2125,7 @@ def memory_changes(browser):
         saved = file.read()
     assert "trunk and tailwind" in saved, saved
     assert created[0] in saved.splitlines(), saved
-    print("memory: a change line opens the memory, whose stamps show and survive a save")
+    print("memory: a write is one row whose link opens the memory, whose stamps show and survive a save")
 
     # A memory over its limit is marked.
     big = os.path.join(HOME, ".cookie-agent", "memory", "user", "e2e-big.md")
@@ -2090,16 +2140,36 @@ def memory_changes(browser):
     browser.shot("memory-over-limit")
     os.remove(big)
 
-    # A line about a deleted memory says it is gone.
+    # An edit is one row too, whose diff shows the lines around the change
+    # as an edit's does.
     view(browser, "chat")
+    send(browser, "revise the build memory")
+    browser.wait("the edit row", lambda: memory_rows(browser, "Edit memory user://e2e-build") == 1, timeout=40)
+    idle(browser)
+    assert count(browser, "#transcript [data-memory-change]") == 0
+    summary, changed, rows = open_memory_diff(browser, "Edit memory user://e2e-build")
+    assert re.fullmatch(r"user://e2e-build · modified · \+1 −1", summary), summary
+    assert changed == [
+        "-The user said the browser scenario builds with trunk and tailwind.",
+        "+The user said the browser scenario builds with trunk, tailwind, and wasm.",
+    ], changed
+    # The hunk header, the four frontmatter lines above it, and the change.
+    assert rows == 7, rows
+    browser.shot("memory-edit-row")
+
+    # A deleted memory's row shows what it held; its link says it is gone.
     send(browser, "forget how the build works")
-    browser.wait("the delete line", lambda: count(browser, "#transcript [data-memory-change]") == 2, timeout=40)
+    browser.wait("the delete row", lambda: memory_rows(browser, "Delete memory user://e2e-build") == 1, timeout=40)
     idle(browser)
     assert not os.path.exists(path)
-    browser.script("const l = document.querySelectorAll('#transcript [data-memory-change] button'); l[l.length - 1].click()")
+    assert count(browser, "#transcript [data-memory-change]") == 0
+    summary, changed, _ = open_memory_diff(browser, "Delete memory user://e2e-build")
+    assert re.fullmatch(r"user://e2e-build · deleted · \+0 −5", summary), summary
+    assert changed[-1] == "-The user said the browser scenario builds with trunk, tailwind, and wasm.", changed
+    click_memory_link(browser, "Delete memory user://e2e-build")
     browser.wait("the gone note", lambda: page_view(browser) == "memory"
                  and "user://e2e-build is not in memory now." in browser.text("#page [data-memory-gone]"))
-    print("memory: a line about a deleted memory says it is gone")
+    print("memory: an edit and a delete are one row each with their diff; a deleted memory's link says it is gone")
 
 
 def cron_reading(browser, text):

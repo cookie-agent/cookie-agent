@@ -28,7 +28,8 @@ otherwise the last user text decides.
   a `read` call, then the "stream only" answer at 1,500 lines, for the
   page's frame time on a long transcript;
 - containing "remember": a `memory_write` of `user://e2e-build`; containing
-  "forget": a `memory_delete` of it;
+  "revise": a `memory_edit` of it; containing "forget": a `memory_delete`
+  of it;
 - anything else: "ok".
 
 Every reply reports 1,000 prompt tokens, 800 of them read from the cache
@@ -211,6 +212,11 @@ def reply(request):
                 "keywords": ["e2e-scenario"],
                 "body": "The user said the browser scenario builds with trunk.\n",
             },
+        )
+    if "revise" in text:
+        return tool_reply(
+            "memory_edit",
+            {"url": "user://e2e-build", "old": "trunk and tailwind", "new": "trunk, tailwind, and wasm"},
         )
     if "forget" in text:
         return tool_reply("memory_delete", {"url": "user://e2e-build"})

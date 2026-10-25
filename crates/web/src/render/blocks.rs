@@ -195,6 +195,25 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             artifact.byte_length,
             alt.as_deref().or(artifact.filename.as_deref()),
         ),
+        // A memory URL opens the memory in the Memory view.
+        DisplayBlock::Link { url, label }
+            if cookie_agent_client_state::tool_header::is_memory_url(url) =>
+        {
+            let label = label
+                .as_deref()
+                .filter(|label| !label.is_empty())
+                .map(|label| {
+                    format!(
+                        "<span class=\"min-w-0 truncate text-ink dark:text-sand\">— {}</span>",
+                        escape(label)
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                "<button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"inline-flex min-h-11 max-w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span class=\"shrink-0 font-mono underline decoration-dotted underline-offset-2\">{url}</span>{label}</button>",
+                url = escape(url),
+            )
+        }
         DisplayBlock::Link { url, label } => {
             let text = escape(label.as_deref().unwrap_or(url));
             if safe_link(url) {
@@ -606,6 +625,19 @@ mod tests {
             label: None,
         });
         assert!(!unsafe_link.contains("href"), "{unsafe_link}");
+        // A memory URL opens the Memory view at that memory.
+        let memory = html(DisplayBlock::Link {
+            url: "project://web/<build>".into(),
+            label: Some("Build conventions".into()),
+        });
+        assert!(
+            memory.contains(
+                "data-action=\"open-memory\" data-memory-url=\"project://web/&lt;build&gt;\""
+            ),
+            "{memory}"
+        );
+        assert!(memory.contains("— Build conventions</span>"), "{memory}");
+        assert!(!memory.contains("href"), "{memory}");
 
         let session = SessionId::new_v7();
         let session_ref = html(DisplayBlock::SessionRef {

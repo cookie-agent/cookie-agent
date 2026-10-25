@@ -1204,15 +1204,43 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         },
         "text-[0.625rem] opacity-60",
     );
-    let mut html = format!(
-        "<div class=\"rounded-lg border border-toasted dark:border-ember\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex items-center\"><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{chevron}{}<span class=\"min-w-0 shrink truncate\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>{approval}{background}</div>",
-        escape(&id),
-        escape(&id),
-        svg(
-            icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
-            "text-caramel dark:text-maple"
+    let icon = svg(
+        icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
+        "text-caramel dark:text-maple",
+    );
+    let header = tool_header_text(view, tool);
+    // A memory the call names is a link to the Memory view inside the
+    // header, a click target of its own between the two halves that toggle.
+    let link = tool
+        .memory_url()
+        .and_then(|url| header.find(url).map(|at| (at, url)));
+    let toggle = match link {
+        None => format!(
+            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
+            escape(&id),
+            escape(&header),
         ),
-        escape(&tool_header_text(view, tool)),
+        Some((at, url)) => {
+            let suffix = header[at + url.len()..].trim();
+            let suffix = if suffix.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<span class=\"min-w-0 shrink truncate\">{}</span>",
+                    escape(suffix)
+                )
+            };
+            format!(
+                "<div class=\"flex min-w-0 flex-1 items-center rounded-lg hover:bg-toasted dark:hover:bg-ember\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink items-center gap-2 rounded-l-lg py-1 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink truncate rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-r-lg py-1 pr-2 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
+                escape(header[..at].trim_end()),
+                id = escape(&id),
+                url = escape(url),
+            )
+        }
+    };
+    let mut html = format!(
+        "<div class=\"rounded-lg border border-toasted dark:border-ember\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex items-center\">{toggle}{approval}{background}</div>",
+        escape(&id),
     );
     if let Some(delegate) = view.delegates.get(&tool.id) {
         html.push_str(&delegate_html(delegate, tool.status == ToolStatus::Running));
@@ -1438,6 +1466,77 @@ mod tests {
         assert!(html.contains("aria-expanded=\"false\""), "{html}");
         assert!(!html.contains("data-tool-body"), "{html}");
         assert!(!html.contains("timeout"), "{html}");
+    }
+
+    /// A memory tool call is one row whose header links to the memory, a
+    /// target of its own beside the halves that toggle, and whose open
+    /// body shows the change as a diff.
+    #[test]
+    fn a_memory_call_links_its_url_and_opens_to_its_diff() {
+        let mut call = tool(
+            cookie_agent_protocol::PreparedPresentation::new(
+                cookie_agent_protocol::SafeDisplayText::new("Edit memory agent://builder")
+                    .expect("title"),
+                Some(
+                    cookie_agent_protocol::BoundedDisplayText::new("agent://builder")
+                        .expect("argument"),
+                ),
+            )
+            .with_hint("file_edit"),
+            "{}",
+        );
+        call.display = vec![cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::DisplayBlock::Diff(cookie_agent_protocol::DiffBlock {
+                path: "agent://builder".into(),
+                old_path: None,
+                language: Some("markdown".into()),
+                change: cookie_agent_protocol::DiffChange::Modified,
+                hunks: vec![cookie_agent_protocol::DiffHunk {
+                    old_start: 4,
+                    old_lines: 2,
+                    new_start: 4,
+                    new_lines: 2,
+                    lines: vec![
+                        cookie_agent_protocol::DiffLine {
+                            op: cookie_agent_protocol::DiffLineOp::Context,
+                            text: "---".into(),
+                        },
+                        cookie_agent_protocol::DiffLine {
+                            op: cookie_agent_protocol::DiffLineOp::Remove,
+                            text: "- old lesson".into(),
+                        },
+                        cookie_agent_protocol::DiffLine {
+                            op: cookie_agent_protocol::DiffLineOp::Add,
+                            text: "- new lesson".into(),
+                        },
+                    ],
+                }],
+                added: 1,
+                removed: 1,
+                omitted: None,
+                as_of: cookie_agent_protocol::DiffAsOf::Execute,
+                full: None,
+            }),
+        )];
+        let folded = rendered(&call, &Expanded::default());
+        assert_eq!(header(&folded), "Edit memory");
+        let link = "<button type=\"button\" data-action=\"open-memory\" data-memory-url=\"agent://builder\"";
+        assert_eq!(folded.matches(link).count(), 1, "{folded}");
+        // The link is no part of a toggle: it sits between the two.
+        let at = folded.find(link).expect("the link");
+        let before = &folded[..at];
+        assert!(before.ends_with("</button>"), "{folded}");
+        assert_eq!(folded.matches("data-action=\"toggle-tool\"").count(), 2);
+        assert!(!folded.contains("data-tool-body"), "{folded}");
+        let open = rendered(&call, &Expanded::from_iter([call.id.to_string()]));
+        assert!(open.contains("data-tool-body"), "{open}");
+        assert!(open.contains("data-kind=\"diff\""), "{open}");
+        assert!(open.contains("agent://builder · modified"), "{open}");
+        assert!(open.contains("- new lesson"), "{open}");
+        // A call whose argument is no memory URL keeps one toggle.
+        let plain = rendered(&run("Run a command", "user:// x"), &Expanded::default());
+        assert!(!plain.contains("open-memory"), "{plain}");
+        assert_eq!(plain.matches("data-action=\"toggle-tool\"").count(), 1);
     }
 
     #[test]
