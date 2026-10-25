@@ -41,6 +41,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
+| [Push notifications](push-notifications.md) | Draft (2026-10-25), awaiting approval; Web Push from the daemon to installed web clients when a root session settles (its run ended and nothing but recurring cron jobs can wake it) and when an approval or an ACP agent's question waits for the user; approvals stop expiring by default (`[approval] timeout_ms` optional) |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |
