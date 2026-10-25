@@ -775,3 +775,14 @@ User decisions after the first use:
   unsubscribes too and forgets which daemon they came from. Forgotten
   while not connected, only the browser unsubscribes, and the daemon drops
   the subscription when its next push finds it gone.
+- **Turn off and forgetting share one path.** The daemon's id for this
+  browser's subscription is the one `notifications.subscribe` answers for
+  the browser's current subscription, registered again when its key is the
+  daemon's (the same endpoint keeps its id), so it is found even when the
+  page kept no id or kept it under another URL for the daemon; the kept id
+  is the fallback.
+- **An uninstalled app** is noticed at the next push: the push service
+  answers `404` or `410` for a subscription the browser dropped, and the
+  daemon removes it (section 6.3). A platform that keeps the browser's
+  subscription after the app is removed keeps delivering to the browser;
+  **Remove** in Devices stops it.

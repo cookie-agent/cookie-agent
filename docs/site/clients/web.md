@@ -878,9 +878,18 @@ notifications**; the browser asks whether to allow them.
 Once on, **Send test** sends one at once, the field names this device in
 the list, and **Turn off** stops them. **Devices**, below, lists every
 browser the daemon pushes to, with when it last sent one and why the last
-one failed; **Remove** stops another device's. **Forget this daemon** stops
-this browser's too: while still connected, the daemon removes it from
-Devices, and the browser drops its subscription. A browser takes notifications from one
+one failed; **Remove** stops another device's. **Turn off** and **Forget
+this daemon** both remove this browser from Devices (when the page is
+connected) and drop the browser's subscription.
+
+**Uninstalling the app, or clearing the site's data,** ends the browser's
+subscription where the platform ties it to the app (an iPhone's Home
+Screen app, for one). The push service then refuses the next push, and the
+daemon removes the device from Devices. Until a push is attempted it stays
+listed. On a desktop or Android, removing the app may leave the
+browser's own permission and subscription for the site in place, so
+notifications keep arriving in the browser: turn them off before
+uninstalling, or **Remove** the device from another client. A browser takes notifications from one
 daemon at a time: on a page that connected to another daemon since, Settings
 offers **Switch to this daemon**.
 

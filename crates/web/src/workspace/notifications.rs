@@ -23,25 +23,79 @@ fn subscription_key(daemon_url: &str) -> String {
 /// subscription.
 const RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Forgetting the daemon at `daemon_url` stops its notifications here: the
-/// daemon drops this browser's subscription, over `client` while the page
-/// is still connected, and the browser unsubscribes when its notifications
-/// come from that daemon (a daemon it could not tell finds the
-/// subscription gone at its next push).
+/// Stops the daemon at `daemon_url` notifying this browser: the daemon
+/// drops this browser's subscription, over `client` when there is one, and
+/// the browser unsubscribes when its subscription is that daemon's.
+///
+/// The daemon's id for the subscription is the one `notifications.subscribe`
+/// answers: registering the browser's subscription again keeps its id, so
+/// it is found even when the page kept none (or kept it under another URL
+/// for the daemon). Without a connection only the browser unsubscribes; the
+/// daemon drops the subscription when its next push finds it gone.
+async fn unregister(
+    daemon_url: &str,
+    client: Option<cookie_agent_protocol::Client>,
+) -> Result<(), cookie_agent_protocol::ClientError> {
+    let subscription = browser::push_subscription().await;
+    let mut outcome = Ok(());
+    let mut theirs = browser::load(PUSH_DAEMON_URL_KEY).as_deref() == Some(daemon_url);
+    if let Some(client) = client {
+        let mut id = browser::load(&subscription_key(daemon_url));
+        if let (Ok(daemon), Some(subscription)) =
+            (client.get_notifications().await, subscription.clone())
+            && subscription
+                .key
+                .as_deref()
+                .is_some_and(|key| same_key(key, &daemon.public_key))
+        {
+            theirs = true;
+            let (agent, touches) = browser::user_agent();
+            if let Ok(registered) = client
+                .subscribe_notifications(NotificationsSubscribeParams {
+                    endpoint: subscription.endpoint,
+                    p256dh: subscription.p256dh,
+                    auth: subscription.auth,
+                    label: device_label(&agent, touches),
+                })
+                .await
+            {
+                id = Some(registered.subscription.id);
+            }
+        }
+        if let Some(id) = id
+            && let Err(error) = client.unsubscribe_notifications(id).await
+            && error.error_code() != Some("push_subscription_not_found")
+        {
+            outcome = Err(error);
+        }
+    }
+    browser::forget(&subscription_key(daemon_url));
+    if theirs {
+        if subscription.is_some() {
+            browser::push_unsubscribe().await;
+        }
+        browser::forget(PUSH_DAEMON_URL_KEY);
+    }
+    outcome
+}
+
+/// Forgetting the daemon at `daemon_url` stops its notifications here
+/// ([`unregister`]), waiting at most [`RELEASE_TIMEOUT`] for the daemon.
 pub(crate) async fn release_push(
     daemon_url: String,
     client: Option<cookie_agent_protocol::Client>,
 ) {
-    let own = browser::load(&subscription_key(&daemon_url));
-    if let (Some(client), Some(id)) = (client, own) {
-        let removal = std::pin::pin!(client.unsubscribe_notifications(id));
-        let timeout = std::pin::pin!(gloo_timers::future::sleep(RELEASE_TIMEOUT));
-        let _ = futures_util::future::select(removal, timeout).await;
-    }
-    browser::forget(&subscription_key(&daemon_url));
-    if browser::load(PUSH_DAEMON_URL_KEY).as_deref() == Some(daemon_url.as_str()) {
-        browser::push_unsubscribe().await;
-        browser::forget(PUSH_DAEMON_URL_KEY);
+    let release = std::pin::pin!(unregister(&daemon_url, client));
+    let timeout = std::pin::pin!(gloo_timers::future::sleep(RELEASE_TIMEOUT));
+    if let futures_util::future::Either::Right(_) =
+        futures_util::future::select(release, timeout).await
+    {
+        // The daemon did not answer in time: this browser stops anyway.
+        browser::forget(&subscription_key(&daemon_url));
+        if browser::load(PUSH_DAEMON_URL_KEY).as_deref() == Some(daemon_url.as_str()) {
+            browser::push_unsubscribe().await;
+            browser::forget(PUSH_DAEMON_URL_KEY);
+        }
     }
 }
 
@@ -219,23 +273,15 @@ impl Workspace {
         });
     }
 
-    /// **Turn off**: unsubscribes this browser and removes its
-    /// subscription from the daemon at `daemon_url`.
+    /// **Turn off**: removes this browser's subscription from the daemon at
+    /// `daemon_url` and unsubscribes the browser, as forgetting the daemon
+    /// does.
     pub fn turn_off_notifications(self, daemon_url: String) {
         self.push_error.set(None);
         self.push_busy.set(true);
-        let own = self.own_subscription(&daemon_url);
         let client = self.client();
         spawn_local(async move {
-            browser::push_unsubscribe().await;
-            browser::forget(&subscription_key(&daemon_url));
-            if browser::load(PUSH_DAEMON_URL_KEY).as_deref() == Some(daemon_url.as_str()) {
-                browser::forget(PUSH_DAEMON_URL_KEY);
-            }
-            if let (Some(id), Some(client)) = (own, client)
-                && let Err(error) = client.unsubscribe_notifications(id).await
-                && error.error_code() != Some("push_subscription_not_found")
-            {
+            if let Err(error) = unregister(&daemon_url, client).await {
                 self.push_error
                     .set(Some(crate::errors::describe_full(&error)));
             }
