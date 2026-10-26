@@ -3011,12 +3011,19 @@ def desktop_layout(browser):
 
 def phone_layout():
     """The phone's drawer, Back, the bottom sheets, the mode picker, and the
-    bottom bar that gives way to the keyboard."""
+    bottom bar that gives way to the keyboard. A page opened on a phone
+    shows its sessions first, over a new session."""
     phone = Browser()
     try:
+        phone.phone(390, 844)
         phone.go(LINK)
         phone.wait("the connection", lambda: phone.text("#connected") != "")
-        phone.phone(390, 844)
+        phone.wait("the sessions first", lambda: count(phone, "#drawer [data-session]") > 0)
+        assert "New session" in phone.text("main h1, main header"), "no new session under the sessions"
+        phone.shot("phone-opens-on-sessions")
+        phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+        phone.wait("the sessions closed", lambda: count(phone, "#drawer") == 0)
+        print("phone: the page opens on its sessions, over a new session")
         composer_clear(phone, "phone")
         phone.shot("phone-fresh-connect")
         assert not shown(phone, "[data-rail=primary]"), "a phone shows the rail outside the drawer"
@@ -3969,6 +3976,10 @@ def install_on_phones():
             # The banner goes for good once dismissed.
             phone.go(LINK)
             phone.wait("the connection", lambda: phone.text("#connected") != "")
+            # A phone opens on its sessions; the banner is under them.
+            phone.wait("the sessions", lambda: count(phone, "#drawer") == 1)
+            phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+            phone.wait("the sessions closed", lambda: count(phone, "#drawer") == 0)
             if agent is None:
                 phone.script(FAKE_PROMPT, "dismissed")
             phone.wait("the install banner", lambda: count(phone, "#install-banner") == 1)
@@ -4358,7 +4369,7 @@ def projects_phone():
         phone.phone(375, 800)
         phone.go(LINK)
         phone.wait("the connection", lambda: phone.text("#connected") != "")
-        phone.click("main [data-sidebar-toggle]")
+        # A phone opens on its sessions, over a new session.
         phone.wait("the drawer", lambda: count(phone, "#drawer [data-project-section]") >= 2)
         project = phone.script(
             "const h = document.querySelector('#drawer [data-project-header]:not([data-project-header=none])');"

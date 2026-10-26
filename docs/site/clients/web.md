@@ -741,8 +741,9 @@ changes (`crons.changed`), from any client or agent.
   - **Status line:** a thin line above the bottom bar, only while
     approvals wait (tap the badge to answer), or for a few seconds after a
     status message.
-- **The drawer.** The sidebar button opens a drawer from the left over
-  the dimmed page: the rail as an icon strip, with the theme button at its
+- **The drawer.** The page opens with it, its sessions over a new
+  session (a notification's session opens instead). The sidebar button
+  opens it again from the left over the dimmed page: the rail as an icon strip, with the theme button at its
   foot, beside the sessions, with the open session's subagents nested
   under its row. A tap outside, browser Back, or choosing a session or a
   view closes it; choosing Chat leaves it open on the sessions, and a tap

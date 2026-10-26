@@ -620,6 +620,16 @@ impl Workspace {
         self.finish_waiting_sign_in();
         let selected = self.selected.get_untracked();
         self.refresh_onboarding(!reconnected);
+        // A phone opens on its sessions, over a new session: what it is
+        // opened for is mostly a session already going. A notification's
+        // session, opened next, closes them.
+        if !reconnected
+            && self.narrow.get_untracked()
+            && self.new_session.get_untracked()
+            && self.view.get_untracked() == crate::layout::View::Chat
+        {
+            self.sidebar_open.set(true);
+        }
         self.report_presence();
         if reconnected {
             self.reread_open();
