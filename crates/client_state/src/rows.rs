@@ -80,13 +80,16 @@ pub fn display_line_count(text: &str) -> usize {
     text.split('\n').count()
 }
 
-/// Whether a session counts as active in a session list: it runs, or it
-/// waits on a producer that will start its next run (an active goal, a
-/// background call, a subagent, an external producer).
+/// Whether a session counts as active in a session list: it runs, it is
+/// held and waits for the user to resume it, or it waits on a producer that
+/// will start its next run (an active goal, a background call, a subagent,
+/// an external producer).
 pub fn session_is_active(session: &SessionMeta) -> bool {
     matches!(
         crate::activity::session_activity(session),
-        crate::activity::SessionActivity::Running | crate::activity::SessionActivity::Waiting(_)
+        crate::activity::SessionActivity::Running
+            | crate::activity::SessionActivity::Held(_)
+            | crate::activity::SessionActivity::Waiting(_)
     )
 }
 

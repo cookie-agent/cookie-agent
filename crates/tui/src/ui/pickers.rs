@@ -233,13 +233,15 @@ pub(crate) fn session_search_rows<'a>(
 }
 
 /// The marker a session row carries after its title: `⏳` while a run is
-/// going, `⏰` while nothing runs but a producer will start the next run (an
-/// active goal, a background call, a subagent, or an external producer),
-/// and nothing otherwise. Running takes precedence.
+/// going, `⏸` while its automatic runs are held, `⏰` while nothing runs but
+/// a producer will start the next run (an active goal, a background call, a
+/// subagent, or an external producer), and nothing otherwise. Running takes
+/// precedence, then the hold.
 pub(crate) fn activity_marker(session: &SessionMeta) -> &'static str {
     use cookie_agent_client_state::activity::{SessionActivity, session_activity};
     match session_activity(session) {
         SessionActivity::Running => " ⏳",
+        SessionActivity::Held(_) => " ⏸",
         SessionActivity::Waiting(_) => " ⏰",
         SessionActivity::Problem(_) | SessionActivity::None => "",
     }

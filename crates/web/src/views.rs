@@ -438,6 +438,10 @@ fn session_row(
         cookie_agent_client_state::activity::SessionActivity::Waiting(kinds) => {
             cookie_agent_client_state::activity::waiting_label(kinds)
         }
+        cookie_agent_client_state::activity::SessionActivity::Held(reason) => format!(
+            "held: {}",
+            cookie_agent_client_state::held::reason_label(reason)
+        ),
         _ => mark.label.to_owned(),
     };
     let last_activity = session.last_activity;

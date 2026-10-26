@@ -154,12 +154,14 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   by its runtime, such as `labpc · ~/api`.
   - **Rows.** Each session shows its title, how long ago it was last
     active beside it, and where it runs as badges on the line below.
-    In each project, active sessions come first (those that run, or wait
-    on something that will start their next run: an active goal, a
-    background call, a subagent, or a plugin or runtime), then the others,
-    each newest first. A session that runs has a turning circle before its
-    title, one that waits has a clock (its tooltip says what it waits on,
-    such as `waiting on: goal, background call`), and one whose last run
+    In each project, active sessions come first (those that run, are
+    [held](../sessions/held.md), or wait on something that will start
+    their next run: an active goal, a background call, a subagent, or a
+    plugin or runtime), then the others, each newest first. A session that
+    runs has a turning circle before its title, a held one has a pause (red
+    when its runs kept failing; its tooltip says why, such as `held:
+    stopped by you`), one that waits has a clock (its tooltip says what it
+    waits on, such as `waiting on: goal, background call`), and one whose last run
     failed or was interrupted has a mark; the others have none. A daemon
     older than client protocol 1.9 does not say what a session waits on.
     A session a scheduled prompt started has a filled clock before its

@@ -178,7 +178,8 @@ pub fn session_status(status: SessionStatus) -> StatusMark {
 }
 
 /// The mark a session's row shows before its title, if any: a turning
-/// circle while it runs, a clock while it waits on a producer (an active
+/// circle while it runs, a pause while it is held, a clock while it waits
+/// on a producer (an active
 /// goal, a background call, a subagent, or an external producer) to start
 /// its next run, and a mark when its last run failed or was interrupted. A
 /// finished, idle, or cancelled session has none, so its title starts at
@@ -186,6 +187,19 @@ pub fn session_status(status: SessionStatus) -> StatusMark {
 pub fn row_status(activity: &SessionActivity) -> Option<StatusMark> {
     match activity {
         SessionActivity::Running => Some(session_status(SessionStatus::Running)),
+        // A pause, as the held line in the transcript shows; red when its
+        // runs kept failing.
+        SessionActivity::Held(reason) => Some(StatusMark {
+            icon: icondata::FaPauseSolid,
+            label: "held",
+            tone: match reason {
+                cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::HeldReason::Failing { .. },
+                ) => FAILED,
+                _ => RUNNING,
+            },
+            spins: false,
+        }),
         SessionActivity::Waiting(_) => Some(StatusMark {
             icon: icondata::FaClockRegular,
             label: "waiting",
@@ -330,6 +344,12 @@ mod tests {
         .expect("a waiting mark");
         assert!(!waiting.spins);
         assert_ne!(waiting.icon, session_status(SessionStatus::Running).icon);
+        let held = row_status(&SessionActivity::Held(cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::HeldReason::Stopped {},
+        )))
+        .expect("a held mark");
+        assert_eq!(held.label, "held");
+        assert!(!held.spins);
         assert!(row_status(&SessionActivity::Problem(SessionStatus::Failed)).is_some());
         assert!(row_status(&SessionActivity::Problem(SessionStatus::Interrupted)).is_some());
         assert!(row_status(&SessionActivity::Problem(SessionStatus::Cancelled)).is_none());

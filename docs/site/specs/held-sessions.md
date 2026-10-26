@@ -182,6 +182,10 @@ Where the implementation differs from the text above, this section wins.
   and Queue, with a *Held — ...* status line after the transcript. The TUI
   draws a banner on the conversation's last row with a *resume* button
   (`PointerTarget::HeldResume`), and Enter in an empty composer resumes.
+  Session lists show a held session as `SessionActivity::Held`, sorted with
+  the active ones: a pause before its title on the web (red when held for
+  failures, `held: <reason>` as its tooltip), and `⏸` in the TUI (added
+  2026-10-26).
 - **Tests:** `crates/engine/src/runtime/tests/held_sessions.rs` (failures to
   the budget and a resume, a stop, a goal that keeps failing, the parent's
   and a sibling's mail, the push), the cron skip in `tests/crons.rs`, the

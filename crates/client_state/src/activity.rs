@@ -1,7 +1,7 @@
 //! What a session list shows about each session's activity: running, waiting
 //! on a producer, a problem with its last run, or nothing.
 
-use cookie_agent_protocol::{SemVer, SessionMeta, SessionStatus, WaitingOn};
+use cookie_agent_protocol::{HeldReason, Open, SemVer, SessionMeta, SessionStatus, WaitingOn};
 
 /// The client protocol minor from which `SessionMeta` reports `waiting_on`.
 pub const WAITING_ON_MINOR: u32 = 9;
@@ -24,6 +24,10 @@ pub enum SessionActivity {
     /// A run is going. It takes precedence over everything else: a running
     /// session shows as running whatever it waits on.
     Running,
+    /// No run is going and the session's automatic runs are held
+    /// (`docs/site/specs/held-sessions.md`): it waits for the user to resume
+    /// it. It takes precedence over waiting, which the hold stops.
+    Held(Open<HeldReason>),
     /// No run is going, and these producers will start the next one without
     /// the user, in `SessionMeta::waiting_on` order. Waiting takes
     /// precedence over a problem with the last run, since the session will
@@ -43,6 +47,9 @@ pub enum SessionActivity {
 pub fn session_activity(meta: &SessionMeta) -> SessionActivity {
     if meta.status == SessionStatus::Running {
         return SessionActivity::Running;
+    }
+    if let Some(reason) = &meta.held {
+        return SessionActivity::Held(reason.clone());
     }
     if !meta.waiting_on.is_empty() {
         return SessionActivity::Waiting(meta.waiting_on.clone());
@@ -81,7 +88,7 @@ pub fn waiting_label(kinds: &[WaitingOn]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::{SemVer, SessionMeta, SessionStatus, WaitingOn};
+    use cookie_agent_protocol::{HeldReason, Open, SemVer, SessionMeta, SessionStatus, WaitingOn};
 
     use super::{SessionActivity, daemon_reports_waiting, session_activity, waiting_label};
 
@@ -114,6 +121,16 @@ mod tests {
         .expect("session metadata");
         meta.waiting_on = waiting_on.to_vec();
         meta
+    }
+
+    #[test]
+    fn held_beats_waiting_and_running_beats_held() {
+        let stopped = Open::Known(HeldReason::Stopped {});
+        let mut held = meta(SessionStatus::Cancelled, &[WaitingOn::Goal]);
+        held.held = Some(stopped.clone());
+        assert_eq!(session_activity(&held), SessionActivity::Held(stopped));
+        held.status = SessionStatus::Running;
+        assert_eq!(session_activity(&held), SessionActivity::Running);
     }
 
     #[test]

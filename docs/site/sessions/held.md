@@ -34,6 +34,9 @@ A run that a daemon restart interrupted is neither: it resumes as before.
 
 The transcript records why (*Automatic runs held: stopped by you* or
 *failed 4 times in a row: ...*), and the session's line says what waits.
+In the session list a held session sorts with the active ones and shows a
+pause: before its title on the web (red when its runs kept failing, its
+tooltip saying why), and `⏸` after its title in the TUI.
 
 ## Resuming
 
