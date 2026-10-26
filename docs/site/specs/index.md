@@ -44,6 +44,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
+| [Managing runtimes from clients](runtime-management.md) | Draft (2026-10-26), awaiting decisions; per-runtime MCP servers and ACP agents in the daemon's configuration applied live, the machines panel's server, tool, and agent editors, every-runtime profiles, restarting template and dial-in runtimes, and MCP OAuth for servers on any runtime |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |

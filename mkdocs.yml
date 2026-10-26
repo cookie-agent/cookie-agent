@@ -189,6 +189,7 @@ nav:
           - MCP tool filters: specs/mcp-tool-filters.md
           - ACP agents: specs/acp-agents.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
+          - Managing runtimes from clients: specs/runtime-management.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md
           - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
