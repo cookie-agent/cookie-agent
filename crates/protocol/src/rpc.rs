@@ -2050,6 +2050,11 @@ pub struct McpServerInfo {
     /// none were, and from runtimes that do not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filtered_tools: Option<u32>,
+    /// Every tool the server lists, by its own name and in its order, each
+    /// with whether its filters left it out (client protocol 1.36.0); empty
+    /// while it has listed nothing, and from runtimes that do not say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub server_tools: Vec<crate::runtime_protocol::McpServerTool>,
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub message: Option<String>,

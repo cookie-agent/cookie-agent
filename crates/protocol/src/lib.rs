@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.35, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.36, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
@@ -262,7 +262,7 @@ pub use project::*;
 pub use provider::*;
 pub use rpc::*;
 pub use runtime::*;
-pub use runtime_protocol::McpServerScope;
+pub use runtime_protocol::{McpServerScope, McpServerTool};
 pub use semver::*;
 pub use session::*;
 pub use session_model::*;

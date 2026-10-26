@@ -107,6 +107,9 @@ pub struct McpServerStatus {
     /// How many of the tools the server lists its `include_tools` and
     /// `exclude_tools` left out.
     pub filtered_tools: usize,
+    /// Every tool of the last listing, by the server's own name and in its
+    /// order, with whether the filters left it out.
+    pub server_tools: Vec<cookie_agent_protocol::McpServerTool>,
     pub auth_in_progress: bool,
 }
 
@@ -126,6 +129,8 @@ struct ServerRuntime {
     tools: Mutex<Vec<CachedTool>>,
     /// How many tools of the last listing the filters left out.
     filtered_tools: AtomicUsize,
+    /// The last listing, as [`McpServerStatus::server_tools`].
+    server_tools: Mutex<Vec<cookie_agent_protocol::McpServerTool>>,
     list_generation: AtomicU64,
     publication: Mutex<()>,
     tool_refresh: Mutex<ToolRefreshDebounce>,
@@ -986,6 +991,7 @@ impl ServerRuntime {
                 message,
                 tools: Vec::new(),
                 filtered_tools: 0,
+                server_tools: Vec::new(),
                 auth_in_progress: false,
             }),
             name,
@@ -993,6 +999,7 @@ impl ServerRuntime {
             loaded,
             tools: Mutex::new(Vec::new()),
             filtered_tools: AtomicUsize::new(0),
+            server_tools: Mutex::new(Vec::new()),
             list_generation: AtomicU64::new(0),
             publication: Mutex::new(()),
             tool_refresh: Mutex::new(ToolRefreshDebounce::default()),
@@ -1088,6 +1095,11 @@ impl ServerRuntime {
                 .map(|tool| tool.spec.name.clone())
                 .collect();
             status.filtered_tools = self.filtered_tools.load(Ordering::Acquire);
+            status.server_tools = self
+                .server_tools
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
         }
         self.notify_changed();
     }
@@ -1109,6 +1121,10 @@ impl ServerRuntime {
         self.clear_claims();
         self.tools.lock().unwrap_or_else(|p| p.into_inner()).clear();
         self.filtered_tools.store(0, Ordering::Release);
+        self.server_tools
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         self.set_status(McpServerState::Failed, Some(message.clone()));
         if let Some(registry) = self.registry.upgrade() {
             registry.failed(McpServerFailure {
@@ -1686,6 +1702,13 @@ impl ServerRuntime {
         // The server's `include_tools` and `exclude_tools`, over the names it
         // lists, before any tool is published.
         let listed = tools.len();
+        let server_tools = tools
+            .iter()
+            .map(|tool| cookie_agent_protocol::McpServerTool {
+                name: tool.name.to_string(),
+                filtered: !self.loaded.config.publishes_tool(tool.name.as_ref()),
+            })
+            .collect::<Vec<_>>();
         let converted = tools
             .into_iter()
             .filter(|tool| self.loaded.config.publishes_tool(tool.name.as_ref()))
@@ -1706,7 +1729,16 @@ impl ServerRuntime {
             }
         };
         let filtered = listed - converted.len();
-        let filtered_changed = self.filtered_tools.swap(filtered, Ordering::AcqRel) != filtered;
+        let listing_changed = {
+            let mut current = self
+                .server_tools
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let changed = *current != server_tools;
+            *current = server_tools;
+            changed
+        };
+        self.filtered_tools.store(filtered, Ordering::Release);
         let unchanged = {
             let current = self
                 .tools
@@ -1722,7 +1754,7 @@ impl ServerRuntime {
         };
         if unchanged {
             drop(publication);
-            if filtered_changed && self.current_state() == McpServerState::Connected {
+            if listing_changed && self.current_state() == McpServerState::Connected {
                 self.set_status(McpServerState::Connected, None);
             }
             return;

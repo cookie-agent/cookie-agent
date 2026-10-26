@@ -5,9 +5,10 @@
 //! rows and changes (`machines.*`).
 
 use cookie_agent_protocol::{
-    AttachmentName, CapabilityName, MachineAssignment, MachineName, MachinesListResult,
-    McpServerInfo, RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId,
-    RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
+    AgentDescriptor, AgentId, AttachmentName, CapabilityName, MachineAssignment, MachineName,
+    MachinesListResult, McpServerInfo, RuntimeAttachRequest, RuntimeAttachment,
+    RuntimeCapabilityInfo, RuntimeId, RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind,
+    RuntimeListing, RuntimesListResult,
 };
 
 /// One attachment row: what the session records and the instance it refers
@@ -180,6 +181,62 @@ impl MachineAction {
         .into_iter()
         .find(|action| action.key() == key)
     }
+}
+
+/// An ACP agent declaration a runtime offers, as the machines views list it
+/// (`docs/site/specs/runtime-management.md` section 4.2).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeAcpAgent {
+    /// The declaration's key, which is also the agent of that ID.
+    pub agent: AgentId,
+    /// A session that attaches the runtime can run it now.
+    pub available: bool,
+    /// What the agent of the declaration's own ID says it is; empty when
+    /// only templates run the declaration.
+    pub description: String,
+    /// The agents that run the declaration on the runtime, in ID order:
+    /// the one of its own ID and every template over it (`acp.agent`).
+    pub agents: Vec<AgentId>,
+}
+
+/// The ACP agent declarations `runtime_id` offers, by key, from the
+/// catalog's `agents`.
+pub fn runtime_acp_agents(
+    agents: &[AgentDescriptor],
+    runtime_id: &RuntimeId,
+) -> Vec<RuntimeAcpAgent> {
+    let mut declarations = std::collections::BTreeMap::<AgentId, RuntimeAcpAgent>::new();
+    for descriptor in agents {
+        for offer in descriptor
+            .runtimes
+            .iter()
+            .filter(|offer| offer.runtime_id == *runtime_id)
+        {
+            let declaration =
+                declarations
+                    .entry(offer.agent.clone())
+                    .or_insert_with(|| RuntimeAcpAgent {
+                        agent: offer.agent.clone(),
+                        available: false,
+                        description: String::new(),
+                        agents: Vec::new(),
+                    });
+            declaration.available |= offer.available;
+            if descriptor.id == offer.agent {
+                declaration.description.clone_from(&descriptor.description);
+            }
+            if !declaration.agents.contains(&descriptor.id) {
+                declaration.agents.push(descriptor.id.clone());
+            }
+        }
+    }
+    declarations
+        .into_values()
+        .map(|mut declaration| {
+            declaration.agents.sort();
+            declaration
+        })
+        .collect()
 }
 
 /// One row of the machines view: a machine, or a runtime under it.
@@ -731,5 +788,85 @@ mod tests {
             attach_parameters(box_choice, "").map(|(_, _, workspace)| workspace),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn a_runtimes_acp_agents_are_its_declarations_with_the_agents_over_them() {
+        use cookie_agent_protocol::{AgentDescriptor, AgentId, AgentMode, AgentRuntime};
+        let offer = |runtime: &str, declaration: &str, available| AgentRuntime {
+            runtime_id: RuntimeId::new(runtime).unwrap(),
+            agent: AgentId::new(declaration).unwrap(),
+            available,
+            options: Vec::new(),
+            input_media: Vec::new(),
+        };
+        let agent = |id: &str, description: &str, runtimes: Vec<AgentRuntime>| AgentDescriptor {
+            id: AgentId::new(id).unwrap(),
+            preset: None,
+            description: description.into(),
+            mode: AgentMode::All,
+            enabled: true,
+            runnable_as_root: true,
+            resolved_fallback: Vec::new(),
+            delegation_targets: Vec::new(),
+            runtime: None,
+            runtimes,
+            unset_models: Vec::new(),
+        };
+        let agents = [
+            agent("build", "Builds", Vec::new()),
+            agent(
+                "claude",
+                "Claude Code",
+                vec![
+                    offer("labpc", "claude", true),
+                    offer("local", "claude", false),
+                ],
+            ),
+            // A template over `claude`, and one over `codex`, which no
+            // document of its own ID describes.
+            agent(
+                "claude-review",
+                "Reviews",
+                vec![
+                    offer("labpc", "claude", true),
+                    offer("local", "claude", false),
+                ],
+            ),
+            agent(
+                "codex-fast",
+                "Fast Codex",
+                vec![offer("labpc", "codex", false)],
+            ),
+        ];
+        let listed = super::runtime_acp_agents(&agents, &RuntimeId::new("labpc").unwrap());
+        assert_eq!(
+            listed
+                .iter()
+                .map(|declaration| (
+                    declaration.agent.as_str(),
+                    declaration.available,
+                    declaration.description.as_str(),
+                    declaration
+                        .agents
+                        .iter()
+                        .map(AgentId::as_str)
+                        .collect::<Vec<_>>()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "claude",
+                    true,
+                    "Claude Code",
+                    vec!["claude", "claude-review"]
+                ),
+                ("codex", false, "", vec!["codex-fast"]),
+            ]
+        );
+        let local = super::runtime_acp_agents(&agents, &RuntimeId::new("local").unwrap());
+        assert_eq!(local.len(), 1);
+        assert!(!local[0].available);
+        assert!(super::runtime_acp_agents(&agents, &RuntimeId::new("global").unwrap()).is_empty());
     }
 }

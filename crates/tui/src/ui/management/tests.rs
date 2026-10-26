@@ -144,6 +144,7 @@ fn mcp_panel_renders_live_state_and_connection() {
         state: McpServerState::Disconnected,
         tool_count: 0,
         filtered_tools: None,
+        server_tools: Vec::new(),
         message: None,
         auth_in_progress: Some(false),
     }]);
@@ -194,6 +195,7 @@ fn mcp_panel_renders_copyable_oauth_wait() {
         state: McpServerState::NeedsAuth,
         tool_count: 0,
         filtered_tools: None,
+        server_tools: Vec::new(),
         message: Some("waiting for OAuth browser callback".into()),
         auth_in_progress: Some(true),
     }]);
@@ -1137,6 +1139,7 @@ fn hosted_server(
         state,
         tool_count,
         filtered_tools: None,
+        server_tools: Vec::new(),
         message: message.map(str::to_owned),
         auth_in_progress: None,
     }
@@ -1287,6 +1290,53 @@ fn the_machines_view_counts_a_runtimes_mcp_servers() {
 }
 
 #[test]
+fn the_machines_view_lists_a_runtimes_tools_and_acp_agents() {
+    use cookie_agent_protocol::{AgentDescriptor, AgentId, AgentMode, AgentRuntime, McpServerTool};
+    let mut panel = super::RuntimePanel::default();
+    panel.install(runtime_listing());
+    panel.install_machines(Ok(super::sample_machines()));
+    let mut browser = hosted_server("labpc", None, "browser", McpServerState::Connected, 2, None);
+    browser.server_tools = ["click", "install", "type"]
+        .into_iter()
+        .map(|name| McpServerTool {
+            name: name.into(),
+            filtered: name == "install",
+        })
+        .collect();
+    panel.install_mcp_servers(vec![browser]);
+    let agent = |id: &str, declaration: &str| AgentDescriptor {
+        id: AgentId::new(id).unwrap(),
+        preset: None,
+        description: String::new(),
+        mode: AgentMode::All,
+        enabled: true,
+        runnable_as_root: true,
+        resolved_fallback: Vec::new(),
+        delegation_targets: Vec::new(),
+        runtime: None,
+        runtimes: vec![AgentRuntime {
+            runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
+            agent: AgentId::new(declaration).unwrap(),
+            available: true,
+            options: Vec::new(),
+            input_media: Vec::new(),
+        }],
+        unset_models: Vec::new(),
+    };
+    panel.agents = vec![agent("claude", "claude"), agent("claude-review", "claude")];
+    panel.view = super::RuntimeView::Machines;
+    panel.machine_selection.select(Some(1));
+    let text = render_runtime_panel(&mut panel, &[], 110, 30);
+    assert!(text.contains("tools: click, type"), "{text}");
+    assert!(text.contains("left out: install"), "{text}");
+    assert!(text.contains("ACP agents:"), "{text}");
+    assert!(
+        text.contains("claude  available  templates: claude-review"),
+        "{text}"
+    );
+}
+
+#[test]
 fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
     let server = |runtime: &str, workspace: Option<&str>, name: &str| McpServerInfo {
         runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
@@ -1310,6 +1360,7 @@ fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
         state: McpServerState::Failed,
         tool_count: 0,
         filtered_tools: None,
+        server_tools: Vec::new(),
         message: Some("exited".into()),
         auth_in_progress: None,
     };

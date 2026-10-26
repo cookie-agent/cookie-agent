@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.35.0",
+    "protocol_version": "1.36.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.35.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.36.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -304,7 +304,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
 | `elicitation.respond` | Session ID, `elicitation_id`, `action` (`accept`, `decline`, or `cancel`), and `content`, the form's values by field name, for `accept` of a form | Empty object, once the answer is handed to the agent; `elicitation_not_pending` or `elicitation_answer_invalid` otherwise (see [Questions](#questions)) |
-| `mcp.server.list` | Empty object | Every MCP server the daemon and its runtimes host: its `runtime_id`, `workspace`, `name`, `source`, `definition`, `state`, `tool_count`, and `message` (see [MCP servers](#mcp-servers)) |
+| `mcp.server.list` | Empty object | Every MCP server the daemon and its runtimes host: its `runtime_id`, `workspace`, `name`, `source`, `definition`, `state`, `tool_count`, `server_tools` (since 1.36.0), and `message` (see [MCP servers](#mcp-servers)) |
 | `mcp.server.add` | `name`, `definition` | The new server as `mcp.server.list` reports it |
 | `mcp.server.edit` | `name`, `definition` | The server afterwards |
 | `mcp.server.remove` | `name` | `null` once the server is gone |
@@ -1320,7 +1320,12 @@ instance hosts, from its template's `mcp` table or, for a dial-in runtime,
 from `[runtimes.local.mcp]` on its own machine. Each entry has the hosting
 `runtime_id`, the hosting instance's `workspace` (absent for `global`),
 `name`, `source`, `definition`, `state`, `tool_count`, `message`, and
-`auth_in_progress`. `source` is `user_file` (the daemon's `config.toml`),
+`auth_in_progress`. Since 1.36.0 it also has `server_tools`: every tool the
+server lists, by the server's own name (what `include_tools` and
+`exclude_tools` match) and in its order, as `{ name, filtered }`, with
+`filtered: true` (omitted when false) for a tool its filters left out;
+absent while the server has listed nothing and from a runtime older than
+runtime protocol 1.9.0. `source` is `user_file` (the daemon's `config.toml`),
 `runtime` (a global server changed in the running daemon only), or, since
 1.12.0, `machine`: defined on the hosting runtime's machine, which the
 daemon does not read, so its `definition` is empty (no `command` or `url`).

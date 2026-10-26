@@ -440,6 +440,21 @@ pub fn server_tools_label(server: &McpServerInfo) -> String {
     }
 }
 
+/// `server`'s tools by the server's own names, in its order: those it
+/// offers, then those its filters left out. Both empty while it has listed
+/// nothing, and for a runtime too old to say.
+pub fn server_tool_names(server: &McpServerInfo) -> (Vec<&str>, Vec<&str>) {
+    let (mut offered, mut left_out) = (Vec::new(), Vec::new());
+    for tool in &server.server_tools {
+        if tool.filtered {
+            left_out.push(tool.name.as_str());
+        } else {
+            offered.push(tool.name.as_str());
+        }
+    }
+    (offered, left_out)
+}
+
 /// How a server's state reads at a glance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StateTone {
@@ -594,6 +609,7 @@ mod tests {
             state,
             tool_count: 0,
             filtered_tools: None,
+            server_tools: Vec::new(),
             message: message.map(str::to_owned),
             auth_in_progress: None,
         }
@@ -868,5 +884,25 @@ mod tests {
         );
         browser.filtered_tools = Some(0);
         assert_eq!(super::server_tools_label(&browser), "12 tools");
+    }
+
+    #[test]
+    fn a_servers_tools_split_into_offered_and_left_out_in_its_order() {
+        let mut browser = server("labpc", None, "browser", McpServerState::Connected, None);
+        assert_eq!(super::server_tool_names(&browser), (Vec::new(), Vec::new()));
+        let tool = |name: &str, filtered| cookie_agent_protocol::McpServerTool {
+            name: name.into(),
+            filtered,
+        };
+        browser.server_tools = vec![
+            tool("click", false),
+            tool("install", true),
+            tool("type", false),
+            tool("tab_close", true),
+        ];
+        assert_eq!(
+            super::server_tool_names(&browser),
+            (vec!["click", "type"], vec!["install", "tab_close"])
+        );
     }
 }

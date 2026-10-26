@@ -302,6 +302,7 @@ impl App {
         self.providers = snapshot.providers;
         self.models = snapshot.models;
         self.agents = snapshot.agents;
+        self.runtime_panel.agents.clone_from(&self.agents);
         if self
             .selected_preset
             .as_ref()

@@ -365,6 +365,27 @@ pub struct McpServerReport {
     /// none were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filtered_tools: Option<u32>,
+    /// Every tool the server lists, by its own name and in its order, each
+    /// with whether the filters left it out (runtime protocol 1.9.0); empty
+    /// from older runtimes and while the server has listed nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub server_tools: Vec<McpServerTool>,
+}
+
+/// One tool an MCP server lists, by the server's own name: the name its
+/// `include_tools` and `exclude_tools` match (runtime protocol 1.9.0, client
+/// protocol 1.36.0).
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct McpServerTool {
+    pub name: String,
+    /// The server's filters left it out, so it is not offered.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub filtered: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Where a runtime hosts an MCP server (runtime protocol 1.5.0; client

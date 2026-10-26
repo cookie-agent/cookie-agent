@@ -13,8 +13,8 @@ use std::time::Duration;
 use cookie_agent_client_state::{
     mcp::{runtime_servers, servers_badge},
     runtimes::{
-        MachineAction, MachineEntry, machine_action_request, machine_entries, machine_form_title,
-        machine_name_request,
+        MachineAction, MachineEntry, RuntimeAcpAgent, machine_action_request, machine_entries,
+        machine_form_title, machine_name_request, runtime_acp_agents,
     },
 };
 use cookie_agent_protocol::{
@@ -60,6 +60,8 @@ struct RuntimeCard {
     /// Its MCP servers: its own (runtime-wide, or waiting for a workspace)
     /// and those its instances host.
     servers: Vec<McpServerInfo>,
+    /// The ACP agent declarations it offers.
+    agents: Vec<RuntimeAcpAgent>,
 }
 
 /// The open form: a machine's rename or merge, or a runtime's "Move to…".
@@ -256,6 +258,13 @@ fn machine_cards(
 ) -> impl IntoView {
     let mcp_badge = |id: &RuntimeId| servers_badge(&runtime_servers(mcp, id));
     let mcp_servers = |id: &RuntimeId| runtime_servers(mcp, id);
+    let catalog = workspace.with_runtime(|runtime| {
+        runtime
+            .snapshot()
+            .map(|snapshot| snapshot.agents.clone())
+            .unwrap_or_default()
+    });
+    let acp_agents = |id: &RuntimeId| runtime_acp_agents(&catalog, id);
     let listing = |id: &RuntimeId| {
         registry.and_then(|registry| {
             registry
@@ -300,6 +309,7 @@ fn machine_cards(
                 let card = RuntimeCard {
                     mcp: mcp_badge(&runtime),
                     servers: mcp_servers(&runtime),
+                    agents: acp_agents(&runtime),
                     remembered,
                     connected: listed
                         .as_ref()
@@ -329,6 +339,7 @@ fn machine_cards(
                 .map(|runtime| RuntimeCard {
                     mcp: mcp_badge(&runtime.runtime_id),
                     servers: mcp_servers(&runtime.runtime_id),
+                    agents: acp_agents(&runtime.runtime_id),
                     id: runtime.runtime_id.clone(),
                     machine: None,
                     pinned: false,
@@ -554,6 +565,54 @@ fn machine_form(
     }
 }
 
+/// The ACP agent declarations a runtime offers: each key, whether a session
+/// that attaches the runtime can run it now, and the templates over it.
+fn runtime_acp_agent_list(agents: Vec<RuntimeAcpAgent>) -> impl IntoView {
+    let items = agents
+        .into_iter()
+        .map(|declaration| {
+            let templates = declaration
+                .agents
+                .iter()
+                .filter(|agent| **agent != declaration.agent)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            let (dot, dot_class) = if declaration.available {
+                (icondata::FaCircleSolid, "text-green-700 dark:text-green-400")
+            } else {
+                (icondata::FaCircleRegular, "opacity-60")
+            };
+            view! {
+                <li
+                    class="flex min-w-0 flex-col gap-0.5"
+                    data-acp-agent=declaration.agent.to_string()
+                    data-acp-available=declaration.available.then_some("true")
+                >
+                    <div class="flex min-w-0 items-center gap-2">
+                        <Glyph icon=dot class=format!("shrink-0 text-[0.6rem] {dot_class}") />
+                        <span class="min-w-16 flex-1 truncate font-mono text-sm">{declaration.agent.to_string()}</span>
+                        <span class=STATE>{if declaration.available { "available" } else { "unavailable" }}</span>
+                    </div>
+                    {(!declaration.description.is_empty()).then(|| view! {
+                        <span class=format!("pl-4 {NOTE} truncate")>{declaration.description.clone()}</span>
+                    })}
+                    {(!templates.is_empty()).then(|| view! {
+                        <span class=format!("pl-4 {NOTE} truncate") data-acp-templates>
+                            {format!("templates: {}", templates.join(", "))}
+                        </span>
+                    })}
+                </li>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="flex flex-col gap-1 rounded-md bg-parchment px-2 py-1.5 dark:bg-char" data-runtime-acp>
+            <span class="text-xs font-bold opacity-70">"ACP agents"</span>
+            <ul class="flex flex-col gap-1">{items}</ul>
+        </div>
+    }
+}
+
 /// A runtime's row: a grip, how it came to the daemon, its ID, whether it
 /// is connected and pinned, what it offers, and why it last failed; then
 /// "Move to…" and, when pinned, Unpin. Pressing the row drags it.
@@ -748,6 +807,7 @@ fn runtime_row(
                     let home = card.listing.as_ref().and_then(|listing| listing.home.clone());
                     crate::views::manage::runtime_mcp_servers(card.servers.clone(), Some(home))
                 })}
+                {(!card.agents.is_empty()).then(|| runtime_acp_agent_list(card.agents.clone()))}
                 {message.map(|message| view! { <span class="text-xs break-words text-red-800 dark:text-red-300">{message}</span> })}
             </div>
             <button

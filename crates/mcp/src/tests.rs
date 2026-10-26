@@ -1708,9 +1708,26 @@ fn a_refreshed_listing_is_filtered_and_its_count_reported() {
     let status = &registry.statuses()[0];
     assert_eq!(status.tools, ["my_chrome_browser_click"]);
     assert_eq!(status.filtered_tools, 1);
+    // The listing keeps the server's own names, in its order, the filtered
+    // one marked.
+    assert_eq!(
+        status.server_tools,
+        [
+            cookie_agent_protocol::McpServerTool {
+                name: "browser_click".into(),
+                filtered: false,
+            },
+            cookie_agent_protocol::McpServerTool {
+                name: "browser_install".into(),
+                filtered: true,
+            },
+        ]
+    );
     // A failure drops the tools and the count with them.
     server.fail("gone".into());
-    assert_eq!(registry.statuses()[0].filtered_tools, 0);
+    let status = &registry.statuses()[0];
+    assert_eq!(status.filtered_tools, 0);
+    assert!(status.server_tools.is_empty());
 }
 
 /// Over the stdio fixture: the first listing and the refresh after

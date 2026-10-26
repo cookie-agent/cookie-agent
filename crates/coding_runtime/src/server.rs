@@ -741,6 +741,7 @@ impl Server {
                 tools: Vec::new(),
                 scope: Some(protocol::McpServerScope::Workspace),
                 filtered_tools: None,
+                server_tools: Vec::new(),
             })
             .collect::<Vec<_>>();
         let runtime_mcp = if runtime_servers.is_empty() {
@@ -1489,6 +1490,7 @@ fn mcp_report(status: McpServerStatus) -> McpServerReport {
         scope: None,
         filtered_tools: (status.filtered_tools > 0)
             .then(|| u32::try_from(status.filtered_tools).unwrap_or(u32::MAX)),
+        server_tools: status.server_tools,
     }
 }
 

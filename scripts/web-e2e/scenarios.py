@@ -5235,6 +5235,12 @@ def runtime_mcp(browser):
     assert count(browser, machine_runtime + ' [data-mcp-server="shared"][data-mcp-scope="runtime"]') == 1
     fixture_row = browser.text(machine_runtime + ' [data-mcp-server="fixture"]')
     assert "at " in fixture_row, fixture_row
+    # Each server's tools, by the server's own names, under a disclosure.
+    tools = machine_runtime + ' [data-mcp-server="shared"] [data-mcp-tools]'
+    assert count(browser, tools) == 1
+    assert count(browser, tools + ' [data-mcp-tool="echo/text"]') == 1
+    assert count(browser, tools + ' [data-mcp-tool-filtered]') == 0
+    browser.click(tools + " summary")
     settle(browser)
     browser.shot("runtime-mcp-machines-desktop")
     browser.phone(390, 844)

@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.36.0
+
+- `McpServerInfo.server_tools` ([runtime management
+  spec](../specs/runtime-management.md) phase 1): every tool the server
+  lists, by its own name and in its order, as `McpServerTool { name,
+  filtered }`; absent while it has listed nothing. An older peer ignores it.
+  Runtime protocol 1.9.0 adds the same list to `McpServerReport`.
+
 ## 1.35.0
 
 - An `idle` `daemon.restart` waits for background calls too: a call still

@@ -187,6 +187,9 @@ impl Engine {
                     filtered_tools: status
                         .map(|status| u32::try_from(status.filtered_tools).unwrap_or(u32::MAX))
                         .filter(|filtered| *filtered > 0),
+                    server_tools: status
+                        .map(|status| status.server_tools.clone())
+                        .unwrap_or_default(),
                     message: status.and_then(|status| status.message.clone()),
                     auth_in_progress: status.map(|status| status.auth_in_progress),
                 }
@@ -475,6 +478,7 @@ pub(crate) fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option
             .report
             .filtered_tools
             .filter(|filtered| *filtered > 0),
+        server_tools: server.report.server_tools,
         message: if waiting {
             Some("starts when a workspace opens".to_owned())
         } else {

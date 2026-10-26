@@ -567,8 +567,12 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   its MCP servers counted by state (`MCP 1 connected, 1
   failed`) and listed with their state, tool count, and workspace, its
   runtime-scoped ones (`runtime-wide`) and its workspace-scoped ones that no
-  workspace has started yet (`starts with a workspace`) included, and why it
-  last failed to connect. A runtime that connected before and is
+  workspace has started yet (`starts with a workspace`) included, each
+  server's tools by the server's own names under **Tools** (those its
+  `include_tools` or `exclude_tools` left out dimmed and struck through),
+  the ACP agents it offers (each declaration with whether a session that
+  attaches the runtime can run it now, its description, and the templates
+  over it), and why it last failed to connect. A runtime that connected before and is
   offline now stays on its machine, under the connected ones, dimmed, with
   when it was last seen and **Forget**, which drops the daemon's record of
   where it ran (see [Offline runtimes](../concepts/machines.md#offline-runtimes)).

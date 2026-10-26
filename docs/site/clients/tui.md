@@ -702,7 +702,11 @@ waits for (from `mcp.server.list`), its runtime's runtime-scoped servers
 among them marked `runtime-wide`. The machines view counts each runtime's
 MCP servers the same way and lists them in the selected runtime's details,
 including, before any workspace of it is open, its runtime-scoped servers
-and its workspace-scoped ones as `starts with a workspace`.
+and its workspace-scoped ones as `starts with a workspace`. Under each
+server the details list its tools by the server's own names (`tools:`) and
+those its filters left out (`left out:`), then the ACP agents the runtime
+offers, each available or not, with the templates over it. The details
+grow with them, up to half the panel.
 The panel refreshes on every runtime change and while it is open.
 
 Press `a` to attach: the panel lists every capability of every runtime

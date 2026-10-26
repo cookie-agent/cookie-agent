@@ -1306,6 +1306,15 @@ async fn servers_the_runtimes_machine_defines_are_listed_as_machine_servers() {
     );
     assert_eq!(listed.tool_count, 1);
     assert_eq!(listed.filtered_tools, Some(1));
+    // The runtime reports the listing by the server's own names.
+    assert_eq!(
+        listed
+            .server_tools
+            .iter()
+            .map(|tool| (tool.name.as_str(), tool.filtered))
+            .collect::<Vec<_>>(),
+        [("echo/text", false), ("fail", true)]
+    );
     engine.shutdown().await;
 }
 

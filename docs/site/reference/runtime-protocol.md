@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.8.0**
+The protocol version is a semver string, currently **1.9.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -198,6 +198,10 @@ no message carries them.
 messages; and the display block `plan`.
 1.8.0 added the skill source `official`, the daemon's official skills; a
 runtime reports its project skills as before.
+1.9.0 added an MCP server report's optional `server_tools`: every tool the
+server lists, by the server's own name (the name its `include_tools` and
+`exclude_tools` match) and in its order, each with `filtered: true` when the
+filters left it out. Clients list them in their machines views.
 
 ## Capabilities and instances
 
@@ -426,7 +430,7 @@ never used: a remote server connects with its static headers only.
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
-| `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; `tools`, its tool names; and, since 1.5.0, `scope`, `workspace` here (absent reads as `workspace`). Absent when the instance hosts none. Runtime-scoped servers are not among them. |
+| `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; `tools`, its tool names; since 1.5.0, `scope`, `workspace` here (absent reads as `workspace`); since 1.6.0, `filtered_tools`; and since 1.9.0, `server_tools`, every tool it lists by its own name with `filtered` set for those its filters left out. Absent when the instance hosts none. Runtime-scoped servers are not among them. |
 
 ### `capability/tools_changed`
 

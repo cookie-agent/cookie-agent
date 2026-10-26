@@ -8,7 +8,8 @@ use cookie_agent_client_state::{
     mcp::{
         McpFields, McpTransport, PersistChoice, StateTone, runtime_label, scope_note,
         server_definition_display, server_message, server_state_label, server_tone,
-        server_tools_label, source_label, state_label as mcp_state_label, waits_for_workspace,
+        server_tool_names, server_tools_label, source_label, state_label as mcp_state_label,
+        waits_for_workspace,
     },
     plugins::{plugin_detail, state_label as plugin_state_label},
     providers::{
@@ -265,6 +266,41 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// A server's tools by its own names, collapsed under its tool count: those
+/// it offers, then those its filters left out, dimmed and struck through.
+/// Nothing for a server that has listed none.
+fn server_tools(server: &McpServerInfo) -> Option<impl IntoView + use<>> {
+    let (offered, left_out) = server_tool_names(server);
+    if offered.is_empty() && left_out.is_empty() {
+        return None;
+    }
+    let chip = |name: &str, filtered: bool| {
+        view! {
+            <li
+                class="rounded bg-toasted px-1.5 font-mono text-[0.7rem] dark:bg-ember"
+                class:line-through=filtered
+                class:opacity-50=filtered
+                title=filtered.then_some("left out by the server's include_tools or exclude_tools")
+                data-mcp-tool=name.to_owned()
+                data-mcp-tool-filtered=filtered.then_some("true")
+            >
+                {name.to_owned()}
+            </li>
+        }
+    };
+    let chips = offered
+        .iter()
+        .map(|name| chip(name, false))
+        .chain(left_out.iter().map(|name| chip(name, true)))
+        .collect_view();
+    Some(view! {
+        <details class="pl-4" data-mcp-tools>
+            <summary class=format!("cursor-pointer select-none {NOTE}")>"Tools"</summary>
+            <ul class="mt-1 flex flex-wrap gap-1">{chips}</ul>
+        </details>
+    })
+}
+
 /// The MCP servers a runtime row's instance uses: each one's name, tool
 /// count, and state, `runtime-wide` for one its runtime shares across
 /// workspaces, and under it why it failed or what it waits for. A server
@@ -315,6 +351,7 @@ pub(crate) fn runtime_mcp_servers(
                         </span>
                     })}
                     {at.map(|at| view! { <span class=format!("pl-4 {NOTE} truncate")>{at}</span> })}
+                    {server_tools(&server)}
                     {server_message(&server).map(|message| view! {
                         <span
                             class=if failed {

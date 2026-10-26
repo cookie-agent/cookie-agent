@@ -1,7 +1,8 @@
 # Managing Runtimes from Clients
 
-Status: **draft** (2026-10-26); every decision in
-[section 9](#9-decisions) made by the user on 2026-10-26. Builds on [runtimes](runtimes.md),
+Status: **in progress** (2026-10-26); every decision in
+[section 9](#9-decisions) made by the user on 2026-10-26. Phase 1
+implemented 2026-10-26 (client protocol 1.36.0, runtime protocol 1.9.0). Builds on [runtimes](runtimes.md),
 [runtime capabilities](runtime-capabilities.md), [ACP agents](acp-agents.md),
 [MCP tool filters](mcp-tool-filters.md), [web MCP OAuth](web-mcp-oauth.md),
 and the daemon restart of [engine configuration](engine-configuration.md)
@@ -128,10 +129,11 @@ tabs, and every new target gets a `PointerTarget` and a hover.
 - **List.** Each server shows its state, where it is declared
   (`[runtimes.<id>]`, or `profile <name>`, section 5), scope, and message. Expanded,
   it lists every tool: offered tools first, then filtered-out ones dimmed.
-  - Client protocol: `McpServerInfo.tools: Vec<McpToolInfo { name,
-    filtered }>`, using the server's own names. It is omitted when empty.
-  - Runtime protocol: `McpServerReport.filtered_tool_names`, beside the
-    existing `tools`.
+  - Client protocol 1.36.0: `McpServerInfo.server_tools: Vec<McpServerTool
+    { name, filtered }>`, using the server's own names. It is omitted when
+    empty.
+  - Runtime protocol 1.9.0: the same `server_tools` on `McpServerReport`,
+    beside the existing `tools` (published names).
 - **Leave out or take back a tool.** A per-tool toggle edits the server's
   filters:
   - Leaving a tool out adds its exact name to `exclude_tools`.
@@ -317,8 +319,8 @@ reads its own file, and the daemon still accepts its servers as reported.
 
 | Phase | Content |
 |---|---|
-| 1 | Tool names and filtered names on the wire (`McpServerInfo.tools`, `McpServerReport.filtered_tool_names`); `runtimes.agents.list`; read-only expanded rows in both clients |
-| 2 | Dial-in `[runtimes.<id>]` settings sent at initialize, dial-in machines ignoring `[runtimes.local]` with a warning, `${NAME}` in `env`, `runtime/settings_changed`; `runtime_id` on `mcp.server.*`, `mcp.server.rename`, `runtimes.agents.*`; the editors, tool toggles, and document links in both clients; the guides moved to the daemon tables |
+| 1 | Tool names and filtered names on the wire (`McpServerInfo.server_tools`, `McpServerReport.server_tools`); read-only lists of each runtime's tools and ACP agents in both clients, the agents from the catalog's `AgentDescriptor.runtimes` |
+| 2 | `runtimes.agents.list`; dial-in `[runtimes.<id>]` settings sent at initialize, dial-in machines ignoring `[runtimes.local]` with a warning, `${NAME}` in `env`, `runtime/settings_changed`; `runtime_id` on `mcp.server.*`, `mcp.server.rename`, `runtimes.agents.*`; the editors, tool toggles, and document links in both clients; the guides moved to the daemon tables |
 | 3 | `runtimes.restart`, `runtime/restart` with self-exec, `can_restart` |
 | 4 | Runtime MCP OAuth: `mcp/token`, `mcp/auth_changed`, `runtime_id` on `mcp.auth.*`, `mcp.auth.forget`, Sign in on any machine in both clients |
 | 5 | `[runtime_profiles]`, if approved |

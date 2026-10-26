@@ -6,8 +6,8 @@
 //! renames, merges, and forgets machines and moves runtimes between them.
 
 use cookie_agent_protocol::{
-    CapabilityName, MachineAssignment, MachineInfo, MachineName, MachinesListResult, McpServerInfo,
-    RuntimeId, RuntimeListing, RuntimesListResult,
+    AgentDescriptor, AgentId, CapabilityName, MachineAssignment, MachineInfo, MachineName,
+    MachinesListResult, McpServerInfo, RuntimeId, RuntimeListing, RuntimesListResult,
 };
 use ratatui::{
     Frame,
@@ -21,10 +21,13 @@ pub(in crate::ui) use cookie_agent_client_state::runtimes::{
     draft_runtime_rows, runtime_rows,
 };
 use cookie_agent_client_state::{
-    mcp::{runtime_servers, server_message, server_summary, servers_badge, servers_overview},
+    mcp::{
+        runtime_servers, server_message, server_summary, server_tool_names, servers_badge,
+        servers_overview,
+    },
     runtimes::{
         attach_parameters, machine_action_request, machine_entries, machine_form_title,
-        machine_name_request, reconnect_request, runtime_choices, status_label,
+        machine_name_request, reconnect_request, runtime_acp_agents, runtime_choices, status_label,
     },
 };
 
@@ -116,6 +119,8 @@ pub(in crate::ui) struct RuntimePanel {
     /// `mcp.server.list`, for the MCP servers each runtime hosts; `None`
     /// until it answers.
     pub(in crate::ui) mcp_servers: Option<Vec<McpServerInfo>>,
+    /// The catalog's agents, for the ACP agents each runtime offers.
+    pub(in crate::ui) agents: Vec<AgentDescriptor>,
 }
 
 impl RuntimePanel {
@@ -477,20 +482,32 @@ fn render_machines(
     hits: &mut RuntimeHits,
 ) {
     let entries = panel.machine_entries();
-    let form_height = if panel.machine_form.is_some() { 3 } else { 0 };
-    let [list_area, detail_area, actions_area, form_area] = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(6),
-            Constraint::Length(1),
-            Constraint::Length(form_height),
-        ])
-        .areas(area);
     let machines = match &panel.machines {
         Some(Ok(listing)) => listing.machines.as_slice(),
         _ => &[],
     };
+    let selected = panel.selected_machine_entry();
+    let detail = match (&panel.machines, &selected) {
+        (None, _) => "Loading machines...".to_owned(),
+        (Some(Err(error)), _) => format!("Machines are unavailable: {error}"),
+        (Some(Ok(_)), None) => "No machines yet.".to_owned(),
+        (Some(Ok(_)), Some(entry)) => machine_entry_detail(entry, machines, panel),
+    };
+    let form_height = if panel.machine_form.is_some() { 3 } else { 0 };
+    // The details grow with a runtime's servers and agents, up to half the
+    // panel, so the list keeps the rest.
+    let detail_height = u16::try_from(detail.lines().count() + 2)
+        .unwrap_or(u16::MAX)
+        .clamp(6, (area.height / 2).max(6));
+    let [list_area, detail_area, actions_area, form_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(detail_height),
+            Constraint::Length(1),
+            Constraint::Length(form_height),
+        ])
+        .areas(area);
     let items = entries
         .iter()
         .map(|entry| ListItem::new(machine_entry_line(entry, machines, panel, theme)))
@@ -525,13 +542,6 @@ fn render_machines(
                 .push((Rect::new(inner.x, y, inner.width, 1), index));
         }
     }
-    let selected = panel.selected_machine_entry();
-    let detail = match (&panel.machines, &selected) {
-        (None, _) => "Loading machines...".to_owned(),
-        (Some(Err(error)), _) => format!("Machines are unavailable: {error}"),
-        (Some(Ok(_)), None) => "No machines yet.".to_owned(),
-        (Some(Ok(_)), Some(entry)) => machine_entry_detail(entry, machines, panel),
-    };
     frame.render_widget(
         Paragraph::new(detail).wrap(Wrap { trim: false }).block(
             crate::ui::panel_block()
@@ -670,6 +680,37 @@ fn machine_entry_detail(
                     if let Some(workspace) = &server.workspace {
                         let shown = panel.display_workspace(runtime, workspace);
                         text.push_str(&format!("  at {shown}"));
+                    }
+                    let (offered, left_out) = server_tool_names(server);
+                    if !offered.is_empty() {
+                        text.push_str(&format!("\n    tools: {}", offered.join(", ")));
+                    }
+                    if !left_out.is_empty() {
+                        text.push_str(&format!("\n    left out: {}", left_out.join(", ")));
+                    }
+                }
+            }
+            let declarations = runtime_acp_agents(&panel.agents, runtime);
+            if !declarations.is_empty() {
+                text.push_str("\nACP agents:");
+                for declaration in &declarations {
+                    text.push_str(&format!(
+                        "\n  {}  {}",
+                        declaration.agent,
+                        if declaration.available {
+                            "available"
+                        } else {
+                            "unavailable"
+                        }
+                    ));
+                    let templates = declaration
+                        .agents
+                        .iter()
+                        .filter(|agent| **agent != declaration.agent)
+                        .map(AgentId::as_str)
+                        .collect::<Vec<_>>();
+                    if !templates.is_empty() {
+                        text.push_str(&format!("  templates: {}", templates.join(", ")));
                     }
                 }
             }

@@ -188,6 +188,13 @@
           ],
           "description": "Where a runtime other than `global` hosts the server (client protocol\n1.13.0): `runtime`, one process the runtime shares across its\nworkspaces, listed without a workspace; or `workspace`, one per\ninstance, listed with the instance's workspace, and once without one\n(`disconnected`, \"starts when a workspace opens\") while no instance of\na connected runtime hosts it. Absent for `global`'s servers and from\nruntimes that do not say."
         },
+        "server_tools": {
+          "description": "Every tool the server lists, by its own name and in its order, each\nwith whether its filters left it out (client protocol 1.36.0); empty\nwhile it has listed nothing, and from runtimes that do not say.",
+          "items": {
+            "$ref": "#/$defs/McpServerTool"
+          },
+          "type": "array"
+        },
         "source": {
           "$ref": "#/$defs/McpConfigSource"
         },
@@ -254,6 +261,22 @@
         }
       ],
       "x-open": true
+    },
+    "McpServerTool": {
+      "description": "One tool an MCP server lists, by the server's own name: the name its\n`include_tools` and `exclude_tools` match (runtime protocol 1.9.0, client\nprotocol 1.36.0).",
+      "properties": {
+        "filtered": {
+          "description": "The server's filters left it out, so it is not offered.",
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
