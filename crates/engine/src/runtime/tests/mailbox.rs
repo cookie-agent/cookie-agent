@@ -65,28 +65,41 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .expect("first admission");
     assert!(steered.accepted);
     let recall_me = steered.user_input_seq.expect("admission seq");
-    // Only the client that sent an input can take it back.
+    // Any client can take an input back, another client's too: the
+    // content goes to the one that recalled it.
+    let other = cookie_agent_protocol::EventOrigin::new("client:tui-other").unwrap();
     assert_eq!(
         fixture
             .engine
-            .recall_input(
-                session.session_id,
-                recall_me,
-                cookie_agent_protocol::EventOrigin::new("client:tui-other").unwrap(),
-            )
+            .recall_input(session.session_id, recall_me, other.clone())
             .await
-            .expect("foreign recall"),
-        cookie_agent_protocol::SessionRecallInputResult::NotOwner
-    );
-    assert_eq!(
-        fixture
-            .engine
-            .recall_input(session.session_id, recall_me, origin())
-            .await
-            .expect("recall pending input"),
+            .expect("recall another client's pending input"),
         cookie_agent_protocol::SessionRecallInputResult::Recalled {
             content: "recall me".into()
         }
+    );
+    let recalled = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events()
+        .iter()
+        .find(|event| {
+            matches!(
+                event.payload,
+                cookie_agent_protocol::EventPayload::UserInputRecalled { user_input_seq, .. }
+                    if user_input_seq == recall_me
+            )
+        })
+        .map(|event| event.origin.clone())
+        .expect("the recall");
+    assert_eq!(
+        recalled,
+        Some(other),
+        "recorded under the client that recalled it"
     );
     assert_eq!(
         fixture

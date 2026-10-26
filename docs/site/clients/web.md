@@ -422,7 +422,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     message.
 
   The strip above the composer lists pending and queued messages; tap one
-  of yours to take it back.
+  to take it back into your composer, another client's too (a daemon
+  before client protocol 1.31.0 lets only the client that sent it).
 - **Commands.** The ⋮ menu in the title bar has the session's commands,
   each by name with an icon and a line saying what it does, and each opens
   a sheet with labelled fields and a main button: **Compact context**,

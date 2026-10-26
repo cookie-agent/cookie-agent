@@ -1725,6 +1725,8 @@ pub enum SessionRecallInputResult {
     /// a run started with it, or it was voided.
     Gone,
     /// Another client submitted the input; only its author can recall it.
+    /// A daemon before client protocol 1.31.0 answers it; later ones let
+    /// any client recall any waiting input.
     NotOwner,
 }
 crate::open_enum!(tagged SessionRecallInputResult, tag = "outcome", tags = [

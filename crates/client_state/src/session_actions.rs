@@ -4,13 +4,24 @@
 
 use cookie_agent_protocol::{
     ApprovalListResult, ArtifactReadResult, ArtifactRef, DisplayBlock, Open, PermissionMode,
-    SessionId, ToolCallId,
+    SemVer, SessionId, ToolCallId,
 };
 
 use crate::{
     FullContent, FullContentState, MAX_FULL_CONTENT_BYTES, SessionState, StateStore,
     approval_state_from_record,
 };
+
+/// The first client protocol whose daemons let any client take back a
+/// waiting (pending or queued) input, not only the client that sent it.
+pub const RECALL_ANY_SINCE: SemVer = SemVer::new(1, 31, 0);
+
+/// Whether the daemon, speaking `version`, lets this client take back
+/// another client's waiting input. An older daemon answers `not_owner`.
+#[must_use]
+pub fn daemon_recalls_any_input(version: Option<SemVer>) -> bool {
+    version.is_some_and(|version| version >= RECALL_ANY_SINCE)
+}
 
 /// How clients name a permission mode.
 pub const fn permission_mode_label(mode: PermissionMode) -> &'static str {

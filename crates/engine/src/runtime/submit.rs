@@ -145,7 +145,8 @@ impl Engine {
     }
 
     /// Withdraws `seq`, a pending steered input of the running run or a
-    /// queued input, when `origin` submitted it.
+    /// queued input, for any client: the recall is recorded under the
+    /// recalling `origin`, and its content goes back to that client.
     pub async fn recall_input(
         &self,
         session: SessionId,
@@ -161,9 +162,6 @@ impl Engine {
                     .into_iter()
                     .find(|pending| pending.admission_seq == seq)
             {
-                if pending.origin != origin {
-                    return Ok(SessionRecallInputResult::NotOwner);
-                }
                 engine.append_direct(
                     session,
                     Some(run),
@@ -181,9 +179,6 @@ impl Engine {
             let Some(entry) = queue.get(seq) else {
                 return Ok(SessionRecallInputResult::Gone);
             };
-            if entry.origin.as_ref() != Some(&origin) {
-                return Ok(SessionRecallInputResult::NotOwner);
-            }
             let content = entry.content.clone();
             engine.append_direct(
                 session,

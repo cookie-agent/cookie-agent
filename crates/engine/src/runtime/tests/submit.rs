@@ -275,3 +275,57 @@ async fn a_picked_model_is_the_session_selection_every_later_run_uses() {
     assert_eq!(picked_by, Some(origin("client:tui-a")));
     fixture.engine.shutdown().await;
 }
+
+/// Any client can take back an input another client queued: the queue
+/// loses it, the recall is recorded under the client that recalled it, and
+/// the content comes back to that client.
+#[tokio::test]
+async fn any_client_recalls_another_clients_queued_input() {
+    let (endpoint, _captured, reached, release) =
+        scripted_server_with_delayed_response(vec![text_response("first done")], 0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection).unwrap();
+    fixture
+        .engine
+        .submit_input(
+            submit(session.session_id, "first", InputDelivery::Queue, "first"),
+            origin("client:tui-a"),
+        )
+        .await
+        .expect("start");
+    tokio::time::timeout(Duration::from_secs(5), reached)
+        .await
+        .expect("first model request")
+        .expect("reached");
+    let SessionSubmitInputResult::Queued { queued_seq } = fixture
+        .engine
+        .submit_input(
+            submit(session.session_id, "later", InputDelivery::Queue, "later"),
+            origin("client:web-b"),
+        )
+        .await
+        .expect("queue")
+    else {
+        panic!("a running session queues");
+    };
+
+    assert_eq!(
+        fixture
+            .engine
+            .recall_input(session.session_id, queued_seq, origin("client:tui-a"))
+            .await
+            .expect("recall"),
+        cookie_agent_protocol::SessionRecallInputResult::Recalled {
+            content: "later".into()
+        }
+    );
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let events = projection.log.event_snapshot();
+    assert!(QueuedInputs::from_events(&events).head().is_none());
+    let recall = events
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::UserInputQueueRecalled { .. }))
+        .expect("the recall");
+    assert_eq!(recall.origin, Some(origin("client:tui-a")));
+    release.notify_one();
+}

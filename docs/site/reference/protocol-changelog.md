@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.31.0
+
+- `session.recall_input` takes back any client's pending or queued input, not
+  only the caller's: the recall is recorded under the caller's origin and the
+  content goes back to the caller. `not_owner` is no longer answered; clients
+  offer recalling another client's input only to a daemon of 1.31.0 or later.
+  No wire change.
+
 ## 1.30.0
 
 - Push notifications ([push notifications spec](../specs/push-notifications.md)),

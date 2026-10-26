@@ -237,10 +237,10 @@ The `Pending` strip shows both lanes: `⏳` rows are steered messages and `⏭`
 rows are queued ones. It shows up to three rows and folds additional entries
 into `+N more`. Several clients can share one daemon (see
 [Architecture](../architecture.md)); a message another client sent is labelled
-with that client, such as `· tui-0192f3`. Click one of your own rows to take
-that message back into the composer for editing, or press Up in an empty
-composer to take back your newest one. Only the client that sent a message can
-take it back.
+with that client, such as `· tui-0192f3`. Click a row to take that message
+back into your composer for editing, another client's too (a daemon before
+client protocol 1.31.0 lets only the client that sent it), or press Up in an
+empty composer to take back your newest one.
 
 Queued messages run only after the current run completes normally. If the run
 fails or is cancelled, or the daemon restarts mid-run, the queue is cleared, and

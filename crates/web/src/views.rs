@@ -2035,13 +2035,17 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
                     queue
                         .get()
                         .into_iter()
-                        .map(|(seq, text, own)| {
-                            if own {
+                        .map(|(seq, text, own, recallable)| {
+                            if recallable {
                                 view! {
                                     <button
                                         type="button"
                                         class=format!("{ROW} font-mono text-xs")
-                                        title="Take back into the composer"
+                                        title=if own {
+                                            "Take back into the composer"
+                                        } else {
+                                            "Take back into your composer (another client sent it)"
+                                        }
                                         on:click=move |_| workspace.recall(seq)
                                     >
                                         <span class="flex w-full items-center gap-2">

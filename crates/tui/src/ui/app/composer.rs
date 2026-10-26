@@ -476,7 +476,7 @@ impl App {
     pub(in crate::ui) fn newest_own_input_seq(&self) -> Option<u64> {
         self.selected_queue_entries()
             .into_iter()
-            .filter(PendingQueueEntry::recallable)
+            .filter(PendingQueueEntry::recallable_own)
             .map(|entry| entry.seq)
             .max()
     }
@@ -496,6 +496,9 @@ impl App {
         let Some(state) = self.selected.and_then(|id| self.store.sessions.get(&id)) else {
             return Vec::new();
         };
+        let any_client = cookie_agent_client_state::session_actions::daemon_recalls_any_input(
+            self.client.daemon_version(),
+        );
         let mut entries = state
             .pending_inputs
             .iter()
@@ -505,6 +508,7 @@ impl App {
                 accepted_at: input.admitted_at,
                 preview: input.text.clone(),
                 author: self.input_author(input.origin.as_ref()),
+                any_client,
             })
             .collect::<Vec<_>>();
         entries.extend(
@@ -518,6 +522,7 @@ impl App {
                     accepted_at: queued.queued_at,
                     preview: crate::state::user_content_text(&queued.content),
                     author: self.input_author(queued.origin.as_ref()),
+                    any_client,
                 }),
         );
         for item in &state.transcript {
@@ -550,6 +555,7 @@ impl App {
                     summary.as_deref(),
                 ),
                 author: None,
+                any_client,
             });
         }
         // Steered inputs reach the model before any queued run starts, so
@@ -671,7 +677,7 @@ impl App {
         frame.render_widget(Paragraph::new(lines), inner);
         let newest_own = pending
             .iter()
-            .filter(|entry| entry.recallable())
+            .filter(|entry| entry.recallable_own())
             .map(|entry| entry.seq)
             .max();
         self.hit_map.queue_entries = (0..line_count)

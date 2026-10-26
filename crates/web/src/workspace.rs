@@ -1896,11 +1896,16 @@ impl Workspace {
 
     /// This client's pending and queued inputs of the viewed session, as
     /// `(seq, text, own)`, in order.
-    pub fn queue(self) -> Vec<(u64, String, bool)> {
+    pub fn queue(self) -> Vec<(u64, String, bool, bool)> {
         let Some(session_id) = self.selected.get() else {
             return Vec::new();
         };
-        let own = self.client().and_then(|client| client.origin());
+        let client = self.client();
+        let own = client.as_ref().and_then(Client::origin);
+        // Another client's input too, where the daemon allows it.
+        let any = cookie_agent_client_state::session_actions::daemon_recalls_any_input(
+            client.as_ref().and_then(Client::daemon_version),
+        );
         self.with_store(|store| {
             let Some(state) = store.sessions.get(&session_id) else {
                 return Vec::new();
@@ -1909,20 +1914,24 @@ impl Workspace {
                 .pending_inputs
                 .iter()
                 .map(|input| {
+                    let mine = input.origin.as_ref() == own.as_ref();
                     (
                         input.admission_seq,
                         format!("steering: {}", input.text),
-                        input.origin.as_ref() == own.as_ref(),
+                        mine,
+                        mine || any,
                     )
                 })
                 .chain(state.queued_inputs.entries().iter().map(|input| {
+                    let mine = input.origin.as_ref() == own.as_ref();
                     (
                         input.queued_seq,
                         format!(
                             "queued: {}",
                             cookie_agent_client_state::user_content_text(&input.content)
                         ),
-                        input.origin.as_ref() == own.as_ref(),
+                        mine,
+                        mine || any,
                     )
                 }))
                 .collect()
@@ -1934,8 +1943,8 @@ impl Workspace {
         match self
             .queue()
             .into_iter()
-            .filter(|(_, _, own)| *own)
-            .map(|(seq, _, _)| seq)
+            .filter(|(_, _, own, _)| *own)
+            .map(|(seq, _, _, _)| seq)
             .max()
         {
             Some(seq) => self.recall(seq),
@@ -1945,8 +1954,9 @@ impl Workspace {
         }
     }
 
-    /// Takes back this client's pending or queued input `seq` into the
-    /// composer (`session.recall_input`).
+    /// Takes back the pending or queued input `seq` into this client's
+    /// composer (`session.recall_input`): this client's, or another's where
+    /// the daemon allows it.
     pub fn recall(self, seq: u64) {
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {

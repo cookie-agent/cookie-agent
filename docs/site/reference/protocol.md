@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.30.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.31.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.30.0",
+    "protocol_version": "1.31.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.30.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.31.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -288,7 +288,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `run.steer` | Run ID, [`content`](#user-content) | `accepted` boolean, admission `user_input_seq` |
 | `session.select_model` | Session ID, selection | Whether the session's selection changed |
 | `session.submit_input` | Session ID, [`content`](#user-content), `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
-| `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` content, `gone`, or `not_owner` |
+| `session.recall_input` | Session ID, seq of a pending or queued input, any client's since 1.31.0 | `recalled` content, `gone`, or (before 1.31.0, for another client's input) `not_owner` |
 | `artifact.upload.begin` | Session ID, `byte_length`, optional `filename` | `upload_id`, `chunk_bytes` (see [Media](#media)) |
 | `artifact.upload.chunk` | `upload_id`, `offset`, base64 `data` of at most `chunk_bytes` bytes | Empty object |
 | `artifact.upload.finish` | `upload_id`, `sha256` of every byte sent | The stored `artifact` (`ArtifactRef`), and `image` `{ width, height }` for an image |
@@ -1132,8 +1132,10 @@ cancelled, or interrupted run voids every queued input, and the daemon appends
 reduce the queue with `cookie_agent_protocol::QueuedInputs`, as the daemon does.
 
 `session.recall_input` takes back one pending steered input or one queued input
-by its seq. Only the client whose origin admitted it may do so: another client
-gets `{ "outcome": "not_owner" }`. A pending input is withdrawn with
+by its seq. Since 1.31.0 any client may, another client's input too: the recall
+is recorded under the origin of the client that asked, and the content goes back
+to it. A daemon before 1.31.0 lets only the client whose origin admitted it, and
+answers another client `{ "outcome": "not_owner" }`. A pending input is withdrawn with
 `user_input_recalled` and a queued one with `user_input_queue_recalled`; both
 return `{ "outcome": "recalled", "content" }`, the input's content for editing. An input that was already promoted,
 started, or voided returns `{ "outcome": "gone" }`.

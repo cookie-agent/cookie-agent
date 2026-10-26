@@ -119,7 +119,7 @@
       "type": "object"
     },
     {
-      "description": "Another client submitted the input; only its author can recall it.",
+      "description": "Another client submitted the input; only its author can recall it.\nA daemon before client protocol 1.31.0 answers it; later ones let\nany client recall any waiting input.",
       "properties": {
         "outcome": {
           "const": "not_owner",

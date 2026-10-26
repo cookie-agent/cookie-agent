@@ -374,14 +374,24 @@ pub(super) struct PendingQueueEntry {
     pub(super) seq: u64,
     pub(super) accepted_at: jiff::Timestamp,
     pub(super) preview: String,
-    /// Another client's input: shown with its author, never recallable here.
+    /// Another client's input: shown with its author.
     pub(super) author: Option<String>,
+    /// The daemon lets this client take back another client's input.
+    pub(super) any_client: bool,
 }
 
 impl PendingQueueEntry {
-    /// Whether clicking the row takes this input back into the composer.
+    /// Whether clicking the row takes this input back into the composer:
+    /// this client's, or another's where the daemon allows it.
     pub(super) fn recallable(&self) -> bool {
-        matches!(self.kind, QueueEntryKind::User | QueueEntryKind::Queued) && self.author.is_none()
+        matches!(self.kind, QueueEntryKind::User | QueueEntryKind::Queued)
+            && (self.author.is_none() || self.any_client)
+    }
+
+    /// Whether this client sent the input and can take it back: what Up in
+    /// an empty composer recalls.
+    pub(super) fn recallable_own(&self) -> bool {
+        self.recallable() && self.author.is_none()
     }
 }
 
