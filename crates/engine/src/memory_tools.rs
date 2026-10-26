@@ -276,16 +276,14 @@ struct WriteArgs {
     /// project's overview, whose description the daemon sets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    /// Up to 32 keywords of 1 to 64 characters a later search would use;
-    /// none when left out.
-    // The schema stays a list: a session's thinking blocks are bound to
-    // the tool list they were made with, and a changed schema fails their
-    // replay. A string is accepted all the same.
+    /// Up to 32 keywords of 1 to 64 characters a later search would use,
+    /// as a list or one comma-separated string; none when left out.
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_keywords"
     )]
+    #[schemars(schema_with = "keywords_schema")]
     keywords: Vec<String>,
     /// The memory's Markdown body; may be empty.
     body: String,
@@ -331,6 +329,16 @@ fn split_keywords(text: &str) -> Vec<String> {
         .filter(|keyword| !keyword.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn keywords_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "description": "Up to 32 keywords of 1 to 64 characters a later search would use, as a list or one comma-separated string; none when left out.",
+        "anyOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "string"}
+        ]
+    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
