@@ -637,15 +637,27 @@ async fn failing_producer_runs_stop_at_the_retry_budget() {
         .expect("the run and its one retry")
         .unwrap();
     assert_eq!(requests.len(), 2);
+    let outcomes = |engine: &crate::Engine| {
+        discard_events(engine, session_id)
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::RunFinished { outcome } => Some(outcome),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // The session is briefly not running between the failed run and its
+    // retry, so wait for both to have ended, however slow the machine.
+    with_watchdog("both runs to end", async {
+        while outcomes(&fixture.engine).len() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     wait_for_session_not_running(&fixture.engine, session_id).await;
+    // The budget is spent: no third run starts.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let outcomes = discard_events(&fixture.engine, session_id)
-        .into_iter()
-        .filter_map(|event| match event.payload {
-            EventPayload::RunFinished { outcome } => Some(outcome),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let outcomes = outcomes(&fixture.engine);
     assert_eq!(outcomes.len(), 2, "{outcomes:?}");
     assert!(outcomes.iter().all(|outcome| matches!(
         outcome,
