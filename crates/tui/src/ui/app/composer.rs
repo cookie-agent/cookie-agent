@@ -1098,11 +1098,7 @@ impl App {
                     self.status = "Search providers, then press Down or Tab to choose one.".into();
                 }
             }
-            SlashCommand::Mcp => {
-                self.modal = Modal::Mcp;
-                self.mcp_panel.form = None;
-                self.poll_mcp();
-            }
+            SlashCommand::Mcp => self.open_mcp_panel(None),
             SlashCommand::Background => self.open_background_panel(),
             SlashCommand::Plugins => self.open_plugin_panel(),
             SlashCommand::Config => self.open_config_panel(),

@@ -8,7 +8,10 @@ use std::time::Duration;
 
 use cookie_agent_client_state::{
     config::{ConfigApplyOutcome, document_text, new_agent_refusal, reload_status, restart_note},
-    mcp::{McpFields, PersistChoice, edit_refusal, is_global, new_definition, sort_servers},
+    mcp::{
+        McpFields, PersistChoice, edit_refusal, is_global, mutation_runtime, new_definition,
+        sort_servers, toggle_tool,
+    },
     memory::{
         MemoryStamps, MemoryWriteOutcome, NEW_MEMORY, delete_refusal, editor_text,
         new_memory_refusal, saved_status,
@@ -17,15 +20,17 @@ use cookie_agent_client_state::{
         ProviderAction, ProviderOperation, action_name, retry_store_contention_once,
         store_contention_message,
     },
-    runtimes::{MachineRequest, RuntimeRow, reconnect_status, runtime_rows},
+    runtimes::{AcpAgentFields, MachineRequest, RuntimeRow, reconnect_status, runtime_rows},
 };
 use cookie_agent_protocol::{
-    AttachmentName, CapabilityName, ClientConnectId, ClientDelivery, ClientRequestId,
+    AgentId, AttachmentName, CapabilityName, ClientConnectId, ClientDelivery, ClientRequestId,
     ConfigApplyParams, ConfigChange, ConfigRevision, McpServerAddParams, McpServerEditParams,
     McpServerInfo, McpServerNameParams, McpServerPersistParams, McpServerReconnectParams,
-    McpServerSetEnabledParams, MemoryListParams, ProviderConnectParams, ProviderDescriptor,
-    ProviderDisconnectParams, RuntimeId, RuntimesReconnectParams, SessionRuntimeAttachParams,
-    SessionRuntimeDetachParams, errors,
+    McpServerRenameParams, McpServerScope, McpServerSetEnabledParams, MemoryListParams,
+    ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams, RuntimeAgentDeclaration,
+    RuntimeId, RuntimesAgentsListParams, RuntimesAgentsRemoveParams, RuntimesAgentsRenameParams,
+    RuntimesAgentsRenameResult, RuntimesAgentsSetParams, RuntimesReconnectParams,
+    SessionRuntimeAttachParams, SessionRuntimeDetachParams, errors,
 };
 use leptos::{prelude::*, task::spawn_local};
 
@@ -39,6 +44,26 @@ use crate::{
 /// How often an open `/runtime` or `/mcp` panel reads its list again, as the
 /// TUI polls.
 pub const PANEL_POLL: Duration = Duration::from_secs(1);
+
+/// Each runtime's ACP agent declarations, as the Machines view last read
+/// them.
+pub type RuntimeAgentsSignal =
+    RwSignal<std::collections::BTreeMap<RuntimeId, Result<Vec<RuntimeAgentDeclaration>, String>>>;
+
+/// What renaming declaration `old` to `new` did to its documents.
+fn rename_status(old: &AgentId, new: &AgentId, renamed: &RuntimesAgentsRenameResult) -> String {
+    let mut status = format!("ACP agent `{old}` is `{new}` now");
+    if !renamed.moved.is_empty() {
+        status.push_str(&format!("; moved {}", renamed.moved.join(", ")));
+    }
+    if !renamed.stale_templates.is_empty() {
+        status.push_str(&format!(
+            "; {} still name `{old}` in acp.agent",
+            renamed.stale_templates.join(", ")
+        ));
+    }
+    status
+}
 
 /// A config document open in the editor.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -413,30 +438,54 @@ impl Workspace {
         edit_refusal(server)
     }
 
-    /// Adds or edits a server from its form, then keeps it where `persist`
-    /// says. `editing` names the edited server, which an edit cannot rename.
+    /// Adds or edits a server from its form. `editing` names the edited
+    /// server, whose runtime the change goes to; a new one goes to
+    /// `runtime`, `global` when `None`. A changed name renames the server
+    /// first. `scope` is a runtime server's, and `persist` says where a
+    /// `global` one is kept.
     pub fn submit_mcp(
         self,
         fields: McpFields,
         editing: Option<McpServerInfo>,
         persist: PersistChoice,
+        runtime: Option<RuntimeId>,
+        scope: Option<McpServerScope>,
     ) -> Result<(), String> {
         let base = editing
             .as_ref()
             .map_or_else(new_definition, |server| server.definition.clone());
-        let (name, definition) = fields.definition(&base)?;
-        if editing.as_ref().is_some_and(|server| server.name != name) {
-            return Err("editing cannot rename a server; remove it and add the new name".into());
+        let (name, mut definition) = fields.definition(&base)?;
+        let runtime_id = match &editing {
+            Some(server) => mutation_runtime(server),
+            None => runtime.filter(|runtime| runtime.as_str() != RuntimeId::GLOBAL),
+        };
+        if runtime_id.is_some() {
+            definition.scope = scope;
         }
+        let renamed = editing
+            .as_ref()
+            .map(|server| server.name.clone())
+            .filter(|old| *old != name);
         let Some(client) = self.client() else {
             return Err("not connected".into());
         };
-        let target = persist.target();
+        let target = persist.target().filter(|_| runtime_id.is_none());
         spawn_local(async move {
             let result = async {
+                if let Some(old) = renamed {
+                    client
+                        .rename_mcp_server(McpServerRenameParams {
+                            runtime_id: runtime_id.clone(),
+                            name: old,
+                            new_name: name.clone(),
+                        })
+                        .await
+                        .map_err(|error| crate::errors::describe_full(&error))?;
+                }
                 let mutation = if editing.is_some() {
                     client
                         .edit_mcp_server(McpServerEditParams {
+                            runtime_id,
                             name: name.clone(),
                             definition,
                         })
@@ -444,6 +493,7 @@ impl Workspace {
                 } else {
                     client
                         .add_mcp_server(McpServerAddParams {
+                            runtime_id,
                             name: name.clone(),
                             definition,
                         })
@@ -465,13 +515,17 @@ impl Workspace {
         Ok(())
     }
 
-    pub fn remove_mcp(self, name: String) {
+    pub fn remove_mcp(self, server: &McpServerInfo) {
         let Some(client) = self.client() else {
             return;
         };
+        let params = McpServerNameParams {
+            runtime_id: mutation_runtime(server),
+            name: server.name.clone(),
+        };
         spawn_local(async move {
             let result = client
-                .remove_mcp_server(McpServerNameParams { name })
+                .remove_mcp_server(params)
                 .await
                 .map(|result| result.server)
                 .map_err(|error| crate::errors::describe_full(&error));
@@ -479,18 +533,179 @@ impl Workspace {
         });
     }
 
-    pub fn toggle_mcp(self, name: String, enabled: bool) {
+    pub fn toggle_mcp(self, server: &McpServerInfo, enabled: bool) {
         let Some(client) = self.client() else {
             return;
         };
+        let params = McpServerSetEnabledParams {
+            runtime_id: mutation_runtime(server),
+            name: server.name.clone(),
+            enabled,
+        };
         spawn_local(async move {
             let result = client
-                .set_mcp_server_enabled(McpServerSetEnabledParams { name, enabled })
+                .set_mcp_server_enabled(params)
                 .await
                 .map(|result| result.server)
                 .map_err(|error| crate::errors::describe_full(&error));
             self.finish_mcp(result);
         });
+    }
+
+    /// Leaves `tool` of `server` out (`leave_out`) or takes it back, by
+    /// editing the server's filters.
+    pub fn toggle_mcp_tool(self, server: &McpServerInfo, tool: &str, leave_out: bool) {
+        let definition = match toggle_tool(&server.definition, tool, leave_out) {
+            Ok(definition) => definition,
+            Err(refusal) => {
+                self.status.set(refusal);
+                return;
+            }
+        };
+        let Some(client) = self.client() else {
+            return;
+        };
+        let params = McpServerEditParams {
+            runtime_id: mutation_runtime(server),
+            name: server.name.clone(),
+            definition,
+        };
+        spawn_local(async move {
+            let result = client
+                .edit_mcp_server(params)
+                .await
+                .map(|result| result.server)
+                .map_err(|error| crate::errors::describe_full(&error));
+            self.finish_mcp(result);
+        });
+    }
+
+    // ---- a runtime's ACP agents (the Machines view) -------------------------
+
+    /// Reads `runtime`'s ACP agent declarations into `into`.
+    pub fn read_runtime_agents(self, runtime: RuntimeId, into: RuntimeAgentsSignal) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        spawn_local(async move {
+            let result = client
+                .list_runtime_agents(RuntimesAgentsListParams {
+                    runtime_id: runtime.clone(),
+                })
+                .await
+                .map(|result| result.agents)
+                .map_err(|error| crate::errors::describe_full(&error));
+            into.update(|agents| {
+                agents.insert(runtime, result);
+            });
+        });
+    }
+
+    /// Adds or edits one of `runtime`'s ACP agent declarations from its form;
+    /// `editing` names the edited one, which a changed key renames first.
+    pub fn submit_runtime_agent(
+        self,
+        runtime: RuntimeId,
+        fields: &AcpAgentFields,
+        editing: Option<AgentId>,
+        into: RuntimeAgentsSignal,
+    ) -> Result<(), String> {
+        let (agent, definition) = fields.definition()?;
+        let renamed = editing.filter(|old| *old != agent);
+        let Some(client) = self.client() else {
+            return Err("not connected".into());
+        };
+        spawn_local(async move {
+            let result = async {
+                if let Some(old) = renamed {
+                    let renamed = client
+                        .rename_runtime_agent(RuntimesAgentsRenameParams {
+                            runtime_id: runtime.clone(),
+                            agent: old.clone(),
+                            new_agent: agent.clone(),
+                        })
+                        .await
+                        .map_err(|error| crate::errors::describe_full(&error))?;
+                    self.status.set(rename_status(&old, &agent, &renamed));
+                }
+                client
+                    .set_runtime_agent(RuntimesAgentsSetParams {
+                        runtime_id: runtime.clone(),
+                        agent,
+                        definition,
+                    })
+                    .await
+                    .map(|result| result.agents)
+                    .map_err(|error| crate::errors::describe_full(&error))
+            }
+            .await;
+            self.finish_runtime_agents(runtime, result, into);
+        });
+        Ok(())
+    }
+
+    /// Removes one of `runtime`'s ACP agent declarations; its documents stay.
+    pub fn remove_runtime_agent(
+        self,
+        runtime: RuntimeId,
+        agent: AgentId,
+        into: RuntimeAgentsSignal,
+    ) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        spawn_local(async move {
+            let result = client
+                .remove_runtime_agent(RuntimesAgentsRemoveParams {
+                    runtime_id: runtime.clone(),
+                    agent,
+                })
+                .await
+                .map(|result| result.agents)
+                .map_err(|error| crate::errors::describe_full(&error));
+            self.finish_runtime_agents(runtime, result, into);
+        });
+    }
+
+    fn finish_runtime_agents(
+        self,
+        runtime: RuntimeId,
+        result: Result<Vec<RuntimeAgentDeclaration>, String>,
+        into: RuntimeAgentsSignal,
+    ) {
+        if let Err(error) = &result {
+            self.status.set(format!("ACP agent change failed: {error}"));
+        }
+        into.update(|agents| {
+            agents.insert(runtime, result);
+        });
+        // The configuration changed; the Agents view reads it afresh.
+        self.poll_config();
+    }
+
+    /// Opens agent document `path` in the Agents view's editor: the
+    /// document when it exists, else `template` as a new one.
+    pub fn open_agent_document(self, path: &str, template: String) {
+        let Some(Ok(config)) = self.config.get_untracked() else {
+            self.status.set("the configuration is still loading".into());
+            return;
+        };
+        self.open_view(View::Agents, None);
+        if config
+            .documents
+            .iter()
+            .any(|document| document.path == path)
+        {
+            self.edit_config(path);
+            return;
+        }
+        self.config_edit.set(Some(ConfigEdit {
+            path: path.to_owned(),
+            text: template,
+            original: None,
+            expected_fingerprint: None,
+            revision: config.revision.clone(),
+        }));
     }
 
     /// Reconnects any runtime's server; the request goes to the runtime

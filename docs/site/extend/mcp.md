@@ -35,8 +35,9 @@ on that runtime's machine:
 
 - **Top-level `[mcp.servers.<name>]`** servers belong to the daemon's global
   runtime and run where the daemon runs. Every session that attaches
-  `global` (the default) can use them. Only these servers can use OAuth, and
-  only these can be added, edited, removed, or toggled from `/mcp`.
+  `global` (the default) can use them. Only these servers can use OAuth.
+  `/mcp` and the web client edit them, and a runtime's servers too (see
+  below).
 - **`[runtimes.<id>.mcp.servers.<name>]`** servers belong to a coding
   runtime template and run on the runtime's machine, for example a language
   server next to a repository on another host over ssh. Their `scope` says
@@ -149,7 +150,11 @@ and `[runtimes.<id>.mcp.servers]`.
 An empty pattern, or an `include_tools = []` that would publish nothing, is a
 configuration error. `/mcp`, the runtime panels, and the web client's MCP
 servers show how many tools the filters left out, as `12 tools, 30
-filtered`.
+filtered`. The machines views list each tool by the server's own name and
+leave one out or take it back: `t` on a server in `/mcp` lists its tools,
+where space toggles one, and in the web client's Machines view a tool is a
+button. Toggling edits the filters by the tool's exact name and never
+rewrites a pattern.
 
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers

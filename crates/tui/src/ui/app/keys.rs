@@ -85,6 +85,26 @@ impl App {
             }
             return;
         }
+        if let Some(selected) = self.mcp_panel.tools {
+            let tools = self.mcp_panel.selected_tools();
+            match key.code {
+                KeyCode::Esc => self.mcp_panel.tools = None,
+                KeyCode::Up => self.mcp_panel.tools = Some(selected.saturating_sub(1)),
+                KeyCode::Down => {
+                    self.mcp_panel.tools = Some((selected + 1).min(tools.len().saturating_sub(1)));
+                }
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    if let (Some((tool, filtered)), Ok(Some(server))) =
+                        (tools.get(selected), self.mcp_panel.selected_editable())
+                    {
+                        let server = server.clone();
+                        self.dispatch_mcp_tool_toggle(&server, tool, !filtered);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Some(auth) = self.mcp_panel.auth.as_ref() {
             match key.code {
                 KeyCode::Esc => self.dispatch_mcp_auth_cancel(auth.server.clone()),
@@ -100,7 +120,14 @@ impl App {
             KeyCode::Esc => self.modal = Modal::None,
             KeyCode::Up => move_picker_selection(&mut self.mcp_panel.selection, count, true),
             KeyCode::Down => move_picker_selection(&mut self.mcp_panel.selection, count, false),
-            KeyCode::Char('n') => self.mcp_panel.form = Some(McpForm::add()),
+            KeyCode::Char('n') => {
+                self.mcp_panel.form = Some(McpForm::add(self.mcp_panel.runtime.clone()));
+            }
+            KeyCode::Char('t') => {
+                if self.mcp_panel.selected().is_some() {
+                    self.mcp_panel.tools = Some(0);
+                }
+            }
             KeyCode::Char('e' | 'd' | ' ') => match self.mcp_panel.selected_editable() {
                 Err(refusal) => self.status = refusal,
                 Ok(None) => {}
@@ -108,8 +135,8 @@ impl App {
                     let server = server.clone();
                     match key.code {
                         KeyCode::Char('e') => self.mcp_panel.form = Some(McpForm::edit(&server)),
-                        KeyCode::Char('d') => self.dispatch_mcp_remove(server.name),
-                        _ => self.dispatch_mcp_toggle(server.name, !server.definition.enabled),
+                        KeyCode::Char('d') => self.dispatch_mcp_remove(&server),
+                        _ => self.dispatch_mcp_toggle(&server, !server.definition.enabled),
                     }
                 }
             },
@@ -507,7 +534,9 @@ impl App {
         let Some(form) = self.mcp_panel.form.take() else {
             return;
         };
-        let persist = form.persist.target();
+        let runtime_id = form.runtime.clone();
+        // A runtime's server is in its table already.
+        let persist = form.persist.target().filter(|_| runtime_id.is_none());
         let editing = form.editing;
         let original = form.original_name.clone();
         let (name, definition) = match form.definition() {
@@ -518,18 +547,25 @@ impl App {
                 return;
             }
         };
-        if editing && original.as_deref() != Some(name.as_str()) {
-            self.status = "editing cannot rename a server; remove it and add the new name".into();
-            self.mcp_panel.form = Some(form);
-            return;
-        }
+        let renamed = original.filter(|old| editing && *old != name);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = async {
+                if let Some(old) = renamed {
+                    client
+                        .rename_mcp_server(cookie_agent_protocol::McpServerRenameParams {
+                            runtime_id: runtime_id.clone(),
+                            name: old,
+                            new_name: name.clone(),
+                        })
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 let mutation = if editing {
                     client
                         .edit_mcp_server(McpServerEditParams {
+                            runtime_id: runtime_id.clone(),
                             name: name.clone(),
                             definition,
                         })
@@ -537,6 +573,7 @@ impl App {
                 } else {
                     client
                         .add_mcp_server(McpServerAddParams {
+                            runtime_id,
                             name: name.clone(),
                             definition,
                         })
@@ -559,12 +596,16 @@ impl App {
         });
     }
 
-    pub(super) fn dispatch_mcp_remove(&self, name: String) {
+    pub(super) fn dispatch_mcp_remove(&self, server: &McpServerInfo) {
+        let params = McpServerNameParams {
+            runtime_id: crate::ui::management::mutation_runtime(server),
+            name: server.name.clone(),
+        };
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = client
-                .remove_mcp_server(McpServerNameParams { name })
+                .remove_mcp_server(params)
                 .await
                 .map(|result| result.server)
                 .map_err(|error| error.to_string());
@@ -574,12 +615,63 @@ impl App {
         });
     }
 
-    pub(super) fn dispatch_mcp_toggle(&self, name: String, enabled: bool) {
+    pub(super) fn dispatch_mcp_toggle(&self, server: &McpServerInfo, enabled: bool) {
+        let params = McpServerSetEnabledParams {
+            runtime_id: crate::ui::management::mutation_runtime(server),
+            name: server.name.clone(),
+            enabled,
+        };
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = client
-                .set_mcp_server_enabled(McpServerSetEnabledParams { name, enabled })
+                .set_mcp_server_enabled(params)
+                .await
+                .map(|result| result.server)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::McpMutation {
+                result: Box::new(result),
+            });
+        });
+    }
+
+    /// Leaves `tool` of `server` out (`leave_out`) or takes it back, by
+    /// editing the server's filters.
+    pub(super) fn dispatch_mcp_tool_toggle(
+        &mut self,
+        server: &McpServerInfo,
+        tool: &str,
+        leave_out: bool,
+    ) {
+        let definition = match cookie_agent_client_state::mcp::toggle_tool(
+            &server.definition,
+            tool,
+            leave_out,
+        ) {
+            Ok(definition) => definition,
+            Err(refusal) => {
+                self.status = refusal;
+                return;
+            }
+        };
+        let params = McpServerEditParams {
+            runtime_id: crate::ui::management::mutation_runtime(server),
+            name: server.name.clone(),
+            definition,
+        };
+        self.status = format!(
+            "{} {tool}…",
+            if leave_out {
+                "leaving out"
+            } else {
+                "taking back"
+            }
+        );
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .edit_mcp_server(params)
                 .await
                 .map(|result| result.server)
                 .map_err(|error| error.to_string());

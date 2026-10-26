@@ -714,6 +714,16 @@ impl App {
             }
             RpcUpdate::CronChanged { result } => self.install_cron_change(result),
             RpcUpdate::MachinesRefreshed { result } => self.install_machine_listing(result),
+            RpcUpdate::RuntimeAgents {
+                runtime,
+                result,
+                status,
+            } => self.install_runtime_agents(&runtime, result, status),
+            RpcUpdate::AgentDocument {
+                path,
+                template,
+                result,
+            } => self.open_agent_document(path, template, result),
             RpcUpdate::MachineChanged { result } => self.install_machine_change(result),
             RpcUpdate::RuntimesRefreshed { result } => match result {
                 Ok(listing) => {
@@ -1484,6 +1494,23 @@ impl App {
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::RuntimeMcpRefreshed { result });
         });
+    }
+
+    /// Opens `/mcp`, every runtime's servers or, from the machines view,
+    /// `runtime`'s.
+    pub(in crate::ui) fn open_mcp_panel(
+        &mut self,
+        runtime: Option<cookie_agent_protocol::RuntimeId>,
+    ) {
+        self.modal = Modal::Mcp;
+        self.mcp_panel.form = None;
+        self.mcp_panel.tools = None;
+        if self.mcp_panel.runtime != runtime {
+            self.mcp_panel.runtime = runtime;
+            self.mcp_panel.servers.clear();
+            self.mcp_panel.selection.select(None);
+        }
+        self.poll_mcp();
     }
 
     pub(in crate::ui) fn poll_mcp(&mut self) {

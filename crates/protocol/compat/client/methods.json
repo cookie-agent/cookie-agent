@@ -356,6 +356,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "mcp.server.rename",
+      "params": "McpServerRenameParams",
+      "params_role": "command",
+      "result": "McpServerMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "mcp.server.set_enabled",
       "params": "McpServerSetEnabledParams",
       "params_role": "command",
@@ -608,6 +616,38 @@
       "params": "RuntimeSnapshotGetParams",
       "params_role": "command",
       "result": "RuntimeSnapshotResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtimes.agents.list",
+      "params": "RuntimesAgentsListParams",
+      "params_role": "command",
+      "result": "RuntimesAgentsResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtimes.agents.remove",
+      "params": "RuntimesAgentsRemoveParams",
+      "params_role": "command",
+      "result": "RuntimesAgentsResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtimes.agents.rename",
+      "params": "RuntimesAgentsRenameParams",
+      "params_role": "command",
+      "result": "RuntimesAgentsRenameResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtimes.agents.set",
+      "params": "RuntimesAgentsSetParams",
+      "params_role": "command",
+      "result": "RuntimesAgentsResult"
     },
     {
       "direction": "from_daemon",

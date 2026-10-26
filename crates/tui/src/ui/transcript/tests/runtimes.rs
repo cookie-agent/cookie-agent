@@ -395,3 +395,94 @@ async fn a_machine_change_announced_during_a_listing_lists_again() {
     settle_recording().await;
     assert_eq!(recorded_method_count(&recorded, "machines.list"), 2);
 }
+
+/// The machines view opens a runtime's MCP servers (`s`) and ACP agents
+/// (`a`); an agent is declared from the form and removed
+/// (`docs/site/specs/runtime-management.md` section 4).
+#[tokio::test]
+async fn the_machines_view_manages_a_runtimes_servers_and_acp_agents() {
+    let (_directory, server) = crate::tests::in_process_server_with_configuration();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    let session = client
+        .create_session(cookie_agent_protocol::SessionCreateParams::new(
+            crate::tests::test_run_selection(),
+        ))
+        .await
+        .expect("session")
+        .session
+        .session_id;
+    let mut app = App::new(client.clone()).await.expect("app");
+    let mut deliveries = app.take_deliveries();
+    app.open_session(session).await;
+    app.run_command(SlashCommand::Runtime).await;
+    app.handle_key(key(KeyCode::Char('m'))).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        machine_names(app).len() == 1 && app.runtime_panel.listing.is_some()
+    })
+    .await;
+    // `local`, the third row: the machine, `global`, `local`.
+    app.handle_key(key(KeyCode::Down)).await;
+    app.handle_key(key(KeyCode::Down)).await;
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains("MCP servers (s)"), "{rendered}");
+    assert!(rendered.contains("ACP agents (a)"), "{rendered}");
+
+    app.handle_key(key(KeyCode::Char('a'))).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.runtime_panel
+            .agents_view
+            .as_ref()
+            .is_some_and(|view| view.declarations.is_some())
+    })
+    .await;
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains("ACP agents on local"), "{rendered}");
+    assert!(rendered.contains("declares none"), "{rendered}");
+
+    app.handle_key(key(KeyCode::Char('n'))).await;
+    type_text(&mut app, "helper").await;
+    app.handle_key(key(KeyCode::Tab)).await;
+    // The command field starts as `[]`.
+    app.handle_key(key(KeyCode::Backspace)).await;
+    app.handle_key(key(KeyCode::Backspace)).await;
+    type_text(&mut app, "[\"true\"]").await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.status.contains("`helper`") && !app.status.starts_with("saving")
+            || app.status.contains("failed")
+    })
+    .await;
+    assert_eq!(app.status, "ACP agent `helper` saved");
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains("helper"), "{rendered}");
+    assert!(rendered.contains("command: true"), "{rendered}");
+
+    app.handle_key(key(KeyCode::Char('d'))).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.status.starts_with("ACP agent `helper` removed")
+    })
+    .await;
+    assert!(
+        app.runtime_panel
+            .agents_view
+            .as_ref()
+            .and_then(|view| view.declarations.as_ref())
+            .is_some_and(|declarations| declarations.as_ref().is_ok_and(Vec::is_empty))
+    );
+
+    // Esc goes back to the machines; `s` opens the runtime's MCP servers.
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert!(app.runtime_panel.agents_view.is_none());
+    app.handle_key(key(KeyCode::Char('s'))).await;
+    assert_eq!(app.modal, Modal::Mcp);
+    assert_eq!(
+        app.mcp_panel
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.as_str()),
+        Some("local")
+    );
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains("MCP servers on local"), "{rendered}");
+}

@@ -4,6 +4,16 @@
   "properties": {
     "name": {
       "type": "string"
+    },
+    "runtime_id": {
+      "description": "The runtime whose `[runtimes.<id>]` table holds the server (client\nprotocol 1.37.0); `global`'s top-level `[mcp]` servers when absent.",
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

@@ -121,6 +121,8 @@ pub(in crate::ui) struct RuntimePanel {
     pub(in crate::ui) mcp_servers: Option<Vec<McpServerInfo>>,
     /// The catalog's agents, for the ACP agents each runtime offers.
     pub(in crate::ui) agents: Vec<AgentDescriptor>,
+    /// A runtime's ACP agents, open over the machines view.
+    pub(in crate::ui) agents_view: Option<super::runtime_agents::AgentsView>,
 }
 
 impl RuntimePanel {
@@ -354,7 +356,10 @@ pub(in crate::ui) fn render_runtimes(
     render_tabs(frame, tabs, panel, theme, &mut hits);
     match panel.view {
         RuntimeView::Attachments => render_attachments(frame, body, panel, rows, theme),
-        RuntimeView::Machines => render_machines(frame, body, panel, theme, &mut hits),
+        RuntimeView::Machines => match panel.agents_view.as_mut() {
+            Some(view) => super::runtime_agents::render_agents(frame, body, view, theme),
+            None => render_machines(frame, body, panel, theme, &mut hits),
+        },
     }
     hits
 }
@@ -517,7 +522,7 @@ fn render_machines(
         .title(crate::ui::panel_title("Machines"))
         .title_bottom(crate::ui::panel_title(
             Line::from(Span::styled(
-                "n rename | v move | u unpin | g merge | f forget | m attachments | esc close",
+                "n rename | v move | u unpin | g merge | f forget | s servers | a agents | m attachments | esc close",
                 theme.internal(),
             ))
             .right_aligned(),

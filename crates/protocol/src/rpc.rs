@@ -486,6 +486,11 @@ pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
 pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
 pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
 pub const RUNTIMES_RECONNECT_METHOD: &str = "runtimes.reconnect";
+pub const RUNTIMES_AGENTS_LIST_METHOD: &str = "runtimes.agents.list";
+pub const RUNTIMES_AGENTS_SET_METHOD: &str = "runtimes.agents.set";
+pub const RUNTIMES_AGENTS_REMOVE_METHOD: &str = "runtimes.agents.remove";
+pub const RUNTIMES_AGENTS_RENAME_METHOD: &str = "runtimes.agents.rename";
+pub const MCP_SERVER_RENAME_METHOD: &str = "mcp.server.rename";
 pub const MACHINES_LIST_METHOD: &str = "machines.list";
 pub const MACHINES_RENAME_METHOD: &str = "machines.rename";
 pub const MACHINES_ASSIGN_METHOD: &str = "machines.assign";
@@ -652,6 +657,92 @@ pub struct RuntimesReconnectParams {
 pub struct RuntimesReconnectResult {
     /// The instance afterwards.
     pub instance: RuntimeInstanceInfo,
+}
+
+/// `runtimes.agents.list` (client protocol 1.37.0): the ACP agents a
+/// runtime's `[runtimes.<id>.acp.agents]` declares.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesAgentsListParams {
+    pub runtime_id: RuntimeId,
+}
+
+/// The runtime's ACP agent declarations, in key order, as the daemon's
+/// configuration has them now.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimesAgentsResult {
+    pub agents: Vec<RuntimeAgentDeclaration>,
+}
+
+/// One `[runtimes.<id>.acp.agents.<agent>]` declaration.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimeAgentDeclaration {
+    /// The table key, which is also the ID of the agent it offers.
+    pub agent: AgentId,
+    pub definition: AcpAgentDefinition,
+    /// The runtime reported it and a session that attaches the runtime can
+    /// run it now.
+    pub available: bool,
+    /// The agent documents that run it: the one of its own ID and the
+    /// templates whose `acp.agent` names it, as `config.get` paths
+    /// (`agents/<id>.md`); empty when none exists yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<String>,
+}
+
+/// What an ACP agent declaration sets.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpAgentDefinition {
+    /// The program and its arguments, run without a shell on the runtime's
+    /// machine.
+    pub command: Vec<String>,
+    /// Variables merged over the runtime's environment.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    pub enabled: bool,
+}
+
+/// `runtimes.agents.set` (client protocol 1.37.0): adds the declaration
+/// `agent` to the runtime, or replaces it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesAgentsSetParams {
+    pub runtime_id: RuntimeId,
+    pub agent: AgentId,
+    pub definition: AcpAgentDefinition,
+}
+
+/// `runtimes.agents.remove` (client protocol 1.37.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesAgentsRemoveParams {
+    pub runtime_id: RuntimeId,
+    pub agent: AgentId,
+}
+
+/// `runtimes.agents.rename` (client protocol 1.37.0): moves the declaration
+/// `agent` to `new_agent`, and, when no other runtime declares `agent`, its
+/// document `agents/<agent>.md` to `agents/<new_agent>.md`.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesAgentsRenameParams {
+    pub runtime_id: RuntimeId,
+    pub agent: AgentId,
+    pub new_agent: AgentId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimesAgentsRenameResult {
+    pub agents: Vec<RuntimeAgentDeclaration>,
+    /// The documents the rename moved, as `config.get` paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<String>,
+    /// The templates whose `acp.agent` still names the old key, which no
+    /// runtime may declare any more.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_templates: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -2020,6 +2111,11 @@ pub struct McpServerDefinition {
     /// 1.16.0).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_tools: Vec<String>,
+    /// How many copies a runtime other than `global` runs (client protocol
+    /// 1.37.0): one per workspace when absent. `global`'s servers take
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::runtime_protocol::McpServerScope>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -2074,6 +2170,10 @@ pub struct McpServerListResult {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerAddParams {
+    /// The runtime whose `[runtimes.<id>]` table holds the server (client
+    /// protocol 1.37.0); `global`'s top-level `[mcp]` servers when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<RuntimeId>,
     pub name: String,
     pub definition: McpServerDefinition,
 }
@@ -2081,6 +2181,10 @@ pub struct McpServerAddParams {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerEditParams {
+    /// The runtime whose `[runtimes.<id>]` table holds the server (client
+    /// protocol 1.37.0); `global`'s top-level `[mcp]` servers when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<RuntimeId>,
     pub name: String,
     pub definition: McpServerDefinition,
 }
@@ -2088,7 +2192,24 @@ pub struct McpServerEditParams {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerNameParams {
+    /// The runtime whose `[runtimes.<id>]` table holds the server (client
+    /// protocol 1.37.0); `global`'s top-level `[mcp]` servers when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<RuntimeId>,
     pub name: String,
+}
+
+/// `mcp.server.rename` (client protocol 1.37.0): moves the server `name` to
+/// `new_name` in one configuration edit.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerRenameParams {
+    /// The runtime whose `[runtimes.<id>]` table holds the server (client
+    /// protocol 1.37.0); `global`'s top-level `[mcp]` servers when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<RuntimeId>,
+    pub name: String,
+    pub new_name: String,
 }
 
 /// `mcp.server.reconnect`: reconnects one server now. A server hosted by a
@@ -2109,6 +2230,10 @@ pub struct McpServerReconnectParams {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerSetEnabledParams {
+    /// The runtime whose `[runtimes.<id>]` table holds the server (client
+    /// protocol 1.37.0); `global`'s top-level `[mcp]` servers when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<RuntimeId>,
     pub name: String,
     pub enabled: bool,
 }

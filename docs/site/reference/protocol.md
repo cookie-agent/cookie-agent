@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.36.0",
+    "protocol_version": "1.37.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.36.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.37.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -247,6 +247,10 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Every `runtimes` entry (built-in, configured, and dial-in, with lifetime, connection, capabilities, and machine) and the opened `instances` with status (see [Runtimes](#runtimes)) |
 | `runtimes.reconnect` | `runtime_id`, optional `capability`, `workspace` when the capability takes one | The `instance` afterwards, as `runtimes.list` reports it |
+| `runtimes.agents.list` | `runtime_id`; since 1.37.0 | `agents`: the runtime's `[runtimes.<id>.acp.agents]` declarations (see [Runtime tables](#runtime-tables)) |
+| `runtimes.agents.set` | `runtime_id`, `agent`, `definition` (`command`, `env`, `description`, `enabled`) | `agents` afterwards |
+| `runtimes.agents.remove` | `runtime_id`, `agent` | `agents` afterwards |
+| `runtimes.agents.rename` | `runtime_id`, `agent`, `new_agent` | `agents` afterwards, the `moved` documents, and the `stale_templates` that still name `agent` |
 | `machines.list` | Empty object | Every `machines` entry, in name order (see [Machines](#machines)) |
 | `machines.rename` | `machine`, new `name` | The `machines` afterwards; the machine's memory folder moves with it |
 | `machines.assign` | `runtime` ID, `machine` | The `machines` afterwards; the runtime is pinned to the machine, created when the name is new |
@@ -305,10 +309,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
 | `elicitation.respond` | Session ID, `elicitation_id`, `action` (`accept`, `decline`, or `cancel`), and `content`, the form's values by field name, for `accept` of a form | Empty object, once the answer is handed to the agent; `elicitation_not_pending` or `elicitation_answer_invalid` otherwise (see [Questions](#questions)) |
 | `mcp.server.list` | Empty object | Every MCP server the daemon and its runtimes host: its `runtime_id`, `workspace`, `name`, `source`, `definition`, `state`, `tool_count`, `server_tools` (since 1.36.0), and `message` (see [MCP servers](#mcp-servers)) |
-| `mcp.server.add` | `name`, `definition` | The new server as `mcp.server.list` reports it |
-| `mcp.server.edit` | `name`, `definition` | The server afterwards |
-| `mcp.server.remove` | `name` | `null` once the server is gone |
-| `mcp.server.set_enabled` | `name`, `enabled` | The server afterwards |
+| `mcp.server.add` | `name`, `definition`, optional `runtime_id` (since 1.37.0) | The new server as `mcp.server.list` reports it |
+| `mcp.server.edit` | `name`, `definition`, optional `runtime_id` | The server afterwards |
+| `mcp.server.remove` | `name`, optional `runtime_id` | `null` once the server is gone |
+| `mcp.server.set_enabled` | `name`, `enabled`, optional `runtime_id` | The server afterwards |
+| `mcp.server.rename` | `name`, `new_name`, optional `runtime_id`; since 1.37.0 | The server under its new name |
 | `mcp.server.reconnect` | `name`, optional `runtime_id` and `workspace` of a server a runtime hosts | The server afterwards |
 | `mcp.server.persist` | `name`, `target` (`user_file`) | The server afterwards, written to `config.toml` |
 | `mcp.auth.begin` | `server`, the client's `redirect_uri` (loopback, or `https` since 1.11.0) | `authorization_url` to open in a browser |
@@ -1347,13 +1352,45 @@ dropped and is being restarted: its tools stay published and calls fail with
 the `runtime_unavailable` failure code until it reconnects or, after every
 attempt failed, becomes `failed` and its tools are dropped (see
 [MCP](../extend/mcp.md#connection-lifecycle)). The `mcp.server.*` mutations
-and `mcp.auth.*` act on servers of the global runtime. `mcp.server.reconnect
+act on the global runtime's servers, or, since 1.37.0, with `runtime_id`,
+on another runtime's (see [Runtime tables](#runtime-tables)); `mcp.auth.*`
+act on the global runtime's. `mcp.server.reconnect
 { name, runtime_id?, workspace? }` reconnects a server of any runtime and
 waits for the attempt: without `runtime_id` (or with `global`) a top-level
 server, otherwise the one the instance of `runtime_id` at `workspace` hosts,
 as `mcp.server.list` names them; without `workspace`, a runtime-scoped
 server of `runtime_id` (a waiting workspace-scoped one fails: it starts with
 a workspace).
+
+### Runtime tables
+
+Since 1.37.0 clients change a runtime's `[runtimes.<id>]` table in the
+daemon's `config.toml`: its MCP servers with the `mcp.server.*` mutations
+and a `runtime_id` other than `global`, and its ACP agent declarations
+with `runtimes.agents.*`. Each change is one configuration edit, written
+and applied as `config.apply` writes (it fails `config_conflict` when the
+file changed meanwhile), and a connected runtime gets it at once (runtime
+protocol 1.10.0, `runtime/settings_changed`). A runtime server's
+`definition` carries `scope` (`runtime` or `workspace`), which a `global`
+server refuses. A server another dial-in runtime of an older cookie defines
+on its own machine (`source: machine`) is not in the file and cannot be
+changed.
+
+- **`mcp.server.rename`** moves the server's table in one edit. A `global`
+  server changed in the running daemon only, without `mcp.server.persist`,
+  is refused, and a `global` server's OAuth sign-in does not follow its new
+  name.
+- **`runtimes.agents.list`** returns each declaration's `agent` (its key and
+  the ID of the agent it offers), `definition`, `available` (the runtime
+  reported it and a session that attaches the runtime can run it now), and
+  `documents`: the agent documents that run it, the one of its own ID and
+  the templates whose `acp.agent` names it, as `config.get` paths.
+- **`runtimes.agents.rename`** moves the declaration. When no other runtime
+  declares the old key, the same edit moves `agents/<agent>.md` to
+  `agents/<new_agent>.md` (`moved`); templates whose `acp.agent` names the
+  old key are not rewritten, and `stale_templates` lists them. Sessions keep
+  the agent ID they recorded.
+- **`runtimes.agents.remove`** leaves the agent's documents in place.
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI

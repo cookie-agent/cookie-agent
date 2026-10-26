@@ -104,6 +104,17 @@
             }
           ]
         },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpServerScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How many copies a runtime other than `global` runs (client protocol\n1.37.0): one per workspace when absent. `global`'s servers take\nnone."
+        },
         "timeout_ms": {
           "format": "uint64",
           "minimum": 0,
@@ -130,6 +141,22 @@
         "timeout_ms"
       ],
       "type": "object"
+    },
+    "McpServerScope": {
+      "description": "Where a runtime hosts an MCP server (runtime protocol 1.5.0; client\nprotocol 1.13.0). Open: a value this build does not know reads as\n`workspace`.",
+      "oneOf": [
+        {
+          "const": "runtime",
+          "description": "One process per runtime, started when the runtime initializes and\nshared by every workspace instance; its tools are the runtime's own,\noutside any instance.",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "description": "One process per workspace instance, started when the instance\nopens.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -140,6 +167,16 @@
     },
     "name": {
       "type": "string"
+    },
+    "runtime_id": {
+      "description": "The runtime whose `[runtimes.<id>]` table holds the server (client\nprotocol 1.37.0); `global`'s top-level `[mcp]` servers when absent.",
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

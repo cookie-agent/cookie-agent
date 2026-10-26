@@ -708,7 +708,16 @@ and its workspace-scoped ones as `starts with a workspace`. Under each
 server the details list its tools by the server's own names (`tools:`) and
 those its filters left out (`left out:`), then the ACP agents the runtime
 offers, each available or not, with the templates over it. The details
-grow with them, up to half the panel.
+grow with them, up to half the panel. On a runtime, `s` opens `/mcp` with
+that runtime's servers only, where `n` adds one to it, and `a` opens its
+ACP agents: `n` declares one (its ID, command as a JSON array, environment,
+description, and whether it is enabled), `e` edits the selected one (a new
+ID renames it, and its document when no other runtime declares the old ID),
+space enables or disables it, `d` removes it (its documents stay), `o`
+opens its document in the editor (a new one from a template when it has
+none), `t` writes a template over it (`acp.agent`), and Esc returns to the
+machines. Every change is written to the runtime's `[runtimes.<id>]` table
+in the daemon's `config.toml`, and a connected runtime takes it at once.
 The panel refreshes on every runtime change and while it is open.
 
 Press `a` to attach: the panel lists every capability of every runtime

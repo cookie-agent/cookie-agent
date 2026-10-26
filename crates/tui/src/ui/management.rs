@@ -1,7 +1,7 @@
 use cookie_agent_client_state::usage::{CacheHit, format_count};
 use cookie_agent_protocol::{
-    McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction,
-    SessionTreeUsageResult, SessionUsageResult, UsageRollup,
+    McpServerDefinition, McpServerInfo, McpServerScope, McpServerState, ModelUsageRollup,
+    PermissionAction, RuntimeId, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
 };
 use ratatui::{
     Frame,
@@ -21,9 +21,11 @@ use super::{
 
 use cookie_agent_client_state::mcp::{
     McpFields, edit_refusal, new_definition, runtime_label, server_definition_display,
-    sort_servers, source_label, state_label as mcp_state_label,
+    server_tool_names, sort_servers, source_label, state_label as mcp_state_label,
 };
-pub(super) use cookie_agent_client_state::mcp::{McpTransport, PersistChoice, is_global};
+pub(super) use cookie_agent_client_state::mcp::{
+    McpTransport, PersistChoice, is_global, mutation_runtime,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum McpFormFocus {
@@ -53,13 +55,22 @@ pub(super) struct McpForm {
     pub(super) exclude_tools: InputState,
     pub(super) enabled: bool,
     pub(super) persist: PersistChoice,
+    /// The runtime other than `global` whose table holds the server; `None`
+    /// for `global`'s.
+    pub(super) runtime: Option<RuntimeId>,
+    /// A runtime server's one copy for the runtime, shared by its
+    /// workspaces, rather than one per workspace.
+    pub(super) shared: bool,
     pub(super) focus: McpFormFocus,
     base: McpServerDefinition,
 }
 
 impl McpForm {
-    pub(super) fn add() -> Self {
+    /// A new server of `runtime`, `global` when `None`.
+    pub(super) fn add(runtime: Option<RuntimeId>) -> Self {
         Self {
+            runtime: runtime.filter(|runtime| runtime.as_str() != RuntimeId::GLOBAL),
+            shared: false,
             editing: false,
             original_name: None,
             name: InputState::default(),
@@ -80,6 +91,8 @@ impl McpForm {
     pub(super) fn edit(server: &McpServerInfo) -> Self {
         let fields = McpFields::edit(server);
         Self {
+            runtime: mutation_runtime(server),
+            shared: server.definition.scope == Some(McpServerScope::Runtime),
             editing: true,
             original_name: Some(server.name.clone()),
             name: json_input(&fields.name),
@@ -150,6 +163,9 @@ impl McpForm {
                 });
             }
             McpFormFocus::Enabled => self.enabled = !self.enabled,
+            // A runtime's server is in its table already; the row says how
+            // many copies run instead.
+            McpFormFocus::Persist if self.runtime.is_some() => self.shared = !self.shared,
             McpFormFocus::Persist => {
                 self.persist = match self.persist {
                     PersistChoice::Runtime => PersistChoice::User,
@@ -186,6 +202,16 @@ impl McpForm {
             exclude_tools: self.exclude_tools.as_str().to_owned(),
         }
         .definition(&self.base)
+        .map(|(name, mut definition)| {
+            if self.runtime.is_some() {
+                definition.scope = Some(if self.shared {
+                    McpServerScope::Runtime
+                } else {
+                    McpServerScope::Workspace
+                });
+            }
+            (name, definition)
+        })
     }
 }
 
@@ -197,6 +223,12 @@ fn json_input(value: &str) -> InputState {
 
 #[derive(Default)]
 pub(super) struct McpPanel {
+    /// The runtime the panel shows, opened from the machines view; every
+    /// runtime's servers when `None`.
+    pub(super) runtime: Option<RuntimeId>,
+    /// The selected tool of the selected server's tool list, while it is
+    /// open.
+    pub(super) tools: Option<usize>,
     pub(super) servers: Vec<McpServerInfo>,
     pub(super) selection: ListState,
     pub(super) form: Option<McpForm>,
@@ -222,6 +254,9 @@ impl Drop for AuthListener {
 
 impl McpPanel {
     pub(super) fn install(&mut self, mut servers: Vec<McpServerInfo>) {
+        if let Some(runtime) = &self.runtime {
+            servers.retain(|server| server.runtime_id == *runtime);
+        }
         sort_servers(&mut servers);
         self.servers = servers;
         if self.auth.as_ref().is_some_and(|auth| {
@@ -236,9 +271,21 @@ impl McpPanel {
         self.clamp();
     }
 
-    /// The selected server, when `mcp.server.*` can edit it: only the
-    /// global runtime's servers are configured here; a coding runtime's come
-    /// from its template.
+    /// The selected server's tools, by its own names, each with whether
+    /// its filters left it out: offered ones first.
+    pub(super) fn selected_tools(&self) -> Vec<(String, bool)> {
+        self.selected().map_or_else(Vec::new, |server| {
+            let (offered, left_out) = server_tool_names(server);
+            offered
+                .into_iter()
+                .map(|name| (name.to_owned(), false))
+                .chain(left_out.into_iter().map(|name| (name.to_owned(), true)))
+                .collect()
+        })
+    }
+
+    /// The selected server, when `mcp.server.*` can edit it: any but one an
+    /// older dial-in runtime defines on its own machine.
     pub(super) fn selected_editable(&self) -> Result<Option<&McpServerInfo>, String> {
         match self.selected() {
             Some(server) => match edit_refusal(server) {
@@ -314,6 +361,10 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
         render_mcp_form(frame, area, form, theme);
         return;
     }
+    if let Some(selected) = panel.tools {
+        render_mcp_tools(frame, area, panel, selected, theme);
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -347,10 +398,13 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
             .block(
                 crate::ui::panel_block()
                     .border_style(theme.panel_border())
-                    .title(crate::ui::panel_title("MCP servers"))
+                    .title(crate::ui::panel_title(match &panel.runtime {
+                        Some(runtime) => format!("MCP servers on {runtime}"),
+                        None => "MCP servers".to_owned(),
+                    }))
                     .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
-                            "n add | e edit | d remove | space toggle | r reconnect | esc close",
+                            "n add | e edit | d remove | space toggle | t tools | r reconnect | esc close",
                             theme.internal(),
                         ))
                         .right_aligned(),
@@ -417,6 +471,59 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
     );
 }
 
+/// The selected server's tools by its own names: space leaves one out or
+/// takes it back.
+fn render_mcp_tools(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &McpPanel,
+    selected: usize,
+    theme: &Theme,
+) {
+    let tools = panel.selected_tools();
+    let name = panel
+        .selected()
+        .map_or_else(String::new, |server| server.name.clone());
+    let rows = if tools.is_empty() {
+        vec![ListItem::new(Line::styled(
+            "The server has listed no tools.",
+            theme.muted(),
+        ))]
+    } else {
+        tools
+            .iter()
+            .map(|(tool, filtered)| {
+                if *filtered {
+                    ListItem::new(Line::styled(format!("[ ] {tool}  left out"), theme.muted()))
+                } else {
+                    ListItem::new(Line::styled(format!("[x] {tool}"), theme.body()))
+                }
+            })
+            .collect()
+    };
+    let mut state = ListState::default();
+    state.select((!tools.is_empty()).then(|| selected.min(tools.len() - 1)));
+    frame.render_stateful_widget(
+        List::new(rows)
+            .highlight_symbol("> ")
+            .highlight_style(theme.selected())
+            .block(
+                crate::ui::panel_block()
+                    .border_style(theme.panel_border())
+                    .title(crate::ui::panel_title(format!("Tools of {name}")))
+                    .title_bottom(crate::ui::panel_title(
+                        Line::from(Span::styled(
+                            "space leave out / take back | esc servers",
+                            theme.internal(),
+                        ))
+                        .right_aligned(),
+                    )),
+            ),
+        area,
+        &mut state,
+    );
+}
+
 fn render_mcp_form(frame: &mut Frame, area: Rect, form: &McpForm, theme: &Theme) {
     let transport = match form.transport {
         McpTransport::Stdio => "stdio",
@@ -466,7 +573,19 @@ fn render_mcp_form(frame: &mut Frame, area: Rect, form: &McpForm, theme: &Theme)
             form.exclude_tools.as_str().to_owned(),
         ),
         (McpFormFocus::Enabled, "Enabled", form.enabled.to_string()),
-        (McpFormFocus::Persist, "Save", form.persist.label().into()),
+        if form.runtime.is_some() {
+            (
+                McpFormFocus::Persist,
+                "Copies",
+                if form.shared {
+                    "one for the runtime, shared by its workspaces".into()
+                } else {
+                    "one per workspace".into()
+                },
+            )
+        } else {
+            (McpFormFocus::Persist, "Save", form.persist.label().into())
+        },
         (McpFormFocus::Submit, "Submit", "press enter".into()),
     ]);
     let lines = rows
@@ -964,6 +1083,9 @@ pub(super) use runtimes::{
     AttachStep, DraftRuntime, MachineAction, MachineRequest, RuntimeHits, RuntimePanel, RuntimeRow,
     RuntimeView, draft_runtime_rows, render_runtimes, runtime_rows,
 };
+
+mod runtime_agents;
+pub(super) use runtime_agents::{AcpAgentForm, AcpFormFocus, AgentsView};
 
 mod permissions;
 pub(super) use permissions::{

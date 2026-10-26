@@ -225,9 +225,11 @@ async fn mcp_management_is_reachable_through_protocol() {
         timeout_ms: Some(1000),
         include_tools: None,
         exclude_tools: Vec::new(),
+        scope: None,
     };
     client
         .add_mcp_server(McpServerAddParams {
+            runtime_id: None,
             name: "runtime".into(),
             definition: runtime_definition.clone(),
         })
@@ -272,6 +274,7 @@ async fn mcp_management_is_reachable_through_protocol() {
     edited.args.push("--edited".into());
     client
         .edit_mcp_server(McpServerEditParams {
+            runtime_id: None,
             name: "runtime".into(),
             definition: edited,
         })
@@ -279,6 +282,7 @@ async fn mcp_management_is_reachable_through_protocol() {
         .expect("edit runtime MCP server");
     client
         .remove_mcp_server(McpServerNameParams {
+            runtime_id: None,
             name: "runtime".into(),
         })
         .await

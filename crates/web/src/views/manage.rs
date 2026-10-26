@@ -6,7 +6,7 @@
 use cookie_agent_client_state::{
     config::config_rows,
     mcp::{
-        McpFields, McpTransport, PersistChoice, StateTone, runtime_label, scope_note,
+        McpFields, McpTransport, PersistChoice, StateTone, edit_refusal, runtime_label, scope_note,
         server_definition_display, server_message, server_state_label, server_tone,
         server_tool_names, server_tools_label, source_label, state_label as mcp_state_label,
         waits_for_workspace,
@@ -37,6 +37,10 @@ pub(super) const FIELD: &str = "min-h-11 w-full rounded-md border border-crust b
 pub(super) const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-md border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 /// A small label for a thing's state.
 pub(super) const STATE: &str = "shrink-0 rounded-full bg-toasted px-2 py-0.5 text-xs dark:bg-ember";
+/// An action of one row in a list, such as a runtime's MCP server: quiet
+/// text, so a row's several actions stay out of its way, on a full touch
+/// target.
+pub(super) const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 text-xs font-bold text-caramel hover:bg-crust active:bg-crust dark:text-maple dark:hover:bg-smoke dark:active:bg-smoke";
 /// An editor's page: the text fills it and the actions stay at its foot.
 pub(super) const EDITOR_PAGE: &str = "flex min-h-full flex-1 flex-col gap-2";
 pub(super) const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-toasted bg-cream px-3 py-2 dark:border-ember dark:bg-night";
@@ -142,7 +146,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         </span>
                         {row.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
                         {message.map(|message| view! { <span class=ERROR>{message}</span> })}
-                        {(!servers.is_empty()).then(|| runtime_mcp_servers(servers, None))}
+                        {(!servers.is_empty()).then(|| runtime_mcp_servers(servers, None, None))}
                         <div class="flex gap-2">
                             <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone())>
                                 <Glyph icon=icondata::FaArrowsRotateSolid />
@@ -268,23 +272,54 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
 
 /// A server's tools by its own names, collapsed under its tool count: those
 /// it offers, then those its filters left out, dimmed and struck through.
+/// With `manage`, each is a button that leaves it out or takes it back.
 /// Nothing for a server that has listed none.
-fn server_tools(server: &McpServerInfo) -> Option<impl IntoView + use<>> {
+fn server_tools(
+    server: &McpServerInfo,
+    manage: Option<Workspace>,
+) -> Option<impl IntoView + use<>> {
     let (offered, left_out) = server_tool_names(server);
     if offered.is_empty() && left_out.is_empty() {
         return None;
     }
     let chip = |name: &str, filtered: bool| {
-        view! {
-            <li
+        let label = name.to_owned();
+        let chip = view! {
+            <span
                 class="rounded bg-toasted px-1.5 font-mono text-[0.7rem] dark:bg-ember"
                 class:line-through=filtered
                 class:opacity-50=filtered
-                title=filtered.then_some("left out by the server's include_tools or exclude_tools")
+            >
+                {label}
+            </span>
+        };
+        let tool = name.to_owned();
+        let toggled = server.clone();
+        view! {
+            <li
+                title=if filtered {
+                    "left out by the server's include_tools or exclude_tools"
+                } else {
+                    "offered to agents"
+                }
                 data-mcp-tool=name.to_owned()
                 data-mcp-tool-filtered=filtered.then_some("true")
             >
-                {name.to_owned()}
+                {match manage {
+                    Some(workspace) => view! {
+                        <button
+                            type="button"
+                            class="rounded hover:outline hover:outline-1 hover:outline-caramel dark:hover:outline-maple"
+                            aria-label=format!("{} {name}", if filtered { "Take back" } else { "Leave out" })
+                            data-mcp-tool-toggle
+                            on:click=move |_| workspace.toggle_mcp_tool(&toggled, &tool, !filtered)
+                        >
+                            {chip}
+                        </button>
+                    }
+                    .into_any(),
+                    None => chip.into_any(),
+                }}
             </li>
         }
     };
@@ -295,7 +330,9 @@ fn server_tools(server: &McpServerInfo) -> Option<impl IntoView + use<>> {
         .collect_view();
     Some(view! {
         <details class="pl-4" data-mcp-tools>
-            <summary class=format!("cursor-pointer select-none {NOTE}")>"Tools"</summary>
+            <summary class=format!("cursor-pointer select-none {NOTE}")>
+                {if manage.is_some() { "Tools (select one to leave it out or take it back)" } else { "Tools" }}
+            </summary>
             <ul class="mt-1 flex flex-wrap gap-1">{chips}</ul>
         </details>
     })
@@ -309,6 +346,7 @@ fn server_tools(server: &McpServerInfo) -> Option<impl IntoView + use<>> {
 pub(crate) fn runtime_mcp_servers(
     servers: Vec<McpServerInfo>,
     workspaces: Option<Option<String>>,
+    manage: Option<(Workspace, RwSignal<Option<McpEdit>>)>,
 ) -> impl IntoView {
     let items = servers
         .into_iter()
@@ -351,7 +389,24 @@ pub(crate) fn runtime_mcp_servers(
                         </span>
                     })}
                     {at.map(|at| view! { <span class=format!("pl-4 {NOTE} truncate")>{at}</span> })}
-                    {server_tools(&server)}
+                    {server_tools(&server, manage.map(|(workspace, _)| workspace))}
+                    {manage.filter(|_| edit_refusal(&server).is_none()).map(|(workspace, form)| {
+                        let (edited, toggled, removed) = (server.clone(), server.clone(), server.clone());
+                        let enable = !server.definition.enabled;
+                        view! {
+                            <div class="flex flex-wrap gap-1 pl-3" data-mcp-actions>
+                                <button type="button" class=ROW_ACTION data-mcp-edit on:click=move |_| form.set(Some(McpEdit::edit(&edited)))>
+                                    "Edit"
+                                </button>
+                                <button type="button" class=ROW_ACTION data-mcp-toggle on:click=move |_| workspace.toggle_mcp(&toggled, enable)>
+                                    {if enable { "Enable" } else { "Disable" }}
+                                </button>
+                                <button type="button" class=ROW_ACTION data-mcp-remove on:click=move |_| workspace.remove_mcp(&removed)>
+                                    "Remove"
+                                </button>
+                            </div>
+                        }
+                    })}
                     {server_message(&server).map(|message| view! {
                         <span
                             class=if failed {
@@ -381,7 +436,7 @@ pub(crate) fn runtime_mcp_servers(
 pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
     poll_while_open(move || workspace.poll_mcp());
     // The form: its fields, the server it edits, and where it is kept.
-    let form = RwSignal::new(None::<(McpFields, Option<cookie_agent_protocol::McpServerInfo>)>);
+    let form = RwSignal::new(None::<McpEdit>);
     let persist = RwSignal::new(PersistChoice::Runtime);
     let error = RwSignal::new(None::<String>);
     let list = move || {
@@ -398,8 +453,8 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                 let needs_auth = server.state == McpServerState::NeedsAuth;
                 let name = server.name.clone();
                 let edited = server.clone();
-                let removed = server.name.clone();
-                let toggled = (server.name.clone(), !server.definition.enabled);
+                let removed = server.clone();
+                let toggled = (server.clone(), !server.definition.enabled);
                 let reconnected = server.clone();
                 let editable = refusal.is_none();
                 view! {
@@ -431,20 +486,20 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                                     let edited = edited.clone();
                                     move |_| {
                                         error.set(None);
-                                        form.set(Some((McpFields::edit(&edited), Some(edited.clone()))));
+                                        form.set(Some(McpEdit::edit(&edited)));
                                     }
                                 }>
                                     "Edit"
                                 </button>
                                 <button type="button" class=BUTTON data-mcp-toggle on:click={
                                     let toggled = toggled.clone();
-                                    move |_| workspace.toggle_mcp(toggled.0.clone(), toggled.1)
+                                    move |_| workspace.toggle_mcp(&toggled.0, toggled.1)
                                 }>
                                     {if toggled.1 { "Enable" } else { "Disable" }}
                                 </button>
                                 <button type="button" class=BUTTON data-mcp-remove on:click={
                                     let removed = removed.clone();
-                                    move |_| workspace.remove_mcp(removed.clone())
+                                    move |_| workspace.remove_mcp(&removed)
                                 }>
                                     "Remove"
                                 </button>
@@ -472,7 +527,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                     class=PRIMARY
                     on:click=move |_| {
                         error.set(None);
-                        form.set(Some((McpFields::add(), None)));
+                        form.set(Some(McpEdit::add(None)));
                     }
                 >
                     <Glyph icon=icondata::FaPlusSolid />
@@ -480,7 +535,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                 </button>
             }
                 .into_any(),
-            Some((fields, editing)) => mcp_form(workspace, form, persist, error, fields, editing).into_any(),
+            Some(edit) => mcp_form(workspace, form, persist, error, edit).into_any(),
         }}
     }
 }
@@ -656,17 +711,63 @@ fn sign_ins(workspace: Workspace) -> impl IntoView {
     })
 }
 
-fn mcp_form(
+/// An MCP server form open: its fields, the server it edits, and, for a
+/// new one, the runtime it goes to (`global` when `None`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct McpEdit {
+    pub(crate) fields: McpFields,
+    pub(crate) editing: Option<cookie_agent_protocol::McpServerInfo>,
+    pub(crate) runtime: Option<cookie_agent_protocol::RuntimeId>,
+}
+
+impl McpEdit {
+    pub(crate) fn add(runtime: Option<cookie_agent_protocol::RuntimeId>) -> Self {
+        Self {
+            fields: McpFields::add(),
+            editing: None,
+            runtime,
+        }
+    }
+
+    pub(crate) fn edit(server: &cookie_agent_protocol::McpServerInfo) -> Self {
+        Self {
+            fields: McpFields::edit(server),
+            editing: Some(server.clone()),
+            runtime: Some(server.runtime_id.clone()),
+        }
+    }
+
+    /// The runtime other than `global` the server is on, if it is.
+    fn table_runtime(&self) -> Option<&cookie_agent_protocol::RuntimeId> {
+        self.runtime
+            .as_ref()
+            .filter(|runtime| runtime.as_str() != cookie_agent_protocol::RuntimeId::GLOBAL)
+    }
+}
+
+pub(crate) fn mcp_form(
     workspace: Workspace,
-    form: RwSignal<Option<(McpFields, Option<cookie_agent_protocol::McpServerInfo>)>>,
+    form: RwSignal<Option<McpEdit>>,
     persist: RwSignal<PersistChoice>,
     error: RwSignal<Option<String>>,
-    fields: McpFields,
-    editing: Option<cookie_agent_protocol::McpServerInfo>,
+    edit: McpEdit,
 ) -> impl IntoView {
+    let McpEdit {
+        fields,
+        editing,
+        runtime,
+    } = edit.clone();
+    let on_runtime = edit.table_runtime().cloned();
     let transport = RwSignal::new(fields.transport);
     let enabled = RwSignal::new(fields.enabled);
     let extras = RwSignal::new(fields.extras.clone());
+    // One copy for the runtime, shared by its workspaces.
+    let shared = RwSignal::new(
+        editing
+            .as_ref()
+            .and_then(|server| server.definition.scope)
+            .is_some_and(|scope| scope == cookie_agent_protocol::McpServerScope::Runtime),
+    );
     let editing_name = editing.as_ref().map(|server| server.name.clone());
     let submit = move || {
         let mut fields = McpFields {
@@ -684,16 +785,35 @@ fn mcp_form(
         if fields.transport == McpTransport::Http {
             fields.environment = "{}".into();
         }
-        match workspace.submit_mcp(fields, editing.clone(), persist.get_untracked()) {
+        let scope = Some(if shared.get_untracked() {
+            cookie_agent_protocol::McpServerScope::Runtime
+        } else {
+            cookie_agent_protocol::McpServerScope::Workspace
+        });
+        match workspace.submit_mcp(
+            fields,
+            editing.clone(),
+            persist.get_untracked(),
+            runtime.clone(),
+            scope,
+        ) {
             Ok(()) => form.set(None),
             Err(message) => error.set(Some(message)),
         }
     };
     view! {
-        <p class="text-sm font-bold">{if editing_name.is_some() { "Edit MCP server" } else { "New MCP server" }}</p>
+        <p class="text-sm font-bold">
+            {match (editing_name.is_some(), &on_runtime) {
+                (true, Some(runtime)) => format!("Edit MCP server on {runtime}"),
+                (true, None) => "Edit MCP server".to_owned(),
+                (false, Some(runtime)) => format!("New MCP server on {runtime}"),
+                (false, None) => "New MCP server".to_owned(),
+            }}
+        </p>
         <label class="flex flex-col gap-1 text-sm">
             <span>"Name"</span>
-            <input type="text" id="mcp-name" class=FIELD value=fields.name.clone() readonly=editing_name.is_some() />
+            <input type="text" id="mcp-name" class=FIELD value=fields.name.clone() />
+            {editing_name.is_some().then(|| view! { <span class=NOTE>"A new name renames the server."</span> })}
         </label>
         <label class="flex flex-col gap-1 text-sm">
             <span>"Transport"</span>
@@ -743,7 +863,13 @@ fn mcp_form(
             <input type="checkbox" id="mcp-enabled" class="h-5 w-5" prop:checked=move || enabled.get() on:change=move |_| enabled.update(|on| *on = !*on) />
             <span>"Enabled"</span>
         </label>
-        <label class="flex flex-col gap-1 text-sm">
+        {on_runtime.is_some().then(|| view! {
+            <label class="flex min-h-11 items-center gap-2 text-sm">
+                <input type="checkbox" id="mcp-shared" class="h-5 w-5" prop:checked=move || shared.get() on:change=move |_| shared.update(|on| *on = !*on) />
+                <span>"One for the runtime, shared by its workspaces (a browser, say)"</span>
+            </label>
+        })}
+        <label class="flex flex-col gap-1 text-sm" class:hidden=on_runtime.is_some()>
             <span>"Keep it"</span>
             <select
                 id="mcp-persist"

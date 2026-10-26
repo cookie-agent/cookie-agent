@@ -349,6 +349,17 @@ impl Engine {
             .map_err(|error| EngineError::Mcp(error.to_string()))
     }
 
+    /// Whether the global server `name` has a change made in the running
+    /// daemon only, on top of `config.toml`.
+    pub(crate) fn mcp_runtime_overlay(&self, name: &str) -> bool {
+        self.inner
+            .config_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime_entry(name)
+            .is_some()
+    }
+
     pub async fn persist_mcp_server(
         &self,
         name: String,
@@ -450,6 +461,7 @@ pub(crate) fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option
                 timeout_ms: None,
                 include_tools: None,
                 exclude_tools: Vec::new(),
+                scope: None,
             },
         ),
     };
@@ -519,10 +531,18 @@ fn definition_to_wire(config: &McpServerConfig) -> McpServerDefinition {
         timeout_ms: config.timeout_ms,
         include_tools: config.include_tools.clone(),
         exclude_tools: config.exclude_tools.clone(),
+        scope: config.scope.map(|scope| match scope {
+            cookie_agent_config::McpServerScope::Runtime => {
+                cookie_agent_protocol::McpServerScope::Runtime
+            }
+            cookie_agent_config::McpServerScope::Workspace => {
+                cookie_agent_protocol::McpServerScope::Workspace
+            }
+        }),
     }
 }
 
-fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
+pub(crate) fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
     let stdio = definition.command.is_some();
     McpServerConfig {
         command: definition.command,
@@ -547,7 +567,14 @@ fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
         },
         enabled: definition.enabled,
         timeout_ms: definition.timeout_ms,
-        scope: None,
+        scope: definition.scope.map(|scope| match scope {
+            cookie_agent_protocol::McpServerScope::Runtime => {
+                cookie_agent_config::McpServerScope::Runtime
+            }
+            cookie_agent_protocol::McpServerScope::Workspace => {
+                cookie_agent_config::McpServerScope::Workspace
+            }
+        }),
         include_tools: definition.include_tools,
         exclude_tools: definition.exclude_tools,
     }

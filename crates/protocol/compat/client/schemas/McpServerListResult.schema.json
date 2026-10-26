@@ -114,6 +114,17 @@
             }
           ]
         },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpServerScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How many copies a runtime other than `global` runs (client protocol\n1.37.0): one per workspace when absent. `global`'s servers take\nnone."
+        },
         "timeout_ms": {
           "format": "uint64",
           "minimum": 0,

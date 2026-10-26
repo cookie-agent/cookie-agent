@@ -92,6 +92,7 @@ mod residency;
 pub(crate) mod restart;
 mod runs;
 mod runtime_notes;
+mod runtime_tables;
 mod session_delete;
 mod sessions;
 mod skills;

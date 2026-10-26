@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "AcpAgentDefinition": {
+      "description": "What an ACP agent declaration sets.",
+      "properties": {
+        "command": {
+          "description": "The program and its arguments, run without a shell on the runtime's\nmachine.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Variables merged over the runtime's environment.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "command",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "RuntimeAgentDeclaration": {
+      "description": "One `[runtimes.<id>.acp.agents.<agent>]` declaration.",
+      "properties": {
+        "agent": {
+          "description": "The table key, which is also the ID of the agent it offers.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "available": {
+          "description": "The runtime reported it and a session that attaches the runtime can\nrun it now.",
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/$defs/AcpAgentDefinition"
+        },
+        "documents": {
+          "description": "The agent documents that run it: the one of its own ID and the\ntemplates whose `acp.agent` names it, as `config.get` paths\n(`agents/<id>.md`); empty when none exists yet.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "agent",
+        "definition",
+        "available"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The runtime's ACP agent declarations, in key order, as the daemon's\nconfiguration has them now.",
+  "properties": {
+    "agents": {
+      "items": {
+        "$ref": "#/$defs/RuntimeAgentDeclaration"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "agents"
+  ],
+  "title": "RuntimesAgentsResult",
+  "type": "object"
+}

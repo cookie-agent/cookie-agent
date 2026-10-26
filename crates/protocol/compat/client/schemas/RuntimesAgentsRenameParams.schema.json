@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`runtimes.agents.rename` (client protocol 1.37.0): moves the declaration\n`agent` to `new_agent`, and, when no other runtime declares `agent`, its\ndocument `agents/<agent>.md` to `agents/<new_agent>.md`.",
+  "properties": {
+    "agent": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": "string"
+    },
+    "new_agent": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": "string"
+    },
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime_id",
+    "agent",
+    "new_agent"
+  ],
+  "title": "RuntimesAgentsRenameParams",
+  "type": "object"
+}

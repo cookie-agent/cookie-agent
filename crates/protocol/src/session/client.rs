@@ -943,6 +943,40 @@ impl Client {
         self.call(crate::RUNTIMES_RECONNECT_METHOD, &params).await
     }
 
+    /// A runtime's ACP agent declarations (client protocol 1.37.0).
+    pub async fn list_runtime_agents(
+        &self,
+        params: crate::RuntimesAgentsListParams,
+    ) -> Result<crate::RuntimesAgentsResult, ClientError> {
+        self.call(crate::RUNTIMES_AGENTS_LIST_METHOD, &params).await
+    }
+
+    /// Adds or replaces one of a runtime's ACP agent declarations.
+    pub async fn set_runtime_agent(
+        &self,
+        params: crate::RuntimesAgentsSetParams,
+    ) -> Result<crate::RuntimesAgentsResult, ClientError> {
+        self.call(crate::RUNTIMES_AGENTS_SET_METHOD, &params).await
+    }
+
+    /// Removes one of a runtime's ACP agent declarations.
+    pub async fn remove_runtime_agent(
+        &self,
+        params: crate::RuntimesAgentsRemoveParams,
+    ) -> Result<crate::RuntimesAgentsResult, ClientError> {
+        self.call(crate::RUNTIMES_AGENTS_REMOVE_METHOD, &params)
+            .await
+    }
+
+    /// Renames one of a runtime's ACP agent declarations.
+    pub async fn rename_runtime_agent(
+        &self,
+        params: crate::RuntimesAgentsRenameParams,
+    ) -> Result<crate::RuntimesAgentsRenameResult, ClientError> {
+        self.call(crate::RUNTIMES_AGENTS_RENAME_METHOD, &params)
+            .await
+    }
+
     /// Every machine of the daemon's machine registry.
     pub async fn list_machines(&self) -> Result<crate::MachinesListResult, ClientError> {
         self.call(crate::MACHINES_LIST_METHOD, &crate::MachinesListParams {})
@@ -1362,6 +1396,14 @@ impl Client {
         params: McpServerNameParams,
     ) -> Result<McpServerMutationResult, ClientError> {
         self.call("mcp.server.remove", &params).await
+    }
+
+    /// Renames a server (client protocol 1.37.0).
+    pub async fn rename_mcp_server(
+        &self,
+        params: crate::McpServerRenameParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.call(crate::MCP_SERVER_RENAME_METHOD, &params).await
     }
 
     pub async fn set_mcp_server_enabled(

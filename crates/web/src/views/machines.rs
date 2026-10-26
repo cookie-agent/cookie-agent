@@ -11,22 +11,24 @@
 use std::time::Duration;
 
 use cookie_agent_client_state::{
+    mcp::PersistChoice,
     mcp::{runtime_servers, servers_badge},
     runtimes::{
-        MachineAction, MachineEntry, RuntimeAcpAgent, machine_action_request, machine_entries,
+        AcpAgentFields, MachineAction, MachineEntry, RuntimeAcpAgent, acp_agent_document,
+        acp_template_document, agent_document_path, machine_action_request, machine_entries,
         machine_form_title, machine_name_request, runtime_acp_agents,
     },
 };
 use cookie_agent_protocol::{
-    MachineName, MachinesListResult, McpServerInfo, RememberedRuntime, RuntimeId, RuntimeListing,
-    RuntimesListResult,
+    AgentId, MachineName, MachinesListResult, McpServerInfo, RememberedRuntime,
+    RuntimeAgentDeclaration, RuntimeId, RuntimeListing, RuntimesListResult,
 };
 use leptos::{ev, prelude::*, task::spawn_local};
 use wasm_bindgen::JsCast as _;
 
 use super::{
     BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, loading,
-    manage::{CONFIRM, FIELD, STATE, field_value, poll_while_open},
+    manage::{CONFIRM, FIELD, McpEdit, ROW_ACTION, STATE, field_value, mcp_form, poll_while_open},
 };
 use crate::{
     browser,
@@ -197,9 +199,65 @@ impl Dragging {
     }
 }
 
+/// Each runtime's ACP agent declarations, as the view last read them.
+type RuntimeAgentsSignal =
+    RwSignal<std::collections::BTreeMap<RuntimeId, Result<Vec<RuntimeAgentDeclaration>, String>>>;
+
+/// What the view manages of each runtime: the MCP server or ACP agent form
+/// open, and the runtimes' ACP agent declarations read so far. The forms
+/// show above the cards, which render again as the lists change.
+#[derive(Clone, Copy)]
+struct Manage {
+    mcp: RwSignal<Option<McpEdit>>,
+    mcp_error: RwSignal<Option<String>>,
+    persist: RwSignal<PersistChoice>,
+    agents: RuntimeAgentsSignal,
+    acp: RwSignal<Option<AcpEdit>>,
+    acp_error: RwSignal<Option<String>>,
+}
+
+/// An ACP agent declaration form open: the runtime, the fields, and the
+/// key of the declaration it edits.
+#[derive(Clone, Debug, PartialEq)]
+struct AcpEdit {
+    runtime: RuntimeId,
+    fields: AcpAgentFields,
+    editing: Option<AgentId>,
+}
+
+impl Manage {
+    fn new() -> Self {
+        Self {
+            mcp: RwSignal::new(None),
+            mcp_error: RwSignal::new(None),
+            persist: RwSignal::new(PersistChoice::Runtime),
+            agents: RwSignal::new(std::collections::BTreeMap::new()),
+            acp: RwSignal::new(None),
+            acp_error: RwSignal::new(None),
+        }
+    }
+
+    /// Reads the declarations of every runtime `ids` names that it has not
+    /// read yet.
+    fn read_agents(self, workspace: Workspace, ids: impl IntoIterator<Item = RuntimeId>) {
+        for id in ids {
+            if id.as_str() != RuntimeId::GLOBAL
+                && !self
+                    .agents
+                    .with_untracked(|agents| agents.contains_key(&id))
+            {
+                workspace.read_runtime_agents(id, self.agents);
+            }
+        }
+    }
+}
+
 /// The daemon's machines and its runtimes: the Machines & runtimes view.
 pub fn machines_page(workspace: Workspace) -> impl IntoView {
     poll_while_open(move || workspace.poll_runtimes());
+    let manage = Manage::new();
+    // The agent documents the ACP agents link to.
+    workspace.poll_config();
     let form = RwSignal::new(None::<Form>);
     let adding = RwSignal::new(false);
     let dragging = Dragging::new();
@@ -232,6 +290,7 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
         <Show when=move || adding.get()>
             {add_runtime(workspace, adding)}
         </Show>
+        {open_forms(workspace, manage)}
         {move || {
             // The view reads both lists every second: only a change
             // renders the cards again, so an open form keeps its text.
@@ -242,8 +301,116 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
             };
             let registry = registry.get();
             let mcp = mcp.get().unwrap_or_default();
-            machine_cards(workspace, &machines, registry.as_ref(), &mcp, form, dragging).into_any()
+            manage.read_agents(
+                workspace,
+                machines
+                    .machines
+                    .iter()
+                    .flat_map(|machine| {
+                        machine
+                            .connected
+                            .iter()
+                            .map(|runtime| runtime.runtime_id.clone())
+                            .chain(machine.remembered.iter().map(|runtime| runtime.runtime_id.clone()))
+                    })
+                    .chain(
+                        registry
+                            .iter()
+                            .flat_map(|registry| registry.runtimes.iter().map(|runtime| runtime.runtime_id.clone())),
+                    )
+                    .collect::<Vec<_>>(),
+            );
+            machine_cards(workspace, &machines, registry.as_ref(), &mcp, form, dragging, manage).into_any()
         }}
+    }
+}
+
+/// The open MCP server or ACP agent form, above the cards.
+fn open_forms(workspace: Workspace, manage: Manage) -> impl IntoView {
+    view! {
+        {move || manage.mcp.get().map(|edit| view! {
+            <div class="flex flex-col gap-2 rounded-lg border border-toasted p-3 dark:border-ember" data-machines-mcp-form>
+                {mcp_form(workspace, manage.mcp, manage.persist, manage.mcp_error, edit)}
+            </div>
+        })}
+        {move || manage.acp.get().map(|edit| view! {
+            <div class="flex flex-col gap-2 rounded-lg border border-toasted p-3 dark:border-ember" data-machines-acp-form>
+                {acp_form(workspace, manage, edit)}
+            </div>
+        })}
+    }
+}
+
+/// The form of one of a runtime's ACP agent declarations.
+fn acp_form(workspace: Workspace, manage: Manage, edit: AcpEdit) -> impl IntoView {
+    let AcpEdit {
+        runtime,
+        fields,
+        editing,
+    } = edit;
+    let enabled = RwSignal::new(fields.enabled);
+    let title = match &editing {
+        Some(agent) => format!("Edit ACP agent {agent} on {runtime}"),
+        None => format!("New ACP agent on {runtime}"),
+    };
+    let renames = editing.is_some();
+    let submit = move || {
+        let fields = AcpAgentFields {
+            agent: field_value("acp-agent"),
+            command: field_value("acp-command"),
+            environment: field_value("acp-env"),
+            description: field_value("acp-description"),
+            enabled: enabled.get_untracked(),
+        };
+        match workspace.submit_runtime_agent(
+            runtime.clone(),
+            &fields,
+            editing.clone(),
+            manage.agents,
+        ) {
+            Ok(()) => manage.acp.set(None),
+            Err(message) => manage.acp_error.set(Some(message)),
+        }
+    };
+    view! {
+        <p class="text-sm font-bold">{title}</p>
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Agent ID"</span>
+            <input type="text" id="acp-agent" class=FIELD value=fields.agent.clone() placeholder="claude" />
+            <span class=NOTE>
+                {if renames {
+                    "A new ID renames the declaration, and its document when no other runtime declares the old ID."
+                } else {
+                    "The agent's ID on every runtime that declares it, and the name of its document."
+                }}
+            </span>
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Command JSON array"</span>
+            <input type="text" id="acp-command" class=FIELD value=fields.command.clone() placeholder=r#"["npx", "-y", "@agentclientprotocol/claude-agent-acp"]"# />
+            <span class=NOTE>"Run without a shell on the runtime's machine."</span>
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Environment JSON object"</span>
+            <input type="text" id="acp-env" class=FIELD value=fields.environment.clone() />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Description"</span>
+            <input type="text" id="acp-description" class=FIELD value=fields.description.clone() />
+        </label>
+        <label class="flex min-h-11 items-center gap-2 text-sm">
+            <input type="checkbox" id="acp-enabled" class="h-5 w-5" prop:checked=move || enabled.get() on:change=move |_| enabled.update(|on| *on = !*on) />
+            <span>"Enabled"</span>
+        </label>
+        {move || manage.acp_error.get().map(|message| view! { <p class=ERROR>{message}</p> })}
+        <div class="flex gap-2">
+            <button type="button" id="acp-save" class=PRIMARY on:click=move |_| submit()>
+                "Save"
+            </button>
+            <button type="button" class=BUTTON on:click=move |_| manage.acp.set(None)>
+                "Cancel"
+            </button>
+        </div>
     }
 }
 
@@ -255,6 +422,7 @@ fn machine_cards(
     mcp: &[McpServerInfo],
     form: RwSignal<Option<Form>>,
     dragging: Dragging,
+    manage: Manage,
 ) -> impl IntoView {
     let mcp_badge = |id: &RuntimeId| servers_badge(&runtime_servers(mcp, id));
     let mcp_servers = |id: &RuntimeId| runtime_servers(mcp, id);
@@ -370,6 +538,7 @@ fn machine_cards(
                 names.clone(),
                 form,
                 dragging,
+                manage,
             )
         })
         .collect_view();
@@ -378,7 +547,7 @@ fn machine_cards(
         {(!unplaced.is_empty()).then(|| {
             let rows = unplaced
                 .into_iter()
-                .map(|card| runtime_row(workspace, card, names.clone(), form, dragging))
+                .map(|card| runtime_row(workspace, card, names.clone(), form, dragging, manage))
                 .collect_view();
             view! {
                 <section class="rounded-xl border border-toasted dark:border-ember" data-unplaced>
@@ -401,6 +570,7 @@ fn machine_cards(
 /// A machine's card: its operating system's icon, its name, what it
 /// holds, its rename, merge, and forget, and its runtimes. While a runtime
 /// is dragged, the card takes it.
+#[expect(clippy::too_many_arguments, reason = "the view's shared state")]
 fn machine_card(
     workspace: Workspace,
     name: MachineName,
@@ -409,6 +579,7 @@ fn machine_card(
     names: Vec<MachineName>,
     form: RwSignal<Option<Form>>,
     dragging: Dragging,
+    manage: Manage,
 ) -> impl IntoView {
     let platform = info.as_ref().and_then(|info| info.platform.clone());
     let memories = info.as_ref().map_or(0, |info| info.memories);
@@ -485,7 +656,7 @@ fn machine_card(
     let empty = runtimes.is_empty();
     let rows = runtimes
         .into_iter()
-        .map(|card| runtime_row(workspace, card, names.clone(), form, dragging))
+        .map(|card| runtime_row(workspace, card, names.clone(), form, dragging, manage))
         .collect_view();
     let form_entry = entry.clone();
     view! {
@@ -565,42 +736,218 @@ fn machine_form(
     }
 }
 
-/// The ACP agent declarations a runtime offers: each key, whether a session
-/// that attaches the runtime can run it now, and the templates over it.
-fn runtime_acp_agent_list(agents: Vec<RuntimeAcpAgent>) -> impl IntoView {
-    let items = agents
+/// The buttons that add an MCP server or an ACP agent to a runtime.
+fn runtime_manage_buttons(manage: Manage, runtime: RuntimeId) -> impl IntoView {
+    let agents = runtime.as_str() != RuntimeId::GLOBAL;
+    let for_server = runtime.clone();
+    view! {
+        <div class="flex flex-wrap gap-2" data-runtime-manage>
+            <button
+                type="button"
+                class=BUTTON
+                data-runtime-add-mcp
+                on:click=move |_| {
+                    manage.mcp_error.set(None);
+                    manage.mcp.set(Some(McpEdit::add(Some(for_server.clone()))));
+                }
+            >
+                <Glyph icon=icondata::FaPlusSolid />
+                "MCP server"
+            </button>
+            {agents.then(|| view! {
+                <button
+                    type="button"
+                    class=BUTTON
+                    data-runtime-add-acp
+                    on:click=move |_| {
+                        manage.acp_error.set(None);
+                        manage.acp.set(Some(AcpEdit {
+                            runtime: runtime.clone(),
+                            fields: AcpAgentFields::add(),
+                            editing: None,
+                        }));
+                    }
+                >
+                    <Glyph icon=icondata::FaPlusSolid />
+                    "ACP agent"
+                </button>
+            })}
+        </div>
+    }
+}
+
+/// The ACP agents a runtime offers. Its `[runtimes.<id>.acp.agents]`
+/// declarations each show their key, whether a session that attaches the
+/// runtime can run them now, their description and command, and their
+/// documents, with Edit, Enable or Disable, Remove, and a link to create or
+/// open their document; agents only the catalog lists, which a runtime of an
+/// older cookie declares on its own machine, show as they are.
+fn runtime_acp_agent_list(
+    workspace: Workspace,
+    manage: Manage,
+    runtime: RuntimeId,
+    catalog: Vec<RuntimeAcpAgent>,
+) -> impl IntoView {
+    let read = manage.agents.with(|agents| agents.get(&runtime).cloned());
+    let declarations = match read {
+        Some(Ok(declarations)) => declarations,
+        Some(Err(error)) => {
+            return view! { <p class=ERROR data-runtime-acp-error>{error}</p> }.into_any();
+        }
+        None => Vec::new(),
+    };
+    let machine_only = catalog
+        .into_iter()
+        .filter(|offered| {
+            !declarations
+                .iter()
+                .any(|declared| declared.agent == offered.agent)
+        })
+        .collect::<Vec<_>>();
+    if declarations.is_empty() && machine_only.is_empty() {
+        return ().into_any();
+    }
+    let dot = |available: bool| {
+        if available {
+            (
+                icondata::FaCircleSolid,
+                "text-green-700 dark:text-green-400",
+            )
+        } else {
+            (icondata::FaCircleRegular, "opacity-60")
+        }
+    };
+    let declared = declarations
         .into_iter()
         .map(|declaration| {
-            let templates = declaration
-                .agents
-                .iter()
-                .filter(|agent| **agent != declaration.agent)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
-            let (dot, dot_class) = if declaration.available {
-                (icondata::FaCircleSolid, "text-green-700 dark:text-green-400")
-            } else {
-                (icondata::FaCircleRegular, "opacity-60")
+            let (icon, icon_class) = dot(declaration.available);
+            let agent = declaration.agent.clone();
+            let own = agent_document_path(agent.as_str());
+            let has_own = declaration.documents.contains(&own);
+            let edited = AcpEdit {
+                runtime: runtime.clone(),
+                fields: AcpAgentFields::edit(&declaration),
+                editing: Some(agent.clone()),
             };
+            let toggled = {
+                let mut fields = AcpAgentFields::edit(&declaration);
+                fields.enabled = !fields.enabled;
+                fields
+            };
+            let enable = toggled.enabled;
+            let (toggle_runtime, remove_runtime) = (runtime.clone(), runtime.clone());
+            let (toggle_agent, removed) = (agent.clone(), agent.clone());
+            let description = declaration.definition.description.clone();
+            let command = declaration.definition.command.join(" ");
+            let documents = declaration
+                .documents
+                .iter()
+                .map(|path| {
+                    let opened = path.clone();
+                    view! {
+                        <button
+                            type="button"
+                            class="font-mono text-[0.7rem] text-caramel underline-offset-2 hover:underline dark:text-maple"
+                            data-acp-document=path.clone()
+                            on:click=move |_| workspace.open_agent_document(&opened, String::new())
+                        >
+                            {path.clone()}
+                        </button>
+                    }
+                })
+                .collect_view();
+            let (created, created_description) = (own.clone(), description.clone());
+            let template_of = agent.to_string();
             view! {
                 <li
                     class="flex min-w-0 flex-col gap-0.5"
-                    data-acp-agent=declaration.agent.to_string()
+                    data-acp-agent=agent.to_string()
                     data-acp-available=declaration.available.then_some("true")
+                    data-acp-enabled=declaration.definition.enabled.then_some("true")
                 >
                     <div class="flex min-w-0 items-center gap-2">
-                        <Glyph icon=dot class=format!("shrink-0 text-[0.6rem] {dot_class}") />
-                        <span class="min-w-16 flex-1 truncate font-mono text-sm">{declaration.agent.to_string()}</span>
-                        <span class=STATE>{if declaration.available { "available" } else { "unavailable" }}</span>
-                    </div>
-                    {(!declaration.description.is_empty()).then(|| view! {
-                        <span class=format!("pl-4 {NOTE} truncate")>{declaration.description.clone()}</span>
-                    })}
-                    {(!templates.is_empty()).then(|| view! {
-                        <span class=format!("pl-4 {NOTE} truncate") data-acp-templates>
-                            {format!("templates: {}", templates.join(", "))}
+                        <Glyph icon=icon class=format!("shrink-0 text-[0.6rem] {icon_class}") />
+                        <span class="min-w-16 flex-1 truncate font-mono text-sm">{agent.to_string()}</span>
+                        <span class=STATE>
+                            {if !declaration.definition.enabled {
+                                "disabled"
+                            } else if declaration.available {
+                                "available"
+                            } else {
+                                "unavailable"
+                            }}
                         </span>
+                    </div>
+                    {(!description.is_empty()).then(|| view! {
+                        <span class=format!("pl-4 {NOTE} truncate")>{description.clone()}</span>
                     })}
+                    <span class=format!("pl-4 {NOTE} truncate font-mono") data-acp-command>{command}</span>
+                    <div class="flex flex-wrap items-center gap-2 pl-4">
+                        {documents}
+                        {(!has_own).then(|| view! {
+                            <button
+                                type="button"
+                                class=ROW_ACTION
+                                data-acp-create-document
+                                on:click=move |_| workspace.open_agent_document(
+                                    &created,
+                                    acp_agent_document(template_of.as_str(), &created_description),
+                                )
+                            >
+                                "Create document"
+                            </button>
+                        })}
+                    </div>
+                    <div class="flex flex-wrap gap-1 pl-3" data-acp-actions>
+                        <button type="button" class=ROW_ACTION data-acp-edit on:click=move |_| {
+                            manage.acp_error.set(None);
+                            manage.acp.set(Some(edited.clone()));
+                        }>
+                            "Edit"
+                        </button>
+                        <button type="button" class=ROW_ACTION data-acp-toggle on:click=move |_| {
+                            let _ = workspace.submit_runtime_agent(
+                                toggle_runtime.clone(),
+                                &toggled,
+                                Some(toggle_agent.clone()),
+                                manage.agents,
+                            );
+                        }>
+                            {if enable { "Enable" } else { "Disable" }}
+                        </button>
+                        <button type="button" class=ROW_ACTION data-acp-template on:click={
+                            let agent = agent.to_string();
+                            move |_| workspace.open_agent_document(
+                                &agent_document_path(&format!("{agent}-template")),
+                                acp_template_document(&agent),
+                            )
+                        }>
+                            "New template"
+                        </button>
+                        <button type="button" class=ROW_ACTION data-acp-remove on:click=move |_| {
+                            workspace.remove_runtime_agent(remove_runtime.clone(), removed.clone(), manage.agents);
+                        }>
+                            "Remove"
+                        </button>
+                    </div>
+                </li>
+            }
+        })
+        .collect_view();
+    let offered = machine_only
+        .into_iter()
+        .map(|offered| {
+            let (icon, icon_class) = dot(offered.available);
+            view! {
+                <li class="flex min-w-0 flex-col gap-0.5" data-acp-agent=offered.agent.to_string() data-acp-machine>
+                    <div class="flex min-w-0 items-center gap-2">
+                        <Glyph icon=icon class=format!("shrink-0 text-[0.6rem] {icon_class}") />
+                        <span class="min-w-16 flex-1 truncate font-mono text-sm">{offered.agent.to_string()}</span>
+                        <span class=STATE>{if offered.available { "available" } else { "unavailable" }}</span>
+                    </div>
+                    <span class=format!("pl-4 {NOTE}")>
+                        {format!("declared on the runtime's machine, which runs an older cookie; declare it in [runtimes.{runtime}.acp] to manage it here")}
+                    </span>
                 </li>
             }
         })
@@ -608,9 +955,10 @@ fn runtime_acp_agent_list(agents: Vec<RuntimeAcpAgent>) -> impl IntoView {
     view! {
         <div class="flex flex-col gap-1 rounded-md bg-parchment px-2 py-1.5 dark:bg-char" data-runtime-acp>
             <span class="text-xs font-bold opacity-70">"ACP agents"</span>
-            <ul class="flex flex-col gap-1">{items}</ul>
+            <ul class="flex flex-col gap-1">{declared}{offered}</ul>
         </div>
     }
+    .into_any()
 }
 
 /// A runtime's row: a grip, how it came to the daemon, its ID, whether it
@@ -622,6 +970,7 @@ fn runtime_row(
     names: Vec<MachineName>,
     form: RwSignal<Option<Form>>,
     dragging: Dragging,
+    manage: Manage,
 ) -> impl IntoView {
     let id = card.id.clone();
     let lifetime = card.listing.as_ref().map(|listing| listing.lifetime);
@@ -805,9 +1154,14 @@ fn runtime_row(
                 })}
                 {(!card.servers.is_empty()).then(|| {
                     let home = card.listing.as_ref().and_then(|listing| listing.home.clone());
-                    crate::views::manage::runtime_mcp_servers(card.servers.clone(), Some(home))
+                    crate::views::manage::runtime_mcp_servers(
+                        card.servers.clone(),
+                        Some(home),
+                        Some((workspace, manage.mcp)),
+                    )
                 })}
-                {(!card.agents.is_empty()).then(|| runtime_acp_agent_list(card.agents.clone()))}
+                {runtime_acp_agent_list(workspace, manage, card.id.clone(), card.agents.clone())}
+                {runtime_manage_buttons(manage, card.id.clone())}
                 {message.map(|message| view! { <span class="text-xs break-words text-red-800 dark:text-red-300">{message}</span> })}
             </div>
             <button

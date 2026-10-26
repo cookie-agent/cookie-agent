@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`runtimes.agents.remove` (client protocol 1.37.0).",
+  "properties": {
+    "agent": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": "string"
+    },
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime_id",
+    "agent"
+  ],
+  "title": "RuntimesAgentsRemoveParams",
+  "type": "object"
+}

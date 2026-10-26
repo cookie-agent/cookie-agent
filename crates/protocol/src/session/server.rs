@@ -512,6 +512,42 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::RuntimesReconnectParams,
     ) -> Result<crate::RuntimesReconnectResult, ServerFault>;
+    /// A runtime's ACP agent declarations (client protocol 1.37.0).
+    async fn list_runtime_agents(
+        &self,
+        _params: crate::RuntimesAgentsListParams,
+    ) -> Result<crate::RuntimesAgentsResult, ServerFault> {
+        Err(ServerFault::from_error(
+            crate::errors::UNKNOWN_METHOD.error().build(),
+        ))
+    }
+    /// Adds or replaces one of a runtime's ACP agent declarations.
+    async fn set_runtime_agent(
+        &self,
+        _params: crate::RuntimesAgentsSetParams,
+    ) -> Result<crate::RuntimesAgentsResult, ServerFault> {
+        Err(ServerFault::from_error(
+            crate::errors::UNKNOWN_METHOD.error().build(),
+        ))
+    }
+    /// Removes one of a runtime's ACP agent declarations.
+    async fn remove_runtime_agent(
+        &self,
+        _params: crate::RuntimesAgentsRemoveParams,
+    ) -> Result<crate::RuntimesAgentsResult, ServerFault> {
+        Err(ServerFault::from_error(
+            crate::errors::UNKNOWN_METHOD.error().build(),
+        ))
+    }
+    /// Renames one of a runtime's ACP agent declarations.
+    async fn rename_runtime_agent(
+        &self,
+        _params: crate::RuntimesAgentsRenameParams,
+    ) -> Result<crate::RuntimesAgentsRenameResult, ServerFault> {
+        Err(ServerFault::from_error(
+            crate::errors::UNKNOWN_METHOD.error().build(),
+        ))
+    }
     /// Lists the machines.
     async fn list_machines(
         &self,
@@ -742,6 +778,15 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: McpServerSetEnabledParams,
     ) -> Result<McpServerMutationResult, ServerFault>;
+    /// Renames a server (client protocol 1.37.0).
+    async fn rename_mcp_server(
+        &self,
+        _params: crate::McpServerRenameParams,
+    ) -> Result<McpServerMutationResult, ServerFault> {
+        Err(ServerFault::from_error(
+            crate::errors::UNKNOWN_METHOD.error().build(),
+        ))
+    }
     async fn reconnect_mcp_server(
         &self,
         params: McpServerReconnectParams,
@@ -1210,6 +1255,18 @@ async fn dispatch<S: ServerProtocol>(
         }
         crate::RUNTIMES_LIST_METHOD => value(server.list_runtimes(decode_default(params)?).await?),
         crate::RUNTIMES_RECONNECT_METHOD => value(server.reconnect_runtime(decode(params)?).await?),
+        crate::RUNTIMES_AGENTS_LIST_METHOD => {
+            value(server.list_runtime_agents(decode(params)?).await?)
+        }
+        crate::RUNTIMES_AGENTS_SET_METHOD => {
+            value(server.set_runtime_agent(decode(params)?).await?)
+        }
+        crate::RUNTIMES_AGENTS_REMOVE_METHOD => {
+            value(server.remove_runtime_agent(decode(params)?).await?)
+        }
+        crate::RUNTIMES_AGENTS_RENAME_METHOD => {
+            value(server.rename_runtime_agent(decode(params)?).await?)
+        }
         crate::MACHINES_LIST_METHOD => value(server.list_machines(decode_default(params)?).await?),
         crate::MACHINES_RENAME_METHOD => value(server.rename_machine(decode(params)?).await?),
         crate::MACHINES_ASSIGN_METHOD => value(server.assign_machine(decode(params)?).await?),
@@ -1287,6 +1344,7 @@ async fn dispatch<S: ServerProtocol>(
         "mcp.server.edit" => value(server.edit_mcp_server(decode(params)?).await?),
         "mcp.server.remove" => value(server.remove_mcp_server(decode(params)?).await?),
         "mcp.server.set_enabled" => value(server.set_mcp_server_enabled(decode(params)?).await?),
+        crate::MCP_SERVER_RENAME_METHOD => value(server.rename_mcp_server(decode(params)?).await?),
         "mcp.server.reconnect" => value(server.reconnect_mcp_server(decode(params)?).await?),
         "mcp.server.persist" => value(server.persist_mcp_server(decode(params)?).await?),
         crate::ARTIFACT_UPLOAD_BEGIN_METHOD => {

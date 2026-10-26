@@ -33,7 +33,7 @@ fn permission_rows_keep_action_defaults_and_sources() {
 
 #[test]
 fn stdio_mcp_form_accepts_args_environment_and_working_directory() {
-    let mut form = super::McpForm::add();
+    let mut form = super::McpForm::add(None);
     form.name.set_buffer("local".into());
     form.endpoint.set_buffer("server-command".into());
     form.extras.set_buffer("[\"--stdio\"]".into());
@@ -50,7 +50,7 @@ fn stdio_mcp_form_accepts_args_environment_and_working_directory() {
 
 #[test]
 fn mcp_form_edits_tool_filters_and_the_panel_shows_the_filtered_count() {
-    let mut form = super::McpForm::add();
+    let mut form = super::McpForm::add(None);
     form.name.set_buffer("my_chrome".into());
     form.endpoint.set_buffer("chrome-mcp".into());
     // Tab reaches both filter fields, for either transport.
@@ -140,6 +140,7 @@ fn mcp_panel_renders_live_state_and_connection() {
             timeout_ms: None,
             include_tools: None,
             exclude_tools: Vec::new(),
+            scope: None,
         },
         state: McpServerState::Disconnected,
         tool_count: 0,
@@ -191,6 +192,7 @@ fn mcp_panel_renders_copyable_oauth_wait() {
             timeout_ms: None,
             include_tools: None,
             exclude_tools: Vec::new(),
+            scope: None,
         },
         state: McpServerState::NeedsAuth,
         tool_count: 0,
@@ -1135,6 +1137,7 @@ fn hosted_server(
             timeout_ms: None,
             include_tools: None,
             exclude_tools: Vec::new(),
+            scope: None,
         },
         state,
         tool_count,
@@ -1356,6 +1359,7 @@ fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
             timeout_ms: None,
             include_tools: None,
             exclude_tools: Vec::new(),
+            scope: None,
         },
         state: McpServerState::Failed,
         tool_count: 0,
@@ -1384,10 +1388,11 @@ fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
         ]
     );
     panel.selection.select(Some(1));
+    // A runtime's server is edited in its [runtimes.labpc.mcp] table.
     assert!(
         panel
             .selected_editable()
-            .is_err_and(|refusal| refusal.contains("[runtimes.labpc.mcp]"))
+            .is_ok_and(|server| server.is_some_and(|server| server.runtime_id.as_str() == "labpc"))
     );
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
     terminal

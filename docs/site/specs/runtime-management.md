@@ -3,9 +3,11 @@
 Status: **in progress** (2026-10-26); every decision in
 [section 9](#9-decisions) made by the user on 2026-10-26. Phase 1
 implemented 2026-10-26 (client protocol 1.36.0, runtime protocol 1.9.0);
-phase 2's daemon side (2a: dial-in tables, `runtime/settings_changed`,
-dial-in machines without `[runtimes.local]`) implemented 2026-10-26 in
-runtime protocol 1.10.0, `${NAME}` in `env` deferred. Builds on [runtimes](runtimes.md),
+phase 2 implemented 2026-10-26: 2a (dial-in tables,
+`runtime/settings_changed`, dial-in machines without `[runtimes.local]`) in
+runtime protocol 1.10.0, `${NAME}` in `env` deferred; 2b (the panels'
+editors, `mcp.server.rename`, `runtimes.agents.*`) in client protocol
+1.37.0, renames not rewriting templates (section 4.2). Builds on [runtimes](runtimes.md),
 [runtime capabilities](runtime-capabilities.md), [ACP agents](acp-agents.md),
 [MCP tool filters](mcp-tool-filters.md), [web MCP OAuth](web-mcp-oauth.md),
 and the daemon restart of [engine configuration](engine-configuration.md)
@@ -175,8 +177,10 @@ The panel follows that:
   `env`, `description`, `enabled`) and apply it live.
   - **Rename (D6)** renames the declaration on that runtime. When no other
     runtime or profile still declares the old key, the same `config.apply`
-    also moves `agents/<old>.md` to the new key and rewrites `acp.agent` in
-    the templates that name it. When another one still does, the documents
+    also moves `agents/<old>.md` to the new key. Templates whose
+    `acp.agent` names the old key are not rewritten (implemented
+    2026-10-26: rewriting their front matter by hand is fragile); the
+    result lists them and the clients say which to edit. When another one still does, the documents
     stay with the old key, which those runtimes go on offering, and the
     confirmation says so. Existing sessions keep the agent ID they
     recorded. Where it is gone, they resume with the default agent, as for

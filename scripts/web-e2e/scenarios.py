@@ -5261,6 +5261,44 @@ def runtime_mcp(browser):
     browser.shot("runtime-mcp-machines-phone")
     browser.resize(1280, 900)
     print("the Machines view counts the local runtime's MCP servers")
+
+    # Leaving a tool out edits the server's table, which the runtime takes
+    # at once; taking it back undoes it.
+    echo = tools + ' [data-mcp-tool="echo/text"]'
+    # The cards render again as the servers change, closing the disclosure.
+    open_tools = "document.querySelector('" + tools + "').open = true;"
+    browser.script(open_tools)
+    browser.click(echo + " [data-mcp-tool-toggle]")
+    browser.wait(
+        "echo/text left out",
+        lambda: count(browser, echo + "[data-mcp-tool-filtered]") == 1,
+        timeout=40,
+    )
+    browser.script(open_tools)
+    browser.click(echo + " [data-mcp-tool-toggle]")
+    browser.wait(
+        "echo/text taken back",
+        lambda: count(browser, echo + "[data-mcp-tool-filtered]") == 0,
+        timeout=40,
+    )
+    print("a tool is left out and taken back from the Machines view")
+
+    # An ACP agent is declared on the runtime, listed, and removed.
+    browser.click(machine_runtime + " [data-runtime-add-acp]")
+    browser.wait("the ACP agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
+    browser.type("#acp-agent", "helper")
+    browser.script("document.querySelector('#acp-command').value = '';")
+    browser.type("#acp-command", '["true"]')
+    browser.click("#acp-save")
+    helper = machine_runtime + ' [data-acp-agent="helper"]'
+    browser.wait("the declared agent", lambda: count(browser, helper) == 1, timeout=40)
+    assert "true" in browser.text(helper + " [data-acp-command]")
+    assert count(browser, helper + " [data-acp-create-document]") == 1
+    settle(browser)
+    browser.shot("runtime-acp-machines-desktop")
+    browser.click(helper + " [data-acp-remove]")
+    browser.wait("the agent removed", lambda: count(browser, helper) == 0, timeout=40)
+    print("an ACP agent is declared on and removed from a runtime in the Machines view")
     close_sheet(browser)
 
 

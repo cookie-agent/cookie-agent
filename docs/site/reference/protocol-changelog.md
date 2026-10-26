@@ -5,6 +5,21 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.37.0
+
+- Clients change a runtime's `[runtimes.<id>]` table ([runtime management
+  spec](../specs/runtime-management.md) phase 2), all additions an older
+  peer ignores (see [Runtime tables](protocol.md#runtime-tables)):
+  - `mcp.server.add`, `edit`, `remove`, and `set_enabled` take an optional
+    `runtime_id`; without it, or with `global`, they act on the top-level
+    `[mcp]` servers as before.
+  - `mcp.server.rename { runtime_id?, name, new_name }`.
+  - `McpServerDefinition.scope`: a runtime server's `runtime` or
+    `workspace`.
+  - `runtimes.agents.list`, `set`, `remove`, and `rename`, and their types
+    `RuntimeAgentDeclaration`, `AcpAgentDefinition`, `RuntimesAgentsResult`,
+    and `RuntimesAgentsRenameResult`.
+
 ## 1.36.0
 
 - `McpServerInfo.server_tools` ([runtime management

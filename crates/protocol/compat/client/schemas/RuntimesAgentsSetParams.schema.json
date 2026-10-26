@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "AcpAgentDefinition": {
+      "description": "What an ACP agent declaration sets.",
+      "properties": {
+        "command": {
+          "description": "The program and its arguments, run without a shell on the runtime's\nmachine.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Variables merged over the runtime's environment.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "command",
+        "enabled"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`runtimes.agents.set` (client protocol 1.37.0): adds the declaration\n`agent` to the runtime, or replaces it.",
+  "properties": {
+    "agent": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": "string"
+    },
+    "definition": {
+      "$ref": "#/$defs/AcpAgentDefinition"
+    },
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime_id",
+    "agent",
+    "definition"
+  ],
+  "title": "RuntimesAgentsSetParams",
+  "type": "object"
+}

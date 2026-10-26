@@ -4,11 +4,13 @@
 //! attaches, what attaching offers and asks for, and the machines view's
 //! rows and changes (`machines.*`).
 
+use std::collections::BTreeMap;
+
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentId, AttachmentName, CapabilityName, MachineAssignment, MachineName,
-    MachinesListResult, McpServerInfo, RuntimeAttachRequest, RuntimeAttachment,
-    RuntimeCapabilityInfo, RuntimeId, RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind,
-    RuntimeListing, RuntimesListResult,
+    AcpAgentDefinition, AgentDescriptor, AgentId, AttachmentName, CapabilityName,
+    MachineAssignment, MachineName, MachinesListResult, McpServerInfo, RuntimeAgentDeclaration,
+    RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId, RuntimeInstanceInfo,
+    RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
 };
 
 /// One attachment row: what the session records and the instance it refers
@@ -141,6 +143,10 @@ pub enum MachineAction {
     Unpin,
     Merge,
     Forget,
+    /// Opens a runtime's MCP servers, to manage them.
+    Servers,
+    /// Opens a runtime's ACP agents, to manage them.
+    Agents,
 }
 
 impl MachineAction {
@@ -151,6 +157,8 @@ impl MachineAction {
             Self::Unpin => 'u',
             Self::Merge => 'g',
             Self::Forget => 'f',
+            Self::Servers => 's',
+            Self::Agents => 'a',
         }
     }
 
@@ -161,7 +169,15 @@ impl MachineAction {
             Self::Unpin => "unpin",
             Self::Merge => "merge into",
             Self::Forget => "forget",
+            Self::Servers => "MCP servers",
+            Self::Agents => "ACP agents",
         }
+    }
+
+    /// Whether the action opens a panel of the runtime rather than changing
+    /// the machine registry.
+    pub const fn opens_panel(self) -> bool {
+        matches!(self, Self::Servers | Self::Agents)
     }
 
     /// Whether the action asks for a machine name first.
@@ -177,6 +193,8 @@ impl MachineAction {
             Self::Unpin,
             Self::Merge,
             Self::Forget,
+            Self::Servers,
+            Self::Agents,
         ]
         .into_iter()
         .find(|action| action.key() == key)
@@ -239,6 +257,106 @@ pub fn runtime_acp_agents(
         .collect()
 }
 
+/// The form of an ACP agent declaration,
+/// `[runtimes.<id>.acp.agents.<agent>]`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcpAgentFields {
+    /// The declaration's key, which is also its agent's ID.
+    pub agent: String,
+    /// The program and its arguments, as a JSON array.
+    pub command: String,
+    /// The environment, as a JSON object.
+    pub environment: String,
+    pub description: String,
+    pub enabled: bool,
+}
+
+impl AcpAgentFields {
+    /// A new declaration's form.
+    #[must_use]
+    pub fn add() -> Self {
+        Self {
+            agent: String::new(),
+            command: "[]".into(),
+            environment: "{}".into(),
+            description: String::new(),
+            enabled: true,
+        }
+    }
+
+    /// `declaration`'s form.
+    #[must_use]
+    pub fn edit(declaration: &RuntimeAgentDeclaration) -> Self {
+        Self {
+            agent: declaration.agent.to_string(),
+            command: serde_json::to_string(&declaration.definition.command)
+                .unwrap_or_else(|_| "[]".into()),
+            environment: serde_json::to_string(&declaration.definition.env)
+                .unwrap_or_else(|_| "{}".into()),
+            description: declaration.definition.description.clone(),
+            enabled: declaration.definition.enabled,
+        }
+    }
+
+    /// The key and definition the form describes, or what is wrong.
+    pub fn definition(&self) -> Result<(AgentId, AcpAgentDefinition), String> {
+        let agent = AgentId::new(self.agent.trim()).map_err(|_| {
+            "the agent ID is lowercase letters, digits, and single inner hyphens".to_owned()
+        })?;
+        let command: Vec<String> = serde_json::from_str(self.command.trim())
+            .map_err(|_| "the command is a JSON array of strings".to_owned())?;
+        if command.first().is_none_or(String::is_empty) {
+            return Err("the command names a program first".into());
+        }
+        let env = if self.environment.trim().is_empty() {
+            BTreeMap::new()
+        } else {
+            serde_json::from_str(self.environment.trim())
+                .map_err(|_| "the environment is a JSON object of strings".to_owned())?
+        };
+        Ok((
+            agent,
+            AcpAgentDefinition {
+                command,
+                env,
+                description: self.description.trim().to_owned(),
+                enabled: self.enabled,
+            },
+        ))
+    }
+}
+
+/// The document of agent `agent`, as `config.get` names it.
+#[must_use]
+pub fn agent_document_path(agent: &str) -> String {
+    format!("agents/{agent}.md")
+}
+
+/// A new document for the ACP agent of declaration `agent`: what the agent
+/// is called, and the agent's own rules until the user adds cookie's.
+#[must_use]
+pub fn acp_agent_document(agent: &str, description: &str) -> String {
+    let description = if description.is_empty() {
+        format!("ACP agent {agent}")
+    } else {
+        description.to_owned()
+    };
+    format!(
+        "---\ndescription: {}\nmode: all\nacp: {{}}\n---\n",
+        serde_json::to_string(&description).unwrap_or_default()
+    )
+}
+
+/// A new template over declaration `agent`: its own agent, named by the
+/// document, that runs the declaration's process with its own settings.
+#[must_use]
+pub fn acp_template_document(agent: &str) -> String {
+    format!(
+        "---\ndescription: {}\nmode: subagent\nacp:\n  agent: {agent}\n---\n",
+        serde_json::to_string(&format!("{agent}, with its own settings")).unwrap_or_default()
+    )
+}
+
 /// One row of the machines view: a machine, or a runtime under it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MachineEntry {
@@ -261,8 +379,20 @@ impl MachineEntry {
                 MachineAction::Merge,
                 MachineAction::Forget,
             ],
-            Self::Runtime { pinned: true, .. } => vec![MachineAction::Move, MachineAction::Unpin],
-            Self::Runtime { pinned: false, .. } => vec![MachineAction::Move],
+            Self::Runtime {
+                runtime, pinned, ..
+            } => {
+                let mut actions = vec![MachineAction::Move];
+                if *pinned {
+                    actions.push(MachineAction::Unpin);
+                }
+                actions.push(MachineAction::Servers);
+                // `global` hosts no ACP agents.
+                if runtime.as_str() != RuntimeId::GLOBAL {
+                    actions.push(MachineAction::Agents);
+                }
+                actions
+            }
         }
     }
 }
@@ -788,6 +918,49 @@ mod tests {
             attach_parameters(box_choice, "").map(|(_, _, workspace)| workspace),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn an_acp_agent_form_makes_a_declaration_or_says_what_is_wrong() {
+        use super::AcpAgentFields;
+        let mut fields = AcpAgentFields::add();
+        fields.agent = "Claude".into();
+        assert!(fields.definition().unwrap_err().contains("agent ID"));
+        fields.agent = "claude".into();
+        assert!(fields.definition().unwrap_err().contains("names a program"));
+        fields.command = "npx -y claude".into();
+        assert!(fields.definition().unwrap_err().contains("JSON array"));
+        fields.command = r#"["npx", "-y", "@agentclientprotocol/claude-agent-acp"]"#.into();
+        fields.environment = r#"{"CLAUDE_CONFIG_DIR": "/home/me/.claude"}"#.into();
+        fields.description = " Claude Code ".into();
+        let (agent, definition) = fields.definition().expect("a declaration");
+        assert_eq!(agent.as_str(), "claude");
+        assert_eq!(definition.command.len(), 3);
+        assert_eq!(definition.env["CLAUDE_CONFIG_DIR"], "/home/me/.claude");
+        assert_eq!(definition.description, "Claude Code");
+        // Its form again, for an edit.
+        let declaration = cookie_agent_protocol::RuntimeAgentDeclaration {
+            agent,
+            definition,
+            available: true,
+            documents: Vec::new(),
+        };
+        assert_eq!(
+            AcpAgentFields::edit(&declaration).definition().unwrap().1,
+            declaration.definition
+        );
+    }
+
+    #[test]
+    fn new_acp_documents_run_the_declaration() {
+        let own = super::acp_agent_document("claude", "");
+        assert_eq!(
+            own,
+            "---\ndescription: \"ACP agent claude\"\nmode: all\nacp: {}\n---\n"
+        );
+        let template = super::acp_template_document("claude");
+        assert!(template.contains("acp:\n  agent: claude\n"), "{template}");
+        assert_eq!(super::agent_document_path("claude"), "agents/claude.md");
     }
 
     #[test]

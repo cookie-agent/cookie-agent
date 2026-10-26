@@ -577,9 +577,25 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   workspace has started yet (`starts with a workspace`) included, each
   server's tools by the server's own names under **Tools** (those its
   `include_tools` or `exclude_tools` left out dimmed and struck through),
-  the ACP agents it offers (each declaration with whether a session that
-  attaches the runtime can run it now, its description, and the templates
-  over it), and why it last failed to connect. A runtime that connected before and is
+  the ACP agents it offers, and why it last failed to connect. Each runtime
+  is managed there too, its changes written to its `[runtimes.<id>]` table
+  in the daemon's `config.toml` and taken by a connected runtime at once:
+  - **MCP servers.** **MCP server** adds one to the runtime; each server has
+    **Edit** (a new name renames it; a runtime's server says whether it runs
+    once for the runtime or once per workspace), **Enable** or **Disable**,
+    and **Remove**. Selecting a tool under **Tools** leaves it out or takes
+    it back: its exact name goes into or out of `exclude_tools`, or into
+    `include_tools` when that is what leaves it out; a tool an
+    `exclude_tools` pattern leaves out says so instead.
+  - **ACP agents.** **ACP agent** declares one on the runtime (its ID, its
+    command as a JSON array, its environment, description, and whether it is
+    enabled); each declaration shows whether a session that attaches the
+    runtime can run it now, its command, and its documents, with **Edit** (a
+    new ID renames it, and its document when no other runtime declares the
+    old ID), **Enable** or **Disable**, **New template** (a document over it
+    with `acp.agent`), and **Remove**, which keeps its documents. A document
+    opens in the Agents view; **Create document** starts one when it has
+    none. A runtime that connected before and is
   offline now stays on its machine, under the connected ones, dimmed, with
   when it was last seen and **Forget**, which drops the daemon's record of
   where it ran (see [Offline runtimes](../concepts/machines.md#offline-runtimes)).

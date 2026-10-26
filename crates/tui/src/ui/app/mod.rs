@@ -1211,6 +1211,19 @@ pub(in crate::ui) enum RpcUpdate {
     RuntimeHomesRefreshed {
         homes: Option<cookie_agent_client_state::paths::RuntimeHomes>,
     },
+    /// `runtimes.agents.*` answered for the machines view's agents.
+    RuntimeAgents {
+        runtime: cookie_agent_protocol::RuntimeId,
+        result: Result<Vec<cookie_agent_protocol::RuntimeAgentDeclaration>, String>,
+        status: Option<String>,
+    },
+    /// `config.get` answered for opening an agent document, `template`
+    /// when it does not exist yet.
+    AgentDocument {
+        path: String,
+        template: String,
+        result: Result<cookie_agent_protocol::ConfigGetResult, String>,
+    },
     MachinesRefreshed {
         result: Result<cookie_agent_protocol::MachinesListResult, String>,
     },

@@ -1133,6 +1133,54 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::RuntimesReconnectResult { instance })
     }
 
+    async fn list_runtime_agents(
+        &self,
+        params: cookie_agent_protocol::RuntimesAgentsListParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsResult> {
+        Ok(cookie_agent_protocol::RuntimesAgentsResult {
+            agents: self.engine.runtime_agent_declarations(&params.runtime_id),
+        })
+    }
+
+    async fn set_runtime_agent(
+        &self,
+        params: cookie_agent_protocol::RuntimesAgentsSetParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsResult> {
+        self.engine
+            .set_runtime_agent(params.runtime_id, params.agent, params.definition)
+            .await
+            .map(|agents| cookie_agent_protocol::RuntimesAgentsResult { agents })
+            .map_err(protocol_fault)
+    }
+
+    async fn remove_runtime_agent(
+        &self,
+        params: cookie_agent_protocol::RuntimesAgentsRemoveParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsResult> {
+        self.engine
+            .remove_runtime_agent(params.runtime_id, params.agent)
+            .await
+            .map(|agents| cookie_agent_protocol::RuntimesAgentsResult { agents })
+            .map_err(protocol_fault)
+    }
+
+    async fn rename_runtime_agent(
+        &self,
+        params: cookie_agent_protocol::RuntimesAgentsRenameParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsRenameResult> {
+        self.engine
+            .rename_runtime_agent(params.runtime_id, params.agent, params.new_agent)
+            .await
+            .map(|(agents, moved, stale_templates)| {
+                cookie_agent_protocol::RuntimesAgentsRenameResult {
+                    agents,
+                    moved,
+                    stale_templates,
+                }
+            })
+            .map_err(protocol_fault)
+    }
+
     async fn background_tool(
         &self,
         params: cookie_agent_protocol::RunToolBackgroundParams,
@@ -1171,30 +1219,64 @@ impl ServerProtocol for Server {
     }
 
     async fn add_mcp_server(&self, params: McpServerAddParams) -> Result<McpServerMutationResult> {
-        self.engine
-            .add_mcp_server(params.name, params.definition)
-            .await
-            .map(|server| McpServerMutationResult { server })
-            .map_err(protocol_fault)
+        match table_runtime(params.runtime_id) {
+            Some(runtime) => {
+                self.engine
+                    .add_runtime_mcp_server(runtime, params.name, params.definition)
+                    .await
+            }
+            None => {
+                self.engine
+                    .add_mcp_server(params.name, params.definition)
+                    .await
+            }
+        }
+        .map(|server| McpServerMutationResult { server })
+        .map_err(protocol_fault)
     }
 
     async fn edit_mcp_server(
         &self,
         params: McpServerEditParams,
     ) -> Result<McpServerMutationResult> {
-        self.engine
-            .edit_mcp_server(params.name, params.definition)
-            .await
-            .map(|server| McpServerMutationResult { server })
-            .map_err(protocol_fault)
+        match table_runtime(params.runtime_id) {
+            Some(runtime) => {
+                self.engine
+                    .edit_runtime_mcp_server(runtime, params.name, params.definition)
+                    .await
+            }
+            None => {
+                self.engine
+                    .edit_mcp_server(params.name, params.definition)
+                    .await
+            }
+        }
+        .map(|server| McpServerMutationResult { server })
+        .map_err(protocol_fault)
     }
 
     async fn remove_mcp_server(
         &self,
         params: McpServerNameParams,
     ) -> Result<McpServerMutationResult> {
+        match table_runtime(params.runtime_id) {
+            Some(runtime) => {
+                self.engine
+                    .remove_runtime_mcp_server(runtime, params.name)
+                    .await
+            }
+            None => self.engine.remove_mcp_server(params.name).await,
+        }
+        .map(|server| McpServerMutationResult { server })
+        .map_err(protocol_fault)
+    }
+
+    async fn rename_mcp_server(
+        &self,
+        params: cookie_agent_protocol::McpServerRenameParams,
+    ) -> Result<McpServerMutationResult> {
         self.engine
-            .remove_mcp_server(params.name)
+            .rename_mcp_server(params.runtime_id, params.name, params.new_name)
             .await
             .map(|server| McpServerMutationResult { server })
             .map_err(protocol_fault)
@@ -1204,11 +1286,20 @@ impl ServerProtocol for Server {
         &self,
         params: McpServerSetEnabledParams,
     ) -> Result<McpServerMutationResult> {
-        self.engine
-            .set_mcp_server_enabled(params.name, params.enabled)
-            .await
-            .map(|server| McpServerMutationResult { server })
-            .map_err(protocol_fault)
+        match table_runtime(params.runtime_id) {
+            Some(runtime) => {
+                self.engine
+                    .set_runtime_mcp_server_enabled(runtime, params.name, params.enabled)
+                    .await
+            }
+            None => {
+                self.engine
+                    .set_mcp_server_enabled(params.name, params.enabled)
+                    .await
+            }
+        }
+        .map(|server| McpServerMutationResult { server })
+        .map_err(protocol_fault)
     }
 
     async fn reconnect_mcp_server(
@@ -1377,4 +1468,12 @@ fn rename_fault(request: &SessionRenameParams, error: EngineError) -> RpcFault {
 
 fn approval_fault(request: &ApprovalRespondParams, error: EngineError) -> RpcFault {
     RpcFault::approval(request, error)
+}
+
+/// The runtime whose `[runtimes.<id>]` table an `mcp.server.*` mutation
+/// edits; `None` for `global`'s top-level servers.
+fn table_runtime(
+    runtime_id: Option<cookie_agent_protocol::RuntimeId>,
+) -> Option<cookie_agent_protocol::RuntimeId> {
+    runtime_id.filter(|runtime| runtime.as_str() != cookie_agent_protocol::RuntimeId::GLOBAL)
 }

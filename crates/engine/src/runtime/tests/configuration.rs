@@ -380,6 +380,7 @@ async fn persisting_an_mcp_server_writes_and_applies_the_configuration() {
         timeout_ms: None,
         include_tools: None,
         exclude_tools: Vec::new(),
+        scope: None,
     };
     fixture
         .engine
@@ -440,4 +441,175 @@ async fn persisting_an_mcp_server_writes_and_applies_the_configuration() {
             .user_mcp_servers
             .contains_key("docs")
     );
+}
+
+fn runtime_server(command: &str) -> cookie_agent_protocol::McpServerDefinition {
+    cookie_agent_protocol::McpServerDefinition {
+        command: Some(command.into()),
+        args: Vec::new(),
+        env: std::collections::BTreeMap::new(),
+        cwd: None,
+        url: None,
+        headers: std::collections::BTreeMap::new(),
+        oauth: None,
+        enabled: true,
+        timeout_ms: None,
+        include_tools: None,
+        exclude_tools: Vec::new(),
+        scope: Some(cookie_agent_protocol::McpServerScope::Runtime),
+    }
+}
+
+/// A runtime's MCP servers are changed in its `[runtimes.<id>]` table,
+/// written and applied (`docs/site/specs/runtime-management.md` section
+/// 4.1).
+#[tokio::test]
+async fn a_runtimes_mcp_servers_are_added_edited_renamed_and_removed_in_its_table() {
+    let fixture = reloadable();
+    let engine = &fixture.engine;
+    let labpc = cookie_agent_protocol::RuntimeId::new("labpc").unwrap();
+    let servers = |engine: &crate::Engine| {
+        engine
+            .configuration()
+            .runtimes
+            .iter()
+            .find(|(id, _)| id.as_str() == "labpc")
+            .map(|(_, template)| template.mcp_servers.clone())
+            .unwrap_or_default()
+    };
+    engine
+        .add_runtime_mcp_server(
+            labpc.clone(),
+            "browser".into(),
+            runtime_server("browser-mcp"),
+        )
+        .await
+        .expect("added");
+    let text = std::fs::read_to_string(fixture.root.join("config.toml")).unwrap();
+    assert!(
+        text.contains("[runtimes.labpc.mcp.servers.browser]"),
+        "{text}"
+    );
+    let added = &servers(engine)["browser"];
+    assert_eq!(added.command.as_deref(), Some("browser-mcp"));
+    assert_eq!(
+        added.scope,
+        Some(cookie_agent_config::McpServerScope::Runtime)
+    );
+    // The table holds a dial-in runtime's settings: nothing to start.
+    assert!(
+        !engine
+            .configuration()
+            .runtimes
+            .values()
+            .next()
+            .unwrap()
+            .daemon_starts()
+    );
+    let again = engine
+        .add_runtime_mcp_server(labpc.clone(), "browser".into(), runtime_server("other"))
+        .await
+        .expect_err("a second `browser`");
+    assert!(again.to_string().contains("already has"), "{again}");
+
+    engine
+        .set_runtime_mcp_server_enabled(labpc.clone(), "browser".into(), false)
+        .await
+        .expect("disabled");
+    assert!(!servers(engine)["browser"].enabled);
+    let mut edited = runtime_server("browser-mcp");
+    edited.exclude_tools = vec!["browser_install".into()];
+    engine
+        .edit_runtime_mcp_server(labpc.clone(), "browser".into(), edited)
+        .await
+        .expect("edited");
+    assert_eq!(
+        servers(engine)["browser"].exclude_tools,
+        ["browser_install"]
+    );
+
+    engine
+        .rename_mcp_server(Some(labpc.clone()), "browser".into(), "chrome".into())
+        .await
+        .expect("renamed");
+    let renamed = servers(engine);
+    assert!(!renamed.contains_key("browser"));
+    assert_eq!(renamed["chrome"].exclude_tools, ["browser_install"]);
+    engine
+        .remove_runtime_mcp_server(labpc.clone(), "chrome".into())
+        .await
+        .expect("removed");
+    assert!(servers(engine).is_empty());
+    let unknown = engine
+        .remove_runtime_mcp_server(labpc, "chrome".into())
+        .await
+        .expect_err("gone");
+    assert!(unknown.to_string().contains("no MCP server"), "{unknown}");
+
+    // `global`'s servers are the top-level ones, which have no table here.
+    let global = cookie_agent_protocol::RuntimeId::new("global").unwrap();
+    let refused = engine
+        .add_runtime_mcp_server(global, "x".into(), runtime_server("x"))
+        .await
+        .expect_err("no [runtimes.global]");
+    assert!(refused.to_string().contains("[mcp]"), "{refused}");
+}
+
+/// A runtime's ACP agent declarations are set, listed with the documents
+/// that run them, renamed with their own document when nothing else
+/// declares them, and removed (section 4.2, decision D6).
+#[tokio::test]
+async fn a_runtimes_acp_agents_are_set_listed_renamed_and_removed() {
+    let fixture = reloadable();
+    fixture.write(
+        "agents/claude.md",
+        "---\ndescription: Claude Code\nmode: all\nacp: {}\n---\nWork.\n",
+    );
+    fixture.write(
+        "agents/claude-review.md",
+        "---\ndescription: Reviewer\nmode: subagent\nacp:\n  agent: claude\n---\nReview.\n",
+    );
+    fixture.engine.reload_configuration().await.expect("reload");
+    let engine = &fixture.engine;
+    let labpc = cookie_agent_protocol::RuntimeId::new("labpc").unwrap();
+    let claude = cookie_agent_protocol::AgentId::new("claude").unwrap();
+    let definition = cookie_agent_protocol::AcpAgentDefinition {
+        command: vec!["claude-acp".into()],
+        env: std::collections::BTreeMap::new(),
+        description: "Claude Code".into(),
+        enabled: true,
+    };
+    let listed = engine
+        .set_runtime_agent(labpc.clone(), claude.clone(), definition)
+        .await
+        .expect("declared");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].agent, claude);
+    assert_eq!(listed[0].definition.command, ["claude-acp"]);
+    assert!(!listed[0].available, "labpc is not connected");
+    assert_eq!(
+        listed[0].documents,
+        ["agents/claude-review.md", "agents/claude.md"]
+    );
+
+    let renamed = cookie_agent_protocol::AgentId::new("claude-code").unwrap();
+    let (agents, moved, stale) = engine
+        .rename_runtime_agent(labpc.clone(), claude, renamed.clone())
+        .await
+        .expect("renamed");
+    assert_eq!(agents[0].agent, renamed);
+    assert_eq!(moved, ["agents/claude.md"]);
+    assert_eq!(stale, ["agents/claude-review.md"]);
+    assert!(fixture.root.join("agents/claude-code.md").exists());
+    assert!(!fixture.root.join("agents/claude.md").exists());
+    assert_eq!(agents[0].documents, ["agents/claude-code.md"]);
+
+    let agents = engine
+        .remove_runtime_agent(labpc.clone(), renamed.clone())
+        .await
+        .expect("removed");
+    assert!(agents.is_empty());
+    // Its document stays.
+    assert!(fixture.root.join("agents/claude-code.md").exists());
+    assert!(engine.runtime_agent_declarations(&labpc).is_empty());
 }

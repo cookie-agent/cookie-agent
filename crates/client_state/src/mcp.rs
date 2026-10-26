@@ -209,6 +209,7 @@ pub fn new_definition() -> McpServerDefinition {
         timeout_ms: None,
         include_tools: None,
         exclude_tools: Vec::new(),
+        scope: None,
     }
 }
 
@@ -248,24 +249,105 @@ pub fn is_global(server: &McpServerInfo) -> bool {
     server.runtime_id.as_str() == RuntimeId::GLOBAL
 }
 
-/// Why `server` cannot be edited, removed, or toggled here: only the
-/// global runtime's servers are configured with `mcp.server.*`; a coding
-/// runtime's come from its template, or from its own machine's
-/// configuration.
+/// Why `server` cannot be edited, removed, or toggled here: only one a
+/// dial-in runtime older than runtime protocol 1.10.0 defines on its own
+/// machine, which the daemon does not read. Every other server is in the
+/// daemon's `config.toml`, `global`'s under `[mcp]` and a runtime's under
+/// `[runtimes.<id>.mcp]` (client protocol 1.37.0).
 pub fn edit_refusal(server: &McpServerInfo) -> Option<String> {
-    if server.source == McpConfigSource::Machine {
-        return Some(format!(
-            "MCP server `{}` is defined on the machine of runtime `{}`; edit [runtimes.local.mcp] \
-             in that machine's config.toml",
-            server.name, server.runtime_id
-        ));
-    }
-    (!is_global(server)).then(|| {
+    (server.source == McpConfigSource::Machine).then(|| {
         format!(
-            "MCP server `{}` belongs to runtime `{}`; edit its [runtimes.{}.mcp] template",
+            "MCP server `{}` is defined on the machine of runtime `{}`, which runs an older \
+             cookie; move it to [runtimes.{}.mcp] in the daemon's config.toml",
             server.name, server.runtime_id, server.runtime_id
         )
     })
+}
+
+/// The runtime an `mcp.server.*` mutation of `server` names: `None` for
+/// `global`'s top-level servers.
+pub fn mutation_runtime(server: &McpServerInfo) -> Option<RuntimeId> {
+    (!is_global(server)).then(|| server.runtime_id.clone())
+}
+
+/// Whether `definition`'s `include_tools` and `exclude_tools` publish
+/// `tool`, as the runtime decides.
+pub fn publishes_tool(definition: &McpServerDefinition, tool: &str) -> bool {
+    let matches = |pattern: &String| wildcard_match(pattern, tool);
+    definition
+        .include_tools
+        .as_ref()
+        .is_none_or(|include| include.iter().any(matches))
+        && !definition.exclude_tools.iter().any(matches)
+}
+
+/// `definition` with `tool`, by the server's own name, left out (`leave_out`)
+/// or taken back (`docs/site/specs/runtime-management.md` section 4.1). A
+/// tool is left out by adding its exact name to `exclude_tools`, and taken
+/// back by removing that name, then, when `include_tools` still leaves it
+/// out, adding the exact name there. Patterns are never rewritten: a tool an
+/// `exclude_tools` pattern leaves out is refused with the pattern.
+pub fn toggle_tool(
+    definition: &McpServerDefinition,
+    tool: &str,
+    leave_out: bool,
+) -> Result<McpServerDefinition, String> {
+    let mut toggled = definition.clone();
+    if leave_out {
+        if !publishes_tool(definition, tool) {
+            return Err(format!("`{tool}` is left out already"));
+        }
+        toggled.exclude_tools.push(tool.to_owned());
+        return Ok(toggled);
+    }
+    toggled.exclude_tools.retain(|pattern| pattern != tool);
+    if let Some(pattern) = toggled
+        .exclude_tools
+        .iter()
+        .find(|pattern| wildcard_match(pattern, tool))
+    {
+        return Err(format!(
+            "`{tool}` is left out by the pattern `{pattern}` in exclude_tools; edit the server to \
+             change it"
+        ));
+    }
+    if let Some(include) = toggled.include_tools.as_mut()
+        && !include.iter().any(|pattern| wildcard_match(pattern, tool))
+    {
+        include.push(tool.to_owned());
+    }
+    Ok(toggled)
+}
+
+/// `*` and `?` over a server's tool names, as `include_tools` and
+/// `exclude_tools` match them; a trailing ` *` also matches the bare
+/// prefix.
+fn wildcard_match(pattern: &str, name: &str) -> bool {
+    fn matches(pattern: &[char], name: &[char]) -> bool {
+        let (mut p, mut n, mut star, mut retry) = (0, 0, None, 0);
+        while n < name.len() {
+            if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[n]) {
+                p += 1;
+                n += 1;
+            } else if p < pattern.len() && pattern[p] == '*' {
+                star = Some(p);
+                p += 1;
+                retry = n;
+            } else if let Some(index) = star {
+                p = index + 1;
+                retry += 1;
+                n = retry;
+            } else {
+                return false;
+            }
+        }
+        pattern[p..].iter().all(|c| *c == '*')
+    }
+    let name = name.chars().collect::<Vec<_>>();
+    matches(&pattern.chars().collect::<Vec<_>>(), &name)
+        || pattern
+            .strip_suffix(" *")
+            .is_some_and(|prefix| matches(&prefix.chars().collect::<Vec<_>>(), &name))
 }
 
 /// The runtime hosting `server`, with the instance's workspace when it has
@@ -605,6 +687,7 @@ mod tests {
                 timeout_ms: None,
                 include_tools: None,
                 exclude_tools: Vec::new(),
+                scope: None,
             },
             state,
             tool_count: 0,
@@ -794,10 +877,52 @@ mod tests {
             server_definition_display(&machine),
             "defined in [runtimes.local.mcp] on the runtime's machine"
         );
-        assert!(
-            edit_refusal(&machine)
-                .is_some_and(|refusal| refusal.contains("on the machine of runtime `client_box`"))
+        assert!(edit_refusal(&machine).is_some_and(|refusal| {
+            refusal.contains("on the machine of runtime `client_box`")
+                && refusal.contains("[runtimes.client_box.mcp]")
+        }));
+    }
+
+    #[test]
+    fn a_runtimes_server_is_edited_in_its_table_and_names_its_runtime() {
+        let hosted = server("labpc", None, "browser", McpServerState::Connected, None);
+        assert_eq!(edit_refusal(&hosted), None);
+        assert_eq!(
+            super::mutation_runtime(&hosted),
+            Some(RuntimeId::new("labpc").unwrap())
         );
+        let global = server("global", None, "docs", McpServerState::Connected, None);
+        assert_eq!(super::mutation_runtime(&global), None);
+    }
+
+    #[test]
+    fn a_tool_is_left_out_and_taken_back_by_its_exact_name() {
+        use super::{publishes_tool, toggle_tool};
+        let base = server("labpc", None, "browser", McpServerState::Connected, None).definition;
+        let left_out = toggle_tool(&base, "browser_install", true).expect("left out");
+        assert_eq!(left_out.exclude_tools, ["browser_install"]);
+        assert!(!publishes_tool(&left_out, "browser_install"));
+        assert!(toggle_tool(&left_out, "browser_install", true).is_err());
+        let back = toggle_tool(&left_out, "browser_install", false).expect("taken back");
+        assert!(back.exclude_tools.is_empty());
+        assert!(publishes_tool(&back, "browser_install"));
+
+        // A tool `include_tools` does not name is taken back by naming it.
+        let mut included = base.clone();
+        included.include_tools = Some(vec!["browser_c*".into()]);
+        assert!(publishes_tool(&included, "browser_click"));
+        assert!(!publishes_tool(&included, "browser_type"));
+        let back = toggle_tool(&included, "browser_type", false).expect("named");
+        assert_eq!(
+            back.include_tools.as_deref(),
+            Some(&["browser_c*".to_owned(), "browser_type".to_owned()][..])
+        );
+        // A pattern that leaves it out is the user's to change.
+        let mut patterned = base;
+        patterned.exclude_tools = vec!["browser_tab*".into()];
+        let refused = toggle_tool(&patterned, "browser_tab_close", false).expect_err("pattern");
+        assert!(refused.contains("`browser_tab*`"), "{refused}");
+        assert_eq!(patterned.exclude_tools, ["browser_tab*"]);
     }
 
     #[test]
