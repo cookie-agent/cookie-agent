@@ -2,8 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    GoalId, InvocationId, ProducerId, ProducerIdempotencyKey, ProducerName, ProducerSource,
-    SessionId, ToolCallId,
+    AgentId, GoalId, InvocationId, ProducerId, ProducerIdempotencyKey, ProducerName,
+    ProducerSource, SessionId, ToolCallId,
 };
 
 /// Stable identity used with session + idempotency key for durable deduplication.
@@ -21,6 +21,9 @@ use crate::{
 /// context, never from model arguments.
 /// Subagent identifies a delegated session reporting its finished turns to
 /// its parent.
+/// AcpAgent identifies the session's ACP agent starting work on its own
+/// (`docs/site/specs/acp-v2.md` section 6); the engine derives it from the
+/// live ACP session, and its messages are never sent to the agent.
 /// The owner is durable and participates in `(session, owner, key)` dedup.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -48,6 +51,10 @@ pub enum ProducerOwner {
     /// A delegated session reporting a finished turn to its parent.
     Subagent {
         session_id: SessionId,
+    },
+    /// The session's ACP agent, starting work no prompt of cookie's started.
+    AcpAgent {
+        agent: AgentId,
     },
 }
 

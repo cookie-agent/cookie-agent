@@ -59,6 +59,15 @@ Each prompt's last text block is a command:
                          session/cancel
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
+  wake-later <s> <text>  answers "later", then <s> seconds after its work ended
+                         starts work of its own (running, <text>, idle), as
+                         Claude Code does when a background command ends
+  wake-steer <s>         the same, but its own work says "waiting" and waits (up to
+                         10 s) for a message steered into it, then answers
+                         "steered: <texts>"; session/cancel ends it as cancelled
+  wake-ask <s> <kind> <r>
+                         the same, but its own work asks permission for a call
+                         of ACP kind <kind> on <r> and says the outcome
   mcp echo <tool> <json> the same, reported as its own tool call first, as
                          Claude Code reports its MCP calls (`mcp__cookie__<tool>`)
   mcp miss <tool>        reports a call of one of cookie's tools that fails
@@ -421,8 +430,59 @@ def prompt(request_id, params):
             running[session_id] = False
 
 
+def wait_for_steer(session_id, timeout):
+    """Waits for a message steered into the work, or a cancel: the texts,
+    or None for a cancel."""
+    with state_lock:
+        state_lock.wait_for(lambda: steered[session_id] or cancelled[session_id], timeout=timeout)
+        if cancelled[session_id]:
+            return None
+        return list(steered[session_id])
+
+
+def wake_later(session_id, delay, work):
+    """Starts work of the agent's own `delay` seconds after now, unless a
+    prompt's work runs then."""
+    def later():
+        import time
+        time.sleep(delay)
+        with state_lock:
+            if running.get(session_id):
+                return
+            running[session_id] = True
+            cancelled[session_id] = False
+            steered[session_id] = []
+        state(session_id, "running")
+        if work() == "cancelled":
+            finish(session_id, "cancelled")
+            return
+        finish(session_id, "end_turn", USAGE)
+    threading.Thread(target=later, daemon=True).start()
+
+
 def run_command(request_id, session_id, session, word, rest, texts, kinds):
-    if word == "say":
+    if word == "wake-later":
+        delay, _, text = rest.partition(" ")
+        wake_later(session_id, float(delay), lambda: say(session_id, text or "woke"))
+        say(session_id, "later")
+    elif word == "wake-steer":
+        def wait_for_message():
+            say(session_id, "waiting")
+            got = wait_for_steer(session_id, 10)
+            if got is None:
+                return "cancelled"
+            say(session_id, "steered: " + " | ".join(got))
+        wake_later(session_id, float(rest), wait_for_message)
+        say(session_id, "later")
+    elif word == "wake-ask":
+        delay, _, ask = rest.partition(" ")
+        kind, _, resource = ask.partition(" ")
+        def ask_permission():
+            outcome = permission(session_id, f"call-wake-{session['turn']}", kind, resource)
+            say(session_id, f"woke and asked: {outcome}")
+        wake_later(session_id, float(delay), ask_permission)
+        say(session_id, "later")
+    elif word == "say":
         say(session_id, rest)
     elif word == "think":
         update(session_id, {"sessionUpdate": "agent_thought_chunk", "messageId": next_message_id("thought"),

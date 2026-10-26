@@ -49,6 +49,7 @@ pub fn producer_owner_label(owner: &ProducerOwner) -> String {
         ProducerOwner::Agent { session_id } => format!("agent {session_id}"),
         ProducerOwner::Tool { tool_call_id } => format!("background call {tool_call_id}"),
         ProducerOwner::Subagent { session_id } => format!("subagent {session_id}"),
+        ProducerOwner::AcpAgent { agent } => format!("{agent}, on its own"),
     }
 }
 

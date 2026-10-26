@@ -526,6 +526,14 @@ not in it.
   for cookie's own agents. A message the agent declines keeps waiting and
   goes with its next turn. A scheduled job set to `steer` and a subagent's
   report arrive the same way.
+- **Work the agent starts on its own.** An agent can start work with no
+  message of yours, such as Claude Code's follow-up when a command it ran
+  in the background ends. Cookie shows it as a run of its own, under a row
+  saying the agent woke on its own (`<agent>, on its own`), with everything
+  it does as in any turn: its reply, its tool calls, its permission requests
+  and questions, and cookie's tools. Stop stops that work too; a message you
+  send meanwhile goes into it. It shows even after you stopped a run, since
+  the agent is already working.
 - **Questions.** A question from the agent (see [Questions from the
   agent](#questions-from-the-agent)) docks a panel above the TUI's status
   bar, titled `<agent> asks · waiting on you`: Tab moves between the fields

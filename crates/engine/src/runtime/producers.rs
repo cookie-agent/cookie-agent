@@ -362,30 +362,44 @@ impl Engine {
         }
         let events = self.inner.store.log(session)?.event_snapshot();
         let retry = self.inner.config.load().runtime.model_retry;
-        let wake_delay = match after_runs(&events, retry.standard_retries) {
-            AfterRuns::Held => return Ok(()),
-            // A stop holds only what could start a run on its own; with
-            // nothing such, the user's next message is just a message.
-            AfterRuns::Hold(HeldReason::Stopped {}) if !self.could_wake(session)? => {
-                return Ok(());
+        // The ACP agent's own work is shown even while the session is held:
+        // the agent is already working (`docs/site/specs/acp-v2.md`
+        // section 7).
+        let acp_wake = self
+            .goal_producer_projection(session)?
+            .messages
+            .iter()
+            .any(|message| {
+                pending(message) && matches!(message.producer_owner, ProducerOwner::AcpAgent { .. })
+            });
+        let wake_delay = if acp_wake {
+            None
+        } else {
+            match after_runs(&events, retry.standard_retries) {
+                AfterRuns::Held => return Ok(()),
+                // A stop holds only what could start a run on its own; with
+                // nothing such, the user's next message is just a message.
+                AfterRuns::Hold(HeldReason::Stopped {}) if !self.could_wake(session)? => {
+                    return Ok(());
+                }
+                AfterRuns::Hold(reason) => {
+                    self.append_direct(
+                        session,
+                        None,
+                        event_origin("engine:producer"),
+                        Event::AutomaticRunsHeld {
+                            reason: Open::Known(reason),
+                        },
+                    )?;
+                    self.inner.store.persist_buffered_session(session)?;
+                    return Ok(());
+                }
+                AfterRuns::Wake => None,
+                AfterRuns::Retry(ordinal) => Some(super::model_loop::exponential_retry_delay(
+                    ordinal,
+                    std::time::Duration::from_millis(retry.backoff_ceiling_ms),
+                )),
             }
-            AfterRuns::Hold(reason) => {
-                self.append_direct(
-                    session,
-                    None,
-                    event_origin("engine:producer"),
-                    Event::AutomaticRunsHeld {
-                        reason: Open::Known(reason),
-                    },
-                )?;
-                self.inner.store.persist_buffered_session(session)?;
-                return Ok(());
-            }
-            AfterRuns::Wake => None,
-            AfterRuns::Retry(ordinal) => Some(super::model_loop::exponential_retry_delay(
-                ordinal,
-                std::time::Duration::from_millis(retry.backoff_ceiling_ms),
-            )),
         };
         let projection = self.goal_producer_projection(session)?;
         let real = projection

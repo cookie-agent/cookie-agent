@@ -942,6 +942,8 @@ fn producer_label(owner: &ProducerOwner) -> Option<String> {
         ProducerOwner::Subagent { session_id } => {
             Some(format!("[report from subagent {session_id}]"))
         }
+        // Why the agent's own work started: never the user's word.
+        ProducerOwner::AcpAgent { agent } => Some(format!("[{agent} started work on its own]")),
         ProducerOwner::Delegation { .. }
         | ProducerOwner::Goal { .. }
         | ProducerOwner::GoalControl { .. }

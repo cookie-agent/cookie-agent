@@ -7104,7 +7104,7 @@
       "type": "string"
     },
     "ProducerOwner": {
-      "description": "Stable identity used with session + idempotency key for durable deduplication.\nExternal identifies a producer outside the daemon, a plugin or a runtime:\nthe engine derives `source` from the authenticated connection, never from\nsend parameters, and the sender chooses `name` when it registers. The\nconnection epoch that authorizes live sends is runtime-only and never part\nof this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.\nAgent identifies an in-tree agent mail sender; the session identity is\nengine-derived from the executing tool context, never from model arguments.\nTool identifies the background result of one tool call that ran in the\nbackground; the call identity is engine-derived from the executing tool\ncontext, never from model arguments.\nSubagent identifies a delegated session reporting its finished turns to\nits parent.\nThe owner is durable and participates in `(session, owner, key)` dedup.",
+      "description": "Stable identity used with session + idempotency key for durable deduplication.\nExternal identifies a producer outside the daemon, a plugin or a runtime:\nthe engine derives `source` from the authenticated connection, never from\nsend parameters, and the sender chooses `name` when it registers. The\nconnection epoch that authorizes live sends is runtime-only and never part\nof this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.\nAgent identifies an in-tree agent mail sender; the session identity is\nengine-derived from the executing tool context, never from model arguments.\nTool identifies the background result of one tool call that ran in the\nbackground; the call identity is engine-derived from the executing tool\ncontext, never from model arguments.\nSubagent identifies a delegated session reporting its finished turns to\nits parent.\nAcpAgent identifies the session's ACP agent starting work on its own\n(`docs/site/specs/acp-v2.md` section 6); the engine derives it from the\nlive ACP session, and its messages are never sent to the agent.\nThe owner is durable and participates in `(session, owner, key)` dedup.",
       "oneOf": [
         {
           "description": "A plugin's or a runtime's named producer.",
@@ -7235,6 +7235,26 @@
           "required": [
             "type",
             "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The session's ACP agent, starting work no prompt of cookie's started.",
+          "properties": {
+            "agent": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+              "type": "string"
+            },
+            "type": {
+              "const": "acp_agent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
           ],
           "type": "object"
         }

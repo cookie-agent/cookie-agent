@@ -294,7 +294,10 @@ A stored checklist item carrying an `id` does not decode.
 or a runtime's named producer),
 `delegation { invocation_id }`, `goal { goal_id }`,
 `goal_control { goal_id }`, `agent { session_id }`, `tool { tool_call_id }`, or
-`subagent { session_id }` (a child's `<subagent_report>`, keyed by its run ID). It identifies a specific
+`subagent { session_id }` (a child's `<subagent_report>`, keyed by its run ID), or
+`acp_agent { agent }` (the session's ACP agent starting work on its own, a
+message recorded to start the run that shows it and never sent to the agent;
+client protocol 1.38.0). It identifies a specific
 stable owner, not a volatile registration or merely an owner kind. Accepted events
 are the sole authoritative message body/mode storage, including deferred queue
 sends while a run is active. Registration records are never session events.

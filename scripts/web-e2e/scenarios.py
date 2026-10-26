@@ -5012,9 +5012,12 @@ def acp_agents(browser):
 
     send(browser, "terminal")
     browser.wait("the commands' output", lambda: "ran" in browser.text("#transcript"), timeout=60)
+    # Only the two calls this turn ran: expanding the earlier edit too can
+    # push the end out of view, where the transcript does not render it.
     browser.script(
-        "document.querySelectorAll('#transcript [data-tool][data-expanded=false] [data-action=toggle-tool]')"
-        ".forEach(toggle => toggle.click())"
+        "[...document.querySelectorAll('#transcript [data-tool][data-expanded=false] [data-action=toggle-tool]')]"
+        ".slice(-2).forEach(toggle => toggle.click());"
+        "const latest = document.querySelector('[data-jump-latest]'); if (latest) latest.click();"
     )
     browser.wait(
         "the output in the calls' terminals",

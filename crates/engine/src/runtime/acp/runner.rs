@@ -74,6 +74,17 @@ pub(crate) struct LiveSession {
     pub first_prompt: bool,
     /// What the process routes to the session.
     pub events: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SessionEvent>>>,
+    /// What the listener between runs read, which the next round takes
+    /// first.
+    pub carried: Arc<std::sync::Mutex<Vec<SessionEvent>>>,
+    /// A round wants `events`: the listener lets go of them.
+    pub wanted: Arc<tokio::sync::Notify>,
+    /// Rounds waiting for `events`: the listener stays off them meanwhile,
+    /// so it never takes them back before the round does.
+    pub waiting: Arc<std::sync::atomic::AtomicUsize>,
+    /// How many rounds have taken `events`, and a wake for the listener
+    /// waiting on the next.
+    pub rounds: Arc<(std::sync::atomic::AtomicU64, tokio::sync::Notify)>,
 }
 
 impl LiveSession {
@@ -255,6 +266,20 @@ fn plan_block(plan: &Value) -> DisplayBlock {
 }
 
 /// Commands of an `available_commands_update`.
+/// Whether the input after `boundary` holds a wake of the agent's own
+/// (an admitted `acp_agent` producer message).
+fn woke_since(events: &crate::events::EventSnapshot, boundary: u64) -> bool {
+    let producers = crate::goal_projection::GoalProducerProjection::from_events(events);
+    producers.messages.iter().any(|message| {
+        !message.discarded
+            && matches!(
+                message.producer_owner,
+                cookie_agent_protocol::ProducerOwner::AcpAgent { .. }
+            )
+            && message.admission.is_some_and(|(_, seq)| seq > boundary)
+    })
+}
+
 fn commands_of(update: &Value) -> Vec<cookie_agent_protocol::AcpCommand> {
     update
         .get("availableCommands")
@@ -1030,6 +1055,31 @@ impl Turn<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// Takes one event of the session into the round: an update, or a
+    /// request the round answers (`cancelling`: refused, the turn is being
+    /// cancelled).
+    async fn take_event(
+        &mut self,
+        event: SessionEvent,
+        cancelling: bool,
+    ) -> Result<(), EngineError> {
+        match event {
+            SessionEvent::Update(update) => self.update(update).await?,
+            SessionEvent::Permission(_, incoming) if cancelling => {
+                let _ = incoming.respond(&wire::permission_outcome(None)).await;
+            }
+            SessionEvent::Permission(request, incoming) => self.permission(*request, incoming),
+            SessionEvent::BridgeCall {
+                name,
+                arguments,
+                reply,
+            } => self.bridge_call(name, arguments, reply).await?,
+            SessionEvent::Elicitation(_, incoming) if cancelling => elicitation::cancel(incoming),
+            SessionEvent::Elicitation(create, incoming) => self.elicitation(*create, incoming),
+        }
+        Ok(())
     }
 
     async fn record_update(&self, update: AcpSessionUpdate) -> Result<(), EngineError> {
@@ -2147,28 +2197,40 @@ impl Engine {
         prompt: Vec<Value>,
     ) -> Result<RoundEnd, EngineError> {
         let events = Arc::clone(&turn.live.events);
+        // The listener between runs lets go of the session's updates.
+        turn.live
+            .waiting
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        turn.live.wanted.notify_one();
         let mut events = events.lock().await;
-        // What arrived between rounds, such as the commands an agent
-        // announces after `session/new`; turn output from before the
-        // prompt (a load's replay) is not this round's.
+        turn.live
+            .waiting
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        let (rounds, round_taken) = &*turn.live.rounds;
+        rounds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        round_taken.notify_waiters();
+        let listening = prompt.is_empty();
+        // Input to steer wakes the round: a prompt during the work. Watched
+        // from here, so input that arrives while the round takes in what
+        // came before is not missed; input already waiting is looked for
+        // once the work can take it.
+        let steer_wake = self.inner.acp.processes.watch_steering(turn.session());
+        steer_wake.notify_one();
+        // What arrived between runs: the listener's, then what is still
+        // queued. A wake's work is this round's; for a prompt it is work the
+        // agent did meanwhile, recorded before the prompt.
+        let carried = std::mem::take(
+            &mut *turn
+                .live
+                .carried
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for event in carried {
+            turn.take_event(event, false).await?;
+        }
         while let Ok(event) = events.try_recv() {
-            match event {
-                SessionEvent::Update(update) => {
-                    let kind = update
-                        .get("sessionUpdate")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    turn.metadata(&kind, &update).await?;
-                }
-                SessionEvent::Permission(_, request) => {
-                    let _ = request.respond(&wire::permission_outcome(None)).await;
-                }
-                SessionEvent::BridgeCall { reply, .. } => {
-                    let _ = reply.send(bridge_refusal());
-                }
-                SessionEvent::Elicitation(_, request) => elicitation::cancel(request),
-            }
+            turn.take_event(event, false).await?;
         }
         let process = Arc::clone(&turn.live.process);
         let session_id = turn.live.acp_session_id.clone();
@@ -2181,14 +2243,18 @@ impl Engine {
             .request::<_, wire::PromptResponse>(wire::method::SESSION_PROMPT, &prompt_request);
         tokio::pin!(request);
         let mut cancel_deadline: Option<tokio::time::Instant> = None;
-        // Input to steer wakes the round: a prompt during the work.
-        let steer_wake = self.inner.acp.processes.watch_steering(turn.session());
         let mut pending_steer: Option<PendingSteer> = None;
         // The prompt's answer says the agent took it in; the round ends at
-        // the `idle` after it, with no steer on its way.
-        turn.round = RoundState::default();
-        let mut answered = false;
+        // the `idle` after it, with no steer on its way. A listening round
+        // (a wake's) sends no prompt and ends at its work's `idle`.
+        if !listening {
+            turn.round = RoundState::default();
+        }
+        let mut answered = listening;
         let answer = loop {
+            if answered && pending_steer.is_none() && turn.round.ended() {
+                break Some(Ok(()));
+            }
             // Biased, cancellation first: an agent that streams without a
             // pause keeps the update branch ready, and a cancel accepted
             // meanwhile must still reach it at the next turn of the loop.
@@ -2234,29 +2300,7 @@ impl Engine {
                     }
                 }
                 event = events.recv() => match event {
-                    Some(SessionEvent::Update(update)) => {
-                        turn.update(update).await?;
-                        if answered && pending_steer.is_none() && turn.round.ended() {
-                            break Some(Ok(()));
-                        }
-                    }
-                    Some(SessionEvent::Permission(request, incoming)) => {
-                        if cancel_deadline.is_some() {
-                            let _ = incoming.respond(&wire::permission_outcome(None)).await;
-                        } else {
-                            turn.permission(*request, incoming);
-                        }
-                    }
-                    Some(SessionEvent::BridgeCall { name, arguments, reply }) => {
-                        turn.bridge_call(name, arguments, reply).await?;
-                    }
-                    Some(SessionEvent::Elicitation(create, incoming)) => {
-                        if cancel_deadline.is_some() {
-                            elicitation::cancel(incoming);
-                        } else {
-                            turn.elicitation(*create, incoming);
-                        }
-                    }
+                    Some(event) => turn.take_event(event, cancel_deadline.is_some()).await?,
                     None => break None,
                 },
                 () = steer_wake.notified(),
@@ -2480,7 +2524,8 @@ impl Engine {
         }
         let caps = &process.init().capabilities.prompt();
         prompt.extend(self.input_since(events, boundary, caps).0);
-        if prompt.is_empty() {
+        // Only the agent's own wake: nothing to send, the round listens.
+        if prompt.is_empty() && !woke_since(events, boundary) {
             prompt.push(wire::text_block("Continue."));
         }
         live.first_prompt = false;
@@ -2598,9 +2643,13 @@ impl Engine {
             .iter()
             .filter(|message| !message.discarded)
             .filter_map(|message| {
-                message
-                    .admission
-                    .map(|(_, seq)| (seq, (message.message_id, &message.body)))
+                message.admission.map(|(_, seq)| {
+                    let wake = matches!(
+                        message.producer_owner,
+                        cookie_agent_protocol::ProducerOwner::AcpAgent { .. }
+                    );
+                    (seq, (message.message_id, &message.body, wake))
+                })
             })
             .collect::<HashMap<_, _>>();
         let mut submitted = HashMap::new();
@@ -2618,8 +2667,11 @@ impl Engine {
                     }
                 }
                 Event::ProducerMessageAdmitted { .. } if event.seq > boundary => {
-                    if let Some((message_id, body)) = admitted.get(&event.seq) {
-                        self.push_content(&mut prompt, event.session_id, body, caps);
+                    if let Some((message_id, body, wake)) = admitted.get(&event.seq) {
+                        // The agent made its wake's message: never sent to it.
+                        if !wake {
+                            self.push_content(&mut prompt, event.session_id, body, caps);
+                        }
                         taken.producer_messages.push(*message_id);
                     }
                 }
@@ -2913,6 +2965,10 @@ impl Engine {
             options,
             first_prompt: matches!(how, AcpSessionStart::New),
             events: Arc::new(tokio::sync::Mutex::new(receiver)),
+            carried: Arc::default(),
+            wanted: Arc::default(),
+            waiting: Arc::default(),
+            rounds: Arc::default(),
         };
         if matches!(how, AcpSessionStart::New) {
             self.apply_starting_options(session, run, &mut live, document)
@@ -2941,6 +2997,7 @@ impl Engine {
             .await?;
         }
         self.remember_live(&live);
+        self.listen_between_runs(&live);
         Ok(live)
     }
 

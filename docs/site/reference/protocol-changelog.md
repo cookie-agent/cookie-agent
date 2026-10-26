@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.38.0
+
+- Work an ACP agent starts on its own ([ACP v2 spec](../specs/acp-v2.md)
+  sections 6 and 7), such as Claude Code's follow-up after a background
+  command, is a run started by a producer message of the new owner
+  `acp_agent { agent }` (description "Woke on its own"). An older client
+  reads the `producer_message_accepted` event as an unknown payload. Plugin
+  protocol 1.20.0 carries the owner in events the same way.
+
 ## 1.37.0
 
 - Clients change a runtime's `[runtimes.<id>]` table ([runtime management

@@ -34,6 +34,7 @@ pub(crate) mod process;
 pub(crate) mod prompt;
 pub(crate) mod runner;
 mod terminal;
+mod wakes;
 pub(crate) mod wire;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

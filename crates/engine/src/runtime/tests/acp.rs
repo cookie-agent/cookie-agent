@@ -21,6 +21,7 @@ mod compaction;
 mod lifecycle;
 mod rounds;
 mod titles;
+mod wakes;
 use crate::{Engine, EngineOptions};
 
 fn origin() -> EventOrigin {

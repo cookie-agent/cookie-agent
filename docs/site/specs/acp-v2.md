@@ -1,6 +1,8 @@
 # ACP v2: the port, self-wakes, subagent sessions, and background work
 
-Status: **draft** (2026-10-26). Not yet implemented.
+Status: **in progress** (2026-10-26). Phase 1 (v2 only) implemented
+2026-10-26 (`04b4b0e4d`); phase 2 (self-wakes) implemented 2026-10-26,
+client protocol 1.38.0 and plugin protocol 1.20.0.
 
 The user decided on 2026-10-26:
 
@@ -548,3 +550,28 @@ nested under its parent; a background terminal in the background bar.
   unknown fields and kinds as today.
 - **Codex.** Its v2 surface, including what it reports of subagents and
   background work, is checked in phase 1.
+
+## 17. Implementation notes
+
+**Phase 1 (2026-10-26, `04b4b0e4d`):**
+
+- A whole `agent_message` or `agent_thought` adds only what its chunks did
+  not already stream (the agents in use stream chunks); it does not replace
+  them.
+- A plan sent as Markdown or as a file shows as a one-entry checklist.
+- The round reads insertion from the `user_message` echo in the update
+  stream. The prompt's answer and the updates travel apart, so the echo
+  orders them.
+
+**Phase 2 (2026-10-26, client protocol 1.38.0):**
+
+- **What starts a wake.** Only what v2 defines as starting foreground
+  work: `running`, `requires_action`, or a request to answer. Output
+  between runs with no such state is kept, and the next run records it.
+- **Clients.** They show the wake's message as they show any producer
+  message, labelled `<agent>, on its own` with the description "Woke on
+  its own"; the approval reviewer reads it as `[<agent> started work on its
+  own]`.
+- **Holds.** A wake starts its run past any hold. A Stop records a hold
+  only when the session could otherwise wake (held sessions, section 2),
+  so a wake after a Stop is the case that needs this.
