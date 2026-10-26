@@ -569,6 +569,50 @@ fn keywords_are_optional_and_an_agent_memory_needs_no_description() {
     }
 }
 
+/// `keywords` is a list, or one comma-separated string, as agents often
+/// send a list; a string holding a list's JSON is that list.
+#[test]
+fn keywords_may_be_one_comma_separated_string() {
+    let keywords = |value: serde_json::Value| match check(
+        "memory_write",
+        json!({"url": "project://web/build", "description": "d", "keywords": value, "body": ""}),
+    ) {
+        Ok(MemoryCall::Write { document, .. }) => document.keywords().to_vec(),
+        Ok(_) => panic!("{value}: not a write"),
+        Err(error) => panic!("{value}: {error}"),
+    };
+    let expected = ["cargo", "release notes", "ci"];
+    assert_eq!(keywords(json!(["cargo", "release notes", "ci"])), expected);
+    assert_eq!(keywords(json!("cargo, release notes,ci")), expected);
+    assert_eq!(keywords(json!(" cargo ,, release notes , ci, ")), expected);
+    assert_eq!(
+        keywords(json!("[\"cargo\", \"release notes\", \"ci\"]")),
+        expected
+    );
+    assert_eq!(keywords(json!("cargo")), ["cargo"]);
+    assert!(keywords(json!("")).is_empty());
+    assert!(keywords(json!(" , ")).is_empty());
+    // A bracket that is no JSON list is a keyword like any other text.
+    assert_eq!(keywords(json!("[draft], cargo")), ["[draft]", "cargo"]);
+    // Neither a list nor a string.
+    assert!(
+        check(
+            "memory_write",
+            json!({"url": "project://web/build", "description": "d", "keywords": 3, "body": ""})
+        )
+        .is_err()
+    );
+    // The keyword bounds hold either way.
+    let long = "k".repeat(65);
+    assert!(
+        check(
+            "memory_write",
+            json!({"url": "project://web/build", "description": "d", "keywords": format!("cargo, {long}"), "body": ""})
+        )
+        .is_err()
+    );
+}
+
 fn only_diff(blocks: &[Open<DisplayBlock>]) -> &DiffBlock {
     match blocks {
         [Open::Known(DisplayBlock::Diff(diff))] => diff,

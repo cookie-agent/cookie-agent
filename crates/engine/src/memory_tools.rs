@@ -276,9 +276,14 @@ struct WriteArgs {
     /// project's overview, whose description the daemon sets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    /// Up to 32 keywords of 1 to 64 characters a later search would use;
-    /// none when left out.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Up to 32 keywords of 1 to 64 characters a later search would use,
+    /// as a list or one comma-separated string; none when left out.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_keywords"
+    )]
+    #[schemars(schema_with = "keywords_schema")]
     keywords: Vec<String>,
     /// The memory's Markdown body; may be empty.
     body: String,
@@ -289,6 +294,51 @@ struct WriteArgs {
     /// With `new`: one line saying why it is not one of the near memories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+}
+
+/// `keywords` as memory_write takes them: a list, or one string of
+/// comma-separated keywords, which agents often send for a list (some send
+/// the list's JSON as a string, which reads as that list).
+fn deserialize_keywords<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Keywords {
+        List(Vec<String>),
+        Text(String),
+    }
+    Ok(match Keywords::deserialize(deserializer)? {
+        Keywords::List(keywords) => keywords,
+        Keywords::Text(text) => split_keywords(&text),
+    })
+}
+
+/// The keywords of `text`: the list its JSON holds, else its
+/// comma-separated parts, trimmed, the empty ones left out.
+fn split_keywords(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if text.starts_with('[')
+        && let Ok(keywords) = serde_json::from_str::<Vec<String>>(text)
+    {
+        return keywords;
+    }
+    text.split(',')
+        .map(str::trim)
+        .filter(|keyword| !keyword.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn keywords_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "description": "Up to 32 keywords of 1 to 64 characters a later search would use, as a list or one comma-separated string; none when left out.",
+        "anyOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "string"}
+        ]
+    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
@@ -751,18 +801,18 @@ fn call_presentation(
         WRITE => {
             let mut entries = vec![("url", primary.clone())];
             entries.extend(text("description").map(|value| ("description", value)));
-            entries.extend(
-                call.arguments
-                    .get("keywords")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|keywords| {
-                        let keywords = keywords
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .collect::<Vec<_>>();
-                        ("keywords", keywords.join(", "))
-                    }),
-            );
+            entries.extend(call.arguments.get("keywords").and_then(|keywords| {
+                let keywords = match keywords {
+                    serde_json::Value::Array(keywords) => keywords
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                    serde_json::Value::String(text) => split_keywords(text),
+                    _ => return None,
+                };
+                Some(("keywords", keywords.join(", ")))
+            }));
             entries.extend(text("body").map(|value| ("body", value)));
             entries.extend(text("reason").map(|value| ("reason", value)));
             (
