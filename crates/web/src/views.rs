@@ -61,7 +61,7 @@ use depth::{
 };
 
 use manage::runtimes_sheet;
-use shell::{Drawer, PageView, Rail, SidebarButton};
+use shell::{PageView, Rail, SidebarButton};
 
 use crate::{
     app::Connection,
@@ -162,17 +162,32 @@ pub fn WorkspaceView(
         }
     });
     let chat = move || workspace.view.get() == View::Chat;
+    // Below desktop widths the sessions are the page, over the transcript,
+    // which keeps its place under them.
+    let sessions_page = move || workspace.sidebar_open.get();
     view! {
         <div class="flex min-h-0 flex-1">
-            <div class="hidden sm:flex">
-                <Rail workspace=workspace connection=connection theme=theme primary=true />
+            // A phone shows the rail beside a view's first level only.
+            <div class="flex" class:hidden=move || workspace.narrow.get() && !workspace.at_list()>
+                <Rail workspace=workspace connection=connection theme=theme />
             </div>
-            <div class="flex min-w-0 flex-1" class:hidden=move || !chat()>
+            <div class="flex min-w-0 flex-1" class:relative=sessions_page class:hidden=move || !chat()>
                 <aside
-                    class="hidden w-72 shrink-0 flex-col border-r border-toasted bg-parchment dark:border-ember dark:bg-char"
+                    class="shrink-0 flex-col border-r border-toasted bg-parchment dark:border-ember dark:bg-char"
+                    class:hidden=move || !sessions_page()
+                    class:flex=sessions_page
+                    class:absolute=sessions_page
+                    class:inset-0=sessions_page
+                    class:w-72=move || !sessions_page()
                     class:lg:flex=move || workspace.sidebar_pinned.get()
                     id="sidebar"
                 >
+                    <Show when=sessions_page>
+                        <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
+                            <SidebarButton workspace=workspace />
+                            <h1 class="min-w-0 flex-1 truncate px-1 text-lg font-bold">"Sessions"</h1>
+                        </div>
+                    </Show>
                     <SessionList workspace=workspace />
                 </aside>
                 <ChatView workspace=workspace />
@@ -180,7 +195,6 @@ pub fn WorkspaceView(
             <Show when=move || !chat()>
                 <PageView workspace=workspace connection=connection />
             </Show>
-            <Drawer workspace=workspace connection=connection theme=theme />
             <Sheet workspace=workspace />
             <onboarding::OnboardingSheet workspace=workspace />
         </div>
@@ -197,6 +211,9 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
     view! {
             <main
                 class="flex min-w-0 flex-1 flex-col"
+                // Under the sessions shown as the page.
+                class:invisible=move || workspace.sidebar_open.get()
+                inert=move || workspace.sidebar_open.get().then_some("")
                 on:dragover=move |event: ev::DragEvent| event.prevent_default()
                 on:drop=move |event: ev::DragEvent| {
                     event.prevent_default();
@@ -711,7 +728,7 @@ fn session_row(
                         <span class="hidden @[22rem]:inline">"Delete"</span>
                     </button>
                 </Show>
-                // An icon, so the four fit a phone's drawer on one line.
+                // An icon, so the four fit a phone's session row on one line.
                 <button
                     type="button"
                     class=BUTTON.replace("px-3", "px-0")

@@ -333,7 +333,7 @@ impl Workspace {
         )));
         self.project_error.set(None);
         self.poll_runtimes();
-        // A phone's drawer gives way to the editor.
+        // The sessions shown as the page give way to the editor.
         self.sidebar_open.set(false);
         self.panel.set(Some(Panel::Project));
         if let Some(info) = info {

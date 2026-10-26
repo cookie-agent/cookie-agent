@@ -1,9 +1,8 @@
 //! The Agents view: the agent documents in a sidebar like Chat's sessions
 //! (the shared agents, then each preset's), and the open document's
 //! editor beside it. A desktop pins the sidebar, which the sidebar button
-//! hides and shows; a narrower window slides it over. A phone shows the
-//! agents as the page until one opens (its drawer carries them beside the
-//! rail too).
+//! hides and shows; a narrower window shows it as the page in place of the
+//! editor. A phone shows the agents as the page until one opens.
 
 use leptos::prelude::*;
 
@@ -32,15 +31,17 @@ fn is_agent(path: &str) -> bool {
     path.starts_with("agents/")
 }
 
-/// The Agents view: the sidebar, then the open agent or what to do. A
-/// phone shows one at a time: the agents fill the page until one opens,
-/// and the title bar's back arrow returns to them.
+/// The Agents view: the sidebar, then the open agent or what to do. Below
+/// desktop widths it shows one at a time: the agents fill the page while
+/// the sidebar is open, and on a phone until one opens; the title bar's
+/// sidebar button returns to them.
 pub fn agents_page(workspace: Workspace) -> impl IntoView {
     let listing = move || {
-        workspace.narrow.get()
-            && !workspace
-                .config_edit
-                .with(|edit| edit.as_ref().is_some_and(|edit| is_agent(&edit.path)))
+        workspace.sidebar_open.get()
+            || (workspace.narrow.get()
+                && !workspace
+                    .config_edit
+                    .with(|edit| edit.as_ref().is_some_and(|edit| is_agent(&edit.path))))
     };
     view! {
         <div class="flex min-h-0 flex-1">

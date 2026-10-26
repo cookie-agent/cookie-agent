@@ -299,8 +299,9 @@ pub struct Workspace {
     /// The Settings section open; `None` for the section list on a phone,
     /// the first section on a wider window.
     pub settings_section: RwSignal<Option<crate::layout::SettingsSection>>,
-    /// The sessions over the page: a phone's drawer, or the sidebar sliding
-    /// over a tablet's transcript.
+    /// Below desktop widths, the sidebar shown as the page: the sessions in
+    /// place of the transcript (the agents, in Agents, in place of the
+    /// agent open).
     pub sidebar_open: RwSignal<bool>,
     /// A desktop window shows the sessions sidebar; kept in the browser.
     pub sidebar_pinned: RwSignal<bool>,

@@ -338,7 +338,7 @@ pub(crate) fn runtime_mcp_servers(
                     data-mcp-scope=server.scope.map(|scope| scope.as_str())
                     data-mcp-waiting=waiting.then_some("true")
                 >
-                    <div class="flex min-w-0 items-center gap-2">
+                    <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                         <Glyph icon=dot class=format!("shrink-0 text-[0.6rem] {dot_class}") />
                         <span class="min-w-16 flex-1 truncate font-mono text-sm">{server.name.clone()}</span>
                         {(!waiting).then(|| view! { <span class=format!("shrink-0 {NOTE}")>{server_tools_label(&server)}</span> })}

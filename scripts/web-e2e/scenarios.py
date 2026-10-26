@@ -753,8 +753,8 @@ def streaming_scroll(browser):
         phone.wait("the connection", lambda: phone.text("#connected") != "")
         phone.phone(390, 844)
         phone.click("main [data-sidebar-toggle]")
-        phone.wait("the drawer", lambda: count(phone, '#drawer [data-session="%s"]' % session) > 0)
-        phone.script("document.querySelector(arguments[0]).click()", '#drawer [data-session="%s"]' % session)
+        phone.wait("the sessions", lambda: count(phone, '#sidebar [data-session="%s"]' % session) > 0)
+        phone.script("document.querySelector(arguments[0]).click()", '#sidebar [data-session="%s"]' % session)
         phone.wait("the session", lambda: "beta 599 " in phone.text("#transcript"), timeout=30)
         send(browser, "stream only, label gamma")
         phone.wait("the long reply", lambda: "gamma 60 " in phone.text("#transcript"), timeout=30)
@@ -1430,18 +1430,19 @@ def set_text(browser, selector, text):
 
 
 def close_sheet(browser):
-    """Closes an open sheet and drawer, and goes back to the chat view."""
+    """Closes an open sheet and the sessions page, and goes back to the chat
+    view."""
     if count(browser, "#sheet") > 0:
         browser.click("#sheet h2 ~ button")
     browser.script(
-        "const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click();"
+        "const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click();"
         "if (document.querySelector('#page'))"
         "  document.querySelector('[data-rail=primary] [data-view=chat]').click()"
     )
     browser.wait("the chat view", lambda: count(browser, "#page") == 0)
-    # A phone's rail opens Chat on its sessions, in the drawer.
-    browser.script("const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click()")
-    browser.wait("the closed drawer", lambda: count(browser, "#drawer") == 0)
+    # A phone's rail opens Chat on its sessions, as the page.
+    browser.script("const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click()")
+    browser.wait("the closed sessions", lambda: count(browser, SESSIONS_PAGE) == 0)
 
 
 # The usage sheet's figures for the session (its first list), by name.
@@ -1572,11 +1573,11 @@ def touch_message_menu():
         phone.phone(390, 844)
         assert phone.script("return matchMedia('(pointer: coarse)').matches"), "the pointer is not coarse"
         phone.click("main [data-sidebar-toggle]")
-        phone.wait("the drawer", lambda: count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0)
+        phone.wait("the sessions", lambda: count(phone, "#sidebar nav[aria-label=Sessions] [data-session]") > 0)
         phone.script(
-            "const rows = [...document.querySelectorAll('#drawer nav[aria-label=Sessions] [data-session]')];"
+            "const rows = [...document.querySelectorAll('#sidebar nav[aria-label=Sessions] [data-session]')];"
             "const other = rows.find((r) => r.getAttribute('aria-current') !== 'true');"
-            "if (other) other.click(); else document.querySelector('[data-drawer-backdrop]').click();"
+            "if (other) other.click(); else document.querySelector('#sidebar [data-sidebar-toggle]').click();"
         )
         phone.wait("a user message", lambda: count(phone, "#transcript .user-row") > 0, timeout=30)
         phone.script(
@@ -2304,6 +2305,11 @@ def page_view(browser):
     return browser.script("const p = document.querySelector('#page'); return p ? p.dataset.view : 'chat'")
 
 
+# The sessions shown as the page, below desktop widths: their title bar
+# has the sidebar button, which a pinned sidebar has not.
+SESSIONS_PAGE = "#sidebar [data-sidebar-toggle]"
+
+
 def perform(browser, sources):
     """Runs WebDriver input actions, then releases what they hold."""
     call("POST", browser.path("/actions"), {"actions": sources})
@@ -3010,7 +3016,8 @@ def desktop_layout(browser):
 
 
 def phone_layout():
-    """The phone's drawer, Back, the bottom sheets, the mode picker, and the
+    """The phone's two levels (a view's list beside the rail, an item open
+    on the whole screen), Back, the bottom sheets, the mode picker, and the
     bottom bar that gives way to the keyboard. A page opened on a phone
     shows its sessions first, over a new session."""
     phone = Browser()
@@ -3018,55 +3025,60 @@ def phone_layout():
         phone.phone(390, 844)
         phone.go(LINK)
         phone.wait("the connection", lambda: phone.text("#connected") != "")
-        phone.wait("the sessions first", lambda: count(phone, "#drawer [data-session]") > 0)
-        assert "New session" in phone.text("main h1, main header"), "no new session under the sessions"
+        phone.wait("the sessions first", lambda: count(phone, "#sidebar [data-session]") > 0)
+        assert "New session" in phone.script("return document.querySelector('main h1, main header').textContent"), "no new session under the sessions"
         phone.shot("phone-opens-on-sessions")
-        phone.script("document.querySelector('[data-drawer-backdrop]').click()")
-        phone.wait("the sessions closed", lambda: count(phone, "#drawer") == 0)
+        phone.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
+        phone.wait("the sessions closed", lambda: count(phone, SESSIONS_PAGE) == 0)
         print("phone: the page opens on its sessions, over a new session")
         composer_clear(phone, "phone")
         phone.shot("phone-fresh-connect")
-        assert not shown(phone, "[data-rail=primary]"), "a phone shows the rail outside the drawer"
-        # The drawer: the rail beside the sessions, over the dimmed chat.
+        assert not shown(phone, "[data-rail=primary]"), "a phone shows the rail beside the transcript"
+        # The sessions: the page itself, the rail beside them.
         phone.click("main [data-sidebar-toggle]")
-        phone.wait("the drawer", lambda: shown(phone, "#drawer [data-rail=drawer]"))
-        width = phone.script("return document.querySelector('#drawer').getBoundingClientRect().width")
-        assert 300 <= width <= 340, "the drawer is %s px wide" % width
-        phone.shot("phone-drawer")
+        phone.wait("the sessions", lambda: count(phone, SESSIONS_PAGE) == 1 and shown(phone, "[data-rail=primary]"))
+        rail = phone.script("return document.querySelector('[data-rail=primary]').getBoundingClientRect().right")
+        sessions = phone.script("const r = document.querySelector('#sidebar').getBoundingClientRect(); return [r.left, r.right]")
+        assert abs(sessions[0] - rail) <= 1 and abs(sessions[1] - 390) <= 1, "the sessions span %s beside a rail ending at %s" % (sessions, rail)
+        phone.shot("phone-sessions")
         phone.script("history.back()")
-        phone.wait("Back closing the drawer", lambda: count(phone, "#drawer") == 0)
+        phone.wait("Back closing the sessions", lambda: count(phone, SESSIONS_PAGE) == 0 and not shown(phone, "[data-rail=primary]"))
 
-        # A rail button whose view has a list, its second level, shows the
-        # list first: the agents and the memories fill the page, Chat's
-        # sessions stay in the drawer. Choosing an item opens its detail,
-        # whose back arrow (and browser Back) returns to the list.
+        # A rail button whose view has a list, its first level, shows the
+        # list first, the rail beside it. Choosing an item opens it on the
+        # whole screen; the sidebar button (and browser Back) returns to
+        # the list.
         agent = '#agents-sidebar [data-config-path="agents/helper.md"]'
         phone.click("main [data-sidebar-toggle]")
-        phone.click("#drawer [data-view=agents]")
+        phone.click("[data-rail=primary] [data-view=agents]")
         phone.wait(
             "the agents",
-            lambda: page_view(phone) == "agents" and count(phone, "#drawer") == 0 and shown(phone, agent),
+            lambda: page_view(phone) == "agents" and shown(phone, agent) and shown(phone, "[data-rail=primary]"),
         )
         assert count(phone, "#config-text") == 0 and not shown(phone, "[data-agents-empty]"), "the rail opened an agent"
         assert phone.text("#page-title") == "Agents" and not shown(phone, "[data-page-back]")
+        assert count(phone, "#page [data-sidebar-toggle]") == 0, "the agents list has a sidebar button"
         phone.shot("phone-rail-agents")
         phone.click(agent + " button")
         phone.wait("the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
-        assert shown(phone, "[data-page-back]"), "the agent has no back arrow"
+        assert not shown(phone, "[data-rail=primary]"), "the rail shows beside the agent"
+        assert not shown(phone, "[data-page-back]"), "the agent has a back arrow beside the sidebar button"
         phone.shot("phone-rail-agents-open")
-        phone.script("history.back()")
-        phone.wait("Back to the agents", lambda: count(phone, "#config-text") == 0 and shown(phone, agent))
-        phone.click(agent + " button")
-        phone.wait("the agent again", lambda: shown(phone, "#config-text"))
-        phone.click("[data-page-back]")
-        phone.wait("the back arrow to the agents", lambda: count(phone, "#config-text") == 0 and shown(phone, agent))
-
         phone.click("#page [data-sidebar-toggle]")
-        phone.click("#drawer [data-view=memory]")
+        phone.wait("the agents over the agent", lambda: shown(phone, agent) and shown(phone, "[data-rail=primary]"))
+        phone.script("history.back()")
+        phone.wait("Back to the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
+        phone.click("#page [data-sidebar-toggle]")
+        phone.click(agent + " button")
+        phone.wait("the agent again", lambda: shown(phone, "#config-text") and not shown(phone, agent))
+        phone.script("history.back()")
+        phone.wait("Back closing the agent", lambda: count(phone, "#config-text") == 0 and shown(phone, agent))
+
+        phone.click("[data-rail=primary] [data-view=memory]")
         phone.wait(
             "the memories",
             lambda: page_view(phone) == "memory"
-            and count(phone, "#drawer") == 0
+            and shown(phone, "[data-rail=primary]")
             and "Reading memories" not in phone.text("#page"),
         )
         assert count(phone, "#memory-text") == 0, "the rail opened a memory"
@@ -3074,45 +3086,39 @@ def phone_layout():
         # Run on its own, the daemon may have no memory to open yet.
         if count(phone, "#page .memory-row button") > 0:
             phone.click("#page .memory-row button")
-            phone.wait("the memory", lambda: count(phone, "#memory-text") == 1)
-            phone.click("[data-page-back]")
+            phone.wait("the memory", lambda: count(phone, "#memory-text") == 1 and not shown(phone, "[data-rail=primary]"))
+            phone.click("#page [data-sidebar-toggle]")
             phone.wait("Back to the memories", lambda: count(phone, "#memory-text") == 0 and count(phone, "#page .memory-row") > 0)
 
-        # Machines has no list: its page at once.
-        phone.click("#page [data-sidebar-toggle]")
-        phone.click("#drawer [data-view=machines]")
-        phone.wait("the machines", lambda: page_view(phone) == "machines" and count(phone, "#drawer") == 0)
+        # Machines has no list: its page at once, the rail beside it.
+        phone.click("[data-rail=primary] [data-view=machines]")
+        phone.wait("the machines", lambda: page_view(phone) == "machines" and shown(phone, "[data-rail=primary]"))
 
-        phone.click("#page [data-sidebar-toggle]")
-        phone.click("#drawer [data-view=chat]")
+        phone.click("[data-rail=primary] [data-view=chat]")
         phone.wait(
             "the sessions",
-            lambda: page_view(phone) == "chat" and count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0,
+            lambda: page_view(phone) == "chat" and count(phone, "#sidebar nav[aria-label=Sessions] [data-session]") > 0,
         )
         phone.shot("phone-rail-chat")
         phone.script("history.back()")
-        phone.wait("Back closing the sessions", lambda: count(phone, "#drawer") == 0 and page_view(phone) == "chat")
-        print("phone: a rail button shows its view's list first; Back from an item returns to it")
+        phone.wait("Back closing the sessions", lambda: count(phone, SESSIONS_PAGE) == 0 and page_view(phone) == "chat")
+        print("phone: a rail button shows its view's list beside the rail; the sidebar button returns from an item")
 
         # Settings' list is its page too: no section until one is chosen.
         phone.click("main [data-sidebar-toggle]")
-        phone.click("#drawer [data-view=settings]")
-        phone.wait("the settings view", lambda: page_view(phone) == "settings" and count(phone, "#drawer") == 0)
+        phone.click("[data-rail=primary] [data-view=settings]")
+        phone.wait("the settings view", lambda: page_view(phone) == "settings" and count(phone, SESSIONS_PAGE) == 0)
         assert shown(phone, "[data-section=providers]") and count(phone, "[data-section-body]") == 0, "the rail opened a section"
-        # List, then detail; Back closes the drawer, then leaves the detail.
+        # List, then detail; Back leaves the detail.
         phone.click("#page [data-section=configuration]")
         phone.wait("the section", lambda: shown(phone, "[data-section-body=configuration]"))
         assert not shown(phone, "[data-section=providers]"), "the list stays beside the detail"
+        assert not shown(phone, "[data-rail=primary]"), "the rail shows beside the section"
         assert phone.text("#page-title") == "Configuration", phone.text("#page-title")
-        phone.click("#page [data-sidebar-toggle]")
-        phone.wait("the drawer", lambda: count(phone, "#drawer") == 1)
         phone.script("history.back()")
-        phone.wait("Back closing the drawer", lambda: count(phone, "#drawer") == 0)
-        assert shown(phone, "[data-section-body=configuration]"), "Back left the section with the drawer"
-        phone.script("history.back()")
-        phone.wait("Back leaving the section", lambda: shown(phone, "[data-section=providers]"))
-        # The title bar's back arrow does the same; an editor fills the
-        # screen with its actions at the foot.
+        phone.wait("Back leaving the section", lambda: shown(phone, "[data-section=providers]") and shown(phone, "[data-rail=primary]"))
+        # A third level, an editor in a section, has the back arrow up one
+        # level; an editor fills the screen with its actions at the foot.
         phone.click("#page [data-section=configuration]")
         phone.click('#page [data-config-path="config.toml"] button')
         phone.wait("the editor", lambda: count(phone, "#config-text") == 1)
@@ -3120,15 +3126,19 @@ def phone_layout():
         assert 0 <= bottom < 70, "the editor's actions are %s px above its foot" % bottom
         phone.shot("phone-editor")
         phone.click("[data-page-back]")
-        phone.wait("the closed editor", lambda: count(phone, "#config-text") == 0)
-        phone.click("[data-page-back]")
-        phone.wait("the section list", lambda: shown(phone, "[data-section=providers]"))
-        print("phone: the drawer opens and switches views; Back closes it, then leaves a detail")
+        phone.wait("the closed editor", lambda: count(phone, "#config-text") == 0 and shown(phone, "[data-section-body=configuration]"))
+        assert not shown(phone, "[data-page-back]"), "the section has a back arrow beside the sidebar button"
+        # The sidebar button goes up to the list from any depth.
+        phone.click('#page [data-config-path="config.toml"] button')
+        phone.wait("the editor again", lambda: count(phone, "#config-text") == 1)
+        phone.click("#page [data-sidebar-toggle]")
+        phone.wait("the section list", lambda: shown(phone, "[data-section=providers]") and count(phone, "#config-text") == 0)
+        print("phone: a view's list shows beside the rail; Back and the sidebar button leave a detail")
 
         # A subagent's title bar: ‹ goes back to its parent.
-        phone.click("#page [data-sidebar-toggle]")
-        phone.click("#drawer [data-new-session]")
-        phone.wait("the new session", lambda: page_view(phone) == "chat" and count(phone, "#drawer") == 0)
+        phone.click("[data-rail=primary] [data-view=chat]")
+        phone.click("#sidebar [data-new-session]")
+        phone.wait("the new session", lambda: page_view(phone) == "chat" and count(phone, SESSIONS_PAGE) == 0)
         # The cards stack in one column above the composer, which stays at
         # the foot.
         phone.wait("the cards", lambda: count(phone, "#new-session [data-card]") > 1 and count(phone, "#composer") == 1)
@@ -3164,7 +3174,7 @@ def phone_layout():
         # A long press on a session row offers to delete it, and never opens
         # it; a scroll cancels the press.
         phone.click("main [data-sidebar-toggle]")
-        phone.click("#drawer [data-new-session]")
+        phone.click("#sidebar [data-new-session]")
         select_local(phone)
         send(phone, "hello there")
         phone.wait("the answer", lambda: answers(phone) >= 1)
@@ -3173,48 +3183,49 @@ def phone_layout():
             "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
         )
         phone.click("main [data-sidebar-toggle]")
-        click_row(phone, "#drawer nav[aria-label=Sessions] [data-session]:not([aria-current])")
-        phone.wait("another session", lambda: count(phone, "#drawer") == 0 and phone.text("#transcript") != "")
+        click_row(phone, "#sidebar nav[aria-label=Sessions] [data-session]:not([aria-current])")
+        phone.wait("another session", lambda: count(phone, SESSIONS_PAGE) == 0 and phone.text("#transcript") != "")
         opened = phone.text("#session-title")
         phone.click("main [data-sidebar-toggle]")
-        row = '#drawer [data-session="%s"]' % doomed
-        phone.wait("the drawer", lambda: count(phone, row) == 1)
-        assert not shown(phone, '#drawer [data-delete="%s"]' % doomed), "the hover trash shows on a phone"
+        row = '#sidebar [data-session="%s"]' % doomed
+        phone.wait("the sessions", lambda: count(phone, row) == 1)
+        assert not shown(phone, '#sidebar [data-delete="%s"]' % doomed), "the hover trash shows on a phone"
         long_press(phone, row, drag=40)
         time.sleep(0.3)
-        assert count(phone, "#drawer [data-delete-actions]") == 0, "a scroll still revealed the delete"
+        assert count(phone, "#sidebar [data-delete-actions]") == 0, "a scroll still revealed the delete"
         long_press(phone, row)
-        phone.wait("the delete action", lambda: count(phone, "#drawer [data-delete-actions]") == 1)
-        assert count(phone, "#drawer") == 1 and phone.text("#session-title") == opened, "the long press opened the session"
+        phone.wait("the delete action", lambda: count(phone, "#sidebar [data-delete-actions]") == 1)
+        title = phone.script("return document.querySelector('#session-title').textContent")
+        assert count(phone, SESSIONS_PAGE) == 1 and title == opened, "the long press opened the session"
         phone.shot("phone-delete-revealed")
         # The long press offers Rename too, which makes the title a field.
-        phone.click("#drawer [data-rename-reveal]")
-        phone.wait("the row's field", lambda: count(phone, '#drawer [data-rename-field="%s"]' % doomed) == 1)
+        phone.click("#sidebar [data-rename-reveal]")
+        phone.wait("the row's field", lambda: count(phone, '#sidebar [data-rename-field="%s"]' % doomed) == 1)
         phone.shot("phone-rename-row")
-        phone.type('#drawer [data-rename-field="%s"]' % doomed, "Doomed" + ENTER)
-        phone.wait("the renamed row", lambda: phone.text('#drawer [data-session-row="%s"] [data-session-title]' % doomed) == "Doomed")
+        phone.type('#sidebar [data-rename-field="%s"]' % doomed, "Doomed" + ENTER)
+        phone.wait("the renamed row", lambda: phone.text('#sidebar [data-session-row="%s"] [data-session-title]' % doomed) == "Doomed")
         long_press(phone, row)
-        phone.wait("the delete action", lambda: count(phone, "#drawer [data-delete-actions]") == 1)
-        phone.click("#drawer [data-delete-reveal]")
-        phone.wait("the confirmation", lambda: count(phone, "#drawer [data-delete-confirm-box]") == 1)
+        phone.wait("the delete action", lambda: count(phone, "#sidebar [data-delete-actions]") == 1)
+        phone.click("#sidebar [data-delete-reveal]")
+        phone.wait("the confirmation", lambda: count(phone, "#sidebar [data-delete-confirm-box]") == 1)
         phone.shot("phone-delete-confirm")
-        phone.click('#drawer [data-delete-confirm="%s"]' % doomed)
+        phone.click('#sidebar [data-delete-confirm="%s"]' % doomed)
         phone.wait("the deleted row", lambda: count(phone, row) == 0, timeout=30)
         print("phone: a long press offers the delete without opening the session; a scroll cancels it")
-        phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+        phone.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
 
-        # Back to Chat and the latest session, from the drawer. A tap on the
-        # open session's own row switches its subagent tree instead, and
-        # leaves the drawer open.
+        # Back to Chat and the latest session, from the sessions. A tap on
+        # the open session's own row switches its subagent tree instead,
+        # and leaves the sessions open.
         phone.click("main [data-sidebar-toggle]")
-        phone.wait("the drawer", lambda: count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0)
-        latest = "#drawer nav[aria-label=Sessions] [data-session]"
+        phone.wait("the sessions", lambda: count(phone, "#sidebar nav[aria-label=Sessions] [data-session]") > 0)
+        latest = "#sidebar nav[aria-label=Sessions] [data-session]"
         if phone.script("return document.querySelector(arguments[0]).getAttribute('aria-current')", latest) == "true":
-            phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+            phone.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
         else:
             click_row(phone, latest)
         phone.wait("the transcript", lambda: page_view(phone) == "chat" and phone.text("#transcript") != "")
-        phone.wait("the closed drawer", lambda: count(phone, "#drawer") == 0)
+        phone.wait("the closed sessions", lambda: count(phone, SESSIONS_PAGE) == 0)
         # One row of 44 px targets.
         tops = phone.script(
             "return [...document.querySelectorAll('#status-bar > *')]"
@@ -3319,15 +3330,15 @@ return [...new Set(small)];
 OVERFLOW = """
 const page = document.documentElement.scrollWidth - document.documentElement.clientWidth;
 let inner = 0;
-for (const id of ['#sheet', '#page [data-page-body]', '#drawer nav[aria-label=Sessions]']) {
+for (const id of ['#sheet', '#page [data-page-body]', '#sidebar nav[aria-label=Sessions]']) {
   for (const e of document.querySelectorAll(id)) inner = Math.max(inner, e.scrollWidth - e.clientWidth);
 }
 return Math.max(page, inner);
 """
 
 # What the audit opens at each size: the chat's sheets by their commands,
-# the ⋮ menu and the drawer by a click, then every view, Settings section,
-# and editor by a script click (the rail is in the drawer on a phone).
+# the ⋮ menu and the sessions by a click, then every view, Settings section,
+# and editor by a script click (a phone's rail hides beside a transcript).
 SHEETS = [
     ("agent", ["#agent-chip"]),
     ("model", ["#model-chip"]),
@@ -3354,7 +3365,10 @@ SCRIPTED = [
     ("editor-agent", ["[data-rail=primary] [data-view=agents]", '[data-config-path^="agents/"] button']),
     ("editor-memory", ["[data-rail=primary] [data-view=memory]", "#page .memory-row button"]),
     ("agents-open", ["[data-rail=primary] [data-view=agents]", '[data-config-path="agents/helper.md"] button']),
-    ("agents-drawer", ["[data-rail=primary] [data-view=agents]", "#page [data-sidebar-toggle]"]),
+    ("agents-list", [
+        "[data-rail=primary] [data-view=agents]", '[data-config-path="agents/helper.md"] button',
+        "#page [data-sidebar-toggle]",
+    ]),
     ("machines-add", ["[data-rail=primary] [data-view=machines]", "#machines-add"]),
     ("machines-move", ["[data-rail=primary] [data-view=machines]", '#page [data-machine-action="move to machine"]']),
     ("memory-agent", ["[data-rail=primary] [data-view=memory]", '[data-memory="agent://helper"] button']),
@@ -3385,7 +3399,7 @@ def settle(browser, timeout=5):
 
 
 def phone_audit():
-    """Every view, sheet, editor, and the drawer at phone sizes: no
+    """Every view, sheet, editor, and the sessions at phone sizes: no
     sideways scroll and touch targets of at least 44 px. Returns what falls
     short."""
     problems = []
@@ -3396,32 +3410,31 @@ def phone_audit():
             phone.wait("the connection", lambda: phone.text("#connected") != "")
             phone.phone(width, height)
             # The most recent session, with tool calls, media, and producers,
-            # from the drawer (a phone's) or the sessions over the transcript
-            # (a phone on its side).
+            # from the sessions shown as the page.
             phone.click("main [data-sidebar-toggle]")
-            phone.wait("the drawer", lambda: count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0)
-            latest = "#drawer nav[aria-label=Sessions] [data-session]"
+            phone.wait("the sessions", lambda: count(phone, "#sidebar nav[aria-label=Sessions] [data-session]") > 0)
+            latest = "#sidebar nav[aria-label=Sessions] [data-session]"
             if phone.script("return document.querySelector(arguments[0]).getAttribute('aria-current')", latest) == "true":
                 # Already open: a tap would switch its tree.
-                phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+                phone.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
             else:
                 click_row(phone, latest)
             phone.wait("the transcript", lambda: phone.text("#transcript") != "")
             settle(phone)
             views = [("transcript", None)] + SHEETS
-            views += [("commands", "menu"), ("drawer", "drawer"), ("subagents", "subagents")] + SCRIPTED
+            views += [("commands", "menu"), ("sessions", "sessions"), ("subagents", "subagents")] + SCRIPTED
             for view, command in views:
                 close_sheet(phone)
                 if command == "menu":
                     phone.click("button[aria-label=Commands]")
-                elif command == "drawer":
+                elif command == "sessions":
                     phone.click("main [data-sidebar-toggle]")
                 elif command == "subagents":
-                    # The drawer with the open session's tree expanded.
+                    # The sessions with the open session's tree expanded.
                     phone.click("main [data-sidebar-toggle]")
                     settle(phone)
                     phone.script(
-                        "const row = document.querySelector('#drawer [data-session][aria-current=true]');"
+                        "const row = document.querySelector('#sidebar [data-session][aria-current=true]');"
                         "if (row && row.getAttribute('aria-expanded') !== 'true') row.click()"
                     )
                 elif isinstance(command, list):
@@ -3493,7 +3506,7 @@ def reconnects():
         assert listeners == 0, "%s popstate listeners were added and not removed" % listeners
         agent = '#agents-sidebar [data-config-path="agents/helper.md"]'
         phone.click("main [data-sidebar-toggle]")
-        phone.click("#drawer [data-view=agents]")
+        phone.click("[data-rail=primary] [data-view=agents]")
         phone.wait("the agents", lambda: page_view(phone) == "agents" and shown(phone, agent))
         phone.click(agent + " button")
         phone.wait("the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
@@ -3890,8 +3903,8 @@ def offer(browser):
 
 
 def browser_section(browser):
-    """Opens Settings › This browser by script clicks (a phone's rail is in
-    its drawer)."""
+    """Opens Settings › This browser by script clicks (a phone's rail hides
+    beside a transcript)."""
     for selector in ("[data-rail=primary] [data-view=settings]", "[data-section=browser]"):
         browser.script("document.querySelector(arguments[0]).click()", selector)
         time.sleep(0.4)
@@ -3985,9 +3998,9 @@ def install_on_phones():
             phone.go(LINK)
             phone.wait("the connection", lambda: phone.text("#connected") != "")
             # A phone opens on its sessions; the banner is under them.
-            phone.wait("the sessions", lambda: count(phone, "#drawer") == 1)
-            phone.script("document.querySelector('[data-drawer-backdrop]').click()")
-            phone.wait("the sessions closed", lambda: count(phone, "#drawer") == 0)
+            phone.wait("the sessions", lambda: count(phone, SESSIONS_PAGE) == 1)
+            phone.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
+            phone.wait("the sessions closed", lambda: count(phone, SESSIONS_PAGE) == 0)
             if agent is None:
                 phone.script(FAKE_PROMPT, "dismissed")
             phone.wait("the install banner", lambda: count(phone, "#install-banner") == 1)
@@ -4360,9 +4373,9 @@ def projects(browser):
 
 
 def phone_section_of(phone, session):
-    """The section key a session's row is listed under in the drawer."""
+    """The section key a session's row is listed under in the sessions."""
     return phone.script(
-        "const r = document.querySelector('#drawer [data-session-row=\"' + arguments[0] + '\"]');"
+        "const r = document.querySelector('#sidebar [data-session-row=\"' + arguments[0] + '\"]');"
         "return r && r.closest('[data-project-section]').dataset.projectSection",
         session,
     )
@@ -4378,44 +4391,44 @@ def projects_phone():
         phone.go(LINK)
         phone.wait("the connection", lambda: phone.text("#connected") != "")
         # A phone opens on its sessions, over a new session.
-        phone.wait("the drawer", lambda: count(phone, "#drawer [data-project-section]") >= 2)
+        phone.wait("the sessions", lambda: count(phone, "#sidebar [data-project-section]") >= 2)
         project = phone.script(
-            "const h = document.querySelector('#drawer [data-project-header]:not([data-project-header=none])');"
+            "const h = document.querySelector('#sidebar [data-project-header]:not([data-project-header=none])');"
             "return h ? h.dataset.projectHeader : null"
         )
         assert project, "no project section"
-        target = '#drawer [data-project-header="%s"]' % project
+        target = '#sidebar [data-project-header="%s"]' % project
         long_press(phone, target + " [data-section-toggle]")
         phone.wait("the header's buttons", lambda: count(phone, target + " [data-header-edit]") == 1)
         phone.shot("phone-project-header")
         row = phone.script(
-            "const r = document.querySelector('#drawer [data-project-section=none] [data-session-row]');"
+            "const r = document.querySelector('#sidebar [data-project-section=none] [data-session-row]');"
             "return r ? r.dataset.sessionRow : null"
         )
-        long_press(phone, '#drawer [data-session-row="%s"] [data-session]' % row)
-        phone.wait("the row's actions", lambda: count(phone, "#drawer [data-delete-actions] [data-row-menu]") == 1)
+        long_press(phone, '#sidebar [data-session-row="%s"] [data-session]' % row)
+        phone.wait("the row's actions", lambda: count(phone, "#sidebar [data-delete-actions] [data-row-menu]") == 1)
         labels = phone.script(
-            "return [...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => b.getAttribute('aria-label'))"
+            "return [...document.querySelectorAll('#sidebar [data-delete-actions] button')].map((b) => b.getAttribute('aria-label'))"
         )
         assert labels == ["More actions", "Rename", "Delete", "Cancel"], labels
         # A narrow phone shows the four as icons, on one line.
         tops = phone.script(
-            "return [...new Set([...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => Math.round(b.getBoundingClientRect().top)))]"
+            "return [...new Set([...document.querySelectorAll('#sidebar [data-delete-actions] button')].map((b) => Math.round(b.getBoundingClientRect().top)))]"
         )
         assert len(tops) == 1, "the row's actions wrap: %s" % tops
         fits(phone, "the row's actions")
         phone.shot("phone-row-actions")
-        phone.click("#drawer [data-actions-cancel]")
-        drag_row(phone, '#drawer [data-session-row="%s"] [data-session]' % row, target + " [data-section-toggle]", touch=True)
+        phone.click("#sidebar [data-actions-cancel]")
+        drag_row(phone, '#sidebar [data-session-row="%s"] [data-session]' % row, target + " [data-section-toggle]", touch=True)
         phone.wait("the moved row", lambda: phone_section_of(phone, row) == "project:" + project)
         print("phone: long presses show the header's and the row's buttons; a finger drags a row onto a header")
         # The ⋮ a long press reveals opens a sheet from the bottom, the
         # screen's width, with rows a finger can hit; a tap outside closes
         # it, and its Move to project… moves the row back out.
-        long_press(phone, '#drawer [data-session-row="%s"] [data-session]' % row)
-        phone.wait("the row's ⋮", lambda: count(phone, "#drawer [data-delete-actions] [data-row-menu]") == 1)
-        menu = "#drawer [data-row-menu-list]"
-        phone.click("#drawer [data-delete-actions] [data-row-menu]")
+        long_press(phone, '#sidebar [data-session-row="%s"] [data-session]' % row)
+        phone.wait("the row's ⋮", lambda: count(phone, "#sidebar [data-delete-actions] [data-row-menu]") == 1)
+        menu = "#sidebar [data-row-menu-list]"
+        phone.click("#sidebar [data-delete-actions] [data-row-menu]")
         phone.wait("the row's sheet", lambda: count(phone, menu) == 1)
         frame = phone.script(
             "const m = document.querySelector(arguments[0]).getBoundingClientRect();"
@@ -4426,10 +4439,10 @@ def projects_phone():
         assert "Move to project…" in phone.text(menu), phone.text(menu)
         fits(phone, "the row's sheet")
         phone.shot("phone-row-menu")
-        phone.click("#drawer [data-row-menu-backdrop]")
+        phone.click("#sidebar [data-row-menu-backdrop]")
         phone.wait("the sheet closed by a tap outside", lambda: count(phone, menu) == 0)
-        assert count(phone, "#drawer") == 1, "the tap outside closed the drawer"
-        phone.click("#drawer [data-delete-actions] [data-row-menu]")
+        assert count(phone, SESSIONS_PAGE) == 1, "the tap outside closed the sessions"
+        phone.click("#sidebar [data-delete-actions] [data-row-menu]")
         phone.wait("the row's sheet", lambda: count(phone, menu) == 1)
         phone.click(menu + " [data-menu-item=move]")
         phone.wait("the picker", lambda: count(phone, "#sheet [data-move-to]") >= 2)
@@ -4739,7 +4752,7 @@ def basics(browser):
 
 
 def narrow(browser):
-    """A phone-sized window: no sideways scroll, the sessions in a drawer."""
+    """A phone-sized window: no sideways scroll, the sessions as the page."""
     browser.resize(375, 800)
     time.sleep(0.5)
     overflow = browser.script(
@@ -4747,12 +4760,12 @@ def narrow(browser):
     )
     assert overflow <= 0, "the page scrolls sideways by %s px" % overflow
     browser.click("main [data-sidebar-toggle]")
-    browser.wait("the drawer", lambda: browser.text("#drawer") != "")
+    browser.wait("the sessions", lambda: count(browser, SESSIONS_PAGE) == 1 and browser.text("#sidebar") != "")
     browser.shot("narrow-sessions")
-    browser.script("document.querySelector('[data-drawer-backdrop]').click()")
-    browser.wait("the closed drawer", lambda: count(browser, "#drawer") == 0)
+    browser.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
+    browser.wait("the closed sessions", lambda: count(browser, SESSIONS_PAGE) == 0)
     browser.shot("narrow")
-    print("the narrow layout fits and opens the sessions in a drawer")
+    print("the narrow layout fits and shows the sessions as the page")
 
 
 def foreign_origin(browser):

@@ -11,7 +11,7 @@ reply, opens both tool calls, and saves `web-light.png` and `web-dark.png`
 at 1280×800, and `web-phone-light.png` and `web-phone-dark.png` at 390×844.
 
 With `all`, it also opens every view of the rail, every Settings section,
-an editor, every sheet and menu, and the phone's drawer, at desktop,
+an editor, every sheet and menu, and the phone's sessions, at desktop,
 phone, and phone-landscape sizes, and saves each in light and dark under
 `<output-dir>/all/`, then the connect screen, for reviewing the page's look
 as a whole. First it starts three more sessions on the runtime cards, so
@@ -223,7 +223,7 @@ CLICKS = [
     ("commands", "button[aria-label=Commands]"),
     ("message-menu", "#transcript [data-action=user-menu]"),
     ("connection", "[data-rail] button[aria-haspopup=dialog]"),
-    ("drawer", "main [data-sidebar-toggle]"),
+    ("sessions", "main [data-sidebar-toggle]"),
 ]
 # The rail's views, and the Settings sections.
 VIEWS = ["agents", "settings", "machines", "memory"]
@@ -242,12 +242,12 @@ def close_all():
         "const m = document.querySelector('[data-row-menu-backdrop]'); if (m) m.click();"
         "const s = document.querySelector('#sheet h2 ~ button'); if (s) s.click();"
         "const c = document.querySelector('#connection-close'); if (c) c.click();"
-        "const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click();"
+        "const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click();"
     )
     time.sleep(0.3)
     view("chat")
-    # A phone's rail opens Chat on its sessions, in the drawer.
-    browser.script("const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click();")
+    # A phone's rail opens Chat on its sessions, as the page.
+    browser.script("const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click();")
     time.sleep(0.3)
     browser.script(
         "const c = document.querySelector('#composer');"
@@ -435,30 +435,30 @@ def projects_showcase(size, width):
     the editor and its emoji picker, New session's project picker, and a
     project's delete."""
     close_all()
-    drawer = width < 1024
-    scope = "#drawer" if drawer else "#sidebar"
+    narrow = width < 1024
+    scope = "#sidebar"
     greeter = project_id("greeter")
     website = project_id("website")
-    if drawer:
+    if narrow:
         click("main [data-sidebar-toggle]")
     both_themes("%s-project-sections" % size)
     click('%s [data-project-header="%s"] [data-section-toggle]' % (scope, website))
     both_themes("%s-project-folded" % size)
     click('%s [data-project-header="%s"] [data-section-toggle]' % (scope, website))
     header = '%s [data-project-header="%s"]' % (scope, greeter)
-    if drawer:
+    if narrow:
         long_press(header + " [data-section-toggle]")
     else:
         hover(header + " [data-section-toggle]", dx=-60)
     both_themes("%s-project-header-actions" % size)
-    if not drawer:
+    if not narrow:
         drag_and_shoot(
             row_of("Brainstorm release names") + " [data-session]",
             header + " [data-section-toggle]",
             "%s-project-drag" % size,
         )
     close_all()
-    if drawer:
+    if narrow:
         click("main [data-sidebar-toggle]")
         long_press(row_of("Brainstorm release names", scope) + " [data-session]")
         both_themes("%s-project-row-actions" % size)
@@ -473,7 +473,7 @@ def projects_showcase(size, width):
         click("[data-row-menu-list] [data-menu-item=move]")
     both_themes("%s-project-move" % size)
     close_all()
-    if drawer:
+    if narrow:
         click("main [data-sidebar-toggle]")
         long_press(header + " [data-section-toggle]")
     else:
@@ -488,7 +488,7 @@ def projects_showcase(size, width):
     field_value("#emoji-search", "heart")
     both_themes("%s-project-emoji-search" % size)
     close_all()
-    if drawer:
+    if narrow:
         click("main [data-sidebar-toggle]")
     click(header + " [data-header-new]")
     browser.wait("the cards", lambda: browser.count("#new-session-project") == 1)
@@ -496,7 +496,7 @@ def projects_showcase(size, width):
     both_themes("%s-project-new-session" % size)
     click(row_of("Fix the greeting in greet.py") + " [data-session]")
     close_all()
-    if drawer:
+    if narrow:
         click("main [data-sidebar-toggle]")
         long_press(header + " [data-section-toggle]")
     else:
@@ -512,12 +512,12 @@ def badges_and_titles(size, width):
     (offered by the hover's pencil, or a phone's long press), emptied, and
     the title bar's title as a field, emptied."""
     close_all()
-    drawer = width < 1024
-    if drawer:
+    narrow = width < 1024
+    if narrow:
         click("main [data-sidebar-toggle]")
     both_themes("%s-session-badges" % size)
-    row = row_of("Deploy the site from the studio", "#drawer" if drawer else "#sidebar")
-    if drawer:
+    row = row_of("Deploy the site from the studio", "#sidebar")
+    if narrow:
         long_press(row + " [data-session]")
         both_themes("%s-row-actions" % size)
         click(row + " ~ [data-delete-actions-frame] [data-rename-reveal]")
@@ -606,7 +606,7 @@ if ALL:
             time.sleep(1.2)
             both_themes("%s-settings-%s" % (size, section))
         # The views of 2026-10: an agent open beside the agents (and the
-        # agents in a narrow window's drawer), the machines' Add a runtime,
+        # agents as a narrow window's page), the machines' Add a runtime,
         # Move to…, and a drag, and a project folder open, its delete's
         # confirmation, and an agent's memory.
         close_all()
@@ -615,7 +615,7 @@ if ALL:
         both_themes("%s-agents-open" % size)
         if width < 1024:
             click("#page [data-sidebar-toggle]")
-            both_themes("%s-agents-drawer" % size)
+            both_themes("%s-agents-list" % size)
         close_all()
         view("machines")
         click("#machines-add")
@@ -649,10 +649,14 @@ if ALL:
         time.sleep(0.5)
         for name, selector in CLICKS:
             close_all()
-            if name == "drawer" and width >= 1024:
+            if name == "sessions" and width >= 1024:
                 # A desktop pins the sidebar instead (photographed below).
                 continue
-            elif browser.count(selector):
+            if name == "connection" and width < 640:
+                # A phone's rail shows beside the sessions.
+                browser.script("document.querySelector('main [data-sidebar-toggle]').click()")
+                time.sleep(0.3)
+            if browser.count(selector):
                 browser.script("document.querySelector(arguments[0]).click()", selector)
             else:
                 continue

@@ -46,29 +46,31 @@ impl View {
     }
 
     /// Whether the view has a list beside it that the sidebar button shows
-    /// and hides: Chat's sessions, and Agents' agents.
+    /// and hides: Chat's sessions, and Agents' agents. A desktop pins it
+    /// beside the transcript (the agent open); a narrower window shows it
+    /// as the page in their place.
     pub const fn has_sidebar(self) -> bool {
         matches!(self, Self::Chat | Self::Agents)
     }
 
-    /// Where a phone shows the view's list, its second level, which a tap
+    /// Where a phone shows the view's list, its first level, which a tap
     /// on its rail button shows before any of its items: Chat's sessions
-    /// in the drawer beside the rail; the agents, the Settings sections,
-    /// and the memories as the page itself until one opens. Machines has
-    /// no list.
+    /// in its sidebar, shown as the page; the agents, the Settings
+    /// sections, the memories, and the cron jobs as the page itself until
+    /// one opens. Machines has no list.
     pub const fn phone_list(self) -> Option<PhoneList> {
         match self {
-            Self::Chat => Some(PhoneList::Drawer),
+            Self::Chat => Some(PhoneList::Sidebar),
             Self::Agents | Self::Settings | Self::Memory | Self::Cron => Some(PhoneList::Page),
             Self::Machines => None,
         }
     }
 
-    /// Whether the drawer stays open after a tap on the view's rail
-    /// button, on a `phone` (whose rail is in the drawer): for a list the
-    /// drawer holds. Anywhere else the tap closes the drawer.
-    pub const fn rail_keeps_drawer(self, phone: bool) -> bool {
-        phone && matches!(self.phone_list(), Some(PhoneList::Drawer))
+    /// Whether a tap on the view's rail button opens its sidebar, on a
+    /// `phone`: for a list the sidebar holds. Anywhere else the tap closes
+    /// the sidebar.
+    pub const fn rail_opens_sidebar(self, phone: bool) -> bool {
+        phone && matches!(self.phone_list(), Some(PhoneList::Sidebar))
     }
 
     /// The `data-view` value of its rail button and page.
@@ -87,8 +89,8 @@ impl View {
 /// Where a phone shows a view's list; see [`View::phone_list`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhoneList {
-    /// In the drawer, beside the rail.
-    Drawer,
+    /// In the sidebar, which fills the page beside the rail.
+    Sidebar,
     /// As the page, until one of its items opens over it.
     Page,
 }
@@ -167,9 +169,9 @@ impl SettingsSection {
 /// Something open that browser Back closes, innermost last.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Layer {
-    /// The phone's drawer, or the sessions sliding over a tablet's
-    /// transcript.
-    Drawer,
+    /// The sidebar shown as the page below desktop widths: the sessions in
+    /// place of the transcript, or the agents in place of the agent open.
+    Sidebar,
     /// A phone's Settings section, opened from the section list.
     Section,
     /// A document, memory, or cron job open in its editor.
@@ -337,9 +339,9 @@ mod tests {
 
     #[test]
     fn the_history_gains_an_entry_per_opened_layer_and_gives_back_closed_ones() {
-        use Layer::{Drawer, Editor, Section};
+        use Layer::{Editor, Section, Sidebar};
         assert_eq!(reconcile(&[], &[]), HistoryStep::Keep);
-        assert_eq!(reconcile(&[], &[Drawer]), HistoryStep::Push(vec![Drawer]));
+        assert_eq!(reconcile(&[], &[Sidebar]), HistoryStep::Push(vec![Sidebar]));
         assert_eq!(
             reconcile(&[Section], &[Section, Editor]),
             HistoryStep::Push(vec![Editor])
@@ -349,34 +351,34 @@ mod tests {
             HistoryStep::Back(1)
         );
         assert_eq!(reconcile(&[Section, Editor], &[]), HistoryStep::Back(2));
-        // Closing the drawer by choosing a view that opens a section: back
+        // Closing the sidebar by choosing a view that opens a section: back
         // first, the section's entry once the browser is there.
-        assert_eq!(reconcile(&[Drawer], &[Section]), HistoryStep::Back(1));
+        assert_eq!(reconcile(&[Sidebar], &[Section]), HistoryStep::Back(1));
         assert_eq!(
-            reconcile(&[Drawer, Section], &[Drawer, Section]),
+            reconcile(&[Sidebar, Section], &[Sidebar, Section]),
             HistoryStep::Keep
         );
     }
 
     #[test]
     fn a_phone_rail_tap_shows_the_views_list_and_back_returns_to_it() {
-        use Layer::{Drawer, Editor, Section};
-        // A phone's rail is in the drawer: a tap on Chat keeps it open on
-        // the sessions, a tap on a view whose list is its page closes it.
-        assert!(View::Chat.rail_keeps_drawer(true));
+        use Layer::{Editor, Section, Sidebar};
+        // A tap on Chat opens a phone's sessions as the page, a tap on a
+        // view whose list is its page closes them.
+        assert!(View::Chat.rail_opens_sidebar(true));
         assert!(
-            !View::Chat.rail_keeps_drawer(false),
-            "a wider window has its rail outside"
+            !View::Chat.rail_opens_sidebar(false),
+            "a wider window opens on the transcript"
         );
         let after_tap = |view: View| -> Vec<Layer> {
-            if view.rail_keeps_drawer(true) {
-                vec![Drawer]
+            if view.rail_opens_sidebar(true) {
+                vec![Sidebar]
             } else {
                 Vec::new()
             }
         };
         assert_eq!(
-            reconcile(&[Drawer], &after_tap(View::Chat)),
+            reconcile(&[Sidebar], &after_tap(View::Chat)),
             HistoryStep::Keep
         );
         for view in [
@@ -386,8 +388,11 @@ mod tests {
             View::Cron,
             View::Machines,
         ] {
-            assert!(!view.rail_keeps_drawer(true), "{view:?}");
-            assert_eq!(reconcile(&[Drawer], &after_tap(view)), HistoryStep::Back(1));
+            assert!(!view.rail_opens_sidebar(true), "{view:?}");
+            assert_eq!(
+                reconcile(&[Sidebar], &after_tap(view)),
+                HistoryStep::Back(1)
+            );
         }
         // Choosing an item of a page list opens a detail Back closes, back
         // to the list.

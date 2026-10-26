@@ -131,8 +131,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     transcript, and the agents beside the open agent. The sidebar button
     hides and shows it, and the browser remembers the choice (one for
     both views).
-  - **640 to 1023 px:** the rail stays; the sidebar button slides the
-    sessions over the transcript.
+  - **640 to 1023 px:** the rail stays; the sidebar button shows the
+    sessions as the page in place of the transcript (the agents in place
+    of the open agent), and hides them again. Choosing one, or browser
+    Back, hides them too.
   - **Narrower, a phone:** see [Phones](#phones).
 - **Sheets.** The session's panels open as a sheet on the right (from the
   bottom on a phone): approvals, the agent, model, permission mode, and
@@ -756,14 +758,19 @@ changes (`crons.changed`), from any client or agent.
   - **Status line:** a thin line above the bottom bar, only while
     approvals wait (tap the badge to answer), or for a few seconds after a
     status message.
-- **The drawer.** The page opens with it, its sessions over a new
-  session (a notification's session opens instead). The sidebar button
-  opens it again from the left over the dimmed page: the rail as an icon strip, with the theme button at its
-  foot, beside the sessions, with the open session's subagents nested
-  under its row. A tap outside, browser Back, or choosing a session or a
-  view closes it; choosing Chat leaves it open on the sessions, and a tap
-  on the open session's row switches its tree and leaves it open too. It opens only from the button: a swipe from the edge is
-  the browser's Back. A long press on a session's row, let go in place,
+- **Two levels.** Each view has a first level, its list, and a second
+  level, the item open in it. The first level fills the screen beside the
+  rail, which stays an icon strip with the theme button at its foot; the
+  second level fills the whole screen, without the rail, and the sidebar
+  button at the left of its title bar goes back up to the list.
+- **The sessions.** The page opens on them, over a new session (a
+  notification's session opens instead). In a session, the sidebar button
+  shows them again with the rail, the open session's subagents nested
+  under its row; browser Back, the sidebar button in their title bar,
+  choosing a session, or choosing another view hides them. Choosing Chat
+  on the rail shows the sessions, and a tap on the open session's row
+  switches its tree and leaves them shown. A swipe from the edge is the
+  browser's Back. A long press on a session's row, let go in place,
   reveals its **⋮**, a sheet with **Move to project…**, which lists the
   projects, its **Rename**, which makes its title a field, and its
   **Delete**, then the confirmation; held
@@ -771,19 +778,20 @@ changes (`crons.changed`), from any client or agent.
   project's header shows its pencil and trash.
 - **List first.** A view with a list shows the list when you choose it
   on the rail, and opens an item only when you choose it there: Chat's
-  sessions stay in the drawer; the agents, the Settings sections, and the
-  memories fill the screen. Machines & runtimes has no list and opens at
-  once.
-- **Agents:** the agent open fills the screen, with the back arrow to the
-  agents; the sidebar button opens the drawer with the rail beside the
-  agents.
-- **Other views** fill the screen under the same title bar. Lists open
-  their details one level at a time, such as a Settings section, then a
-  document: the back arrow in the title bar, or browser Back, goes up one
-  level. An editor fills the screen with **Apply** or **Save** and
-  **Cancel** at its foot. Only Chat has the composer and the bottom bar.
+  sessions, the agents, the Settings sections, the memories, and the
+  scheduled prompts. Machines & runtimes has no list: it opens at once,
+  beside the rail.
+- **Agents:** the agent open fills the screen; the sidebar button shows
+  the agents with the rail, and browser Back returns to the agent.
+- **Other views** fill the screen under the same title bar. A Settings
+  section, a memory, or a scheduled prompt open is the second level: the
+  sidebar button, or browser Back, returns to the list. A document open
+  in a Settings section is a third level, with a back arrow in the title
+  bar up to the section. An editor fills the screen with **Apply** or
+  **Save** and **Cancel** at its foot. Only Chat has the composer and the
+  bottom bar.
 - **On its side** (about 844×390), a phone gets the 640 px layout: the
-  rail stays, the sessions slide over, and the bottom bar sits beside the
+  rail stays, the sessions show as the page, and the bottom bar sits beside the
   composer.
 - **The on-screen keyboard.** The page sizes itself to what the keyboard
   leaves visible, so the composer and an open sheet stay above it. While

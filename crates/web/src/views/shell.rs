@@ -1,17 +1,18 @@
 //! The page's frame around the views: the rail that switches them, the
-//! drawer that carries the rail and the sessions on a phone (and the
-//! sessions over a tablet's transcript; the agents, in Agents), and the
-//! full-page views other than Chat.
+//! sidebar button, and the full-page views other than Chat.
 //!
-//! Widths: below 640 px (Tailwind's `sm`) a phone, whose rail is in the
-//! drawer; from 640 px the rail stays on the left; from 1024 px (`lg`) the
-//! sessions sidebar is pinned beside the transcript.
+//! Widths: below 640 px (Tailwind's `sm`) a phone, which shows the rail
+//! beside a view's first level (its list) only, and gives an item open
+//! the whole screen; from 640 px the rail stays on the left; below
+//! 1024 px (`lg`) the sessions (the agents, in Agents) show as the page in
+//! place of the transcript (the agent open), and from 1024 px they are
+//! pinned beside it.
 
 use leptos::prelude::*;
 
 use super::{
-    ICON_BUTTON, NOTE, ROW, SessionList,
-    agents::{AgentList, agents_page},
+    ICON_BUTTON, NOTE, ROW,
+    agents::agents_page,
     cron::cron_page,
     events_sheet,
     machines::machines_page,
@@ -43,13 +44,11 @@ pub fn view_icon(view: View) -> crate::icons::Icon {
 }
 
 /// The rail: the views, then the connection and the theme at its foot.
-/// `primary` is the one always in the page (the drawer has a second).
 #[component]
 pub fn Rail(
     workspace: Workspace,
     connection: Connection,
     theme: RwSignal<ThemePreference>,
-    primary: bool,
 ) -> impl IntoView {
     let buttons = View::ALL
         .into_iter()
@@ -87,77 +86,51 @@ pub fn Rail(
         <nav
             aria-label="Views"
             class="rail flex w-14 shrink-0 flex-col items-center gap-1 border-r border-toasted bg-parchment py-2 dark:border-ember dark:bg-char"
-            data-rail=if primary { "primary" } else { "drawer" }
+            data-rail="primary"
         >
             <img src="icons/icon.svg" alt="" class="mb-1 h-7 w-7 short:hidden" />
             {buttons}
             <span class="flex-1"></span>
-            <ConnectionStatus connection=connection compact=true primary=primary />
+            <ConnectionStatus connection=connection compact=true primary=true />
             <ThemeToggle theme=theme class=RAIL_BUTTON in_rail=true />
         </nav>
     }
 }
 
-/// The sessions over the page: a phone's drawer (the rail beside the
-/// sessions, 85 % wide), or the sessions sliding over a tablet's
-/// transcript. A desktop pins them instead. In Agents it carries the
-/// agents in their place.
-#[component]
-pub fn Drawer(
-    workspace: Workspace,
-    connection: Connection,
-    theme: RwSignal<ThemePreference>,
-) -> impl IntoView {
-    view! {
-        <Show when=move || workspace.sidebar_open.get()>
-            <div
-                class="fixed inset-0 z-30 bg-espresso/30 lg:hidden dark:bg-night/60"
-                data-drawer-backdrop
-                on:click=move |_| workspace.sidebar_open.set(false)
-            ></div>
-            <div
-                id="drawer"
-                role="dialog"
-                aria-label=move || sidebar_label(workspace.view.get())
-                class="sheet-frame fixed top-0 left-0 z-40 flex w-[85%] max-w-sm shadow-xl sm:bottom-0 sm:left-14 sm:w-80 lg:hidden"
-            >
-                <div class="flex sm:hidden">
-                    <Rail workspace=workspace connection=connection theme=theme primary=false />
-                </div>
-                <div class="flex min-w-0 flex-1 flex-col overflow-y-auto border-r border-toasted bg-parchment dark:border-ember dark:bg-char">
-                    {move || match workspace.view.get() {
-                        View::Agents => view! { <AgentList workspace=workspace /> }.into_any(),
-                        _ => view! { <SessionList workspace=workspace /> }.into_any(),
-                    }}
-                </div>
-            </div>
-        </Show>
-    }
-}
-
-/// What the sidebar (or the drawer) holds in `view`.
+/// What the sidebar holds in `view`: the sessions in Chat, else the
+/// view's list a phone's sidebar button goes back up to.
 fn sidebar_label(view: View) -> &'static str {
-    if view == View::Agents {
-        "Agents"
-    } else {
+    if view == View::Chat {
         "Sessions"
+    } else {
+        view.label()
     }
 }
 
 /// The sidebar button: it shows and hides the sessions, or the agents in
-/// Agents.
+/// Agents; in the other views, on a phone's second level, it goes back up
+/// to the view's list.
 #[component]
-pub fn SidebarButton(workspace: Workspace, #[prop(optional)] class: &'static str) -> impl IntoView {
+pub fn SidebarButton(workspace: Workspace) -> impl IntoView {
     let shown = move || {
         workspace.sidebar_open.get()
             || (workspace.view.get().has_sidebar() && workspace.sidebar_pinned.get())
     };
+    let title = move || {
+        let view = workspace.view.get();
+        let label = sidebar_label(view);
+        if view.has_sidebar() {
+            format!("Show or hide the {}", label.to_lowercase())
+        } else {
+            format!("Back to {label}")
+        }
+    };
     view! {
         <button
             type="button"
-            class=format!("{ICON_BUTTON} {class}")
+            class=ICON_BUTTON
             aria-label=move || sidebar_label(workspace.view.get())
-            title=move || format!("Show or hide the {}", sidebar_label(workspace.view.get()).to_lowercase())
+            title=title
             data-sidebar-toggle
             aria-expanded=move || shown().to_string()
             on:click=move |_| workspace.toggle_sidebar()
@@ -168,15 +141,26 @@ pub fn SidebarButton(workspace: Workspace, #[prop(optional)] class: &'static str
 }
 
 /// A view other than Chat, as a full page: its title bar, then its
-/// content. A phone's title bar has the sidebar button, and a back arrow
-/// on a detail page.
+/// content. Agents' title bar has the sidebar button, and so has a phone's
+/// second level, to go back up to the list; a detail page has a back
+/// arrow, which on a phone only a third level needs.
 #[component]
 pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
-    let detail = move || {
-        workspace
+    let sidebar_button = move || {
+        let phone = workspace.narrow.get();
+        match workspace.view.get() {
+            // A phone with no agent open shows the agents anyway.
+            View::Agents => !phone || workspace.config_edit.with(Option::is_some),
+            _ => phone && !workspace.at_list(),
+        }
+    };
+    let back = move || {
+        let depth = workspace
             .open_layers()
             .iter()
-            .any(|layer| matches!(layer, Layer::Section | Layer::Editor))
+            .filter(|layer| matches!(layer, Layer::Section | Layer::Editor))
+            .count();
+        depth > usize::from(workspace.narrow.get())
     };
     let title = move || match workspace.view.get() {
         View::Settings if workspace.narrow.get() => workspace
@@ -192,14 +176,10 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
             data-view=move || workspace.view.get().id()
         >
             <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
-                // Agents has a sidebar at every width; elsewhere the
-                // button opens a phone's drawer.
-                {move || if workspace.view.get().has_sidebar() {
-                    view! { <SidebarButton workspace=workspace /> }.into_any()
-                } else {
-                    view! { <SidebarButton workspace=workspace class="sm:hidden" /> }.into_any()
-                }}
-                <Show when=detail>
+                <Show when=sidebar_button>
+                    <SidebarButton workspace=workspace />
+                </Show>
+                <Show when=back>
                     <button
                         type="button"
                         class=ICON_BUTTON

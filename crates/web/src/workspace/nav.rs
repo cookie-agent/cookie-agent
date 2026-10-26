@@ -13,7 +13,7 @@ use crate::{
 
 impl Workspace {
     /// Shows `view`, reading what it lists; `section` picks the Settings
-    /// section. It closes any sheet and the drawer.
+    /// section. It closes any sheet and the sidebar shown as the page.
     pub fn open_view(self, view: View, section: Option<SettingsSection>) {
         self.panel.set(None);
         self.sidebar_open.set(false);
@@ -33,7 +33,7 @@ impl Workspace {
     /// items opens it.
     pub fn open_from_rail(self, view: View) {
         self.open_view(view, None);
-        if view.rail_keeps_drawer(self.narrow.get_untracked()) {
+        if view.rail_opens_sidebar(self.narrow.get_untracked()) {
             self.sidebar_open.set(true);
         }
     }
@@ -117,15 +117,38 @@ impl Workspace {
     }
 
     /// The sidebar button: a desktop pins or hides the sidebar of Chat and
-    /// Agents, remembered in the browser; a narrower window slides the
-    /// sessions (the agents, in Agents) over.
+    /// Agents, remembered in the browser; a narrower window shows the
+    /// sessions (the agents, in Agents) as the page, or hides them. In the
+    /// other views only a phone's second level has it, and it goes back up
+    /// to the view's list.
     pub fn toggle_sidebar(self) {
-        if browser::matches(browser::DESKTOP_QUERY) && self.view.get_untracked().has_sidebar() {
+        let view = self.view.get_untracked();
+        if !view.has_sidebar() {
+            self.close_layer(Layer::Editor);
+            self.close_layer(Layer::Section);
+        } else if browser::matches(browser::DESKTOP_QUERY) {
             let shown = !self.sidebar_pinned.get_untracked();
             browser::store(SIDEBAR_KEY, if shown { "shown" } else { "hidden" });
             self.sidebar_pinned.set(shown);
         } else {
             self.sidebar_open.update(|open| *open = !*open);
+        }
+    }
+
+    /// Whether the open view shows its first level: its list (Machines,
+    /// which has none, at once). A phone shows the rail beside the first
+    /// level only; an item open fills its screen, and the sidebar button
+    /// goes back up.
+    pub fn at_list(self) -> bool {
+        match self.view.get() {
+            View::Chat => self.sidebar_open.get(),
+            View::Agents => self.sidebar_open.get() || self.config_edit.with(Option::is_none),
+            View::Settings => self.settings_section.get().is_none(),
+            View::Memory => {
+                self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
+            }
+            View::Cron => self.cron_form.with(Option::is_none),
+            View::Machines => true,
         }
     }
 
@@ -152,7 +175,7 @@ impl Workspace {
             layers.push(Layer::Editor);
         }
         if self.sidebar_open.get() {
-            layers.push(Layer::Drawer);
+            layers.push(Layer::Sidebar);
         }
         layers
     }
@@ -201,7 +224,7 @@ impl Workspace {
 
     fn close_layer(self, layer: Layer) {
         match layer {
-            Layer::Drawer => self.sidebar_open.set(false),
+            Layer::Sidebar => self.sidebar_open.set(false),
             Layer::Section => self.settings_section.set(None),
             Layer::Editor => {
                 self.config_edit.set(None);
