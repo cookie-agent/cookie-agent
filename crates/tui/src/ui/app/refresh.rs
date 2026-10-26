@@ -570,6 +570,7 @@ impl App {
                 if self.tree_root == Some(session_id) && self.selection_generation == generation {
                     let mut tree = *tree;
                     self.patch_tree_titles(&mut tree);
+                    cookie_agent_client_state::rows::order_tree(&mut tree);
                     self.subscribe_tree_sessions(&tree);
                     self.tree = Some(tree);
                     self.clamp_tree_view();
@@ -1054,6 +1055,7 @@ impl App {
                 {
                     let mut tree = result.tree;
                     self.patch_tree_titles(&mut tree);
+                    cookie_agent_client_state::rows::order_tree(&mut tree);
                     self.subscribe_tree_sessions(&tree);
                     self.tree = Some(tree);
                     self.clamp_tree_view();
@@ -1415,6 +1417,8 @@ impl App {
         {
             node.session.status = status;
             node.session.last_event_seq = seq;
+            // A subagent that starts or ends a run moves in the order.
+            cookie_agent_client_state::rows::order_tree(tree);
         }
     }
 

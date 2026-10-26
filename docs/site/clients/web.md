@@ -321,7 +321,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 - **Subagents.** Only the open session's row has its subagents nested
   under it, each with its status (a turning circle while it runs, a check,
   failed, or cancelled), its agent, its short handle, and its task. Click
-  one to open it. Subagents have no trash: they go with their root. The
+  one to open it. Under each session its subagents come in the session
+  list's order: those that run, are held, or wait first, then the others,
+  each group newest activity first. Subagents have no trash: they go with
+  their root. The
   tree has two states; click the open session's own row, whose chevron
   turns with it, to switch between them (clicking another session still
   opens it), and the browser remembers the choice for each session. A

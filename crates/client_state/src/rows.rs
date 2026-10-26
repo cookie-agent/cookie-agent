@@ -106,6 +106,22 @@ pub fn order_sessions(sessions: &mut [SessionMeta]) {
     });
 }
 
+/// Orders a session tree's subagents as [`order_sessions`] orders a list,
+/// under each session at every depth: the active ones first (running, held,
+/// or waiting on a producer), then the rest, each group newest activity
+/// first. The root keeps its place.
+pub fn order_tree(tree: &mut cookie_agent_protocol::SessionTree) {
+    tree.children.sort_by_key(|child| {
+        (
+            !session_is_active(&child.session),
+            std::cmp::Reverse(child.session.last_activity),
+        )
+    });
+    for child in &mut tree.children {
+        order_tree(child);
+    }
+}
+
 /// The agent snapshot the system prompt row shows: the latest run's, else
 /// the one the session was created with; and whether it is the run's.
 pub fn system_prompt_source(state: &SessionState) -> Option<(&AgentSnapshot, bool)> {
@@ -333,35 +349,81 @@ mod tests {
         );
     }
 
+    fn session(name: &str, status: &str, at: &str) -> SessionMeta {
+        serde_json::from_value(serde_json::json!({
+            "session_id": cookie_agent_protocol::SessionId::new_v7(),
+            "origin": {"type": "root"},
+            "short_id": name,
+            "cwd_identity": "/w",
+            "title": null,
+            "last_agent_activity": null,
+            "creation_selection": {
+                "agent": "primary",
+                "model": {"model": "custom.local/test", "variant": null},
+            },
+            "runtime_revision": format!("sha256:{}", "1".repeat(64)),
+            "catalog_revision": format!("sha256:{}", "2".repeat(64)),
+            "provider_state_revision": format!("sha256:{}", "3".repeat(64)),
+            "model_revision": format!("sha256:{}", "4".repeat(64)),
+            "agent_revision": format!("sha256:{}", "5".repeat(64)),
+            "recipe_registry_revision": format!("sha256:{}", "6".repeat(64)),
+            "manifest_revision": format!("sha256:{}", "7".repeat(64)),
+            "title_updated_seq": 0,
+            "last_event_seq": 1,
+            "last_activity": at,
+            "status": status,
+            "skipped_events": [],
+        }))
+        .expect("session meta")
+    }
+
+    #[test]
+    fn subagents_come_in_the_session_list_order_at_every_depth() {
+        let node = |meta: SessionMeta, children: Vec<cookie_agent_protocol::SessionTree>| {
+            cookie_agent_protocol::SessionTree {
+                session: meta,
+                children,
+            }
+        };
+        let mut tree = node(
+            session("root", "running", "2026-10-20T12:00:00Z"),
+            vec![
+                node(
+                    session("done", "completed", "2026-10-20T11:00:00Z"),
+                    Vec::new(),
+                ),
+                node(
+                    session("old-running", "running", "2026-10-20T08:00:00Z"),
+                    vec![
+                        node(
+                            session("deep-done", "completed", "2026-10-20T09:00:00Z"),
+                            Vec::new(),
+                        ),
+                        node(
+                            session("deep-running", "running", "2026-10-20T07:00:00Z"),
+                            Vec::new(),
+                        ),
+                    ],
+                ),
+                node(
+                    session("newer-done", "failed", "2026-10-20T11:30:00Z"),
+                    Vec::new(),
+                ),
+            ],
+        );
+        order_tree(&mut tree);
+        let names = |tree: &cookie_agent_protocol::SessionTree| {
+            tree.children
+                .iter()
+                .map(|child| child.session.short_id.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&tree), ["old-running", "newer-done", "done"]);
+        assert_eq!(names(&tree.children[0]), ["deep-running", "deep-done"]);
+    }
+
     #[test]
     fn active_sessions_come_first_then_the_rest_newest_first() {
-        let session = |name: &str, status: &str, at: &str| -> SessionMeta {
-            serde_json::from_value(serde_json::json!({
-                "session_id": cookie_agent_protocol::SessionId::new_v7(),
-                "origin": {"type": "root"},
-                "short_id": name,
-                "cwd_identity": "/w",
-                "title": null,
-                "last_agent_activity": null,
-                "creation_selection": {
-                    "agent": "primary",
-                    "model": {"model": "custom.local/test", "variant": null},
-                },
-                "runtime_revision": format!("sha256:{}", "1".repeat(64)),
-                "catalog_revision": format!("sha256:{}", "2".repeat(64)),
-                "provider_state_revision": format!("sha256:{}", "3".repeat(64)),
-                "model_revision": format!("sha256:{}", "4".repeat(64)),
-                "agent_revision": format!("sha256:{}", "5".repeat(64)),
-                "recipe_registry_revision": format!("sha256:{}", "6".repeat(64)),
-                "manifest_revision": format!("sha256:{}", "7".repeat(64)),
-                "title_updated_seq": 0,
-                "last_event_seq": 1,
-                "last_activity": at,
-                "status": status,
-                "skipped_events": [],
-            }))
-            .expect("session meta")
-        };
         let mut sessions = vec![
             session("old-idle", "idle", "2026-10-20T08:00:00Z"),
             session("old-running", "running", "2026-10-20T07:00:00Z"),

@@ -130,7 +130,9 @@ impl Workspace {
             match result {
                 Ok(result) => {
                     self.follow_live_sessions(&result.tree);
-                    self.tree.set(Some(result.tree));
+                    let mut tree = result.tree;
+                    cookie_agent_client_state::rows::order_tree(&mut tree);
+                    self.tree.set(Some(tree));
                 }
                 Err(error) => self.status.set(format!(
                     "session tree unavailable: {}",
