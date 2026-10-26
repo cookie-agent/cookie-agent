@@ -1250,3 +1250,106 @@ a model run's steered input does, with no mark of its own.
 - **Clients** no longer mark steered messages: the TUI's and the web
   client's *↪ steered into the agent's running turn* are gone. The
   `steered` record stays in the session log.
+
+## Addendum (2026-10-25): documents as templates over a declaration
+
+Status: **approved** (2026-10-25).
+
+User request: one ACP agent declaration (`claude`) serves several agent
+documents, each with its own cookie permissions, mode, and body. User
+decisions of the same day: the key is `acp.agent`; a declaration with no
+document of its own ID stays an agent with the default document.
+
+```yaml
+# ~/.cookie-agent/agents/claude-review.md
+---
+description: Claude Code, read-only reviewer
+mode: subagent
+acp:
+  agent: claude          # a [runtimes.*.acp.agents.claude] declaration
+  mode: plan
+permissions:
+  read: allow
+  write: deny
+  bash: { "git diff *": allow, "*": ask }
+---
+You review the change you are given and report findings; you do not edit.
+```
+
+- **`acp.agent`** names the declaration the document runs: the key of a
+  `[runtimes.<id>.acp.agents.<agent>]` table. It follows the agent ID
+  grammar; anything else fails the load (`acp.agent`, strict like the
+  block's other fields). Absent, it is the document's own ID, so
+  `claude.md` with `acp: {}` keeps meaning what it means today.
+- **It names a declaration, never a document.** `acp.agent: claude` runs
+  the runtimes' `claude` whether or not `claude.md` exists; settings are not
+  inherited from it, and documents cannot chain.
+- **The document's ID is the agent's ID.** `claude-review` is listed,
+  picked, delegated to, and scheduled by that ID; its synthetic model is
+  `acp/claude-review`, and an ACP session record's `agent` is it while
+  `runtime_agent` is the declaration (`claude`).
+- **Bare declarations stay agents.** A declared ID with no document of that
+  ID is the agent of that ID with the default document, as now. A
+  `claude.md` with `enabled: false` hides it, and the templates over
+  `claude` are unaffected.
+- **Shadowing** (user decision of the same day: a diagnostic, not a
+  failed load). A document whose ID a runtime declares wins over the
+  declaration as before. With an `acp` block naming another declaration
+  (`claude.md` with `acp.agent: codex`), the `claude` declaration is no
+  agent of its own and `ConfigStatus.diagnostics` says so, as for a
+  document without an `acp` block.
+- **Offers and placement.** A document's offers are the runtimes that
+  declare its `acp.agent` (the engine's `AcpOffers`, relabelled with the
+  document's ID). Placement, the refusals, availability, and the
+  one-offering-runtime rule for `runtime.attach` are unchanged, judged
+  against those runtimes.
+- **One process per declaration and runtime.** `ProcessKey` already names
+  the runtime and the declaration, so `claude` and `claude-review` share
+  one agent process, each cookie session with its own ACP session.
+  Everything a template sets is per ACP session already: the starting mode
+  and config options, `models`, `hide_tools` (the MCP bridge is started
+  per session), permissions, and the first prompt's body.
+- **Switching agents in a session** from one template to another starts a
+  new ACP session: resume and load take the latest record of the session's
+  current agent, and only when its `runtime_id` and `runtime_agent` are
+  the ones that run the agent now (a document whose `acp.agent` changed
+  starts afresh, with the diagnostic a move between runtimes gives).
+- **What the agent reports is the declaration's.** `acp-agents.json` (the
+  last options and input media) is keyed by declaration and runtime, not
+  by the cookie agent: `KnownAgents::update` is called with
+  `RuntimeAgent::agent` instead of `RuntimeAgent::id`. Existing entries
+  are valid as they are, since every one has the two equal. Every
+  template's `AgentRuntime.options` is that state with its own
+  `acp.mode`, `acp.config`, and `models` applied; the option IDs the
+  configuration diagnostics use are the declaration's.
+- **Undeclared.** A document whose `acp.agent` no runtime declares yet is
+  accepted provisionally with the diagnostic of today, which clears once a
+  runtime reports that declaration; delegation targets resolve the same
+  way.
+- **Out of scope.** `command` and `env` stay with the declaration, and the
+  templates share its process, so a template cannot change them (a
+  different `CLAUDE_CONFIG_DIR` is a second declaration).
+
+**Protocol.** No schema change. `AgentRuntime.agent` already carries the
+declaration's key; it now differs from the agent's ID for a template, and
+its documentation says so. Client protocol minor bump, for clients that
+show it: the TUI's and the web's agent pickers and `list_agents` name the
+declaration when it differs (`[claude on local]`, `acp agent: claude`).
+Plugin and runtime protocols unchanged; the history format is unchanged
+(`AcpSessionRecord` already has `runtime_agent`).
+
+**Docs.** The [ACP agents guide](../extend/acp-agents.md) gets a
+*Several documents over one agent* section with the example above; the
+agent document reference in [agents](../extend/agents.md) lists
+`acp.agent`.
+
+**Tests.** Two documents over one declaration: both listed, each with its
+own permissions deciding the agent's requests and its own `hide_tools` in
+the bridge, one process serving both sessions; options reported in one
+session shown on the other's draft with its own `acp.mode` applied; a bare
+declaration beside its templates, and hidden by `enabled: false`; a
+document naming another declaration shadowing its own ID's (the
+diagnostic); `acp.agent` not an agent ID refused at load; an undeclared
+`acp.agent` provisional until a runtime reports it; switching a session
+between two templates starting a new ACP session, and a changed
+`acp.agent` refusing resume; an old `acp-agents.json` read unchanged.
