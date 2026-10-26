@@ -31,7 +31,7 @@ replaced; see [config.toml](configuration.md).
 | `snapshot_index_bytes` | integer | `4096` | Room for the index of the session's machine memories in a snapshot, in bytes of rendered text, summed over all machines. Memories that do not fit are only counted. Must be positive. |
 
 A write or edit that would leave a memory over its kind's limit is refused,
-and the model is shown the memory's current content to condense. A memory
+and the model is told to read it with `memory_read` and condense it. A memory
 already over its limit, as after the limit is lowered, stays valid and is
 still shown, marked over its limit; only changes that make it smaller are
 accepted until it fits. A file larger than 57344 bytes is invalid: search

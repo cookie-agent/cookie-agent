@@ -727,7 +727,7 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         unseen.contains("this memory changed since you saw it, or you have not read it"),
         "{unseen}"
     );
-    assert!(unseen.contains("- unseen"), "{unseen}");
+    assert!(!unseen.contains("- unseen"), "{unseen}");
     // A memory changed since the session saw it is `operation_changed`.
     assert_eq!(
         ended["unseen"].error.as_ref().unwrap().code.as_str(),

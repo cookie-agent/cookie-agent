@@ -655,6 +655,18 @@ struct ShownCall {
     terminal_index: Option<u32>,
 }
 
+/// The agent's own call of one of cookie's tools through the bridge. The
+/// bridge records cookie's call of the tool, so the agent's is not shown
+/// too, unless it ends without reaching cookie.
+struct BridgeEcho {
+    tool: String,
+    fields: ToolCallFields,
+    /// The order the agent made its calls in, oldest claimed first.
+    order: u64,
+    /// A bridge call stands for it.
+    claimed: bool,
+}
+
 /// What the runner keeps of one model turn being written.
 struct Step {
     attempt_id: AttemptId,
@@ -676,6 +688,10 @@ struct Turn<'a> {
     /// Attempts abandoned since the last committed turn.
     retries: u32,
     calls: HashMap<String, ShownCall>,
+    /// The agent's calls of cookie's tools, by their ACP IDs.
+    echoes: HashMap<String, BridgeEcho>,
+    /// The tools of bridge calls no echo has claimed yet, oldest first.
+    unclaimed_bridge_calls: Vec<String>,
     /// Model call IDs used in the run, which must stay unique.
     used_call_ids: std::collections::HashSet<String>,
     last_turn_seq: Option<u64>,
@@ -1299,10 +1315,50 @@ impl Turn<'_> {
         .await
     }
 
-    async fn tool_call(&mut self, mut update: ToolCallFields) -> Result<(), EngineError> {
+    async fn tool_call(&mut self, update: ToolCallFields) -> Result<(), EngineError> {
         if update.tool_call_id.is_empty() {
             return Ok(());
         }
+        if let Some(echo) = self.echoes.get_mut(&update.tool_call_id) {
+            echo.fields = permissions::merge(Some(&echo.fields), &update);
+            let ended = matches!(echo.fields.status.as_deref(), Some("completed" | "failed"));
+            if echo.claimed || !ended {
+                return Ok(());
+            }
+            // It ended without reaching cookie, such as a call the agent
+            // could not make: shown as the agent's call, with its error.
+            let echo = self
+                .echoes
+                .remove(&update.tool_call_id)
+                .expect("echo just found");
+            return self.show_call(echo.fields).await;
+        }
+        if !self.calls.contains_key(&update.tool_call_id)
+            && let Some(tool) = permissions::bridge_tool_of(&update)
+        {
+            let claimed = self
+                .unclaimed_bridge_calls
+                .iter()
+                .position(|unclaimed| *unclaimed == tool)
+                .map(|index| self.unclaimed_bridge_calls.remove(index))
+                .is_some();
+            let order = self.echoes.len() as u64;
+            self.echoes.insert(
+                update.tool_call_id.clone(),
+                BridgeEcho {
+                    tool,
+                    fields: permissions::merge(None, &update),
+                    order,
+                    claimed,
+                },
+            );
+            return Ok(());
+        }
+        self.show_call(update).await
+    }
+
+    /// Shows the agent's tool call `update`, or updates the one shown.
+    async fn show_call(&mut self, mut update: ToolCallFields) -> Result<(), EngineError> {
         let terminal_meta = terminal::take_meta(&mut update.meta);
         // Nothing but output: the live display grows by appends.
         let output_only = update.title.is_none()
@@ -1670,6 +1726,18 @@ impl Turn<'_> {
         arguments: Value,
         reply: tokio::sync::oneshot::Sender<Value>,
     ) -> Result<(), EngineError> {
+        // This call stands for the agent's oldest unclaimed call of the
+        // tool, which is then not shown; one the agent reports later
+        // claims it instead.
+        let echo = self
+            .echoes
+            .values_mut()
+            .filter(|echo| !echo.claimed && echo.tool == name)
+            .min_by_key(|echo| echo.order);
+        match echo {
+            Some(echo) => echo.claimed = true,
+            None => self.unclaimed_bridge_calls.push(name.clone()),
+        }
         let selection = cookie_agent_protocol::acp_model_selection(&self.live.agent.id);
         let turn_context = Arc::new(cookie_agent_runtime_api::TurnAgentContext {
             agent: self.live.agent.id.clone(),
@@ -1816,7 +1884,12 @@ impl Turn<'_> {
         let cwd = self.live.cwd.clone();
         let home = self.home.clone();
         let known = self.calls.get(&request.tool_call.tool_call_id);
-        let known_fields = known.map(|call| call.fields.clone());
+        // A call of cookie's tools that is not shown is known all the same.
+        let known_fields = known.map(|call| call.fields.clone()).or_else(|| {
+            self.echoes
+                .get(&request.tool_call.tool_call_id)
+                .map(|echo| echo.fields.clone())
+        });
         let tool_call_id = known.map(|call| call.tool_call_id);
         tokio::spawn(async move {
             let answer = tokio::select! {
@@ -1909,6 +1982,8 @@ impl Engine {
             next_attempt: 1,
             retries: 0,
             calls: HashMap::new(),
+            echoes: HashMap::new(),
+            unclaimed_bridge_calls: Vec::new(),
             used_call_ids: Default::default(),
             last_turn_seq: None,
             last_text: String::new(),

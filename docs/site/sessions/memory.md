@@ -75,8 +75,9 @@ Each kind of memory has its own size limit, the whole file counted:
 `project_max_bytes`, and `overview_max_bytes` under `[memory]` (16384 bytes
 each by default; see [Memory [memory]](../engine/memory.md)). A write or edit
 by a model, or by you from a client, that would leave a memory over its limit
-is refused. The model is shown the memory's current content and told to
-condense it first. A memory already over its limit, as after you lowered the
+is refused, and the model is told to read it with `memory_read` and
+condense it first. The refusal leaves the content out: after a write, the
+model could take it for what the write left. A memory already over its limit, as after you lowered the
 limit, stays valid and is still shown, marked `over its limit`; only changes
 that make it smaller are accepted until it fits.
 
@@ -264,8 +265,8 @@ The daemon backs the rubric with a few checks that need no model:
   stored) to create it anyway. A weaker match saves the memory and lists the
   near ones so the agent can merge them. A body identical to an existing one
   in the same place is always refused.
-- **Size limits** (above): a write over the limit is refused with the
-  current content to condense.
+- **Size limits** (above): a write over the limit is refused and told to
+  read the memory and condense it.
 - **No revisions.** The tools carry no revision. `memory_edit` applies when
   its `oldString` occurs exactly once in the current body, so an edit on top of
   someone else's change that does not touch that text still works. The daemon
@@ -274,8 +275,10 @@ The daemon backs the rubric with a few checks that need no model:
   and is never shown to you for approval. It checks again when the edit runs.
   `memory_write` replaces an existing memory only when the session saw its
   current content, through `memory_read`, the snapshot, or one of its own
-  writes; otherwise it is refused with the current content, so a whole-memory
-  write cannot silently drop what you or another session changed. (After a
+  writes; otherwise it is refused and told to read it first or edit it, so
+  a whole-memory write cannot silently drop what you or another session
+  changed. The refusal leaves the content out: after a write, the model
+  could take it for what the write left. (After a
   daemon restart a session reads a memory again before replacing it.)
 - **Deletes delete.** `memory_delete` removes the file, `user://` categories
   and `agent://` files included; nothing is kept, and there is no undo.

@@ -147,6 +147,22 @@ fn mcp_tool_of(call: &ToolCallFields) -> Option<(String, String)> {
         .map(|(server, tool)| (server.to_owned(), tool.to_owned()))
 }
 
+/// The tool of cookie's own MCP bridge that `call` is the agent's call of,
+/// by any agent's form that [`mcp_tool_of`] reads, or Claude Code's
+/// `claudeCode.toolName` (`mcp__cookie__<tool>`).
+pub(crate) fn bridge_tool_of(call: &ToolCallFields) -> Option<String> {
+    let from_name = || {
+        call.tool_name()?
+            .strip_prefix("mcp__")?
+            .split_once("__")
+            .map(|(server, tool)| (server.to_owned(), tool.to_owned()))
+    };
+    mcp_tool_of(call)
+        .or_else(from_name)
+        .filter(|(server, tool)| server == BRIDGE_SERVER && !tool.is_empty())
+        .map(|(_, tool)| tool)
+}
+
 /// A name as cookie publishes an MCP server's tools: ASCII letters,
 /// digits, `_`, and `-` kept, everything else `_`.
 fn mcp_name_part(value: &str) -> String {
@@ -502,6 +518,35 @@ mod tests {
             assert_eq!(
                 map_request(&call(fields.clone()), None),
                 expected,
+                "{fields}"
+            );
+        }
+    }
+
+    #[test]
+    fn calls_of_cookies_bridge_name_their_tool_in_each_adapters_form() {
+        for fields in [
+            json!({"toolCallId": "a", "title": "mcp__cookie__memory_read"}),
+            json!({"toolCallId": "b", "title": "Read memory",
+                   "_meta": {"claudeCode": {"toolName": "mcp__cookie__memory_read"}}}),
+            json!({"toolCallId": "c", "rawInput": {"server": "cookie", "tool": "memory_read"}}),
+            json!({"toolCallId": "d", "title": "memory_read (cookie MCP Server)"}),
+        ] {
+            assert_eq!(
+                super::bridge_tool_of(&call(fields.clone())).as_deref(),
+                Some("memory_read"),
+                "{fields}"
+            );
+        }
+        for fields in [
+            json!({"toolCallId": "e", "title": "mcp__exa__web_search"}),
+            json!({"toolCallId": "f", "title": "Read",
+                   "_meta": {"claudeCode": {"toolName": "Read"}}}),
+            json!({"toolCallId": "g", "title": "run mcp__cookie__memory_read"}),
+        ] {
+            assert_eq!(
+                super::bridge_tool_of(&call(fields.clone())),
+                None,
                 "{fields}"
             );
         }

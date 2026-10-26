@@ -119,19 +119,22 @@ pub(crate) enum StoreError {
         count: usize,
     },
     /// A model's replacing write of a memory its session has not seen as
-    /// it is now.
+    /// it is now. The message leaves the memory's content out: following
+    /// a write, it would read as what the write left.
     #[error(
-        "{url} was not written: this memory changed since you saw it, or you have not read it: read it first, or edit it. Its current content:\n\n{content}"
+        "{url} was not written: this memory changed since you saw it, or you have not read it. Read it with memory_read, then write it again, or change it with memory_edit."
     )]
-    Unseen { url: MemoryUrl, content: String },
-    /// The change would leave the memory over its limit.
-    #[error("{}", too_large_message(url, *size, *max, current.as_deref()))]
+    Unseen { url: MemoryUrl },
+    /// The change would leave the memory over its limit. The message
+    /// leaves the memory's content out: following a write, it would read
+    /// as what the write left.
+    #[error("{}", too_large_message(url, *size, *max, *current))]
     TooLarge {
         url: MemoryUrl,
         size: usize,
         max: usize,
-        /// The memory's current text, when it exists.
-        current: Option<String>,
+        /// The memory's current size in bytes, when it exists.
+        current: Option<usize>,
     },
     /// A new memory looks like memories that exist.
     #[error("{}", similar_message(url, near))]
@@ -162,18 +165,18 @@ fn occurs_once(url: &MemoryUrl, body: &str, old: &str) -> Result<(), StoreError>
     })
 }
 
-fn too_large_message(url: &MemoryUrl, size: usize, max: usize, current: Option<&str>) -> String {
+fn too_large_message(url: &MemoryUrl, size: usize, max: usize, current: Option<usize>) -> String {
     let (size_text, max_text) = (format::size(size as u64), format::size(max as u64));
     match current {
         None => format!(
             "{url} was not created: it would be {size_text}, over its limit of {max_text}. Make it shorter."
         ),
-        Some(current) if current.len() > max => format!(
-            "{url} was not written: it is {}, already over its limit of {max_text}, and only a change that makes it smaller is accepted until it fits; this one would leave it at {size_text}. Condense it first. Its current content:\n\n{current}",
-            format::size(current.len() as u64)
+        Some(current) if current > max => format!(
+            "{url} was not written: it is {}, already over its limit of {max_text}, and only a change that makes it smaller is accepted until it fits; this one would leave it at {size_text}. Condense it first: read it with memory_read, then write a shorter version.",
+            format::size(current as u64)
         ),
-        Some(current) => format!(
-            "{url} was not written: it would be {size_text}, over its limit of {max_text}. Condense it first: merge or drop what it holds. Its current content:\n\n{current}"
+        Some(_) => format!(
+            "{url} was not written: it would be {size_text}, over its limit of {max_text}. Condense it first: read it with memory_read, then merge or drop what it holds."
         ),
     }
 }
@@ -676,10 +679,7 @@ impl MemoryRoot {
                 });
             }
             (WriteMode::Model { seen, .. }, Some(current)) if seen != Some(&current) => {
-                return Err(StoreError::Unseen {
-                    url: url.clone(),
-                    content: existing_text.unwrap_or_default(),
-                });
+                return Err(StoreError::Unseen { url: url.clone() });
             }
             (WriteMode::Model { new, .. }, None) => {
                 match super::similar::compare(&document, &self.neighbours(url)?) {
@@ -963,7 +963,7 @@ fn check_size(
         url: url.clone(),
         size: text.len(),
         max,
-        current: current.map(str::to_owned),
+        current: current.map(str::len),
     })
 }
 

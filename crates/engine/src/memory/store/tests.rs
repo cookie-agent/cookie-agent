@@ -258,7 +258,8 @@ fn size_limits_refuse_growth_and_let_an_oversized_memory_shrink() {
     )
     .unwrap();
 
-    // Growing past it is refused, showing what the memory holds now.
+    // Growing past it is refused, without what the memory holds now, which
+    // would read as what the edit left.
     let grown = memory.edit(
         &url("project://web/a"),
         "x",
@@ -276,7 +277,7 @@ fn size_limits_refuse_growth_and_let_an_oversized_memory_shrink() {
         panic!("{grown:?}");
     };
     assert!(error.to_string().contains("Condense it first"), "{error}");
-    assert!(error.to_string().ends_with(&body(100)), "{error}");
+    assert!(!error.to_string().contains(&body(100)), "{error}");
 
     // Lowered under the memory's size, only a smaller memory is accepted.
     let path = data.path().join("memory/projects/web/a.md");
@@ -330,10 +331,10 @@ fn a_model_replaces_only_what_its_session_saw() {
         panic!("{unseen:?}");
     };
     let message = error.to_string();
-    assert!(message.contains("this memory changed since you saw it, or you have not read it: read it first, or edit it"), "{message}");
+    assert!(message.contains("this memory changed since you saw it, or you have not read it. Read it with memory_read"), "{message}");
     assert!(
-        message.ends_with(&stamped("d", "- one\n", earlier(), earlier())),
-        "{message}"
+        !message.contains("- one"),
+        "the refusal shows the memory's content: {message}"
     );
     let stale = MemoryRevision::of(b"older");
     assert!(matches!(

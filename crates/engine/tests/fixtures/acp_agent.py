@@ -54,6 +54,10 @@ Each prompt's last text block is a command:
                          session/cancel
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
+  mcp echo <tool> <json> the same, reported as its own tool call first, as
+                         Claude Code reports its MCP calls (`mcp__cookie__<tool>`)
+  mcp miss <tool>        reports a call of one of cookie's tools that fails
+                         before it reaches the bridge
 
 Its config options are `mode` (unless ACP_FIXTURE_MODES), `model`, and `fast`, a
 boolean when the client takes boolean options (else an on/off select).
@@ -572,9 +576,26 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             say(session_id, "tools: " + ",".join(names))
         else:
             tool, _, arguments = more.partition(" ")
-            reply = mcp(session, "tools/call", {"name": tool, "arguments": json.loads(arguments or "{}")}, 3)
+            arguments = json.loads(arguments or "{}")
+            name = f"mcp__cookie__{tool}"
+            reported = {"toolCallId": f"call-{action}-{tool}", "title": name, "kind": "other",
+                        "_meta": {"claudeCode": {"toolName": name}}}
+            if action in ("echo", "miss"):
+                update(session_id, {"sessionUpdate": "tool_call", **reported, "status": "pending",
+                                    "rawInput": arguments})
+            if action == "miss":
+                update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": reported["toolCallId"],
+                                    "status": "failed",
+                                    "content": [{"type": "content", "content": {"type": "text", "text": "MCP error: not connected"}}]})
+                say(session_id, "missed")
+                respond(request_id, {"stopReason": "end_turn", "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}})
+                return
+            reply = mcp(session, "tools/call", {"name": tool, "arguments": arguments}, 3)
             result = reply.get("result", {})
             text = " ".join(item.get("text", "") for item in result.get("content", []))
+            if action == "echo":
+                update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": reported["toolCallId"],
+                                    "status": "failed" if result.get("isError") else "completed"})
             say(session_id, f"result: {text} error: {result.get('isError')}")
     else:
         say(session_id, " | ".join(texts))

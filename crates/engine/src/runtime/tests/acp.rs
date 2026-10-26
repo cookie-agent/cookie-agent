@@ -1059,6 +1059,65 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_call_of_cookies_tools_shows_once_as_cookies_own() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let starts = |engine: &Engine| {
+        events(engine, session)
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::ToolCallStarted { start } => Some(start),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // The agent reports its MCP call, then makes it through the bridge:
+    // one call, cookie's, not the agent's `mcp__cookie__list_agents` too.
+    let outcome = turn(engine, session, "echo", "mcp echo list_agents {}").await;
+    assert!(
+        final_text(&outcome).ends_with("error: False"),
+        "{}",
+        final_text(&outcome)
+    );
+    let shown = starts(engine);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert_eq!(shown[0].presentation.tool.published_name, "list_agents");
+    assert!(
+        !matches!(
+            shown[0]
+                .presentation
+                .tool
+                .source
+                .as_ref()
+                .and_then(Open::known),
+            Some(ToolSource::Acp { .. })
+        ),
+        "{:?}",
+        shown[0].presentation.tool.source
+    );
+    // A call that fails before it reaches cookie shows as the agent's,
+    // with its error.
+    let outcome = turn(engine, session, "miss", "mcp miss memory_read").await;
+    assert_eq!(final_text(&outcome), "missed");
+    let shown = starts(engine);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(matches!(
+        shown[1]
+            .presentation
+            .tool
+            .source
+            .as_ref()
+            .and_then(Open::known),
+        Some(ToolSource::Acp { .. })
+    ));
+    assert_eq!(
+        shown[1].presentation.tool.published_name,
+        "mcp__cookie__memory_read"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_turn_records_the_tools_the_bridge_offers_for_the_clients() {
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();

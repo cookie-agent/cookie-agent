@@ -470,10 +470,7 @@ fn a_read_pages_the_body_from_a_one_based_offset() {
 #[test]
 fn the_write_tools_word_their_errors_as_the_file_tools_do() {
     let url = MemoryUrl::parse("user://feedback").unwrap();
-    let unseen = super::store_error(crate::memory::store::StoreError::Unseen {
-        url: url.clone(),
-        content: String::new(),
-    });
+    let unseen = super::store_error(crate::memory::store::StoreError::Unseen { url: url.clone() });
     assert!(matches!(
         unseen,
         cookie_agent_runtime_api::ToolError::OperationChanged(_)
