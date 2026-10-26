@@ -290,7 +290,9 @@ these rules:
 - **Sidebar.**
   - Project sections are collapsible and remembered per browser.
   - Projects are ordered by their latest session's activity, and "No
-    project" comes last.
+    project" comes last. *(Changed 2026-10-26, user decision: projects are
+    ordered by creation, oldest first, in `projects.list` and the
+    clients.)*
   - Each section orders its own sessions (added 2026-10-21). Active
     sessions come first: running, or waiting on a producer such as an
     active goal or background calls. Every other session follows. Each

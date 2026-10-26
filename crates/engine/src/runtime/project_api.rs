@@ -89,7 +89,7 @@ impl Engine {
             .collect()
     }
 
-    /// `projects.list`: every project, in name order.
+    /// `projects.list`: every project, oldest first.
     pub async fn list_projects(&self) -> Result<Vec<ProjectInfo>, EngineError> {
         self.projects_blocking(|engine, store| {
             let roots = engine.raw_roots();

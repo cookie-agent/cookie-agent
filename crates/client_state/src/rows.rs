@@ -94,27 +94,35 @@ pub fn session_is_active(session: &SessionMeta) -> bool {
 }
 
 /// Orders a session list: the active sessions first, then the rest, each
-/// group newest activity first; sessions that tie keep their order. It
-/// knows nothing of how a list is grouped, so a client orders each group
-/// (each project's sessions, say) on its own.
+/// group newest [`ordering_activity`] first; sessions that tie keep their
+/// order. It knows nothing of how a list is grouped, so a client orders each
+/// group (each project's sessions, say) on its own.
 pub fn order_sessions(sessions: &mut [SessionMeta]) {
     sessions.sort_by_key(|session| {
         (
             !session_is_active(session),
-            std::cmp::Reverse(session.last_activity),
+            std::cmp::Reverse(ordering_activity(session)),
         )
     });
 }
 
+/// When a session last had activity that orders it: the user's last input
+/// or delegation (`last_agent_activity`), which its own output and tool
+/// results never move, so a busy session keeps its place while it works;
+/// else, from an older daemon or before any such activity, its last event.
+pub fn ordering_activity(session: &SessionMeta) -> jiff::Timestamp {
+    session.last_agent_activity.unwrap_or(session.last_activity)
+}
+
 /// Orders a session tree's subagents as [`order_sessions`] orders a list,
 /// under each session at every depth: the active ones first (running, held,
-/// or waiting on a producer), then the rest, each group newest activity
-/// first. The root keeps its place.
+/// or waiting on a producer), then the rest, each group newest
+/// [`ordering_activity`] first. The root keeps its place.
 pub fn order_tree(tree: &mut cookie_agent_protocol::SessionTree) {
     tree.children.sort_by_key(|child| {
         (
             !session_is_active(&child.session),
-            std::cmp::Reverse(child.session.last_activity),
+            std::cmp::Reverse(ordering_activity(&child.session)),
         )
     });
     for child in &mut tree.children {
@@ -375,6 +383,25 @@ mod tests {
             "skipped_events": [],
         }))
         .expect("session meta")
+    }
+
+    #[test]
+    fn a_busy_session_keeps_its_place_by_the_users_last_activity() {
+        // Both run; `busy` produced output since, but the user wrote to
+        // `asked` last, so `asked` stays first.
+        let mut busy = session("busy", "running", "2026-10-20T12:00:00Z");
+        busy.last_agent_activity = Some("2026-10-20T09:00:00Z".parse().unwrap());
+        let mut asked = session("asked", "running", "2026-10-20T11:00:00Z");
+        asked.last_agent_activity = Some("2026-10-20T10:00:00Z".parse().unwrap());
+        // Without the user's activity, the last event orders it.
+        let unknown = session("unknown", "running", "2026-10-20T09:30:00Z");
+        let mut sessions = vec![busy, unknown, asked];
+        order_sessions(&mut sessions);
+        let names = sessions
+            .iter()
+            .map(|session| session.short_id.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["asked", "unknown", "busy"]);
     }
 
     #[test]

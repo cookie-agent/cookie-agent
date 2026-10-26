@@ -372,10 +372,12 @@ impl ProjectStore {
         self.read_all().map_or_else(
             |_| Vec::new(),
             |(projects, _)| {
-                projects
+                let mut names = projects
                     .into_iter()
                     .map(|project| project.name.into_string())
-                    .collect()
+                    .collect::<Vec<_>>();
+                names.sort();
+                names
             },
         )
     }
@@ -435,7 +437,11 @@ impl ProjectStore {
                 Err(error) => unreadable.push((entry.path(), error)),
             }
         }
-        projects.sort_by(|left, right| left.name.cmp(&right.name));
+        // Oldest first: a new project goes last and the others keep their
+        // places. IDs are UUIDv7s and break a tie in the same order.
+        projects.sort_by(|left, right| {
+            (left.created, left.id.as_str()).cmp(&(right.created, right.id.as_str()))
+        });
         Ok((projects, unreadable))
     }
 

@@ -553,10 +553,9 @@ impl Workspace {
                     self.projects.update(|projects| {
                         match projects.iter_mut().find(|known| known.id == project.id) {
                             Some(known) => *known = project.clone(),
-                            None => {
-                                projects.push(project.clone());
-                                projects.sort_by(|left, right| left.name.cmp(&right.name));
-                            }
+                            // The newest project goes last, as `projects.list`
+                            // has it.
+                            None => projects.push(project.clone()),
                         }
                     });
                     self.status.set(format!(

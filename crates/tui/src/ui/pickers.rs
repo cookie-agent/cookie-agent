@@ -178,12 +178,17 @@ pub(crate) fn session_search_rows<'a>(
         .into_iter()
         .filter(|session| session_matches(session, query))
         .collect::<Vec<_>>();
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.last_activity));
+    // By the user's last activity, so a busy session keeps its place.
+    sessions.sort_by_key(|session| {
+        std::cmp::Reverse(cookie_agent_client_state::rows::ordering_activity(session))
+    });
 
     let mut rows = Vec::new();
     let mut current_date = None;
     for session in sessions {
-        let date = session.last_activity.to_zoned(time_zone.clone()).date();
+        let date = cookie_agent_client_state::rows::ordering_activity(session)
+            .to_zoned(time_zone.clone())
+            .date();
         if current_date != Some(date) {
             rows.push(SessionSearchRow::Header(session_day_label(
                 date, today, yesterday,

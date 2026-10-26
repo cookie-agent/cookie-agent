@@ -75,12 +75,14 @@ fn a_project_is_named_with_its_emoji_first() {
 }
 
 #[test]
-fn sections_follow_their_latest_session_and_no_project_comes_last() {
+fn sections_come_in_creation_order_and_no_project_comes_last() {
+    // IDs are UUIDv7s in the daemon, so their order is the creation order;
+    // the list arrives in another.
     let projects = vec![
-        project("aaa", "alpha", None),
-        project("bbb", "beta", Some("🧪")),
         project("ccc", "gamma", None),
+        project("aaa", "alpha", None),
         project("ddd", "delta", None),
+        project("bbb", "beta", Some("🧪")),
     ];
     let mut child = session("child", Some("aaa"), "idle", 59);
     child.origin = serde_json::from_value(serde_json::json!({
@@ -106,15 +108,14 @@ fn sections_follow_their_latest_session_and_no_project_comes_last() {
         .iter()
         .map(|section| project_label(section.project.as_ref()))
         .collect::<Vec<_>>();
-    // beta's latest is 10:30, alpha's 10:20; delta and gamma have none and
-    // keep the list's order; "No project" is last though its session is
-    // the newest.
-    assert_eq!(order, ["🧪 beta", "alpha", "gamma", "delta", "no project"]);
-    assert_eq!(names(&sections[1].sessions), ["a-new", "a-old"]);
+    // Oldest project first, whatever its sessions' activity (beta's is the
+    // newest); "No project" is last though its session is the newest of all.
+    assert_eq!(order, ["alpha", "🧪 beta", "gamma", "delta", "no project"]);
+    assert_eq!(names(&sections[0].sessions), ["a-new", "a-old"]);
     // A project that no longer exists lists as no project; a delegated
     // session lists nowhere.
     assert_eq!(names(&sections[4].sessions), ["loose", "gone"]);
-    assert_eq!(sections[0].key(), "project:bbb");
+    assert_eq!(sections[1].key(), "project:bbb");
     assert_eq!(sections[4].key(), "none");
 }
 

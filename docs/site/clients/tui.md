@@ -268,7 +268,9 @@ terminal emulator supports OSC 52.
 ## Session picker
 
 `/sessions` lists the root sessions of the directory the TUI started in,
-newest first under day headings; type to filter them by title, and press
+newest first under day headings, by your last message or delegation in
+each (its own output does not move it; one with none goes by its last
+event); type to filter them by title, and press
 Enter or click a row to open one.
 
 - **Ctrl+A**, or the **All directories** button, lists every directory's
@@ -276,7 +278,7 @@ Enter or click a row to open one.
   button now reads **This directory**) to go back. In the search field,
   Home still moves to the start of the text.
 - **Ctrl+P**, or the project button beside it, filters by project: all
-  projects, then each project in name order, then the sessions in no
+  projects, then each project oldest first, then the sessions in no
   project, then all again. The picker's title names the project shown.
   Each row names its project, with its emoji, before its agent.
 - A session a [cron job](#scheduled-prompts) started leads with a clock,

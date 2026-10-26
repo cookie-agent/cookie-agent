@@ -157,7 +157,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     In each project, active sessions come first (those that run, are
     [held](../sessions/held.md), or wait on something that will start
     their next run: an active goal, a background call, a subagent, or a
-    plugin or runtime), then the others, each newest first. A session that
+    plugin or runtime), then the others, each newest first by your last
+    message or delegation in it (its own output does not move it, so a busy
+    session keeps its place; a session with none goes by its last event).
+    A session that
     runs has a turning circle before its title, a held one has a pause (red
     when its runs kept failing; its tooltip says why, such as `held:
     stopped by you`), one that waits has a clock (its tooltip says what it
@@ -223,7 +226,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     session. A daemon older than client protocol 1.5 cannot delete, and
     the page offers no trash.
 - **Projects.** The sessions sidebar has a section for each project,
-  ordered by its latest session's activity, then **No project** last.
+  oldest project first, so a new one goes last and the others keep their
+  places, then **No project** last.
   - **Headers.** A project's header shows its emoji (a folder when it has
     none) and its name; when its defaults attach runtimes, a second line
     shows them as badges, by the session rows' rules. Click a header to
@@ -323,7 +327,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   failed, or cancelled), its agent, its short handle, and its task. Click
   one to open it. Under each session its subagents come in the session
   list's order: those that run, are held, or wait first, then the others,
-  each group newest activity first. Subagents have no trash: they go with
+  each group newest by the last message or delegation in it. Subagents
+  have no trash: they go with
   their root. The
   tree has two states; click the open session's own row, whose chevron
   turns with it, to switch between them (clicking another session still

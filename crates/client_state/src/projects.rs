@@ -79,9 +79,10 @@ pub fn section_key(project: Option<&ProjectId>) -> String {
     project.map_or_else(|| "none".to_owned(), |id| format!("project:{id}"))
 }
 
-/// The session list as project sections. A section per project, ordered by
-/// its latest session's activity; projects without sessions follow in name
-/// order; "No project" comes last and holds every root session of no
+/// The session list as project sections. A section per project, oldest
+/// project first: project IDs are UUIDv7s, so their order is the order the
+/// projects were created in, and a new project goes last without moving the
+/// others. "No project" comes last and holds every root session of no
 /// project or of a project that no longer exists. Each section orders its
 /// sessions by [`order_sessions`]. Delegated sessions are left out.
 #[must_use]
@@ -115,16 +116,15 @@ pub fn project_sections(projects: &[ProjectInfo], sessions: &[SessionMeta]) -> V
         order_sessions(&mut section.sessions);
     }
     order_sessions(&mut none.sessions);
-    let latest = |section: &ProjectSection| {
-        section
-            .sessions
-            .iter()
-            .map(|session| session.last_activity)
-            .max()
-    };
-    // The stable sort keeps `projects.list`'s name order among the projects
-    // without sessions.
-    sections.sort_by_key(|section| std::cmp::Reverse(latest(section)));
+    sections.sort_by(|left, right| {
+        let id = |section: &ProjectSection| {
+            section
+                .project
+                .as_ref()
+                .map(|project| project.id.as_str().to_owned())
+        };
+        id(left).cmp(&id(right))
+    });
     sections.push(none);
     sections
 }

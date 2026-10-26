@@ -297,9 +297,8 @@ impl App {
         match result {
             Ok(project) => {
                 if !self.projects.iter().any(|known| known.id == project.id) {
+                    // The newest project goes last, as `projects.list` has it.
                     self.projects.push(project.clone());
-                    self.projects
-                        .sort_by(|left, right| left.name.cmp(&right.name));
                     self.note_sessions_changed();
                 }
                 self.project_create = None;

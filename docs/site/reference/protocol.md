@@ -258,7 +258,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `memory.read` | Memory `url` | The file's whole `text`, its `revision`, and why it is `invalid` when it is |
 | `memory.write` | Memory `url`, whole-file `text`, `revision` of the file it replaces | The new `revision`, and a `notice` when an `agent://` file kept the daemon's description or keywords; without `revision` the memory must not exist |
 | `memory.delete` | Memory `url`, `revision` | Empty object |
-| `projects.list` | Empty object | Every `projects` entry, in name order (see [Projects](#projects)) |
+| `projects.list` | Empty object | Every `projects` entry, oldest first (see [Projects](#projects)); an older daemon sends them in name order |
 | `project.get` | `project` ID | The `project` and its `agents_md` (`{ text, revision }`) when it has one |
 | `project.create` | `name`, optional `emoji`, optional `defaults` | The new `project` |
 | `project.update` | `project` ID, `revision`, optional `name`, `emoji` (`null` clears), `defaults` (`null` clears), `agents_md` (`""` removes) | The `project` afterwards |

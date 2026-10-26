@@ -146,6 +146,25 @@ fn snapshots(fixture: &Fixture, session: SessionId) -> Vec<MemorySnapshot> {
         .collect()
 }
 
+/// `projects.list` lists the oldest project first, whatever the names: a
+/// new project goes last.
+#[tokio::test]
+async fn projects_are_listed_in_creation_order() {
+    let (fixture, _selection) = custom_fixture();
+    for project in ["zeta", "alpha", "mid"] {
+        create(&fixture, project, None).await;
+    }
+    let listed = fixture
+        .engine
+        .list_projects()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|project| project.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(listed, ["zeta", "alpha", "mid"]);
+}
+
 #[tokio::test]
 async fn a_session_in_a_project_takes_its_default_attachments_unless_runtimes_are_given() {
     let (fixture, selection) = custom_fixture();
