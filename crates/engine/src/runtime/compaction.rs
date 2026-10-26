@@ -249,7 +249,26 @@ impl Engine {
             .last_run_started()
             .map(|(_, run, _)| run)
             .ok_or(EngineError::NoRunnableModel)?;
-        let policy = self.historical_title_policy(&events, run)?;
+        let mut policy = self.historical_title_policy(&events, run)?;
+        // The tools a run of the session would send now, as automatic
+        // compaction sends its run's: the summary request stays a prefix of
+        // the conversation's, for its cache and for the reasoning it
+        // replays. Delegation targets come from the registry and the goal
+        // tools follow the goal, as at run admission.
+        policy.historical_delegation = false;
+        policy.goal_tools_enabled = matches!(
+            projection.meta.origin,
+            cookie_agent_protocol::SessionOrigin::Root
+        )
+            && crate::goal_projection::GoalProducerProjection::from_events(&events)
+                .goal
+                .is_some_and(|goal| {
+                    matches!(
+                        goal.status,
+                        cookie_agent_protocol::GoalStatus::Active
+                            | cookie_agent_protocol::GoalStatus::Paused
+                    )
+                });
         let binding = active_compaction_binding(&policy, &events, run)?;
         let internal_policy = self.internal_agent_policy(
             InternalAgentKind::ContextCompaction,
@@ -652,6 +671,7 @@ impl Engine {
                 compaction_focus.as_deref(),
                 prior_summary_count > 0,
             );
+            let retry_prefix = prefix.clone();
             let mut summary = self
                 .run_internal_history_agent(
                     input.session,
@@ -674,6 +694,36 @@ impl Engine {
                     },
                 )
                 .await;
+            // A replayed reasoning block the provider binds to a conversation
+            // prefix that changed since (Anthropic's thinking-binding check)
+            // fails the summary as it fails a turn; the summary is tried once
+            // more without reasoning, which it does not need
+            // (`docs/site/specs/thinking-replay-recovery.md`).
+            if matches!(&summary, Err(EngineError::Model(error))
+                if super::model_loop::is_thinking_binding_mismatch(error))
+                && !input.cancellation.is_cancelled()
+            {
+                let mut history = retry_prefix;
+                model_history::strip_reasoning(&mut history);
+                summary = self
+                    .run_internal_history_agent(
+                        input.session,
+                        Some(input.run),
+                        InternalAgentKind::ContextCompaction,
+                        input.internal_policy,
+                        InternalAgentHistoryInput {
+                            history: compaction_history(history, &instruction),
+                            summary_source: instruction.clone(),
+                            tools: input.tools.to_vec(),
+                            reject_non_text: true,
+                        },
+                        InternalAgentExecution {
+                            cancellation: input.cancellation,
+                            actor_direct: false,
+                        },
+                    )
+                    .await;
+            }
             if matches!(&summary, Err(EngineError::Model(error))
                 if error.kind == oven_sdk::ModelErrorKind::ContextLength)
                 && !input.cancellation.is_cancelled()

@@ -2909,7 +2909,7 @@ fn is_overload_retry(error: &ModelError) -> bool {
 /// to a conversation prefix that changed since: a 400 whose message says the
 /// block "is bound to a different conversation". A tampered signature reads
 /// differently and is not recovered.
-fn is_thinking_binding_mismatch(error: &ModelError) -> bool {
+pub(super) fn is_thinking_binding_mismatch(error: &ModelError) -> bool {
     const MISMATCH: &str = "bound to a different conversation";
     error.kind == oven_sdk::ModelErrorKind::InvalidRequest
         && (error.message.contains(MISMATCH)

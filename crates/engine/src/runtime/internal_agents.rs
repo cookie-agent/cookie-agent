@@ -105,6 +105,10 @@ impl Engine {
         // can show what the session is doing.
         let delta_run = parent_run.filter(|_| kind == InternalAgentKind::ContextCompaction);
         let mut only_context_failures = !policy.models.is_empty();
+        // Every model refused replayed reasoning bound to another prefix:
+        // the caller may try again without it.
+        let mut binding_failure = None::<ModelError>;
+        let mut only_binding_failures = !policy.models.is_empty();
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
         let call = SafeInternalAgentCall {
@@ -323,6 +327,11 @@ impl Engine {
                 }
                 Err(error) => {
                     only_context_failures &= error.kind == oven_sdk::ModelErrorKind::ContextLength;
+                    if super::model_loop::is_thinking_binding_mismatch(&error) {
+                        binding_failure = Some(error.clone());
+                    } else {
+                        only_binding_failures = false;
+                    }
                     last_failure = InternalAgentFailure {
                         code: safe_code("model_failure"),
                         message: safe_error(&error.message),
@@ -365,6 +374,12 @@ impl Engine {
             execution.actor_direct,
         )
         .await?;
+        if kind == InternalAgentKind::ContextCompaction
+            && only_binding_failures
+            && let Some(error) = binding_failure
+        {
+            return Err(error.into());
+        }
         if kind == InternalAgentKind::ContextCompaction && only_context_failures {
             return Err(ModelError::new(
                 oven_sdk::ModelErrorKind::ContextLength,

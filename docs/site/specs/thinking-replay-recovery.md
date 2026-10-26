@@ -87,3 +87,14 @@ The `memory_write` schema that takes `keywords` as a list or one
 comma-separated string (reverted by 04bcc7417, restored locally by
 fca2518d1) ships with it: a running session that meets the changed schema
 recovers on its next request.
+
+## Implementation notes
+
+- **Compaction** (2026-10-26, user report): a summary request the provider
+  refuses for the same reason is tried once more with every reasoning part
+  and native replay left out (`model_history::strip_reasoning`), keeping
+  the tools; the internal agent returns the mismatch when every model
+  refused for it, instead of a generic failure. A manual compaction now
+  builds its tools as a run would (goal tools as at admission, delegation
+  targets from the registry), as automatic compaction uses its run's, so
+  its request stays a prefix of the conversation's.

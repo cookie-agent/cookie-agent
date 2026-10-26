@@ -527,6 +527,22 @@ pub(crate) fn project_summary_context<E: Borrow<StoredEvent>>(
     })
 }
 
+/// Leaves the reasoning out of `history`: every assistant turn's reasoning
+/// parts and its native replay, keeping its text and tool calls. A request
+/// built from it replays no reasoning block, so a provider that binds them to
+/// the conversation they were made in (Anthropic's thinking-binding check)
+/// has none to refuse (`docs/site/specs/thinking-replay-recovery.md`).
+pub(crate) fn strip_reasoning(history: &mut [HistoryTurn]) {
+    for turn in history {
+        if let HistoryTurn::Assistant(turn) = turn {
+            turn.message
+                .content
+                .retain(|part| !matches!(part, AssistantPart::Reasoning(_)));
+            turn.finish.native_replay = None;
+        }
+    }
+}
+
 pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
     events: &[E],
     store: &ArtifactRouter,

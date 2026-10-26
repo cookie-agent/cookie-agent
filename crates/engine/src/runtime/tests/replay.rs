@@ -544,3 +544,52 @@ async fn a_revert_to_before_a_cut_replays_the_earlier_reasoning_again() {
     assert!(anthropic_request_has_thinking(&requests[3]));
     fixture.engine.shutdown().await;
 }
+
+/// A compaction whose summary request the provider refuses for a stale
+/// thinking binding is tried once more without the reasoning, and commits.
+#[tokio::test]
+async fn a_compaction_refused_for_a_thinking_binding_retries_without_reasoning() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("signed")),
+        AnthropicReplayResponse::Text("second answer"),
+        AnthropicReplayResponse::BindingMismatch400,
+        AnthropicReplayResponse::Text("the summary"),
+    ])
+    .await;
+    let (fixture, selection) = binding_fixture(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "seed").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "second").await;
+    assert!(
+        fixture
+            .engine
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("compaction")
+    );
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("compaction requests");
+    assert_eq!(requests.len(), 4);
+    assert!(
+        anthropic_request_has_thinking(&requests[2]),
+        "the refused summary request"
+    );
+    assert!(!anthropic_request_has_thinking(&requests[3]), "the retry");
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .to_vec();
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ContextCheckpointCommitted { commit }
+        if matches!(&commit.checkpoint, cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint, .. } if checkpoint.summary() == "the summary"))));
+    fixture.engine.shutdown().await;
+}
