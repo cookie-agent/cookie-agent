@@ -1078,22 +1078,17 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
         let id = id.unwrap_or_else(|| host_runtime_id("", &host_name()));
         dial_in_id(&id)?;
         cookie_agent_protocol::runtime_dial_in_url(&daemon, &id)?;
-        // A runtime that dials in hosts its own machine's MCP servers and
-        // ACP agents: those of `[runtimes.local]` in its configuration.
-        let mcp_servers = local_runtime_mcp_servers()?;
-        let acp_agents = local_runtime_acp_agents()?;
+        // A runtime that dials in hosts the MCP servers and ACP agents the
+        // daemon's `[runtimes.<id>]` gives it, never this machine's own.
+        warn_local_runtime_settings(&id);
         let stop = CancellationToken::new();
         stop_on_signal(stop.clone())?;
-        let acp_agent_updates = Some(watch_local_acp_agents(acp_agents.clone(), stop.clone()));
         return dial_in(
             &daemon,
             &token,
             &id,
             cookie_agent_coding_runtime::server::ServeOptions {
                 roots,
-                mcp_servers,
-                acp_agents,
-                acp_agent_updates,
                 stop,
                 ..Default::default()
             },
@@ -1503,15 +1498,9 @@ async fn run_daemon_tui(
 /// machine cannot see this one.
 #[cfg(feature = "tui")]
 fn start_dial_in(url: &str, token: &str, id: &str, cwd: Option<&str>) -> anyhow::Result<()> {
-    let acp_agents = local_runtime_acp_agents()?;
+    // Its MCP servers and ACP agents are the daemon's `[runtimes.<id>]`.
     let options = cookie_agent_coding_runtime::server::ServeOptions {
         roots: cwd.iter().map(PathBuf::from).collect(),
-        mcp_servers: local_runtime_mcp_servers()?,
-        acp_agent_updates: Some(watch_local_acp_agents(
-            acp_agents.clone(),
-            CancellationToken::new(),
-        )),
-        acp_agents,
         ..Default::default()
     };
     let (url, token, id) = (url.to_owned(), token.to_owned(), id.to_owned());
@@ -2201,100 +2190,26 @@ fn daemon_token(
     Ok(token)
 }
 
-/// `[runtimes.local.mcp]` of this machine's configuration, as a runtime
-/// that dials in hosts them.
-fn local_runtime_mcp_servers()
--> anyhow::Result<Vec<cookie_agent_runtime_api::protocol::McpServerSettings>> {
-    let config = cookie_agent_config::load().context("load configuration")?;
-    Ok(config
+/// Says once that this machine's `[runtimes.local]` MCP servers and ACP
+/// agents, which only its own daemon's built-in runtime hosts, are not the
+/// ones runtime `id` dials in with
+/// (`docs/site/specs/runtime-management.md` section 3.2).
+fn warn_local_runtime_settings(id: &str) {
+    let Ok(config) = cookie_agent_config::load() else {
+        return;
+    };
+    let local = config
         .runtimes
         .iter()
-        .find(|(id, _)| id.as_str() == cookie_agent_protocol::RuntimeId::LOCAL)
-        .map(|(_, template)| {
-            template
-                .mcp_servers
-                .iter()
-                .map(
-                    |(name, server)| cookie_agent_runtime_api::protocol::McpServerSettings {
-                        name: name.clone(),
-                        config: serde_json::to_value(server)
-                            .expect("MCP server configuration serializes"),
-                    },
-                )
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
-/// `[runtimes.local.acp.agents]` of this machine's configuration, as a
-/// runtime that dials in hosts them.
-fn local_runtime_acp_agents()
--> anyhow::Result<Vec<cookie_agent_runtime_api::protocol::AcpAgentSettings>> {
-    let config = cookie_agent_config::load().context("load configuration")?;
-    Ok(acp_agents_of(&config))
-}
-
-fn acp_agents_of(
-    config: &cookie_agent_config::LoadedConfiguration,
-) -> Vec<cookie_agent_runtime_api::protocol::AcpAgentSettings> {
-    config
-        .runtimes
-        .iter()
-        .find(|(id, _)| id.as_str() == cookie_agent_protocol::RuntimeId::LOCAL)
-        .map(|(_, template)| {
-            template
-                .acp_agents
-                .iter()
-                .map(
-                    |(id, agent)| cookie_agent_runtime_api::protocol::AcpAgentSettings {
-                        id: id.to_string(),
-                        command: agent.command.clone(),
-                        env: agent.env.clone(),
-                        description: agent.description.clone(),
-                        enabled: agent.enabled,
-                    },
-                )
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// How often a runtime that dials in reads its configuration again for
-/// changed ACP agents.
-const ACP_AGENT_POLL: Duration = Duration::from_secs(5);
-
-/// Follows `[runtimes.local.acp.agents]` of this machine's configuration
-/// until `stop`, starting from `current`: each change is a new value. A
-/// configuration that does not load keeps the agents it had.
-fn watch_local_acp_agents(
-    current: Vec<cookie_agent_runtime_api::protocol::AcpAgentSettings>,
-    stop: CancellationToken,
-) -> tokio::sync::watch::Receiver<Vec<cookie_agent_runtime_api::protocol::AcpAgentSettings>> {
-    let (sender, receiver) = tokio::sync::watch::channel(current);
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                () = stop.cancelled() => return,
-                () = sender.closed() => return,
-                () = tokio::time::sleep(ACP_AGENT_POLL) => {}
-            }
-            let Ok(config) = tokio::task::spawn_blocking(cookie_agent_config::load).await else {
-                continue;
-            };
-            let Ok(config) = config else {
-                continue;
-            };
-            let agents = acp_agents_of(&config);
-            sender.send_if_modified(|known| {
-                let changed = *known != agents;
-                if changed {
-                    known.clone_from(&agents);
-                }
-                changed
-            });
-        }
-    });
-    receiver
+        .find(|(runtime, _)| runtime.as_str() == cookie_agent_protocol::RuntimeId::LOCAL)
+        .map(|(_, template)| template);
+    if local.is_some_and(|local| !local.mcp_servers.is_empty() || !local.acp_agents.is_empty()) {
+        eprintln!(
+            "cookie runtime: this machine's [runtimes.local] MCP servers and ACP agents are its \
+             own daemon's; runtime `{id}` hosts the ones [runtimes.{id}] gives it in the \
+             configuration of the daemon it dials in to"
+        );
+    }
 }
 
 /// Checks `id` as a runtime ID a runtime may dial in under: well formed

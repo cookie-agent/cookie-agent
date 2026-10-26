@@ -94,6 +94,11 @@ pub mod method {
     pub const CONTEXT: &str = "runtime/context";
     /// daemon → runtime: stop gracefully.
     pub const SHUTDOWN: &str = "runtime/shutdown";
+    /// daemon → runtime (notification): the runtime's settings changed in
+    /// the daemon's configuration (since 1.10.0). The runtime applies them
+    /// as `runtime/initialize` would, starting, stopping, or restarting only
+    /// the MCP servers and ACP agents that changed.
+    pub const SETTINGS_CHANGED: &str = "runtime/settings_changed";
     /// daemon → runtime: answer at once, with an empty result, while the
     /// connection is up (since 1.4.0). The daemon pings a connection it has
     /// heard nothing on for a while and drops one that stays silent; any
@@ -187,6 +192,13 @@ pub struct InitializeParams {
     pub features: Vec<String>,
     /// The runtime's ID.
     pub runtime_id: String,
+    pub settings: RuntimeSettings,
+}
+
+/// `runtime/settings_changed` (runtime protocol 1.10.0): the runtime's
+/// settings as they are now, whole.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct RuntimeSettingsChangedParams {
     pub settings: RuntimeSettings,
 }
 

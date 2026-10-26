@@ -1,5 +1,7 @@
 //! `[runtimes.<id>]`: configured ways to start runtimes
-//! (`docs/site/specs/runtimes.md` section 4.1).
+//! (`docs/site/specs/runtimes.md` section 4.1), and the settings of the
+//! runtimes the daemon does not start: the built-in `local` one and those
+//! that dial in (`docs/site/specs/runtime-management.md` section 3.1).
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -60,9 +62,10 @@ pub struct AcpAgentConfig {
     pub enabled: bool,
 }
 
-/// A validated runtime template. `[runtimes.local]` configures the built-in
-/// local coding runtime and carries only MCP servers: its `command` and
-/// `env` are empty.
+/// A validated runtime template. `[runtimes.local]`, which configures the
+/// built-in local coding runtime, and a table without `command`, which holds
+/// the settings of the runtime that dials in with its ID, carry only MCP
+/// servers and ACP agents: their `command` and `env` are empty.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeTemplateConfig {
     /// The program and its arguments. One process serves every workspace
@@ -82,6 +85,13 @@ pub struct RuntimeTemplateConfig {
 }
 
 impl RuntimeTemplateConfig {
+    /// Whether the daemon starts the runtime from this template, rather
+    /// than the table holding the settings of a runtime it does not start.
+    #[must_use]
+    pub const fn daemon_starts(&self) -> bool {
+        !self.command.is_empty()
+    }
+
     #[must_use]
     pub const fn startup_timeout(&self) -> Duration {
         Duration::from_millis(self.startup_timeout_ms)
@@ -146,17 +156,24 @@ fn validate_template(
         }
     }
     let acp_agents = validate_acp_agents(id, template.acp)?;
-    if id == RuntimeId::LOCAL {
-        if template.command.is_some()
-            || template.env.is_some()
-            || template.startup_timeout_ms.is_some()
-            || template.shutdown_grace_ms.is_some()
-        {
-            return Err(invalid(
-                id,
-                "the built-in `local` runtime accepts only `mcp` and `acp` tables",
-            ));
-        }
+    let launch_fields = template.env.is_some()
+        || template.startup_timeout_ms.is_some()
+        || template.shutdown_grace_ms.is_some();
+    if id == RuntimeId::LOCAL && (template.command.is_some() || launch_fields) {
+        return Err(invalid(
+            id,
+            "the built-in `local` runtime accepts only `mcp` and `acp` tables",
+        ));
+    }
+    if id != RuntimeId::LOCAL && template.command.is_none() && launch_fields {
+        return Err(invalid(
+            id,
+            "a table without `command` holds the settings of the runtime that dials in as \
+             this ID and accepts only `mcp` and `acp` tables; give it a `command` for the \
+             daemon to start it",
+        ));
+    }
+    if template.command.is_none() {
         return Ok(RuntimeTemplateConfig {
             command: Vec::new(),
             env: BTreeMap::new(),

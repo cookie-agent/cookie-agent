@@ -87,7 +87,9 @@ pub(crate) struct ProtocolTemplate {
     /// such as the daemon's working directory for `local`.
     default_workspace: Option<PathBuf>,
     connector: Arc<dyn RuntimeConnector>,
-    settings: RuntimeSettings,
+    /// What the next connection initializes with, and what a live one was
+    /// last sent.
+    settings: Mutex<RuntimeSettings>,
     /// Bound on connecting and initializing, and on opening an instance;
     /// `None` for an in-process runtime.
     startup_timeout: Option<Duration>,
@@ -126,7 +128,7 @@ impl ProtocolTemplate {
             runtime_id: runtime_id.to_owned(),
             default_workspace: None,
             connector,
-            settings,
+            settings: Mutex::new(settings),
             startup_timeout: Some(startup_timeout),
             shutdown_grace,
             liveness: Some(super::Liveness::DEFAULT),
@@ -186,13 +188,14 @@ impl ProtocolTemplate {
             return Ok(client);
         }
         let diagnostics = Mutex::new(None);
+        let settings = lock(&self.settings).clone();
         let attempt = async {
             let connection = self.connector.connect().await?;
             lock(&diagnostics).clone_from(&connection.diagnostics);
             RuntimeClient::initialize(
                 connection,
                 &self.runtime_id,
-                &self.settings,
+                &settings,
                 self.shutdown_grace,
                 self.mcp_hub.clone(),
             )
@@ -229,6 +232,11 @@ impl ProtocolTemplate {
             message: None,
         };
         *lock(&self.connection) = Some(client.clone());
+        // Settings that changed while the runtime initialized reach it now.
+        let latest = lock(&self.settings).clone();
+        if latest != settings {
+            client.update_settings(&latest);
+        }
         Ok(client)
     }
 }
@@ -296,6 +304,19 @@ impl RuntimeTemplate for ProtocolTemplate {
         lock(&self.connection).take();
     }
 
+    fn update_settings(&self, settings: &RuntimeSettings) {
+        {
+            let mut current = lock(&self.settings);
+            if *current == *settings {
+                return;
+            }
+            current.clone_from(settings);
+        }
+        if let Some(client) = live(&self.connection) {
+            client.update_settings(settings);
+        }
+    }
+
     fn runtime_mcp_servers(&self) -> Vec<cookie_agent_protocol::McpServerInfo> {
         live(&self.connection)
             .map(|client| client.runtime_mcp_servers())
@@ -318,8 +339,7 @@ impl RuntimeTemplate for ProtocolTemplate {
     fn acp_agents(&self) -> super::registry::RuntimeAcpAgents {
         let agents = match live(&self.connection) {
             Some(client) => client.acp_agents(),
-            None => self
-                .settings
+            None => lock(&self.settings)
                 .acp_agents
                 .iter()
                 .map(protocol::AcpAgentReport::from)
@@ -412,7 +432,8 @@ pub(crate) fn register_configured_templates(
     mcp_hub: &Arc<McpHub>,
 ) -> Result<(), EngineError> {
     for (runtime_id, template) in &config.runtimes {
-        if runtime_id.is_reserved() {
+        // A table without a command holds a dial-in runtime's settings.
+        if runtime_id.is_reserved() || !template.daemon_starts() {
             continue;
         }
         registry.register_template(Arc::new(
@@ -697,6 +718,26 @@ struct ClientInner {
     /// The ACP agents the runtime hosts, from its initialize reply or its
     /// latest `runtime/agents_changed`.
     acp_agents: Mutex<Vec<protocol::AcpAgentReport>>,
+    /// The runtime's protocol version, from its initialize reply.
+    protocol_version: OnceLock<cookie_agent_protocol::SemVer>,
+}
+
+/// The first runtime protocol whose runtimes take
+/// `runtime/settings_changed`.
+const SETTINGS_CHANGED_SINCE: cookie_agent_protocol::SemVer =
+    cookie_agent_protocol::SemVer::new(1, 10, 0);
+
+/// The MCP server definitions of `settings`, by server name.
+fn mcp_definitions(settings: &RuntimeSettings) -> BTreeMap<String, McpServerConfig> {
+    settings
+        .mcp_servers
+        .iter()
+        .filter_map(|server| {
+            serde_json::from_value(server.config.clone())
+                .ok()
+                .map(|config| (server.name.clone(), config))
+        })
+        .collect()
 }
 
 /// What the daemon knows about the MCP servers a runtime hosts.
@@ -809,15 +850,7 @@ impl RuntimeClient {
         mcp_hub: Option<Arc<McpHub>>,
     ) -> Result<(Self, InitializeResult), String> {
         let (peer, incoming) = Peer::start(connection.transport);
-        let definitions = settings
-            .mcp_servers
-            .iter()
-            .filter_map(|server| {
-                serde_json::from_value(server.config.clone())
-                    .ok()
-                    .map(|config| (server.name.clone(), config))
-            })
-            .collect();
+        let definitions = mcp_definitions(settings);
         let inner = Arc::new(ClientInner {
             peer,
             runtime_id: runtime_id.to_owned(),
@@ -843,6 +876,7 @@ impl RuntimeClient {
             liveness: OnceLock::new(),
             probe: super::liveness::Probe::default(),
             acp_agents: Mutex::default(),
+            protocol_version: OnceLock::new(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let reply: serde_json::Value = inner
@@ -862,6 +896,7 @@ impl RuntimeClient {
         let result: InitializeResult =
             read_handshake(cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION, reply)
                 .map_err(|reason| format!("runtime `{runtime_id}`: {reason}"))?;
+        let _ = inner.protocol_version.set(result.protocol_version);
         // No runtime feature is defined yet.
         for feature in &result.features {
             eprintln!(
@@ -920,6 +955,30 @@ impl RuntimeClient {
     /// The runtime's ID.
     pub(crate) fn runtime_id(&self) -> &str {
         &self.inner.runtime_id
+    }
+
+    /// Sends the runtime `settings`, the daemon's configuration of it now,
+    /// as `runtime/settings_changed`, and lists its MCP servers with their
+    /// new definitions. A runtime older than runtime protocol 1.10.0 does
+    /// not take them; it gets them when it next connects.
+    pub(crate) fn update_settings(&self, settings: &RuntimeSettings) {
+        lock(&self.inner.mcp).definitions = mcp_definitions(settings);
+        if let Some(hub) = &self.inner.mcp_hub {
+            hub.changed();
+        }
+        let takes_changes = self
+            .inner
+            .protocol_version
+            .get()
+            .is_some_and(|version| *version >= SETTINGS_CHANGED_SINCE);
+        if takes_changes {
+            self.inner.peer.notify_detached(
+                method::SETTINGS_CHANGED,
+                &protocol::RuntimeSettingsChangedParams {
+                    settings: settings.clone(),
+                },
+            );
+        }
     }
 
     /// The ACP agents the runtime reported last.
@@ -1007,6 +1066,7 @@ impl RuntimeClient {
             liveness: OnceLock::new(),
             probe: super::liveness::Probe::default(),
             acp_agents: Mutex::default(),
+            protocol_version: OnceLock::new(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let client = Self { inner };

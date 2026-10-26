@@ -280,21 +280,22 @@ async fn agent_stop_kills_the_process_and_reports_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_given_no_agents_hosts_its_own_and_reports_changes() {
-    let (updates, receiver) = tokio::sync::watch::channel(vec![agent("codex", true)]);
-    let mut harness = start(ServeOptions {
-        acp_agents: vec![agent("codex", true)],
-        acp_agent_updates: Some(receiver),
-        ..ServeOptions::default()
-    });
+async fn changed_settings_replace_the_agents_and_report_them() {
+    let mut harness = start(ServeOptions::default());
     let result: InitializeResult = harness
         .daemon
-        .request(method::INITIALIZE, &initialize(Vec::new()))
+        .request(method::INITIALIZE, &initialize(vec![agent("codex", true)]))
         .await
         .unwrap();
     assert_eq!(result.acp_agents.len(), 1);
-    updates
-        .send(vec![agent("codex", true), agent("claude", true)])
+    let settings = initialize(vec![agent("codex", true), agent("claude", true)]).settings;
+    harness
+        .daemon
+        .notify(
+            method::SETTINGS_CHANGED,
+            &cookie_agent_runtime_api::protocol::RuntimeSettingsChangedParams { settings },
+        )
+        .await
         .unwrap();
     let changed = loop {
         if let Relayed::Changed(changed) = harness.next().await {

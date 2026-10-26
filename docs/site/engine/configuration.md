@@ -117,7 +117,8 @@ error. Applying a configuration does this:
 | `mcp` | At once: changed servers restart, removed ones stop; servers added or changed at runtime (`/mcp`) stay on top |
 | `tool_output` for runtime instances | When an instance next starts or reconnects |
 | `server.session_idle_eviction_after` | At once, from the next check of idle sessions |
-| `server` (its other keys), `plugins`, `runtimes` | Only after the daemon restarts; the reload reports them as needing a restart, and a client can restart the daemon (see [Restarting the daemon](../daemon/persistent.md#restarting-the-daemon)) |
+| `runtimes.<id>.mcp`, `runtimes.<id>.acp` | At once, for a connected runtime: added servers and agents start, removed ones stop, changed ones restart (see [Runtime templates](../runtimes/templates.md)) |
+| `server` (its other keys), `plugins`, a template's `command`, `env`, and timeouts | Only after the daemon restarts; the reload reports them as needing a restart, and a client can restart the daemon (see [Restarting the daemon](../daemon/persistent.md#restarting-the-daemon)) |
 
 Skills are not reloaded.
 

@@ -44,7 +44,7 @@ that uses `labpc`.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `command` | array of strings | required | The program and its arguments. |
+| `command` | array of strings | none | The program and its arguments. Without it, the table holds the settings of the runtime that dials in with its ID (see below). |
 | `env` | table of strings | `{}` | Variables added to the daemon's environment for the process. |
 | `startup_timeout_ms` | positive integer | `10000` | Bound on starting the process and its answer to `runtime/initialize`, and on each capability opening, which follows its MCP servers' first connection attempts. |
 | `shutdown_grace_ms` | positive integer | `3000` | How long a stopping runtime gets before its process group is killed. |
@@ -54,6 +54,16 @@ that uses `labpc`.
 - **Runtime IDs** match `[a-z][a-z0-9_]{0,31}` because they become tool name
   prefixes. `global` is reserved. `[runtimes.local]` configures the built-in
   local runtime and accepts only `mcp` and `acp` tables.
+- **A table without `command`** is no template: the daemon starts nothing
+  for it, and it holds the MCP servers and ACP agents of the runtime that
+  [dials in](dial-in.md) with its ID. Like `[runtimes.local]`, it accepts
+  only `mcp` and `acp`; `env` or a timeout without `command` is rejected.
+- **Live changes.** A runtime's `mcp` and `acp` tables reach it at once when
+  the configuration is applied, whether the daemon started it or it dialed
+  in: added servers and agents start, removed ones stop, changed ones
+  restart, and the others keep running. `command`, `env`, and the timeouts
+  take effect when the runtime next starts, which the configuration status
+  reports as a restart needing to apply `runtimes`.
 - **`command`** must be nonempty and its first element must name a program.
   One process serves every workspace, so the command names none. An element
   containing `{workspace}`, which older templates used, is rejected.

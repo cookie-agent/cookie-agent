@@ -53,8 +53,8 @@ description = "Gemini CLI"
 ```
 
 The daemon lists them as `claude`, `codex`, and `gemini`, the keys of their
-declarations, once it restarts (`[runtimes.local]` changes with the rest of
-`runtimes`, at the next start). Pick one in the agent picker of the TUI (`/agent`) or the
+declarations, as soon as the configuration is applied: a changed `acp`
+table reaches its runtime at once. Pick one in the agent picker of the TUI (`/agent`) or the
 web client (the agent chip) for a new session, and send a message: the daemon starts the
 agent's process on the first turn, opens an ACP session in the session's
 workspace, and shows the agent's reply, thoughts, tool calls, and plan as
@@ -93,13 +93,14 @@ uses it. See [Which runtime runs it](#which-runtime-runs-it).
 
 ## On a machine that dials in
 
-A [runtime that dials in](../runtimes/dial-in.md)
-declares its agents in its own machine's `config.toml`, under
-`[runtimes.local]`, exactly where its MCP servers go:
+A [runtime that dials in](../runtimes/dial-in.md) hosts the agents of its
+table in the daemon's `config.toml`: a `[runtimes.<id>]` without `command`,
+named after the ID it dials in with, exactly where its MCP servers go. The
+command runs on the lab machine:
 
 ```toml
-# ~/.cookie-agent/config.toml on the lab machine
-[runtimes.local.acp.agents.claude]
+# ~/.cookie-agent/config.toml on the daemon's machine
+[runtimes.lab.acp.agents.claude]
 command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
 description = "Claude Code on the lab machine"
 ```
@@ -110,16 +111,15 @@ cookie runtime serve --daemon ws://laptop:7419/ws --id lab --token <token>
 ```
 
 The agent is `claude`, which a session that attaches `lab` runs on the lab
-machine while the runtime is connected. The runtime reads its configuration
-again every few seconds and reports changed agents, so adding one needs no
-restart. To keep it connected, run it as a
-[service](../runtimes/service.md).
+machine while the runtime is connected. A change to the table reaches the
+connected runtime at once, so adding an agent needs no restart. To keep it
+connected, run it as a [service](../runtimes/service.md).
 
 ## Which runtime runs it
 
 An agent's ID is the key of its declaration, whichever runtime declares it:
-`[runtimes.local.acp.agents.claude]` and a lab machine's own
-`[runtimes.local.acp.agents.claude]` both offer the one agent `claude`. A
+`[runtimes.local.acp.agents.claude]` and `[runtimes.lab.acp.agents.claude]`
+both offer the one agent `claude`. A
 session runs it on the runtime it attaches that offers it:
 
 - A session that attaches `local` (the default for a new session) runs

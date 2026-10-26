@@ -1316,8 +1316,9 @@ TUI shows each as an error row in every named session it displays.
 
 `mcp.server.list` returns the servers of every runtime: the global runtime's
 top-level `[mcp]` servers first, then those each running coding runtime
-instance hosts, from its template's `mcp` table or, for a dial-in runtime,
-from `[runtimes.local.mcp]` on its own machine. Each entry has the hosting
+instance hosts, from its `[runtimes.<id>]` table in the daemon's
+configuration, a dial-in runtime's included (since runtime protocol 1.10.0;
+an older dial-in runtime hosts `[runtimes.local.mcp]` of its own machine). Each entry has the hosting
 `runtime_id`, the hosting instance's `workspace` (absent for `global`),
 `name`, `source`, `definition`, `state`, `tool_count`, `message`, and
 `auth_in_progress`. Since 1.36.0 it also has `server_tools`: every tool the
@@ -1327,7 +1328,8 @@ server lists, by the server's own name (what `include_tools` and
 absent while the server has listed nothing and from a runtime older than
 runtime protocol 1.9.0. `source` is `user_file` (the daemon's `config.toml`),
 `runtime` (a global server changed in the running daemon only), or, since
-1.12.0, `machine`: defined on the hosting runtime's machine, which the
+1.12.0, `machine`: defined on the hosting runtime's machine (an older
+dial-in runtime's own servers), which the
 daemon does not read, so its `definition` is empty (no `command` or `url`).
 `source` is an open enum; a 1.11 client reads `machine` as `runtime`. Before
 1.12.0 a dial-in runtime's own servers were left out of the list. Since

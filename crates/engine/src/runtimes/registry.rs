@@ -87,6 +87,13 @@ pub trait RuntimeTemplate: Send + Sync {
     /// daemon shuts it down through the instances that use it.
     fn disconnect(&self) {}
 
+    /// Takes the runtime's settings as the daemon's configuration has them
+    /// now (`docs/site/specs/runtime-management.md` section 3.1): the next
+    /// connection initializes with them, and a connected runtime gets them
+    /// at once. The default ignores them: only a runtime behind the runtime
+    /// protocol takes settings.
+    fn update_settings(&self, _settings: &cookie_agent_runtime_api::protocol::RuntimeSettings) {}
+
     /// Every MCP server the connected runtime is configured with, as
     /// `mcp.server.list` shows them without a workspace: its runtime-scoped
     /// servers, live, and its workspace-scoped ones as configured. Empty
@@ -1571,6 +1578,28 @@ impl RuntimeRegistry {
                 listing: template.listing(),
             })
             .collect()
+    }
+
+    /// Gives every runtime its settings from `config`, as applied now: a
+    /// connected runtime that takes them gets the ones that changed.
+    pub(crate) fn update_settings(&self, config: &cookie_agent_config::LoadedConfiguration) {
+        let mut templates = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        templates.extend(
+            self.dial_ins
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .map(|template| Arc::clone(template) as Arc<dyn RuntimeTemplate>),
+        );
+        for template in templates {
+            template.update_settings(&super::runtime_settings(config, template.runtime_id()));
+        }
     }
 
     /// The ACP agents of every registered runtime, by runtime ID.

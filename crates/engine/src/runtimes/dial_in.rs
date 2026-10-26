@@ -90,6 +90,9 @@ pub(crate) struct DialInTemplate {
     liveness: super::Liveness,
     /// The ACP agents the runtime reported last, kept while it is away.
     acp_agents: Mutex<Vec<cookie_agent_runtime_api::protocol::AcpAgentReport>>,
+    /// The runtime's settings as the daemon's configuration last had them,
+    /// once a connection or a configuration change set them.
+    settings: Mutex<Option<RuntimeSettings>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -108,6 +111,7 @@ impl DialInTemplate {
             last_seen: Mutex::default(),
             liveness: super::Liveness::DEFAULT,
             acp_agents: Mutex::default(),
+            settings: Mutex::default(),
         }
     }
 
@@ -149,9 +153,8 @@ impl DialInTemplate {
         self.current().is_some()
     }
 
-    /// Initializes the runtime over `connection` and makes it the template's
-    /// connection. The runtime brings its own MCP servers, so the daemon
-    /// sends none.
+    /// Initializes the runtime over `connection` with `settings`, its
+    /// `[runtimes.<id>]` table, and makes it the template's connection.
     pub(crate) async fn connect(
         &self,
         connection: cookie_agent_runtime_api::RuntimeConnection,
@@ -186,6 +189,13 @@ impl DialInTemplate {
             message: None,
         };
         *lock(&self.connection) = Some(client.clone());
+        // Settings that changed while the runtime initialized reach it now.
+        let latest = lock(&self.settings)
+            .get_or_insert_with(|| settings.clone())
+            .clone();
+        if latest != *settings {
+            client.update_settings(&latest);
+        }
         Ok(client)
     }
 
@@ -279,6 +289,19 @@ impl RuntimeTemplate for DialInTemplate {
 
     fn disconnect(&self) {
         lock(&self.connection).take();
+    }
+
+    fn update_settings(&self, settings: &RuntimeSettings) {
+        {
+            let mut current = lock(&self.settings);
+            if current.as_ref() == Some(settings) {
+                return;
+            }
+            *current = Some(settings.clone());
+        }
+        if let Some(client) = self.current() {
+            client.update_settings(settings);
+        }
     }
 
     fn runtime_mcp_servers(&self) -> Vec<cookie_agent_protocol::McpServerInfo> {

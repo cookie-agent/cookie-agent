@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.9.0**
+The protocol version is a semver string, currently **1.10.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -202,6 +202,12 @@ runtime reports its project skills as before.
 server lists, by the server's own name (the name its `include_tools` and
 `exclude_tools` match) and in its order, each with `filtered: true` when the
 filters left it out. Clients list them in their machines views.
+1.10.0 added `runtime/settings_changed`, the daemon's notification of a
+runtime's whole new settings, which a runtime applies without reconnecting
+(see [Settings changes](#settings-changes)). A runtime that dials in now
+gets its MCP servers and ACP agents from the daemon's `[runtimes.<id>]` as a
+template does; a `cookie runtime serve` of this version no longer reads its
+own machine's `[runtimes.local]`.
 
 ## Capabilities and instances
 
@@ -338,6 +344,7 @@ that dials in after its instances failed reopens them. Calls are never retried t
 | `capability/tools_changed` | runtime → daemon | notification | An instance's whole new tool list |
 | `runtime/context` | daemon → runtime | request | An instance's `AGENTS.md` context for a run's preset |
 | `runtime/shutdown` | daemon → runtime | request | Stop gracefully |
+| `runtime/settings_changed` | daemon → runtime | notification | The runtime's whole new settings, as `runtime/initialize` carries them; since 1.10.0 (see [Settings changes](#settings-changes)) |
 | `runtime/ping` | daemon → runtime | request | Answer `{}` at once; since 1.4.0 (see [Liveness](#liveness)) |
 | `tool/prepare` | daemon → runtime | request | Prepare one turn's calls to an instance |
 | `tool/revalidate` | daemon → runtime | request | Check a prepared call can still run as approved |
@@ -380,7 +387,7 @@ ignored.
 | `runtime_id` | The runtime's ID, `[a-z][a-z0-9_]{0,31}`. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
-| `settings.acp_agents` | Optional, since 1.7.0: the template's ACP agents (`[runtimes.<id>.acp.agents]`, or `[runtimes.local]` for the daemon's own runtime): `id`, `command`, `env`, `description`, `enabled`. A runtime given none hosts its own machine's `[runtimes.local.acp.agents]`, as a runtime that dials in does (see [ACP agents](#acp-agents)). |
+| `settings.acp_agents` | Optional, since 1.7.0: the runtime's ACP agents (`[runtimes.<id>.acp.agents]`, of a template or of a runtime that dials in, or `[runtimes.local]` for the daemon's own runtime): `id`, `command`, `env`, `description`, `enabled`. A runtime given none hosts none, unless a program embedding it gave it agents of its own (see [ACP agents](#acp-agents)). |
 | `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../extend/mcp.md#accepted-fields) reads it, with its `scope`. Each instance of a capability that hosts MCP servers runs the workspace-scoped ones in its workspace; the runtime runs the runtime-scoped ones once, in its home directory (see [Runtime-scoped MCP servers](#runtime-scoped-mcp-servers)). A server's `cwd`, when relative, resolves against that directory. |
 
 A runtime rejects settings it does not support with `initialize_rejected`; a runtime that
@@ -503,6 +510,27 @@ is created or opened, and the session's next run waits for the answer.
 
 A daemon older than 1.5.0 knows no tools outside an instance, so a runtime
 that sees one in `runtime/initialize` hosts every server per workspace.
+
+### Settings changes
+
+Since 1.10.0 the daemon sends `runtime/settings_changed` (`settings`, the
+whole object `runtime/initialize` carries) to a connected runtime whenever
+the daemon's configuration of it changes: its `[runtimes.<id>]` MCP servers
+or ACP agents, `[tool_output]`, or `[agent_md]`. It sends it only to a
+runtime that answered `runtime/initialize` with 1.10.0 or later; an older
+one gets the change when it next connects. A runtime that connected while
+the configuration changed gets the newer settings right after its
+initialize reply.
+
+The runtime applies them as `runtime/initialize` would, by name: a server or
+agent that is new starts, one that is gone stops, one whose definition
+changed restarts, and the others keep running. Every instance takes the
+workspace-scoped servers, including one that opens meanwhile; the
+runtime-scoped ones follow `runtime/mcp_changed` and `runtime/tools_changed`
+as usual, and the instances' own `mcp/changed` and
+`capability/tools_changed`. Changed agents are reported with
+`runtime/agents_changed`. Settings it cannot apply leave the runtime as it
+was, and it says why on its standard error.
 
 ### `runtime/context`
 
@@ -707,8 +735,7 @@ them; the daemon speaks ACP to them.
 
 - **Declarations.** The runtime reports its agents in `runtime/initialize`'s
   `acp_agents`, and again with `runtime/agents_changed` (`agents`, the whole
-  list) when they change, such as when a runtime that dials in reads its
-  configuration again. The daemon lists each under its own ID; runtimes
+  list) when they change, such as after `runtime/settings_changed`. The daemon lists each under its own ID; runtimes
   that report the same ID offer the same agent.
 - **Processes.** `agent/start` (`agent`) runs the agent's `command` without a
   shell (on Windows, a bare program name also finds a `.cmd` or `.bat`

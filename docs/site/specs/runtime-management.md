@@ -2,7 +2,10 @@
 
 Status: **in progress** (2026-10-26); every decision in
 [section 9](#9-decisions) made by the user on 2026-10-26. Phase 1
-implemented 2026-10-26 (client protocol 1.36.0, runtime protocol 1.9.0). Builds on [runtimes](runtimes.md),
+implemented 2026-10-26 (client protocol 1.36.0, runtime protocol 1.9.0);
+phase 2's daemon side (2a: dial-in tables, `runtime/settings_changed`,
+dial-in machines without `[runtimes.local]`) implemented 2026-10-26 in
+runtime protocol 1.10.0, `${NAME}` in `env` deferred. Builds on [runtimes](runtimes.md),
 [runtime capabilities](runtime-capabilities.md), [ACP agents](acp-agents.md),
 [MCP tool filters](mcp-tool-filters.md), [web MCP OAuth](web-mcp-oauth.md),
 and the daemon restart of [engine configuration](engine-configuration.md)
@@ -96,8 +99,8 @@ command = ["claude-code-acp"]
   `["runtimes", <id>, "mcp", "servers", <name>]` and so on. The typed RPCs in
   section 4 wrap it for the panel. No `runtime_id` is added to `config.get`
   or `config.apply`: there is one configuration, the daemon's.
-- **Secrets.** `env` values in these tables may be `${NAME}`, expanded on
-  the runtime from its own environment. A token can then stay on the machine
+- **Secrets (deferred, not implemented).** `env` values in these tables may
+  be `${NAME}`, expanded on the runtime from its own environment. A token can then stay on the machine
   that uses it, as it did when the machine declared the server. A plain
   value is sent as written.
 
@@ -114,9 +117,10 @@ command = ["claude-code-acp"]
   `[runtimes.local.mcp]` or `[runtimes.local.acp]` entries warns once at
   startup that a dial-in runtime ignores them, and names the daemon table
   to move them to (`[runtimes.<id>]`). It does not migrate them.
-- Removed: `watch_local_acp_agents`, the 5-second poll, and
-  `McpConfigSource::Machine`. Every runtime's servers come from the
-  daemon's configuration, with full definitions.
+- Removed: `watch_local_acp_agents` and its 5-second poll. Every runtime's
+  servers come from the daemon's configuration, with full definitions;
+  `McpConfigSource::Machine` stays for a dial-in runtime older than runtime
+  protocol 1.10.0, which still hosts its own machine's.
 
 ## 4. Machines panel
 

@@ -52,17 +52,19 @@ Four things decide how a service has to be set up:
   cancelling its calls and stopping its MCP servers, so a service manager's
   ordinary stop is right. A clean stop exits successfully, so
   restart-on-failure leaves it stopped.
-- **It runs as the user it serves.** The runtime hosts its own machine's MCP
-  servers, those of `[runtimes.local.mcp.servers.*]` in that user's
-  `config.toml`, and its tools see that user's files and profile. Run the
-  service as the account whose configuration and browser profile it needs,
-  and, for browser MCP servers, inside that user's login session. A browser
-  belongs to the machine, not to a workspace, so give it
-  `scope = "runtime"`: the runtime starts it once when it connects, in that
-  user's home directory, and every workspace shares it:
+- **It runs as the user it serves.** The runtime runs the MCP servers and
+  ACP agents of its `[runtimes.<id>]` table in the daemon's configuration
+  (see [MCP servers and ACP agents](dial-in.md)) as that user, and its tools
+  see that user's files and profile. Run the service as the account whose
+  files and browser profile it needs, and, for browser MCP servers, inside
+  that user's login session. A browser belongs to the machine, not to a
+  workspace, so give it `scope = "runtime"`: the runtime starts it once when
+  it connects, in that user's home directory, and every workspace shares
+  it:
 
   ```toml
-  [runtimes.local.mcp.servers.my_chrome]
+  # The daemon's config.toml, for the runtime that dials in as `labpc`
+  [runtimes.labpc.mcp.servers.my_chrome]
   command = "npx"
   args = ["-y", "chrome-devtools-mcp@latest"]
   scope = "runtime"

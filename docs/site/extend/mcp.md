@@ -42,10 +42,11 @@ on that runtime's machine:
   server next to a repository on another host over ssh. Their `scope` says
   how many copies run (see [scope](#scope-one-per-workspace-or-one-per-runtime)).
   `[runtimes.local.mcp.servers.<name>]` servers run in the daemon's built-in
-  `local` coding runtime, and those of a machine's own
-  `[runtimes.local.mcp.servers.<name>]` in a runtime that machine dials in
-  with (`cookie runtime serve --daemon`, or the TUI attached to a daemon on
-  another machine).
+  `local` coding runtime. A table without `command`, such as
+  `[runtimes.desk.mcp.servers.<name>]`, gives its servers to the runtime
+  that dials in as `desk` (`cookie runtime serve --daemon`, or the TUI
+  attached to a daemon on another machine), which runs them on its own
+  machine; see [runtimes that dial in](../runtimes/dial-in.md).
 
 ```toml
 [runtimes.labpc]
@@ -144,7 +145,7 @@ The runtime that hosts the server applies them to its first `tools/list` and
 to every refresh after `notifications/tools/list_changed`, so a tool the
 server adds later is filtered too; a filtered tool is never published, to
 any agent. Both keys work wherever a server is configured: `[mcp.servers]`,
-`[runtimes.<id>.mcp.servers]`, and a machine's own `[runtimes.local.mcp]`.
+and `[runtimes.<id>.mcp.servers]`.
 An empty pattern, or an `include_tools = []` that would publish nothing, is a
 configuration error. `/mcp`, the runtime panels, and the web client's MCP
 servers show how many tools the filters left out, as `12 tools, 30

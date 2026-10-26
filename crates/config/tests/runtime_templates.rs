@@ -90,14 +90,8 @@ fn template_fields_are_strict() {
 
 #[test]
 fn a_command_is_a_nonempty_array_naming_a_program() {
-    for template in [
-        "[runtimes.labpc]\n",
-        "[runtimes.labpc]\ncommand = []\n",
-        "[runtimes.labpc]\nenv = { A = \"b\" }\n",
-    ] {
-        let error = rejected(template);
-        assert!(error.contains("nonempty array"), "{template}: {error}");
-    }
+    let error = rejected("[runtimes.labpc]\ncommand = []\n");
+    assert!(error.contains("nonempty array"), "{error}");
     let error = rejected("[runtimes.labpc]\ncommand = [\"\", \"--stdio\"]\n");
     assert!(error.contains("name a program"), "{error}");
     // Later elements may be empty arguments.
@@ -325,5 +319,58 @@ exclude_tools = ["screenshot"]
     ] {
         let error = rejected(table);
         assert!(error.contains("include_tools"), "{table}: {error}");
+    }
+}
+
+#[test]
+fn a_table_without_a_command_holds_a_dial_in_runtimes_settings() {
+    let loaded = load(
+        "[runtimes.labpc]\n\
+         [runtimes.labpc.mcp.servers.browser]\ncommand = \"browser-mcp\"\n\
+         [runtimes.labpc.acp.agents.claude]\ncommand = [\"claude-acp\"]\n",
+    )
+    .expect("dial-in settings");
+    let (_, labpc) = loaded
+        .runtimes
+        .iter()
+        .find(|(id, _)| id.as_str() == "labpc")
+        .expect("labpc");
+    assert!(!labpc.daemon_starts());
+    assert!(labpc.command.is_empty() && labpc.env.is_empty());
+    assert_eq!(labpc.mcp_servers.keys().collect::<Vec<_>>(), ["browser"]);
+    assert_eq!(
+        labpc
+            .acp_agents
+            .keys()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["claude"]
+    );
+    let empty = load("[runtimes.labpc]\n").expect("an empty dial-in table");
+    assert!(
+        !empty
+            .runtimes
+            .values()
+            .next()
+            .expect("labpc")
+            .daemon_starts()
+    );
+    let started = load("[runtimes.labpc]\ncommand = [\"runtime\"]\n").expect("a template");
+    assert!(
+        started
+            .runtimes
+            .values()
+            .next()
+            .expect("labpc")
+            .daemon_starts()
+    );
+    // How the daemon starts a runtime needs a command to start.
+    for field in [
+        "env = { A = \"b\" }",
+        "startup_timeout_ms = 1",
+        "shutdown_grace_ms = 1",
+    ] {
+        let error = rejected(&format!("[runtimes.labpc]\n{field}\n"));
+        assert!(error.contains("without `command`"), "{field}: {error}");
     }
 }

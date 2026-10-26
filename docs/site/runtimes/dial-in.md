@@ -23,9 +23,9 @@ cookie runtime serve --daemon ws://laptop:7419/ws --token <token>
   processes it starts.
 - **Identity.** `--id` is the runtime ID, `[a-z][a-z0-9_]{0,31}`; without
   it, the host name, sanitized (`host_` in front when it does not start with
-  a letter). It must not be `global`, `local`, or a configured
-  `[runtimes.<id>]`, and only one runtime may be connected under an ID at a
-  time.
+  a letter). It must not be `global`, `local`, or a `[runtimes.<id>]`
+  template with a `command`, and only one runtime may be connected under an
+  ID at a time.
 - **Refusals.** The daemon says why it refuses a runtime, and the runtime
   prints it. A refusal that retrying cannot fix, a configured or reserved
   ID or a wrong token, ends `cookie runtime serve --daemon` with an error:
@@ -85,10 +85,27 @@ cookie runtime serve --daemon ws://laptop:7419/ws --token <token>
   and then `failed`; a runtime that vanished without one, such as one that
   was killed or lost its network, shows the transport's error instead, for
   example ``Connection reset without closing handshake``.
-- **MCP servers.** It hosts its own machine's
-  [MCP servers](tools.md#mcp-servers): those of
-  `[runtimes.local.mcp]` in that machine's `config.toml`, a
-  `scope = "runtime"` one from the moment it connects.
+- **MCP servers and ACP agents.** It hosts the ones the daemon's
+  configuration gives it: a `[runtimes.<id>]` table with no `command`, named
+  after the ID it dials in with, holds its
+  [MCP servers](tools.md#mcp-servers) and [ACP agents](tools.md#acp-agents),
+  a `scope = "runtime"` server from the moment it connects. Changes to the
+  table reach the connected runtime at once: added servers and agents
+  start, removed ones stop, changed ones restart, and the rest keep running.
+  The machine itself keeps only how to reach the daemon, `[server] url` and
+  `token`; its own `[runtimes.local]` is its own daemon's, and a runtime
+  that dials in warns at startup that it does not host it:
+
+  ```toml
+  # ~/.cookie-agent/config.toml on the daemon's machine
+  [runtimes.labpc]
+  [runtimes.labpc.mcp.servers.my_chrome]
+  command = "npx"
+  args = ["-y", "chrome-devtools-mcp@latest"]
+  scope = "runtime"
+  [runtimes.labpc.acp.agents.claude]
+  command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+  ```
 - **Roots.** `--root` limits its workspaces, as for
   [`--stdio`](templates.md#cookie-runtime-serve).
 - **Clients on its machine.** Plain `cookie` and `cookie attach` on the

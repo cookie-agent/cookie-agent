@@ -1,0 +1,147 @@
+{
+  "$defs": {
+    "AcpAgentSettings": {
+      "description": "One ACP agent a runtime hosts, as configured\n(`[runtimes.<id>.acp.agents.<agent>]`; runtime protocol 1.7.0).",
+      "properties": {
+        "command": {
+          "description": "The program and its arguments, run without a shell.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Variables merged over the runtime's environment.",
+          "type": "object"
+        },
+        "id": {
+          "description": "The table key: an agent ID (lowercase letters, digits, and single\ninner hyphens).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "command"
+      ],
+      "type": "object"
+    },
+    "AgentMdLimits": {
+      "properties": {
+        "max_bytes": {
+          "description": "Files larger than this are skipped. At most\nthe `AGENTS.md` event bound.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_bytes"
+      ],
+      "type": "object"
+    },
+    "McpServerSettings": {
+      "description": "One MCP server of a runtime template.",
+      "properties": {
+        "config": {
+          "description": "The server's table, as the `[mcp.servers.<name>]` schema reads it."
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "config"
+      ],
+      "type": "object"
+    },
+    "RuntimeSettings": {
+      "description": "What the daemon's configuration says about the runtime's work. A runtime\nrejects settings it does not support.",
+      "properties": {
+        "acp_agents": {
+          "description": "The template's ACP agents, which the runtime starts on its own\nmachine (runtime protocol 1.7.0). A runtime that hosts no agents\nrejects a nonempty list; one that gets none hosts its own machine's.",
+          "items": {
+            "$ref": "#/$defs/AcpAgentSettings"
+          },
+          "type": "array"
+        },
+        "agent_md": {
+          "$ref": "#/$defs/AgentMdLimits",
+          "description": "`[agent_md]`: the `AGENTS.md` size rule."
+        },
+        "mcp_servers": {
+          "default": [],
+          "description": "The template's MCP servers, which the runtime hosts on its own\nmachine. A runtime that hosts no MCP servers rejects a nonempty list.",
+          "items": {
+            "$ref": "#/$defs/McpServerSettings"
+          },
+          "type": "array"
+        },
+        "tool_output": {
+          "$ref": "#/$defs/ToolOutputLimits",
+          "description": "`[tool_output]`: preview limits of tool output."
+        }
+      },
+      "required": [
+        "tool_output",
+        "agent_md"
+      ],
+      "type": "object"
+    },
+    "ToolOutputLimits": {
+      "properties": {
+        "head_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tail_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_lines",
+        "max_bytes",
+        "head_lines",
+        "tail_lines"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`runtime/settings_changed` (runtime protocol 1.10.0): the runtime's\nsettings as they are now, whole.",
+  "properties": {
+    "settings": {
+      "$ref": "#/$defs/RuntimeSettings"
+    }
+  },
+  "required": [
+    "settings"
+  ],
+  "title": "RuntimeSettingsChangedParams",
+  "type": "object"
+}

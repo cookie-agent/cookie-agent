@@ -74,7 +74,7 @@ runs where the server runs. Put it where the browser belongs:
 |---|---|---|
 | `[mcp.servers.<name>]` | on the daemon's machine, in the global runtime; every session that attaches `global` (the default) gets it | a headless browser next to a daemon on a server or your own desktop |
 | `[runtimes.<id>.mcp.servers.<name>]` | on the machine of the runtime template `<id>`, which the daemon starts | a browser on a host the daemon reaches over ssh |
-| `[runtimes.local.mcp.servers.<name>]` in a dial-in machine's own `config.toml` | on that machine, in the runtime it dials in with | your desktop's Chrome, while the daemon runs elsewhere |
+| `[runtimes.<id>.mcp.servers.<name>]` without a `command` for the runtime | on the machine that dials in as `<id>`, in that runtime | your desktop's Chrome, while the daemon runs elsewhere |
 
 In the two runtime forms, give the server `scope = "runtime"`. A browser
 belongs to the machine, not to a workspace: the runtime starts one copy when
@@ -210,11 +210,12 @@ server.
    open its status page from the toolbar icon, and copy the
    `PLAYWRIGHT_MCP_EXTENSION_TOKEN` value. The token belongs to that Chrome
    profile.
-4. **Configure the server** in the desktop's own
-   `%USERPROFILE%\.cookie-agent\config.toml`:
+4. **Configure the server** in the daemon's `config.toml`, for the runtime
+   the desktop dials in as. The table has no `command`, since the daemon
+   does not start the runtime; the server runs on the desktop:
 
     ```toml
-    [runtimes.local.mcp.servers.my_chrome]
+    [runtimes.winbox.mcp.servers.my_chrome]
     command = "npx"
     args = ["-y", "@playwright/mcp@latest", "--extension"]
     env = { PLAYWRIGHT_MCP_EXTENSION_TOKEN = "<extension-token>" }
@@ -231,8 +232,8 @@ server.
       downloads the package; pre-fetch it with
       `npx -y @playwright/mcp@latest --version` so the first connection does not
       run out of time.
-    - The token sits in your `config.toml` on the desktop; keep that file to
-      yourself.
+    - The token sits in the daemon's `config.toml`, which reaches the desktop
+      in the runtime's settings; keep that file to yourself.
 
 5. **Try it in a terminal first**, with the daemon's token from `[server]
    token` in the daemon's `config.toml`:
@@ -259,8 +260,7 @@ server.
    logon task from
    [Running a runtime as a service](../runtimes/service.md#windows),
    with `--id winbox`. It runs in your session, so it reaches your Chrome.
-   After changing the server's configuration, restart the task
-   (`Stop-ScheduledTask` and `Start-ScheduledTask`).
+   A change to the server's table reaches the connected runtime at once.
 
 7. **Use it in a session.** The browser tools come with the runtime: attach
    `winbox/coding` in `/runtime` (`a`, then a workspace such as `~`), or let a
@@ -273,7 +273,8 @@ server.
 When you only need the browser while you are at the desktop, the TUI does
 the same without a task: `cookie attach --url wss://host.example.ts.net/ws
 --token <token>` on the desktop dials in as `client_<host name>` for as long as
-it runs, hosting the same `[runtimes.local.mcp.servers]` (see
+it runs, hosting the `[runtimes.client_<host name>.mcp.servers]` of the
+daemon's configuration (see
 [A client's machine](../concepts/runtimes.md#a-clients-machine)).
 
 ## Linux and macOS: a headless browser next to the daemon

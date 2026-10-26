@@ -59,9 +59,10 @@ use cookie_agent_runtime_api::{
         InlineMedia, McpChangedParams, McpFailureReport, McpReconnectParams, McpServerReport,
         McpServerSettings, Outcome, OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult,
         PreparedCall, PreparedRef, PromptSectionDeclaration, RuntimeMcpChangedParams,
-        RuntimeMcpReconnectParams, RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration,
-        SkillDiscoveryDeclaration, ToolDeclaration, ToolDeclarationExt as _, ToolProgressParams,
-        ToolResult, ToolResultExt as _, WireToolError, method,
+        RuntimeMcpReconnectParams, RuntimeSettings, RuntimeSettingsChangedParams, RuntimeSkills,
+        RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration, ToolDeclaration,
+        ToolDeclarationExt as _, ToolProgressParams, ToolResult, ToolResultExt as _, WireToolError,
+        method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -83,8 +84,8 @@ pub struct ServeOptions {
     /// How dropped MCP servers are reconnected; the shared default when
     /// absent. Tests that cannot wait for the production backoff set it.
     pub mcp_reconnect: Option<ReconnectPolicy>,
-    /// MCP servers of the runtime's own machine, hosted when the daemon
-    /// sends none, as for a runtime that dials in.
+    /// MCP servers hosted when the daemon sends none, such as an embedding
+    /// program's own.
     pub mcp_servers: Vec<McpServerSettings>,
     /// Declare producer messaging: the runtime's tools get a
     /// [`ToolExecutionContext::producers`] channel to the sessions attached
@@ -94,13 +95,9 @@ pub struct ServeOptions {
     /// Stops serving when cancelled, as `runtime/shutdown` does: calls still
     /// running are cancelled and the MCP servers shut down.
     pub stop: CancellationToken,
-    /// ACP agents of the runtime's own machine, hosted when the daemon
-    /// declares none, as for a runtime that dials in.
+    /// ACP agents hosted when the daemon declares none, such as an
+    /// embedding program's own.
     pub acp_agents: Vec<protocol::AcpAgentSettings>,
-    /// Replacements of [`Self::acp_agents`], such as a dial-in runtime's
-    /// configuration changing: each value is reported to the daemon with
-    /// `runtime/agents_changed`.
-    pub acp_agent_updates: Option<tokio::sync::watch::Receiver<Vec<protocol::AcpAgentSettings>>>,
     /// The program and arguments an ACP agent runs to reach cookie's tools,
     /// before `--socket <path>`: this executable's `runtime mcp-bridge` when
     /// empty.
@@ -126,7 +123,6 @@ impl Default for ServeOptions {
             producer_messaging: false,
             stop: CancellationToken::new(),
             acp_agents: Vec::new(),
-            acp_agent_updates: None,
             bridge_command: Vec::new(),
         }
     }
@@ -231,6 +227,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> Stri
         prepared: Mutex::default(),
         executions: Mutex::default(),
         next_prepared: AtomicU64::new(1),
+        settings_changes: tokio::sync::watch::channel(None).0,
         stop,
     });
     let stopped = loop {
@@ -260,9 +257,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> Stri
     lock(&server.prepared).clear();
     let instances = lock(&server.instances).drain().collect::<Vec<_>>();
     for (_, instance) in instances {
-        if let Some(mcp) = &instance.mcp {
-            mcp.shutdown().await;
-        }
+        instance.mcp.shutdown().await;
     }
     if let Some(mcp) = server.runtime_mcp() {
         mcp.registry.shutdown().await;
@@ -305,19 +300,46 @@ struct Server {
     /// Executing calls by prepared ID.
     executions: Mutex<HashMap<u64, Execution>>,
     next_prepared: AtomicU64,
+    /// The latest `runtime/settings_changed`, which
+    /// [`Server::follow_settings`] applies.
+    settings_changes: tokio::sync::watch::Sender<Option<RuntimeSettings>>,
     /// Cancelled when the server stops; every call runs under a child of it.
     stop: CancellationToken,
 }
 
-/// What `runtime/initialize` set.
+/// What `runtime/initialize` set, and `runtime/settings_changed` changes.
 struct Initialized {
     runtime_id: String,
-    settings: RuntimeSettings,
-    /// The workspace-scoped MCP servers, which every instance hosts.
-    mcp_servers: BTreeMap<String, LoadedMcpServer>,
-    /// The runtime-scoped MCP servers, hosted once for the runtime, when it
+    /// Whether the daemon knows runtime-scoped MCP servers (runtime
+    /// protocol 1.5.0); an older one gets every server per workspace.
+    shared_mcp: bool,
+    settings: Mutex<RuntimeSettings>,
+    /// The MCP servers and ACP agents the runtime hosts: the daemon's, or
+    /// [`ServeOptions`]'s when it sends none.
+    hosted: Mutex<Hosted>,
+    /// The runtime-scoped MCP servers, hosted once for the runtime, once it
     /// has any.
-    runtime_mcp: Option<Arc<RuntimeMcp>>,
+    runtime_mcp: Mutex<Option<Arc<RuntimeMcp>>>,
+}
+
+/// The MCP servers and ACP agents a runtime hosts, as configured.
+#[derive(Clone, Default)]
+struct Hosted {
+    /// Hosted once for the runtime.
+    runtime_servers: BTreeMap<String, LoadedMcpServer>,
+    /// Hosted by every instance.
+    workspace_servers: BTreeMap<String, LoadedMcpServer>,
+    acp_agents: Vec<protocol::AcpAgentSettings>,
+}
+
+impl Initialized {
+    fn runtime_mcp(&self) -> Option<Arc<RuntimeMcp>> {
+        lock(&self.runtime_mcp).clone()
+    }
+
+    fn workspace_servers(&self) -> BTreeMap<String, LoadedMcpServer> {
+        lock(&self.hosted).workspace_servers.clone()
+    }
 }
 
 /// The runtime-scoped MCP servers: one registry for the runtime, whose
@@ -330,7 +352,7 @@ struct RuntimeMcp {
     /// The origin calls to them prepare with: the runtime, no workspace.
     info: Arc<RuntimeInfo>,
     /// The workspace-scoped servers as configured, listed with them.
-    configured: Vec<McpServerReport>,
+    configured: Mutex<Vec<McpServerReport>>,
     /// Subscribed before the initialize reply, taken by the reporter.
     watch: Mutex<
         Option<(
@@ -352,7 +374,7 @@ struct RuntimeReported {
 impl RuntimeMcp {
     /// Every configured server as the runtime reports them, in name order.
     fn reports(&self) -> Vec<McpServerReport> {
-        runtime_reports(Some(&self.registry), &self.configured)
+        runtime_reports(Some(&self.registry), &lock(&self.configured))
     }
 
     /// Sends the daemon the runtime's own tools and its servers' status
@@ -382,6 +404,54 @@ impl RuntimeMcp {
         )
         .await
     }
+}
+
+/// Brings `registry` from the `previous` servers to `servers`: removes the
+/// ones gone, adds the new ones, and replaces the ones whose definition
+/// changed. A server that fails to change is reported by the registry as it
+/// is, on standard error otherwise.
+async fn apply_servers(
+    registry: &McpRegistry,
+    previous: &BTreeMap<String, LoadedMcpServer>,
+    servers: &BTreeMap<String, LoadedMcpServer>,
+) {
+    for name in previous.keys().filter(|name| !servers.contains_key(*name)) {
+        if let Err(error) = registry.remove_server(name).await {
+            eprintln!("cookie runtime: MCP server `{name}` not removed: {error}");
+        }
+    }
+    for (name, server) in servers {
+        if previous
+            .get(name)
+            .is_some_and(|previous| previous.config == server.config)
+        {
+            continue;
+        }
+        if let Err(error) = registry.upsert_server(name.clone(), server.clone()).await {
+            eprintln!("cookie runtime: MCP server `{name}` not updated: {error}");
+        }
+    }
+}
+
+/// The workspace-scoped `servers` as configured, before any instance hosts
+/// them.
+fn configured_reports(servers: &BTreeMap<String, LoadedMcpServer>) -> Vec<McpServerReport> {
+    servers
+        .iter()
+        .map(|(name, server)| McpServerReport {
+            name: name.clone(),
+            state: if server.config.enabled {
+                protocol::McpServerState::Disconnected
+            } else {
+                protocol::McpServerState::Disabled
+            },
+            message: None,
+            tools: Vec::new(),
+            scope: Some(protocol::McpServerScope::Workspace),
+            filtered_tools: None,
+            server_tools: Vec::new(),
+        })
+        .collect()
 }
 
 /// Every configured server as the runtime reports them, in name order: the
@@ -414,8 +484,9 @@ struct Instance {
     /// the runtime's registry. Names are unique across them: the registry
     /// fails a server whose tool would take a built-in name.
     providers: Vec<Arc<dyn ToolProvider>>,
-    /// The template's MCP servers, when it has any.
-    mcp: Option<McpRegistry>,
+    /// The workspace-scoped MCP servers, which settings may change while
+    /// it is open.
+    mcp: McpRegistry,
     /// The result `capability/open` answered, for a repeated open.
     opened: CapabilityOpenResult,
 }
@@ -459,7 +530,7 @@ const RUNTIME_SCOPED_MCP: cookie_agent_protocol::SemVer =
 impl Server {
     /// The runtime-scoped MCP servers, once initialized with any.
     fn runtime_mcp(&self) -> Option<Arc<RuntimeMcp>> {
-        self.state.get().and_then(|state| state.runtime_mcp.clone())
+        self.state.get().and_then(|state| state.runtime_mcp())
     }
 
     /// Registers the execution an execute request starts.
@@ -485,19 +556,17 @@ impl Server {
     ) {
         let method = request.method.clone();
         if method == method::INITIALIZE {
-            // Taken before the answer reads the agents, so a change made while
-            // it is answered still counts as a change to follow.
-            let agent_updates = self.options.acp_agent_updates.clone();
+            // Subscribed before the reply, so settings sent right after it
+            // are applied.
+            let settings = self.settings_changes.subscribe();
             let result = self.initialize(&request);
             let initialized = result.is_ok();
             reply(request, result).await;
-            if initialized && let Some(updates) = agent_updates {
-                tokio::spawn(Arc::clone(&self).follow_acp_agents(updates));
+            if initialized {
+                tokio::spawn(Arc::clone(&self).follow_settings(settings));
             }
             // Reported from now on: the reply had their status until now.
-            if initialized
-                && let Some(mcp) = self.state.get().and_then(|state| state.runtime_mcp.clone())
-            {
+            if initialized && let Some(mcp) = self.runtime_mcp() {
                 tokio::spawn(Arc::clone(&self).report_runtime_mcp(mcp));
             }
             return;
@@ -616,6 +685,12 @@ impl Server {
                 }
                 Err(error) => ignored(error),
             },
+            method::SETTINGS_CHANGED => match notification.params() {
+                Ok(RuntimeSettingsChangedParams { settings }) => {
+                    self.settings_changes.send_replace(Some(settings));
+                }
+                Err(error) => ignored(error),
+            },
             method::PRODUCER_RECOVERY_START if self.options.producer_messaging => {
                 let peer = self.peer.clone();
                 tokio::spawn(async move {
@@ -636,31 +711,89 @@ impl Server {
         }
     }
 
-    /// Reports each new value of the runtime's own ACP agents while the
-    /// daemon declared none.
-    async fn follow_acp_agents(
+    /// Applies each `runtime/settings_changed` in turn, the latest when
+    /// several arrive while one is applied, until the runtime stops.
+    async fn follow_settings(
         self: Arc<Self>,
-        mut updates: tokio::sync::watch::Receiver<Vec<protocol::AcpAgentSettings>>,
+        mut changes: tokio::sync::watch::Receiver<Option<RuntimeSettings>>,
     ) {
         loop {
             tokio::select! {
                 () = self.stop.cancelled() => return,
-                changed = updates.changed() => if changed.is_err() {
+                changed = changes.changed() => if changed.is_err() {
                     return;
                 },
             }
-            let daemon_declared = self
-                .state
-                .get()
-                .is_some_and(|state| !state.settings.acp_agents.is_empty());
-            if daemon_declared {
+            let Some(settings) = changes.borrow_and_update().clone() else {
                 continue;
-            }
-            let agents = updates.borrow_and_update().clone();
-            if let Err(reason) = self.acp.replace(agents).await {
-                eprintln!("cookie runtime: ACP agents not updated: {reason}");
+            };
+            let Some(state) = self.state.get().cloned() else {
+                continue;
+            };
+            if let Err(reason) = Arc::clone(&self).apply_settings(&state, settings).await {
+                eprintln!("cookie runtime: settings not applied: {reason}");
             }
         }
+    }
+
+    /// Takes `settings` in place of the runtime's: starts, stops, or
+    /// restarts the MCP servers and ACP agents that changed, and leaves the
+    /// others running.
+    async fn apply_settings(
+        self: Arc<Self>,
+        state: &Arc<Initialized>,
+        settings: RuntimeSettings,
+    ) -> Result<(), String> {
+        let hosted = self.hosted(&settings, state.shared_mcp)?;
+        // No instance opens meanwhile, so each one opens with the servers
+        // before or gets the change.
+        let _opening = self.opening.lock().await;
+        let previous = lock(&state.hosted).clone();
+        *lock(&state.settings) = settings;
+        if hosted.acp_agents != previous.acp_agents {
+            self.acp.replace(hosted.acp_agents.clone()).await?;
+        }
+        // The runtime-scoped servers' registry, started for the first ones.
+        let runtime_mcp = match state.runtime_mcp() {
+            Some(mcp) => {
+                apply_servers(
+                    &mcp.registry,
+                    &previous.runtime_servers,
+                    &hosted.runtime_servers,
+                )
+                .await;
+                Some(mcp)
+            }
+            None if hosted.runtime_servers.is_empty() => None,
+            None => {
+                let mcp = Arc::new(self.start_runtime_mcp(
+                    &state.runtime_id,
+                    hosted.runtime_servers.clone(),
+                    Vec::new(),
+                )?);
+                *lock(&state.runtime_mcp) = Some(Arc::clone(&mcp));
+                tokio::spawn(Arc::clone(&self).report_runtime_mcp(Arc::clone(&mcp)));
+                Some(mcp)
+            }
+        };
+        let instances = lock(&self.instances).values().cloned().collect::<Vec<_>>();
+        for instance in instances {
+            apply_servers(
+                &instance.mcp,
+                &previous.workspace_servers,
+                &hosted.workspace_servers,
+            )
+            .await;
+        }
+        if let Some(mcp) = runtime_mcp {
+            *lock(&mcp.configured) = configured_reports(&hosted.workspace_servers);
+            mcp.registry.await_eager_ready().await;
+            mcp.sync(&self.peer, None)
+                .await
+                .map_err(|error| format!("reporting the runtime's MCP servers: {error}"))?;
+        }
+        *lock(&state.hosted) = hosted;
+        Ok(())
     }
 
     /// The open instance `id` names.
@@ -704,58 +837,24 @@ impl Server {
     fn initialize_once(&self, params: InitializeParams) -> Result<InitializeResult, String> {
         cookie_agent_protocol::RuntimeId::new(params.runtime_id.as_str())
             .map_err(|_| format!("invalid runtime ID `{}`", params.runtime_id))?;
-        let configured = if params.settings.mcp_servers.is_empty() {
-            mcp_servers(&self.options.mcp_servers)?
-        } else {
-            mcp_servers(&params.settings.mcp_servers)?
-        };
-        if params.settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
-            return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
-        }
-        self.acp.declare(if params.settings.acp_agents.is_empty() {
-            // The latest of the runtime's own, when it follows them.
-            self.options.acp_agent_updates.as_ref().map_or_else(
-                || self.options.acp_agents.clone(),
-                |updates| updates.borrow().clone(),
-            )
-        } else {
-            params.settings.acp_agents.clone()
-        })?;
         // A daemon older than runtime protocol 1.5.0 knows no tools outside
         // an instance: every server is hosted per workspace for it.
-        let shared = params.protocol_version >= RUNTIME_SCOPED_MCP;
-        let (runtime_servers, mcp_servers): (BTreeMap<_, _>, BTreeMap<_, _>) =
-            configured.into_iter().partition(|(_, server)| {
-                shared && server.config.hosted_scope() == McpServerScope::Runtime
-            });
-        let reported = mcp_servers
-            .iter()
-            .map(|(name, server)| McpServerReport {
-                name: name.clone(),
-                state: if server.config.enabled {
-                    protocol::McpServerState::Disconnected
-                } else {
-                    protocol::McpServerState::Disabled
-                },
-                message: None,
-                tools: Vec::new(),
-                scope: Some(protocol::McpServerScope::Workspace),
-                filtered_tools: None,
-                server_tools: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        let runtime_mcp = if runtime_servers.is_empty() {
+        let shared_mcp = params.protocol_version >= RUNTIME_SCOPED_MCP;
+        let hosted = self.hosted(&params.settings, shared_mcp)?;
+        self.acp.declare(hosted.acp_agents.clone())?;
+        let configured = configured_reports(&hosted.workspace_servers);
+        let runtime_mcp = if hosted.runtime_servers.is_empty() {
             None
         } else {
             Some(Arc::new(self.start_runtime_mcp(
                 &params.runtime_id,
-                runtime_servers,
-                reported.clone(),
+                hosted.runtime_servers.clone(),
+                configured.clone(),
             )?))
         };
         let mcp_reports = match &runtime_mcp {
             Some(mcp) => mcp.reports(),
-            None => runtime_reports(None, &reported),
+            None => runtime_reports(None, &configured),
         };
         if let Some(mcp) = &runtime_mcp {
             mcp.reported
@@ -766,12 +865,13 @@ impl Server {
         }
         let initialized = Arc::new(Initialized {
             runtime_id: params.runtime_id,
-            settings: params.settings,
-            mcp_servers,
-            runtime_mcp,
+            shared_mcp,
+            settings: Mutex::new(params.settings),
+            hosted: Mutex::new(hosted),
+            runtime_mcp: Mutex::new(runtime_mcp),
         });
         if let Err(initialized) = self.state.set(initialized) {
-            if let Some(mcp) = initialized.runtime_mcp.clone() {
+            if let Some(mcp) = initialized.runtime_mcp() {
                 tokio::spawn(async move { mcp.registry.shutdown().await });
             }
             return Err("the runtime is already initialized".into());
@@ -794,6 +894,34 @@ impl Server {
             producer_messaging: self.options.producer_messaging,
             mcp_servers: mcp_reports,
             acp_agents: self.acp.reports(),
+        })
+    }
+
+    /// What `settings` has the runtime host: its MCP servers, split by
+    /// scope, and its ACP agents, each [`ServeOptions`]'s when the daemon
+    /// sends none.
+    fn hosted(&self, settings: &RuntimeSettings, shared_mcp: bool) -> Result<Hosted, String> {
+        if settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
+            return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
+        }
+        let configured = if settings.mcp_servers.is_empty() {
+            mcp_servers(&self.options.mcp_servers)?
+        } else {
+            mcp_servers(&settings.mcp_servers)?
+        };
+        let (runtime_servers, workspace_servers) =
+            configured.into_iter().partition(|(_, server)| {
+                shared_mcp && server.config.hosted_scope() == McpServerScope::Runtime
+            });
+        let acp_agents = if settings.acp_agents.is_empty() {
+            self.options.acp_agents.clone()
+        } else {
+            settings.acp_agents.clone()
+        };
+        Ok(Hosted {
+            runtime_servers,
+            workspace_servers,
+            acp_agents,
         })
     }
 
@@ -833,7 +961,7 @@ impl Server {
             providers: vec![Arc::new(registry.clone())],
             registry,
             info: Arc::new(info),
-            configured,
+            configured: Mutex::new(configured),
             watch: Mutex::new(Some(watch)),
             reported: tokio::sync::Mutex::default(),
         })
@@ -874,7 +1002,7 @@ impl Server {
         request: &IncomingRequest,
     ) -> Result<Outcome, RpcError> {
         let params: RuntimeMcpReconnectParams = request.params()?;
-        let Some(mcp) = &state.runtime_mcp else {
+        let Some(mcp) = state.runtime_mcp() else {
             return Ok(Outcome::of(match params.server {
                 Some(server) => Err(ToolError::execution(format!(
                     "unknown runtime-scoped MCP server `{server}`"
@@ -955,7 +1083,7 @@ impl Server {
         }
         // The runtime's own servers have finished their first attempt, and
         // the daemon has their tools, when an instance opens.
-        if let Some(mcp) = &state.runtime_mcp {
+        if let Some(mcp) = state.runtime_mcp() {
             tokio::select! {
                 () = mcp.registry.await_eager_ready() => {}
                 () = self.stop.cancelled() => {
@@ -987,59 +1115,52 @@ impl Server {
         let skills = cookie_agent_config::load_project_skills(workspace.root())
             .map_err(|error| format!("project skills: {error}"))?;
         let mut providers = (self.options.tools)(&workspace);
-        let (mcp, watch) = if state.mcp_servers.is_empty() {
-            (None, None)
-        } else {
-            // A server runs in the instance's workspace, or its configured
-            // `cwd` (a relative one under the workspace).
-            let registry = McpRegistry::new(
-                state.mcp_servers.clone(),
-                McpRegistryOptions {
-                    working_dir: Some(workspace.root().to_owned()),
-                    ..McpRegistryOptions::default()
-                },
-            )
-            .map_err(|error| error.to_string())?;
-            for provider in &providers {
-                registry
-                    .reserve_provider(provider.as_ref())
-                    .map_err(|error| error.to_string())?;
+        // Every instance has a registry, empty or not, so servers its
+        // settings add later have one to join. A server runs in the
+        // instance's workspace, or its configured `cwd` (a relative one
+        // under the workspace).
+        let mcp = McpRegistry::new(
+            state.workspace_servers(),
+            McpRegistryOptions {
+                working_dir: Some(workspace.root().to_owned()),
+                ..McpRegistryOptions::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        for provider in &providers {
+            mcp.reserve_provider(provider.as_ref())
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(policy) = &self.options.mcp_reconnect {
+            mcp.set_reconnect_policy(policy.clone());
+        }
+        mcp.start_eager(&tokio::runtime::Handle::current());
+        tokio::select! {
+            () = mcp.await_eager_ready() => {}
+            () = self.stop.cancelled() => {
+                mcp.shutdown().await;
+                return Err("the runtime stopped while its MCP servers connected".into());
             }
-            if let Some(policy) = &self.options.mcp_reconnect {
-                registry.set_reconnect_policy(policy.clone());
-            }
-            registry.start_eager(&tokio::runtime::Handle::current());
-            tokio::select! {
-                () = registry.await_eager_ready() => {}
-                () = self.stop.cancelled() => {
-                    registry.shutdown().await;
-                    return Err("the runtime stopped while its MCP servers connected".into());
-                }
-            }
-            // Subscribed before the reply: a failure from now on reaches
-            // the daemon once it has the reply, one before is in it.
-            let watch = McpWatch {
-                registry: registry.clone(),
-                changes: registry.subscribe_changes(),
-                failures: registry.subscribe_failures(),
-                declared: RuntimeTools::default(),
-                reported: Vec::new(),
-            };
-            providers.push(Arc::new(registry.clone()));
-            (Some(registry), Some(watch))
+        }
+        // Subscribed before the reply: a failure from now on reaches the
+        // daemon once it has the reply, one before is in it.
+        let watch = McpWatch {
+            registry: mcp.clone(),
+            changes: mcp.subscribe_changes(),
+            failures: mcp.subscribe_failures(),
+            declared: RuntimeTools::default(),
+            reported: Vec::new(),
         };
+        providers.push(Arc::new(mcp.clone()));
         let tools = declared_tools(&providers)?;
-        let mcp_servers: Vec<McpServerReport> = mcp
-            .as_ref()
-            .map(mcp_reports)
-            .unwrap_or_default()
+        let mcp_servers: Vec<McpServerReport> = mcp_reports(&mcp)
             .into_iter()
             .map(|report| McpServerReport {
                 scope: Some(protocol::McpServerScope::Workspace),
                 ..report
             })
             .collect();
-        let watch = watch.map(|watch| McpWatch {
+        let watch = Some(McpWatch {
             declared: tools.clone(),
             reported: mcp_servers.clone(),
             ..watch
@@ -1161,7 +1282,7 @@ impl Server {
             .expect("a coding runtime has a workspace")
             .root()
             .to_owned();
-        let max_bytes = state.settings.agent_md.max_bytes;
+        let max_bytes = lock(&state.settings).agent_md.max_bytes;
         let context = tokio::task::spawn_blocking(move || {
             load_agent_md(&workspace, params.preset.as_deref(), max_bytes)
         })
@@ -1500,14 +1621,7 @@ impl Server {
     async fn reconnect_mcp(&self, request: &IncomingRequest) -> Result<Outcome, RpcError> {
         let params: McpReconnectParams = request.params()?;
         let state = self.instance(Some(&params.instance))?;
-        let Some(registry) = &state.mcp else {
-            return Ok(Outcome::of(match params.server {
-                Some(server) => Err(ToolError::execution(format!(
-                    "unknown MCP server `{server}`"
-                ))),
-                None => Ok(()),
-            }));
-        };
+        let registry = &state.mcp;
         Ok(Outcome::of(match params.server {
             Some(server) => registry.reconnect_server(&server).await,
             None => {

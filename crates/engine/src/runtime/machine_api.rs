@@ -226,8 +226,9 @@ impl Engine {
     ) {
         let configured = config
             .runtimes
-            .keys()
-            .map(|runtime| runtime.as_str().to_owned())
+            .iter()
+            .filter(|(_, template)| template.daemon_starts())
+            .map(|(runtime, _)| runtime.as_str().to_owned())
             .collect::<std::collections::BTreeSet<_>>();
         let machines = Arc::clone(&self.inner.machines);
         let dropped = tokio::task::spawn_blocking(move || {

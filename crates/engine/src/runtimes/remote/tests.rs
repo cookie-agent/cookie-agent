@@ -3249,3 +3249,127 @@ async fn template_and_global_servers_publish_only_the_tools_their_filters_keep()
     );
     engine.shutdown().await;
 }
+
+/// A dial-in runtime hosts the MCP servers the daemon's `[runtimes.<id>]`
+/// gives it, and takes a changed table at once: an added server starts and
+/// a removed one stops, while the one that did not change keeps running
+/// (`docs/site/specs/runtime-management.md` section 3.1).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dial_in_runtime_hosts_its_daemon_table_and_follows_changes() {
+    let (fixture, _) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let directory = fixture._directory.path();
+    let local = local_mcp_config(&fixture.config, &directory.join("refuse"));
+    let mut server = local
+        .runtimes
+        .values()
+        .next()
+        .expect("the fixture template")
+        .mcp_servers["fixture"]
+        .clone();
+    // Hosted once for the runtime, so it runs without a workspace open.
+    server.scope = Some(cookie_agent_config::McpServerScope::Runtime);
+    let labpc = cookie_agent_identity::RuntimeId::new("labpc").unwrap();
+    let with_servers = |names: &[&str]| {
+        let mut config = fixture.config.clone();
+        config.runtimes.insert(
+            labpc.clone(),
+            cookie_agent_config::RuntimeTemplateConfig {
+                command: Vec::new(),
+                env: std::collections::BTreeMap::new(),
+                startup_timeout_ms: 10_000,
+                shutdown_grace_ms: 3_000,
+                mcp_servers: names
+                    .iter()
+                    .map(|name| ((*name).to_owned(), server.clone()))
+                    .collect(),
+                acp_agents: std::collections::BTreeMap::new(),
+            },
+        );
+        config
+    };
+    let engine = crate::Engine::open_async(crate::EngineOptions {
+        data_dir: directory.join("data"),
+        cwd: directory.to_owned(),
+        config: with_servers(&["fixture"]),
+        model_manager: Arc::clone(&fixture.manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory),
+    })
+    .await
+    .expect("engine with [runtimes.labpc]");
+    // The table configures no template: `labpc` may dial in.
+    assert!(
+        engine
+            .runtime_templates()
+            .iter()
+            .all(|template| template.runtime_id != "labpc")
+    );
+    let (daemon, runtime) = cookie_agent_protocol::in_process_pair(64);
+    let stop = tokio_util::sync::CancellationToken::new();
+    let served = tokio::spawn(cookie_agent_coding_runtime::server::serve(
+        Box::new(runtime),
+        ServeOptions {
+            stop: stop.clone(),
+            ..ServeOptions::default()
+        },
+    ));
+    engine
+        .accept_dial_in_runtime("labpc", Box::new(daemon))
+        .await
+        .expect("labpc dials in");
+    let connected = |engine: &crate::Engine| {
+        let mut names = engine
+            .list_mcp_servers()
+            .into_iter()
+            .filter(|server| {
+                server.runtime_id.as_str() == "labpc"
+                    && server.state == cookie_agent_protocol::McpServerState::Connected
+            })
+            .map(|server| server.name)
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let wait_for = |expected: &'static [&'static str]| {
+        let engine = engine.clone();
+        async move {
+            crate::runtime::tests::support::with_watchdog("labpc's servers", async {
+                while connected(&engine) != expected {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+        }
+    };
+    wait_for(&["fixture"]).await;
+    let listed = engine
+        .list_mcp_servers()
+        .into_iter()
+        .find(|server| server.runtime_id.as_str() == "labpc")
+        .expect("labpc's server");
+    assert_eq!(
+        listed.source,
+        cookie_agent_protocol::McpConfigSource::UserFile
+    );
+    assert_eq!(
+        listed.definition.command.as_deref(),
+        Some(crate::runtime::tests::support::python_command())
+    );
+
+    engine
+        .apply_configuration_locked(with_servers(&["fixture", "second"]))
+        .await
+        .expect("a second server");
+    wait_for(&["fixture", "second"]).await;
+    engine
+        .apply_configuration_locked(with_servers(&["second"]))
+        .await
+        .expect("the first server removed");
+    wait_for(&["second"]).await;
+    // Neither change needs a restart.
+    assert!(engine.configuration_status().restart_required.is_empty());
+
+    stop.cancel();
+    let _ = served.await;
+    engine.shutdown().await;
+}

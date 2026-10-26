@@ -1,10 +1,10 @@
 # MCP servers and ACP agents on runtimes
 
 A runtime hosts MCP servers and ACP agents on its own machine. Declare them
-in the runtime's `mcp.servers` and `acp.agents` tables: under
-`[runtimes.<id>]` for a [template](templates.md), under `[runtimes.local]`
-for the daemon's machine, and under `[runtimes.local]` in the `config.toml`
-of a machine whose [runtime dials in](dial-in.md).
+in the runtime's `mcp.servers` and `acp.agents` tables, all in the daemon's
+`config.toml`: under `[runtimes.<id>]` for a [template](templates.md) and
+for a [runtime that dials in](dial-in.md) as `<id>` (a table without
+`command`), and under `[runtimes.local]` for the daemon's machine.
 [MCP servers](../extend/mcp.md) and [ACP agents](../extend/acp-agents.md)
 cover the servers and agents themselves; this page covers hosting them on a
 runtime.
@@ -71,10 +71,9 @@ command = "docs-mcp"
   list each attachment's servers, the runtime's shared ones included, with
   their state, tool count, and failure, and the machines view lists every
   server of each connected runtime, so a runtime's servers show before any
-  session opens a workspace of it. They cannot be edited there; change the
-  template and restart the daemon. A dial-in runtime's own servers
-  (`[runtimes.local.mcp]` on its machine) are listed too, with the source
-  `runtime machine config`, since client protocol 1.12.0.
+  session opens a workspace of it. Each lists its tools by the server's own
+  names, those its filters left out apart (client protocol 1.36.0). Edits
+  to a runtime's table reach it at once (see [Live changes](templates.md)).
 
 ## ACP agents
 
@@ -83,9 +82,9 @@ a subagent's turns over the Agent Client Protocol (see the
 [ACP agents spec](../specs/acp-agents.md), and the
 [ACP agents guide](../extend/acp-agents.md) for setting up Claude Code,
 Codex, and Gemini CLI). Declare them exactly where MCP
-servers go: `[runtimes.local.acp.agents.<agent>]` on the daemon's machine and
-on a machine whose runtime dials in, and `[runtimes.<id>.acp.agents.<agent>]`
-for a template.
+servers go: `[runtimes.local.acp.agents.<agent>]` for the daemon's machine,
+and `[runtimes.<id>.acp.agents.<agent>]` for a template or a runtime that
+dials in.
 
 ```toml
 [runtimes.local.acp.agents.claude]
@@ -126,10 +125,8 @@ env = { CODEX_HOME = "/home/ada/.codex" }
   [ACP agent documents](../extend/agents.md#acp-agent-documents)). Without
   one the agent has mode `all`, the first offering runtime's description,
   and the default rules.
-- **Changes.** The daemon's templates and `[runtimes.local]` apply when the
-  daemon next starts, like the rest of `runtimes`. A runtime that dials in
-  reads its machine's configuration again every few seconds and reports
-  changed agents.
+- **Changes.** A changed `acp` table reaches a connected runtime at once: it
+  starts the new agents, stops the removed ones, and reports the change.
 - **Processes.** Each agent runs one process per runtime, shared by its
   sessions, started on its first turn and stopped after
   [`[acp] idle_shutdown_ms`](../engine/acp.md) with no turn in progress, with

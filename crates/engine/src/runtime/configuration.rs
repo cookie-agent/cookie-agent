@@ -122,7 +122,10 @@ impl Engine {
         if applied.plugins != started.plugins {
             restart_required.push(RestartRequiredPart::Plugins);
         }
-        if applied.runtimes != started.runtimes {
+        // A runtime's MCP servers and ACP agents reach it as they change
+        // (`runtime/settings_changed`); how the daemon starts one takes a
+        // restart.
+        if runtime_launches(&applied) != runtime_launches(started) {
             restart_required.push(RestartRequiredPart::Runtimes);
         }
         ConfigurationStatus {
@@ -453,6 +456,7 @@ impl Engine {
             )?;
             engine.inner.config.store(Arc::clone(&applied));
             engine.publish(publication);
+            engine.inner.runtimes.update_settings(&applied);
             Ok(())
         })
         .await?;
@@ -549,4 +553,32 @@ fn apply_change(candidate: &mut ConfigTree, change: ConfigChange) -> Result<(), 
             .set_key_json(&key, &value)
             .map_err(|error| EngineError::ConfigChangeRefused(error.to_string())),
     }
+}
+
+/// How the daemon starts one runtime: its ID, command, environment, startup
+/// timeout, and shutdown grace.
+type RuntimeLaunch<'a> = (
+    &'a str,
+    &'a [String],
+    &'a std::collections::BTreeMap<String, String>,
+    u64,
+    u64,
+);
+
+/// How the daemon starts each runtime `config` has a template for.
+fn runtime_launches(config: &LoadedConfiguration) -> Vec<RuntimeLaunch<'_>> {
+    config
+        .runtimes
+        .iter()
+        .filter(|(_, template)| template.daemon_starts())
+        .map(|(id, template)| {
+            (
+                id.as_str(),
+                template.command.as_slice(),
+                &template.env,
+                template.startup_timeout_ms,
+                template.shutdown_grace_ms,
+            )
+        })
+        .collect()
 }

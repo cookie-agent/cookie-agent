@@ -211,6 +211,14 @@
     },
     {
       "direction": "from_daemon",
+      "kind": "notification",
+      "method": "runtime/settings_changed",
+      "params": "RuntimeSettingsChangedParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
       "kind": "request",
       "method": "runtime/shutdown",
       "params": "Empty",
