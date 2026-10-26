@@ -108,17 +108,21 @@ pub enum SettingsSection {
     /// This browser: installing the page as an app, and what it keeps:
     /// the diagnostics filter and the token.
     Browser,
+    /// The client's and the daemon's versions, the connection, and the
+    /// credits.
+    About,
 }
 
 impl SettingsSection {
     /// The order the section list shows.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Configuration,
         Self::Providers,
         Self::Mcp,
         Self::Plugins,
         Self::Notifications,
         Self::Browser,
+        Self::About,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -129,6 +133,7 @@ impl SettingsSection {
             Self::Plugins => "Plugins",
             Self::Notifications => "Notifications",
             Self::Browser => "This browser",
+            Self::About => "About",
         }
     }
 
@@ -141,6 +146,7 @@ impl SettingsSection {
             Self::Plugins => "plugin status and restarts",
             Self::Notifications => "push notifications on this browser and your devices",
             Self::Browser => "installing the app, diagnostics shown, and forgetting this daemon",
+            Self::About => "versions, the connection, links, and credits",
         }
     }
 
@@ -153,6 +159,7 @@ impl SettingsSection {
             Self::Plugins => "plugins",
             Self::Notifications => "notifications",
             Self::Browser => "browser",
+            Self::About => "about",
         }
     }
 }

@@ -225,7 +225,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   - **Headers.** A project's header shows its emoji (a folder when it has
     none) and its name; when its defaults attach runtimes, a second line
     shows them as badges, by the session rows' rules. Click a header to
-    fold or unfold its section; the browser remembers it. **+**, always
+    fold or unfold its section; the browser remembers it. A folded section
+    still shows its running sessions. **+**, always
     there, starts a new session in the project. Hover over a header (on a
     touch screen, press it for about half a second) for its pencil, which
     opens the project editor, and its trash. **No project** has only its
@@ -436,7 +437,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   Open it to approve once, approve for the session tree, or reject.
 - **Questions.** An [ACP agent's question](../extend/acp-agents.md#questions-from-the-agent)
   shows as a card above the composer, naming who asks (with *1 of N* when
-  several wait), and the bottom bar says *waiting for your answer*; a
+  several wait), and the transcript's last line says *waiting for your
+  answer*; a
   subagent's delegate row says the same. A form lists its fields in order:
   radios for a choice (*No choice* for an optional one), checkboxes for a
   multiple choice and for yes or no, and text, email, URL, date, or number
@@ -484,8 +486,12 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   turns off for them. A name the daemon would refuse is flagged before it
   is sent. While a new session is composed, the same table edits the
   rules it will be created with, previewed against its agent.
-- **Bottom bar.** Below the composer; each part has an icon and says more
-  on hover:
+- **Working.** While the session runs, the transcript's last line says
+  **working…** (or *waiting for your answer*); a view following the end
+  keeps it in sight. **Latest** shows only when the transcript scrolls and
+  you scrolled up from its end.
+- **Bottom bar.** Below the composer (above it on a phone); each part has
+  an icon and says more on hover:
   - the agent, the model, and the permission mode, as three chips of one
     shape, each opening its picker. The mode chip has a shield of its own
     for each mode; its picker lists every mode with its shield and what it
@@ -518,7 +524,6 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   - the approvals waiting, when there are any (click to answer them); each
     card shows the call and, when the approval reviewer passed it to you,
     its reason ("The reviewer asks: …", or that its review failed);
-  - **working…** while the session runs;
   - the last status message;
   - where the session works, its workspaces under
     their runtimes' homes, after a dot in each runtime's machine's colour (click for
@@ -665,6 +670,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   [Notifications](#notifications).
 - **This browser.** Settings › This browser picks the diagnostics the
   transcript shows (as **Diagnostics** does) and forgets the daemon.
+- **About.** Settings › About shows this page's version and client
+  protocol, the daemon's version, client protocol, and address, links to
+  cookie's website, documentation, and GitHub repository, and the
+  [credits](#credits).
 
 ## Scheduled prompts
 
@@ -720,15 +729,16 @@ changes (`crons.changed`), from any client or agent.
     and ⋮, which opens the session's commands as a sheet from the bottom.
     A subagent's session has **‹** before its title, which goes to its
     parent.
-  - **Bottom bar:** one row. The model chip takes the room left and
+  - **Bottom bar:** one row, above the composer and on its background.
+    The model chip takes the room left and
     shortens its name first; the agent chip shows only its icon below
     about 380 px; the permission mode chip shows only its shield; the cost
     shows to the cent ("$0.02") and opens **Usage**, which also has the
     context size. Every picker, and every sheet of the ⋮ menu, opens from
     the bottom.
-  - **Status line:** a thin line above the composer, only while the
-    session runs, while approvals wait (tap the badge to answer), or for a
-    few seconds after a status message.
+  - **Status line:** a thin line above the bottom bar, only while
+    approvals wait (tap the badge to answer), or for a few seconds after a
+    status message.
 - **The drawer.** The sidebar button opens a drawer from the left over
   the dimmed page: the rail as an icon strip, with the theme button at its
   foot, beside the sessions, with the open session's subagents nested
@@ -960,12 +970,15 @@ run `cookie mcp auth <server>` instead.
 
 ## Credits
 
-The page's icons are [Font Awesome Free](https://fontawesome.com) by
-Fonticons, Inc., under the
-[CC BY 4.0 licence](https://fontawesome.com/license/free). The connect
-screen and the connection panel credit them. They are inline SVG in the
-page's code (from the `icondata` crate, shown through `leptos_icons`), not
-a web font.
+Settings › About credits what the page is built from, each with its
+licence:
+
+- the icons, [Font Awesome Free](https://fontawesome.com) by Fonticons,
+  Inc., under the [CC BY 4.0 licence](https://fontawesome.com/license/free):
+  inline SVG in the page's code (from the `icondata` crate, shown through
+  `leptos_icons`), not a web font;
+- the code font, JetBrains Mono, under the SIL Open Font License 1.1;
+- code highlighting, highlight.js, under the BSD 3-Clause licence.
 
 ## Hosting the page elsewhere
 

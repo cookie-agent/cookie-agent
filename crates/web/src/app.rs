@@ -672,7 +672,6 @@ pub(crate) fn ConnectionStatus(
                     <Show when=move || connection.attached.get()>
                         <ForgetDaemon connection=connection confirming=confirming primary=primary on_forget=close />
                     </Show>
-                    <Credits />
                 </div>
             </Show>
         </div>
@@ -735,19 +734,115 @@ pub(crate) fn ForgetDaemon(
 }
 
 /// The licence credit for the page's icons.
-#[component]
-pub(crate) fn Credits() -> impl IntoView {
+/// Where cookie lives, as Settings › About links it.
+const LINKS: [(&str, &str); 3] = [
+    ("Website", "https://cookie-agent.github.io/"),
+    ("Documentation", "https://cookie-agent.github.io/doc/"),
+    ("GitHub", "https://github.com/cookie-agent/cookie-agent"),
+];
+
+/// What the page is built from and under which licences, as Settings ›
+/// About lists it: each with a link to its licence.
+const ATTRIBUTIONS: [(&str, &str, &str); 3] = [
+    (
+        "Icons: Font Awesome Free by Fonticons, Inc.",
+        "CC BY 4.0",
+        "https://fontawesome.com/license/free",
+    ),
+    (
+        "Code font: JetBrains Mono by JetBrains s.r.o.",
+        "SIL Open Font License 1.1",
+        "fonts/JetBrainsMono-OFL.txt",
+    ),
+    (
+        "Code highlighting: highlight.js",
+        "BSD 3-Clause",
+        "highlight.js-LICENSE.txt",
+    ),
+];
+
+/// Settings › About: this client's and the daemon's versions and client
+/// protocols, the daemon's address, cookie's website, documentation, and
+/// repository, and the credits.
+pub(crate) fn about_section(connection: Connection) -> impl IntoView {
+    let rows = move || {
+        let mut rows = vec![
+            (
+                "Client",
+                format!("cookie {} (web)", env!("CARGO_PKG_VERSION")),
+            ),
+            (
+                "Client protocol",
+                cookie_agent_protocol::CLIENT_PROTOCOL_VERSION.to_string(),
+            ),
+        ];
+        match connection.phase.get() {
+            Phase::Connected {
+                address,
+                engine_version,
+                protocol_version,
+            } => {
+                rows.push(("Daemon", format!("cookie {engine_version}")));
+                rows.push(("Daemon protocol", protocol_version));
+                rows.push(("Daemon URL", address));
+            }
+            _ => rows.push(("Daemon URL", connection.url())),
+        }
+        rows
+    };
     view! {
-        <p class="text-xs text-ink dark:text-sand">
-            <a
-                href=icons::CREDIT_URL
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-flex min-h-11 items-center underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
-            >
-                {icons::CREDIT}
-            </a>
-        </p>
+        <h2 class="text-sm font-bold">"Versions"</h2>
+        <dl id="about" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+            {move || {
+                rows()
+                    .into_iter()
+                    .map(|(name, value)| view! {
+                        <dt class="text-ink dark:text-sand">{name}</dt>
+                        <dd class="min-w-0 font-mono text-xs break-all" data-about=name>{value}</dd>
+                    })
+                    .collect_view()
+            }}
+        </dl>
+        <h2 class="mt-4 text-sm font-bold">"Links"</h2>
+        <ul id="about-links" class="flex flex-col text-sm">
+            {LINKS
+                .iter()
+                .map(|(name, url)| view! {
+                    <li>
+                        <a
+                            href=*url
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            data-about-link=*name
+                            class="inline-flex min-h-11 items-center gap-2 underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
+                        >
+                            {*name}
+                            <span class="font-mono text-xs text-ink no-underline dark:text-sand">{*url}</span>
+                        </a>
+                    </li>
+                })
+                .collect_view()}
+        </ul>
+        <h2 class="mt-4 text-sm font-bold">"Credits"</h2>
+        <ul id="credits" class="flex flex-col text-sm">
+            {ATTRIBUTIONS
+                .iter()
+                .map(|(what, licence, url)| view! {
+                    <li>
+                        {*what}
+                        ", under the "
+                        <a
+                            href=*url
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="inline-flex min-h-11 items-center underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
+                        >
+                            {*licence}
+                        </a>
+                    </li>
+                })
+                .collect_view()}
+        </ul>
     }
 }
 
@@ -848,7 +943,6 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                 <div class="flex w-full flex-wrap justify-center gap-2 text-left">
                     <InstallAction />
                 </div>
-                <Credits />
             </footer>
         </div>
     }

@@ -46,7 +46,9 @@ impl Workspace {
             Some(SettingsSection::Mcp) => self.poll_mcp(),
             Some(SettingsSection::Plugins) => self.poll_plugins(),
             Some(SettingsSection::Notifications) => self.poll_notifications(),
-            Some(SettingsSection::Providers | SettingsSection::Browser) => {}
+            Some(
+                SettingsSection::Providers | SettingsSection::Browser | SettingsSection::About,
+            ) => {}
         }
         self.settings_section.set(section);
     }
@@ -67,7 +69,9 @@ impl Workspace {
                 Some(SettingsSection::Mcp) => self.poll_mcp(),
                 Some(SettingsSection::Plugins) => self.poll_plugins(),
                 Some(SettingsSection::Notifications) => self.poll_notifications(),
-                Some(SettingsSection::Providers | SettingsSection::Browser) => {}
+                Some(
+                    SettingsSection::Providers | SettingsSection::Browser | SettingsSection::About,
+                ) => {}
             },
             View::Memory => self.poll_memory(),
             View::Chat | View::Machines | View::Cron => {}

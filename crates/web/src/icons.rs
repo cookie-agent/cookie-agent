@@ -13,11 +13,6 @@ use leptos::prelude::*;
 
 use crate::theme::ThemePreference;
 
-/// Font Awesome's credit line, which its licence asks the page to show.
-pub const CREDIT: &str = "Icons: Font Awesome Free by Fonticons, Inc., CC BY 4.0";
-/// Where the credit links: the licence.
-pub const CREDIT_URL: &str = "https://fontawesome.com/license/free";
-
 /// `icon` as an inline element, `class` sizing or colouring it.
 #[component]
 pub fn Glyph(

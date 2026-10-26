@@ -8,7 +8,7 @@ use cookie_agent_client_state::{
     badges::{project_badges, project_badges_tooltip},
     projects::{ProjectSection, delete_question, project_label, project_sections, validate_emoji},
 };
-use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId};
+use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId, SessionStatus};
 use leptos::{ev, html, prelude::*};
 
 use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, RowActions, choice_line, session_row};
@@ -300,7 +300,8 @@ pub(super) fn project_list(
     }
 }
 
-/// One section: its header, then its sessions while it is open.
+/// One section: its header, then its sessions while it is open, and its
+/// running sessions while it is folded.
 fn section_view(
     workspace: Workspace,
     section: ProjectSection,
@@ -319,22 +320,26 @@ fn section_view(
     view! {
         <section class="flex flex-col gap-1" data-project-section=key.clone() data-open=move || open.get().to_string()>
             {project_header(workspace, section.project.clone(), key.clone(), open, drag, headers, sessions.iter().map(|session| session.session_id).collect())}
-            <Show when=move || open.get()>
-                {
-                    let sessions = sessions.clone();
-                    move || {
-                        if empty {
-                            return view! { <p class=format!("px-3 pb-1 {NOTE}") data-section-empty>"No sessions yet."</p> }.into_any();
-                        }
-                        sessions
-                            .clone()
-                            .into_iter()
-                            .map(|session| session_row(workspace, session, now, actions, drag))
-                            .collect_view()
-                            .into_any()
+            {
+                let sessions = sessions.clone();
+                move || {
+                    let open = open.get();
+                    if empty {
+                        return open
+                            .then(|| view! { <p class=format!("px-3 pb-1 {NOTE}") data-section-empty>"No sessions yet."</p> })
+                            .into_any();
                     }
+                    // Folded, the section still shows its sessions at work,
+                    // as a folded subagent tree shows its running agents.
+                    sessions
+                        .iter()
+                        .filter(|session| open || session.status == SessionStatus::Running)
+                        .cloned()
+                        .map(|session| session_row(workspace, session, now, actions, drag))
+                        .collect_view()
+                        .into_any()
                 }
-            </Show>
+            }
         </section>
     }
 }

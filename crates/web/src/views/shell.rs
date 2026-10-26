@@ -294,6 +294,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                                 SettingsSection::Plugins => plugins_sheet(workspace).into_any(),
                                 SettingsSection::Notifications => super::notifications::notifications_section(workspace, connection).into_any(),
                                 SettingsSection::Browser => browser_section(workspace, connection).into_any(),
+                                SettingsSection::About => crate::app::about_section(connection).into_any(),
                             }}
                         </div>
                     </div>

@@ -359,7 +359,7 @@ def idle(browser, what="the run's end", text=None, timeout=90):
     browser.wait(
         what,
         lambda: (text is None or text in browser.text("#transcript"))
-        and "working" not in browser.text("#status-bar")
+        and count(browser, "#working") == 0
         and count(browser, RUNNING_ROW) == 0,
         timeout=timeout,
     )
@@ -461,7 +461,7 @@ def composer(browser):
     browser.click("#stop")
     browser.wait(
         "the stopped run",
-        lambda: "working" not in browser.text("#status-bar")
+        lambda: count(browser, "#working") == 0
         and "queued by the button" in browser.script("return document.querySelector('#composer').value"),
         timeout=40,
     )
@@ -3338,7 +3338,7 @@ SCRIPTED = [
     ("new-session-cards", ["[data-new-session]"]),
 ] + [
     ("settings-%s" % section, ["[data-rail=primary] [data-view=settings]", "[data-section=%s]" % section])
-    for section in ("configuration", "providers", "mcp", "plugins", "notifications", "browser")
+    for section in ("configuration", "providers", "mcp", "plugins", "notifications", "browser", "about")
 ] + [
     ("editor-config", [
         "[data-rail=primary] [data-view=settings]", "[data-section=configuration]",
@@ -4709,7 +4709,7 @@ def basics(browser):
     browser.type("#composer", ESCAPE)
     browser.wait(
         "the cancelled run",
-        lambda: "working" not in browser.text("#status-bar")
+        lambda: count(browser, "#working") == 0
         and browser.script("return document.querySelector('#composer').value").find("queued one") >= 0,
         timeout=40,
     )
@@ -5027,7 +5027,7 @@ def acp_questions(browser):
     browser.wait("the question", lambda: count(browser, "#question") == 1, timeout=60)
     assert browser.text("#question [data-question-heading]") == "fixture asks", browser.text("#question")
     assert browser.text("#question [data-question-message]") == "How should I go?"
-    browser.wait("the run waiting on the user", lambda: "waiting for your answer" in browser.text("#status-bar"))
+    browser.wait("the run waiting on the user", lambda: "waiting for your answer" in browser.text("#working"))
     fields = browser.script(
         "return [...document.querySelectorAll('#question [data-field]')].map(e => e.dataset.field)"
     )

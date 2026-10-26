@@ -223,8 +223,8 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 </div>
                 <StatusLine workspace=workspace />
                 <cards::DraftNotice workspace=workspace />
-                // A short window (a phone on its side) puts the
-                // bottom bar beside the composer.
+                // A phone puts the bottom bar above the composer, and a
+                // short window (a phone on its side) beside it.
                 <div class="flex flex-col short:flex-row short:items-end">
                     <Composer workspace=workspace composing=composing />
                     <BottomBar workspace=workspace composing=composing />
@@ -1360,12 +1360,22 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             (element, at)
         })
     };
-    // Mirrors `follow` into `following` once it changed.
+    // Whether the rows overflow the box: without, there is no older row to
+    // jump back from.
+    let overflows = RwSignal::new(false);
+    // Mirrors `follow` into `following` once it changed, and whether the
+    // rows overflow.
     let shown = move || {
         if let Some(now) = follow.try_with_value(|follow| follow.following())
             && following.try_get_untracked() != Some(now)
         {
             following.set(now);
+        }
+        if let Some((_, at)) = metrics() {
+            let now = at.height > at.view;
+            if overflows.try_get_untracked() != Some(now) {
+                overflows.set(now);
+            }
         }
     };
     // Pins the view to the end when following and the end moved away.
@@ -1518,7 +1528,10 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     // wheel, a key, a finger, the scrollbar, a flick's momentum) and
     // resumes only when they come back to the end.
     let back = move || {
-        follow.update_value(Follow::back);
+        // Nothing to scroll back to: the view keeps following the end.
+        if metrics().is_some_and(|(_, at)| at.height > at.view) {
+            follow.update_value(Follow::back);
+        }
         shown();
     };
     let forward = move || {
@@ -1619,12 +1632,24 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         view! { <TranscriptRow row=row id=id /> }
                     }
                 />
+                // The run going on, after the last row: the content grows
+                // with it, so a view following the end keeps it in sight.
+                <Show when=move || running(workspace) && !workspace.new_session.get()>
+                    <div
+                        id="working"
+                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-caramel dark:text-maple"
+                        role="status"
+                    >
+                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
+                        {move || working_label(workspace)}
+                    </div>
+                </Show>
             </div>
             // Over the end of the transcript while it does not follow it;
             // the row it sits in takes no room.
             <div class="pointer-events-none sticky bottom-0 mx-auto h-0 max-w-4xl">
                 <Show when=move || {
-                    !following.get() && workspace.selected.get().is_some()
+                    !following.get() && overflows.get() && workspace.selected.get().is_some()
                         && !workspace.new_session.get()
                 }>
                     <button
@@ -2077,8 +2102,19 @@ fn actions_padding(buttons: ComposerButtons) -> &'static str {
     }
 }
 
-/// Sizes the composer to its text, from one line to five.
-fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) {
+/// [`actions_padding`] as a length, for a scrollbar's room on top of it.
+fn actions_room(buttons: ComposerButtons) -> &'static str {
+    match buttons {
+        ComposerButtons::SteerAndQueue => "5.625rem",
+        ComposerButtons::Send { .. } | ComposerButtons::Stop => "3rem",
+    }
+}
+
+/// Sizes the composer to its text, from one line to five, and returns the
+/// room its scrollbar takes once the text scrolls, in pixels: the buttons
+/// in the box's corner move left of it. A scrollbar drawn over the text
+/// (a phone's) takes none, and gets [`OVERLAY_SCROLLBAR`].
+fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) -> i32 {
     let style = web_sys::HtmlElement::style(textarea);
     let _ = style.set_property("height", "auto");
     let (height, scrolls) = crate::keys::composer_height(
@@ -2088,7 +2124,16 @@ fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) {
     );
     let _ = style.set_property("height", &format!("{height}px"));
     let _ = style.set_property("overflow-y", if scrolls { "auto" } else { "hidden" });
+    if !scrolls {
+        return 0;
+    }
+    let element: &web_sys::HtmlElement = textarea;
+    let inner = web_sys::Element::client_width(element);
+    (element.offset_width() - inner).max(OVERLAY_SCROLLBAR)
 }
+
+/// The room the composer's buttons leave a scrollbar drawn over the text.
+const OVERLAY_SCROLLBAR: i32 = 6;
 
 #[component]
 fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
@@ -2103,9 +2148,14 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     // The box follows its text: typed, pasted, recalled, or sent away; and
     // its buttons, whose number changes the room the text has. On the
     // next frame the composer may be gone, with the view it was in.
+    // The room the box's scrollbar takes, which the buttons keep clear of.
+    let gutter = RwSignal::new(0);
     let fit = move || {
         if let Some(textarea) = textarea.try_get_untracked().flatten() {
-            fit_composer(&textarea);
+            let room = fit_composer(&textarea);
+            if gutter.try_get_untracked() != Some(room) {
+                gutter.set(room);
+            }
         }
     };
     Effect::new(move |_| {
@@ -2249,6 +2299,11 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                             actions_padding(buttons.get()),
                         )
                     }
+                    // A scrollbar takes room from the text's side too.
+                    style:padding-right=move || {
+                        let room = gutter.get();
+                        (room > 0).then(|| format!("calc({} + {room}px)", actions_room(buttons.get())))
+                    }
                     placeholder="Message"
                     disabled=disabled
                     prop:value=move || workspace.composer.get()
@@ -2296,7 +2351,11 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 <div class="absolute bottom-1 left-1 flex items-center gap-0.5" data-composer-left>
                     <AttachButtons workspace=workspace />
                 </div>
-                <div class="absolute right-1 bottom-1 flex items-center gap-1.5" data-composer-actions>
+                <div
+                    class="absolute bottom-1 flex items-center gap-1.5"
+                    style:right=move || format!("calc(0.25rem + {}px)", gutter.get())
+                    data-composer-actions
+                >
                     {move || match buttons.get() {
                         ComposerButtons::Send { .. } => button(
                             "send", "Send", "Enter", icondata::FaPaperPlaneSolid, true,
@@ -2376,9 +2435,11 @@ fn context_title(tokens: u64, window: Option<u64>) -> String {
 const STATUS_LIVE: Duration = Duration::from_secs(8);
 
 /// The bottom bar: the session's agent, model, permission mode, and cost.
-/// A wide window adds the approvals, the working spinner, the status
-/// message, and the context size; a phone shows those in the status line
-/// above the composer, and hides the bar while the composer has focus.
+/// A wide window shows it under the composer and adds the approvals, the
+/// status message, and the context size; a phone shows it above the
+/// composer, on the composer's background, with the approvals and the
+/// status in the status line above it, and hides it while the composer has
+/// focus.
 #[component]
 fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let cost = move || {
@@ -2421,7 +2482,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     view! {
         <div
             id="status-bar"
-            class="flex flex-wrap items-center gap-x-1 bg-parchment px-2 text-xs compact:flex-nowrap short:w-[22rem] short:shrink-0 short:bg-transparent dark:bg-char short:dark:bg-transparent"
+            class="flex flex-wrap items-center gap-x-1 bg-parchment px-2 text-xs compact:-order-1 compact:flex-nowrap compact:bg-transparent short:order-none short:w-[22rem] short:shrink-0 dark:bg-char compact:dark:bg-transparent"
             class:compact:hidden=move || composing.get()
         >
             <button
@@ -2507,12 +2568,6 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     {move || approvals_label(approvals.get())}
                 </button>
             </Show>
-            <Show when=move || running(workspace)>
-                <span class="inline-flex min-h-11 items-center gap-1.5 px-2 font-bold text-caramel compact:hidden dark:text-maple" role="status">
-                    <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
-                    {move || working_label(workspace)}
-                </span>
-            </Show>
             <span
                 class="min-w-[4rem] flex-1 truncate px-2 text-ink compact:hidden dark:text-sand"
                 id="status"
@@ -2549,9 +2604,10 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     }
 }
 
-/// A phone's line above the composer: the approvals waiting, the working
-/// spinner, and a new status message for a few seconds; it shows only
-/// while one of them does. Wider windows have these in the bottom bar.
+/// A phone's line above the composer: the approvals waiting and a new
+/// status message for a few seconds; it shows only while one of them does.
+/// Wider windows have these in the bottom bar. The working spinner is the
+/// transcript's last row.
 #[component]
 fn StatusLine(workspace: Workspace) -> impl IntoView {
     let live = RwSignal::new(false);
@@ -2575,7 +2631,7 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
         status
     });
     let approvals = Memo::new(move |_| workspace.approvals().len());
-    let shown = move || running(workspace) || approvals.get() > 0 || live.get();
+    let shown = move || approvals.get() > 0 || live.get();
     view! {
         <Show when=shown>
             <div
@@ -2593,12 +2649,6 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
                         <Glyph icon=icondata::FaBellSolid />
                         {move || approvals_label(approvals.get())}
                     </button>
-                </Show>
-                <Show when=move || running(workspace)>
-                    <span class="inline-flex shrink-0 items-center gap-1.5 px-2 font-bold text-caramel dark:text-maple" role="status">
-                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
-                        {move || working_label(workspace)}
-                    </span>
                 </Show>
                 <Show when=move || live.get()>
                     <span class="min-w-0 flex-1 truncate px-2 text-ink dark:text-sand" title=move || workspace.status.get()>
