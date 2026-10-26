@@ -188,6 +188,7 @@ nav:
           - Permission consolidation: specs/permission-consolidation.md
           - MCP tool filters: specs/mcp-tool-filters.md
           - ACP agents: specs/acp-agents.md
+          - "ACP agents: background tasks and self-wakes": specs/acp-agent-wakes.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
           - Managing runtimes from clients: specs/runtime-management.md
           - Model configuration: specs/model-configuration.md
