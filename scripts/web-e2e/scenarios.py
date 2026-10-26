@@ -3540,6 +3540,14 @@ def suspended_tab(browser):
     cache_hit_rate(browser)
     close_sheet(browser)
     print("a tab shown again after the daemon stopped answering reconnects, and reads the open sheet again")
+    # The open session follows the new connection: a message sent now
+    # shows, and so does the reply.
+    before = answers(browser)
+    send(browser, "after the reconnect")
+    browser.wait("the message after the reconnect", lambda: "after the reconnect" in browser.text("#transcript"), timeout=30)
+    browser.wait("the reply after the reconnect", lambda: answers(browser) > before, timeout=60)
+    idle(browser, "the run after the reconnect")
+    print("after the reconnect, the open session shows a new message and its reply")
 
 
 # Clicks each of `arguments[0]` (selectors) in turn, the first at the
@@ -4861,6 +4869,89 @@ def audit():
 # scenario builds on, which run first when it is picked alone. The phone
 # audit stays last in its group, after every scenario that fills the
 # daemon it looks through.
+def acp_reconnect(browser):
+    """An ACP agent's open session follows a new connection: after the page
+    reconnects, a message sent to it shows, and so does the agent's reply."""
+    new_session(browser)
+    browser.click("#agent-chip")
+    fixture = '#sheet [data-agent="fixture"]'
+    browser.wait("the runtime agents", lambda: count(browser, fixture) == 1, timeout=40)
+    browser.click(fixture)
+    browser.wait("the picked agent", lambda: "fixture" in browser.text("#agent-chip"))
+    send(browser, "say before")
+    browser.wait("the agent's reply", lambda: "before" in browser.text("#transcript"), timeout=60)
+    idle(browser, "the agent's turn")
+    with open(os.path.join(HOME, "daemon.pid")) as file:
+        daemon = int(file.read())
+    visibility = (
+        "Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => arguments[0]});"
+        "document.dispatchEvent(new Event('visibilitychange'))"
+    )
+    os.kill(daemon, signal.SIGSTOP)
+    try:
+        browser.script(visibility, "hidden")
+        browser.script(visibility, "visible")
+        browser.wait("the reconnect", lambda: "stopped answering" in browser.text("#reconnecting"), timeout=20)
+    finally:
+        os.kill(daemon, signal.SIGCONT)
+    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    send(browser, "say afterwards")
+    browser.wait("the message after the reconnect", lambda: "say afterwards" in browser.text("#transcript"), timeout=30)
+    browser.wait("the agent's reply after the reconnect", lambda: "afterwards" in browser.text("#transcript").replace("say afterwards", ""), timeout=60)
+    idle(browser, "the agent's turn after the reconnect")
+    print("after the reconnect, an ACP agent's open session shows a new message and the agent's reply")
+
+
+def acp_restart(browser):
+    """An ACP agent's open session follows a restarted daemon: after the
+    page reconnects to the new process, a message sent to it shows, and so
+    does the agent's reply."""
+    new_session(browser)
+    browser.click("#agent-chip")
+    fixture = '#sheet [data-agent="fixture"]'
+    browser.wait("the runtime agents", lambda: count(browser, fixture) == 1, timeout=40)
+    browser.click(fixture)
+    browser.wait("the picked agent", lambda: "fixture" in browser.text("#agent-chip"))
+    send(browser, "say before")
+    browser.wait("the agent's reply", lambda: "before" in browser.text("#transcript"), timeout=60)
+    idle(browser, "the agent's turn")
+    browser.click("#connection")
+    browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
+    browser.click("#connection-restart")
+    browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
+    browser.click("#restart-idle")
+    browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
+    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    send(browser, "say afterwards")
+    browser.wait("the message after the restart", lambda: "say afterwards" in browser.text("#transcript"), timeout=30)
+    browser.wait("the agent's reply after the restart", lambda: "afterwards" in browser.text("#transcript").replace("say afterwards", ""), timeout=60)
+    idle(browser, "the agent's turn after the restart")
+    print("after a daemon restart, an ACP agent's open session shows a new message and the agent's reply")
+
+
+def session_restart(browser):
+    """An open session follows a restarted daemon: after the page reconnects
+    to the new process, a message sent to it shows, and so does the
+    reply."""
+    new_session(browser)
+    send(browser, "before the restart")
+    browser.wait("the reply", lambda: answers(browser) >= 1, timeout=60)
+    idle(browser, "the first turn")
+    before = answers(browser)
+    browser.click("#connection")
+    browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
+    browser.click("#connection-restart")
+    browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
+    browser.click("#restart-idle")
+    browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
+    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    send(browser, "after the restart")
+    browser.wait("the message after the restart", lambda: "after the restart" in browser.text("#transcript"), timeout=30)
+    browser.wait("the reply after the restart", lambda: answers(browser) > before, timeout=60)
+    idle(browser, "the turn after the restart")
+    print("after a daemon restart, the open session shows a new message and its reply")
+
+
 def acp_agents(browser):
     """An ACP agent the daemon's `local` runtime hosts (test-web-page.sh
     declares the scripted fixture, and a disabled one, for this group):
@@ -5192,6 +5283,11 @@ SCENARIOS = [
     ("runtime_mcp", runtime_mcp, "runtime_mcp", []),
     ("acp_agents", acp_agents, "acp", []),
     ("acp_questions", acp_questions, "acp", []),
+    ("acp_reconnect", acp_reconnect, "acp", []),
+    # It restarts its daemon.
+    ("acp_restart", acp_restart, "acp_restart", []),
+    # It restarts its daemon.
+    ("session_restart", session_restart, "session_restart", []),
     # It restarts its daemon.
     ("restart_daemon", restart_daemon, "restart", []),
     ("install_prompt", install_prompt, "install", []),

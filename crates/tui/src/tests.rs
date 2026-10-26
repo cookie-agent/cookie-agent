@@ -153,7 +153,11 @@ pub(crate) fn in_process_server_with_configuration() -> (tempfile::TempDir, Arc<
 /// The `events.subscribe` requests one connection sent, in order, as
 /// (session, cursor). Each replay page is its own request.
 #[derive(Clone, Default)]
-pub(crate) struct SubscribeLog(Arc<std::sync::Mutex<Vec<SubscribeRequest>>>);
+pub(crate) struct SubscribeLog(
+    Arc<std::sync::Mutex<Vec<SubscribeRequest>>>,
+    /// The sessions `session.resume` asked for, in order.
+    Arc<std::sync::Mutex<Vec<SessionId>>>,
+);
 
 /// One `events.subscribe` request: its session and cursor.
 type SubscribeRequest = (SessionId, Option<u64>);
@@ -171,6 +175,11 @@ impl SubscribeLog {
 
     pub(crate) fn total(&self) -> usize {
         self.0.lock().expect("subscribe log").len()
+    }
+
+    /// Whether `session.resume` was asked for `session`.
+    pub(crate) fn resumed(&self, session: SessionId) -> bool {
+        self.1.lock().expect("resume log").contains(&session)
     }
 }
 
@@ -213,6 +222,11 @@ impl cookie_agent_protocol::Transport for CountingStream {
                 .lock()
                 .expect("subscribe log")
                 .push((session, params["cursor"].as_u64()));
+        }
+        if value["method"] == "session.resume"
+            && let Ok(session) = serde_json::from_value(value["params"]["session_id"].clone())
+        {
+            self.log.1.lock().expect("resume log").push(session);
         }
         self.inner.send(frame).await
     }

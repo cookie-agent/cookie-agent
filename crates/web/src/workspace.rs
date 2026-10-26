@@ -637,17 +637,25 @@ impl Workspace {
                 self.status.set(RECONNECTED.into());
             }
         }
+        if reconnected {
+            // The daemon may be a new process, which owns none of the
+            // sessions the last one did: a session it does not own answers
+            // `events.subscribe` with a snapshot that no tail keeps current.
+            // Each is classified (taken) again, as opening it does.
+            self.owned.set_value(HashSet::new());
+        }
         spawn_local(async move {
             self.refresh_lists().await;
             if reconnected && let Some(session_id) = selected {
-                let owned = self.owned(session_id);
                 let subscribe = self
                     .subscriptions
                     .try_update_value(|subscriptions| {
-                        subscriptions.subscribe_from_scratch(session_id, owned)
+                        subscriptions.subscribe_from_scratch(session_id, false)
                     })
                     .expect("the subscriptions live");
                 self.send_subscribe(subscribe);
+                // Owned again, the snapshot subscription becomes live.
+                self.classify_again(session_id);
                 self.refresh_approvals(session_id);
                 self.load_permission_mode(session_id);
                 self.refresh_cost(session_id);
@@ -1330,6 +1338,23 @@ impl Workspace {
         for session in released {
             self.release(session);
         }
+    }
+
+    /// Classifies `session_id`'s ownership on the current connection; once
+    /// owned, its subscription becomes live
+    /// ([`Self::apply_ownership_classification`]).
+    fn classify_again(self, session_id: SessionId) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        let generation = self.begin_ownership_classification(session_id);
+        let connection = self.connection.get_value();
+        spawn_local(async move {
+            let outcome = classify_session(&client, session_id).await;
+            if self.is_current(connection) {
+                self.apply_ownership_classification(session_id, generation, outcome);
+            }
+        });
     }
 
     fn begin_ownership_classification(self, session_id: SessionId) -> u64 {

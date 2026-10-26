@@ -648,10 +648,14 @@ async fn a_reconnected_view_rebuilds_the_reply_it_missed_without_duplicating_it(
     let mut app = App::new(client).await.expect("app");
     let mut deliveries = app.take_deliveries();
     let redial = Arc::clone(&server);
+    let redialed = Arc::new(std::sync::Mutex::new(None));
+    let redial_log = Arc::clone(&redialed);
     app.reconnector = Some(Arc::new(move || {
         let (server, identity) = (Arc::clone(&redial), identity.clone());
+        let redial_log = Arc::clone(&redial_log);
         Box::pin(async move {
-            let client = server.connect_in_process();
+            let (client, log, sever) = crate::tests::connect_counting(&server);
+            *redial_log.lock().expect("redial log") = Some((log, sever));
             client
                 .handshake_as(identity)
                 .await
@@ -702,6 +706,24 @@ async fn a_reconnected_view_rebuilds_the_reply_it_missed_without_duplicating_it(
     pump_until(&mut app, &mut deliveries, session, "rebuilt reply", |app| {
         shown(app, session).1 == "one two"
     })
+    .await;
+    // The daemon on the other end may be a new process that owns nothing:
+    // the open session is taken again, as opening it does, so its
+    // subscription is live and not a snapshot (a restarted daemon answers
+    // an unowned session's subscribe with one).
+    pump_until(
+        &mut app,
+        &mut deliveries,
+        session,
+        "the session resumed",
+        |_| {
+            redialed
+                .lock()
+                .expect("redial log")
+                .as_ref()
+                .is_some_and(|(log, _): &(crate::tests::SubscribeLog, _)| log.resumed(session))
+        },
+    )
     .await;
     settle(&mut app, &mut deliveries).await;
     assert_eq!(shown(&app, session), (String::new(), "one two".to_owned()));

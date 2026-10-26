@@ -246,9 +246,16 @@ impl App {
         self.status = "reconnected to the daemon".into();
         self.poll_onboarding();
         self.request_runtime_resync();
+        // The daemon may be a new process, which owns none of the sessions
+        // the last one did: a session it does not own answers
+        // `events.subscribe` with a snapshot that no tail keeps current.
+        // Each is classified (taken) again, as opening it does.
+        self.owned_sessions.clear();
         self.refresh_lists().await;
         if let Some(selected) = self.selected {
             self.resubscribe_from_scratch(selected);
+            // Owned again, the snapshot subscription becomes live.
+            self.classify_session_background(selected);
             self.refresh_approvals(selected);
             self.refresh_permission_mode_for_session(selected);
         }
