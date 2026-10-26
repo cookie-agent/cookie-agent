@@ -242,6 +242,9 @@ fn ask(kind: &str, call: &ToolCallFields) -> MappedRequest {
 pub(crate) fn merge(known: Option<&ToolCallFields>, update: &ToolCallFields) -> ToolCallFields {
     let mut merged = known.cloned().unwrap_or_default();
     merged.tool_call_id.clone_from(&update.tool_call_id);
+    if update.name.is_some() {
+        merged.name.clone_from(&update.name);
+    }
     if update.title.is_some() {
         merged.title.clone_from(&update.title);
     }

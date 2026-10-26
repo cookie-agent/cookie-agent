@@ -497,7 +497,7 @@ impl super::super::Engine {
     /// session it serves.
     pub(super) async fn probe_fork_point(&self, live: &super::runner::LiveSession) {
         let process = &live.process;
-        if !process.init().agent_capabilities.session("fork")
+        if !process.init().capabilities.session("fork")
             || process.fork_point.get().is_some()
             || process
                 .fork_probe
@@ -524,7 +524,7 @@ impl super::super::Engine {
             Ok(Err(cookie_agent_runtime_api::rpc::RpcError::Remote { code: -32602, .. })) => true,
             Ok(Ok(response)) => {
                 if let Some(id) = response.session_id.filter(|id| !id.is_empty()) {
-                    let deletes = process.init().agent_capabilities.session("delete");
+                    let deletes = process.init().capabilities.session("delete");
                     end_agent_session(process, &id, !deletes, deletes).await;
                     process.unroute(&id);
                 }
@@ -649,7 +649,7 @@ impl super::super::Engine {
             });
         let live_fork = process
             .as_ref()
-            .map(|process| process.init().agent_capabilities.session("fork"));
+            .map(|process| process.init().capabilities.session("fork"));
         let live_point = process
             .as_ref()
             .and_then(|process| process.fork_point.get().copied());
@@ -668,7 +668,7 @@ impl super::super::Engine {
         additional_directories: &[String],
         mcp_servers: &[wire::McpServer],
     ) -> Result<(String, wire::SessionResponse), String> {
-        if !process.init().agent_capabilities.session("fork") {
+        if !process.init().capabilities.session("fork") {
             return Err("it does not offer `session/fork`".to_owned());
         }
         let response = tokio::time::timeout(
@@ -784,16 +784,16 @@ impl super::super::Engine {
 /// How long the agent gets to answer `session/close` and `session/delete`.
 const END_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Asks the agent to close its session `acp_session_id` (`close`, when it
-/// offers `session/close`) and then to delete it (`delete`, when it offers
-/// `session/delete`). What it answers changes nothing.
+/// Asks the agent to close its session `acp_session_id` (`close`; every v2
+/// agent offers `session/close`) and then to delete it (`delete`, when it
+/// offers `session/delete`). What it answers changes nothing.
 pub(super) async fn end_agent_session(
     process: &AgentProcess,
     acp_session_id: &str,
     close: bool,
     delete: bool,
 ) {
-    let caps = &process.init().agent_capabilities;
+    let caps = &process.init().capabilities;
     let reference = wire::SessionRef {
         session_id: acp_session_id,
     };
@@ -805,7 +805,7 @@ pub(super) async fn end_agent_session(
                 .request::<_, serde_json::Value>(method, &reference),
         )
     };
-    if close && caps.session("close") {
+    if close {
         let _ = request(wire::method::SESSION_CLOSE).await;
     }
     if delete && caps.session("delete") {

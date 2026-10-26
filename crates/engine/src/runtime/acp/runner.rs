@@ -12,7 +12,11 @@
 //! it with the last text (or runs the next round of queued input),
 //! `cancelled` cancels it, and the rest fail it.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use cookie_agent_protocol::{
     AcpConfigOption, AcpConfigOptionKind, AcpConfigValue, AcpNotice, AcpNoticeSeverity,
@@ -33,7 +37,7 @@ use super::super::{
     ActiveRun, Engine, EngineError, SessionCommand, ToolCallFailureCode, ToolFailure, event_origin,
 };
 use super::{
-    elicitation, permissions,
+    diff, elicitation, permissions,
     process::{AgentProcess, SessionEvent, agent_error_message},
     terminal::{self, Terminal},
     wire::{self, ToolCallFields},
@@ -65,8 +69,6 @@ pub(crate) struct LiveSession {
     pub bridge: Option<String>,
     /// The agent's config options, as the session shows them.
     pub options: Vec<AcpConfigOption>,
-    /// Whether `options` shows the agent's modes as an option `mode`.
-    pub modes_as_option: bool,
     /// Whether the next prompt is the session's first, which carries the
     /// agent document's body.
     pub first_prompt: bool,
@@ -118,39 +120,11 @@ fn stopped(reason: &str) -> RoundEnd {
     RoundEnd::Stopped { message, finish }
 }
 
-/// One ACP option or mode list in the session's terms.
-fn options_of(
-    config_options: Option<&Vec<Value>>,
-    modes: Option<&wire::SessionModes>,
-) -> (Vec<AcpConfigOption>, bool) {
-    let mut options = config_options
-        .map(|options| options.iter().filter_map(config_option).collect::<Vec<_>>())
-        .unwrap_or_default();
-    let has_mode_option = options
-        .iter()
-        .any(|option| option.category.as_deref() == Some("mode") || option.id == "mode");
-    let modes_as_option =
-        !has_mode_option && modes.is_some_and(|modes| !modes.available_modes.is_empty());
-    if modes_as_option && let Some(modes) = modes {
-        options.push(AcpConfigOption {
-            id: "mode".to_owned(),
-            name: "Mode".to_owned(),
-            kind: AcpConfigOptionKind::Select,
-            description: None,
-            category: Some("mode".to_owned()),
-            current_value: modes.current_mode_id.clone(),
-            values: modes
-                .available_modes
-                .iter()
-                .map(|mode| AcpConfigValue {
-                    value: mode.id.clone(),
-                    name: mode.name.clone(),
-                    description: mode.description.clone(),
-                })
-                .collect(),
-        });
-    }
-    (options, modes_as_option)
+/// The agent's config options in the session's terms.
+fn options_of(config_options: Option<&Vec<Value>>) -> Vec<AcpConfigOption> {
+    config_options
+        .map(|options| options.iter().filter_map(config_option).collect())
+        .unwrap_or_default()
 }
 
 /// A config option as the session shows it: a `select`, its grouped values
@@ -169,7 +143,7 @@ fn config_option(option: &Value) -> Option<AcpConfigOption> {
                 description: None,
             };
             return Some(AcpConfigOption {
-                id: text(option, "id")?,
+                id: text(option, "configId")?,
                 name: text(option, "name").unwrap_or_default(),
                 kind: AcpConfigOptionKind::Boolean,
                 description: text(option, "description"),
@@ -198,7 +172,7 @@ fn config_option(option: &Value) -> Option<AcpConfigOption> {
         }
     }
     Some(AcpConfigOption {
-        id: text(option, "id")?,
+        id: text(option, "configId")?,
         name: text(option, "name").unwrap_or_default(),
         kind: AcpConfigOptionKind::Select,
         description: text(option, "description"),
@@ -230,8 +204,25 @@ fn config_value(value: &Value) -> Option<AcpConfigValue> {
 }
 
 /// A plan block of an ACP `plan` update.
-fn plan_block(update: &Value) -> DisplayBlock {
-    let entries = update
+fn plan_block(plan: &Value) -> DisplayBlock {
+    // A plan as Markdown or a file is one entry that shows it.
+    let single = match plan.get("type").and_then(Value::as_str) {
+        Some("markdown") => plan.get("content").and_then(Value::as_str),
+        Some("file") => plan.get("uri").and_then(Value::as_str),
+        _ => None,
+    };
+    if let Some(content) = single {
+        let mut block = DisplayBlock::Plan {
+            entries: vec![PlanEntry {
+                content: content.to_owned(),
+                status: PlanEntryStatus::Unknown,
+                priority: None,
+            }],
+        };
+        block.sanitize();
+        return block;
+    }
+    let entries = plan
         .get("entries")
         .and_then(Value::as_array)
         .into_iter()
@@ -332,72 +323,6 @@ fn cost_of(update: Option<&Value>) -> Option<u64> {
     (amount.is_finite() && amount >= 0.0).then(|| (amount * 1e12).round() as u64)
 }
 
-/// A diff block of ACP diff content.
-fn diff_block(path: &str, old: Option<&str>, new: &str) -> DisplayBlock {
-    use cookie_agent_protocol::{DiffAsOf, DiffBlock, DiffChange, DiffHunk, DiffLine, DiffLineOp};
-    let old_text = old.unwrap_or_default();
-    let diff = similar::TextDiff::from_lines(old_text, new);
-    let (mut added, mut removed) = (0_u64, 0_u64);
-    let hunks = diff
-        .grouped_ops(3)
-        .into_iter()
-        .map(|group| {
-            let (first, last) = (
-                group[0].as_tag_tuple(),
-                group[group.len() - 1].as_tag_tuple(),
-            );
-            let old_range = first.1.start..last.1.end;
-            let new_range = first.2.start..last.2.end;
-            let mut lines = Vec::new();
-            for op in &group {
-                for change in diff.iter_changes(op) {
-                    let op = match change.tag() {
-                        similar::ChangeTag::Equal => DiffLineOp::Context,
-                        similar::ChangeTag::Insert => {
-                            added += 1;
-                            DiffLineOp::Add
-                        }
-                        similar::ChangeTag::Delete => {
-                            removed += 1;
-                            DiffLineOp::Remove
-                        }
-                    };
-                    lines.push(DiffLine {
-                        op,
-                        text: change.value().trim_end_matches(['\n', '\r']).to_owned(),
-                    });
-                }
-            }
-            let number = |start: usize, count: usize| start as u64 + u64::from(count > 0);
-            DiffHunk {
-                old_start: number(old_range.start, old_range.len()),
-                old_lines: old_range.len() as u64,
-                new_start: number(new_range.start, new_range.len()),
-                new_lines: new_range.len() as u64,
-                lines,
-            }
-        })
-        .collect();
-    let mut block = DisplayBlock::Diff(DiffBlock {
-        path: path.to_owned(),
-        old_path: None,
-        language: None,
-        change: if old.is_none() {
-            DiffChange::Created
-        } else {
-            DiffChange::Modified
-        },
-        hunks,
-        added,
-        removed,
-        omitted: None,
-        as_of: DiffAsOf::Execute,
-        full: None,
-    });
-    block.sanitize();
-    block
-}
-
 impl Engine {
     /// The display blocks and text of a tool call's content: text as
     /// Markdown, images as media, resource links as links, embedded
@@ -425,17 +350,11 @@ impl Engine {
         for content in call.content.iter().flatten() {
             match content.get("type").and_then(Value::as_str) {
                 Some("diff") => {
-                    let path = content
-                        .get("path")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let new = content
-                        .get("newText")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let old = content.get("oldText").and_then(Value::as_str);
-                    blocks.push(diff_block(path, old, new));
-                    say(&mut text, &format!("edited {path}"));
+                    let (diffs, paths) = diff::diff_blocks(content);
+                    blocks.extend(diffs);
+                    for path in paths {
+                        say(&mut text, &format!("edited {path}"));
+                    }
                 }
                 Some("content") => {
                     let block = content.get("content").cloned().unwrap_or(Value::Null);
@@ -641,6 +560,74 @@ fn display_text(text: &str) -> SafeDisplayText {
     .unwrap_or_else(|_| SafeDisplayText::new("ACP tool call").expect("static title"))
 }
 
+/// What a round has seen of the agent's work, in the order of its updates.
+#[derive(Default)]
+struct RoundState {
+    /// The last `idle` since the work last ran or took a prompt in.
+    idle: Option<Idle>,
+    /// Prompts whose `user_message` echo has come.
+    echoed: HashSet<String>,
+    /// Prompts the agent took in whose echo has not come yet: the work
+    /// they start is still to come.
+    awaiting_echo: HashSet<String>,
+    /// Agent messages streamed as chunks, which a whole message repeats.
+    streamed: HashSet<String>,
+}
+
+impl RoundState {
+    /// The agent took prompt `message_id` in.
+    fn inserted(&mut self, message_id: &str) {
+        if !self.echoed.contains(message_id) {
+            self.awaiting_echo.insert(message_id.to_owned());
+        }
+    }
+
+    /// Whether the work ended: an `idle` after every prompt taken in.
+    fn ended(&self) -> bool {
+        self.idle.is_some() && self.awaiting_echo.is_empty()
+    }
+}
+
+/// An `idle` state: why the work stopped, and what it used.
+struct Idle {
+    stop_reason: Option<String>,
+    usage: Option<Value>,
+    /// The error of an `error` stop.
+    error: Option<String>,
+}
+
+impl Idle {
+    fn of(update: &Value) -> Self {
+        let error = update.get("error").map(|error| {
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .map_or_else(|| error.to_string(), str::to_owned)
+        });
+        Self {
+            stop_reason: update
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            usage: update
+                .get("usage")
+                .filter(|usage| !usage.is_null())
+                .cloned(),
+            error,
+        }
+    }
+}
+
+/// One of the agent's terminals: the call that shows it, once one names
+/// it, and what came for it before then.
+#[derive(Default)]
+struct TerminalRoute {
+    call: Option<String>,
+    /// The bytes of output applied, which a snapshot extends.
+    written: usize,
+    waiting: terminal::TerminalMeta,
+}
+
 /// One tool call the agent reported in the run.
 struct ShownCall {
     tool_call_id: ToolCallId,
@@ -707,8 +694,10 @@ struct Turn<'a> {
     home: Option<String>,
     /// Calls through the bridge, and questions to the user, still running.
     bridged: Vec<tokio::task::JoinHandle<()>>,
-    /// The agent takes input into its running turn (`_session/steering`).
-    steering: bool,
+    /// What the round has seen of the agent's work.
+    round: RoundState,
+    /// The agent's terminals, by ID.
+    terminals: HashMap<String, TerminalRoute>,
     /// Claims on input steered into the turn, released at its next commit.
     steer_claims: Vec<super::super::producer_claims::ClaimedPrompt>,
     /// Input was taken to steer that the agent did not take: the next round
@@ -916,12 +905,12 @@ impl Turn<'_> {
     }
 
     /// Takes the session's input to steer and sends it into the agent's
-    /// running turn: the turn so far commits, so the input stands after it.
+    /// running work: the turn so far commits, so the input stands after it.
     /// The user's inputs stay waiting, held so no client takes them back,
     /// until the agent answers ([`Self::end_steer`] promotes them once it
-    /// took them); producer messages are promoted and claimed like a
-    /// round's. `_session/steering` carries both. `None` when there was
-    /// none.
+    /// took them in); producer messages are promoted and claimed like a
+    /// round's. A `session/prompt` during the work carries both: v2 answers
+    /// it once the agent inserts it. `None` when there was none.
     async fn begin_steer(&mut self) -> Result<Option<PendingSteer>, EngineError> {
         if self
             .step
@@ -949,13 +938,7 @@ impl Turn<'_> {
             engine.release_steered_inputs(session);
             return Ok(None);
         }
-        let caps = self
-            .live
-            .process
-            .init()
-            .agent_capabilities
-            .prompt_capabilities
-            .clone();
+        let caps = self.live.process.init().capabilities.prompt();
         let mut prompt = Vec::new();
         for input in &inputs {
             engine.push_content(&mut prompt, session, &input.content, &caps);
@@ -976,16 +959,15 @@ impl Turn<'_> {
         tokio::spawn(async move {
             let answer = process
                 .peer
-                .request::<_, wire::SteeringResponse>(
-                    wire::method::SESSION_STEERING,
-                    &wire::SteeringRequest {
+                .request::<_, wire::PromptResponse>(
+                    wire::method::SESSION_PROMPT,
+                    &wire::PromptRequest {
                         session_id: &session_id,
                         prompt: &prompt,
-                        meta: serde_json::json!({"steering": {"idleBehavior": "promptRequired"}}),
                     },
                 )
                 .await
-                .map(|response| response.outcome)
+                .map(|response| response.message_id)
                 .map_err(|error| agent_error_message(&error));
             let _ = reply.send(answer);
         });
@@ -998,8 +980,8 @@ impl Turn<'_> {
         }))
     }
 
-    /// What the agent answered a steer: taken (`injected`, or a turn it
-    /// started for it), the turns after cover the input and the session
+    /// What the agent answered a steer: taken in (the ID of the user
+    /// message it became), the turns after cover the input and the session
     /// records that it was steered; otherwise the next round sends it.
     async fn end_steer(
         &mut self,
@@ -1011,8 +993,10 @@ impl Turn<'_> {
         // the user's inputs are still waiting, and the next round takes
         // them as any.
         let producers = !pending.steered.producer_messages.is_empty();
-        match answer.as_deref() {
-            Ok("injected" | "startedNewTurn") => {
+        match answer {
+            Ok(message_id) => {
+                // The work goes on until its `idle` after the steer's echo.
+                self.round.inserted(&message_id);
                 let held = pending.inputs;
                 let (submitted, last) = self
                     .engine
@@ -1030,18 +1014,9 @@ impl Turn<'_> {
                 })
                 .await
             }
-            Ok("promptRequired") => {
+            Err(reason) => {
                 self.engine.release_steered_inputs(session);
                 self.unsteered |= producers;
-                Ok(())
-            }
-            other => {
-                self.engine.release_steered_inputs(session);
-                self.unsteered |= producers;
-                let reason = match other {
-                    Ok(outcome) => format!("it answered `{outcome}`"),
-                    Err(error) => error.clone(),
-                };
                 self.engine
                     .acp_notice(
                         self.session(),
@@ -1092,6 +1067,9 @@ impl Turn<'_> {
                     .await
             }
             "agent_message_chunk" | "agent_thought_chunk" => {
+                if let Some(id) = update.get("messageId").and_then(Value::as_str) {
+                    self.round.streamed.insert(id.to_owned());
+                }
                 let text = update
                     .get("content")
                     .map(wire::content_text)
@@ -1112,21 +1090,117 @@ impl Turn<'_> {
                 }
                 Ok(())
             }
-            // Subagents stay flat on purpose: Claude Code's Task subagents
-            // arrive as ordinary tool calls whose
-            // `_meta.claudeCode.parentToolUseId` names the Task call, and ACP's
-            // `subagent_update` and child sessions (offered to a client that
-            // declares `clientCapabilities.subagents`) are unstable. Neither
-            // nesting by `parentToolUseId` nor child sessions is implemented
-            // until the subagent API is stable.
-            "tool_call" | "tool_call_update" => {
+            // A whole message: what its chunks did not already stream. Agents
+            // that stream chunks repeat them here, which adds nothing.
+            "agent_message" | "agent_thought" => {
+                let streamed = update
+                    .get("messageId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| self.round.streamed.contains(id));
+                if streamed {
+                    return Ok(());
+                }
+                let chunk = if kind == "agent_message" {
+                    "agent_message_chunk"
+                } else {
+                    "agent_thought_chunk"
+                };
+                for block in update
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let mut part = update.clone();
+                    part["sessionUpdate"] = Value::from(chunk);
+                    part["content"] = block;
+                    Box::pin(self.update(part)).await?;
+                }
+                Ok(())
+            }
+            // The echo of a prompt the agent took in: the work it starts is
+            // still to come. The prompt itself is already recorded.
+            "user_message" | "user_message_chunk" => {
+                if let Some(id) = update.get("messageId").and_then(Value::as_str) {
+                    self.round.awaiting_echo.remove(id);
+                    self.round.echoed.insert(id.to_owned());
+                }
+                self.round.idle = None;
+                Ok(())
+            }
+            "state_update" => {
+                match update.get("state").and_then(Value::as_str) {
+                    Some("idle") => self.round.idle = Some(Idle::of(&update)),
+                    Some("running" | "requires_action") => self.round.idle = None,
+                    _ => {}
+                }
+                Ok(())
+            }
+            // Subagents (`subagent_update`) are not shown yet: their own
+            // sessions come with the subagent phase of the v2 port.
+            "tool_call_update" => {
                 let fields: ToolCallFields =
                     serde_json::from_value(update.clone()).unwrap_or_default();
                 self.tool_call(fields).await
             }
-            "plan" => {
+            // One more content item of a call: its content so far, and it.
+            "tool_call_content_chunk" => {
+                let Some(id) = update.get("toolCallId").and_then(Value::as_str) else {
+                    return Ok(());
+                };
+                let Some(item) = update.get("content").cloned() else {
+                    return Ok(());
+                };
+                let mut content = self
+                    .calls
+                    .get(id)
+                    .map(|call| &call.fields)
+                    .or_else(|| self.echoes.get(id).map(|echo| &echo.fields))
+                    .and_then(|fields| fields.content.clone())
+                    .unwrap_or_default();
+                content.push(item);
+                self.tool_call(ToolCallFields {
+                    tool_call_id: id.to_owned(),
+                    content: Some(content),
+                    ..ToolCallFields::default()
+                })
+                .await
+            }
+            "terminal_update" | "terminal_output_chunk" => {
+                let Some(read) = terminal::TerminalUpdate::read(&kind, &update) else {
+                    return Ok(());
+                };
+                let route = self.terminals.entry(read.id.clone()).or_default();
+                let meta = read.meta(route.written);
+                route.written += meta.output.as_ref().map_or(0, String::len);
+                match route.call.clone() {
+                    Some(call) => {
+                        self.show_call_with(
+                            ToolCallFields {
+                                tool_call_id: call,
+                                ..ToolCallFields::default()
+                            },
+                            meta,
+                        )
+                        .await
+                    }
+                    None => {
+                        route.waiting.absorb(meta);
+                        Ok(())
+                    }
+                }
+            }
+            "plan_update" => {
+                let plan = update.get("plan").cloned().unwrap_or(Value::Null);
                 self.record_update(AcpSessionUpdate {
-                    plan: Some(Open::Known(plan_block(&update))),
+                    plan: Some(Open::Known(plan_block(&plan))),
+                    ..AcpSessionUpdate::default()
+                })
+                .await
+            }
+            "plan_removed" => {
+                self.record_update(AcpSessionUpdate {
+                    plan: Some(Open::Known(plan_block(&Value::Null))),
                     ..AcpSessionUpdate::default()
                 })
                 .await
@@ -1150,41 +1224,11 @@ impl Turn<'_> {
                     .get("configOptions")
                     .and_then(Value::as_array)
                     .cloned();
-                let (options, _) = options_of(options.as_ref(), None);
+                let options = options_of(options.as_ref());
                 self.live.options = options.clone();
                 self.engine.remember_live(&self.live);
                 self.record_update(AcpSessionUpdate {
                     options: Some(options),
-                    ..AcpSessionUpdate::default()
-                })
-                .await
-            }
-            // The mode the agent switched to, such as Claude Code leaving
-            // plan mode on its own: the option that shows its modes follows,
-            // whether cookie made it of the modes or the agent offers its own
-            // mode option beside them (Claude Code's adapter does).
-            "current_mode_update" => {
-                let Some(mode) = update.get("currentModeId").and_then(Value::as_str) else {
-                    return Ok(());
-                };
-                let mut changed = false;
-                for option in &mut self.live.options {
-                    let shows_modes =
-                        option.id == "mode" || option.category.as_deref() == Some("mode");
-                    if shows_modes
-                        && option.current_value != mode
-                        && option.values.iter().any(|value| value.value == mode)
-                    {
-                        mode.clone_into(&mut option.current_value);
-                        changed = true;
-                    }
-                }
-                if !changed {
-                    return Ok(());
-                }
-                self.engine.remember_live(&self.live);
-                self.record_update(AcpSessionUpdate {
-                    options: Some(self.live.options.clone()),
                     ..AcpSessionUpdate::default()
                 })
                 .await
@@ -1357,9 +1401,27 @@ impl Turn<'_> {
         self.show_call(update).await
     }
 
-    /// Shows the agent's tool call `update`, or updates the one shown.
-    async fn show_call(&mut self, mut update: ToolCallFields) -> Result<(), EngineError> {
-        let terminal_meta = terminal::take_meta(&mut update.meta);
+    /// Shows the agent's tool call `update`, or updates the one shown,
+    /// with the output that came for a terminal its content names.
+    async fn show_call(&mut self, update: ToolCallFields) -> Result<(), EngineError> {
+        let mut terminal_meta = terminal::TerminalMeta::default();
+        if let Some(id) = terminal::named(update.content.as_ref()) {
+            let route = self.terminals.entry(id.clone()).or_default();
+            if route.call.is_none() {
+                route.call = Some(update.tool_call_id.clone());
+                terminal_meta = std::mem::take(&mut route.waiting);
+            }
+            terminal_meta.id = Some(id);
+        }
+        self.show_call_with(update, terminal_meta).await
+    }
+
+    /// [`Self::show_call`] with `terminal_meta` to apply to its terminal.
+    async fn show_call_with(
+        &mut self,
+        update: ToolCallFields,
+        terminal_meta: terminal::TerminalMeta,
+    ) -> Result<(), EngineError> {
         // Nothing but output: the live display grows by appends.
         let output_only = update.title.is_none()
             && update.kind.is_none()
@@ -1891,6 +1953,11 @@ impl Turn<'_> {
                 .map(|echo| echo.fields.clone())
         });
         let tool_call_id = known.map(|call| call.tool_call_id);
+        // A call cookie has not seen is named by the request's own title.
+        let mut request = request;
+        if known_fields.is_none() && request.tool_call.title.is_none() {
+            request.tool_call.title = request.title.clone();
+        }
         tokio::spawn(async move {
             let answer = tokio::select! {
                 answer = engine.decide_acp_permission(
@@ -1993,7 +2060,8 @@ impl Engine {
             context: None,
             home,
             bridged: Vec::new(),
-            steering: process.init().steering(),
+            round: RoundState::default(),
+            terminals: HashMap::new(),
             steer_claims: Vec::new(),
             unsteered: false,
             compactions: HashMap::new(),
@@ -2113,11 +2181,13 @@ impl Engine {
             .request::<_, wire::PromptResponse>(wire::method::SESSION_PROMPT, &prompt_request);
         tokio::pin!(request);
         let mut cancel_deadline: Option<tokio::time::Instant> = None;
-        // Input to steer wakes the round while the agent can take it.
-        let steer_wake = turn
-            .steering
-            .then(|| self.inner.acp.processes.watch_steering(turn.session()));
+        // Input to steer wakes the round: a prompt during the work.
+        let steer_wake = self.inner.acp.processes.watch_steering(turn.session());
         let mut pending_steer: Option<PendingSteer> = None;
+        // The prompt's answer says the agent took it in; the round ends at
+        // the `idle` after it, with no steer on its way.
+        turn.round = RoundState::default();
+        let mut answered = false;
         let answer = loop {
             // Biased, cancellation first: an agent that streams without a
             // pause keeps the update branch ready, and a cancel accepted
@@ -2138,7 +2208,16 @@ impl Engine {
                     }
                 } => break None,
                 () = process.exited.cancelled() => break None,
-                answer = &mut request => break Some(answer),
+                answer = &mut request, if !answered => match answer {
+                    Ok(response) => {
+                        answered = true;
+                        turn.round.inserted(&response.message_id);
+                        if turn.round.ended() {
+                            break Some(Ok(()));
+                        }
+                    }
+                    Err(error) => break Some(Err(error)),
+                },
                 answer = async {
                     match pending_steer.as_mut() {
                         Some(pending) => (&mut pending.answer).await,
@@ -2150,9 +2229,17 @@ impl Engine {
                         Err("the agent's process ended".to_owned())
                     });
                     turn.end_steer(pending, answer).await?;
+                    if answered && turn.round.ended() {
+                        break Some(Ok(()));
+                    }
                 }
                 event = events.recv() => match event {
-                    Some(SessionEvent::Update(update)) => turn.update(update).await?,
+                    Some(SessionEvent::Update(update)) => {
+                        turn.update(update).await?;
+                        if answered && pending_steer.is_none() && turn.round.ended() {
+                            break Some(Ok(()));
+                        }
+                    }
                     Some(SessionEvent::Permission(request, incoming)) => {
                         if cancel_deadline.is_some() {
                             let _ = incoming.respond(&wire::permission_outcome(None)).await;
@@ -2172,12 +2259,8 @@ impl Engine {
                     }
                     None => break None,
                 },
-                () = async {
-                    match &steer_wake {
-                        Some(wake) => wake.notified().await,
-                        None => std::future::pending().await,
-                    }
-                }, if cancel_deadline.is_none() && pending_steer.is_none() => {
+                () = steer_wake.notified(),
+                    if answered && cancel_deadline.is_none() && pending_steer.is_none() => {
                     pending_steer = turn.begin_steer().await?;
                 }
             }
@@ -2197,15 +2280,13 @@ impl Engine {
             }
         }
         drop(events);
-        if steer_wake.is_some() {
-            self.inner.acp.processes.unwatch_steering(turn.session());
-        }
+        self.inner.acp.processes.unwatch_steering(turn.session());
         if let Some(mut pending) = pending_steer.take() {
             let answer = tokio::time::timeout(CANCEL_GRACE * 5, &mut pending.answer)
                 .await
                 .ok()
                 .and_then(Result::ok)
-                .unwrap_or_else(|| Err("the agent did not answer the steering request".to_owned()));
+                .unwrap_or_else(|| Err("the agent did not take the message in".to_owned()));
             turn.end_steer(pending, answer).await?;
         }
         // A call through the bridge, or a question to the user, ends before
@@ -2215,25 +2296,33 @@ impl Engine {
             let _ = call.await;
         }
         let cancelled = turn.active.cancellation.is_cancelled();
-        let answered_usage = match &answer {
-            Some(Ok(response)) => response.usage.clone(),
-            _ => None,
-        };
+        let idle = turn.round.idle.take();
+        let answered_usage = idle.as_ref().and_then(|idle| idle.usage.clone());
         let end = match answer {
-            Some(Ok(response)) => match response.stop_reason.as_str() {
-                "end_turn" => {
-                    if turn.step.is_some() || turn.last_turn_seq.is_none() {
-                        turn.commit(ModelFinishReason::Stop).await?;
+            Some(Ok(())) => {
+                let idle = idle.expect("the round ends at an idle");
+                match idle.stop_reason.as_deref() {
+                    Some("cancelled") => RoundEnd::Cancelled,
+                    Some("error") => RoundEnd::Failed(
+                        idle.error
+                            .unwrap_or_else(|| "the agent's work failed".to_owned()),
+                    ),
+                    Some(reason @ ("max_tokens" | "max_turn_requests" | "refusal")) => {
+                        stopped(reason)
                     }
-                    let usage = usage_of(response.usage.as_ref(), turn.usage_update.as_ref());
-                    self.record_acp_usage(turn, usage).await?;
-                    RoundEnd::Completed(
-                        (!turn.last_text.is_empty()).then(|| turn.last_text.clone()),
-                    )
+                    // `end_turn`, none, or one this client does not know.
+                    _ => {
+                        if turn.step.is_some() || turn.last_turn_seq.is_none() {
+                            turn.commit(ModelFinishReason::Stop).await?;
+                        }
+                        let usage = usage_of(idle.usage.as_ref(), turn.usage_update.as_ref());
+                        self.record_acp_usage(turn, usage).await?;
+                        RoundEnd::Completed(
+                            (!turn.last_text.is_empty()).then(|| turn.last_text.clone()),
+                        )
+                    }
                 }
-                "cancelled" => RoundEnd::Cancelled,
-                other => stopped(other),
-            },
+            }
             Some(Err(error)) if cancelled => {
                 let _ = error;
                 RoundEnd::Cancelled
@@ -2389,7 +2478,7 @@ impl Engine {
         if live.first_prompt {
             prompt.extend(context.iter().map(|part| wire::text_block(part)));
         }
-        let caps = &process.init().agent_capabilities.prompt_capabilities;
+        let caps = &process.init().capabilities.prompt();
         prompt.extend(self.input_since(events, boundary, caps).0);
         if prompt.is_empty() {
             prompt.push(wire::text_block("Continue."));
@@ -2590,15 +2679,9 @@ impl Engine {
         {
             return Ok(live);
         }
-        self.remember_acp_input(
-            agent,
-            &process.init().agent_capabilities.prompt_capabilities,
-        );
+        self.remember_acp_input(agent, &process.init().capabilities.prompt());
         let cwd = self.acp_cwd(session, agent, process)?;
-        let additional_directories = if process
-            .init()
-            .agent_capabilities
-            .session("additionalDirectories")
+        let additional_directories = if process.init().capabilities.session("additionalDirectories")
         {
             self.acp_additional_directories(session, agent, &cwd)?
         } else {
@@ -2624,6 +2707,7 @@ impl Engine {
                     .map(|(command, args)| (command.clone(), args.to_vec()))
                     .unwrap_or_default();
                 vec![wire::McpServer {
+                    transport: "stdio",
                     name: super::mcp::BRIDGE_SERVER.to_owned(),
                     command,
                     args,
@@ -2679,7 +2763,7 @@ impl Engine {
             prior = None;
             branch = None;
         }
-        let caps = &process.init().agent_capabilities;
+        let caps = &process.init().capabilities;
         let mut opened = None;
         let mut lost = false;
         let mut forked_from = None;
@@ -2710,13 +2794,8 @@ impl Engine {
                 additional_directories: &additional_directories,
                 mcp_servers: &mcp_servers,
             };
-            let attempt = if caps.session("resume") {
-                Some((wire::method::SESSION_RESUME, AcpSessionStart::Resumed))
-            } else if caps.load_session {
-                Some((wire::method::SESSION_LOAD, AcpSessionStart::Loaded))
-            } else {
-                None
-            };
+            // Every v2 agent resumes; none replays (no `replayFrom`).
+            let attempt = Some((wire::method::SESSION_RESUME, AcpSessionStart::Resumed));
             match attempt {
                 Some((method, how)) => {
                     match tokio::time::timeout(
@@ -2805,9 +2884,10 @@ impl Engine {
                     acp_session_id: acp_session_id.clone(),
                     cwd: cwd.clone(),
                     protocol_version: process.init().protocol_version,
-                    agent_info: process.init().agent_info.clone(),
+                    agent_info: process.init().info.clone(),
                     how,
-                    steering: process.init().steering(),
+                    // A v2 agent takes a prompt during its work.
+                    steering: true,
                     forked_from,
                     fork: Some(caps.session("fork")),
                     fork_point: process.fork_point.get().copied(),
@@ -2821,8 +2901,7 @@ impl Engine {
             self.retire_acp_session(session, process, &from.acp_session_id)
                 .await;
         }
-        let (options, modes_as_option) =
-            options_of(response.config_options.as_ref(), response.modes.as_ref());
+        let options = options_of(response.config_options.as_ref());
         self.remember_acp_options(agent, &options, matches!(how, AcpSessionStart::New));
         let mut live = LiveSession {
             session,
@@ -2832,7 +2911,6 @@ impl Engine {
             cwd,
             bridge: bridge.ok().map(|opened| opened.bridge),
             options,
-            modes_as_option,
             first_prompt: matches!(how, AcpSessionStart::New),
             events: Arc::new(tokio::sync::Mutex::new(receiver)),
         };
@@ -2842,14 +2920,20 @@ impl Engine {
             self.apply_session_starting_options(session, run, &mut live)
                 .await;
         }
-        if !live.options.is_empty() {
+        // v2 gives the session's commands with it, not as a first update.
+        let commands = response
+            .available_commands
+            .as_ref()
+            .map(|commands| commands_of(&serde_json::json!({"availableCommands": commands})));
+        if !live.options.is_empty() || commands.is_some() {
             self.append(
                 session,
                 run,
                 origin(),
                 Event::AcpSessionUpdated {
                     update: AcpSessionUpdate {
-                        options: Some(live.options.clone()),
+                        options: (!live.options.is_empty()).then(|| live.options.clone()),
+                        commands,
                         ..AcpSessionUpdate::default()
                     },
                 },
@@ -2981,69 +3065,37 @@ impl Engine {
         id: &str,
         value: &str,
     ) -> Result<(), String> {
-        if live.modes_as_option && id == "mode" {
-            live.process
-                .peer
-                .request::<_, Value>(
-                    wire::method::SESSION_SET_MODE,
-                    &wire::SetModeRequest {
-                        session_id: &live.acp_session_id,
-                        mode_id: value,
-                    },
-                )
-                .await
-                .map_err(|error| agent_error_message(&error))?;
-            for option in &mut live.options {
-                if option.id == "mode" {
-                    value.clone_into(&mut option.current_value);
-                }
-            }
-        } else {
-            // A boolean option takes a boolean (`type: boolean`); a select
-            // the value's ID, as ACP v1 sends it.
-            let boolean = live
-                .options
-                .iter()
-                .any(|option| option.id == id && option.kind == AcpConfigOptionKind::Boolean);
-            let request = if boolean {
-                wire::SetConfigOptionRequest {
-                    session_id: &live.acp_session_id,
-                    config_id: id,
-                    value_type: Some("boolean"),
-                    value: Value::Bool(value == "true"),
-                }
+        // A boolean option takes a boolean (`type: boolean`); a select the
+        // value's ID (`type: id`).
+        let boolean = live
+            .options
+            .iter()
+            .any(|option| option.id == id && option.kind == AcpConfigOptionKind::Boolean);
+        let request = wire::SetConfigOptionRequest {
+            session_id: &live.acp_session_id,
+            config_id: id,
+            value_type: if boolean { "boolean" } else { "id" },
+            value: if boolean {
+                Value::Bool(value == "true")
             } else {
-                wire::SetConfigOptionRequest {
-                    session_id: &live.acp_session_id,
-                    config_id: id,
-                    value_type: None,
-                    value: Value::from(value),
-                }
-            };
-            let response = live
-                .process
-                .peer
-                .request::<_, wire::SetConfigOptionResponse>(
-                    wire::method::SESSION_SET_CONFIG_OPTION,
-                    &request,
-                )
-                .await
-                .map_err(|error| agent_error_message(&error))?;
-            match response.config_options {
-                Some(options) => {
-                    let (mut options, _) = options_of(Some(&options), None);
-                    if live.modes_as_option
-                        && let Some(mode) = live.options.iter().find(|option| option.id == "mode")
-                    {
-                        options.push(mode.clone());
-                    }
-                    live.options = options;
-                }
-                None => {
-                    for option in &mut live.options {
-                        if option.id == id {
-                            value.clone_into(&mut option.current_value);
-                        }
+                Value::from(value)
+            },
+        };
+        let response = live
+            .process
+            .peer
+            .request::<_, wire::SetConfigOptionResponse>(
+                wire::method::SESSION_SET_CONFIG_OPTION,
+                &request,
+            )
+            .await
+            .map_err(|error| agent_error_message(&error))?;
+        match response.config_options {
+            Some(options) => live.options = options_of(Some(&options)),
+            None => {
+                for option in &mut live.options {
+                    if option.id == id {
+                        value.clone_into(&mut option.current_value);
                     }
                 }
             }

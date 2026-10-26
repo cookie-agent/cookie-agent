@@ -358,7 +358,7 @@ fn new_sessions(acp: &AcpFixture) -> Vec<serde_json::Value> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_sessions_other_workspaces_are_the_agents_additional_directories() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[]).await;
+    let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let (session, second) = two_workspace_session(&acp).await;
     turn(engine, session, "first", "say hi").await;
@@ -395,7 +395,7 @@ async fn an_agent_without_additional_directories_gets_only_its_cwd() {
 async fn several_attachments_say_where_the_agents_builtin_tools_run() {
     // Every tool hidden: the attachments are listed all the same.
     let document = "---\ndescription: Fixture\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\n";
-    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[("fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let (session, second) = two_workspace_session(&acp).await;
     turn(engine, session, "first", "say hi").await;

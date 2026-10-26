@@ -24,6 +24,7 @@ use super::Engine;
 use crate::runtime_snapshot::RuntimeAgent;
 
 pub(crate) mod compaction;
+mod diff;
 pub(crate) mod elicitation;
 pub(crate) mod lifecycle;
 pub(crate) mod mcp;

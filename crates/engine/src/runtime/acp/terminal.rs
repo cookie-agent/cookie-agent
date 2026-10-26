@@ -1,15 +1,13 @@
-//! The output an ACP agent streams for the commands it runs: the terminal
-//! extension of `_meta` keys that Zed defined and Claude Code's and Codex's
-//! adapters follow once the client advertises
-//! `clientCapabilities._meta.terminal_output`.
+//! The output an ACP agent streams for the commands it runs: its v2
+//! agent-owned terminals.
 //!
-//! A tool call names its terminal in `terminal_info` (`terminal_id`), its
-//! updates carry the output in `terminal_output` or `terminal_output_delta`
-//! (`terminal_id`, `data`), and `terminal_exit` (`exit_code`, `signal`) says
-//! how the command ended. Both output keys carry text to append: Codex sends
-//! each chunk as it is read, Claude Code the whole output once. The client
-//! runs nothing: cookie does not implement `terminal/*`, so `terminal`
-//! stays `false` in its capabilities.
+//! A tool call names its terminal in its content (`type: terminal`,
+//! `terminalId`). `terminal_update` gives the terminal's `command`, an
+//! `output` snapshot (base64 bytes that replace what came before), and,
+//! once it ended, `exitStatus` (`exitCode`, `signal`);
+//! `terminal_output_chunk` appends base64 bytes. Updates can come before
+//! the call names the terminal. The client runs nothing: v2 has no client
+//! terminals.
 //!
 //! Cookie shows the output as its own `bash` tool shows a command's: a
 //! `terminal` display block that grows while the command runs (appends to
@@ -27,18 +25,17 @@ use serde_json::Value;
 use super::super::{Engine, output_capture::OutputCapture};
 use crate::{ToolCompletion, ToolProgress, events::OutputHub};
 
-/// How a command ended, as `terminal_exit` said.
+/// How a command ended, as `exitStatus` said.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Exit {
     pub code: Option<i32>,
     pub signal: Option<String>,
 }
 
-/// What one update says about its call's terminal.
+/// What to apply to a call's terminal.
 #[derive(Debug, Default)]
 pub(super) struct TerminalMeta {
-    /// The terminal it names (`terminal_info`, or an output's or exit's
-    /// `terminal_id`).
+    /// The terminal's ID.
     pub id: Option<String>,
     /// Output to append.
     pub output: Option<String>,
@@ -49,51 +46,109 @@ impl TerminalMeta {
     pub fn is_empty(&self) -> bool {
         self.id.is_none() && self.output.is_none() && self.exit.is_none()
     }
-}
 
-/// Reads the terminal keys of an update's `_meta`, and takes the output out
-/// of it, so the call's merged fields do not keep the last chunk.
-pub(super) fn take_meta(meta: &mut Option<Value>) -> TerminalMeta {
-    let Some(Value::Object(meta)) = meta else {
-        return TerminalMeta::default();
-    };
-    let id_of = |value: &Value| {
-        value
-            .get("terminal_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned)
-    };
-    let mut terminal = TerminalMeta::default();
-    if let Some(info) = meta.get("terminal_info") {
-        terminal.id = id_of(info);
-    }
-    for key in ["terminal_output", "terminal_output_delta"] {
-        if let Some(output) = meta.remove(key) {
-            terminal.id = terminal.id.take().or_else(|| id_of(&output));
-            if let Some(data) = output.get("data").and_then(Value::as_str) {
-                terminal
-                    .output
-                    .get_or_insert_with(String::new)
-                    .push_str(data);
-            }
+    /// Adds `later` to what is waiting: its output after this one's, its
+    /// exit in place of this one's.
+    pub fn absorb(&mut self, later: Self) {
+        self.id = later.id.or(self.id.take());
+        if let Some(output) = later.output {
+            self.output
+                .get_or_insert_with(String::new)
+                .push_str(&output);
+        }
+        if later.exit.is_some() {
+            self.exit = later.exit;
         }
     }
-    if let Some(exit) = meta.get("terminal_exit") {
-        terminal.id = terminal.id.take().or_else(|| id_of(exit));
-        terminal.exit = Some(Exit {
-            code: exit
-                .get("exit_code")
-                .and_then(Value::as_i64)
-                .and_then(|code| i32::try_from(code).ok()),
-            signal: exit
-                .get("signal")
-                .and_then(Value::as_str)
-                .filter(|signal| !signal.is_empty())
-                .map(str::to_owned),
-        });
+}
+
+/// What one `terminal_update` or `terminal_output_chunk` says.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct TerminalUpdate {
+    pub id: String,
+    /// The decoded bytes: the whole output so far for a snapshot, else the
+    /// bytes to append.
+    pub output: Option<String>,
+    /// `output` replaces what came before.
+    pub snapshot: bool,
+    pub exit: Option<Exit>,
+}
+
+impl TerminalUpdate {
+    /// Reads update `kind` (`terminal_update` or `terminal_output_chunk`).
+    pub(super) fn read(kind: &str, update: &Value) -> Option<Self> {
+        use base64::Engine as _;
+        let id = update
+            .get("terminalId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())?
+            .to_owned();
+        let decode = |data: &Value| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data.as_str()?)
+                .ok()?;
+            Some(String::from_utf8_lossy(&bytes).into_owned())
+        };
+        match kind {
+            "terminal_output_chunk" => Some(Self {
+                id,
+                output: update.get("data").and_then(decode),
+                snapshot: false,
+                exit: None,
+            }),
+            "terminal_update" => Some(Self {
+                id,
+                output: update
+                    .get("output")
+                    .and_then(|output| output.get("data"))
+                    .and_then(decode),
+                snapshot: true,
+                exit: update
+                    .get("exitStatus")
+                    .filter(|exit| exit.is_object())
+                    .map(|exit| Exit {
+                        code: exit
+                            .get("exitCode")
+                            .and_then(Value::as_i64)
+                            .and_then(|code| i32::try_from(code).ok()),
+                        signal: exit
+                            .get("signal")
+                            .and_then(Value::as_str)
+                            .filter(|signal| !signal.is_empty())
+                            .map(str::to_owned),
+                    }),
+            }),
+            _ => None,
+        }
     }
-    terminal
+
+    /// What to apply, given that `written` bytes of output came before: a
+    /// snapshot adds only what extends them.
+    pub(super) fn meta(self, written: usize) -> TerminalMeta {
+        let output = match self.output {
+            Some(output) if self.snapshot => output
+                .get(written..)
+                .filter(|added| !added.is_empty())
+                .map(str::to_owned),
+            output => output.filter(|output| !output.is_empty()),
+        };
+        TerminalMeta {
+            id: Some(self.id),
+            output,
+            exit: self.exit,
+        }
+    }
+}
+
+/// The terminal a tool call's content names.
+pub(super) fn named(content: Option<&Vec<Value>>) -> Option<String> {
+    content?.iter().find_map(|item| {
+        (item.get("type").and_then(Value::as_str) == Some("terminal"))
+            .then(|| item.get("terminalId").and_then(Value::as_str))
+            .flatten()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    })
 }
 
 /// The output a call's terminal shows, up to the display budget.
@@ -339,34 +394,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_meta_keys_name_the_terminal_and_carry_output_and_exit() {
-        let mut meta = Some(serde_json::json!({
-            "terminal_info": {"terminal_id": "t1", "cwd": "/work"},
-            "terminal_output_delta": {"terminal_id": "t1", "data": "one\n"},
-            "terminal_exit": {"terminal_id": "t1", "exit_code": 2, "signal": null},
-            "claudeCode": {"toolName": "Bash"},
-        }));
-        let terminal = take_meta(&mut meta);
-        assert_eq!(terminal.id.as_deref(), Some("t1"));
-        assert_eq!(terminal.output.as_deref(), Some("one\n"));
+    fn terminal_updates_carry_snapshots_chunks_and_the_exit() {
+        let update = TerminalUpdate::read(
+            "terminal_update",
+            &serde_json::json!({
+                "terminalId": "t1", "command": "make",
+                "output": {"data": "b25lCnR3bwo="},
+                "exitStatus": {"exitCode": 2, "signal": null},
+            }),
+        )
+        .unwrap();
+        assert!(update.snapshot);
+        assert_eq!(update.output.as_deref(), Some("one\ntwo\n"));
+        // A snapshot adds only what extends the output already shown.
+        let meta = update.meta(4);
+        assert_eq!(meta.output.as_deref(), Some("two\n"));
         assert_eq!(
-            terminal.exit,
+            meta.exit,
             Some(Exit {
                 code: Some(2),
                 signal: None
             })
         );
-        // The output leaves the fields; the rest stays.
-        let meta = meta.unwrap();
-        assert!(meta.get("terminal_output_delta").is_none());
-        assert_eq!(meta["claudeCode"]["toolName"], "Bash");
+        let chunk = TerminalUpdate::read(
+            "terminal_output_chunk",
+            &serde_json::json!({"terminalId": "t1", "data": "dGhyZWUK"}),
+        )
+        .unwrap();
+        assert_eq!(chunk.meta(100).output.as_deref(), Some("three\n"));
+        assert_eq!(
+            TerminalUpdate::read("terminal_update", &serde_json::json!({})),
+            None,
+            "a terminal needs its ID"
+        );
     }
 
     #[test]
-    fn an_update_without_terminal_keys_says_nothing() {
-        let mut meta = Some(serde_json::json!({"claudeCode": {"toolName": "Read"}}));
-        assert!(take_meta(&mut meta).is_empty());
-        assert!(take_meta(&mut None).is_empty());
+    fn a_call_names_its_terminal_in_its_content() {
+        let content = vec![
+            serde_json::json!({"type": "content", "content": {"type": "text", "text": "x"}}),
+            serde_json::json!({"type": "terminal", "terminalId": "t9"}),
+        ];
+        assert_eq!(named(Some(&content)).as_deref(), Some("t9"));
+        assert_eq!(named(None), None);
     }
 
     #[test]

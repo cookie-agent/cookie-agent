@@ -1,9 +1,10 @@
 # ACP agents
 
-External coding agents, such as Claude Code, Codex, and Gemini CLI, can take
+External coding agents, such as Claude Code and Codex, can take
 a session's turns, or a subagent's, as cookie agents. Cookie drives them over
 the [Agent Client Protocol](https://agentclientprotocol.com) (ACP): cookie is
-the ACP client, the external agent the ACP agent. The agent keeps its own
+the ACP client, the external agent the ACP agent. Cookie speaks ACP version
+2 only. The agent keeps its own
 conversation, model, file tools, and shell; cookie renders its turns, decides
 its permission requests with your rules, offers it cookie's own tools (memory,
 cron, delegation, MCP servers), and keeps the session's history as for any
@@ -14,21 +15,26 @@ daemon starts over ssh, or a runtime that dials in, such as one on a lab
 machine or the one a TUI or web client offers. The runtime starts the agent on
 its own machine, with that machine's credentials, and relays its messages to
 the daemon over the runtime connection; the agent's host needs no route to the
-daemon. The [ACP agents spec](../specs/acp-agents.md) has the design.
+daemon. The [ACP agents spec](../specs/acp-agents.md) has the design, and
+[ACP v2](../specs/acp-v2.md) the port to version 2.
 
 ## Before you start
 
 On the machine that runs the agent:
 
 - Install the agent and log in to it there, as you would to use it in a
-  terminal: `claude` and its `/login`, `codex login`, or `gemini` and its
-  sign-in. Cookie runs no login flow; it uses the credentials already on that
-  machine.
+  terminal: `claude` and its `/login`, or `codex login`. Cookie runs no
+  login flow; it uses the credentials already on that machine.
 - Install its ACP adapter, or let `npx` fetch it: Claude Code speaks ACP
-  through `@agentclientprotocol/claude-agent-acp`, Codex through
-  `@agentclientprotocol/codex-acp`, and Gemini CLI natively with
-  `gemini --acp`. `npx` needs Node.js on that machine's `PATH`, as the
-  runtime sees it.
+  through `@agentclientprotocol/claude-agent-acp`, and Codex through
+  `@agentclientprotocol/codex-acp`. Both speak ACP v2. `npx` needs Node.js on
+  that machine's `PATH`, as the runtime sees it.
+- **ACP v2 only.** An agent that answers `initialize` with version 1 is
+  refused, and its runs fail with `` <agent> speaks ACP v1; cookie needs ACP
+  v2. Update its adapter, or start it in v2 mode ``. Gemini CLI's
+  `gemini --acp` may speak only v1; Claude Code's adapter serves both and
+  can be pinned to v2 with `CLAUDE_AGENT_ACP_PROTOCOL=v2` in the
+  declaration's `env`.
 - `cookie` must be on that machine: the MCP bridge that offers cookie's tools
   to the agent is `cookie runtime mcp-bridge`. A runtime always has it, since
   it is `cookie runtime`.
@@ -46,13 +52,9 @@ description = "Claude Code"
 [runtimes.local.acp.agents.codex]
 command = ["npx", "-y", "@agentclientprotocol/codex-acp"]
 description = "Codex"
-
-[runtimes.local.acp.agents.gemini]
-command = ["gemini", "--acp"]
-description = "Gemini CLI"
 ```
 
-The daemon lists them as `claude`, `codex`, and `gemini`, the keys of their
+The daemon lists them as `claude` and `codex`, the keys of their
 declarations, as soon as the configuration is applied: a changed `acp`
 table reaches its runtime at once. Pick one in the agent picker of the TUI (`/agent`) or the
 web client (the agent chip) for a new session, and send a message: the daemon starts the
@@ -241,7 +243,7 @@ You review the change you are given and report findings; you do not edit.
   `claude` declaration is ignored.
 - **One process.** The documents over a declaration share its agent process
   on each runtime, each cookie session with its own ACP session, and share
-  what the agent offered there (its models, modes, and options in the
+  what the agent offered there (its models and options in the
   pickers). Switching a session to another document starts a new ACP
   session, and so does changing a document's `acp.agent`.
 - **`command` and `env` stay with the declaration**, so documents cannot
@@ -343,9 +345,9 @@ change the session's:
 
 - **Fork.** A fork of the session gets its own agent conversation: at its
   first turn cookie asks the agent to fork the source's (`session/fork`),
-  and the source keeps its own. An agent without `session/fork` (Gemini
-  CLI) cannot be forked after its first reply; the fork is refused with
-  `` `gemini` on `local` can't fork its own conversation ``. A fork at an
+  and the source keeps its own. An agent without `session/fork` cannot be
+  forked after its first reply; the fork is refused with
+  `` `<agent>` on `local` can't fork its own conversation ``. A fork at an
   earlier point than the end of the agent's conversation also needs its
   fork to start at a given message (below). An agent whose fork cannot
   start at a given message is asked to fork as you fork the session, so
@@ -357,8 +359,8 @@ change the session's:
   agent must fork at a given message: cookie names it with JetBrains AIR's
   fork point, which Claude Code's and Codex's adapters read. Cookie checks
   whether the agent does once per agent process, after its first reply in
-  a run; until then, and for an agent that does not (Gemini CLI, or one
-  whose fork ignores the fork point), a revert past the agent's first reply
+  a run; until then, and for an agent that does not (one without
+  `session/fork`, or whose fork ignores the fork point), a revert past the agent's first reply
   is refused with `` `claude` on `local` can't rewind its own conversation ``
   (or that cookie has not checked yet). A revert to before the agent's
   first reply always works: the next turn starts a new agent conversation.
@@ -477,7 +479,7 @@ not in it.
   note in the transcript. Before the agent has started a session on that
   runtime, there is nothing to offer yet: send a first message.
 - **Attachments.** Files go to the agent as it takes them: images to an
-  agent that takes images, audio to one that takes audio (Gemini CLI), and
+  agent that takes images, audio to one that takes audio, and
   text files, up to 1 MiB, as embedded context to one that takes it
   (Claude Code and Codex do). The composers offer attaching once the
   agent has started on that runtime and check files against what it
@@ -509,27 +511,21 @@ not in it.
   model generates does; cookie keeps them with the session.
 - **Command output.** A command the agent runs shows its output as cookie's
   own `bash` calls do: in a terminal block that grows while the command
-  runs (Codex streams it; Claude Code sends it when the command ends), with
-  the exit code once it ends. The output is kept with the call, and what
-  does not fit the preview is kept as an artifact. Cookie asks Claude Code's
-  and Codex's adapters for it (`clientCapabilities._meta.terminal_output`);
-  the agent still runs its commands itself.
+  runs (the agent's ACP terminal, as it streams its output or sends it
+  whole), with the exit code once it ends. The output is kept with the
+  call, and what does not fit the preview is kept as an artifact. The agent
+  runs its commands itself.
 - **Notices.** What the agent flags for you (a rate limit, a retry, a
   compaction of its conversation with its summary) shows as a notice in the
-  transcript, colored by how much it matters. Cookie asks agents for
-  notices and compaction updates (`session.notices` and
-  `session.compaction`), so they do not arrive as message text.
+  transcript, colored by how much it matters.
 - **Steering.** A message you send while the agent works goes into its
-  running turn when the agent supports steering (it advertises the
-  steering extension, as Claude Code's adapter and Codex's do): the agent
-  reads it at its next step. Until the agent takes it, the message waits in
+  running work: cookie sends it as a prompt during the work, and the agent
+  takes it in at its next step. Until the agent takes it, the message waits in
   the pending strip, where any client can take it back; once taken, it
   shows in the transcript where the turn stood, as a steered message does
   for cookie's own agents. A message the agent declines keeps waiting and
   goes with its next turn. A scheduled job set to `steer` and a subagent's
-  report arrive the same way. An agent without it takes the message with its next turn: the
-  web client's Steer button then reads "Queue (this agent can't be
-  steered)", and the TUI's pending strip says the agent can't be steered.
+  report arrive the same way.
 - **Questions.** A question from the agent (see [Questions from the
   agent](#questions-from-the-agent)) docks a panel above the TUI's status
   bar, titled `<agent> asks · waiting on you`: Tab moves between the fields
@@ -542,7 +538,7 @@ not in it.
 - **Compaction.** `/compact` (in the TUI, the web's compaction action)
   runs the agent's own `compact` command when it offers one (Claude Code
   does), with the focus you give; otherwise it is refused with
-  `` `gemini` does not offer compaction ``. Cookie never compacts an ACP
+  `` `<agent>` does not offer compaction ``. Cookie never compacts an ACP
   agent's conversation on its own; the agent does, and its compaction
   shows as a notice.
 - **Titles.** The agent's own title names the session, and each new one
@@ -610,8 +606,11 @@ note.
   rule names an agent no runtime has reported; see
   [Delegating to an ACP agent](#delegating-to-an-acp-agent).
 - **A steered message arrives after the turn.** The agent took it with its
-  next turn: either it cannot be steered, or its turn had already ended
-  when the message reached it.
+  next turn: it declined to take it into its running work, or its work had
+  already ended when the message reached it.
+- **"speaks ACP v1; cookie needs ACP v2".** The agent's adapter answered
+  `initialize` with version 1. Update the adapter, or start it in its v2
+  mode (Claude Code's: `CLAUDE_AGENT_ACP_PROTOCOL=v2`).
 - **"can't rewind its own conversation" or "can't fork its own
   conversation".** The agent cannot fork its conversation where the
   revert or the fork would cut it (see

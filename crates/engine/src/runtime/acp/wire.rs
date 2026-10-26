@@ -1,5 +1,6 @@
 //! The Agent Client Protocol messages the engine sends and reads
-//! (`docs/site/specs/acp-agents.md` section 2): version 1, JSON-RPC 2.0.
+//! (`docs/site/specs/acp-v2.md`): version 2, JSON-RPC 2.0. Cookie speaks
+//! no other version.
 //!
 //! Only what the engine uses is modelled. Everything an agent sends is read
 //! tolerantly: unknown members are ignored, and an unknown update kind,
@@ -9,80 +10,80 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The ACP version the engine speaks.
-pub(crate) const PROTOCOL_VERSION: u32 = 1;
+pub(crate) const PROTOCOL_VERSION: u32 = 2;
 
 pub(crate) mod method {
     pub(crate) const INITIALIZE: &str = "initialize";
     pub(crate) const SESSION_NEW: &str = "session/new";
-    pub(crate) const SESSION_LOAD: &str = "session/load";
     pub(crate) const SESSION_RESUME: &str = "session/resume";
     pub(crate) const SESSION_CLOSE: &str = "session/close";
-    /// Unstable: gated by `sessionCapabilities.fork`.
+    /// Unstable: gated by `capabilities.session.fork`.
     pub(crate) const SESSION_FORK: &str = "session/fork";
     pub(crate) const SESSION_DELETE: &str = "session/delete";
     pub(crate) const SESSION_PROMPT: &str = "session/prompt";
     pub(crate) const SESSION_CANCEL: &str = "session/cancel";
-    pub(crate) const SESSION_SET_MODE: &str = "session/set_mode";
     pub(crate) const SESSION_SET_CONFIG_OPTION: &str = "session/set_config_option";
     pub(crate) const SESSION_UPDATE: &str = "session/update";
     pub(crate) const SESSION_REQUEST_PERMISSION: &str = "session/request_permission";
-    /// The steering extension: a message into the running turn.
-    pub(crate) const SESSION_STEERING: &str = "_session/steering";
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InitializeRequest {
     pub protocol_version: u32,
-    pub client_capabilities: Value,
-    pub client_info: Value,
+    pub info: Value,
+    pub capabilities: Value,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct InitializeResponse {
     pub protocol_version: u32,
-    pub agent_capabilities: AgentCapabilities,
-    pub agent_info: Value,
-    /// The response's own `_meta`, where agents advertise extensions such
-    /// as `steering`.
+    pub info: Value,
+    pub capabilities: AgentCapabilities,
+    /// The response's own `_meta`.
     #[serde(rename = "_meta")]
     pub meta: Value,
 }
 
-impl InitializeResponse {
-    /// Whether the agent accepts [`method::SESSION_STEERING`] for a running
-    /// turn: `_meta.steering.supported` is `true` (the steering extension of
-    /// Claude Code's and Codex's adapters).
-    pub(crate) fn steering(&self) -> bool {
-        self.meta
-            .pointer("/steering/supported")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    }
-}
-
+/// What the agent offers (`capabilities` of its `initialize` answer).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct AgentCapabilities {
-    pub load_session: bool,
-    pub prompt_capabilities: PromptCapabilities,
-    pub session_capabilities: Value,
+    /// `capabilities.session`: `prompt`, `mcp`, `delete`, `fork`,
+    /// `additionalDirectories`, `systemPrompt`. `session/new`, `resume`,
+    /// `close`, `prompt`, and `cancel` are every v2 agent's.
+    pub session: Value,
 }
 
 impl AgentCapabilities {
     /// Whether the agent offers session capability `name`
-    /// (`sessionCapabilities.<name>` present and not `false`).
+    /// (`capabilities.session.<name>` present and not `null` or `false`).
     pub(crate) fn session(&self, name: &str) -> bool {
-        self.session_capabilities
-            .get(name)
-            .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
+        present(self.session.get(name))
+    }
+
+    /// What the agent takes in a prompt besides text and resource links
+    /// (`capabilities.session.prompt`).
+    pub(crate) fn prompt(&self) -> PromptCapabilities {
+        let prompt = self.session.get("prompt");
+        let offers = |kind: &str| present(prompt.and_then(|prompt| prompt.get(kind)));
+        PromptCapabilities {
+            image: offers("image"),
+            audio: offers("audio"),
+            embedded_context: offers("embeddedContext"),
+        }
     }
 }
 
+/// A v2 capability marker: an object (`{}` included) offers it; absent,
+/// `null`, or `false` does not.
+fn present(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
+}
+
 /// What the agent takes in a prompt besides text and resource links.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct PromptCapabilities {
     pub image: bool,
     pub audio: bool,
@@ -90,9 +91,12 @@ pub(crate) struct PromptCapabilities {
     pub embedded_context: bool,
 }
 
-/// One stdio MCP server handed to the agent.
+/// One stdio MCP server handed to the agent (`type: stdio`; `command` an
+/// absolute path).
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct McpServer {
+    #[serde(rename = "type")]
+    pub transport: &'static str,
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
@@ -110,7 +114,8 @@ pub(crate) struct NewSessionRequest<'a> {
     pub mcp_servers: &'a [McpServer],
 }
 
-/// `session/resume` and `session/load`.
+/// `session/resume`, without a replay: the agent keeps its own history and
+/// cookie never shows it again.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExistingSessionRequest<'a> {
@@ -148,29 +153,14 @@ pub(crate) fn air_fork_point(message_id: &str) -> Value {
     })
 }
 
-/// What `session/new`, `session/load`, `session/resume`, and
-/// `session/fork` answer.
+/// What `session/new`, `session/resume`, and `session/fork` answer. The
+/// session's commands come here rather than as a first update.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct SessionResponse {
     pub session_id: Option<String>,
-    pub modes: Option<SessionModes>,
     pub config_options: Option<Vec<Value>>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub(crate) struct SessionModes {
-    pub current_mode_id: String,
-    pub available_modes: Vec<SessionMode>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub(crate) struct SessionMode {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
+    pub available_commands: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -186,18 +176,13 @@ pub(crate) struct PromptRequest<'a> {
     pub prompt: &'a [Value],
 }
 
+/// What `session/prompt` answers: the prompt was inserted into the
+/// conversation as the user message `message_id`. The work it starts is
+/// reported by `state_update`s.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PromptResponse {
-    pub stop_reason: String,
-    pub usage: Option<Value>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SetModeRequest<'a> {
-    pub session_id: &'a str,
-    pub mode_id: &'a str,
+    pub message_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -205,10 +190,10 @@ pub(crate) struct SetModeRequest<'a> {
 pub(crate) struct SetConfigOptionRequest<'a> {
     pub session_id: &'a str,
     pub config_id: &'a str,
-    /// `boolean` for a boolean option's value; left out for a select's,
-    /// whose value is the chosen value's ID.
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub value_type: Option<&'a str>,
+    /// `boolean` for a boolean option's value, `id` for a select's, whose
+    /// value is the chosen value's ID.
+    #[serde(rename = "type")]
+    pub value_type: &'a str,
     pub value: Value,
 }
 
@@ -216,27 +201,6 @@ pub(crate) struct SetConfigOptionRequest<'a> {
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct SetConfigOptionResponse {
     pub config_options: Option<Vec<Value>>,
-}
-
-/// `_session/steering`: `prompt` into the running turn. `idleBehavior:
-/// promptRequired` asks an agent with no turn running to answer
-/// `promptRequired` rather than start a turn of its own; an agent that does
-/// not know it starts one (`startedNewTurn`).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SteeringRequest<'a> {
-    pub session_id: &'a str,
-    pub prompt: &'a [Value],
-    #[serde(rename = "_meta")]
-    pub meta: Value,
-}
-
-/// What `_session/steering` answers: `injected`, `promptRequired`,
-/// `startedNewTurn`, or (Codex) `failed`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub(crate) struct SteeringResponse {
-    pub outcome: String,
 }
 
 /// `session/update`.
@@ -247,15 +211,45 @@ pub(crate) struct SessionNotification {
     pub update: Value,
 }
 
-/// `session/request_permission`.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// `session/request_permission`, with its subject's tool call (a
+/// `tool_call` subject) read into [`Self::tool_call`].
+#[derive(Clone, Debug)]
 pub(crate) struct PermissionRequest {
     pub session_id: String,
-    #[serde(default)]
+    /// What the request asks, in the agent's words for the user.
+    pub title: Option<String>,
+    /// The tool call it asks about; empty for another subject.
     pub tool_call: ToolCallFields,
-    #[serde(default)]
     pub options: Vec<PermissionOption>,
+}
+
+impl<'de> Deserialize<'de> for PermissionRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            session_id: String,
+            #[serde(default)]
+            title: String,
+            #[serde(default)]
+            subject: Option<Value>,
+            #[serde(default)]
+            options: Vec<PermissionOption>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let tool_call: ToolCallFields = wire
+            .subject
+            .filter(|subject| subject.get("type").and_then(Value::as_str) == Some("tool_call"))
+            .and_then(|subject| subject.get("toolCall").cloned())
+            .and_then(|call| serde_json::from_value(call).ok())
+            .unwrap_or_default();
+        Ok(Self {
+            session_id: wire.session_id,
+            title: Some(wire.title).filter(|title| !title.trim().is_empty()),
+            tool_call,
+            options: wire.options,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -277,12 +271,14 @@ pub(crate) fn permission_outcome(option: Option<&str>) -> Value {
     }
 }
 
-/// The fields of a `tool_call`, a `tool_call_update`, and a permission
-/// request's tool call; every one but the ID optional.
+/// The fields of a `tool_call_update`, which upserts a call, and of a
+/// permission request's tool call; every one but the ID optional.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct ToolCallFields {
     pub tool_call_id: String,
+    /// The tool's own name, such as `mcp__cookie__memory_read`.
+    pub name: Option<String>,
     pub title: Option<String>,
     pub kind: Option<String>,
     pub status: Option<String>,
@@ -297,13 +293,17 @@ pub(crate) struct ToolCallFields {
 }
 
 impl ToolCallFields {
-    /// The tool's own name, when the agent's `_meta` gives one (Claude
-    /// Code's adapter: `claudeCode.toolName`).
+    /// The tool's own name: the call's `name`, else Claude Code's
+    /// `_meta.claudeCode.toolName`.
     pub(crate) fn tool_name(&self) -> Option<&str> {
-        self.meta
-            .as_ref()?
-            .pointer("/claudeCode/toolName")
-            .and_then(Value::as_str)
+        self.name
+            .as_deref()
+            .or_else(|| {
+                self.meta
+                    .as_ref()?
+                    .pointer("/claudeCode/toolName")
+                    .and_then(Value::as_str)
+            })
             .filter(|name| !name.trim().is_empty())
     }
 }

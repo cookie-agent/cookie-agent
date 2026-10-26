@@ -1,5 +1,10 @@
-"""A scripted ACP agent for cookie's tests: ACP v1 over stdio, one JSON-RPC
+"""A scripted ACP agent for cookie's tests: ACP v2 over stdio, one JSON-RPC
 message per line.
+
+A prompt is answered once it is inserted (its `user_message` echo, then the
+`messageId`); its work is reported between `state_update` `running` and
+`idle`, which carries the stop reason and usage. A prompt sent while a prompt's
+work runs is a steer: it is inserted into that work.
 
 Each prompt's last text block is a command:
 
@@ -10,8 +15,8 @@ Each prompt's last text block is a command:
                          prompt that is not a command
   work                   a thought, an edit tool call with a diff, a plan, usage
                          (the same usage_update twice)
-  stop <reason>          answers with stop reason <reason> and usage (40 input
-                         and 2 output tokens)
+  stop <reason>          ends its work with stop reason <reason> and usage (40
+                         input and 2 output tokens)
   permission <kind> <r>  asks permission for a call of ACP kind <kind> on <r>
                          (a path, a command, or a URL) and says the outcome
   permission-tool <kind> <title>
@@ -25,23 +30,23 @@ Each prompt's last text block is a command:
                          waits for session/cancel
   ask-wait <kind> <r>    asks permission and waits for session/cancel
   exit                   exits with status 3 after writing to stderr
-  error                  fails the prompt with an authentication error
+  error                  ends its work with stop reason `error` and an
+                         authentication error
   title <text>           reports session title <text>
-  terminal               two execute calls with terminal output when the client
-                         advertised `_meta.terminal_output` (else the output as
-                         text content): one as Codex sends it (chunks, then
-                         exit 3, failed), one as Claude Code does (the whole
-                         output once, then exit 0, completed)
+  terminal               two execute calls with agent terminals: one with its
+                         output in chunks, then exit 3, failed; one with the
+                         whole output as a snapshot with exit 0, completed
   picture                answers text, an image, and more text
-  mode-switch <mode>     switches its own mode to <mode> (current_mode_update),
-                         as Claude Code does when it leaves plan mode
+  mode-switch <mode>     switches its own mode option to <mode>
+                         (config_option_update), as Claude Code does when it
+                         leaves plan mode
   late-input             a tool call whose title, kind, and raw input arrive in a
                          later update (as Claude Code's adapter sends them), with
                          text, image, and resource-link content and raw output
   notices                a warning notice, then a compaction with a streamed
                          summary
   steer-wait [<s>]       says "waiting", then waits (up to <s>, else 10 s) for a message
-                         steered into the turn and answers "steered: <texts>",
+                         steered into its work and answers "steered: <texts>",
                          or "no steer"; session/cancel ends it as cancelled
   recall                 answers "remembers: " and the commands of the session's
                          earlier prompts, joined by ", " (a forked session
@@ -59,16 +64,14 @@ Each prompt's last text block is a command:
   mcp miss <tool>        reports a call of one of cookie's tools that fails
                          before it reaches the bridge
 
-Its config options are `mode` (unless ACP_FIXTURE_MODES), `model`, and `fast`, a
-boolean when the client takes boolean options (else an on/off select).
+Its config options are `mode`, `model`, `fast` (a boolean), and
+`reasoning_effort`.
 
 Environment:
 
   ACP_FIXTURE_LOG        a file every message received is appended to
-  ACP_FIXTURE_RESUME     "1": offers session/resume
-  ACP_FIXTURE_LOAD       "1": offers session/load (and replays on load)
-  ACP_FIXTURE_LOST       "1": refuses to resume or load any session
-  ACP_FIXTURE_MODES      "1": offers modes instead of a mode config option
+  ACP_FIXTURE_V1         "1": answers `initialize` with protocol version 1
+  ACP_FIXTURE_LOST       "1": refuses to resume any session
   ACP_FIXTURE_NO_AUTO    "1": offers no `auto` mode
   ACP_FIXTURE_PID_FILE   a file the process ID is written to
   ACP_FIXTURE_CHILD_PID_FILE
@@ -91,13 +94,11 @@ Environment:
   ACP_FIXTURE_IMAGE_ONLY "1": takes images but no audio or embedded context in a
                          prompt, and no additional directories (by default it
                          advertises all of them)
-  ACP_FIXTURE_STEERING   "1": advertises the steering extension
-                         (`_meta.steering.supported`) and serves
-                         `_session/steering` as Claude Code's adapter does;
-                         "decline": advertises it and answers `failed` to
-                         every steer into a running turn
+  ACP_FIXTURE_DECLINE_STEERS
+                         "1": refuses a prompt sent while its work runs
 """
 
+import base64
 import json
 import os
 import socket
@@ -155,10 +156,14 @@ def update(session_id, body):
     send({"method": "session/update", "params": {"sessionId": session_id, "update": body}})
 
 
-def say(session_id, text):
+def next_message_id(prefix="msg"):
     with state_lock:
         message_count[0] += 1
-        message_id = f"msg-{message_count[0]}"
+        return f"{prefix}-{message_count[0]}"
+
+
+def say(session_id, text):
+    message_id = next_message_id()
     session = sessions.get(session_id)
     if session is not None:
         session.setdefault("history", []).append({"role": "agent", "text": text, "messageId": message_id})
@@ -175,65 +180,71 @@ def new_session_id():
 
 
 def env(name):
-    return os.environ.get(name) in ("1", "decline")
-
-
-def declines_steers():
-    return os.environ.get("ACP_FIXTURE_STEERING") == "decline"
+    return os.environ.get(name) == "1"
 
 
 def options(session):
-    result = []
-    if not env("ACP_FIXTURE_MODES"):
-        modes = [{"value": "default", "name": "Default"}, {"value": "plan", "name": "Plan"}]
-        if not env("ACP_FIXTURE_NO_AUTO"):
-            modes.append({"value": "auto", "name": "Auto"})
-        result.append({
-            "id": "mode", "name": "Mode", "category": "mode", "type": "select",
-            "currentValue": session["mode"], "options": modes,
-        })
+    modes = [{"value": "default", "name": "Default"}, {"value": "plan", "name": "Plan"}]
+    if not env("ACP_FIXTURE_NO_AUTO"):
+        modes.append({"value": "auto", "name": "Auto"})
+    result = [{
+        "configId": "mode", "name": "Mode", "category": "mode", "type": "select",
+        "currentValue": session["mode"], "options": modes,
+    }]
     result.append({
-        "id": "model", "name": "Model", "category": "model", "type": "select",
+        "configId": "model", "name": "Model", "category": "model", "type": "select",
         "currentValue": session["model"],
         "options": [{"value": "small", "name": "Small"}, {"value": "large", "name": "Large"}],
     })
-    # As Claude Code's fast mode: a boolean for a client that takes them,
-    # else an on/off select.
-    fast = {"id": "fast", "name": "Fast mode", "category": "model_config"}
-    if client_capabilities.get("session", {}).get("configOptions", {}).get("boolean") is not None:
-        fast.update({"type": "boolean", "currentValue": session.get("fast", False)})
-    else:
-        fast.update({
-            "type": "select", "currentValue": "on" if session.get("fast") else "off",
-            "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}],
-        })
-    result.append(fast)
+    # As Claude Code's fast mode: a boolean, which every v2 client takes.
     result.append({
-        "id": "reasoning_effort", "name": "Reasoning", "category": "thought_level", "type": "select",
+        "configId": "fast", "name": "Fast mode", "category": "model_config",
+        "type": "boolean", "currentValue": session.get("fast", False),
+    })
+    result.append({
+        "configId": "reasoning_effort", "name": "Reasoning", "category": "thought_level", "type": "select",
         "currentValue": session.get("reasoning_effort", "low"),
         "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}],
     })
     return result
 
 
+def commands():
+    listed = [{"name": "review", "description": "Review the changes",
+               "input": {"type": "text", "hint": "what to review"}}]
+    if not env("ACP_FIXTURE_NO_COMPACT"):
+        listed.append({"name": "compact", "description": "Compact the conversation"})
+    return listed
+
+
 def session_result(session_id, include_id):
+    # v2 gives the session's commands with it, as Claude Code's adapter does.
     session = sessions[session_id]
-    result = {"configOptions": options(session)}
+    result = {"configOptions": options(session), "availableCommands": commands()}
     if include_id:
         result["sessionId"] = session_id
-    if env("ACP_FIXTURE_MODES"):
-        modes = [{"id": "default", "name": "Default"}, {"id": "plan", "name": "Plan"}]
-        if not env("ACP_FIXTURE_NO_AUTO"):
-            modes.append({"id": "auto", "name": "Auto"})
-        result["modes"] = {"currentModeId": session["mode"], "availableModes": modes}
     return result
 
 
-def announce_commands(session_id):
-    commands = [{"name": "review", "description": "Review the changes", "input": {"hint": "what to review"}}]
-    if not env("ACP_FIXTURE_NO_COMPACT"):
-        commands.append({"name": "compact", "description": "Compact the conversation"})
-    update(session_id, {"sessionUpdate": "available_commands_update", "availableCommands": commands})
+def state(session_id, name, **fields):
+    update(session_id, {"sessionUpdate": "state_update", "state": name, **fields})
+
+
+def finish(session_id, reason, usage=None, error=None):
+    """Ends the session's work: `idle` with the stop reason. A prompt after
+    it starts work of its own rather than steering this."""
+    with state_lock:
+        running[session_id] = False
+    fields = {"stopReason": reason}
+    if usage is not None:
+        fields["usage"] = usage
+    if error is not None:
+        fields["error"] = error
+    state(session_id, "idle", **fields)
+
+
+def tool_call(session_id, call):
+    update(session_id, {"sessionUpdate": "tool_call_update", **call})
 
 
 def bridge(session):
@@ -282,16 +293,14 @@ def permission(session_id, call_id, kind, resource, title=None, raw=None):
         raw = {"execute": {"command": resource}, "fetch": {"url": resource}}.get(kind, {"path": resource})
         title = f"{kind} {resource}"
     locations = [{"path": resource}] if resource and kind in ("read", "edit", "delete", "move", "search") else []
-    call = {
-        "sessionUpdate": "tool_call", "toolCallId": call_id, "title": title,
-        "kind": kind, "status": "pending", "locations": locations,
-    }
+    call = {"toolCallId": call_id, "title": title, "kind": kind, "status": "pending", "locations": locations}
     if raw is not None:
         call["rawInput"] = raw
-    update(session_id, call)
+    tool_call(session_id, call)
     answer = request("session/request_permission", {
         "sessionId": session_id,
-        "toolCall": {"toolCallId": call_id},
+        "title": f"Allow {title}?",
+        "subject": {"type": "tool_call", "toolCall": {"toolCallId": call_id}},
         "options": [
             {"optionId": "yes-always", "name": "Always allow", "kind": "allow_always"},
             {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
@@ -305,54 +314,38 @@ def permission(session_id, call_id, kind, resource, title=None, raw=None):
     return "cancelled"
 
 
+def b64(text):
+    return base64.b64encode(text.encode()).decode()
+
+
 def terminal_calls(session_id):
-    streams = client_capabilities.get("_meta", {}).get("terminal_output") is True
-    # As Codex: the terminal named from the start, output in chunks.
-    meta = {"terminal_info": {"terminal_id": "term-codex", "cwd": "/work"}} if streams else None
-    call = {
-        "sessionUpdate": "tool_call", "toolCallId": "call-codex", "title": "make test",
-        "kind": "execute", "status": "in_progress", "rawInput": {"command": "make test"},
-        "content": [{"type": "terminal", "terminalId": "term-codex"}] if streams else [],
-    }
-    if meta:
-        call["_meta"] = meta
-    update(session_id, call)
-    if streams:
-        for chunk in ["building\n", "\u001b[31mFAILED\u001b[0m 1 test\n"]:
-            update(session_id, {
-                "sessionUpdate": "tool_call_update", "toolCallId": "call-codex",
-                "_meta": {"terminal_output": {"terminal_id": "term-codex", "data": chunk}},
-            })
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": "call-codex", "status": "failed",
-            "_meta": {"terminal_exit": {"terminal_id": "term-codex", "exit_code": 3, "signal": None}},
-        })
-    else:
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": "call-codex", "status": "failed",
-            "content": [{"type": "content", "content": {"type": "text", "text": "building\nFAILED 1 test\n"}}],
-        })
-    # As Claude Code: the description first, the whole output once with the
-    # result, then the exit with the status.
-    call = {
-        "sessionUpdate": "tool_call", "toolCallId": "call-claude", "title": "ls",
-        "kind": "execute", "status": "pending", "rawInput": {"command": "ls"},
+    # Output in chunks, as Codex streams it, then the exit and a failure.
+    tool_call(session_id, {
+        "toolCallId": "call-codex", "title": "make test", "kind": "execute", "status": "in_progress",
+        "rawInput": {"command": "make test"},
+        "content": [{"type": "terminal", "terminalId": "term-codex"}],
+    })
+    update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-codex",
+                        "command": "make test", "cwd": "/work"})
+    for chunk in ["building\n", "\u001b[31mFAILED\u001b[0m 1 test\n"]:
+        update(session_id, {"sessionUpdate": "terminal_output_chunk", "terminalId": "term-codex", "data": b64(chunk)})
+    update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-codex",
+                        "exitStatus": {"exitCode": 3}})
+    tool_call(session_id, {"toolCallId": "call-codex", "status": "failed"})
+    # The whole output as a snapshot, which comes before the call names the
+    # terminal, then the exit with the status.
+    tool_call(session_id, {
+        "toolCallId": "call-claude", "title": "ls", "kind": "execute", "status": "pending",
+        "rawInput": {"command": "ls"},
         "content": [{"type": "content", "content": {"type": "text", "text": "List the files"}}],
-    }
-    if streams:
-        call["_meta"] = {"terminal_info": {"terminal_id": "call-claude"}}
-    update(session_id, call)
-    if streams:
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": "call-claude",
-            "_meta": {"terminal_output": {"terminal_id": "call-claude", "data": "notes.txt\n"}},
-        })
-    update(session_id, {
-        "sessionUpdate": "tool_call_update", "toolCallId": "call-claude", "status": "completed",
-        "content": [{"type": "terminal", "terminalId": "call-claude"}] if streams
-        else [{"type": "content", "content": {"type": "text", "text": "notes.txt"}}],
-        "_meta": {"terminal_info": {"terminal_id": "call-claude"},
-                  "terminal_exit": {"terminal_id": "call-claude", "exit_code": 0, "signal": None}} if streams else {},
+    })
+    update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-claude",
+                        "command": "ls", "output": {"data": b64("notes.txt\n")}})
+    update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-claude",
+                        "exitStatus": {"exitCode": 0}})
+    tool_call(session_id, {
+        "toolCallId": "call-claude", "status": "completed",
+        "content": [{"type": "terminal", "terminalId": "term-claude"}],
     })
 
 FORM_SCHEMA = {
@@ -376,10 +369,7 @@ FORM_SCHEMA = {
 def elicit(session_id, session, kind):
     if kind == "form":
         call_id = f"call-ask-{session['turn']}"
-        update(session_id, {
-            "sessionUpdate": "tool_call", "toolCallId": call_id, "title": "AskUserQuestion",
-            "kind": "other", "status": "pending",
-        })
+        tool_call(session_id, {"toolCallId": call_id, "title": "AskUserQuestion", "kind": "other", "status": "pending"})
         params = {"sessionId": session_id, "toolCallId": call_id, "mode": "form",
                   "message": "How should I go?", "requestedSchema": FORM_SCHEMA}
     else:
@@ -402,6 +392,17 @@ def elicit(session_id, session, kind):
     return f"{result.get('action')} {content}"
 
 
+USAGE = {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}
+
+
+def insert(request_id, session_id, params):
+    """Takes a prompt in: its `user_message` echo, then its answer."""
+    message_id = next_message_id("user")
+    update(session_id, {"sessionUpdate": "user_message", "messageId": message_id,
+                        "content": params.get("prompt", [])})
+    respond(request_id, {"messageId": message_id})
+
+
 def prompt(request_id, params):
     session_id = params["sessionId"]
     session = sessions.setdefault(session_id, {"mode": "default", "model": "small", "turn": 0})
@@ -411,10 +412,8 @@ def prompt(request_id, params):
     command = texts[-1] if texts else ""
     word, _, rest = command.partition(" ")
     session.setdefault("history", []).append({"role": "user", "text": command})
-    with state_lock:
-        cancelled[session_id] = False
-        running[session_id] = True
-        steered[session_id] = []
+    insert(request_id, session_id, params)
+    state(session_id, "running")
     try:
         run_command(request_id, session_id, session, word, rest, texts, kinds)
     finally:
@@ -426,25 +425,29 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     if word == "say":
         say(session_id, rest)
     elif word == "think":
-        update(session_id, {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "pondering"}})
+        update(session_id, {"sessionUpdate": "agent_thought_chunk", "messageId": next_message_id("thought"),
+                            "content": {"type": "text", "text": "pondering"}})
         say(session_id, rest)
     elif word == "echo" or not word:
         say(session_id, " | ".join(texts + [k for k in kinds if k != "text"]))
     elif word == "work":
-        update(session_id, {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "planning"}})
+        update(session_id, {"sessionUpdate": "agent_thought_chunk", "messageId": next_message_id("thought"),
+                            "content": {"type": "text", "text": "planning"}})
         say(session_id, "Editing.")
-        update(session_id, {"sessionUpdate": "plan", "entries": [
+        update(session_id, {"sessionUpdate": "plan_update", "plan": {"type": "items", "planId": "plan", "entries": [
             {"content": "Read the file", "priority": "high", "status": "completed"},
             {"content": "Edit the file", "priority": "medium", "status": "in_progress"},
-        ]})
-        update(session_id, {
-            "sessionUpdate": "tool_call", "toolCallId": "call-edit", "title": "Edit notes.txt",
+        ]}})
+        tool_call(session_id, {
+            "toolCallId": "call-edit", "title": "Edit notes.txt",
             "kind": "edit", "status": "in_progress", "locations": [{"path": "/work/notes.txt", "line": 2}],
             "rawInput": {"path": "/work/notes.txt"},
         })
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": "call-edit", "status": "completed",
-            "content": [{"type": "diff", "path": "/work/notes.txt", "oldText": "one\ntwo\n", "newText": "one\n2\n"}],
+        patch = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+2\n"
+        tool_call(session_id, {
+            "toolCallId": "call-edit", "status": "completed",
+            "content": [{"type": "diff", "changes": [{"operation": "modify", "path": "/work/notes.txt"}],
+                         "patch": {"format": "git_patch", "text": patch}}],
             "rawOutput": {"ok": True},
         })
         update(session_id, {"sessionUpdate": "usage_update", "used": 1234, "size": 200000, "cost": {"amount": 0.5, "currency": "USD"}})
@@ -452,17 +455,15 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         update(session_id, {"sessionUpdate": "usage_update", "used": 1234, "size": 200000, "cost": {"amount": 0.5, "currency": "USD"}})
         say(session_id, "Done.")
     elif word == "late-input":
-        update(session_id, {
-            "sessionUpdate": "tool_call", "toolCallId": "call-late", "title": "Tool",
-            "kind": "other", "status": "pending", "_meta": {"claudeCode": {"toolName": "Read"}},
+        tool_call(session_id, {
+            "toolCallId": "call-late", "name": "Read", "title": "Tool", "kind": "other", "status": "pending",
         })
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": "call-late", "title": "Read notes.txt",
+        tool_call(session_id, {
+            "toolCallId": "call-late", "title": "Read notes.txt",
             "kind": "read", "rawInput": {"file_path": "/work/notes.txt"},
-            "_meta": {"claudeCode": {"toolName": "Read"}},
         })
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": "call-late", "status": "completed",
+        tool_call(session_id, {
+            "toolCallId": "call-late", "status": "completed",
             "content": [
                 {"type": "content", "content": {"type": "text", "text": "```\none\n```"}},
                 {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}},
@@ -487,20 +488,18 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             got = list(steered[session_id])
             stopped = cancelled[session_id]
         if stopped:
-            respond(request_id, {"stopReason": "cancelled"})
+            finish(session_id, "cancelled")
             return
         say(session_id, "steered: " + " | ".join(got) if got else "no steer")
     elif word == "stop":
         say(session_id, "stopping")
-        respond(request_id, {"stopReason": rest, "usage": {"inputTokens": 40, "outputTokens": 2, "totalTokens": 42}})
+        finish(session_id, rest, {"inputTokens": 40, "outputTokens": 2, "totalTokens": 42})
         return
     elif word == "permission":
         kind, _, resource = rest.partition(" ")
         outcome = permission(session_id, f"call-{session['turn']}", kind, resource)
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": f"call-{session['turn']}",
-            "status": "completed" if outcome == "yes" else "failed",
-        })
+        tool_call(session_id, {"toolCallId": f"call-{session['turn']}",
+                               "status": "completed" if outcome == "yes" else "failed"})
         say(session_id, f"permission: {outcome}")
     elif word in ("permission-tool", "permission-mcp"):
         first, _, second = rest.partition(" ")
@@ -512,10 +511,7 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
                 session_id, call_id, "other", "", title=f"Tool: {first}/{second}",
                 raw={"server": first, "tool": second, "arguments": {}},
             )
-        update(session_id, {
-            "sessionUpdate": "tool_call_update", "toolCallId": call_id,
-            "status": "completed" if outcome == "yes" else "failed",
-        })
+        tool_call(session_id, {"toolCallId": call_id, "status": "completed" if outcome == "yes" else "failed"})
         say(session_id, f"permission: {outcome}")
     elif word in ("wait", "ask-wait"):
         say(session_id, "waiting")
@@ -528,7 +524,7 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         with state_lock:
             while not cancelled[session_id]:
                 state_lock.wait()
-        respond(request_id, {"stopReason": "cancelled"})
+        finish(session_id, "cancelled")
         return
     elif word == "elicit":
         say(session_id, "elicitation: " + elicit(session_id, session, rest))
@@ -538,25 +534,26 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         with state_lock:
             while not cancelled[session_id]:
                 state_lock.wait()
-        respond(request_id, {"stopReason": "cancelled"})
+        finish(session_id, "cancelled")
         return
     elif word == "exit":
         sys.stderr.write("fixture crashed on purpose\n")
         sys.stderr.flush()
         os._exit(3)
     elif word == "error":
-        fail(request_id, -32000, "Authentication required")
+        finish(session_id, "error", error={"code": -32000, "message": "Authentication required"})
         return
     elif word == "terminal":
         terminal_calls(session_id)
         say(session_id, "ran")
     elif word == "picture":
         say(session_id, "Here it is:")
-        update(session_id, {"sessionUpdate": "agent_message_chunk", "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}})
+        update(session_id, {"sessionUpdate": "agent_message_chunk", "messageId": next_message_id(),
+                            "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}})
         say(session_id, "A picture.")
     elif word == "mode-switch":
         session["mode"] = rest
-        update(session_id, {"sessionUpdate": "current_mode_update", "currentModeId": rest})
+        update(session_id, {"sessionUpdate": "config_option_update", "configOptions": options(session)})
         say(session_id, f"mode: {rest}")
     elif word == "recall":
         earlier = [entry["text"] for entry in session.get("history", [])[:-1] if entry["role"] == "user"]
@@ -578,28 +575,25 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             tool, _, arguments = more.partition(" ")
             arguments = json.loads(arguments or "{}")
             name = f"mcp__cookie__{tool}"
-            reported = {"toolCallId": f"call-{action}-{tool}", "title": name, "kind": "other",
-                        "_meta": {"claudeCode": {"toolName": name}}}
+            reported = {"toolCallId": f"call-{action}-{tool}", "name": name, "title": name, "kind": "other"}
             if action in ("echo", "miss"):
-                update(session_id, {"sessionUpdate": "tool_call", **reported, "status": "pending",
-                                    "rawInput": arguments})
+                tool_call(session_id, {**reported, "status": "pending", "rawInput": arguments})
             if action == "miss":
-                update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": reported["toolCallId"],
-                                    "status": "failed",
-                                    "content": [{"type": "content", "content": {"type": "text", "text": "MCP error: not connected"}}]})
+                tool_call(session_id, {"toolCallId": reported["toolCallId"], "status": "failed",
+                                       "content": [{"type": "content", "content": {"type": "text", "text": "MCP error: not connected"}}]})
                 say(session_id, "missed")
-                respond(request_id, {"stopReason": "end_turn", "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}})
+                finish(session_id, "end_turn", USAGE)
                 return
             reply = mcp(session, "tools/call", {"name": tool, "arguments": arguments}, 3)
             result = reply.get("result", {})
             text = " ".join(item.get("text", "") for item in result.get("content", []))
             if action == "echo":
-                update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": reported["toolCallId"],
-                                    "status": "failed" if result.get("isError") else "completed"})
+                tool_call(session_id, {"toolCallId": reported["toolCallId"],
+                                       "status": "failed" if result.get("isError") else "completed"})
             say(session_id, f"result: {text} error: {result.get('isError')}")
     else:
         say(session_id, " | ".join(texts))
-    respond(request_id, {"stopReason": "end_turn", "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}})
+    finish(session_id, "end_turn", USAGE)
 
 
 def fork(request_id, params):
@@ -640,30 +634,24 @@ def handle(message):
             state_lock.notify_all()
         return
     if method == "initialize":
-        client_capabilities.update(params.get("clientCapabilities") or {})
+        client_capabilities.update(params.get("capabilities") or {})
         rich = not env("ACP_FIXTURE_IMAGE_ONLY")
-        capabilities = {
-            "loadSession": env("ACP_FIXTURE_LOAD"),
-            "promptCapabilities": {"image": True, "audio": rich, "embeddedContext": rich},
-            "sessionCapabilities": {"close": {}},
+        session_caps = {
+            "prompt": {"image": {}, **({"audio": {}, "embeddedContext": {}} if rich else {})},
+            "mcp": {"stdio": {}},
         }
         if rich:
-            capabilities["sessionCapabilities"]["additionalDirectories"] = {}
-        if env("ACP_FIXTURE_RESUME"):
-            capabilities["sessionCapabilities"]["resume"] = {}
+            session_caps["additionalDirectories"] = {}
         if env("ACP_FIXTURE_FORK"):
-            capabilities["sessionCapabilities"]["fork"] = {}
+            session_caps["fork"] = {}
         if env("ACP_FIXTURE_DELETE"):
-            capabilities["sessionCapabilities"]["delete"] = {}
-        result = {
-            "protocolVersion": 1,
-            "agentCapabilities": capabilities,
+            session_caps["delete"] = {}
+        respond(request_id, {
+            "protocolVersion": 1 if env("ACP_FIXTURE_V1") else 2,
+            "info": {"name": "fixture-agent", "title": "Fixture Agent", "version": "1.0.0"},
+            "capabilities": {"session": session_caps},
             "authMethods": [],
-            "agentInfo": {"name": "fixture-agent", "title": "Fixture Agent", "version": "1.0.0"},
-        }
-        if env("ACP_FIXTURE_STEERING"):
-            result["_meta"] = {"steering": {"supported": True}}
-        respond(request_id, result)
+        })
     elif method == "session/new":
         session_id = new_session_id()
         sessions[session_id] = {"mode": "default", "model": "small", "mcpServers": params.get("mcpServers"), "cwd": params.get("cwd"), "history": []}
@@ -671,8 +659,7 @@ def handle(message):
             reply = mcp(sessions[session_id], "tools/list", {}, 2)
             sessions[session_id]["eager_tools"] = "error" not in reply
         respond(request_id, session_result(session_id, True))
-        announce_commands(session_id)
-    elif method in ("session/resume", "session/load"):
+    elif method == "session/resume":
         session_id = params["sessionId"]
         if env("ACP_FIXTURE_LOST"):
             fail(request_id, -32002, "Resource not found: no such session")
@@ -680,43 +667,42 @@ def handle(message):
         sessions.setdefault(session_id, {"mode": "default", "model": "small"})
         sessions[session_id]["mcpServers"] = params.get("mcpServers")
         sessions[session_id]["bridge"] = None
-        if method == "session/load":
-            update(session_id, {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "REPLAYED QUESTION"}})
-            say(session_id, "REPLAYED ANSWER")
+        # v2 snapshots the foreground state before the answer.
+        state(session_id, "idle")
         respond(request_id, session_result(session_id, False))
     elif method == "session/set_config_option":
         session = sessions[params["sessionId"]]
         value = params["value"]
+        kind = params.get("type")
         if params["configId"] == "fast":
-            if params.get("type") == "boolean" and isinstance(value, bool):
-                pass
-            elif value in ("on", "off"):
-                value = value == "on"
-            else:
+            if kind != "boolean" or not isinstance(value, bool):
                 fail(request_id, -32602, f"invalid value for fast: {value!r}")
                 return
+        elif kind != "id":
+            fail(request_id, -32602, f"a select takes `type: id`, not {kind!r}")
+            return
         session[params["configId"]] = value
         respond(request_id, {"configOptions": options(session)})
-    elif method == "session/set_mode":
-        sessions[params["sessionId"]]["mode"] = params["modeId"]
-        respond(request_id, {})
     elif method == "session/prompt":
-        threading.Thread(target=prompt, args=(request_id, params), daemon=True).start()
-    elif method == "_session/steering" and env("ACP_FIXTURE_STEERING"):
         session_id = params["sessionId"]
         texts = [block.get("text", "") for block in params.get("prompt", []) if block.get("type") == "text"]
         with state_lock:
-            if running.get(session_id) and declines_steers():
-                outcome = {"outcome": "failed"}
-            elif running.get(session_id):
+            busy = running.get(session_id, False)
+            if not busy:
+                running[session_id] = True
+                cancelled[session_id] = False
+                steered[session_id] = []
+        if busy:
+            # A prompt during the work: a steer, inserted into it.
+            if env("ACP_FIXTURE_DECLINE_STEERS"):
+                fail(request_id, -32603, "Internal error: the steer was not taken")
+                return
+            insert(request_id, session_id, params)
+            with state_lock:
                 steered[session_id].extend(texts)
                 state_lock.notify_all()
-                outcome = {"outcome": "injected"}
-            elif (params.get("_meta") or {}).get("steering", {}).get("idleBehavior") == "promptRequired":
-                outcome = {"outcome": "promptRequired", "reason": "noRunningTurn"}
-            else:
-                outcome = {"outcome": "startedNewTurn"}
-        respond(request_id, outcome)
+            return
+        threading.Thread(target=prompt, args=(request_id, params), daemon=True).start()
     elif method == "session/cancel":
         with state_lock:
             cancelled[params["sessionId"]] = True

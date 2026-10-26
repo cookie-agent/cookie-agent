@@ -184,13 +184,13 @@ async fn declared_agents_are_reported_and_relayed_until_they_exit() {
     harness
         .send(
             "codex",
-            json!({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {"protocolVersion": 1}}),
+            json!({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {"protocolVersion": 2}}),
         )
         .await;
     let answer = harness.next_message().await;
     assert_eq!(answer["id"], 7);
-    assert_eq!(answer["result"]["protocolVersion"], 1);
-    assert_eq!(answer["result"]["agentInfo"]["name"], "fixture-agent");
+    assert_eq!(answer["result"]["protocolVersion"], 2);
+    assert_eq!(answer["result"]["info"]["name"], "fixture-agent");
 
     for (agent, detail) in [("gemini", "disabled"), ("claude", "hosts no ACP agent")] {
         let error = harness

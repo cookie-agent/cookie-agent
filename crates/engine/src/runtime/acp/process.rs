@@ -371,34 +371,16 @@ impl Processes {
                 wire::method::INITIALIZE,
                 &wire::InitializeRequest {
                     protocol_version: wire::PROTOCOL_VERSION,
-                    client_capabilities: serde_json::json!({
-                        "fs": {"readTextFile": false, "writeTextFile": false},
-                        "terminal": false,
-                        // Notices and compaction updates as their own
-                        // updates rather than message text or a synthetic
-                        // tool call (the session notices and compaction
-                        // RFDs, which Claude Code's and Codex's adapters
-                        // follow).
-                        // Boolean config options (`type: boolean`, such as
-                        // Claude Code's fast mode) as toggles rather than an
-                        // on/off select.
-                        "session": {
-                            "notices": {},
-                            "compaction": {},
-                            "configOptions": {"boolean": {}},
-                        },
-                        // The output of the commands the agent runs, as
-                        // `_meta` keys of their tool calls (the terminal
-                        // extension of Claude Code's and Codex's adapters).
-                        // It asks the client to run nothing: `terminal`
-                        // stays `false`.
-                        "_meta": {"terminal_output": true},
-                        "elicitation": super::elicitation::capabilities(),
-                    }),
-                    client_info: serde_json::json!({
+                    // v2 has no client file system or terminals, and
+                    // notices, compaction, boolean options, plans, and
+                    // subagents are every v2 client's.
+                    info: serde_json::json!({
                         "name": "cookie-agent",
                         "title": "Cookie Agent",
                         "version": env!("CARGO_PKG_VERSION"),
+                    }),
+                    capabilities: serde_json::json!({
+                        "elicitation": super::elicitation::capabilities(),
                     }),
                 },
             ),
@@ -428,8 +410,9 @@ impl Processes {
         };
         if init.protocol_version != wire::PROTOCOL_VERSION {
             let reason = format!(
-                "it speaks ACP version {}, and cookie speaks version {}",
+                "it speaks ACP v{}; cookie needs ACP v{}. Update its adapter, or start it in v{} mode",
                 init.protocol_version,
+                wire::PROTOCOL_VERSION,
                 wire::PROTOCOL_VERSION
             );
             self.stop(&pending, &reason).await;

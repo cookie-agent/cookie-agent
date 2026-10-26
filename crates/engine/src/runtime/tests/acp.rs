@@ -283,7 +283,7 @@ async fn a_turn_renders_chunks_thoughts_tool_calls_a_plan_and_usage() {
     assert_eq!(record.how, AcpSessionStart::New);
     assert_eq!(record.runtime_id.as_str(), "local");
     assert_eq!(record.runtime_agent.as_str(), "fixture");
-    assert_eq!(record.protocol_version, 1);
+    assert_eq!(record.protocol_version, 2);
     assert_eq!(record.agent_info["name"], "fixture-agent");
     assert_eq!(
         Path::new(&record.cwd),
@@ -447,17 +447,18 @@ async fn a_new_session_starts_in_auto_mode_with_the_documents_config_and_command
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn modes_without_a_mode_option_start_in_auto_and_an_option_can_be_set() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_MODES", "1")], &[]).await;
+async fn the_mode_option_starts_in_auto_and_an_option_can_be_set() {
+    let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say hello").await;
-    assert!(
-        acp.received()
-            .iter()
-            .any(|message| message["method"] == "session/set_mode"
-                && message["params"]["modeId"] == "auto")
-    );
+    // A select's value goes as `type: id`.
+    assert!(acp.received().iter().any(|message| {
+        message["method"] == "session/set_config_option"
+            && message["params"]["configId"] == "mode"
+            && message["params"]["type"] == "id"
+            && message["params"]["value"] == "auto"
+    }));
     let result = engine
         .set_session_agent_option(cookie_agent_protocol::SessionAgentOptionSetParams {
             session_id: session,
@@ -499,7 +500,6 @@ fn recorded_option(engine: &Engine, session: SessionId, id: &str) -> Option<Stri
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_agents_own_mode_switch_moves_its_mode_option() {
-    // The agent offers a mode option of its own beside its modes.
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -508,24 +508,6 @@ async fn the_agents_own_mode_switch_moves_its_mode_option() {
         recorded_option(engine, session, "mode").as_deref(),
         Some("auto")
     );
-    turn(engine, session, "switch", "mode-switch plan").await;
-    assert_eq!(
-        recorded_option(engine, session, "mode").as_deref(),
-        Some("plan")
-    );
-    // A mode the option does not list leaves it.
-    turn(engine, session, "unknown", "mode-switch nowhere").await;
-    assert_eq!(
-        recorded_option(engine, session, "mode").as_deref(),
-        Some("plan")
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_agents_mode_switch_moves_the_option_made_of_its_modes() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_MODES", "1")], &[]).await;
-    let engine = acp.engine();
-    let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "switch", "mode-switch plan").await;
     assert_eq!(
         recorded_option(engine, session, "mode").as_deref(),
@@ -674,7 +656,7 @@ async fn idle_commands_are_accepted_the_moment_an_acp_run_ends() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_process_exit_fails_the_run_with_its_stderr_and_the_next_turn_starts_again() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[]).await;
+    let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let outcome = turn(engine, session, "exit", "exit").await;
@@ -722,7 +704,7 @@ fn acp_state_of(engine: &Engine, session: SessionId) -> (bool, usize) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stopped_process_and_a_paged_out_session_leave_no_acp_session_behind() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[]).await;
+    let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say one").await;
@@ -750,34 +732,30 @@ async fn a_stopped_process_and_a_paged_out_session_leave_no_acp_session_behind()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_load_ignores_the_replay() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_LOAD", "1")], &[]).await;
+async fn an_agent_that_speaks_only_acp_v1_is_refused() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_V1", "1")], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, session, "first", "say one").await;
-    stop_process(engine).await;
-    let outcome = turn(engine, session, "second", "say two").await;
-    assert_eq!(final_text(&outcome), "two");
-    let starts = session_starts(engine, session);
-    assert_eq!(starts[1].how, AcpSessionStart::Loaded);
-    assert!(!events(engine, session).iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ModelTurnCommitted { turn, .. } if turn.content.iter().any(|part| matches!(
-            part,
-            PersistedAssistantPart::Text { text, .. } if text.contains("REPLAYED")
-        ))
-    )));
+    let outcome = turn(engine, session, "first", "say one").await;
+    assert!(
+        matches!(&outcome, RunOutcome::Failed { error, .. }
+            if error.as_str().contains("speaks ACP v1; cookie needs ACP v2")),
+        "{outcome:?}"
+    );
+    let initialize = acp
+        .received()
+        .into_iter()
+        .find(|message| message["method"] == "initialize")
+        .unwrap();
+    assert_eq!(initialize["params"]["protocolVersion"], 2);
+    assert_eq!(initialize["params"]["info"]["name"], "cookie-agent");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lost_session_is_replaced_and_the_session_is_told() {
     // Every tool hidden: the first prompt carries no tool instructions.
     let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";
-    let acp = acp_fixture(
-        &[("ACP_FIXTURE_RESUME", "1"), ("ACP_FIXTURE_LOST", "1")],
-        &[("fixture.md", document)],
-    )
-    .await;
+    let acp = acp_fixture(&[("ACP_FIXTURE_LOST", "1")], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let first = turn(engine, session, "first", "echo").await;
@@ -1534,8 +1512,8 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_steer_reaches_the_running_turn_through_the_agents_extension() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "1")], &[]).await;
+async fn a_steer_reaches_the_running_work_as_a_prompt_during_it() {
+    let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let run = start(engine, session, "wait", "steer-wait").await;
@@ -1573,22 +1551,11 @@ async fn a_steer_reaches_the_running_turn_through_the_agents_extension() {
         EventPayload::AcpSessionUpdated { update } if update.steered.as_ref()
             .is_some_and(|steered| steered.user_inputs == [submitted])
     )));
-    let steers = acp
-        .received()
-        .into_iter()
-        .filter(|message| message["method"] == "_session/steering")
-        .collect::<Vec<_>>();
-    assert_eq!(steers.len(), 1);
-    assert_eq!(
-        steers[0]["params"]["prompt"][0]["text"],
-        "look at notes.txt"
-    );
-    assert_eq!(
-        steers[0]["params"]["_meta"]["steering"]["idleBehavior"],
-        "promptRequired"
-    );
-    // One round: the steer did not wait for a second prompt.
-    assert_eq!(prompts(&acp).len(), 1);
+    // The steer is a second `session/prompt`, sent during the work, and
+    // the run's one round took it.
+    let received = prompts(&acp);
+    assert_eq!(received.len(), 2);
+    assert_eq!(received[1], ["look at notes.txt"]);
 }
 
 /// A steer the agent declines stays waiting, as a model run's pending
@@ -1596,7 +1563,7 @@ async fn a_steer_reaches_the_running_turn_through_the_agents_extension() {
 /// take it back.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_steer_stays_waiting_and_can_be_taken_back() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "decline")], &[]).await;
+    let acp = acp_fixture(&[("ACP_FIXTURE_DECLINE_STEERS", "1")], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let run = start(engine, session, "wait", "steer-wait 2").await;
@@ -1611,12 +1578,7 @@ async fn a_declined_steer_stays_waiting_and_can_be_taken_back() {
         .user_input_seq
         .expect("admitted");
     with_watchdog("the agent declined", async {
-        while !acp
-            .received()
-            .iter()
-            .any(|message| message["method"] == "_session/steering")
-            || engine.input_is_steering(session, seq)
-        {
+        while prompts(&acp).len() < 2 || engine.input_is_steering(session, seq) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
@@ -1637,14 +1599,18 @@ async fn a_declined_steer_stays_waiting_and_can_be_taken_back() {
     );
     let outcome = finished(engine, session, run).await;
     assert_eq!(final_text(&outcome), "no steer");
-    assert_eq!(prompts(&acp).len(), 1, "nothing was left for another turn");
+    assert_eq!(
+        prompts(&acp).len(),
+        2,
+        "the declined steer, and nothing left for another turn"
+    );
 }
 
 /// A steer the agent declines, left waiting, goes with the agent's next
 /// turn, and the session records no steer for it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_steer_goes_with_the_agents_next_turn() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "decline")], &[]).await;
+    let acp = acp_fixture(&[("ACP_FIXTURE_DECLINE_STEERS", "1")], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let run = start(engine, session, "wait", "steer-wait 1").await;
@@ -1658,41 +1624,14 @@ async fn a_declined_steer_goes_with_the_agents_next_turn() {
         .unwrap();
     let outcome = finished(engine, session, run).await;
     assert_eq!(final_text(&outcome), "later");
+    // The work's prompt, the declined steer, and the next turn's prompt.
     let received = prompts(&acp);
-    assert_eq!(received.len(), 2);
-    assert_eq!(received[1], ["say later"]);
+    assert_eq!(received.len(), 3);
+    assert_eq!(received[2], ["say later"]);
     assert!(!events(engine, session).iter().any(|event| matches!(
         &event.payload,
         EventPayload::AcpSessionUpdated { update } if update.steered.is_some()
     )));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn without_the_extension_a_steer_waits_for_the_agents_next_turn() {
-    let acp = acp_fixture(&[], &[]).await;
-    let engine = acp.engine();
-    let session = engine.create_session(selection()).unwrap().session_id;
-    let run = start(engine, session, "wait", "steer-wait 1").await;
-    await_event(engine, session, "the agent waiting", |event| {
-        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
-    })
-    .await;
-    engine
-        .steer(run, "say later".into(), origin())
-        .await
-        .unwrap();
-    let outcome = finished(engine, session, run).await;
-    assert_eq!(final_text(&outcome), "later");
-    assert!(!session_starts(engine, session).pop().unwrap().steering);
-    let received = prompts(&acp);
-    assert_eq!(received.len(), 2);
-    assert_eq!(received[0].last().unwrap(), "steer-wait 1");
-    assert_eq!(received[1], ["say later"]);
-    assert!(
-        !acp.received()
-            .iter()
-            .any(|message| message["method"] == "_session/steering")
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1799,14 +1738,13 @@ async fn notices_and_compactions_are_recorded_as_the_agents_notices() {
         .into_iter()
         .find(|message| message["method"] == "initialize")
         .unwrap();
-    let session_capabilities = &initialize["params"]["clientCapabilities"]["session"];
-    assert_eq!(session_capabilities["notices"], serde_json::json!({}));
-    assert_eq!(session_capabilities["compaction"], serde_json::json!({}));
+    // Notices and compactions are every v2 client's: nothing to declare.
+    assert!(initialize["params"]["capabilities"]["session"].is_null());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_after_a_steered_one_still_cancels() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "1")], &[]).await;
+    let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let run = start(engine, session, "wait", "steer-wait").await;
@@ -2156,7 +2094,7 @@ async fn an_engine_shutdown_leaves_no_agent_process_behind() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancel_while_a_steer_is_being_taken_still_cancels_the_agents_turn() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "1")], &[]).await;
+    let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let run = start(engine, session, "wait", "steer-wait").await;
@@ -2202,16 +2140,6 @@ async fn a_commands_terminal_output_streams_into_the_call_and_is_retained() {
     let live = record_live_messages(engine, session).await;
     let outcome = turn(engine, session, "terminal", "terminal").await;
     assert_eq!(final_text(&outcome), "ran");
-    // Cookie asks for the output and runs no terminal itself.
-    let initialize = acp
-        .received()
-        .into_iter()
-        .find(|message| message["method"] == "initialize")
-        .unwrap();
-    let capabilities = &initialize["params"]["clientCapabilities"];
-    assert_eq!(capabilities["_meta"]["terminal_output"], true);
-    assert_eq!(capabilities["terminal"], false);
-
     let events = events(engine, session);
     let call_of = |title: &str| {
         events
@@ -2335,10 +2263,8 @@ async fn a_boolean_option_is_a_toggle_set_with_a_boolean() {
         .into_iter()
         .find(|message| message["method"] == "initialize")
         .unwrap();
-    assert_eq!(
-        initialize["params"]["clientCapabilities"]["session"]["configOptions"]["boolean"],
-        serde_json::json!({})
-    );
+    // A v2 client takes boolean options without saying so.
+    assert_eq!(initialize["params"]["protocolVersion"], 2);
     let fast = |options: &[cookie_agent_protocol::AcpConfigOption]| {
         options
             .iter()
@@ -2590,7 +2516,7 @@ async fn a_form_question_waits_for_the_users_answer() {
         .find(|message| message["method"] == "initialize")
         .expect("initialize");
     assert_eq!(
-        initialize["params"]["clientCapabilities"]["elicitation"],
+        initialize["params"]["capabilities"]["elicitation"],
         serde_json::json!({"form": {}, "url": {}})
     );
 }
