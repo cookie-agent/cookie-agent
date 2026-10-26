@@ -564,7 +564,8 @@ pub struct AgentRuntime {
     /// The runtime that offers the agent.
     pub runtime_id: RuntimeId,
     /// The agent's ID on the runtime, the key of its declaration: the
-    /// agent's own ID.
+    /// agent's own ID, or since client protocol 1.32.0 the declaration its
+    /// document names (`acp.agent`), which several agents may share.
     pub agent: AgentId,
     /// Whether a session that attaches the runtime can use it now: the
     /// runtime is connected, or the daemon starts it on demand, and the

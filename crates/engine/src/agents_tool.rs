@@ -403,6 +403,9 @@ pub(crate) fn render_agent_list(
         let _ = writeln!(output, "{id} ({mode}{tag}) — {}", frontmatter.description);
         if let Some(offers) = &agent.acp {
             let runtimes = crate::runtime_snapshot::join_runtimes(&offers.runtimes());
+            if offers.declaration() != id {
+                let _ = writeln!(output, "  acp agent: {}", offers.declaration());
+            }
             let _ = writeln!(output, "  offered by runtimes: {runtimes}");
             let _ = writeln!(
                 output,

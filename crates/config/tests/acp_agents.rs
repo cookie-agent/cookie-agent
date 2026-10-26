@@ -184,6 +184,40 @@ fn an_acp_document_may_have_an_empty_body() {
 }
 
 #[test]
+fn an_acp_document_names_the_declaration_it_runs() {
+    let document = "---\ndescription: Reviewer\nmode: subagent\nacp:\n  agent: claude\n---\n";
+    let loaded = load(
+        "[runtimes.local.acp.agents.claude]\ncommand = [\"x\"]\n",
+        &[("claude-review.md", document)],
+    )
+    .expect("a document over another declaration");
+    let id = AgentId::new("claude-review").unwrap();
+    let settings = loaded.agents[&id].frontmatter.acp.clone().expect("acp");
+    assert_eq!(settings.agent, Some(AgentId::new("claude").unwrap()));
+    assert_eq!(settings.declaration(&id).as_str(), "claude");
+    // Absent, the document runs the declaration of its own ID.
+    assert_eq!(
+        cookie_agent_config::AcpDocumentSettings::default()
+            .declaration(&id)
+            .as_str(),
+        "claude-review"
+    );
+    // A declaration nobody makes still loads: the engine reports it.
+    load("", &[("claude-review.md", document)]).expect("an undeclared agent");
+    // Not an agent ID, and not a string.
+    for value in ["Claude", "claude_code", "-claude", "\"\"", "[claude]"] {
+        let text = format!("---\ndescription: ACP\nmode: all\nacp:\n  agent: {value}\n---\n");
+        let error = rejected("", &[("review.md", &text)]);
+        assert!(error.contains("review"), "{value}: {error}");
+    }
+    let longest = "a".repeat(64);
+    let text = format!("---\ndescription: ACP\nmode: all\nacp:\n  agent: {longest}\n---\n");
+    load("", &[("review.md", &text)]).expect("a 64-byte ID");
+    let text = format!("---\ndescription: ACP\nmode: all\nacp:\n  agent: {longest}a\n---\n");
+    rejected("", &[("review.md", &text)]);
+}
+
+#[test]
 fn the_idle_shutdown_is_positive() {
     let loaded = load("[acp]\nidle_shutdown_ms = 1\n", &[]).expect("acp table");
     assert_eq!(loaded.runtime.acp.idle_shutdown_ms, 1);

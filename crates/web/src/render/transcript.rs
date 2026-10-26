@@ -985,7 +985,7 @@ pub fn pinned_rows(
         rows.push(pinned_row(
             MODEL_TOOLS_KEY,
             icondata::FaToolboxSolid,
-            &model_tools_summary(tools),
+            &model_tools_summary(state, tools),
             expanded,
             || {
                 let (shown, omitted) = bounded_tools(tools);

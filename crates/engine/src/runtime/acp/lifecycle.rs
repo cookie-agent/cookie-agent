@@ -611,13 +611,19 @@ impl super::super::Engine {
             .map_err(super::super::EngineError::Acp)?;
         self.acp_session(forked, None, &agent, &resolved.document, &process)
             .await?;
-        // A session on another runtime than the one that runs it now
-        // starts anew there, which forks nothing.
+        // A session on another runtime than the one that runs it now, or
+        // of another declaration, starts anew there, which forks nothing.
         match plan(
             &self.inner.store.get(forked)?.log.event_snapshot(),
             &record.agent,
         ) {
             Plan::Resume(started) if started.how == AcpSessionStart::Forked => Ok(()),
+            _ if record.runtime_id == agent.runtime => {
+                Err(super::super::EngineError::Acp(format!(
+                    "its session is of ACP agent `{}`, and its document now runs `{}`",
+                    record.runtime_agent, agent.agent
+                )))
+            }
             _ => Err(super::super::EngineError::Acp(format!(
                 "its session is on runtime `{}`, which does not run it for the new session",
                 record.runtime_id

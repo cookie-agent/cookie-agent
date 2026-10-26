@@ -207,7 +207,7 @@
       "description": "A runtime that offers an ACP agent (`docs/site/specs/acp-agents.md`\nsection 3).",
       "properties": {
         "agent": {
-          "description": "The agent's ID on the runtime, the key of its declaration: the\nagent's own ID.",
+          "description": "The agent's ID on the runtime, the key of its declaration: the\nagent's own ID, or since client protocol 1.32.0 the declaration its\ndocument names (`acp.agent`), which several agents may share.",
           "maxLength": 64,
           "minLength": 1,
           "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",

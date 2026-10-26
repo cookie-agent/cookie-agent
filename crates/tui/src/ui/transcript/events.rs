@@ -242,6 +242,7 @@ pub(super) fn system_prompt_layout(
 
 /// The tools sent with the latest model request, pinned under the system prompt.
 pub(super) fn model_tools_layout(
+    state: &cookie_agent_client_state::SessionState,
     tools: &[String],
     expanded: Option<&HashSet<BlockId>>,
     width: u16,
@@ -253,7 +254,7 @@ pub(super) fn model_tools_layout(
     let mut body = vec![Line::styled(
         format!(
             "🧰 {chevron} {}",
-            cookie_agent_client_state::rows::model_tools_summary(tools)
+            cookie_agent_client_state::rows::model_tools_summary(state, tools)
         ),
         theme.internal(),
     )];

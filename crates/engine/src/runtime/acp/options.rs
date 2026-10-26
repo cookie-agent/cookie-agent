@@ -49,8 +49,9 @@ struct KnownEntry {
     known: KnownAgent,
 }
 
-/// The last-known state of every agent on every runtime, by agent and
-/// runtime ID.
+/// The last-known state of every declaration on every runtime, by the
+/// declaration's key and runtime ID: every document that runs a
+/// declaration shares what it offered.
 #[derive(Debug, Default)]
 pub(crate) struct KnownAgents {
     path: Option<PathBuf>,
@@ -360,7 +361,7 @@ impl crate::runtime::Engine {
             .inner
             .acp
             .known
-            .update(&agent.id, &agent.runtime, |known| {
+            .update(&agent.agent, &agent.runtime, |known| {
                 if new_session || known.options.is_empty() {
                     known.options = options.to_vec();
                 }
@@ -383,7 +384,9 @@ impl crate::runtime::Engine {
             .inner
             .acp
             .known
-            .update(&agent.id, &agent.runtime, |known| known.input_media = media)
+            .update(&agent.agent, &agent.runtime, |known| {
+                known.input_media = media
+            })
         {
             self.refresh_runtime_agents();
         }

@@ -37,10 +37,12 @@ pub(crate) struct ResolvedAgent {
 /// attaches that runtime runs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeAgent {
-    /// The agent's ID: the key of the runtime's declaration.
+    /// The agent's ID: the document that runs the declaration
+    /// (`acp.agent`), else the declaration's key. A runtime's own list
+    /// has the declaration's key.
     pub id: AgentId,
     pub runtime: cookie_agent_protocol::RuntimeId,
-    /// The agent's ID on the runtime.
+    /// The declaration: its key on the runtime.
     pub agent: AgentId,
     /// The runtime's description of it.
     pub description: String,
@@ -59,7 +61,9 @@ impl RuntimeAgent {
 }
 
 /// The runtimes that offer one ACP agent, in runtime ID order
-/// (`docs/site/specs/acp-agents.md` section 15, naming of 2026-10-23).
+/// (`docs/site/specs/acp-agents.md` section 15, naming of 2026-10-23): those
+/// that declare what its document's `acp.agent` names (addendum of
+/// 2026-10-25).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AcpOffers {
     pub id: AgentId,
@@ -73,6 +77,11 @@ impl AcpOffers {
             .iter()
             .map(|offer| offer.runtime.clone())
             .collect()
+    }
+
+    /// The declaration it runs: the key its runtimes declare.
+    pub(crate) fn declaration(&self) -> &AgentId {
+        self.offers.first().map_or(&self.id, |offer| &offer.agent)
     }
 
     /// Whether some runtime that offers it could run it now.
@@ -232,26 +241,49 @@ impl AgentRegistry {
                 .map(|(id, document)| (id.clone(), document.clone())),
         );
         let mut agents = BTreeMap::new();
-        // Every runtime that declares an ID offers the one agent of that ID.
+        // Every runtime that declares an ID offers that declaration.
         let mut offered = BTreeMap::<AgentId, Vec<RuntimeAgent>>::new();
         for runtime_agent in runtime_agents {
             offered
-                .entry(runtime_agent.id.clone())
+                .entry(runtime_agent.agent.clone())
                 .or_default()
                 .push(runtime_agent.clone());
         }
-        for (id, mut offers) in offered {
-            if documents.contains_key(&id) {
-                // A daemon agent of the same ID wins; the configuration
-                // status names the ignored declarations.
+        for offers in offered.values_mut() {
+            offers.sort_by(|left, right| left.runtime.cmp(&right.runtime));
+        }
+        // A document with an `acp` block runs the declaration it names
+        // while a runtime declares it; a declared ID no document has is an
+        // agent with the default document. A daemon agent of the same ID
+        // wins; the configuration status names the ignored declarations.
+        let mut acp_agents = Vec::new();
+        for document in authored.documents().values() {
+            let Some(settings) = &document.frontmatter.acp else {
+                continue;
+            };
+            let Some(offers) = offered.get(settings.declaration(&document.id)) else {
+                continue;
+            };
+            let offers = AcpOffers {
+                id: document.id.clone(),
+                offers: offers
+                    .iter()
+                    .map(|offer| RuntimeAgent {
+                        id: document.id.clone(),
+                        ..offer.clone()
+                    })
+                    .collect(),
+            };
+            acp_agents.push((document.clone(), offers));
+        }
+        for (id, offers) in offered {
+            if documents.contains_key(&id) || authored.get(&id).is_some() {
                 continue;
             }
-            offers.sort_by(|left, right| left.runtime.cmp(&right.runtime));
             let offers = AcpOffers { id, offers };
-            let document = match authored.get(&offers.id) {
-                Some(document) => document.clone(),
-                None => runtime_agent_default_document(&offers)?,
-            };
+            acp_agents.push((runtime_agent_default_document(&offers)?, offers));
+        }
+        for (document, offers) in acp_agents {
             // Whether it can run depends on the session's runtimes: it is
             // a root choice while some runtime could run it.
             let runnable_as_root = offers.any_available()

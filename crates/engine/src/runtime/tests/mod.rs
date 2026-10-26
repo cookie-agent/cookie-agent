@@ -5,6 +5,7 @@ pub(crate) mod support;
 mod acp;
 mod acp_document_models;
 mod acp_input;
+mod acp_templates;
 mod agent_memory;
 mod agents;
 mod approvals;

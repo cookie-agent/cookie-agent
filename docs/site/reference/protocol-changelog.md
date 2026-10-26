@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.32.0
+
+- An ACP agent's document may run another declaration (`acp.agent`), so
+  several agents can run one declaration, each with its own permissions,
+  mode, and body. `AgentRuntime.agent` then differs from the agent's ID:
+  it names the declaration, and clients show it beside the runtime
+  (`claude on local`). No wire change.
+
 ## 1.31.0
 
 - `session.recall_input` takes back any client's pending or queued input, not

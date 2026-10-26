@@ -222,6 +222,19 @@ impl Engine {
         Ok(offered)
     }
 
+    /// The tools of `session` a run of `policy` offers its ACP agent over
+    /// the bridge: its tool definitions without `hide`.
+    pub(crate) fn bridged_tool_definitions(
+        &self,
+        session: SessionId,
+        policy: &super::super::FrozenRunPolicy,
+        hide: &[String],
+    ) -> Result<Vec<oven_sdk::ToolDefinition>, crate::EngineError> {
+        let mut tools = self.tool_definitions(session, policy)?;
+        tools.retain(|tool| !hidden(&tool.name, hide));
+        Ok(tools)
+    }
+
     /// The session's tools as the agent gets them.
     fn bridge_tools(&self, binding: &BridgeBinding) -> Result<Vec<Value>, crate::EngineError> {
         let policy = match self.bridge_run(binding) {
@@ -239,9 +252,8 @@ impl Engine {
         };
         let hide = self.hidden_tools(binding);
         Ok(self
-            .tool_definitions(binding.session, &policy)?
+            .bridged_tool_definitions(binding.session, &policy, &hide)?
             .into_iter()
-            .filter(|tool| !hidden(&tool.name, &hide))
             .map(|tool| {
                 json!({
                     "name": tool.name,

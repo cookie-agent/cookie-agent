@@ -138,9 +138,22 @@ pub fn system_prompt_summary(
     )
 }
 
-/// The tools row's title, after its icon and chevron.
-pub fn model_tools_summary(tools: &[String]) -> String {
-    format!("tools · {} available (last request)", tools.len())
+/// The tools row's title, after its icon and chevron: the tools of the
+/// latest model request, or for an ACP agent the cookie tools its MCP
+/// bridge offers beside the agent's own.
+pub fn model_tools_summary(state: &SessionState, tools: &[String]) -> String {
+    if bridged_tools(state) {
+        format!("cookie tools · {} offered to the agent", tools.len())
+    } else {
+        format!("tools · {} available (last request)", tools.len())
+    }
+}
+
+/// Whether the session's tools row lists what cookie offers an ACP agent
+/// over its MCP bridge: its latest run is of the agent of its ACP session.
+fn bridged_tools(state: &SessionState) -> bool {
+    state.acp.agent.is_some()
+        && state.run_snapshot.as_ref().map(|snapshot| &snapshot.agent) == state.acp.agent.as_ref()
 }
 
 /// A body cut to the bounds an opened row shows: its lines, control
@@ -271,16 +284,24 @@ mod tests {
         // Each name is 9 bytes, then 2 for the separator.
         assert_eq!(shown.len(), (MAX_EXPANDED_BODY_BYTES + 2) / 11);
         assert_eq!(shown.len() + omitted, many.len());
+        let mut state = SessionState::default();
         assert_eq!(
-            model_tools_summary(&tools),
+            model_tools_summary(&state, &tools),
             "tools · 2 available (last request)"
+        );
+        // An ACP agent's run lists the tools cookie's bridge offers it.
+        let claude = AgentId::new("claude").unwrap();
+        state.acp.agent = Some(claude.clone());
+        state.run_snapshot = Some(Box::new(snapshot_of(claude)));
+        assert_eq!(
+            model_tools_summary(&state, &tools),
+            "cookie tools · 2 offered to the agent"
         );
     }
 
-    #[test]
-    fn the_system_prompt_row_names_its_agent_and_the_next() {
-        let snapshot = AgentSnapshot {
-            agent: AgentId::new("primary").unwrap(),
+    fn snapshot_of(agent: AgentId) -> AgentSnapshot {
+        AgentSnapshot {
+            agent,
             mode: cookie_agent_protocol::AgentMode::Primary,
             description: "Test primary agent".into(),
             document_source: cookie_agent_protocol::AgentDocumentSource::User,
@@ -292,7 +313,12 @@ mod tests {
             delegation: None,
             fallback_chain: Vec::new(),
             selected_suffix_start: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_row_names_its_agent_and_the_next() {
+        let snapshot = snapshot_of(AgentId::new("primary").unwrap());
         let fast = AgentId::new("fast").unwrap();
         assert_eq!(
             system_prompt_summary(&snapshot, true, Some(&snapshot.agent)),

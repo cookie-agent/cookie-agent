@@ -27,7 +27,7 @@ fn origin() -> EventOrigin {
     EventOrigin::new("client:test").unwrap()
 }
 
-fn fixture_script() -> PathBuf {
+pub(super) fn fixture_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp_agent.py")
 }
 
@@ -1056,6 +1056,30 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     )
     .await;
     assert!(final_text(&outcome).ends_with("error: True"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_records_the_tools_the_bridge_offers_for_the_clients() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let listed = final_text(&turn(engine, session, "list", "mcp list").await);
+    turn(engine, session, "again", "say hello").await;
+    let published = events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ModelToolsPublished { tool_names, .. } => Some(tool_names),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // Once, as the bridge lists them: the hidden coding tools left out.
+    assert_eq!(published.len(), 1, "{published:?}");
+    assert_eq!(
+        published[0].join(","),
+        listed["tools: ".len()..],
+        "{listed}"
+    );
+    assert!(!published[0].iter().any(|tool| tool == "read"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

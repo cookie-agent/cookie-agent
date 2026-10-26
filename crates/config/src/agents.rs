@@ -357,6 +357,11 @@ pub struct AgentFrontmatter {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AcpDocumentSettings {
+    /// The declaration the document runs: the key of a
+    /// `[runtimes.<id>.acp.agents.<agent>]` table. The document's own ID
+    /// when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentId>,
     /// The mode the agent starts its sessions in, by mode ID; the agent's
     /// `auto` mode, else its default, when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -447,6 +452,12 @@ impl AcpDocumentSettings {
     /// The tools an ACP agent does not get when its document names none:
     /// the coding runtime's, which the agent has its own of.
     pub const DEFAULT_HIDE_TOOLS: [&'static str; 5] = ["read", "write", "edit", "bash", "webfetch"];
+
+    /// The declaration the document `id` runs: `agent`, else `id`.
+    #[must_use]
+    pub fn declaration<'a>(&'a self, id: &'a AgentId) -> &'a AgentId {
+        self.agent.as_ref().unwrap_or(id)
+    }
 
     /// The patterns of the tools the agent does not get.
     #[must_use]

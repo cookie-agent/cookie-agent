@@ -1738,6 +1738,21 @@ impl Engine {
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
+        self.record_model_tool_names(session, run, attempt_id, tool_names)
+            .await
+    }
+
+    /// Records `tool_names` as the tools of `attempt_id`, skipping the
+    /// record when the session's latest one already matches: a model
+    /// run's request tools, or the tools cookie offers an ACP agent over
+    /// its MCP bridge.
+    pub(super) async fn record_model_tool_names(
+        &self,
+        session: SessionId,
+        run: RunId,
+        attempt_id: cookie_agent_protocol::AttemptId,
+        tool_names: Vec<String>,
+    ) -> Result<(), EngineError> {
         // Names a record cannot carry are still sent; clients keep showing
         // the previous record.
         if !cookie_agent_protocol::valid_model_tool_names(&tool_names)

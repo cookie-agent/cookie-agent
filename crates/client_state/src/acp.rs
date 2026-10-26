@@ -41,6 +41,15 @@ pub enum AcpPlacement {
     Ambiguous(Vec<RuntimeId>),
 }
 
+/// The declaration ACP agent `agent` runs, when its document names
+/// another one than its own ID (`acp.agent`, addendum of 2026-10-25).
+pub fn declaration(agent: &AgentDescriptor) -> Option<&AgentId> {
+    offering_runtimes(agent)
+        .first()
+        .map(|offer| &offer.agent)
+        .filter(|declaration| **declaration != agent.id)
+}
+
 /// Where a session or draft that attaches `attached` would run `agent`;
 /// `None` for the daemon's own agents.
 pub fn placement(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<AcpPlacement> {
@@ -94,9 +103,19 @@ pub fn pickable(agent: &AgentDescriptor, attached: &[RuntimeId]) -> bool {
 }
 
 /// What a picker shows after an ACP agent's description, for a session or
-/// draft that attaches `attached`: where it runs, or why it cannot. `None`
-/// for the daemon's own agents.
+/// draft that attaches `attached`: where it runs, or why it cannot, after
+/// the declaration it runs when that is not its own ID. `None` for the
+/// daemon's own agents.
 pub fn runtime_note(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<String> {
+    let note = placement_note(agent, attached)?;
+    Some(match declaration(agent) {
+        Some(declaration) if note.starts_with("on ") => format!("{declaration} {note}"),
+        Some(declaration) => format!("{declaration} · {note}"),
+        None => note,
+    })
+}
+
+fn placement_note(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<String> {
     Some(match placement(agent, attached)? {
         AcpPlacement::Runs(runtime) if agent.runnable_as_root => format!("on {runtime}"),
         AcpPlacement::Runs(runtime) => format!("on {runtime} · disabled"),
@@ -425,6 +444,26 @@ mod tests {
             Some("offered by labpc, local: attach one")
         );
         assert!(unpickable_reason(&claude, &both).contains("(labpc, local)"));
+    }
+
+    #[test]
+    fn a_document_over_another_declaration_names_it_in_the_note() {
+        let mut review = agent("claude-review", &[("local", true)], true, AgentMode::All);
+        for offer in review.runtimes.iter_mut().chain(review.runtime.as_mut()) {
+            offer.agent = AgentId::new("claude").unwrap();
+        }
+        assert_eq!(declaration(&review).map(AgentId::as_str), Some("claude"));
+        assert_eq!(
+            runtime_note(&review, &[runtime("local")]).as_deref(),
+            Some("claude on local")
+        );
+        assert_eq!(
+            runtime_note(&review, &[runtime("lab")]).as_deref(),
+            Some("claude · needs local attached")
+        );
+        // An agent of the declaration's own ID names none.
+        let claude = agent("claude", &[("local", true)], true, AgentMode::All);
+        assert_eq!(declaration(&claude), None);
     }
 
     #[test]

@@ -224,7 +224,7 @@ expression: schema_for!(RuntimeSnapshotResult)
       "type": "object",
       "properties": {
         "agent": {
-          "description": "The agent's ID on the runtime, the key of its declaration: the\nagent's own ID.",
+          "description": "The agent's ID on the runtime, the key of its declaration: the\nagent's own ID, or since client protocol 1.32.0 the declaration its\ndocument names (`acp.agent`), which several agents may share.",
           "type": "string",
           "maxLength": 64,
           "minLength": 1,

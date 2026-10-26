@@ -1253,7 +1253,8 @@ a model run's steered input does, with no mark of its own.
 
 ## Addendum (2026-10-25): documents as templates over a declaration
 
-Status: **approved** (2026-10-25).
+Status: **implemented** (2026-10-25; client protocol 1.32.0); see the
+implementation notes at its end.
 
 User request: one ACP agent declaration (`claude`) serves several agent
 documents, each with its own cookie permissions, mode, and body. User
@@ -1353,3 +1354,33 @@ diagnostic); `acp.agent` not an agent ID refused at load; an undeclared
 `acp.agent` provisional until a runtime reports it; switching a session
 between two templates starting a new ACP session, and a changed
 `acp.agent` refusing resume; an old `acp-agents.json` read unchanged.
+
+**Implementation notes** (2026-10-25):
+
+- `AcpDocumentSettings::agent` (`acp.agent`) and `declaration(id)`. The
+  registry groups declarations by `RuntimeAgent::agent`, runs each document
+  with an `acp` block over its declaration's offers relabelled with its ID,
+  then gives every declared ID no document has the default document;
+  `AcpOffers::declaration` names the key.
+- `KnownAgents` is updated by `RuntimeAgent::agent`. The runner's resume and
+  branch check compares `runtime_agent` with the placed declaration besides
+  `runtime_id` (*The agent's earlier session is of ACP agent `fixture`, and
+  its document now runs `second` ...*); an eager fork refuses the same way.
+- `ConfigStatus.diagnostics`: *ACP agent `fixture` of runtime `local` is
+  ignored: the agent document `fixture` runs `ghost` (`acp.agent`) ...*, and
+  *agent `fixture` runs ACP agent `ghost` (`acp.agent`), which no runtime
+  declares yet ...* for a document naming an undeclared one.
+- Clients: `cookie_agent_client_state::acp::declaration`; `runtime_note`
+  gives `claude on local` or `claude · needs local attached`.
+- **Bridged tools in the transcript** (same day, user report): an ACP turn
+  now records `model_tools_published` with each attempt, the names the
+  bridge's `tools/list` gives (`bridged_tool_definitions`: the run's tool
+  definitions without `hide_tools`), skipped when the latest record
+  matches, as a model run's request tools are. The tools row of the TUI and
+  the web client titles them *cookie tools · N offered to the agent* while
+  the latest run is the session's ACP agent (`rows::model_tools_summary`).
+  No wire change.
+- Tests: `crates/engine/src/runtime/tests/acp_templates.rs`,
+  `a_turn_records_the_tools_the_bridge_offers_for_the_clients`, the config
+  test `an_acp_document_names_the_declaration_it_runs`, and the client
+  note and summary tests.

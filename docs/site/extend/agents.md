@@ -187,7 +187,9 @@ prompt, skill-listing, plugin, cache, and history assembly order.
 An ACP agent runtimes offer (see [ACP agents](../runtimes/tools.md#acp-agents))
 is listed under the key of its declarations, `claude` for
 `[runtimes.local.acp.agents.claude]`, and takes its cookie settings from the
-document of that name, which every runtime that offers it shares. Its `acp`
+document of that name, which every runtime that offers it shares; other
+documents can run the same declaration under their own IDs with
+`acp.agent`. Its `acp`
 block, even `acp: {}`, marks the document as the agent's: it is an agent
 only while a runtime declares it, and a document of that name without the
 block is a daemon agent, whose ID wins over the declarations (the
@@ -212,6 +214,7 @@ You review changes for this project before they are committed.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `models` | array | `[]` | The model and effort the agent's sessions start with, a fallback chain over the agent's own values; see below. |
+| `acp.agent` | agent ID | the document's ID | The declaration the document runs, the key of a `[runtimes.<id>.acp.agents.<agent>]` table; several documents may run one. See [Several documents over one agent](acp-agents.md#several-documents-over-one-agent). |
 | `acp.mode` | string | the agent's `auto`, else its default | The mode the agent starts its sessions in, by mode ID. |
 | `acp.config` | table of strings | `{}` | Initial values of the agent's config options, by option ID (`"true"` or `"false"`, quoted, for an on/off option such as Claude Code's `fast`); an unknown option or value is reported in the session and skipped. |
 | `acp.hide_tools` | array of patterns | `[read, write, edit, bash, webfetch]` | Cookie's tools the agent does not get through the MCP bridge, with `*` and `?`; `[]` offers every tool the rules offer. |

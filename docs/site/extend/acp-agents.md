@@ -207,6 +207,49 @@ You review changes for this project before they are committed.
 
 [ACP agent documents](agents.md#acp-agent-documents) lists every key.
 
+### Several documents over one agent
+
+One declaration can serve several documents, each its own agent with its
+own permissions, mode, `hide_tools`, and body. `acp.agent` names the
+declaration a document runs; without it, a document runs the declaration
+of its own ID:
+
+```yaml
+# ~/.cookie-agent/agents/claude-review.md
+---
+description: Claude Code, read-only reviewer
+mode: subagent
+acp:
+  agent: claude          # a [runtimes.*.acp.agents.claude] declaration
+  mode: plan
+permissions:
+  read: allow
+  write: deny
+  bash: { "git diff *": allow, "*": ask }
+---
+You review the change you are given and report findings; you do not edit.
+```
+
+- **The document's ID is the agent's.** `claude-review` is listed, picked,
+  delegated to, and scheduled by that ID, on the runtimes that declare
+  `claude`; the pickers say `claude on local`, and `list_agents` adds
+  `acp agent: claude`.
+- **The declaration stays an agent** of its own ID while no document has
+  that ID; a `claude.md` with `enabled: false` hides it and leaves the
+  documents over `claude` running. A `claude.md` whose `acp.agent` names
+  another declaration takes the ID, and the configuration status says the
+  `claude` declaration is ignored.
+- **One process.** The documents over a declaration share its agent process
+  on each runtime, each cookie session with its own ACP session, and share
+  what the agent offered there (its models, modes, and options in the
+  pickers). Switching a session to another document starts a new ACP
+  session, and so does changing a document's `acp.agent`.
+- **`command` and `env` stay with the declaration**, so documents cannot
+  change them; a different environment (another `CLAUDE_CONFIG_DIR`) is a
+  second declaration.
+- A document whose `acp.agent` no runtime declares yet is no agent until
+  one does; the configuration status says so.
+
 ### A reference document for Claude Code
 
 The agent learns from the document's body that it runs inside cookie and
@@ -393,6 +436,11 @@ each call decided by the rules as a model's would be.
 `?`. By default it hides the coding runtime's `read`, `write`, `edit`,
 `bash`, and `webfetch`, since the agent has its own; `[]` offers them too.
 `hide_tools` only hides: the rules still decide every call.
+
+The transcript's tools row, pinned under the system prompt in the TUI and
+the web client, lists the tools the bridge offers the agent in its latest
+turn (*cookie tools · 12 offered to the agent*); the agent's own tools are
+not in it.
 
 ## In the clients
 

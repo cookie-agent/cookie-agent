@@ -706,6 +706,8 @@ struct SystemPromptLayoutKey {
     /// The pinned tools block renders with the system prompt.
     model_tools: Option<std::sync::Arc<[String]>>,
     model_tools_expanded: bool,
+    /// Whose bridge the tools are, which the block's title names.
+    acp_agent: Option<AgentId>,
 }
 
 struct CachedSystemPromptLayout {
@@ -997,6 +999,7 @@ pub(super) fn ensure_cached_transcript_layout(
             model_tools: state.model_tools.clone(),
             model_tools_expanded: expanded
                 .is_some_and(|blocks| blocks.contains(&BlockId::ModelTools)),
+            acp_agent: state.acp.agent.clone(),
         });
     let system_prompt_changed =
         cache.system_prompt.as_ref().map(|cached| &cached.key) != prompt_key.as_ref();
@@ -1011,7 +1014,7 @@ pub(super) fn ensure_cached_transcript_layout(
             if let Some(tools) = state.model_tools.as_deref() {
                 append_chunked_item(
                     &mut cache.layout,
-                    &model_tools_layout(tools, expanded, width, theme).into(),
+                    &model_tools_layout(state, tools, expanded, width, theme).into(),
                 );
             }
             Some(CachedSystemPromptLayout { key: prompt_key })
@@ -2242,7 +2245,7 @@ fn transcript_layout_at_clock(
         if let Some(tools) = state.model_tools.as_deref() {
             append_item_layout(
                 &mut layout,
-                model_tools_layout(tools, expanded, width, theme),
+                model_tools_layout(state, tools, expanded, width, theme),
             );
         }
     }

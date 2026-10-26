@@ -139,38 +139,74 @@ impl Engine {
         }
     }
 
-    /// The ACP declarations a daemon agent document of the same ID without
-    /// an `acp` block shadows: the document's agent keeps the ID and the
-    /// declarations are ignored.
+    /// The ACP declarations a daemon agent document of the same ID shadows,
+    /// one without an `acp` block or one whose `acp.agent` names another
+    /// declaration: the document's agent keeps the ID and the declarations
+    /// are ignored. Then the documents whose `acp.agent` no runtime
+    /// declares yet.
     fn shadowed_acp_declarations(&self) -> Vec<String> {
         let config = self.inner.config.load();
-        let mut by_agent = std::collections::BTreeMap::<String, Vec<String>>::new();
-        for agent in self.inner.acp.runtime_agents() {
-            if config
-                .agents
-                .get(&agent.id)
-                .is_some_and(|document| document.frontmatter.acp.is_none())
-            {
+        let declarations = self.inner.acp.runtime_agents();
+        let mut by_agent =
+            std::collections::BTreeMap::<cookie_agent_protocol::AgentId, Vec<String>>::new();
+        for agent in &declarations {
+            if config.agents.get(&agent.agent).is_some_and(|document| {
+                document
+                    .frontmatter
+                    .acp
+                    .as_ref()
+                    .is_none_or(|settings| settings.declaration(&document.id) != &agent.agent)
+            }) {
                 by_agent
-                    .entry(agent.id.to_string())
+                    .entry(agent.agent.clone())
                     .or_default()
                     .push(agent.runtime.to_string());
             }
         }
-        by_agent
+        let mut diagnostics = by_agent
             .into_iter()
             .map(|(agent, runtimes)| {
-                format!(
-                    "ACP agent `{agent}` of {} is ignored: the agent document `{agent}` has no \
-                     `acp` block, so `{agent}` is a daemon agent; give the document an `acp: {{}}` \
-                     block to make it the ACP agent's",
-                    match &runtimes[..] {
-                        [runtime] => format!("runtime `{runtime}`"),
-                        _ => format!("runtimes {}", runtimes.join(", ")),
-                    }
-                )
+                let declared_on = match &runtimes[..] {
+                    [runtime] => format!("runtime `{runtime}`"),
+                    _ => format!("runtimes {}", runtimes.join(", ")),
+                };
+                match config
+                    .agents
+                    .get(&agent)
+                    .and_then(|document| document.frontmatter.acp.as_ref())
+                    .and_then(|settings| settings.agent.as_ref())
+                {
+                    Some(other) => format!(
+                        "ACP agent `{agent}` of {declared_on} is ignored: the agent document \
+                         `{agent}` runs `{other}` (`acp.agent`), so `{agent}` is that \
+                         document's agent"
+                    ),
+                    None => format!(
+                        "ACP agent `{agent}` of {declared_on} is ignored: the agent document \
+                         `{agent}` has no `acp` block, so `{agent}` is a daemon agent; give the \
+                         document an `acp: {{}}` block to make it the ACP agent's"
+                    ),
+                }
             })
-            .collect()
+            .collect::<Vec<_>>();
+        for document in config.agents.values() {
+            let Some(declaration) = document
+                .frontmatter
+                .acp
+                .as_ref()
+                .and_then(|settings| settings.agent.as_ref())
+            else {
+                continue;
+            };
+            if !declarations.iter().any(|agent| &agent.agent == declaration) {
+                diagnostics.push(format!(
+                    "agent `{}` runs ACP agent `{declaration}` (`acp.agent`), which no runtime \
+                     declares yet; it is an agent once one does",
+                    document.id
+                ));
+            }
+        }
+        diagnostics
     }
 
     /// The diagnostics of the published agents: those of the shared agents,

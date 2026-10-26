@@ -700,6 +700,9 @@ struct Turn<'a> {
     unsteered: bool,
     /// The summary text of each compaction in progress, by its ID.
     compactions: HashMap<String, String>,
+    /// The names of the tools cookie offers the agent over its MCP bridge,
+    /// recorded with each attempt as a model run's request tools are.
+    bridge_tools: Option<Vec<String>>,
 }
 
 /// A `_session/steering` request on its way.
@@ -742,6 +745,11 @@ impl Turn<'_> {
                 },
             )
             .await?;
+        if let Some(names) = &self.bridge_tools {
+            self.engine
+                .record_model_tool_names(self.session(), self.run, attempt_id, names.clone())
+                .await?;
+        }
         self.step = Some(Step {
             attempt_id,
             parts: Vec::new(),
@@ -1882,6 +1890,16 @@ impl Engine {
             .acp_session(active.session, Some(run_id), &agent, &document, &process)
             .await?;
         let home = process.client.home();
+        let hide = document
+            .frontmatter
+            .acp
+            .clone()
+            .unwrap_or_default()
+            .hidden_tools();
+        let bridge_tools = self
+            .bridged_tool_definitions(active.session, &active.policy, &hide)
+            .ok()
+            .map(|tools| tools.into_iter().map(|tool| tool.name).collect());
         let mut turn = Turn {
             engine: self,
             run: run_id,
@@ -1904,6 +1922,7 @@ impl Engine {
             steer_claims: Vec::new(),
             unsteered: false,
             compactions: HashMap::new(),
+            bridge_tools,
         };
         loop {
             if active.cancellation.is_cancelled() {
@@ -2556,24 +2575,32 @@ impl Engine {
             } => (None, Some((from, message_id, delete))),
         };
         // The agent keeps its sessions on the machine that runs it: one
-        // recorded on another runtime cannot be resumed or forked here.
+        // recorded on another runtime, or of another declaration, cannot be
+        // resumed or forked here.
         if let Some(elsewhere) = prior
             .as_ref()
             .or(branch.as_ref().map(|(from, _, _)| from))
-            .filter(|record| record.runtime_id != agent.runtime)
+            .filter(|record| {
+                record.runtime_id != agent.runtime || record.runtime_agent != agent.agent
+            })
             .cloned()
         {
-            self.acp_notice(
-                session,
-                run,
+            let notice = if elsewhere.runtime_id == agent.runtime {
+                format!(
+                    "The agent's earlier session is of ACP agent `{}`, and its document now runs \
+                     `{}`; this turn starts a new session, which does not remember the \
+                     conversation so far.",
+                    elsewhere.runtime_agent, agent.agent
+                )
+            } else {
                 format!(
                     "The agent's earlier session is on runtime `{}`, which does not run it for \
                      this session now; this turn starts a new session on runtime `{}`, which does \
                      not remember the conversation so far.",
                     elsewhere.runtime_id, agent.runtime
-                ),
-            )
-            .await;
+                )
+            };
+            self.acp_notice(session, run, notice).await;
             prior = None;
             branch = None;
         }
