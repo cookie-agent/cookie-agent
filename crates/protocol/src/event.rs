@@ -2817,6 +2817,16 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_attempt_id: Option<AttemptId>,
     },
+    /// The provider refused a request because a replayed reasoning block is
+    /// bound to a conversation prefix that changed since (Anthropic's
+    /// thinking-binding check: its tools or system prompt): the reasoning of
+    /// every turn committed at or before `through_seq` is no longer replayed
+    /// (`docs/site/specs/thinking-replay-recovery.md`, client protocol
+    /// 1.33.0).
+    NativeReplayCut {
+        #[schemars(range(min = 1))]
+        through_seq: u64,
+    },
     ModelTurnCommitted {
         attempt_id: AttemptId,
         #[schemars(range(min = 1))]
@@ -3060,6 +3070,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "model_fallback",
     "model_output_started",
     "model_replay_evaluated",
+    "native_replay_cut",
     "model_request_prepared",
     "model_tools_published",
     "model_turn_committed",
@@ -3262,6 +3273,7 @@ impl EventPayload {
             | Self::RunFinished { .. }
             | Self::ModelAttemptStarted { .. }
             | Self::AttemptAbandoned { .. }
+            | Self::NativeReplayCut { .. }
             | Self::ModelTurnCommitted { .. }
             | Self::ModelUsageRecorded { .. }
             | Self::ModelFallback { .. }

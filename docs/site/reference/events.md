@@ -194,6 +194,7 @@ never stored.
 | `model_attempt_started`, `attempt_abandoned`, `model_fallback` | state | run | A model attempt's lifecycle |
 | `model_request_prepared`, `model_tools_published`, `model_output_started`, `model_replay_evaluated` | audit | run | Request and streaming bookkeeping |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
+| `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, after a [thinking-binding mismatch](../specs/thinking-replay-recovery.md) |
 | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_call_linked` | state | run | A tool call's lifecycle |
 | `delegation_reserved`, `delegation_progressed`, `delegation_finished` | state | run | A [delegation](#delegation) on the parent |
 | `delegate_child_terminated` | state | runless | A delegation ended the child before it ran |

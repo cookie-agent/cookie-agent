@@ -7614,6 +7614,25 @@
       "type": "object"
     },
     {
+      "description": "The provider refused a request because a replayed reasoning block is\nbound to a conversation prefix that changed since (Anthropic's\nthinking-binding check: its tools or system prompt): the reasoning of\nevery turn committed at or before `through_seq` is no longer replayed\n(`docs/site/specs/thinking-replay-recovery.md`, client protocol\n1.33.0).",
+      "properties": {
+        "through_seq": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "type": {
+          "const": "native_replay_cut",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "through_seq"
+      ],
+      "type": "object"
+    },
+    {
       "properties": {
         "attempt_id": {
           "format": "uuid",

@@ -1541,6 +1541,7 @@ pub(super) fn reduce_event_from(
         | EventPayload::DelegatedAttachmentsAdded { .. }
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
+        | EventPayload::NativeReplayCut { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
     }
 }

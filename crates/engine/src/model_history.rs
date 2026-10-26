@@ -315,6 +315,9 @@ struct AssistantRecord<'a> {
     /// reasoning-only salvage that restore drops does not leave a dangling
     /// user-role marker.
     interrupted: bool,
+    /// The turn is at or before a `native_replay_cut`: its reasoning is not
+    /// replayed.
+    reasoning_cut: bool,
 }
 
 struct CallRecord<'a> {
@@ -886,8 +889,14 @@ fn assemble_history_with_replay(
     let mut delegation_children = HashMap::new();
     let mut elisions = HashMap::new();
     let mut has_producer_messages = false;
+    // The latest cut: reasoning of turns committed at or before it is not
+    // replayed (`docs/site/specs/thinking-replay-recovery.md`).
+    let mut replay_cut = None::<u64>;
     for event in context_events {
         match &event.payload {
+            EventPayload::NativeReplayCut { through_seq } => {
+                replay_cut = replay_cut.max(Some(*through_seq));
+            }
             EventPayload::SkillLoaded { rendered_body, .. } => {
                 loaded_skills.push(rendered_body);
             }
@@ -1043,6 +1052,7 @@ fn assemble_history_with_replay(
                     // `Cancelled` finish is the provider's ending, not an
                     // interrupt.
                     interrupted: turn.finish_reason == ModelFinishReason::Aborted,
+                    reasoning_cut: replay_cut.is_some_and(|cut| envelope.seq <= cut),
                 })));
             }
             EventPayload::ToolCallStarted { start } => {
@@ -1231,7 +1241,25 @@ fn assemble_history_with_replay(
                 if !assistant.turn.content.iter().all(keep) {
                     assistant.turn.to_mut().content.retain(keep);
                 }
-                let forced_disposition = if retained.len() != original_call_count
+                let reasoning_cut =
+                    assistant.reasoning_cut
+                        && (assistant.turn.native_replay.is_some()
+                            || assistant.turn.content.iter().any(|part| {
+                                matches!(part, PersistedAssistantPart::Reasoning { .. })
+                            }));
+                if reasoning_cut {
+                    let turn = assistant.turn.to_mut();
+                    turn.native_replay = None;
+                    turn.content
+                        .retain(|part| !matches!(part, PersistedAssistantPart::Reasoning { .. }));
+                }
+                let forced_disposition = if reasoning_cut {
+                    Some(ReplayDisposition::DiscardedInvalidPayload {
+                        reason: safe_replay_reason(
+                            "reasoning before a thinking-binding mismatch is not replayed",
+                        ),
+                    })
+                } else if retained.len() != original_call_count
                     && assistant.turn.native_replay.is_some()
                 {
                     assistant.turn.to_mut().native_replay = None;

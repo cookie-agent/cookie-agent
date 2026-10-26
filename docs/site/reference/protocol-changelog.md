@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.33.0
+
+- `native_replay_cut { through_seq }`, a new state event
+  ([thinking-replay recovery spec](../specs/thinking-replay-recovery.md)):
+  the provider refused a replayed reasoning block bound to a conversation
+  prefix that changed since, and the reasoning of every turn committed at or
+  before `through_seq` is no longer replayed. A `diagnostic` of kind
+  `native_replay_cut` beside it says so in the transcript. A reader that does
+  not know the event opens the log render-only, as for any unknown state
+  event. Plugin protocol 1.18.0: plugins receive the event.
+
 ## 1.32.0
 
 - An ACP agent's document may run another declaration (`acp.agent`), so

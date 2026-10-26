@@ -302,3 +302,245 @@ async fn later_attempts_of_a_run_write_replay_decisions_against_a_base() {
         "only decisions after the base's are written: {third:?}"
     );
 }
+
+/// Whether an Anthropic request replays any thinking block.
+fn anthropic_request_has_thinking(request: &str) -> bool {
+    request_body(request)["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .any(|block| block["type"] == "thinking" || block["type"] == "redacted_thinking")
+}
+
+fn signed_replay_primary() -> &'static str {
+    "---\ndescription: Binding test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny }\n---\nBinding.\n"
+}
+
+fn binding_fixture(endpoint: &str) -> (Fixture, cookie_agent_protocol::RunSelection) {
+    custom_fixture_with_capabilities(
+        endpoint,
+        signed_replay_primary(),
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        None,
+        "anthropic-compatible",
+        Some(ANTHROPIC_REPLAY_CAPABILITIES),
+    )
+}
+
+fn run_outcomes(events: &[cookie_agent_protocol::StoredEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(outcome),
+            } => Some(match outcome {
+                cookie_agent_protocol::RunOutcome::Completed { .. } => "completed",
+                cookie_agent_protocol::RunOutcome::Failed { .. } => "failed",
+                cookie_agent_protocol::RunOutcome::Cancelled { .. } => "cancelled",
+                cookie_agent_protocol::RunOutcome::Interrupted { .. } => "interrupted",
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A replay the provider refuses as bound to a different conversation is
+/// sent again at once without the earlier reasoning, and later requests
+/// leave that reasoning out too (`docs/site/specs/thinking-replay-recovery.md`).
+#[tokio::test]
+async fn a_thinking_binding_mismatch_is_retried_once_without_the_earlier_reasoning() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("signed")),
+        AnthropicReplayResponse::BindingMismatch400,
+        AnthropicReplayResponse::Thinking(Some("after-cut")),
+        AnthropicReplayResponse::Text("later"),
+    ])
+    .await;
+    let (fixture, selection) = binding_fixture(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "seed").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "mismatch").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "later").await;
+
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(requests.len(), 4);
+    assert!(
+        anthropic_request_has_thinking(&requests[1]),
+        "the refused replay"
+    );
+    assert!(!anthropic_request_has_thinking(&requests[2]), "the retry");
+    // The next turn leaves out the reasoning before the cut and replays the
+    // reasoning made after it.
+    let later = request_body(&requests[3]);
+    let signatures = later["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .filter(|block| block["type"] == "thinking")
+        .map(|block| block["signature"].as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(signatures, ["after-cut"]);
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .to_vec();
+    assert_eq!(
+        run_outcomes(&events),
+        ["completed", "completed", "completed"]
+    );
+    let cuts = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::NativeReplayCut { .. }))
+        .count();
+    assert_eq!(cuts, 1);
+    let notices = events
+        .iter()
+        .filter(|event| matches!(&event.payload, EventPayload::Diagnostic { message, .. } if message.contains("refused the earlier reasoning")))
+        .count();
+    assert_eq!(notices, 1);
+    fixture.engine.shutdown().await;
+}
+
+/// The one retry refused again fails the attempt as any refused request
+/// does, with a single cut.
+#[tokio::test]
+async fn a_second_binding_mismatch_fails_the_attempt() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("signed")),
+        AnthropicReplayResponse::BindingMismatch400,
+        AnthropicReplayResponse::BindingMismatch400,
+    ])
+    .await;
+    let (fixture, selection) = binding_fixture(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "seed").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "mismatch").await;
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(requests.len(), 3);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .to_vec();
+    assert_eq!(run_outcomes(&events), ["completed", "failed"]);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::NativeReplayCut { .. }))
+            .count(),
+        1
+    );
+    fixture.engine.shutdown().await;
+}
+
+/// Another 400, such as a tampered signature, is not recovered.
+#[tokio::test]
+async fn a_tampered_signature_is_not_recovered() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("signed")),
+        AnthropicReplayResponse::Status400,
+    ])
+    .await;
+    let (fixture, selection) = binding_fixture(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "seed").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "tampered").await;
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(requests.len(), 2);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .to_vec();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::NativeReplayCut { .. }))
+    );
+    fixture.engine.shutdown().await;
+}
+
+/// A revert to before a cut removes it: the reasoning before it replays
+/// again.
+#[tokio::test]
+async fn a_revert_to_before_a_cut_replays_the_earlier_reasoning_again() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("signed")),
+        AnthropicReplayResponse::BindingMismatch400,
+        AnthropicReplayResponse::Text("recovered"),
+        AnthropicReplayResponse::Text("after revert"),
+    ])
+    .await;
+    let (fixture, selection) = binding_fixture(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "seed").await;
+    let seed_end = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .last()
+        .unwrap()
+        .seq;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "mismatch").await;
+    let last = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .last()
+        .unwrap()
+        .seq;
+    fixture
+        .engine
+        .revert_session(
+            session.session_id,
+            seed_end,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            Some(last),
+        )
+        .await
+        .expect("revert to before the cut");
+    run_replay_test_turn(&fixture, session.session_id, &selection, "again").await;
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(requests.len(), 4);
+    assert!(anthropic_request_has_thinking(&requests[3]));
+    fixture.engine.shutdown().await;
+}

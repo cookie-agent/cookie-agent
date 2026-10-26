@@ -1802,6 +1802,9 @@ impl Engine {
             let model = policy::resolve_model(binding, &policy.runtime)?;
             let mut attempts = 0_u32;
             let mut context_recovery_attempted = false;
+            // The one retry a thinking-binding mismatch gets, which the model
+            // retry budget does not count.
+            let mut replay_cut_retries = 0_u32;
             loop {
                 attempts += 1;
                 let attempt_id = cookie_agent_protocol::AttemptId::new_v7();
@@ -2459,6 +2462,25 @@ impl Engine {
                         }
                         return Err(EngineError::Model(error));
                     }
+                    Err(error)
+                        if is_thinking_binding_mismatch(&error)
+                            && !meaningful_output
+                            && replay_cut_retries == 0 =>
+                    {
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned {
+                                attempt_id,
+                                model_error: Some(model_error_summary(&error)),
+                            },
+                        )
+                        .await?;
+                        replay_cut_retries = 1;
+                        self.cut_native_replay(session, run).await?;
+                        continue;
+                    }
                     Err(error) if classify_model_error(&error) == ErrorPolicy::FailRun => {
                         // A user interrupt aborts the attempt mid-stream; the
                         // partial text and reasoning are already visible, so
@@ -2519,7 +2541,7 @@ impl Engine {
                         if is_overload_retry(&error)
                             && retry_budget_allows(
                                 policy.model_retry.overload_retries,
-                                attempts - 1,
+                                attempts - 1 - replay_cut_retries,
                             ) =>
                     {
                         self.append(
@@ -2549,7 +2571,7 @@ impl Engine {
                             && classify_model_error(&error) == ErrorPolicy::RetryEntry
                             && retry_budget_allows(
                                 policy.model_retry.standard_retries,
-                                attempts - 1,
+                                attempts - 1 - replay_cut_retries,
                             ) =>
                     {
                         self.append(
@@ -2738,6 +2760,48 @@ impl Engine {
         EngineError::PluginHookFailed(failure)
     }
 
+    /// Stops replaying the reasoning of every turn committed so far, after
+    /// the provider refused a replayed reasoning block whose conversation
+    /// prefix changed, and says so in the transcript
+    /// (`docs/site/specs/thinking-replay-recovery.md`).
+    async fn cut_native_replay(&self, session: SessionId, run: RunId) -> Result<(), EngineError> {
+        let through_seq = self
+            .inner
+            .store
+            .log(session)?
+            .event_snapshot()
+            .last()
+            .map_or(0, |event| event.seq);
+        if through_seq == 0 {
+            return Ok(());
+        }
+        self.append(
+            session,
+            Some(run),
+            event_origin("engine:model-loop"),
+            Event::NativeReplayCut { through_seq },
+        )
+        .await?;
+        self.append(
+            session,
+            Some(run),
+            event_origin("engine:model-loop"),
+            Event::Diagnostic {
+                source: cookie_agent_protocol::DiagnosticSource::engine("model-loop")
+                    .expect("static diagnostic source is valid"),
+                kind: cookie_agent_protocol::DiagnosticKind::new("native_replay_cut")
+                    .expect("static diagnostic kind is valid"),
+                message: "The provider refused the earlier reasoning (its tools or system \
+                          prompt changed since); the request was sent again without it."
+                    .to_owned(),
+                count: None,
+                detail: None,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     pub(super) async fn sleep_before_model_retry(&self, delay: std::time::Duration) {
         #[cfg(test)]
         if self
@@ -2839,6 +2903,21 @@ impl ReplayEvaluationBase {
 fn is_overload_retry(error: &ModelError) -> bool {
     error.kind == oven_sdk::ModelErrorKind::Overload
         || (error.retryable && matches!(error.diagnostics.http_status, Some(429 | 503)))
+}
+
+/// Whether `error` is Anthropic's refusal of a replayed thinking block bound
+/// to a conversation prefix that changed since: a 400 whose message says the
+/// block "is bound to a different conversation". A tampered signature reads
+/// differently and is not recovered.
+fn is_thinking_binding_mismatch(error: &ModelError) -> bool {
+    const MISMATCH: &str = "bound to a different conversation";
+    error.kind == oven_sdk::ModelErrorKind::InvalidRequest
+        && (error.message.contains(MISMATCH)
+            || error
+                .diagnostics
+                .sanitized_body
+                .as_ref()
+                .is_some_and(|body| body.text().contains(MISMATCH)))
 }
 
 pub(super) fn retry_budget_allows(configured_retries: i64, retries_completed: u32) -> bool {

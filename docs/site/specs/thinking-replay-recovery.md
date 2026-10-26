@@ -1,6 +1,6 @@
 # Recovering from a thinking-binding mismatch
 
-Status: **approved** (2026-10-26).
+Status: **implemented** (2026-10-26; client protocol 1.33.0).
 
 ## 1. Problem
 
@@ -64,9 +64,9 @@ strip-and-retry), with no prevention ahead of time and no `drop_block`.
 
 ## 4. Protocols and history
 
-- `native_replay_cut` is an additive event: client protocol minor bump,
-  history format unchanged (an older reader ignores it and shows the
-  diagnostic).
+- `native_replay_cut` is an additive state event: client protocol 1.33.0,
+  history format unchanged. A reader that does not know it opens the log
+  render-only, as for any unknown state event, and shows the diagnostic.
 - No plugin or runtime protocol change, and no oven-sdk change.
 
 ## 5. Tests

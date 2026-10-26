@@ -42,7 +42,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
-| [Thinking-replay recovery](thinking-replay-recovery.md) | Approved (2026-10-26); a request Anthropic refuses because a replayed thinking block is bound to a changed prefix (tools or system prompt) is retried once without the earlier reasoning, and `native_replay_cut` keeps later requests from replaying it |
+| [Thinking-replay recovery](thinking-replay-recovery.md) | Implemented (2026-10-26; client protocol 1.33.0); a request Anthropic refuses because a replayed thinking block is bound to a changed prefix (tools or system prompt) is retried once without the earlier reasoning, and `native_replay_cut` keeps later requests from replaying it |
 | [Held sessions](held-sessions.md) | Approved (2026-10-26); a session whose run the user stopped, or whose runs failed past `[model_retry] standard_retries`, is held: no automatic runs, new producer messages refused (cron fires skipped, subagent reports deferred, goal reminders not made), recorded as `automatic_runs_held`, and cleared by `session.resume` (Resume in place of Send and Queue) |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |

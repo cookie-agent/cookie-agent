@@ -1834,6 +1834,9 @@ pub(crate) fn anthropic_thinking_body(signature: Option<&str>) -> String {
 pub(crate) enum AnthropicReplayResponse {
     Thinking(Option<&'static str>),
     Status400,
+    /// Anthropic's refusal of a replayed thinking block whose conversation
+    /// prefix changed (preserved thinking).
+    BindingMismatch400,
     Text(&'static str),
     TextWithInputTokens(&'static str, u64),
 }
@@ -1868,10 +1871,17 @@ pub(crate) async fn anthropic_replay_server(
             let (mut socket, _) = listener.accept().await.expect("Anthropic replay accept");
             let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
                 .expect("UTF-8 Anthropic replay request");
-            let reject = matches!(response, AnthropicReplayResponse::Status400);
+            let reject = matches!(
+                response,
+                AnthropicReplayResponse::Status400 | AnthropicReplayResponse::BindingMismatch400
+            );
             requests.push(request);
             if reject {
-                let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"invalid signature"}}"#;
+                let body = if matches!(response, AnthropicReplayResponse::BindingMismatch400) {
+                    r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\". The `tools` list differs from the one this block was created with."}}"#
+                } else {
+                    r#"{"type":"error","error":{"type":"invalid_request_error","message":"invalid signature"}}"#
+                };
                 let wire = format!(
                     "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
@@ -1889,7 +1899,8 @@ pub(crate) async fn anthropic_replay_server(
                     AnthropicReplayResponse::TextWithInputTokens(text, input_tokens) => {
                         anthropic_usage_body(text, input_tokens, 0, 0)
                     }
-                    AnthropicReplayResponse::Status400 => unreachable!(),
+                    AnthropicReplayResponse::Status400
+                    | AnthropicReplayResponse::BindingMismatch400 => unreachable!(),
                 };
                 write_scripted_sse(&mut socket, &body).await;
             }
