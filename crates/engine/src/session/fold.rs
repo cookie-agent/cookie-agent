@@ -185,6 +185,7 @@ fn projection_fold_with(
         waiting_on: Vec::new(),
         delegated_attachments: Vec::new(),
         cron,
+        held: None,
     };
     let mut projection = SessionProjection {
         meta,
@@ -312,6 +313,15 @@ impl SessionProjection {
                 self.meta.project = project.clone();
                 durable_meta = true;
             }
+            EventPayload::AutomaticRunsHeld { reason } => {
+                self.meta.held = Some(reason.clone());
+                durable_meta = true;
+            }
+            EventPayload::AutomaticRunsResumed {} => {
+                if self.meta.held.take().is_some() {
+                    durable_meta = true;
+                }
+            }
             EventPayload::DelegatedAttachmentsAdded { attachments, .. } => {
                 for attachment in attachments {
                     if !self
@@ -388,6 +398,12 @@ impl SessionProjection {
             // run.
             EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputSubmitted { .. } => {
                 self.meta.last_agent_activity = Some(envelope.timestamp);
+                // The user's submitted input clears a hold.
+                if matches!(envelope.payload, EventPayload::UserInputSubmitted { .. })
+                    && self.meta.held.take().is_some()
+                {
+                    durable_meta = true;
+                }
             }
             EventPayload::ModelTurnCommitted {
                 model_turn_seq,

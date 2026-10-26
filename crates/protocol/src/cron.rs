@@ -311,6 +311,9 @@ crate::open_enum! {
         FiringDisabled,
         /// The daemon was waiting to restart (client protocol 1.19.0).
         DaemonRestarting,
+        /// The target session's automatic runs were held (client protocol
+        /// 1.34.0; `docs/site/specs/held-sessions.md`).
+        SessionHeld,
     }
 }
 

@@ -472,6 +472,11 @@ impl Engine {
     /// previous fire's prompt still waits in its session, or, for a
     /// new-session job, its previous run session still runs.
     fn skip_reason(&self, job: &StoredJob) -> Option<StoredSkip> {
+        if let StoredTarget::Session(session) | StoredTarget::Subagent(session) = &job.target
+            && self.held_reason(*session).is_some()
+        {
+            return Some(StoredSkip::SessionHeld);
+        }
         let previous = job
             .history
             .iter()

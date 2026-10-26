@@ -15,6 +15,7 @@ pub mod badges;
 pub mod config;
 pub mod cron;
 pub mod elicitation;
+pub mod held;
 pub mod markdown;
 pub mod mcp;
 pub mod memory;
@@ -1054,6 +1055,10 @@ pub struct SessionState {
     /// What the session's ACP agent reported: its slash commands and its
     /// config options. Empty for a session of a daemon agent.
     pub acp: AcpSessionView,
+    /// Why the session's automatic runs are held, while they are
+    /// (`docs/site/specs/held-sessions.md`): the latest
+    /// `automatic_runs_held` with no resume or submitted user input since.
+    pub held: Option<cookie_agent_protocol::Open<cookie_agent_protocol::HeldReason>>,
     pub transcript: Vec<TranscriptItem>,
     /// Durable insertion time per transcript item id. Cross-session rows such
     /// as aggregated descendant warnings merge into a viewed transcript by

@@ -827,6 +827,7 @@ impl Engine {
                     engine.rebuild_visible_tree_grants();
                     engine.inner.delegation_events.reconcile_parent(session)?;
                     engine.reconcile_reverted_producers_direct(session)?;
+                    engine.hold_after_revert(session)?;
                     engine.forget_deleted_sessions(&deleted);
                     engine
                         .inner

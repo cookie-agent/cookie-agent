@@ -1,5 +1,53 @@
 {
   "$defs": {
+    "HeldReason": {
+      "description": "Why a session's automatic runs stopped (`docs/site/specs/held-sessions.md`).",
+      "oneOf": [
+        {
+          "description": "The user stopped the session's run.",
+          "properties": {
+            "type": {
+              "const": "stopped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Its runs failed `failures` times in a row, past `[model_retry]\nstandard_retries`; `error` is the last run's.",
+          "properties": {
+            "error": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "failures": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "failing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "failures"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
     "RunSelection": {
       "properties": {
         "agent": {
@@ -163,6 +211,17 @@
             "$ref": "#/$defs/RuntimeAttachment"
           },
           "type": "array"
+        },
+        "held": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeldReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the session's automatic runs are held, while they are\n(`docs/site/specs/held-sessions.md`, client protocol 1.34.0): the\nlatest `automatic_runs_held` with no `automatic_runs_resumed` or\nsubmitted user input after it. Absent when not held and from an\nolder daemon."
         },
         "last_activity": {
           "format": "date-time",

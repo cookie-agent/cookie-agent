@@ -147,7 +147,8 @@ A fire is **skipped**, and recorded with the reason, when:
   still running`);
 - `[cron] enabled = false` holds (`firing turned off`);
 - the daemon stopped between recording a fire and delivering it
-  (`interrupted`).
+  (`interrupted`);
+- the target session is [held](held.md) (`session held`).
 
 There is **no catch-up**. A fire missed while the daemon was down is not
 run: when the daemon starts, each job whose time passed gets one history

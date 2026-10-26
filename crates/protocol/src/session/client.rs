@@ -740,6 +740,15 @@ impl Client {
         self.call(crate::SESSION_SELECT_MODEL_METHOD, &params).await
     }
 
+    /// Clear this held session's hold and send its pending producer
+    /// messages (`session.held.resume`, client protocol 1.34.0).
+    pub async fn resume_held_session(
+        &self,
+        params: crate::SessionHeldResumeParams,
+    ) -> Result<crate::SessionHeldResumeResult, ClientError> {
+        self.call(crate::SESSION_HELD_RESUME_METHOD, &params).await
+    }
+
     /// Cancel this session's running manual compaction
     /// (`session.compact.cancel`).
     pub async fn cancel_compaction(

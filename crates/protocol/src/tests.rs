@@ -2155,6 +2155,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     let last_activity = "2026-08-06T12:34:56Z".parse().expect("timestamp");
     let meta = SessionMeta {
         cron: None,
+        held: None,
         session_id: SessionId::new_v7(),
         origin: SessionOrigin::Root,
         short_id: None,
@@ -3728,6 +3729,7 @@ fn remembered_runtimes_and_forget_runtime_round_trip() {
 fn meta_fixture() -> SessionMeta {
     SessionMeta {
         cron: None,
+        held: None,
         session_id: SessionId::new_v7(),
         origin: SessionOrigin::Root,
         short_id: None,

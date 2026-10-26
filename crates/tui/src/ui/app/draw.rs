@@ -116,6 +116,27 @@ impl App {
                 (Rect::default(), layout.conversation)
             };
         self.render_restart_banner(frame, banner);
+        // The held banner takes the conversation's last row, above the
+        // composer, while there is room.
+        let (held, conversation) = if self.held_banner_text().is_some() && conversation.height > 3 {
+            (
+                Rect::new(
+                    conversation.x,
+                    conversation.y + conversation.height - 1,
+                    conversation.width,
+                    1,
+                ),
+                Rect::new(
+                    conversation.x,
+                    conversation.y,
+                    conversation.width,
+                    conversation.height - 1,
+                ),
+            )
+        } else {
+            (Rect::default(), conversation)
+        };
+        self.render_held_banner(frame, held);
         self.render_conversation(frame, conversation);
         self.render_queue_strip(frame, layout.queue);
         if self.background_bar_visible() {

@@ -50,6 +50,7 @@ use sessions::{
 };
 
 mod goal;
+mod held;
 
 #[cfg(test)]
 mod fallback_tests;
@@ -521,6 +522,8 @@ pub(super) enum PointerTarget {
     RestartChoice(restart::RestartChoice),
     /// The restart banner's *Restart daemon* button.
     RestartBanner,
+    /// The held banner's *resume* button (`docs/site/specs/held-sessions.md`).
+    HeldResume,
     /// A button of the `/config` panel's action row.
     ConfigAction(config_panel::ConfigAction),
     /// A picker's search input: a click places its caret.
@@ -635,6 +638,8 @@ pub(super) struct UiHitMap {
     pub(super) restart_choices: Vec<(Rect, restart::RestartChoice)>,
     /// The restart banner's button.
     pub(super) restart_banner: Option<Rect>,
+    /// The held banner's *resume* button.
+    pub(super) held_resume: Option<Rect>,
     /// The `/config` panel's action row.
     pub(super) config_actions: Vec<(Rect, config_panel::ConfigAction)>,
     /// The session picker's action row buttons.
@@ -682,6 +687,7 @@ impl UiHitMap {
         self.confirm_buttons.clear();
         self.restart_choices.clear();
         self.restart_banner = None;
+        self.held_resume = None;
         self.config_actions.clear();
         self.session_picker_actions.clear();
         self.goal_actions.clear();

@@ -252,6 +252,8 @@ pub(crate) enum StoredSkip {
     Interrupted,
     FiringDisabled,
     DaemonRestarting,
+    /// The target session was held (`docs/site/specs/held-sessions.md`).
+    SessionHeld,
 }
 
 impl StoredSkip {
@@ -263,6 +265,7 @@ impl StoredSkip {
             Self::Interrupted => CronSkipReason::Interrupted,
             Self::FiringDisabled => CronSkipReason::FiringDisabled,
             Self::DaemonRestarting => CronSkipReason::DaemonRestarting,
+            Self::SessionHeld => CronSkipReason::SessionHeld,
         }
     }
 }

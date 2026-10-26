@@ -534,8 +534,25 @@ async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting(
         );
         assert!(body.as_plain_text().contains("complete"), "{body}");
     }
-    // The reports wake the parent, whose next request carries the
-    // interrupted calls' results.
+    // The user's stop holds the parent: the reports wait in it until a
+    // resume, whose run's request carries the interrupted calls' results
+    // (`docs/site/specs/held-sessions.md`).
+    assert_eq!(
+        projection.meta.held,
+        Some(cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::HeldReason::Stopped {}
+        ))
+    );
+    assert!(
+        fixture
+            .engine
+            .resume_held_session(
+                parent.session_id,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("resume the parent")
+    );
     let requests = with_watchdog("the parent woke", server)
         .await
         .expect("scripted server");

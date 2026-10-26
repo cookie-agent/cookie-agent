@@ -190,6 +190,41 @@ impl Engine {
                     }
                 }
             }
+            // A held root waits for the user however much is pending: one
+            // held for failures is pushed now, one the user stopped is not
+            // (`docs/site/specs/held-sessions.md` section 5).
+            Event::AutomaticRunsHeld { reason } => {
+                lock(&self.inner.push.armed).remove(&session);
+                if self.inner.store.parent_of(session).is_some() {
+                    return;
+                }
+                let cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::HeldReason::Failing { failures, error },
+                ) = reason
+                else {
+                    return;
+                };
+                let Ok(projection) = self.inner.store.get(session) else {
+                    return;
+                };
+                let meta = &projection.meta;
+                let error = match error {
+                    Some(error) => format!("stopped after {failures} failed runs: {error}"),
+                    None => format!("stopped after {failures} failed runs"),
+                };
+                let _ = self
+                    .inner
+                    .push
+                    .sender
+                    .send(PushSignal::Settled(SettledSignal {
+                        root: session,
+                        outcome: SettledOutcome::Failed { error },
+                        title: meta.title.as_ref().map(ToString::to_string),
+                        short_id: meta.short_id.clone(),
+                        cron: meta.cron.is_some(),
+                        at: Timestamp::now(),
+                    }));
+            }
             _ => {}
         }
     }

@@ -14,7 +14,7 @@ fn tree_recipient(engine: &crate::Engine, sender: SessionId) -> SessionId {
 }
 
 /// A session delegated from `parent` in the tree rooted at `root`.
-fn tree_session(
+pub(super) fn tree_session(
     engine: &crate::Engine,
     root: SessionId,
     parent: SessionId,

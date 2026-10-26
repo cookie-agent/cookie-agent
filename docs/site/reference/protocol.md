@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.33.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.34.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.33.0",
+    "protocol_version": "1.34.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.33.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.34.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -281,6 +281,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `skills.update` | Empty object (since 1.22.0) | Refreshes the official skills now: `enabled` (`false` with `[skills] official = false`), the `skills` kept (`name`, `version`), the ones `updated` and `removed`, and the `error` when the refresh failed and the cached ones stayed |
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
 | `session.compact.cancel` | Session ID | Whether a running manual compaction was cancelled |
+| `session.held.resume` | Session ID | `resumed`: whether the session was [held](#held-sessions); its pending producer messages then run (since 1.34.0) |
 | `session.revert` | Session ID, positive `through_seq`, `expected_last_seq` | Updated session metadata |
 | `session.delete` | Root session ID, positive `expected_last_seq` | `deleted`: every session removed, the root first (see [Delete](#delete)) |
 | `session.fork` | Session ID, positive `through_seq`, `client_fork_id` | New session ID |
@@ -712,7 +713,8 @@ its state: `next_fire`, `runs`, `consecutive_failures`, `last_fire`, and the
   it went to, and the `run_id` and `run_end` (`{ status, at }`) of the run
   its prompt landed in. A skip `reason` is `previous_fire_not_delivered`,
   `previous_run_still_running`, `daemon_was_down`, `interrupted`,
-  `firing_disabled`, or `daemon_restarting` (since 1.19.0), an open set.
+  `firing_disabled`, `daemon_restarting` (since 1.19.0), or `session_held`
+  (since 1.34.0), an open set.
 - **Run sessions.** A new-session fire's session records the job in
   `SessionMeta.cron` (`{ job_id, fired_at }`, also on its `session_created`
   event) and is otherwise ordinary.
@@ -1063,6 +1065,27 @@ call detached or reported; a child's turn started or ended; a delegation or
 external registration made or dropped; a child started or stopped waiting
 on something live. A session the daemon evicted from memory keeps reporting
 what it waits on. A 1.8 daemon sends no `waiting_on`.
+
+### Held sessions
+
+Since 1.34.0 a session whose run the user stopped (`run.cancel`) while
+something could start the next one on its own, or whose runs failed more
+than `[model_retry] standard_retries` times in a row, is
+**held** ([spec](../specs/held-sessions.md)). Nothing starts a run of it on
+its own: its pending producer messages wait, goal reminders stop, a plugin's
+or runtime's `producer.send` is refused with `producer_rejected`, a cron
+fire into it is skipped as `session_held`, and mail from any agent but its
+parent fails with `send_message:recipient_held`. The engine's own reports
+(subagent turns, delegations, background calls) are accepted and wait.
+
+`SessionMeta.held` carries the reason while it lasts, from the latest
+`automatic_runs_held` event. It ends with `automatic_runs_resumed`, written
+by `session.held.resume` or by the parent's mail to its subagent, or with
+any input the user submits; the failure count starts over then. A run that
+a daemon restart interrupted is neither a stop nor a failure: it resumes as
+before. Clients show the hold and offer **Resume** in place of Send; a
+session held for failures sends a push notification, one the user stopped
+does not.
 
 ### Where a root's subagents work
 

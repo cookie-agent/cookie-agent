@@ -740,6 +740,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.held.resume",
+      "params": "SessionHeldResumeParams",
+      "params_role": "command",
+      "result": "SessionHeldResumeResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.list",
       "params": "SessionListParams",
       "params_role": "command",

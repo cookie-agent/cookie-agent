@@ -343,6 +343,7 @@ mod tests {
             attachments: Vec::new(),
             waiting_on: Vec::new(),
             delegated_attachments: Vec::new(),
+            held: None,
         }
     }
 

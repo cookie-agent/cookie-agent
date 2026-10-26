@@ -610,6 +610,7 @@ fn skip_text(reason: cookie_agent_protocol::CronSkipReason) -> &'static str {
         CronSkipReason::Interrupted => "interrupted",
         CronSkipReason::FiringDisabled => "firing disabled",
         CronSkipReason::DaemonRestarting => "daemon restarting",
+        CronSkipReason::SessionHeld => "session held",
         CronSkipReason::Unknown => "unknown",
     }
 }

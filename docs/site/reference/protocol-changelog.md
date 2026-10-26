@@ -5,6 +5,26 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.34.0
+
+- Held sessions ([held sessions spec](../specs/held-sessions.md)): a session
+  whose run the user stopped, or whose runs failed past `[model_retry]
+  standard_retries`, is held until it is resumed. All additions an older
+  peer ignores:
+  - `automatic_runs_held { reason }` and `automatic_runs_resumed {}`, new
+    runless state events. `reason` (`HeldReason`) is open: `stopped`, or
+    `failing` with `failures` and an optional `error`.
+  - `SessionMeta.held`: the reason while the session is held.
+  - `session.held.resume { session_id }` → `{ resumed }`: clears the hold
+    and lets what waits run; `resumed: false` for a session that is not
+    held. A message the user sends clears it too.
+  - The cron skip reason `session_held`.
+  - While held, `producer.send` from a plugin or runtime answers
+    `producer_rejected` with the hold in its detail, and `send_message` from
+    an agent other than the session's parent fails with
+    `send_message:recipient_held`. Plugin protocol 1.19.0: plugins receive
+    the new events.
+
 ## 1.33.0
 
 - `native_replay_cut { through_seq }`, a new state event

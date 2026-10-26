@@ -2062,6 +2062,43 @@ impl Workspace {
     }
 
     /// Cancels the viewed session's running run (`run.cancel`).
+    /// Why the viewed session is held and what waits, while it is
+    /// (`docs/site/specs/held-sessions.md`).
+    pub fn held_line(self) -> Option<String> {
+        let session_id = self.selected.get()?;
+        self.with_store(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .and_then(cookie_agent_client_state::held::composer_line)
+        })
+    }
+
+    /// Resume: sends the draft, if any, which clears the hold as any message
+    /// does, else clears it (`session.held.resume`) so what waits runs.
+    pub fn resume_held(self) {
+        let has_input = self.composer.with_untracked(|text| !text.trim().is_empty())
+            || !self.attachments.with_untracked(Vec::is_empty);
+        if has_input {
+            self.submit(InputDelivery::Steer);
+            return;
+        }
+        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
+        else {
+            return;
+        };
+        spawn_local(async move {
+            match client
+                .resume_held_session(cookie_agent_protocol::SessionHeldResumeParams { session_id })
+                .await
+            {
+                Ok(result) if result.resumed => self.status.set("resumed".into()),
+                Ok(_) => self.status.set("the session was not held".into()),
+                Err(error) => self.status.set(crate::errors::describe(&error)),
+            }
+        });
+    }
+
     pub fn cancel(self) {
         let (Some(client), Some(run_id)) = (self.client(), self.active_run()) else {
             if self.compacting() {

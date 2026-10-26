@@ -456,6 +456,11 @@
           "const": "daemon_restarting",
           "description": "The daemon was waiting to restart (client protocol 1.19.0).",
           "type": "string"
+        },
+        {
+          "const": "session_held",
+          "description": "The target session's automatic runs were held (client protocol\n1.34.0; `docs/site/specs/held-sessions.md`).",
+          "type": "string"
         }
       ],
       "x-open": true

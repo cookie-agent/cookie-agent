@@ -1414,6 +1414,20 @@ pub struct SessionCompactResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation_reason: Option<String>,
 }
+/// Clears a held session's hold and sends its pending producer messages
+/// (`docs/site/specs/held-sessions.md`, client protocol 1.34.0).
+pub const SESSION_HELD_RESUME_METHOD: &str = "session.held.resume";
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionHeldResumeParams {
+    pub session_id: SessionId,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SessionHeldResumeResult {
+    /// Whether the session was held; a session that was not is left as it
+    /// is.
+    pub resumed: bool,
+}
 pub const SESSION_COMPACT_CANCEL_METHOD: &str = "session.compact.cancel";
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

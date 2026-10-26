@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "resumed": {
+      "description": "Whether the session was held; a session that was not is left as it\nis.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "resumed"
+  ],
+  "title": "SessionHeldResumeResult",
+  "type": "object"
+}

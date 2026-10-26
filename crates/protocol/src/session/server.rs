@@ -404,6 +404,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: crate::SessionCompactCancelParams,
         context: &ServerContext,
     ) -> Result<crate::SessionCompactCancelResult, ServerFault>;
+    async fn resume_held_session(
+        &self,
+        params: crate::SessionHeldResumeParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionHeldResumeResult, ServerFault>;
     async fn revert_session(
         &self,
         params: SessionRevertParams,
@@ -1161,6 +1166,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         crate::SESSION_COMPACT_CANCEL_METHOD => {
             value(server.cancel_compaction(decode(params)?, context).await?)
+        }
+        crate::SESSION_HELD_RESUME_METHOD => {
+            value(server.resume_held_session(decode(params)?, context).await?)
         }
         "session.fork" => value(server.fork_session(decode(params)?, context).await?),
         "run.start" => value(server.start_run(decode(params)?, context).await?),

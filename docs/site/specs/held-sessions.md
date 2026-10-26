@@ -1,6 +1,7 @@
 # Held sessions: stopped and failing automatic runs
 
-Status: **approved** (2026-10-26).
+Status: **implemented** (2026-10-26; client protocol 1.34.0, plugin protocol
+1.19.0); see the implementation notes at the end.
 
 ## 1. Problem
 
@@ -138,3 +139,51 @@ All of 2026-10-26, by the user:
 2. A push when a session becomes held for failures, none for a stop.
 3. The parent resumes a held subagent with `delegate_subagent`
    (`resume_session_id`) or `send_message`; other agents cannot.
+
+## 9. Implementation notes (2026-10-26)
+
+Where the implementation differs from the text above, this section wins.
+
+- **Method name.** `session.resume` already opens a session, so the resume
+  is `session.held.resume { session_id }` → `{ resumed }`. It is idempotent:
+  a session that is not held answers `resumed: false`, and there is no
+  `session_not_held` error. With text in the composer, the clients send it
+  as a normal message, which clears the hold.
+- **Refusals reuse existing codes.** A plugin's or runtime's `producer.send`
+  gets `producer_rejected` with *the session is held (...)* as its detail,
+  instead of a new `session_held` error, so the plugin and runtime error
+  surfaces are unchanged. Agent mail fails with
+  `send_message:recipient_held: the session is held (...)`.
+- **The engine's own producers are accepted and wait.** Subagent turn
+  reports, delegation completions, background tool results, and goal
+  controls are recorded while held and go with the resume, which the hold
+  already guarantees. Goal reminders are not made.
+- **A stop** is a `run_finished` `cancelled` whose envelope origin is a
+  client or the user. A cancel the engine makes (shutdown, a parent
+  stopping its subagent) does not hold. A stop holds only when something
+  could start a run on its own: a pending producer message, an active
+  goal, or a live producer registration (a background call, a subagent, a
+  plugin or runtime). With nothing such, there is nothing to hold, and the
+  composer keeps Send.
+- **A revert** that leaves producer messages waiting from before the cut
+  holds the session as a stop does, so the next run is the user's; what
+  arrives later (a surviving background call's result) wakes it as
+  before.
+- **The failure count** runs back from the latest event to the last
+  `completed` run, `user_input_submitted`, or `automatic_runs_resumed`;
+  `interrupted` runs are skipped, and producer messages never reset it.
+  The held state is that walk's result, so it survives restarts.
+- **Subagent reports keep their status.** A report is rendered at the
+  child's run end, before the hold is recorded, so it says `failed` or
+  `cancelled` as before rather than `held`, and a hold sends no report of
+  its own (one would wake the parent, which could undo the user's stop).
+- **Clients.** The transcript records each hold as a warning row and each
+  resume as an info row. The web composer shows **Resume** in place of Send
+  and Queue, with a *Held — ...* status line after the transcript. The TUI
+  draws a banner on the conversation's last row with a *resume* button
+  (`PointerTarget::HeldResume`), and Enter in an empty composer resumes.
+- **Tests:** `crates/engine/src/runtime/tests/held_sessions.rs` (failures to
+  the budget and a resume, a stop, a goal that keeps failing, the parent's
+  and a sibling's mail, the push), the cron skip in `tests/crons.rs`, the
+  updated delegation and producer tests, `client_state::held`, the web's
+  composer buttons, and the TUI's pointer sweep.

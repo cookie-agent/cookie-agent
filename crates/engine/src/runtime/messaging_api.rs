@@ -37,6 +37,9 @@ pub const MESSAGE_INBOX_FULL: &str = "send_message:inbox_full";
 pub const MESSAGE_MAX_HOPS_EXCEEDED: &str = "send_message:max_hops_exceeded";
 pub const MESSAGE_INFLIGHT_FULL: &str = "send_message:inflight_full";
 pub const MESSAGE_ENGINE_SHUTDOWN: &str = "send_message:engine_shutdown";
+/// The recipient is held (`docs/site/specs/held-sessions.md`) and the sender
+/// is not its parent.
+pub const MESSAGE_RECIPIENT_HELD: &str = "send_message:recipient_held";
 
 /// Immutable arguments for one `send_message` tool invocation. The sender
 /// triple is engine-derived tool context, never model arguments.

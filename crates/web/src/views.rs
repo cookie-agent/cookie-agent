@@ -1644,6 +1644,18 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         {move || working_label(workspace)}
                     </div>
                 </Show>
+                // A held session says why and what waits, until a resume.
+                <Show when=move || !running(workspace) && workspace.held_line().is_some()>
+                    <div
+                        id="held"
+                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-caramel dark:text-maple"
+                        role="status"
+                        data-held
+                    >
+                        <Glyph icon=icondata::FaPauseSolid />
+                        {move || workspace.held_line().unwrap_or_default()}
+                    </div>
+                </Show>
             </div>
             // Over the end of the transcript while it does not follow it;
             // the row it sits in takes no room.
@@ -2102,7 +2114,7 @@ fn attach_padding(buttons: crate::attach::AttachButtons) -> &'static str {
 fn actions_padding(buttons: ComposerButtons) -> &'static str {
     match buttons {
         ComposerButtons::SteerAndQueue => "pr-[5.625rem]",
-        ComposerButtons::Send { .. } | ComposerButtons::Stop => "pr-12",
+        ComposerButtons::Send { .. } | ComposerButtons::Stop | ComposerButtons::Resume => "pr-12",
     }
 }
 
@@ -2110,7 +2122,7 @@ fn actions_padding(buttons: ComposerButtons) -> &'static str {
 fn actions_room(buttons: ComposerButtons) -> &'static str {
     match buttons {
         ComposerButtons::SteerAndQueue => "5.625rem",
-        ComposerButtons::Send { .. } | ComposerButtons::Stop => "3rem",
+        ComposerButtons::Send { .. } | ComposerButtons::Stop | ComposerButtons::Resume => "3rem",
     }
 }
 
@@ -2147,7 +2159,11 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let buttons = Memo::new(move |_| {
         let has_input = workspace.composer.with(|text| !text.trim().is_empty())
             || !workspace.attachments.with(Vec::is_empty);
-        composer_buttons(workspace.stoppable(), has_input)
+        composer_buttons(
+            workspace.stoppable(),
+            has_input,
+            workspace.held_line().is_some(),
+        )
     });
     // The box follows its text: typed, pasted, recalled, or sent away; and
     // its buttons, whose number changes the room the text has. On the
@@ -2191,6 +2207,9 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
         });
         match action {
             ComposerAction::Type => return,
+            ComposerAction::Steer if buttons.get_untracked() == ComposerButtons::Resume => {
+                workspace.resume_held();
+            }
             ComposerAction::Steer => workspace.submit(InputDelivery::Steer),
             ComposerAction::Queue => workspace.submit(InputDelivery::Queue),
             ComposerAction::Newline if event.shift_key() => return,
@@ -2369,6 +2388,11 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         ComposerButtons::Stop => button(
                             "stop", "Stop", "Esc", icondata::FaStopSolid, true,
                             Workspace::cancel,
+                        )
+                        .into_any(),
+                        ComposerButtons::Resume => button(
+                            "resume", "Resume", "Enter", icondata::FaPlaySolid, true,
+                            Workspace::resume_held,
                         )
                         .into_any(),
                         ComposerButtons::SteerAndQueue => view! {

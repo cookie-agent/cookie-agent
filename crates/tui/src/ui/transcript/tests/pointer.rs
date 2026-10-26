@@ -56,6 +56,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::ConfirmButton(_) => "confirm button",
         PointerTarget::RestartChoice(_) => "restart choice",
         PointerTarget::RestartBanner => "restart banner",
+        PointerTarget::HeldResume => "held resume",
         PointerTarget::ConfigAction(_) => "config action",
         PointerTarget::PickerInput => "picker input",
         PointerTarget::PickerRow(_) => "picker row",
@@ -373,6 +374,13 @@ async fn every_clickable_element_hovers_visibly() {
     app.modal = Modal::None;
     app.restart.config_status = None;
 
+    // A held session: the banner's *resume* button.
+    app.store.sessions.get_mut(&session).expect("session").held = Some(
+        cookie_agent_protocol::Open::Known(cookie_agent_protocol::HeldReason::Stopped {}),
+    );
+    seen.extend(sweep(&mut app, "held banner"));
+    app.store.sessions.get_mut(&session).expect("session").held = None;
+
     // The `/config` panel's action row: Reload from disk and Restart
     // daemon.
     app.modal = Modal::Config;
@@ -507,6 +515,7 @@ async fn every_clickable_element_hovers_visibly() {
         "confirm button",
         "restart choice",
         "restart banner",
+        "held resume",
         "config action",
         "picker input",
         "picker row",

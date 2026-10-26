@@ -339,6 +339,10 @@ impl App {
             return;
         }
         if self.input.as_str().trim().is_empty() && self.attachments.is_empty() {
+            // Enter in an empty composer resumes a held session.
+            if self.held_banner_text().is_some() {
+                self.resume_held();
+            }
             return;
         }
         let input = crate::state::ComposerInput {

@@ -448,6 +448,8 @@ pub(super) fn reduce_event_from(
             });
         }
         EventPayload::UserInputSubmitted { content } => {
+            // The user acting clears a hold.
+            state.held = None;
             close_open_assistant(state, timestamp);
             state.last_agent_activity = Some(timestamp);
             if run_id.is_some_and(|run_id| !state.initial_input_submitted.insert(run_id)) {
@@ -1543,6 +1545,24 @@ pub(super) fn reduce_event_from(
         | EventPayload::RuntimeDetached { .. }
         | EventPayload::NativeReplayCut { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
+        EventPayload::AutomaticRunsHeld { reason } => {
+            push_event(
+                state,
+                EventLevel::Warning,
+                crate::held::held_row(&reason),
+                timestamp,
+            );
+            state.held = Some(reason.clone());
+        }
+        EventPayload::AutomaticRunsResumed {} => {
+            state.held = None;
+            push_event(
+                state,
+                EventLevel::Info,
+                "Automatic runs resumed.".to_owned(),
+                timestamp,
+            );
+        }
     }
 }
 

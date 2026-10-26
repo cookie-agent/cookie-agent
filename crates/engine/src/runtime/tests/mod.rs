@@ -23,6 +23,7 @@ mod goal_reminders;
 mod goal_selection;
 mod golden_history;
 mod guards;
+mod held_sessions;
 mod hook_failures;
 mod interception;
 mod interrupt;

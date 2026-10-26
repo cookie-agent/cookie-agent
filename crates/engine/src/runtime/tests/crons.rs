@@ -211,6 +211,47 @@ async fn a_fire_is_skipped_while_the_previous_one_still_waits() {
     assert_eq!(fire_messages(engine, session, &job.id), 1);
 }
 
+/// A fire into a held session is skipped, not a failure
+/// (`docs/site/specs/held-sessions.md`).
+#[tokio::test]
+async fn a_fire_into_a_held_session_is_skipped() {
+    let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection).unwrap().session_id;
+    engine
+        .on_actor(session, move |engine| {
+            engine.append_direct(
+                session,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::AutomaticRunsHeld {
+                    reason: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::HeldReason::Stopped {},
+                    ),
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let job = engine
+        .create_cron(params("Poll.", daily(), CronTarget::Session(session)))
+        .await
+        .expect("created");
+    fire_now(engine, &job.id).await;
+    let skipped = await_job(engine, &job.id, "the skip", |job| job.history.len() == 1).await;
+    assert_eq!(
+        last_outcome(&skipped),
+        StoredOutcome::Skipped {
+            reason: StoredSkip::SessionHeld
+        }
+    );
+    assert_eq!(skipped.consecutive_failures, 0);
+    assert_eq!(fire_messages(engine, session, &job.id), 0);
+    fixture.engine.shutdown().await;
+}
+
 /// While a scheduled restart waits, a due fire is recorded as skipped for
 /// it and `crons.run` is refused.
 #[tokio::test]

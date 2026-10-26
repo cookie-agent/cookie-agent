@@ -3342,6 +3342,12 @@ fn validate_record_incremental(
                 return corrupt(path, "runtime attachment events must be runless");
             }
         }
+        // A hold and its resume happen between runs.
+        EventPayload::AutomaticRunsHeld { .. } | EventPayload::AutomaticRunsResumed {} => {
+            if record.run_id.is_some() {
+                return corrupt(path, "a hold or a resume must be runless");
+            }
+        }
         // A session moves between projects outside its runs.
         EventPayload::SessionProjectSet { .. } => {
             if record.run_id.is_some() {

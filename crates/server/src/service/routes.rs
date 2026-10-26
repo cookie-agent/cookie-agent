@@ -370,6 +370,18 @@ impl ServerProtocol for Server {
         })
     }
 
+    async fn resume_held_session(
+        &self,
+        params: cookie_agent_protocol::SessionHeldResumeParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionHeldResumeResult> {
+        self.engine
+            .resume_held_session(params.session_id, context.client_origin())
+            .await
+            .map(|resumed| cookie_agent_protocol::SessionHeldResumeResult { resumed })
+            .map_err(protocol_fault)
+    }
+
     async fn fork_session(
         &self,
         params: SessionForkParams,

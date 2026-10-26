@@ -363,7 +363,24 @@ impl Engine {
         let events = self.inner.store.log(session)?.event_snapshot();
         let retry = self.inner.config.load().runtime.model_retry;
         let wake_delay = match after_runs(&events, retry.standard_retries) {
-            AfterRuns::Hold => return Ok(()),
+            AfterRuns::Held => return Ok(()),
+            // A stop holds only what could start a run on its own; with
+            // nothing such, the user's next message is just a message.
+            AfterRuns::Hold(HeldReason::Stopped {}) if !self.could_wake(session)? => {
+                return Ok(());
+            }
+            AfterRuns::Hold(reason) => {
+                self.append_direct(
+                    session,
+                    None,
+                    event_origin("engine:producer"),
+                    Event::AutomaticRunsHeld {
+                        reason: Open::Known(reason),
+                    },
+                )?;
+                self.inner.store.persist_buffered_session(session)?;
+                return Ok(());
+            }
             AfterRuns::Wake => None,
             AfterRuns::Retry(ordinal) => Some(super::model_loop::exponential_retry_delay(
                 ordinal,
@@ -1438,6 +1455,17 @@ impl Engine {
             self.inner.store.persist_buffered_session(session)?;
             return Ok(existing.message_id);
         }
+        // A held session takes nothing new from plugins, runtimes, or cron
+        // until it is resumed; the engine's own reports wait in it
+        // (`docs/site/specs/held-sessions.md` section 2).
+        if matches!(authority.owner, ProducerOwner::External { .. })
+            && let Some(reason) = self.held_reason(session)
+        {
+            return Err(EngineError::Producer(format!(
+                "the session is held ({}); it takes messages again once the user resumes it",
+                held_text(&reason)
+            )));
+        }
         let message_id = ProducerMessageId::new_v7();
         self.append_direct(
             session,
@@ -1703,6 +1731,28 @@ impl Engine {
             &self.inner.config.load().runtime.messaging,
         )
         .map_err(|code| EngineError::Messaging(code.to_owned()))?;
+        // Mail to a held session resumes it when its parent sends it, and is
+        // refused from any other agent (`docs/site/specs/held-sessions.md`).
+        if let Some(reason) = self.held_reason(session) {
+            let from_parent = matches!(
+                self.inner.store.get(session)?.meta.origin,
+                SessionOrigin::Delegated { parent_session_id, .. } if parent_session_id == sender
+            );
+            if !from_parent {
+                return Err(EngineError::Messaging(format!(
+                    "{}: the session is held ({}); it takes mail once the user or its parent \
+                     resumes it",
+                    super::messaging_api::MESSAGE_RECIPIENT_HELD,
+                    held_text(&reason)
+                )));
+            }
+            self.append_direct(
+                session,
+                None,
+                event_origin("engine:messaging"),
+                Event::AutomaticRunsResumed {},
+            )?;
+        }
         let message_id = ProducerMessageId::new_v7();
         let envelope = UserContent::text(super::messaging_api::render_agent_message_envelope(
             sender,
@@ -2191,34 +2241,46 @@ pub(super) fn pending(message: &ProducerMessageRecord) -> bool {
     !message.consumed && !message.discarded
 }
 
-/// Whether the session's pending producer messages start a run, by its
-/// last runs since a producer message was accepted or the user submitted
-/// input.
+/// What the session's last runs say about starting one on its own
+/// (`docs/site/specs/held-sessions.md` section 2), read back to the last
+/// run that completed, the user's last input, or the last resume.
 enum AfterRuns {
     /// No run failed or was stopped since.
     Wake,
     /// The last runs failed, and `[model_retry] standard_retries` allows
     /// another: the retry of this ordinal, after its backoff.
     Retry(u32),
-    /// The last run was stopped, or the failures used up the retries: the
-    /// messages wait for the user's next message or a new producer
-    /// message. A run a restart interrupted resumes.
-    Hold,
+    /// The session becomes held: the user stopped its run, or its failures
+    /// used up the retries.
+    Hold(HeldReason),
+    /// The session is held already.
+    Held,
 }
 
 fn after_runs(events: &[Arc<StoredEvent>], standard_retries: i64) -> AfterRuns {
     let mut failures = 0_u32;
+    let mut last_error = None;
     for event in events.iter().rev() {
         match &event.payload {
+            EventPayload::AutomaticRunsHeld { .. } => return AfterRuns::Held,
+            EventPayload::AutomaticRunsResumed {} | EventPayload::UserInputSubmitted { .. } => {
+                break;
+            }
             EventPayload::RunFinished { outcome } => match outcome {
-                Open::Known(RunOutcome::Cancelled { .. }) if failures == 0 => {
-                    return AfterRuns::Hold;
+                Open::Known(RunOutcome::Cancelled { .. })
+                    if failures == 0 && event.origin.as_ref().is_some_and(stopped_by_user) =>
+                {
+                    return AfterRuns::Hold(HeldReason::Stopped {});
                 }
-                Open::Known(RunOutcome::Failed { .. }) => failures += 1,
+                Open::Known(RunOutcome::Failed { error, .. }) => {
+                    failures += 1;
+                    last_error.get_or_insert_with(|| error.clone());
+                }
+                // A run a restart interrupted resumes; it neither counts
+                // nor clears.
+                Open::Known(RunOutcome::Interrupted { .. }) => {}
                 _ => break,
             },
-            EventPayload::ProducerMessageAccepted { .. }
-            | EventPayload::UserInputSubmitted { .. } => break,
             _ => {}
         }
     }
@@ -2227,8 +2289,107 @@ fn after_runs(events: &[Arc<StoredEvent>], standard_retries: i64) -> AfterRuns {
         Some(retries) if super::model_loop::retry_budget_allows(standard_retries, retries) => {
             AfterRuns::Retry(retries)
         }
-        Some(_) => AfterRuns::Hold,
+        Some(_) => AfterRuns::Hold(HeldReason::Failing {
+            failures,
+            error: last_error,
+        }),
     }
+}
+
+/// What a held session's reason reads as in a refusal.
+fn held_text(reason: &Open<HeldReason>) -> String {
+    match reason {
+        Open::Known(HeldReason::Stopped {}) => "stopped by the user".to_owned(),
+        Open::Known(HeldReason::Failing { failures, .. }) => {
+            format!("its runs failed {failures} times in a row")
+        }
+        _ => "held".to_owned(),
+    }
+}
+
+impl Engine {
+    /// Why `session`'s automatic runs are held, while they are.
+    pub(super) fn held_reason(&self, session: SessionId) -> Option<Open<HeldReason>> {
+        self.inner.store.get(session).ok()?.meta.held.clone()
+    }
+
+    /// Whether something could start a run of `session` on its own: a
+    /// pending producer message, an active goal, or a live producer
+    /// registration (a background call, a subagent, a plugin or runtime).
+    fn could_wake(&self, session: SessionId) -> Result<bool, EngineError> {
+        let projection = self.goal_producer_projection(session)?;
+        Ok(projection.messages.iter().any(pending)
+            || projection
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == GoalStatus::Active)
+            || self
+                .inner
+                .sessions
+                .producers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&session)
+                .is_some_and(|state| !state.registrations.is_empty()))
+    }
+
+    /// After a revert, producer messages still waiting from before the cut
+    /// are held, as a stop holds them, so the next run is the user's
+    /// (`docs/site/specs/held-sessions.md`, implementation notes). What
+    /// arrives later, such as a surviving background call's result, wakes
+    /// the session as before.
+    pub(super) fn hold_after_revert(&self, session: SessionId) -> Result<(), EngineError> {
+        if self.held_reason(session).is_some()
+            || !self
+                .goal_producer_projection(session)?
+                .messages
+                .iter()
+                .any(pending)
+        {
+            return Ok(());
+        }
+        self.append_direct(
+            session,
+            None,
+            event_origin("engine:revert"),
+            Event::AutomaticRunsHeld {
+                reason: Open::Known(HeldReason::Stopped {}),
+            },
+        )?;
+        self.inner.store.persist_buffered_session(session)?;
+        Ok(())
+    }
+
+    /// `session.held.resume` (`docs/site/specs/held-sessions.md` section 4):
+    /// clears `session`'s hold, which lets its pending producer messages
+    /// start a run, the failure count starting over. Whether it was held; a
+    /// session that is not is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// When the session is unknown or cannot take an append.
+    pub async fn resume_held_session(
+        &self,
+        session: SessionId,
+        origin: EventOrigin,
+    ) -> Result<bool, EngineError> {
+        self.ensure_appendable(session)?;
+        self.on_actor(session, move |engine| {
+            if engine.held_reason(session).is_none() {
+                return Ok(false);
+            }
+            engine.append_direct(session, None, origin, Event::AutomaticRunsResumed {})?;
+            engine.inner.store.persist_buffered_session(session)?;
+            Ok(true)
+        })
+        .await
+    }
+}
+
+/// Whether a cancellation recorded under `origin` was the user's: a client's
+/// `run.cancel`.
+fn stopped_by_user(origin: &EventOrigin) -> bool {
+    origin.as_str() == "user" || origin.as_str().starts_with("client:")
 }
 
 /// Acceptance guards for one agent-mail send, evaluated against the recipient's

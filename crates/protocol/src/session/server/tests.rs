@@ -201,6 +201,13 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SessionCompactCancelResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn resume_held_session(
+        &self,
+        _: crate::SessionHeldResumeParams,
+        _context: &ServerContext,
+    ) -> Result<crate::SessionHeldResumeResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn revert_session(
         &self,
         _: crate::SessionRevertParams,

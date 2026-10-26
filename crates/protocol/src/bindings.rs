@@ -306,6 +306,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!("session.revert", ToDaemon, SessionRevertParams => SessionRevertResult),
         request!(SESSION_DELETE_METHOD, ToDaemon, SessionDeleteParams => SessionDeleteResult),
         request!(SESSION_COMPACT_CANCEL_METHOD, ToDaemon, SessionCompactCancelParams => SessionCompactCancelResult),
+        request!(SESSION_HELD_RESUME_METHOD, ToDaemon, SessionHeldResumeParams => SessionHeldResumeResult),
         request!("session.fork", ToDaemon, SessionForkParams => SessionForkResult),
         request!("run.start", ToDaemon, RunStartParams => RunStartResult),
         request!("run.steer", ToDaemon, RunSteerParams => RunSteerResult),

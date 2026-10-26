@@ -2846,6 +2846,54 @@
       "type": "string",
       "x-open": true
     },
+    "HeldReason": {
+      "description": "Why a session's automatic runs stopped (`docs/site/specs/held-sessions.md`).",
+      "oneOf": [
+        {
+          "description": "The user stopped the session's run.",
+          "properties": {
+            "type": {
+              "const": "stopped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Its runs failed `failures` times in a row, past `[model_retry]\nstandard_retries`; `error` is the last run's.",
+          "properties": {
+            "error": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "failures": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "failing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "failures"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
     "InternalAgentBackend": {
       "oneOf": [
         {
@@ -7610,6 +7658,36 @@
         "attempt_id",
         "resolved_model",
         "ordered_decisions"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The session's automatic runs stopped (`docs/site/specs/held-sessions.md`,\nclient protocol 1.34.0): nothing starts a run of it on its own, and\nexternal producers and other agents' mail are refused, until the user\nresumes it (`session.resume`, or any input the user submits) or its\nparent does.",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/HeldReason"
+        },
+        "type": {
+          "const": "automatic_runs_held",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "reason"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A resume cleared the session's hold: `session.resume`, or its parent\nresuming its subagent with mail.",
+      "properties": {
+        "type": {
+          "const": "automatic_runs_resumed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
       ],
       "type": "object"
     },

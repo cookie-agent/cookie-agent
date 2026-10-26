@@ -388,6 +388,7 @@ pub const fn skip_reason_label(reason: CronSkipReason) -> &'static str {
         CronSkipReason::Interrupted => "interrupted",
         CronSkipReason::FiringDisabled => "firing turned off",
         CronSkipReason::DaemonRestarting => "daemon was restarting",
+        CronSkipReason::SessionHeld => "session held",
         CronSkipReason::Unknown => "another reason",
     }
 }

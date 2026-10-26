@@ -365,6 +365,13 @@ pub struct SessionMeta {
     /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron: Option<crate::SessionCron>,
+    /// Why the session's automatic runs are held, while they are
+    /// (`docs/site/specs/held-sessions.md`, client protocol 1.34.0): the
+    /// latest `automatic_runs_held` with no `automatic_runs_resumed` or
+    /// submitted user input after it. Absent when not held and from an
+    /// older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Open<HeldReason>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -420,6 +427,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             delegated_attachments: Vec<crate::RuntimeAttachment>,
             #[serde(default)]
             cron: Option<crate::SessionCron>,
+            #[serde(default)]
+            held: Option<Open<HeldReason>>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -447,6 +456,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             waiting_on: w.waiting_on,
             delegated_attachments: w.delegated_attachments,
             cron: w.cron,
+            held: w.held,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -2237,6 +2247,26 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
     }
 }
 
+/// Why a session's automatic runs stopped (`docs/site/specs/held-sessions.md`).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HeldReason {
+    /// The user stopped the session's run.
+    Stopped {},
+    /// Its runs failed `failures` times in a row, past `[model_retry]
+    /// standard_retries`; `error` is the last run's.
+    Failing {
+        failures: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<SafeErrorMessage>,
+    },
+}
+
+crate::open_enum!(tagged HeldReason, tag = "type", {
+    Stopped => "stopped",
+    Failing => "failing",
+});
+
 /// How a run ended: the `outcome` of [`EventPayload::RunFinished`].
 ///
 /// Open: an outcome this build does not know reads as interrupted, a run
@@ -2817,6 +2847,17 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_attempt_id: Option<AttemptId>,
     },
+    /// The session's automatic runs stopped (`docs/site/specs/held-sessions.md`,
+    /// client protocol 1.34.0): nothing starts a run of it on its own, and
+    /// external producers and other agents' mail are refused, until the user
+    /// resumes it (`session.resume`, or any input the user submits) or its
+    /// parent does.
+    AutomaticRunsHeld {
+        reason: Open<HeldReason>,
+    },
+    /// A resume cleared the session's hold: `session.resume`, or its parent
+    /// resuming its subagent with mail.
+    AutomaticRunsResumed {},
     /// The provider refused a request because a replayed reasoning block is
     /// bound to a conversation prefix that changed since (Anthropic's
     /// thinking-binding check: its tools or system prompt): the reasoning of
@@ -3045,6 +3086,8 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "approval_requested",
     "approval_step",
     "attempt_abandoned",
+    "automatic_runs_held",
+    "automatic_runs_resumed",
     "context_checkpoint_committed",
     "delegate_child_terminated",
     "delegated_attachments_added",
@@ -3274,6 +3317,8 @@ impl EventPayload {
             | Self::ModelAttemptStarted { .. }
             | Self::AttemptAbandoned { .. }
             | Self::NativeReplayCut { .. }
+            | Self::AutomaticRunsHeld { .. }
+            | Self::AutomaticRunsResumed {}
             | Self::ModelTurnCommitted { .. }
             | Self::ModelUsageRecorded { .. }
             | Self::ModelFallback { .. }
@@ -3357,6 +3402,8 @@ impl EventPayload {
                 | Self::RecordOmitted { .. }
                 | Self::AcpSessionStarted { .. }
                 | Self::AcpSessionUpdated { .. }
+                | Self::AutomaticRunsHeld { .. }
+                | Self::AutomaticRunsResumed {}
         )
     }
     fn validate(&self) -> Result<(), EventSchemaError> {

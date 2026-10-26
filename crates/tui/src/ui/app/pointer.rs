@@ -49,6 +49,9 @@ impl App {
         if hits.restart_banner.is_some_and(over) {
             return Some(PointerTarget::RestartBanner);
         }
+        if hits.held_resume.is_some_and(over) {
+            return Some(PointerTarget::HeldResume);
+        }
         if hits.background_bar.is_some_and(over) {
             return Some(PointerTarget::BackgroundBar);
         }
@@ -481,6 +484,7 @@ impl App {
             PointerTarget::GoalAction(action) => self.activate_goal_action(action),
             PointerTarget::BackgroundBar => self.open_background_panel(),
             PointerTarget::RestartBanner => self.open_restart_confirm(),
+            PointerTarget::HeldResume => self.resume_held(),
             PointerTarget::ConfigAction(action) => self.activate_config_action(action),
             PointerTarget::RestartChoice(choice) => self.answer_restart_confirm(choice),
             PointerTarget::SessionCost => {
@@ -803,6 +807,7 @@ impl App {
             ),
             PointerTarget::BackgroundBar => (one(hits.background_bar), text_style),
             PointerTarget::RestartBanner => (one(hits.restart_banner), fill_style),
+            PointerTarget::HeldResume => (one(hits.held_resume), fill_style),
             PointerTarget::ConfigAction(action) => (
                 one(hits
                     .config_actions

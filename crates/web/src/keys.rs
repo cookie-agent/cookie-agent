@@ -58,12 +58,17 @@ pub enum ComposerButtons {
     Stop,
     /// Steer (Enter) and Queue (Alt+Enter), side by side.
     SteerAndQueue,
+    /// Resume (Enter) in place of Send while the session is held
+    /// (`docs/site/specs/held-sessions.md`): sends the draft, if any, with
+    /// what waits.
+    Resume,
 }
 
-/// The composer's buttons for a session that is `running` and a draft that
-/// `has_input` (text or attached files).
-pub const fn composer_buttons(running: bool, has_input: bool) -> ComposerButtons {
+/// The composer's buttons for a session that is `running`, a draft that
+/// `has_input` (text or attached files), and a session that is `held`.
+pub const fn composer_buttons(running: bool, has_input: bool, held: bool) -> ComposerButtons {
     match (running, has_input) {
+        (false, _) if held => ComposerButtons::Resume,
         (false, has_input) => ComposerButtons::Send { enabled: has_input },
         (true, false) => ComposerButtons::Stop,
         (true, true) => ComposerButtons::SteerAndQueue,
@@ -93,15 +98,26 @@ mod tests {
     #[test]
     fn the_buttons_follow_the_run_and_the_draft() {
         assert_eq!(
-            composer_buttons(false, false),
+            composer_buttons(false, false, false),
             ComposerButtons::Send { enabled: false }
         );
         assert_eq!(
-            composer_buttons(false, true),
+            composer_buttons(false, true, false),
             ComposerButtons::Send { enabled: true }
         );
-        assert_eq!(composer_buttons(true, false), ComposerButtons::Stop);
-        assert_eq!(composer_buttons(true, true), ComposerButtons::SteerAndQueue);
+        assert_eq!(composer_buttons(true, false, false), ComposerButtons::Stop);
+        assert_eq!(
+            composer_buttons(true, true, false),
+            ComposerButtons::SteerAndQueue
+        );
+        // A held session resumes, with a draft or without; a running one
+        // still stops.
+        assert_eq!(
+            composer_buttons(false, false, true),
+            ComposerButtons::Resume
+        );
+        assert_eq!(composer_buttons(false, true, true), ComposerButtons::Resume);
+        assert_eq!(composer_buttons(true, false, true), ComposerButtons::Stop);
     }
 
     #[test]
