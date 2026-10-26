@@ -2304,17 +2304,50 @@ async fn accepted_pause_control_survives_cancelled_run_and_wakes_without_registr
         .expect("cancel old run before control promotion");
     release_first.notify_one();
 
-    let next_admission = await_event(
+    // A stop holds: the control waits for the user's next message.
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        producer_events(&fixture.engine, session_id)
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+            .count(),
+        1,
+        "no run starts on its own after a stop"
+    );
+    let next_run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id,
+                client_run_id: ClientRunId::new("pause-next-run").expect("next run ID"),
+                selection: fixture
+                    .engine
+                    .inner
+                    .store
+                    .get(session_id)
+                    .unwrap()
+                    .meta
+                    .creation_selection
+                    .clone(),
+                content: "go on".into(),
+            },
+            client_origin(),
+        )
+        .await
+        .expect("start the next run")
+        .run_id;
+    await_event(
         &fixture.engine,
         session_id,
-        "pause control admitted to replacement run",
+        "pause control admitted to the user's next run",
         |event| {
             matches!(event.payload, EventPayload::ProducerMessageAdmitted { message_id } if message_id == control.message_id)
-                && event.run_id != Some(old_run)
+                && event.run_id == Some(next_run)
         },
     )
     .await;
-    let next_run = next_admission.run_id.expect("replacement producer run");
     await_event(&fixture.engine, session_id, "replacement pause consumed", |event| {
         matches!(event.payload, EventPayload::ProducerMessageConsumed { message_id, run_id } if message_id == control.message_id && run_id == next_run)
     })

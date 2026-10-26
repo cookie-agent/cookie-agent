@@ -360,14 +360,16 @@ impl Engine {
         {
             return Ok(());
         }
+        let events = self.inner.store.log(session)?.event_snapshot();
+        if held_after_stop(&events) {
+            return Ok(());
+        }
         let projection = self.goal_producer_projection(session)?;
         let real = projection
             .messages
             .iter()
             .any(|message| pending(message) && message.reminder.is_none());
-        let user_pending = super::residency::has_runless_pending_inputs(
-            &self.inner.store.log(session)?.event_snapshot(),
-        );
+        let user_pending = super::residency::has_runless_pending_inputs(&events);
         if !real
             && !user_pending
             && let Some(goal) = projection.goal.as_ref().filter(|goal| {
@@ -2178,6 +2180,28 @@ pub(crate) fn producer_state_pending(events: &[Arc<cookie_agent_protocol::Stored
 /// gap between acceptance and run admission.
 pub(super) fn pending(message: &ProducerMessageRecord) -> bool {
     !message.consumed && !message.discarded
+}
+
+/// Whether the session's last run was stopped or failed with nothing new
+/// since: no producer message accepted and no user input submitted after
+/// it. Its pending producer messages then wait for the user's next message
+/// or a new producer message, so a stop holds and a run that fails at once
+/// does not start again and again. A run a restart interrupted resumes.
+fn held_after_stop(events: &[Arc<StoredEvent>]) -> bool {
+    for event in events.iter().rev() {
+        match &event.payload {
+            EventPayload::RunFinished { outcome } => {
+                return matches!(
+                    outcome,
+                    Open::Known(RunOutcome::Failed { .. } | RunOutcome::Cancelled { .. })
+                );
+            }
+            EventPayload::ProducerMessageAccepted { .. }
+            | EventPayload::UserInputSubmitted { .. } => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Acceptance guards for one agent-mail send, evaluated against the recipient's

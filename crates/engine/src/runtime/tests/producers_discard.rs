@@ -537,7 +537,42 @@ async fn cancelling_a_claimed_request_releases_only_that_request_lease() {
             .contains_key(&claim.seq)
     );
     release_first.notify_one();
-    let consumed = await_event(&fixture.engine, session_id, "retried message committed", |event| {
+    // A stop holds: the message waits for the user's next message.
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !discard_events(&fixture.engine, session_id)
+            .iter()
+            .any(
+                |event| matches!(event.payload, EventPayload::RunStarted { .. })
+                    && event.run_id != claim.run_id
+            ),
+        "no run starts on its own after a stop"
+    );
+    let selection = fixture
+        .engine
+        .inner
+        .store
+        .get(session_id)
+        .unwrap()
+        .meta
+        .creation_selection
+        .clone();
+    fixture
+        .engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("after-stop").unwrap(),
+                selection,
+                content: "go on".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    let consumed = await_event(&fixture.engine, session_id, "held message committed", |event| {
         matches!(event.payload, EventPayload::ProducerMessageConsumed { message_id: id, .. } if id == message_id)
     }).await;
     assert_ne!(consumed.run_id, claim.run_id);
