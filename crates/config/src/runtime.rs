@@ -1184,7 +1184,7 @@ impl MemoryConfig {
     }
 }
 const fn default_memory_document_bytes() -> usize {
-    2048
+    16 * 1024
 }
 const fn default_memory_snapshot_user_bytes() -> usize {
     12 * 1024

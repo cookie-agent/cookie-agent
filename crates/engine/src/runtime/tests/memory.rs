@@ -648,7 +648,8 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         "{read}"
     );
     // The body is numbered from 1, under the header.
-    assert!(read.ends_with("\nmax size: 2048 bytes\ndescription: Build conventions\nkeywords: cargo\n\n1: - run cargo test\n"), "{read}");
+    let limit = fixture.config.runtime.memory.project_max_bytes;
+    assert!(read.ends_with(&format!("\nmax size: {limit} bytes\ndescription: Build conventions\nkeywords: cargo\n\n1: - run cargo test\n")), "{read}");
     assert!(!read.contains("revision"), "{read}");
     assert_eq!(
         ended["read-1"].result.as_ref().unwrap().title.as_str(),
@@ -840,7 +841,10 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
     // No separate change lines: the rows are the record.
     assert_eq!(memory_changes(&fixture, session), 0);
     // Results reach the model.
-    assert!(requests[2].contains("max size: 2048 bytes"));
+    assert!(requests[2].contains(&format!(
+        "max size: {} bytes",
+        fixture.config.runtime.memory.project_max_bytes
+    )));
     fixture.engine.shutdown().await;
 }
 

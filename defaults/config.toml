@@ -20,8 +20,8 @@
 
 ## Size limits of memory notes and of the memory snapshot a session sees.
 # [memory]
-# user_max_bytes = 2048
-# project_max_bytes = 2048
+# user_max_bytes = 16384
+# project_max_bytes = 16384
 # snapshot_user_bytes = 12288
 
 ## Scheduled prompts: whether the daemon fires them, and how many fires each

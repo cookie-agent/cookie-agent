@@ -72,7 +72,7 @@ snapshot, in search results, and in reads.
 
 Each kind of memory has its own size limit, the whole file counted:
 `user_max_bytes`, `agent_max_bytes`, `machine_max_bytes`,
-`project_max_bytes`, and `overview_max_bytes` under `[memory]` (2048 bytes
+`project_max_bytes`, and `overview_max_bytes` under `[memory]` (16384 bytes
 each by default; see [Memory [memory]](../engine/memory.md)). A write or edit
 by a model, or by you from a client, that would leave a memory over its limit
 is refused. The model is shown the memory's current content and told to

@@ -5,11 +5,11 @@ sees. Complete `config.toml`:
 
 ```toml
 [memory]
-user_max_bytes = 2048
-agent_max_bytes = 2048
-machine_max_bytes = 2048
-project_max_bytes = 2048
-overview_max_bytes = 2048
+user_max_bytes = 16384
+agent_max_bytes = 16384
+machine_max_bytes = 16384
+project_max_bytes = 16384
+overview_max_bytes = 16384
 snapshot_user_bytes = 12288
 snapshot_index_bytes = 4096
 ```
@@ -22,11 +22,11 @@ replaced; see [config.toml](configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `user_max_bytes` | integer | `2048` | Largest `user://` category, frontmatter included, in bytes. Must be positive and at most 57344. |
-| `agent_max_bytes` | integer | `2048` | Largest `agent://` file, frontmatter included, in bytes. Must be positive and at most 57344. |
-| `machine_max_bytes` | integer | `2048` | Largest `machine://` memory, frontmatter included, in bytes. Must be positive and at most 57344. |
-| `project_max_bytes` | integer | `2048` | Largest `project://` memory other than an overview, frontmatter included, in bytes. Must be positive and at most 57344. |
-| `overview_max_bytes` | integer | `2048` | Largest project overview, `project://<project>/overview`, frontmatter included, in bytes. Must be positive and at most 57344. |
+| `user_max_bytes` | integer | `16384` | Largest `user://` category, frontmatter included, in bytes. Must be positive and at most 57344. |
+| `agent_max_bytes` | integer | `16384` | Largest `agent://` file, frontmatter included, in bytes. Must be positive and at most 57344. |
+| `machine_max_bytes` | integer | `16384` | Largest `machine://` memory, frontmatter included, in bytes. Must be positive and at most 57344. |
+| `project_max_bytes` | integer | `16384` | Largest `project://` memory other than an overview, frontmatter included, in bytes. Must be positive and at most 57344. |
+| `overview_max_bytes` | integer | `16384` | Largest project overview, `project://<project>/overview`, frontmatter included, in bytes. Must be positive and at most 57344. |
 | `snapshot_user_bytes` | integer | `12288` | Room for the user categories in a snapshot, in bytes of rendered text. Categories that do not fit are listed by name only. Must be positive. |
 | `snapshot_index_bytes` | integer | `4096` | Room for the index of the session's machine memories in a snapshot, in bytes of rendered text, summed over all machines. Memories that do not fit are only counted. Must be positive. |
 
