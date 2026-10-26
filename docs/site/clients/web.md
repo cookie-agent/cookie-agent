@@ -630,11 +630,12 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   across the top says so, such as *Restart needed to apply: plugins,
   runtimes*, with **Restart daemon**. That button, the one in the connection
   panel, and the one in Settings › Configuration ask first: **Restart when idle** (the default) waits until
-  no turn runs and refuses new ones meanwhile, and **Restart now
-  (interrupts 2 running turns)** stops the running turns, counting the
-  sessions the page sees running. Cancel or Escape closes the question; on
+  no turn runs and every background call has reported, refusing new turns
+  meanwhile, and **Restart now (interrupts 2 running turns)** stops the
+  running turns and the background calls, counting the sessions the page
+  sees running. Cancel or Escape closes the question; on
   a phone it is a sheet at the bottom. Once the daemon accepts, the banner
-  says *Restarting when idle… (1 running turn)* until the connection
+  says *Restarting when idle… (1 running turn, 2 background calls)* until the connection
   closes, then the page shows its reconnecting bar (*the daemon is
   restarting*) and reconnects on its own. A daemon older than client
   protocol 1.19 shows neither the banner nor the button. See

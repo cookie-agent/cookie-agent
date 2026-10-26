@@ -1064,6 +1064,7 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::DaemonRestartResult {
             scheduled: scheduled.scheduled,
             active_runs: scheduled.active_runs,
+            background_calls: scheduled.background_calls,
         })
     }
 

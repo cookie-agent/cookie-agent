@@ -26,6 +26,12 @@
       "minimum": 0,
       "type": "integer"
     },
+    "background_calls": {
+      "description": "The background calls still running (client protocol 1.35.0).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
     "reason": {
       "description": "What the restart waits for or is doing, for people to read.",
       "type": [

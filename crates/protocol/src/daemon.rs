@@ -50,6 +50,11 @@ pub struct DaemonRestartResult {
     /// The runs active when the daemon answered: what `idle` waits for and
     /// what `now` interrupts.
     pub active_runs: u32,
+    /// The background calls still running when the daemon answered, which
+    /// `idle` waits for too and `now` ends (client protocol 1.35.0; absent
+    /// from older daemons, which did not wait for them).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub background_calls: u32,
 }
 
 /// A restart is scheduled, sent to every client when it is and again as the
@@ -59,7 +64,15 @@ pub struct DaemonRestartingNotification {
     pub when: RestartWhen,
     /// The runs still active.
     pub active_runs: u32,
+    /// The background calls still running (client protocol 1.35.0).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub background_calls: u32,
     /// What the restart waits for or is doing, for people to read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(count: &u32) -> bool {
+    *count == 0
 }

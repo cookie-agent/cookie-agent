@@ -6,7 +6,9 @@
 //! hook it installs with [`Engine::set_restart_hook`]. An engine without one
 //! refuses with [`EngineError::RestartUnsupported`].
 //!
-//! While an `idle` restart waits, new top-level runs are refused with
+//! An `idle` restart waits for the active runs and the running background
+//! calls, which the shutdown would otherwise end without a report.
+//! While it waits, new top-level runs are refused with
 //! [`EngineError::Restarting`]: client starts, queued input, producer wakes,
 //! and cron fires (recorded as skipped). A run's delegated children still
 //! start, since they are part of a turn the restart waits for.
@@ -37,6 +39,9 @@ pub struct RestartStatus {
     pub when: RestartWhen,
     /// The runs still active, which an `idle` restart waits for.
     pub active_runs: u32,
+    /// The background calls still running, which an `idle` restart waits
+    /// for too.
+    pub background_calls: u32,
     /// The restart is due and the daemon is going down.
     pub due: bool,
 }
@@ -48,6 +53,7 @@ pub struct RestartScheduled {
     /// changed.
     pub scheduled: bool,
     pub active_runs: u32,
+    pub background_calls: u32,
 }
 
 #[derive(Default)]
@@ -123,6 +129,7 @@ impl Engine {
         };
         restart.pending.store(true, Ordering::SeqCst);
         let active_runs = self.restart_active_runs();
+        let background_calls = self.restart_background_calls();
         if scheduled {
             let engine = self.clone();
             let task = async move { engine.wait_for_restart().await };
@@ -136,6 +143,7 @@ impl Engine {
         Ok(RestartScheduled {
             scheduled,
             active_runs,
+            background_calls,
         })
     }
 
@@ -166,6 +174,12 @@ impl Engine {
         u32::try_from(active + starting).unwrap_or(u32::MAX)
     }
 
+    /// The background calls of every session that have not committed their
+    /// result yet.
+    fn restart_background_calls(&self) -> u32 {
+        u32::try_from(self.inner.background.pending_count()).unwrap_or(u32::MAX)
+    }
+
     /// Publishes the restart's progress until it is due, then calls the
     /// hook.
     async fn wait_for_restart(self) {
@@ -177,10 +191,12 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .unwrap_or(RestartWhen::Idle);
             let active_runs = self.restart_active_runs();
-            let due = when == RestartWhen::Now || active_runs == 0;
+            let background_calls = self.restart_background_calls();
+            let due = when == RestartWhen::Now || (active_runs == 0 && background_calls == 0);
             let status = RestartStatus {
                 when,
                 active_runs,
+                background_calls,
                 due,
             };
             restart.status.send_if_modified(|current| {

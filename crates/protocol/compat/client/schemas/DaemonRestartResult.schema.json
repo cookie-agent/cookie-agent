@@ -7,6 +7,12 @@
       "minimum": 0,
       "type": "integer"
     },
+    "background_calls": {
+      "description": "The background calls still running when the daemon answered, which\n`idle` waits for too and `now` ends (client protocol 1.35.0; absent\nfrom older daemons, which did not wait for them).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
     "scheduled": {
       "description": "Whether this call scheduled the restart; `false` when one was already\nscheduled and this call only changed its `when`.",
       "type": "boolean"

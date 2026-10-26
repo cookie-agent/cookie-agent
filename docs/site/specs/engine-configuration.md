@@ -383,6 +383,15 @@ above:
   client next opens its session on the restarted daemon. `crons.run` is
   refused too; a scheduled fire is skipped with the new reason
   `daemon_restarting`.
+- **Background calls (2026-10-26, client protocol 1.35.0).** `idle` also
+  waits for every background call that has not committed its result: one
+  still running, or one that ended and is committing. The first
+  implementation counted only runs, so a restart scheduled while a
+  backgrounded `bash` ran after its turn ended was due at once and the
+  shutdown killed the call without a report. `daemon.restart` and
+  `daemon.restarting` carry the count as `background_calls`. ACP agents'
+  own background shells are not cookie background calls and stay
+  invisible to the wait.
 - **`scheduled`** is `false` when a restart was already scheduled and the
   call only changed its `when`.
 - **`daemon.restarting`** goes to every connection, a new one included,

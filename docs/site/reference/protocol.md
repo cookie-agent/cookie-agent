@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.34.0",
+    "protocol_version": "1.35.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.34.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.35.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -220,7 +220,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
-| `daemon.restart` | Optional `when`: `idle` (default) or `now` (since 1.19.0) | `scheduled` (whether this call scheduled the restart rather than changed one already scheduled) and `active_runs`; a daemon that cannot relaunch itself answers `restart_unsupported` (see [Restarting the daemon](#restarting-the-daemon)) |
+| `daemon.restart` | Optional `when`: `idle` (default) or `now` (since 1.19.0) | `scheduled` (whether this call scheduled the restart rather than changed one already scheduled), `active_runs`, and `background_calls` (since 1.35.0, omitted when zero); a daemon that cannot relaunch itself answers `restart_unsupported` (see [Restarting the daemon](#restarting-the-daemon)) |
 | `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, `small_model`), `providers_connected`, and the configured `default_model` and `small_model` as `{ model, variant? }`. Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
 | `onboarding.preview` | Optional `source`: `{"type": "release"}` (the default: the daemon's version's release, else that version's newest prerelease with a kit, else the latest) or `{"type": "archive", "data": "<base64>"}` (since 1.22.0) | The starter kit's `kit_version`, `cookie_version`, where it came from (`origin`), and per file its `path` and `action` (`write`, `skip` as identical, `write_new` beside a changed file) with a `diff` for changed files. Writes nothing; a failed download or a kit that does not match its manifest or does not load is `onboarding_kit_unavailable` |
 | `onboarding.run` | `install_kit`, optional `source`, optional `default_model` and `small_model` (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0) | The kit files `written`, `skipped`, and `written_new` (the kit's version beside them as `<path>.new`), the configuration `settings` set, and the new `status`. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
@@ -761,18 +761,22 @@ executable with the same arguments and environment, so a restart applies the
 upgraded on disk. Any client holding the token may call it.
 
 - **`when: "idle"`** (the default) waits until no run is active in any
-  session. Meanwhile a new run (`run.start`, `session.submit_input` on an
+  session and no background call is pending: since 1.35.0 a call still
+  running in the background, or one whose result is not yet committed,
+  holds the restart too, since the shutdown would end it without a
+  report. Meanwhile a new run (`run.start`, `session.submit_input` on an
   idle session, a producer's wake) is refused with `daemon_restarting`,
   queued input and producers' messages wait, and a cron fire is recorded as
   skipped with the reason `daemon_restarting`. A run's delegated children
   still start, as part of the turn being waited for.
 - **`when: "now"`** interrupts the running turns as a stop does; they end
-  as cancelled and the restarted daemon closes out anything left.
+  as cancelled and the restarted daemon closes out anything left. Background
+  calls end without a report.
 - **A second call** while a restart is scheduled changes its `when`; `now`
   wins. Its `scheduled` is `false`.
-- **`daemon.restarting`** (`when`, `active_runs`, optional `reason`) reaches
-  every connection when the restart is scheduled and whenever the number of
-  active runs changes while it waits.
+- **`daemon.restarting`** (`when`, `active_runs`, `background_calls` since
+  1.35.0, optional `reason`) reaches every connection when the restart is
+  scheduled and whenever either count changes while it waits.
 - **The restart** stops the daemon as a shutdown does (runs, plugins,
   runtimes, and MCP servers stop and the session logs and stores are
   flushed), sends the replies already queued, and closes every client
@@ -1245,7 +1249,7 @@ subscriptions to the deleted sessions end with them: no further
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 | `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
-| `daemon.restarting` | A restart is scheduled: `when` (`idle` or `now`), the `active_runs` it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
+| `daemon.restarting` | A restart is scheduled: `when` (`idle` or `now`), the `active_runs` and `background_calls` (since 1.35.0, omitted when zero) it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
 | `onboarding.changed` | `onboarding.get`'s answer changed (since 1.22.0): the new answer, after a configuration apply or reload, a provider connected or disconnected, or a model becoming available or not |
 
 A background call in `session.background.list` and `background.changed` is

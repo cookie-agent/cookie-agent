@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.35.0
+
+- An `idle` `daemon.restart` waits for background calls too: a call still
+  running in the background, or one whose result is not yet committed,
+  holds the restart, since the shutdown ends it without a report. Both
+  additions an older peer ignores:
+  - `DaemonRestartResult.background_calls` and
+    `DaemonRestartingNotification.background_calls`: the pending background
+    calls, omitted when zero.
+  - `daemon.restarting` is sent again whenever the count changes.
+
 ## 1.34.0
 
 - Held sessions ([held sessions spec](../specs/held-sessions.md)): a session

@@ -55,8 +55,9 @@ impl Default for BackgroundTaskState {
 }
 
 impl BackgroundTaskState {
-    #[cfg(test)]
-    pub(crate) fn job_count(&self) -> usize {
+    /// The background calls not yet done: running, or ended with their
+    /// result still to commit.
+    pub(crate) fn pending_count(&self) -> usize {
         self.jobs.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 }

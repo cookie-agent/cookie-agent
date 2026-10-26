@@ -1,6 +1,6 @@
 //! Restarting the daemon (`docs/site/specs/engine-configuration.md`
-//! section 11): an `idle` restart waits for the active runs and refuses new
-//! ones meanwhile, `now` is due at once and the shutdown that follows
+//! section 11): an `idle` restart waits for the active runs and the running
+//! background calls and refuses new runs meanwhile, `now` is due at once and the shutdown that follows
 //! interrupts the runs, and an engine without a hook refuses.
 
 use std::{
@@ -108,6 +108,7 @@ async fn an_idle_restart_waits_for_the_active_run_and_refuses_new_ones() {
         RestartStatus {
             when: RestartWhen::Idle,
             active_runs: 1,
+            background_calls: 0,
             due: false,
         },
     )
@@ -153,6 +154,7 @@ async fn an_idle_restart_waits_for_the_active_run_and_refuses_new_ones() {
         RestartStatus {
             when: RestartWhen::Idle,
             active_runs: 0,
+            background_calls: 0,
             due: true,
         },
     )
@@ -208,6 +210,7 @@ async fn now_overrides_an_idle_restart_and_the_shutdown_interrupts_the_run() {
         RestartStatus {
             when: RestartWhen::Now,
             active_runs: 1,
+            background_calls: 0,
             due: true,
         },
     )
@@ -237,4 +240,52 @@ async fn now_overrides_an_idle_restart_and_the_shutdown_interrupts_the_run() {
     let session = restarted.resume(session).await.expect("resumed");
     assert_ne!(session.status, SessionStatus::Running);
     restarted.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_restart_waits_for_a_background_call_that_outlives_its_run() {
+    let run = super::background_tasks::start_job_run(
+        serde_json::json!({"command": "finish", "background": true}),
+        vec![
+            MatchedScriptedResponse::last_message_role("tool", scripted_text_body("waiting")),
+            MatchedScriptedResponse::last_message_contains(
+                "background_result",
+                scripted_text_body("noted"),
+            ),
+        ],
+        3,
+    )
+    .await;
+    let engine = &run.fixture.engine;
+    let called = record_restart(engine);
+    with_watchdog("detach point", run.control.detachable.notified()).await;
+    // The run ends while its call goes on in the background.
+    wait_for_run_inactive(engine, run.run_id).await;
+
+    let scheduled = engine
+        .schedule_restart(RestartWhen::Idle)
+        .expect("scheduled");
+    assert_eq!((scheduled.active_runs, scheduled.background_calls), (0, 1));
+    wait_for_status(
+        engine,
+        RestartStatus {
+            when: RestartWhen::Idle,
+            active_runs: 0,
+            background_calls: 1,
+            due: false,
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "the background call is still running"
+    );
+
+    run.control.release.notify_one();
+    wait_for_restart(&called).await;
+    // Its result is kept for the restarted daemon's run.
+    let projection = engine.inner.store.get(run.session_id).unwrap();
+    assert!(super::background_tasks::background_result(&projection).is_some());
+    run.fixture.engine.shutdown().await;
 }

@@ -66,6 +66,22 @@ fn turns(count: usize) -> String {
     }
 }
 
+/// What a waiting restart still waits for: `1 running turn, 2 background
+/// calls`; empty when nothing.
+#[must_use]
+pub fn waiting_for(active_runs: u32, background_calls: u32) -> String {
+    let mut parts = Vec::new();
+    if active_runs > 0 {
+        parts.push(turns(usize::try_from(active_runs).unwrap_or(usize::MAX)));
+    }
+    match background_calls {
+        0 => {}
+        1 => parts.push("1 background call".to_owned()),
+        count => parts.push(format!("{count} background calls")),
+    }
+    parts.join(", ")
+}
+
 /// The confirmation's other choice: `Restart now (interrupts 2 running
 /// turns)`, or `Restart now` when none runs.
 #[must_use]
@@ -81,13 +97,14 @@ pub fn restart_now_label(running: usize) -> String {
 #[must_use]
 pub fn restart_explanation(running: usize) -> String {
     let wait = if running == 0 {
-        "No turn is running, so a restart when idle happens at once.".to_owned()
+        "When idle waits for any background calls to finish and refuses new turns \
+         meanwhile; now ends them."
+            .to_owned()
     } else {
         format!(
-            "When idle waits for {} to finish and refuses new turns meanwhile; now \
-             interrupts {}.",
-            turns(running),
-            if running == 1 { "it" } else { "them" }
+            "When idle waits for {} and any background calls to finish and refuses new \
+             turns meanwhile; now interrupts them.",
+            turns(running)
         )
     };
     format!(
@@ -100,11 +117,9 @@ pub fn restart_explanation(running: usize) -> String {
 /// `Restarting…` once it is due.
 #[must_use]
 pub fn restarting_text(restarting: &DaemonRestartingNotification) -> String {
-    if restarting.when == RestartWhen::Idle && restarting.active_runs > 0 {
-        format!(
-            "Restarting when idle… ({})",
-            turns(usize::try_from(restarting.active_runs).unwrap_or(usize::MAX))
-        )
+    let waiting = waiting_for(restarting.active_runs, restarting.background_calls);
+    if restarting.when == RestartWhen::Idle && !waiting.is_empty() {
+        format!("Restarting when idle… ({waiting})")
     } else {
         "Restarting…".to_owned()
     }
@@ -142,13 +157,11 @@ impl RestartOutcome {
     pub fn status(&self) -> String {
         match self {
             Self::Scheduled { when, result } => {
-                let active = usize::try_from(result.active_runs).unwrap_or(usize::MAX);
-                match (when, active) {
-                    (_, 0) => "Restarting…".to_owned(),
-                    (RestartWhen::Now, active) => {
-                        format!("Restarting now, interrupting {}…", turns(active))
-                    }
-                    (_, active) => format!("Restarting when idle… ({})", turns(active)),
+                let waiting = waiting_for(result.active_runs, result.background_calls);
+                match (when, waiting.is_empty()) {
+                    (_, true) => "Restarting…".to_owned(),
+                    (RestartWhen::Now, false) => format!("Restarting now, interrupting {waiting}…"),
+                    (_, false) => format!("Restarting when idle… ({waiting})"),
                 }
             }
             Self::Unsupported => "This daemon can't restart itself; it was not started by \
@@ -200,21 +213,30 @@ mod tests {
             restart_now_label(3),
             "Restart now (interrupts 3 running turns)"
         );
-        let waiting = |when, active_runs| DaemonRestartingNotification {
+        let waiting = |when, active_runs, background_calls| DaemonRestartingNotification {
             when,
             active_runs,
+            background_calls,
             reason: None,
         };
         assert_eq!(
-            restarting_text(&waiting(RestartWhen::Idle, 2)),
+            restarting_text(&waiting(RestartWhen::Idle, 2, 0)),
             "Restarting when idle… (2 running turns)"
         );
         assert_eq!(
-            restarting_text(&waiting(RestartWhen::Idle, 0)),
+            restarting_text(&waiting(RestartWhen::Idle, 0, 1)),
+            "Restarting when idle… (1 background call)"
+        );
+        assert_eq!(
+            restarting_text(&waiting(RestartWhen::Idle, 1, 3)),
+            "Restarting when idle… (1 running turn, 3 background calls)"
+        );
+        assert_eq!(
+            restarting_text(&waiting(RestartWhen::Idle, 0, 0)),
             "Restarting…"
         );
         assert_eq!(
-            restarting_text(&waiting(RestartWhen::Now, 2)),
+            restarting_text(&waiting(RestartWhen::Now, 2, 1)),
             "Restarting…"
         );
     }
@@ -234,9 +256,22 @@ mod tests {
             result: DaemonRestartResult {
                 scheduled: true,
                 active_runs: 1,
+                background_calls: 0,
             },
         };
         assert_eq!(scheduled.status(), "Restarting when idle… (1 running turn)");
+        let background = RestartOutcome::Scheduled {
+            when: RestartWhen::Now,
+            result: DaemonRestartResult {
+                scheduled: false,
+                active_runs: 0,
+                background_calls: 2,
+            },
+        };
+        assert_eq!(
+            background.status(),
+            "Restarting now, interrupting 2 background calls…"
+        );
         assert!(
             RestartOutcome::Unsupported
                 .status()

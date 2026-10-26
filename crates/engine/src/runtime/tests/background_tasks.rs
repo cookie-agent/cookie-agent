@@ -545,7 +545,7 @@ async fn a_call_that_finishes_before_its_detach_point_returns_in_the_foreground(
     let result = call_result(&projection).expect("result");
     assert!(result.contains("job output line"), "{result}");
     assert!(background_result(&projection).is_none());
-    assert_eq!(run.fixture.engine.inner.background.job_count(), 0);
+    assert_eq!(run.fixture.engine.inner.background.pending_count(), 0);
 }
 
 #[tokio::test]

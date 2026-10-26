@@ -171,14 +171,16 @@ button. The button, `/restart`, and `R` or *Restart daemon* in `/config`
 open the same confirmation:
 
 - **Restart when idle** (Enter or `i`, the default) waits until no turn is
-  running in any session; new turns are refused meanwhile.
-- **Restart now** (`n`) interrupts the running turns; the confirmation says
-  how many there are.
+  running in any session and every background call has reported; new turns
+  are refused meanwhile.
+- **Restart now** (`n`) interrupts the running turns and ends the background
+  calls; the confirmation says how many turns there are.
 - **Cancel** (Esc) keeps the daemon running and returns to the panel it
   opened over.
 
 Once the daemon announces the restart, the banner shows
-*Restarting when idle… (2 running turns)* until the connection closes, then
+*Restarting when idle… (2 running turns, 1 background call)* until the
+connection closes, then
 the TUI reconnects as after any dropped connection. A daemon not started by
 `cookie daemon`, including the engine of `cookie --standalone`, cannot
 restart itself and says so. See

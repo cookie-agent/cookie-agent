@@ -27,6 +27,7 @@ use std::{
 
 use anyhow::Context as _;
 use clap::Subcommand;
+use cookie_agent_client_state::restart::waiting_for;
 use cookie_agent_protocol::{Client, ClientDelivery, DaemonRestartResult, RestartWhen};
 
 /// Set in the environment of the process a restart starts, which removes it
@@ -201,25 +202,19 @@ where
 
 /// What the daemon answered, as a line.
 pub(crate) fn scheduled_line(when: RestartWhen, result: &DaemonRestartResult) -> String {
-    let turns = |count: u32| {
-        if count == 1 {
-            "1 running turn".to_owned()
-        } else {
-            format!("{count} running turns")
+    let waiting = waiting_for(result.active_runs, result.background_calls);
+    match (when, waiting.is_empty()) {
+        (_, true) => "The daemon is restarting.".to_owned(),
+        (RestartWhen::Now, false) => {
+            format!("The daemon is restarting now, interrupting {waiting}.")
         }
-    };
-    match (when, result.active_runs) {
-        (_, 0) => "The daemon is restarting.".to_owned(),
-        (RestartWhen::Now, active) => {
-            format!(
-                "The daemon is restarting now, interrupting {}.",
-                turns(active)
-            )
-        }
-        (_, active) => format!(
-            "The daemon restarts once {} finish{}. New turns are refused until then.",
-            turns(active),
-            if active == 1 { "es" } else { "" }
+        (_, false) => format!(
+            "The daemon restarts once {waiting} finish{}. New turns are refused until then.",
+            if result.active_runs + result.background_calls == 1 {
+                "es"
+            } else {
+                ""
+            }
         ),
     }
 }
@@ -245,24 +240,21 @@ pub(crate) async fn run_restart(url: &str, token: &str, now: bool) -> anyhow::Re
         .await
         .context("restart the daemon")?;
     println!("{}", scheduled_line(when, &result));
-    if result.active_runs > 0 && when == RestartWhen::Idle {
+    let mut waiting_for_now = (result.active_runs, result.background_calls);
+    if waiting_for_now != (0, 0) && when == RestartWhen::Idle {
         println!(
             "Waiting; Ctrl-C stops waiting, and the restart stays scheduled \
              (`cookie daemon restart --now` restarts at once)."
         );
     }
-    let mut waiting_for = result.active_runs;
     while let Some(delivery) = deliveries.recv().await {
         match delivery {
-            ClientDelivery::DaemonRestarting(restarting)
-                if restarting.active_runs != waiting_for && restarting.active_runs > 0 =>
-            {
-                waiting_for = restarting.active_runs;
-                println!(
-                    "Waiting for {} running turn{}.",
-                    waiting_for,
-                    if waiting_for == 1 { "" } else { "s" }
-                );
+            ClientDelivery::DaemonRestarting(restarting) => {
+                let now = (restarting.active_runs, restarting.background_calls);
+                if now != waiting_for_now && now != (0, 0) {
+                    waiting_for_now = now;
+                    println!("Waiting for {}.", waiting_for(now.0, now.1));
+                }
             }
             ClientDelivery::Disconnected { .. } => break,
             _ => {}
@@ -316,6 +308,7 @@ mod tests {
         let result = |active_runs| DaemonRestartResult {
             scheduled: true,
             active_runs,
+            background_calls: 0,
         };
         assert_eq!(
             scheduled_line(RestartWhen::Idle, &result(0)),
@@ -332,6 +325,28 @@ mod tests {
         assert_eq!(
             scheduled_line(RestartWhen::Now, &result(2)),
             "The daemon is restarting now, interrupting 2 running turns."
+        );
+        let background = DaemonRestartResult {
+            scheduled: true,
+            active_runs: 1,
+            background_calls: 2,
+        };
+        assert_eq!(
+            scheduled_line(RestartWhen::Idle, &background),
+            "The daemon restarts once 1 running turn, 2 background calls finish. New turns are \
+             refused until then."
+        );
+        assert_eq!(
+            scheduled_line(
+                RestartWhen::Idle,
+                &DaemonRestartResult {
+                    scheduled: true,
+                    active_runs: 0,
+                    background_calls: 1,
+                }
+            ),
+            "The daemon restarts once 1 background call finishes. New turns are refused until \
+             then."
         );
     }
 

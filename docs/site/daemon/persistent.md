@@ -117,8 +117,9 @@ restart the daemon in place:
   ```
 
 Each asks first: **when idle**, the default, waits until no turn is running
-in any session; **now** interrupts the running turns, which end as after
-any stop. While a restart waits, new turns are refused with "the daemon is
+in any session and every [background call](../reference/tools.md#background-calls) has
+reported its result; **now** interrupts the running turns, which end as after
+any stop, and ends the background calls without a report. While a restart waits, new turns are refused with "the daemon is
 restarting", queued input and producers' messages wait for the restarted
 daemon (queued input starts when a client opens its session again), and a cron fire due meanwhile is recorded as skipped
 (`daemon restarting`). Clients show *Restarting when idle…* until the

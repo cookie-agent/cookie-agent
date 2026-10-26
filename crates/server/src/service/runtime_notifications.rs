@@ -631,19 +631,27 @@ fn restarting_notification(
     let reason = if status.due {
         "restarting now".to_owned()
     } else {
-        let turns = if status.active_runs == 1 {
-            "turn"
-        } else {
-            "turns"
+        let count = |count: u32, one: &str, many: &str| {
+            (count > 0).then(|| format!("{count} {}", if count == 1 { one } else { many }))
         };
-        format!(
-            "waiting for {} running {turns} to finish",
-            status.active_runs
-        )
+        let waiting = [
+            count(status.active_runs, "running turn", "running turns"),
+            count(
+                status.background_calls,
+                "background call",
+                "background calls",
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" and ");
+        format!("waiting for {waiting} to finish")
     };
     cookie_agent_protocol::DaemonRestartingNotification {
         when: status.when,
         active_runs: status.active_runs,
+        background_calls: status.background_calls,
         reason: Some(reason),
     }
 }
