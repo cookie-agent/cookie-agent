@@ -587,6 +587,73 @@ async fn cancelling_a_claimed_request_releases_only_that_request_lease() {
     fixture.engine.shutdown().await;
 }
 
+/// A producer message whose runs fail is tried again as `[model_retry]
+/// standard_retries` allows, then waits: it never loops.
+#[tokio::test]
+async fn failing_producer_runs_stop_at_the_retry_budget() {
+    let (endpoint, captured) = retry_model_server(vec![
+        RetryModelResponse::Status(400),
+        RetryModelResponse::Status(400),
+    ])
+    .await;
+    let retry = cookie_agent_config::ModelRetryConfig {
+        standard_retries: 1,
+        ..Default::default()
+    };
+    let (fixture, selection) = retry_fixture_with_endpoint(&endpoint, retry).await;
+    fixture
+        .engine
+        .inner
+        .test_hooks
+        .model_retry_sleep_hook
+        .set_mode(ModelRetrySleepMode::Immediate);
+    let session_id = fixture.engine.create_session(selection).unwrap().session_id;
+    let owner = delegation_authority();
+    let registration = fixture
+        .engine
+        .register_producer(session_id, owner.clone())
+        .await
+        .unwrap();
+    fixture
+        .engine
+        .send_producer_message(
+            session_id,
+            owner.clone(),
+            registration,
+            ProducerDeliveryMode::Steer,
+            discard_key("failing-runs"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
+            "input every failed run sees".into(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .engine
+        .unregister_producer(session_id, owner, registration)
+        .await
+        .unwrap();
+    let requests = tokio::time::timeout(test_timeout(5), captured)
+        .await
+        .expect("the run and its one retry")
+        .unwrap();
+    assert_eq!(requests.len(), 2);
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let outcomes = discard_events(&fixture.engine, session_id)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::RunFinished { outcome } => Some(outcome),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert!(outcomes.iter().all(|outcome| matches!(
+        outcome,
+        cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Failed { .. })
+    )));
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn failed_request_releases_claim_so_owner_can_discard_before_retry() {
     let (endpoint, captured) = retry_model_server(vec![RetryModelResponse::Status(503)]).await;

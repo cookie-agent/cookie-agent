@@ -2738,7 +2738,7 @@ impl Engine {
         EngineError::PluginHookFailed(failure)
     }
 
-    async fn sleep_before_model_retry(&self, delay: std::time::Duration) {
+    pub(super) async fn sleep_before_model_retry(&self, delay: std::time::Duration) {
         #[cfg(test)]
         if self
             .inner
@@ -2841,7 +2841,7 @@ fn is_overload_retry(error: &ModelError) -> bool {
         || (error.retryable && matches!(error.diagnostics.http_status, Some(429 | 503)))
 }
 
-fn retry_budget_allows(configured_retries: i64, retries_completed: u32) -> bool {
+pub(super) fn retry_budget_allows(configured_retries: i64, retries_completed: u32) -> bool {
     configured_retries < 0 || u64::from(retries_completed) < configured_retries as u64
 }
 
@@ -2863,7 +2863,7 @@ fn model_retry_delay(
     jittered.max(retry_after.unwrap_or_default())
 }
 
-fn exponential_retry_delay(
+pub(super) fn exponential_retry_delay(
     retry_ordinal: u32,
     ceiling: std::time::Duration,
 ) -> std::time::Duration {

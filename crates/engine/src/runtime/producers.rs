@@ -361,9 +361,15 @@ impl Engine {
             return Ok(());
         }
         let events = self.inner.store.log(session)?.event_snapshot();
-        if held_after_stop(&events) {
-            return Ok(());
-        }
+        let retry = self.inner.config.load().runtime.model_retry;
+        let wake_delay = match after_runs(&events, retry.standard_retries) {
+            AfterRuns::Hold => return Ok(()),
+            AfterRuns::Wake => None,
+            AfterRuns::Retry(ordinal) => Some(super::model_loop::exponential_retry_delay(
+                ordinal,
+                std::time::Duration::from_millis(retry.backoff_ceiling_ms),
+            )),
+        };
         let projection = self.goal_producer_projection(session)?;
         let real = projection
             .messages
@@ -465,6 +471,9 @@ impl Engine {
         }
         let engine = self.clone();
         if !self.spawn_admission_task(&runtime, async move {
+            if let Some(delay) = wake_delay {
+                engine.sleep_before_model_retry(delay).await;
+            }
             let _ = engine
                 .on_actor(session, move |engine| engine.begin_producer_wake(session))
                 .await;
@@ -2182,26 +2191,44 @@ pub(super) fn pending(message: &ProducerMessageRecord) -> bool {
     !message.consumed && !message.discarded
 }
 
-/// Whether the session's last run was stopped or failed with nothing new
-/// since: no producer message accepted and no user input submitted after
-/// it. Its pending producer messages then wait for the user's next message
-/// or a new producer message, so a stop holds and a run that fails at once
-/// does not start again and again. A run a restart interrupted resumes.
-fn held_after_stop(events: &[Arc<StoredEvent>]) -> bool {
+/// Whether the session's pending producer messages start a run, by its
+/// last runs since a producer message was accepted or the user submitted
+/// input.
+enum AfterRuns {
+    /// No run failed or was stopped since.
+    Wake,
+    /// The last runs failed, and `[model_retry] standard_retries` allows
+    /// another: the retry of this ordinal, after its backoff.
+    Retry(u32),
+    /// The last run was stopped, or the failures used up the retries: the
+    /// messages wait for the user's next message or a new producer
+    /// message. A run a restart interrupted resumes.
+    Hold,
+}
+
+fn after_runs(events: &[Arc<StoredEvent>], standard_retries: i64) -> AfterRuns {
+    let mut failures = 0_u32;
     for event in events.iter().rev() {
         match &event.payload {
-            EventPayload::RunFinished { outcome } => {
-                return matches!(
-                    outcome,
-                    Open::Known(RunOutcome::Failed { .. } | RunOutcome::Cancelled { .. })
-                );
-            }
+            EventPayload::RunFinished { outcome } => match outcome {
+                Open::Known(RunOutcome::Cancelled { .. }) if failures == 0 => {
+                    return AfterRuns::Hold;
+                }
+                Open::Known(RunOutcome::Failed { .. }) => failures += 1,
+                _ => break,
+            },
             EventPayload::ProducerMessageAccepted { .. }
-            | EventPayload::UserInputSubmitted { .. } => return false,
+            | EventPayload::UserInputSubmitted { .. } => break,
             _ => {}
         }
     }
-    false
+    match failures.checked_sub(1) {
+        None => AfterRuns::Wake,
+        Some(retries) if super::model_loop::retry_budget_allows(standard_retries, retries) => {
+            AfterRuns::Retry(retries)
+        }
+        Some(_) => AfterRuns::Hold,
+    }
 }
 
 /// Acceptance guards for one agent-mail send, evaluated against the recipient's
