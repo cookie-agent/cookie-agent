@@ -1646,7 +1646,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
 <!-- generated: tool memory_write -->
 
 ```text
-memory_write(body: string, description?: string, keywords?: string[] | string, new?: boolean, reason?: string, url: string)
+memory_write(body: string, description?: string, keywords?: string[], new?: boolean, reason?: string, url: string)
 ```
 
 Description sent to the model:
@@ -1661,7 +1661,7 @@ Only when `memory_read` is sent too and some memory URL is both readable (an `al
 |---|---|---|---|
 | `body` | `string` | yes | The memory's Markdown body; may be empty. |
 | `description` | `string` | no | One line, 1 to 200 characters, that states the memory's fact; shown in indexes and search results. Required except for agent:// and a project's overview, whose description the daemon sets. |
-| `keywords` | `string[] \| string` | no | Up to 32 keywords of 1 to 64 characters a later search would use, as a list or one comma-separated string; none when left out. |
+| `keywords` | `string[]` | no | Up to 32 keywords of 1 to 64 characters a later search would use; none when left out. |
 | `new` | `boolean` | no | True to create a memory that looks like ones that exist, after checking it is new; needs `reason`. |
 | `reason` | `string` | no | With `new`: one line saying why it is not one of the near memories. |
 | `url` | `string` | yes | The memory URL. |
@@ -1685,18 +1685,11 @@ Only when `memory_read` is sent too and some memory URL is both readable (an `al
           ]
         },
         "keywords": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "description": "Up to 32 keywords of 1 to 64 characters a later search would use,\nas a list or one comma-separated string; none when left out."
+          "description": "Up to 32 keywords of 1 to 64 characters a later search would use;\nnone when left out.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "new": {
           "description": "True to create a memory that looks like ones that exist, after\nchecking it is new; needs `reason`.",
