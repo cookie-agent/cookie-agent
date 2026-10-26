@@ -474,9 +474,12 @@ each call decided by the rules as a model's would be.
 - **Steering.** A message you send while the agent works goes into its
   running turn when the agent supports steering (it advertises the
   steering extension, as Claude Code's adapter and Codex's do): the agent
-  reads it at its next step, the transcript marks the message *steered into
-  the agent's running turn*; a scheduled job set to `steer` and a
-  subagent's report arrive the same way. An agent without it takes the message with its next turn: the
+  reads it at its next step. Until the agent takes it, the message waits in
+  the pending strip, where any client can take it back; once taken, it
+  shows in the transcript where the turn stood, as a steered message does
+  for cookie's own agents. A message the agent declines keeps waiting and
+  goes with its next turn. A scheduled job set to `steer` and a subagent's
+  report arrive the same way. An agent without it takes the message with its next turn: the
   web client's Steer button then reads "Queue (this agent can't be
   steered)", and the TUI's pending strip says the agent can't be steered.
 - **Questions.** A question from the agent (see [Questions from the

@@ -706,6 +706,9 @@ struct Turn<'a> {
 struct PendingSteer {
     answer: tokio::sync::oneshot::Receiver<Result<String, String>>,
     claim: super::super::producer_claims::ClaimedPrompt,
+    /// The user inputs it carries, still waiting: their admission
+    /// sequence numbers, promoted once the agent takes them.
+    inputs: Vec<u64>,
     /// The input's end, which the turns after an accepted steer cover.
     through: u64,
     steered: cookie_agent_protocol::AcpSteered,
@@ -889,9 +892,12 @@ impl Turn<'_> {
     }
 
     /// Takes the session's input to steer and sends it into the agent's
-    /// running turn: the turn so far commits, so the input stands after it,
-    /// then the input is promoted and claimed like a round's, and
-    /// `_session/steering` carries it. `None` when there was none.
+    /// running turn: the turn so far commits, so the input stands after it.
+    /// The user's inputs stay waiting, held so no client takes them back,
+    /// until the agent answers ([`Self::end_steer`] promotes them once it
+    /// took them); producer messages are promoted and claimed like a
+    /// round's. `_session/steering` carries both. `None` when there was
+    /// none.
     async fn begin_steer(&mut self) -> Result<Option<PendingSteer>, EngineError> {
         if self
             .step
@@ -901,18 +907,22 @@ impl Turn<'_> {
             self.commit(ModelFinishReason::Stop).await?;
         }
         let (session, run, engine) = (self.session(), self.run, self.engine);
-        engine
-            .request(session, |reply| SessionCommand::PromotePendingOrComplete {
-                run,
-                final_text: None,
-                complete_if_empty: false,
-                reply,
+        let inputs = engine
+            .on_actor(session, move |engine| {
+                Ok(engine.hold_inputs_to_steer(session, run))
             })
             .await?;
-        let claim = engine.prompt_events(session, run).await?;
+        let claim = match engine.prompt_events(session, run).await {
+            Ok(claim) => claim,
+            Err(error) => {
+                engine.release_steered_inputs(session);
+                return Err(error);
+            }
+        };
         // A cancel that arrived while the input was taken stops the turn
         // instead: the round's loop forwards it next.
         if self.active.cancellation.is_cancelled() {
+            engine.release_steered_inputs(session);
             return Ok(None);
         }
         let caps = self
@@ -922,8 +932,14 @@ impl Turn<'_> {
             .agent_capabilities
             .prompt_capabilities
             .clone();
-        let (prompt, steered) = engine.input_since(&claim.events, self.input_through_seq, &caps);
+        let mut prompt = Vec::new();
+        for input in &inputs {
+            engine.push_content(&mut prompt, session, &input.content, &caps);
+        }
+        let (producers, steered) = engine.input_since(&claim.events, self.input_through_seq, &caps);
+        prompt.extend(producers);
         if prompt.is_empty() {
+            engine.release_steered_inputs(session);
             return Ok(None);
         }
         let through = claim
@@ -952,6 +968,7 @@ impl Turn<'_> {
         Ok(Some(PendingSteer {
             answer,
             claim,
+            inputs: inputs.iter().map(|input| input.admission_seq).collect(),
             through,
             steered,
         }))
@@ -965,22 +982,38 @@ impl Turn<'_> {
         pending: PendingSteer,
         answer: Result<String, String>,
     ) -> Result<(), EngineError> {
+        let (session, run) = (self.session(), self.run);
+        // Producer messages the agent did not take go with the next round;
+        // the user's inputs are still waiting, and the next round takes
+        // them as any.
+        let producers = !pending.steered.producer_messages.is_empty();
         match answer.as_deref() {
             Ok("injected" | "startedNewTurn") => {
-                self.input_through_seq = self.input_through_seq.max(pending.through);
+                let held = pending.inputs;
+                let (submitted, last) = self
+                    .engine
+                    .on_actor(session, move |engine| {
+                        engine.promote_steered_inputs(session, run, &held)
+                    })
+                    .await?;
+                let mut steered = pending.steered;
+                steered.user_inputs.extend(submitted);
+                self.input_through_seq = self.input_through_seq.max(pending.through).max(last);
                 self.steer_claims.push(pending.claim);
                 self.record_update(AcpSessionUpdate {
-                    steered: Some(pending.steered),
+                    steered: Some(steered),
                     ..AcpSessionUpdate::default()
                 })
                 .await
             }
             Ok("promptRequired") => {
-                self.unsteered = true;
+                self.engine.release_steered_inputs(session);
+                self.unsteered |= producers;
                 Ok(())
             }
             other => {
-                self.unsteered = true;
+                self.engine.release_steered_inputs(session);
+                self.unsteered |= producers;
                 let reason = match other {
                     Ok(outcome) => format!("it answered `{outcome}`"),
                     Err(error) => error.clone(),
@@ -2270,6 +2303,101 @@ impl Engine {
         live.first_prompt = false;
         self.remember_live(live);
         prompt
+    }
+
+    /// The user inputs of `run` waiting to steer, held while they go into
+    /// the agent's running turn: no client takes them back meanwhile.
+    /// Called on the session's actor.
+    fn hold_inputs_to_steer(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Vec<super::super::PendingInput> {
+        let Ok(log) = self.inner.store.log(session) else {
+            return Vec::new();
+        };
+        let inputs = super::super::mailbox::pending_inputs(&log.event_snapshot(), run);
+        let held = inputs
+            .iter()
+            .map(|input| input.admission_seq)
+            .collect::<Vec<_>>();
+        if held.is_empty() {
+            self.release_steered_inputs(session);
+        } else {
+            self.inner
+                .acp
+                .steering
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(session, held);
+        }
+        inputs
+    }
+
+    /// The agent answered: `session`'s held inputs are no longer on their
+    /// way.
+    pub(crate) fn release_steered_inputs(&self, session: SessionId) {
+        self.inner
+            .acp
+            .steering
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session);
+    }
+
+    /// Whether `seq` of `session` is on its way into the agent's turn.
+    pub(crate) fn input_is_steering(&self, session: SessionId, seq: u64) -> bool {
+        self.inner
+            .acp
+            .steering
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session)
+            .is_some_and(|held| held.contains(&seq))
+    }
+
+    /// The agent took the held inputs `held`: each is promoted where the
+    /// turn stands now, as a model's steer is at its next request, and
+    /// applied. They lead the pending lane, since nothing took them back
+    /// while held. Returns their `user_input_submitted` sequence numbers
+    /// and the last event's. Called on the session's actor.
+    fn promote_steered_inputs(
+        &self,
+        session: SessionId,
+        run: RunId,
+        held: &[u64],
+    ) -> Result<(Vec<u64>, u64), EngineError> {
+        self.release_steered_inputs(session);
+        let pending = super::super::mailbox::pending_inputs(
+            &self.inner.store.log(session)?.event_snapshot(),
+            run,
+        );
+        let mut submitted = Vec::new();
+        let mut last = 0;
+        for input in pending
+            .into_iter()
+            .take_while(|input| held.contains(&input.admission_seq))
+        {
+            let record = self.append_direct_record(
+                session,
+                Some(run),
+                input.origin,
+                Event::UserInputSubmitted {
+                    content: input.content,
+                },
+            )?;
+            submitted.push(record.seq);
+            let applied = self.append_direct_record(
+                session,
+                Some(run),
+                origin(),
+                Event::UserInputApplied {
+                    user_input_seq: record.seq,
+                },
+            )?;
+            last = applied.seq;
+        }
+        Ok((submitted, last))
     }
 
     /// The prompt blocks of the input the session took after `boundary`

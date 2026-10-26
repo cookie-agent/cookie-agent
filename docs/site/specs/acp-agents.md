@@ -1228,3 +1228,25 @@ belongs to named alone); the parts in order (tool instructions, skills,
 attachments, memory, body); several attachments of one runtime listed
 with every tool hidden, and not sent again on resume; a lost session's
 replacement getting them again; the project line.
+
+## Addendum (2026-10-25): a steer waits until the agent takes it
+
+User decision: a message steered into an ACP agent's running turn shows as
+a model run's steered input does, with no mark of its own.
+
+- **The input stays waiting while it is offered.** The runner commits the
+  turn so far, holds the session's pending user inputs (no client can take
+  them back meanwhile: `session.recall_input` answers `gone` for a held
+  input), and sends them with the producer messages it promotes and claims
+  as before in `_session/steering`.
+- **`injected` or `startedNewTurn`** promote exactly the held inputs where
+  the turn stands (`user_input_submitted`, then `user_input_applied`), and
+  `acp_session_updated.steered` records their submitted sequence numbers as
+  before.
+- **Anything else** releases them: they are still pending, any client can
+  take them back, and the next round takes them as any pending input.
+  Producer messages the agent did not take go with the next round as
+  before. The notice for a failed steer stays.
+- **Clients** no longer mark steered messages: the TUI's and the web
+  client's *↪ steered into the agent's running turn* are gone. The
+  `steered` record stays in the session log.

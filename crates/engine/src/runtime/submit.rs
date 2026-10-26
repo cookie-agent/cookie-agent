@@ -162,6 +162,11 @@ impl Engine {
                     .into_iter()
                     .find(|pending| pending.admission_seq == seq)
             {
+                // On its way into an ACP agent's running turn: the agent may
+                // already have it.
+                if engine.input_is_steering(session, seq) {
+                    return Ok(SessionRecallInputResult::Gone);
+                }
                 engine.append_direct(
                     session,
                     Some(run),

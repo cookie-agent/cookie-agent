@@ -152,9 +152,9 @@ be picked. The
 agent's plan shows in the transcript as a checklist (`[x]` done, `[~]` in
 progress, `[ ]` pending), its own tool calls name it after their title and
 fill in their arguments as the agent sends them, and its notices show as
-`Notice` blocks. A message steered into the agent's running turn is marked
-`↪ steered into the agent's running turn`; for an agent that cannot be
-steered, the pending strip says `queued: this agent can't be steered`, and
+`Notice` blocks. A message steered into the agent's running turn stays in
+the pending strip until the agent takes it, then shows as any user message;
+for an agent that cannot be steered, the pending strip says `queued: this agent can't be steered`, and
 the message waits for the agent's next turn.
 
 The composer only ever sends messages: text beginning with `/` is sent as a

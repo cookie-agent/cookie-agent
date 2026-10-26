@@ -89,7 +89,9 @@ Environment:
                          advertises all of them)
   ACP_FIXTURE_STEERING   "1": advertises the steering extension
                          (`_meta.steering.supported`) and serves
-                         `_session/steering` as Claude Code's adapter does
+                         `_session/steering` as Claude Code's adapter does;
+                         "decline": advertises it and answers `failed` to
+                         every steer into a running turn
 """
 
 import json
@@ -169,7 +171,11 @@ def new_session_id():
 
 
 def env(name):
-    return os.environ.get(name) == "1"
+    return os.environ.get(name) in ("1", "decline")
+
+
+def declines_steers():
+    return os.environ.get("ACP_FIXTURE_STEERING") == "decline"
 
 
 def options(session):
@@ -679,7 +685,9 @@ def handle(message):
         session_id = params["sessionId"]
         texts = [block.get("text", "") for block in params.get("prompt", []) if block.get("type") == "text"]
         with state_lock:
-            if running.get(session_id):
+            if running.get(session_id) and declines_steers():
+                outcome = {"outcome": "failed"}
+            elif running.get(session_id):
                 steered[session_id].extend(texts)
                 state_lock.notify_all()
                 outcome = {"outcome": "injected"}

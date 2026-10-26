@@ -1508,6 +1508,82 @@ async fn a_steer_reaches_the_running_turn_through_the_agents_extension() {
     assert_eq!(prompts(&acp).len(), 1);
 }
 
+/// A steer the agent declines stays waiting, as a model run's pending
+/// input does: it never reached the transcript, so any client can still
+/// take it back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declined_steer_stays_waiting_and_can_be_taken_back() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "decline")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "wait", "steer-wait 2").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    let seq = engine
+        .steer(run, "say later".into(), origin())
+        .await
+        .unwrap()
+        .user_input_seq
+        .expect("admitted");
+    with_watchdog("the agent declined", async {
+        while !acp
+            .received()
+            .iter()
+            .any(|message| message["method"] == "_session/steering")
+            || engine.input_is_steering(session, seq)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(!events(engine, session).iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { content }
+            if content.as_plain_text() == "say later"
+    )));
+    assert_eq!(
+        engine
+            .recall_input(session, seq, EventOrigin::new("client:other").unwrap())
+            .await
+            .unwrap(),
+        cookie_agent_protocol::SessionRecallInputResult::Recalled {
+            content: "say later".into()
+        }
+    );
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "no steer");
+    assert_eq!(prompts(&acp).len(), 1, "nothing was left for another turn");
+}
+
+/// A steer the agent declines, left waiting, goes with the agent's next
+/// turn, and the session records no steer for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declined_steer_goes_with_the_agents_next_turn() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "decline")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "wait", "steer-wait 1").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    engine
+        .steer(run, "say later".into(), origin())
+        .await
+        .unwrap();
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "later");
+    let received = prompts(&acp);
+    assert_eq!(received.len(), 2);
+    assert_eq!(received[1], ["say later"]);
+    assert!(!events(engine, session).iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::AcpSessionUpdated { update } if update.steered.is_some()
+    )));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn without_the_extension_a_steer_waits_for_the_agents_next_turn() {
     let acp = acp_fixture(&[], &[]).await;

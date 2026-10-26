@@ -258,19 +258,11 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                         .collect::<String>()
                 })
                 .unwrap_or_default();
-            // Delivered into an ACP agent's running turn.
-            let steered = if view.state.acp.steered.contains(seq) {
-                format!(
-                    "<div class=\"{NOTE} mt-1\" data-steered>↪ steered into the agent's running turn</div>"
-                )
-            } else {
-                String::new()
-            };
             format!(
                 // The row is the whole band at the bubble's height: a mouse
                 // over it shows the ⋯ (style/main.css), whose room stays;
                 // a touch screen long-presses the bubble instead.
-                "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-toasted px-3 py-2 dark:bg-ember\" data-bubble><div class=\"markdown\">{}</div>{files}{steered}</div></div></div>",
+                "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-toasted px-3 py-2 dark:bg-ember\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div></div>",
                 svg(icondata::FaEllipsisSolid, ""),
                 document_html(markdown)
             )
@@ -2058,10 +2050,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            user.contains("data-steered>↪ steered into the agent's running turn</div>"),
-            "{user}"
-        );
+        // A message steered into an ACP agent's turn is an ordinary bubble,
+        // as a model run's steered input is: it reaches the transcript only
+        // once the agent took it.
+        assert!(!user.contains("data-steered"), "{user}");
+        assert!(!user.contains("steered into"), "{user}");
         let notice = item_html(
             &view,
             &TranscriptItem::AcpNotice {

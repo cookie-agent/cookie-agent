@@ -14,11 +14,11 @@
 //! bridge ([`mcp`]).
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
-use cookie_agent_protocol::{AgentId, RuntimeId};
+use cookie_agent_protocol::{AgentId, RuntimeId, SessionId};
 
 use super::Engine;
 use crate::runtime_snapshot::RuntimeAgent;
@@ -54,6 +54,10 @@ pub(crate) struct AcpState {
     pub(crate) processes: process::Processes,
     /// The agents' questions waiting on the user.
     pub(crate) questions: elicitation::Questions,
+    /// The user inputs on their way into an agent's running turn
+    /// (`_session/steering`), by session: they stay waiting, and no client
+    /// can take them back, until the agent answers.
+    pub(crate) steering: Mutex<HashMap<SessionId, Vec<u64>>>,
 }
 
 impl AcpState {
@@ -95,6 +99,7 @@ impl AcpState {
             known,
             processes: process::Processes::default(),
             questions: elicitation::Questions::default(),
+            steering: Mutex::new(HashMap::new()),
         }
     }
 

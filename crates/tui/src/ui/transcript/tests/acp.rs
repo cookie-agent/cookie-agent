@@ -287,9 +287,10 @@ fn a_notice_and_a_steered_message_render() {
     let text = snapshot_lines(
         &transcript_layout_with(&state, None, 60, &Theme::default(), &PlainHighlighter).lines,
     );
+    // A message steered into the agent's turn is an ordinary user message.
+    assert!(!text.contains("steered into"), "{text}");
     for line in [
         "│ look at notes.txt",
-        "│ ↪ steered into the agent's running turn",
         "◇─ Notice",
         "│ The agent compacted its conversation",
         "│ We read notes.txt.",

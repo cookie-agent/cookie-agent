@@ -241,14 +241,6 @@ pub(super) fn transcript_item_layout(
                     .into_iter()
                     .flat_map(|line| markdown_body_line(line, width, theme.user())),
                 );
-                // Delivered into an ACP agent's running turn.
-                if state.acp.steered.contains(seq) {
-                    lines.extend(repeated_prefixed_wrapped_line(
-                        vec![Span::styled("│ ", theme.user())],
-                        Line::styled("↪ steered into the agent's running turn", theme.muted()),
-                        width,
-                    ));
-                }
                 lines
             },
             regions: Vec::new(),
