@@ -599,7 +599,11 @@ fn session_row(
                 aria-expanded=move || tree_root().then(|| workspace.tree_expanded.get().to_string())
                 on:click=move |_| {
                     if !drag.take_click() {
-                        if current() && tree_root() && !workspace.new_session.get_untracked() {
+                        if current() && workspace.sidebar_open.get_untracked() && !workspace.new_session.get_untracked() {
+                            // The sessions as the page, over the open
+                            // session: its row goes back to it.
+                            workspace.sidebar_open.set(false);
+                        } else if current() && tree_root() && !workspace.new_session.get_untracked() {
                             workspace.toggle_tree();
                         } else {
                             workspace.open_session(session_id);

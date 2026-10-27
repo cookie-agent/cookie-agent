@@ -1001,6 +1001,29 @@ def session_depth(browser):
     reopen()
     browser.wait("the remembered collapsed tree", lambda: tree_state(browser) == "collapsed" and count(browser, nested) == 0)
     print("a click on the open session's row expands or collapses its tree; the browser remembers it")
+    # On a phone the sessions are the page: going back up to them, the open
+    # session's row goes back to it rather than folding its tree.
+    phone = Browser(touch=True)
+    try:
+        phone.go(LINK)
+        phone.wait("the connection", lambda: phone.text("#connected") != "")
+        phone.phone(390, 844)
+        row = '#sidebar [data-session="%s"]' % root
+        listed = lambda: phone.script("return document.querySelector('main').inert")
+        if not listed():
+            phone.click("main [data-sidebar-toggle]")
+        phone.wait("the sessions", lambda: listed() and count(phone, row) == 1)
+        phone.script("document.querySelector(arguments[0]).click()", row)
+        phone.wait("the root", lambda: not listed() and phone.text("#session-title") == root_title)
+        phone.click("main [data-sidebar-toggle]")
+        phone.wait("the sessions again", listed)
+        before = tree_state(phone)
+        phone.script("document.querySelector(arguments[0]).click()", row)
+        phone.wait("the root again", lambda: not listed())
+        assert tree_state(phone) == before, "the row folded the tree"
+        print("phone: the open session's row goes back to it from the sessions")
+    finally:
+        phone.close()
 
     # A subagent that runs under one that finished: collapsed, the finished
     # one shows dimmed to place the running one; other sessions show no tree.
