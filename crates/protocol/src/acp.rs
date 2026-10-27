@@ -211,10 +211,11 @@ pub struct AcpSessionRecord {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub agent_info: Value,
     pub how: AcpSessionStart,
-    /// Whether the agent takes messages into its running turn (it
-    /// advertises the steering extension, `_session/steering`): input sent
-    /// to steer reaches the turn, else it waits for the agent's next turn
-    /// (client protocol 1.20.0).
+    /// Whether the agent takes messages into its running work: input sent
+    /// to steer reaches the work, else it waits for the agent's next turn
+    /// (client protocol 1.20.0). Every ACP v2 agent does; a record of an
+    /// earlier build may say otherwise (an ACP v1 agent without the
+    /// steering extension).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub steering: bool,
     /// The agent's session this one was forked from, for `how: forked`
@@ -256,8 +257,9 @@ pub struct AcpNotice {
     pub description: Option<String>,
 }
 
-/// Input the daemon delivered into the agent's running turn through its
-/// steering extension, by the events that took it: the
+/// Input the daemon delivered into the agent's running work (an ACP v2
+/// prompt sent during the work; with an ACP v1 agent of an earlier build,
+/// its steering extension), by the events that took it: the
 /// `user_input_submitted` events' sequence numbers and the producer
 /// messages (client protocol 1.20.0).
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

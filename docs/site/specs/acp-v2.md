@@ -1,6 +1,6 @@
 # ACP v2: the port, self-wakes, subagent sessions, and background work
 
-Status: **in progress** (2026-10-26). Phase 1 (v2 only) implemented
+Status: **implemented** (2026-10-26), every phase. Phase 1 (v2 only) implemented
 2026-10-26 (`04b4b0e4d`); phase 2 (self-wakes) implemented 2026-10-26,
 client protocol 1.38.0 and plugin protocol 1.20.0 (`0aacfd74b`); phase 3
 (subagent sessions) implemented 2026-10-26, client protocol 1.39.0 and

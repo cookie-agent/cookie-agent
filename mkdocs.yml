@@ -161,6 +161,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - "ACP v2: self-wakes, subagents, background work": specs/acp-v2.md
           - Push notifications: specs/push-notifications.md
           - Native compaction: specs/native-compaction.md
           - Approval reviewer: specs/approval-reviewer.md
@@ -188,7 +189,6 @@ nav:
           - Permission consolidation: specs/permission-consolidation.md
           - MCP tool filters: specs/mcp-tool-filters.md
           - ACP agents: specs/acp-agents.md
-          - "ACP v2: self-wakes, subagents, background work": specs/acp-v2.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
           - Managing runtimes from clients: specs/runtime-management.md
           - Model configuration: specs/model-configuration.md

@@ -408,8 +408,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   their arguments as the agent sends them, and its notices show where they
   arrive. A message steered into the agent's running turn stays in the
   strip above the composer until the agent takes it, then shows as any
-  message; for an agent that cannot be steered, the Steer button reads "Queue (this
-  agent can't be steered)" and the message waits for the agent's next turn.
+  message. Every ACP v2 agent can be steered; only a session last run by an
+  ACP v1 agent of an earlier build shows the Steer button as "Queue (this
+  agent can't be steered)", the message waiting for the agent's next turn.
 - **Composer.** One line to start; it grows with what you write up to
   five lines, then scrolls, and shrinks back when you send. The paperclip
   (and on a phone the camera) is inside it at the bottom left, and round

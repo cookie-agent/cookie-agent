@@ -254,7 +254,7 @@
       "x-open": true
     },
     "AcpSteered": {
-      "description": "Input the daemon delivered into the agent's running turn through its\nsteering extension, by the events that took it: the\n`user_input_submitted` events' sequence numbers and the producer\nmessages (client protocol 1.20.0).",
+      "description": "Input the daemon delivered into the agent's running work (an ACP v2\nprompt sent during the work; with an ACP v1 agent of an earlier build,\nits steering extension), by the events that took it: the\n`user_input_submitted` events' sequence numbers and the producer\nmessages (client protocol 1.20.0).",
       "properties": {
         "producer_messages": {
           "items": {
@@ -8617,7 +8617,7 @@
           "type": "string"
         },
         "steering": {
-          "description": "Whether the agent takes messages into its running turn (it\nadvertises the steering extension, `_session/steering`): input sent\nto steer reaches the turn, else it waits for the agent's next turn\n(client protocol 1.20.0).",
+          "description": "Whether the agent takes messages into its running work: input sent\nto steer reaches the work, else it waits for the agent's next turn\n(client protocol 1.20.0). Every ACP v2 agent does; a record of an\nearlier build may say otherwise (an ACP v1 agent without the\nsteering extension).",
           "type": "boolean"
         },
         "type": {
