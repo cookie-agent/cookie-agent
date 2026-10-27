@@ -573,6 +573,32 @@ fn live_appends_and_the_progress_message_show_while_the_call_runs() {
     );
 }
 
+#[test]
+fn progress_the_header_already_shows_is_not_repeated() {
+    // An ACP agent's progress is its title, the command its header runs.
+    let mut state = display_tool_state(
+        hinted_presentation("Run `make test`", ToolHint::SHELL, Some("make test")),
+        ToolStatus::Running,
+        Vec::new(),
+    );
+    let call_id = read_tool_id(&state);
+    crate::state::reduce_live_progress_for_test(
+        &mut state,
+        call_id,
+        "make test",
+        cookie_agent_protocol::DisplayDelta::Append {
+            index: 0,
+            text: "ok\n".into(),
+            stream: Some(TerminalStream::Stdout),
+        },
+    );
+    let collapsed = snapshot_lines(&transcript_layout(&state, None, 80).lines);
+    assert!(collapsed.contains("Run `make test`"), "{collapsed}");
+    assert!(!collapsed.contains("· make test"), "{collapsed}");
+    let expanded = snapshot_lines(&expanded_layout(&state, 80).lines);
+    assert!(!expanded.contains("⋯ make test"), "{expanded}");
+}
+
 #[tokio::test]
 async fn clicking_the_full_output_row_reads_the_artifact_and_shows_it() {
     let mut app = test_app().await;

@@ -203,6 +203,17 @@ impl ToolCallState {
         is_memory_url(argument).then_some(argument)
     }
 
+    /// The progress a running call shows, unless its header already says
+    /// it (an ACP agent's progress repeats the command its title runs).
+    pub fn shown_progress(&self) -> Option<&str> {
+        let progress = self
+            .progress
+            .as_deref()
+            .filter(|_| self.status == crate::ToolStatus::Running)?;
+        let flat = flatten_header_argument(progress);
+        (!title_names_argument(&self.header_text(), &flat)).then_some(progress)
+    }
+
     /// The header's text: the title, then the argument it does not name.
     pub fn header_text(&self) -> String {
         let title = flatten_header_argument(self.presentation.title.as_str());

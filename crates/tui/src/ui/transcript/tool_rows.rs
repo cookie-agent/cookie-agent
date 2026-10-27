@@ -230,7 +230,7 @@ pub(super) fn tool_child_layout(
             .is_some_and(|id| context.expanded.is_some_and(|blocks| blocks.contains(&id)))
     };
     let has_body = tool.failure.is_some()
-        || (tool.status == ToolStatus::Running && tool.progress.is_some())
+        || tool.shown_progress().is_some()
         || !tool.shown_display().is_empty();
     let any_output_expanded = [
         ToolOutputSection::Detail,
@@ -261,8 +261,8 @@ pub(super) fn tool_child_layout(
     };
     // A running call's latest progress message reads as its status; an
     // expanded call shows it above its output instead.
-    let suffix = match tool.progress.as_deref() {
-        Some(progress) if tool.status == ToolStatus::Running && !is_expanded => {
+    let suffix = match tool.shown_progress() {
+        Some(progress) if !is_expanded => {
             format!(" · {}{suffix}", flatten_header_argument(progress))
         }
         _ => suffix,
@@ -791,8 +791,7 @@ pub(super) fn tool_body_lines(
             }
         }
     }
-    if tool.status == ToolStatus::Running
-        && let Some(progress) = &tool.progress
+    if let Some(progress) = tool.shown_progress()
         && let Some(text) = sink.line(progress)
     {
         output.push(ToolBodyLine::wrapped(Line::styled(

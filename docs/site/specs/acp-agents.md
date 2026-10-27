@@ -498,9 +498,11 @@ them.
   tool's display renders the same way.
 - **Tool source.** A call of source `acp` named `<agent> on <runtime>`
   after its title. Since 2026-10-27 its block's header names the agent and
-  the call reads as cookie's own: the TUI shows no source, the web keeps
-  it for screen readers only (a `data-tool-source` span) and shows the
-  call's paths under its runtime's home, as for a runtime's calls.
+  the call reads as cookie's own: neither client names its source, and
+  the web shows the call's paths under its runtime's home, as for a
+  runtime's calls. A running call's progress shows only when its header
+  does not already say it: an ACP agent's progress is its title, which
+  for a command repeats the command.
 - No new pointer target: the TUI's `/options` is a picker modal on the
   existing `PickerRow` targets, and palette rows are `PaletteRow`s.
 

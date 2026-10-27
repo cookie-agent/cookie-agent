@@ -6,7 +6,7 @@
 
 use cookie_agent_protocol::{
     ACP_MODEL_PROVIDER, AcpConfigOption, AcpOptionChoice, AgentDescriptor, AgentId, AgentMode,
-    AgentRuntime, InputMedia, ModelSelection, RuntimeId, ToolSource,
+    AgentRuntime, InputMedia, ModelSelection, RuntimeId,
 };
 
 use crate::AcpSessionView;
@@ -179,15 +179,6 @@ pub fn acp_model(agent: &AgentDescriptor) -> Option<ModelSelection> {
 /// picker lists.
 pub fn is_acp_model(selection: &ModelSelection) -> bool {
     selection.model.provider_id().as_str() == ACP_MODEL_PROVIDER
-}
-
-/// The label of a tool call's source when it is an ACP agent's own tool:
-/// the agent and its runtime.
-pub fn acp_source_label(source: &ToolSource) -> Option<String> {
-    match source {
-        ToolSource::Acp { agent, runtime_id } => Some(format!("{agent} on {runtime_id}")),
-        _ => None,
-    }
 }
 
 /// The option that is the agent's model: the one of category `model`,

@@ -5028,11 +5028,10 @@ def acp_agents(browser):
         ".map(e => e.dataset.planStatus)"
     )
     assert statuses == ["completed", "in_progress"], statuses
-    browser.wait(
-        "the agent's tool call",
-        lambda: "fixture on local"
-        in browser.script("return document.querySelector('#transcript [data-tool-source]')?.textContent || ''"),
-    )
+    # The agent's call reads as cookie's own: its block's header names the
+    # agent, the call does not.
+    browser.wait("the agent's tool call", lambda: count(browser, "#transcript [data-tool]") > 0)
+    assert "fixture on local" not in browser.script("return document.querySelector('#transcript').textContent")
     # The agent's context use, as its usage_update reported it.
     browser.wait("the agent's context", lambda: "1.2k tokens" in browser.text("#context"))
     assert "of 200,000" in browser.script("return document.querySelector('#context').title"), browser.script(

@@ -1226,9 +1226,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     );
     let expanded = view.expanded.tool(&tool.id);
     let progress = tool
-        .progress
-        .as_ref()
-        .filter(|_| tool.status == ToolStatus::Running)
+        .shown_progress()
         .map(|progress| {
             format!(
                 "<span class=\"min-w-0 shrink truncate {NOTE}\" data-progress>· {}</span>",
@@ -1236,22 +1234,6 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
             )
         })
         .unwrap_or_default();
-    // An ACP agent's own call names the agent that ran it to a screen
-    // reader; its block's header already names the agent to the eye.
-    let progress = match tool
-        .presentation
-        .tool
-        .source
-        .as_ref()
-        .and_then(|source| source.known())
-        .and_then(cookie_agent_client_state::acp::acp_source_label)
-    {
-        Some(label) => format!(
-            "<span class=\"sr-only\" data-tool-source>· {}</span>{progress}",
-            escape(&label)
-        ),
-        None => progress,
-    };
     // A call waiting for an approval says so on its header, and opens the
     // approvals from there.
     let approval = if view.waiting_approval(tool) {
