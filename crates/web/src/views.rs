@@ -640,11 +640,11 @@ fn session_row(
                             class:rotate-90=move || workspace.tree_expanded.get()
                             data-tree-chevron
                             title="Show every subagent, or only the running ones"
+                            // Its own tap always: on a phone, the open
+                            // session's row goes back to it instead.
                             on:click=move |event: ev::MouseEvent| {
-                                if !current() {
-                                    event.stop_propagation();
-                                    workspace.toggle_tree();
-                                }
+                                event.stop_propagation();
+                                workspace.toggle_tree();
                             }
                         >
                             <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />

@@ -1018,10 +1018,16 @@ def session_depth(browser):
         phone.click("main [data-sidebar-toggle]")
         phone.wait("the sessions again", listed)
         before = tree_state(phone)
+        # Its chevron folds and unfolds the tree, and leaves the list up.
+        phone.script("document.querySelector(arguments[0]).click()", row + " [data-tree-chevron]")
+        phone.wait("the other tree state", lambda: tree_state(phone) not in ("", before))
+        assert listed(), "the chevron left the sessions"
+        phone.script("document.querySelector(arguments[0]).click()", row + " [data-tree-chevron]")
+        phone.wait("the tree back", lambda: tree_state(phone) == before)
         phone.script("document.querySelector(arguments[0]).click()", row)
         phone.wait("the root again", lambda: not listed())
         assert tree_state(phone) == before, "the row folded the tree"
-        print("phone: the open session's row goes back to it from the sessions")
+        print("phone: the open session's row goes back to it; its chevron folds the tree")
     finally:
         phone.close()
 
