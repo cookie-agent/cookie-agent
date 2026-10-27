@@ -1470,14 +1470,32 @@ pub(super) fn reduce_event_from(
         EventPayload::ModelUsageRecorded {
             model_turn_seq,
             estimated_cost_pico_usd,
+            resolved_model,
+            usage,
             ..
         } => {
             if let Some(item_id) = state.turn_items.get(&model_turn_seq).copied() {
-                state
-                    .assistant_metrics
-                    .entry(item_id)
-                    .or_default()
-                    .record_cost(estimated_cost_pico_usd);
+                let opened = state.item_times.get(&item_id).copied();
+                let context = state.context_tokens;
+                let metrics = state.assistant_metrics.entry(item_id).or_default();
+                metrics.record_cost(estimated_cost_pico_usd);
+                // An ACP agent reports a prompt's usage at its end, not its
+                // turns': its output over the block's time so far gives the
+                // rate, and its latest context use the context.
+                if resolved_model.provider_id.as_str() == cookie_agent_protocol::ACP_MODEL_PROVIDER
+                {
+                    metrics.timed_output_tokens = metrics
+                        .timed_output_tokens
+                        .saturating_add(usage.output_tokens.unwrap_or(0));
+                    if let Some(span) = opened.and_then(|opened| {
+                        std::time::Duration::try_from(timestamp.duration_since(opened)).ok()
+                    }) {
+                        metrics.generation = span;
+                    }
+                    if context.is_some() {
+                        metrics.context_tokens = context;
+                    }
+                }
                 if let Some(TranscriptItem::Assistant { version, .. }) = state
                     .transcript
                     .iter_mut()

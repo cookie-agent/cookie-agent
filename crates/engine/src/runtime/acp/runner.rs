@@ -371,6 +371,7 @@ impl Engine {
         session: SessionId,
         call: &ToolCallFields,
         terminal: Option<&Terminal>,
+        cwd: &str,
     ) -> (Vec<DisplayBlock>, String) {
         let terminal = terminal.filter(|terminal| terminal.shows());
         let mut terminal_shown = false;
@@ -387,7 +388,7 @@ impl Engine {
         for content in call.content.iter().flatten() {
             match content.get("type").and_then(Value::as_str) {
                 Some("diff") => {
-                    let (diffs, paths) = diff::diff_blocks(content);
+                    let (diffs, paths) = diff::diff_blocks(content, cwd);
                     blocks.extend(diffs);
                     for path in paths {
                         say(&mut text, &format!("edited {path}"));
@@ -417,7 +418,27 @@ impl Engine {
         if let Some(terminal) = terminal.filter(|_| !terminal_shown) {
             blocks.splice(0..0, terminal.blocks());
         }
-        for location in call.locations.iter().flatten() {
+        // A read shows its file's lines as cookie's own `read` does, and
+        // then, as an edit's diff does, names its file: no link needed.
+        let mut names_its_file = blocks
+            .iter()
+            .any(|block| matches!(block, DisplayBlock::Diff { .. }));
+        if call.kind.as_deref() == Some("read") {
+            let path = call
+                .raw_input
+                .as_ref()
+                .and_then(|input| PRIMARY_KEYS[1..5].iter().find_map(|key| input.get(*key)))
+                .and_then(Value::as_str);
+            for block in &mut blocks {
+                if let DisplayBlock::Markdown { text, .. } = block
+                    && let Some(code) = numbered_excerpt(text, path)
+                {
+                    *block = code;
+                    names_its_file = true;
+                }
+            }
+        }
+        for location in call.locations.iter().flatten().filter(|_| !names_its_file) {
             blocks.push(DisplayBlock::Link {
                 url: match location.line {
                     Some(line) => format!("file://{}#L{line}", location.path),
@@ -487,6 +508,41 @@ impl Engine {
     }
 }
 
+/// A read's content as cookie's own `read` shows a file's lines: a fenced
+/// excerpt whose lines the agent numbered (`360\t…`, or `360→…`) becomes
+/// code from that line, in `path`'s language.
+fn numbered_excerpt(text: &str, path: Option<&str>) -> Option<DisplayBlock> {
+    let body = text.trim().strip_prefix("```")?;
+    let body = body.split_once('\n')?.1;
+    let body = body.trim_end().strip_suffix("```")?;
+    let mut first = None;
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let digits = trimmed
+            .find(|character: char| !character.is_ascii_digit())
+            .unwrap_or(trimmed.len());
+        let rest = &trimmed[digits..];
+        let content = rest
+            .strip_prefix('\t')
+            .or_else(|| rest.strip_prefix('→'))
+            .or_else(|| (digits > 0 && rest.is_empty()).then_some(""))?;
+        let number = trimmed[..digits].parse::<u64>().ok()?;
+        first.get_or_insert(number);
+        lines.push(content);
+    }
+    let mut block = DisplayBlock::Code {
+        text: lines.join("\n"),
+        language: path.and_then(|path| {
+            cookie_agent_runtime_api::display::language_for_path(std::path::Path::new(path))
+        }),
+        start_line: Some(first?),
+        omitted_lines: None,
+    };
+    block.sanitize();
+    Some(block)
+}
+
 /// The block that shows a call's raw output, when its content shows none.
 fn raw_output_block(output: &Value) -> Option<DisplayBlock> {
     let mut block = match output {
@@ -506,52 +562,138 @@ fn raw_output_block(output: &Value) -> Option<DisplayBlock> {
     Some(block)
 }
 
+/// The raw input fields a call's header can show after its title, in the
+/// order one is chosen.
+const PRIMARY_KEYS: [&str; 8] = [
+    "command",
+    "file_path",
+    "filePath",
+    "path",
+    "notebook_path",
+    "url",
+    "pattern",
+    "query",
+];
+
+/// Raw input fields of an edit that its diff already shows.
+const DIFF_KEYS: [&str; 6] = [
+    "old_string",
+    "new_string",
+    "oldString",
+    "newString",
+    "content",
+    "edits",
+];
+
 /// What a call's header shows after its title: the command, path, URL,
 /// pattern, or query its raw input names.
 fn primary_argument(input: Option<&Value>) -> Option<cookie_agent_protocol::BoundedDisplayText> {
     let input = input?.as_object()?;
-    [
-        "command",
-        "file_path",
-        "filePath",
-        "path",
-        "notebook_path",
-        "url",
-        "pattern",
-        "query",
-    ]
-    .iter()
-    .find_map(|key| input.get(*key).and_then(Value::as_str))
-    .map(|text| {
-        text.lines()
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .filter(|character| !character.is_control())
-            .take(200)
-            .collect::<String>()
-    })
-    .filter(|text| !text.trim().is_empty())
-    .and_then(|text| cookie_agent_protocol::BoundedDisplayText::new(text).ok())
+    PRIMARY_KEYS
+        .iter()
+        .find_map(|key| input.get(*key).and_then(Value::as_str))
+        .map(|text| {
+            text.lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(200)
+                .collect::<String>()
+        })
+        .filter(|text| !text.trim().is_empty())
+        .and_then(|text| cookie_agent_protocol::BoundedDisplayText::new(text).ok())
 }
 
 /// How a call is presented from what the agent reported of it so far:
 /// its title, its kind's hint, what its raw input names, and the raw input
 /// as its arguments.
 fn presentation_of(fields: &ToolCallFields) -> PreparedPresentation {
+    // A command shows as cookie's own `bash` call does: `Run` and the
+    // command on one line, the command as its argument.
+    if fields.kind.as_deref() == Some("execute")
+        && let Some(command) = fields
+            .raw_input
+            .as_ref()
+            .and_then(|input| input.get("command"))
+            .and_then(Value::as_str)
+            .filter(|command| !command.trim().is_empty())
+    {
+        let line = command.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut presentation =
+            cookie_agent_runtime_api::tool_presentation(&format!("Run `{line}`"), &line)
+                .with_hint(cookie_agent_protocol::ToolHint::SHELL)
+                .with_arguments([DisplayBlock::code(command.to_owned(), Some("sh".into()))]);
+        presentation.fit();
+        return presentation;
+    }
     let title = display_text(fields.title.as_deref().unwrap_or("ACP tool call"));
     let mut presentation =
-        PreparedPresentation::new(title, primary_argument(fields.raw_input.as_ref()))
+        PreparedPresentation::new(title.clone(), primary_argument(fields.raw_input.as_ref()))
             .with_hint(kind_hint(fields.kind.as_deref()));
-    if let Some(input) = fields
+    if let Some(arguments) = fields
         .raw_input
-        .clone()
-        .filter(|input| input.as_object().is_none_or(|input| !input.is_empty()))
+        .as_ref()
+        .and_then(|input| arguments_of(input, fields.kind.as_deref(), title.as_str()))
     {
-        presentation = presentation.with_arguments([DisplayBlock::Json { value: input }]);
+        presentation = presentation.with_arguments([arguments]);
     }
     presentation.fit();
     presentation
+}
+
+/// A call's arguments as cookie's own tools show theirs: the raw input's
+/// fields as keys and values, without what the header already shows (its
+/// primary argument, a field the title repeats) or what an edit's diff
+/// shows; nested values keep the input as JSON.
+fn arguments_of(input: &Value, kind: Option<&str>, title: &str) -> Option<DisplayBlock> {
+    let Some(fields) = input.as_object() else {
+        return (!input.is_null()).then(|| DisplayBlock::Json {
+            value: input.clone(),
+        });
+    };
+    let primary = PRIMARY_KEYS
+        .iter()
+        .find(|key| fields.get(**key).is_some_and(Value::is_string));
+    let edit = matches!(kind, Some("edit" | "delete" | "move"));
+    let rest = fields
+        .iter()
+        .filter(|(key, value)| {
+            primary != Some(&key.as_str())
+                && !(edit && DIFF_KEYS.contains(&key.as_str()))
+                && value
+                    .as_str()
+                    .is_none_or(|text| text.trim() != title.trim())
+                // An option left off says nothing, as with cookie's own tools.
+                && !value.is_null()
+                && value.as_bool() != Some(false)
+        })
+        .collect::<Vec<_>>();
+    if rest.is_empty() {
+        return None;
+    }
+    if rest
+        .iter()
+        .any(|(_, value)| value.is_object() || value.is_array())
+    {
+        return Some(DisplayBlock::Json {
+            value: Value::Object(
+                rest.into_iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
+        });
+    }
+    Some(DisplayBlock::key_value(rest.into_iter().map(
+        |(key, value)| {
+            (
+                key.clone(),
+                value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), str::to_owned),
+            )
+        },
+    )))
 }
 
 /// The tool name a call's ACP kind records.
@@ -1760,9 +1902,12 @@ impl Turn<'_> {
             _ => {
                 let fields = &shown.fields;
                 let tool_call_id = shown.tool_call_id;
-                let (blocks, _) =
-                    self.engine
-                        .call_content(session, fields, shown.terminal.as_ref());
+                let (blocks, _) = self.engine.call_content(
+                    session,
+                    fields,
+                    shown.terminal.as_ref(),
+                    &self.live.cwd,
+                );
                 shown.terminal_index = blocks
                     .iter()
                     .position(|block| matches!(block, DisplayBlock::Terminal { .. }))
@@ -1797,9 +1942,12 @@ impl Turn<'_> {
         }
         shown.terminated = true;
         let session = self.active.session;
-        let (mut blocks, mut text) =
-            self.engine
-                .call_content(session, &shown.fields, shown.terminal.as_ref());
+        let (mut blocks, mut text) = self.engine.call_content(
+            session,
+            &shown.fields,
+            shown.terminal.as_ref(),
+            &self.live.cwd,
+        );
         // A command still running when its call ends runs on in the
         // background, as Claude Code's backgrounded commands do.
         let backgrounded = shown
@@ -3002,6 +3150,7 @@ impl Engine {
                 cwd: &cwd,
                 additional_directories: &additional_directories,
                 mcp_servers: &mcp_servers,
+                meta: wire::session_meta(),
             };
             // Every v2 agent resumes; none replays (no `replayFrom`).
             let attempt = Some((wire::method::SESSION_RESUME, AcpSessionStart::Resumed));
@@ -3041,6 +3190,7 @@ impl Engine {
                             cwd: &cwd,
                             additional_directories: &additional_directories,
                             mcp_servers: &mcp_servers,
+                            meta: wire::session_meta(),
                         },
                     ),
                 )
@@ -3721,5 +3871,71 @@ impl Engine {
         Ok(cookie_agent_protocol::SessionAgentOptionSetResult {
             options: live.options,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_reads_numbered_excerpt_is_code_from_its_first_line() {
+        assert_eq!(
+            numbered_excerpt("```\n360\t    {\n361\t        x\n362\n```", Some("/w/a.rs")),
+            Some(DisplayBlock::Code {
+                text: "    {\n        x\n".into(),
+                language: Some("rust".into()),
+                start_line: Some(360),
+                omitted_lines: None,
+            })
+        );
+        assert_eq!(numbered_excerpt("```\nplain text\n```", None), None);
+        assert_eq!(numbered_excerpt("no fence", None), None);
+    }
+
+    #[test]
+    fn a_calls_arguments_show_what_its_header_and_diff_do_not() {
+        // An edit's strings are its diff's; its path is the header's.
+        assert_eq!(
+            arguments_of(
+                &json!({"file_path": "/w/a.rs", "old_string": "a", "new_string": "b", "replace_all": true}),
+                Some("edit"),
+                "Edit a.rs",
+            ),
+            Some(DisplayBlock::key_value([("replace_all", "true")]))
+        );
+        assert_eq!(
+            arguments_of(
+                &json!({"file_path": "/w/a.rs", "old_string": "a", "new_string": "b", "replace_all": false}),
+                Some("edit"),
+                "Edit a.rs",
+            ),
+            None
+        );
+        // A field the title repeats is left out.
+        assert_eq!(
+            arguments_of(
+                &json!({"description": "Map the panel", "prompt": "Look", "subagent_type": "explore"}),
+                Some("think"),
+                "Map the panel",
+            ),
+            Some(DisplayBlock::key_value([
+                ("prompt", "Look"),
+                ("subagent_type", "explore")
+            ]))
+        );
+        // Nested values keep the input as JSON.
+        assert_eq!(
+            arguments_of(&json!({"questions": [{"q": "?"}]}), None, "Ask"),
+            Some(DisplayBlock::Json {
+                value: json!({"questions": [{"q": "?"}]})
+            })
+        );
+        assert_eq!(
+            arguments_of(&json!({"file_path": "/w/a.rs"}), Some("read"), "Read a.rs"),
+            None
+        );
     }
 }

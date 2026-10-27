@@ -86,12 +86,34 @@ fn title_names_argument(title: &str, argument: &str) -> bool {
     if argument.is_empty() || title.contains(argument) {
         return true;
     }
+    // A path the title names by its trailing parts, as an agent's
+    // `Read src/main.rs` names `/work/src/main.rs`.
+    if !argument.contains(char::is_whitespace)
+        && argument
+            .match_indices('/')
+            .map(|(slash, _)| &argument[slash + 1..])
+            .any(|tail| !tail.is_empty() && title_has_path(title, tail))
+    {
+        return true;
+    }
     title.match_indices('…').any(|(end, _)| {
         let shown = &title[..end];
         shown.char_indices().any(|(start, _)| {
             let prefix = &shown[start..];
             prefix.chars().count() >= MIN_CUT_ARGUMENT_CHARS && argument.starts_with(prefix)
         })
+    })
+}
+
+/// Whether `title` holds `path` as a whole path: not inside a longer word
+/// or path (`a.rs` is not named by `data.rs`).
+fn title_has_path(title: &str, path: &str) -> bool {
+    title.match_indices(path).any(|(start, _)| {
+        let before = title[..start].chars().next_back();
+        let after = title[start + path.len()..].chars().next();
+        before.is_none_or(|character| character.is_whitespace() || "`'\"(".contains(character))
+            && after
+                .is_none_or(|character| character.is_whitespace() || "`'\"):,".contains(character))
     })
 }
 
@@ -297,6 +319,20 @@ mod tests {
         ));
         assert!(!title_names_argument("Run a command", "sleep 8"));
         assert!(!title_names_argument("Run `pr…`", "printf 'x'"));
+        // A path the title names by its trailing parts.
+        assert!(title_names_argument(
+            "Read src/main.rs (10 - 20)",
+            "/work/app/src/main.rs"
+        ));
+        assert!(title_names_argument(
+            "Edit main.rs",
+            "/work/app/src/main.rs"
+        ));
+        assert!(!title_names_argument("Edit data.rs", "/work/a.rs"));
+        assert!(!title_names_argument(
+            "Read other/main.rs",
+            "/work/src/main.rs"
+        ));
         assert_eq!(flatten_header_argument("a\n\tb  c"), "a b c");
     }
 

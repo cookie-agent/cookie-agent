@@ -112,6 +112,20 @@ pub(crate) struct NewSessionRequest<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
+    /// [`session_meta`].
+    #[serde(rename = "_meta")]
+    pub meta: Value,
+}
+
+/// The `_meta` every session cookie opens carries: Claude Code's adapter
+/// takes `claudeCode.options` as its SDK options, whose `extraArgs` asks
+/// its CLI for summarized thinking (recent models omit the text by
+/// default), which cookie shows as a model's thinking. Other agents ignore
+/// it.
+pub(crate) fn session_meta() -> Value {
+    serde_json::json!({
+        "claudeCode": {"options": {"extraArgs": {"thinking-display": "summarized"}}}
+    })
 }
 
 /// `session/resume`, without a replay: the agent keeps its own history and
@@ -125,6 +139,9 @@ pub(crate) struct ExistingSessionRequest<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
+    /// [`session_meta`].
+    #[serde(rename = "_meta")]
+    pub meta: Value,
 }
 
 /// `session/fork` (unstable): a new session with the context of
@@ -148,9 +165,10 @@ pub(crate) struct ForkSessionRequest<'a> {
 /// (`jetbrains.air.fork`, version 1), which Claude Code's and Codex's
 /// adapters read; an agent without it forks the whole session.
 pub(crate) fn air_fork_point(message_id: &str) -> Value {
-    serde_json::json!({
-        "jetbrains": {"air": {"fork": {"version": 1, "messageId": message_id}}}
-    })
+    let mut meta = session_meta();
+    meta["jetbrains"] =
+        serde_json::json!({"air": {"fork": {"version": 1, "messageId": message_id}}});
+    meta
 }
 
 /// What `session/new`, `session/resume`, and `session/fork` answer. The

@@ -1195,9 +1195,10 @@ fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         .as_ref()
         .and_then(|source| source.known())
     {
-        Some(cookie_agent_protocol::ToolSource::Runtime { runtime_id, .. }) => {
-            view.homes.get(runtime_id)
-        }
+        Some(
+            cookie_agent_protocol::ToolSource::Runtime { runtime_id, .. }
+            | cookie_agent_protocol::ToolSource::Acp { runtime_id, .. },
+        ) => view.homes.get(runtime_id),
         _ => None,
     };
     crate::places::paths_under_home(&tool.header_text(), home)
@@ -1235,7 +1236,8 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
             )
         })
         .unwrap_or_default();
-    // An ACP agent's own call names the agent that ran it.
+    // An ACP agent's own call names the agent that ran it to a screen
+    // reader; its block's header already names the agent to the eye.
     let progress = match tool
         .presentation
         .tool
@@ -1245,7 +1247,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         .and_then(cookie_agent_client_state::acp::acp_source_label)
     {
         Some(label) => format!(
-            "<span class=\"min-w-0 shrink-0 truncate {NOTE}\" data-tool-source>· {}</span>{progress}",
+            "<span class=\"sr-only\" data-tool-source>· {}</span>{progress}",
             escape(&label)
         ),
         None => progress,

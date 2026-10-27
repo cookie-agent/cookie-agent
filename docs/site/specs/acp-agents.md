@@ -496,8 +496,11 @@ them.
   checklist with `[x]`, `[~]`, and `[ ]` (an icon and a screen-reader
   label in the web) and a high or low priority. A `plan` block inside a
   tool's display renders the same way.
-- **Tool source.** A call of source `acp` names `<agent> on <runtime>` after
-  its title (in the web, a `data-tool-source` span).
+- **Tool source.** A call of source `acp` named `<agent> on <runtime>`
+  after its title. Since 2026-10-27 its block's header names the agent and
+  the call reads as cookie's own: the TUI shows no source, the web keeps
+  it for screen readers only (a `data-tool-source` span) and shows the
+  call's paths under its runtime's home, as for a runtime's calls.
 - No new pointer target: the TUI's `/options` is a picker modal on the
   existing `PickerRow` targets, and palette rows are `PaletteRow`s.
 
@@ -607,7 +610,8 @@ the spec did not anticipate:
 - **Tool calls.** A call's presentation is rebuilt from what the agent
   reported so far (title, the kind's hint, a primary argument from the raw
   input's `command`, `file_path`, `path`, `url`, `pattern`, or `query`, and
-  the raw input as arguments) and recorded as
+  the raw input as arguments; since 2026-10-27 shaped as cookie's own
+  tools' presentations, below) and recorded as
   `acp_session_updated.tool_presentation` whenever it changes, since Claude
   Code's adapter sends the raw input in a later `tool_call_update` (and
   then once more per streamed field). Clients replace the call's title,
@@ -619,6 +623,28 @@ the spec did not anticipate:
   `claudeCode.toolName` becomes the call's published name and
   `metadata.acp.tool_name`; its `claudeCode.toolResponse` (the whole tool
   response, including written files) is not kept.
+- **Looking like cookie's own calls (2026-10-27).** An ACP agent's turns
+  and calls render as a model's do:
+  - an `execute` call with a `command` is `` Run `<command>` `` with the
+    command as an `sh` code argument, as cookie's `bash`;
+  - arguments are the raw input's fields as keys and values, without the
+    primary argument, a field the title repeats, an option left `false`, or
+    an edit's strings its diff shows; nested values keep JSON;
+  - a read whose content is a fenced excerpt the agent numbered
+    (`360\t…`) is code from that line in the file's language, and a read
+    shown so, or an edit with a diff, gets no location link;
+  - a diff names a file under the session's cwd relative to it, and Claude
+    Code's patch header (`diff --git <path> <path>`, no `a/`/`b/`) is one
+    file;
+  - clients leave out a primary argument the title names by its trailing
+    path (`Read src/main.rs` for `/work/src/main.rs`);
+  - every session cookie opens sends `_meta.claudeCode.options.extraArgs`
+    `{"thinking-display": "summarized"}`, so Claude Code streams its
+    thinking (recent models omit the text by default), which shows as a
+    model's thinking;
+  - the reply's footer (`⚡ tps · ctx · $cost`) folds the round's recorded
+    usage: its output over the block's time, the agent's latest context
+    use, and the round costs.
 - **Notices and compaction.** `initialize` declares
   `clientCapabilities.session: {notices: {}, compaction: {}}`. A `notice`
   update (`severity`, `title`, `description`) and a completed or failed

@@ -5001,7 +5001,8 @@ def acp_agents(browser):
     assert statuses == ["completed", "in_progress"], statuses
     browser.wait(
         "the agent's tool call",
-        lambda: "fixture on local" in browser.text("#transcript [data-tool-source]"),
+        lambda: "fixture on local"
+        in browser.script("return document.querySelector('#transcript [data-tool-source]')?.textContent || ''"),
     )
     # The agent's context use, as its usage_update reported it.
     browser.wait("the agent's context", lambda: "1.2k tokens" in browser.text("#context"))

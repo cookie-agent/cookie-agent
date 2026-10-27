@@ -345,10 +345,13 @@ async fn a_turn_renders_chunks_thoughts_tool_calls_a_plan_and_usage() {
         block,
         Open::Known(DisplayBlock::Diff(diff)) if diff.path == "/work/notes.txt" && diff.added == 1 && diff.removed == 1
     )));
-    assert!(result.display.iter().any(|block| matches!(
-        block,
-        Open::Known(DisplayBlock::Link { label: Some(label), .. }) if label == "/work/notes.txt:2"
-    )));
+    // Its diff names the file, as cookie's own edit shows: no link to it.
+    assert!(
+        !result
+            .display
+            .iter()
+            .any(|block| matches!(block, Open::Known(DisplayBlock::Link { .. })))
+    );
     let plan = events
         .iter()
         .find_map(|event| match &event.payload {
@@ -1686,12 +1689,8 @@ async fn a_tool_calls_late_input_updates_its_presentation_and_its_content_render
             .map(|hint| hint.rendered()),
         Some(cookie_agent_protocol::ToolHint::FILE_READ)
     );
-    assert_eq!(
-        presented.presentation.arguments,
-        [Open::Known(DisplayBlock::Json {
-            value: serde_json::json!({"file_path": "/work/notes.txt"})
-        })]
-    );
+    // The path is the header's: nothing else to show.
+    assert_eq!(presented.presentation.arguments, []);
     let result = events
         .iter()
         .find_map(|event| match &event.payload {
@@ -2215,7 +2214,8 @@ async fn a_commands_terminal_output_streams_into_the_call_and_is_retained() {
     };
 
     // Codex's way: chunks, then a failing exit.
-    let codex = call_of("make test");
+    // Commands show as cookie's own `bash` calls do.
+    let codex = call_of("Run `make test`");
     let failed = termination_of(codex);
     assert_eq!(failed.outcome, ToolTerminationOutcome::Failed);
     assert_eq!(
@@ -2270,7 +2270,7 @@ async fn a_commands_terminal_output_streams_into_the_call_and_is_retained() {
 
     // Claude Code's way: the whole output once, its terminal replacing the
     // description, then the exit.
-    let claude = termination_of(call_of("ls"));
+    let claude = termination_of(call_of("Run `ls`"));
     assert_eq!(claude.outcome, ToolTerminationOutcome::Completed);
     let result = claude.result.unwrap();
     assert_eq!(terminal(&result), ("notes.txt\n".to_owned(), Some(0)));

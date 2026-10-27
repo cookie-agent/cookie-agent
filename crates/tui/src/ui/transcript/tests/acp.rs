@@ -311,7 +311,7 @@ fn a_plan_renders_as_a_checklist_with_statuses() {
 }
 
 #[test]
-fn an_acp_agents_tool_call_names_the_agent() {
+fn an_acp_agents_tool_call_reads_as_cookies_own() {
     let mut presentation = hinted_presentation("Read notes.txt", ToolHint::FILE_READ, None);
     presentation.tool.source = Some(Open::Known(ToolSource::Acp {
         agent: AgentId::new("claude").unwrap(),
@@ -321,7 +321,9 @@ fn an_acp_agents_tool_call_names_the_agent() {
     let text = snapshot_lines(
         &transcript_layout_with(&state, None, 80, &Theme::default(), &PlainHighlighter).lines,
     );
-    assert!(text.contains("Read notes.txt · claude on local"), "{text}");
+    // Its block's header names the agent; the call reads as cookie's own.
+    assert!(text.contains("Read notes.txt"), "{text}");
+    assert!(!text.contains("claude on local"), "{text}");
 }
 
 #[test]

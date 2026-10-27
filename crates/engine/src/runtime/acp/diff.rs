@@ -12,8 +12,25 @@ use cookie_agent_protocol::{
 };
 use serde_json::Value;
 
-/// The blocks of one `diff` content item, and the paths it changed.
-pub(super) fn diff_blocks(content: &Value) -> (Vec<DisplayBlock>, Vec<String>) {
+/// The blocks of one `diff` content item, and the paths it changed. A
+/// block names a file under the session's `cwd` relative to it, as
+/// cookie's own edits do.
+pub(super) fn diff_blocks(content: &Value, cwd: &str) -> (Vec<DisplayBlock>, Vec<String>) {
+    let (mut blocks, paths) = diff_blocks_absolute(content);
+    let base = format!("{}/", cwd.trim_end_matches('/'));
+    for block in &mut blocks {
+        if let DisplayBlock::Diff(diff) = block {
+            for path in std::iter::once(&mut diff.path).chain(diff.old_path.as_mut()) {
+                if let Some(relative) = path.strip_prefix(&base).filter(|rest| !rest.is_empty()) {
+                    *path = relative.to_owned();
+                }
+            }
+        }
+    }
+    (blocks, paths)
+}
+
+fn diff_blocks_absolute(content: &Value) -> (Vec<DisplayBlock>, Vec<String>) {
     let changes = content
         .get("changes")
         .and_then(Value::as_array)
@@ -109,9 +126,21 @@ fn parse_patch(text: &str) -> Vec<PatchFile> {
     };
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            let path = rest
-                .rsplit_once(" b/")
-                .map_or_else(|| strip(rest), |(_, new)| new.to_owned());
+            // `a/x b/x`, or, as Claude Code's adapter writes it, the same
+            // absolute path twice.
+            let path = rest.rsplit_once(" b/").map_or_else(
+                || {
+                    if !rest.is_char_boundary(rest.len() / 2) {
+                        return strip(rest);
+                    }
+                    let (half, other) = rest.split_at(rest.len() / 2);
+                    match other.strip_prefix(' ') {
+                        Some(other) if rest.len() % 2 == 1 && half == other => half.to_owned(),
+                        _ => strip(rest),
+                    }
+                },
+                |(_, new)| new.to_owned(),
+            );
             files.push(PatchFile {
                 path,
                 old_path: None,
@@ -231,15 +260,18 @@ new file mode 100644
 
     #[test]
     fn a_patch_becomes_a_block_per_file_with_the_changes_absolute_paths() {
-        let (blocks, paths) = diff_blocks(&json!({
-            "type": "diff",
-            "changes": [
-                {"operation": "modify", "path": "/work/src/notes.txt"},
-                {"operation": "add", "path": "/work/new.txt"},
-                {"operation": "delete", "path": "/work/gone.txt"},
-            ],
-            "patch": {"format": "git_patch", "text": PATCH},
-        }));
+        let (blocks, paths) = diff_blocks(
+            &json!({
+                "type": "diff",
+                "changes": [
+                    {"operation": "modify", "path": "/work/src/notes.txt"},
+                    {"operation": "add", "path": "/work/new.txt"},
+                    {"operation": "delete", "path": "/work/gone.txt"},
+                ],
+                "patch": {"format": "git_patch", "text": PATCH},
+            }),
+            "/elsewhere",
+        );
         assert_eq!(
             paths,
             ["/work/src/notes.txt", "/work/new.txt", "/work/gone.txt"]
@@ -274,15 +306,37 @@ new file mode 100644
 
     #[test]
     fn a_diff_without_a_patch_names_its_files() {
-        let (blocks, paths) = diff_blocks(&json!({
-            "type": "diff",
-            "changes": [{"operation": "move", "path": "/w/b.txt", "oldPath": "/w/a.txt"}],
-        }));
+        let (blocks, paths) = diff_blocks(
+            &json!({
+                "type": "diff",
+                "changes": [{"operation": "move", "path": "/w/b.txt", "oldPath": "/w/a.txt"}],
+            }),
+            "/elsewhere",
+        );
         assert_eq!(paths, ["/w/b.txt"]);
         let [DisplayBlock::Diff(diff)] = blocks.as_slice() else {
             panic!("{blocks:?}");
         };
         assert_eq!(diff.change, DiffChange::Renamed);
         assert_eq!(diff.old_path.as_deref(), Some("/w/a.txt"));
+    }
+
+    #[test]
+    fn claude_codes_absolute_patch_is_one_file_shown_from_the_cwd() {
+        let patch = "diff --git /work/src/a.txt /work/src/a.txt\n--- /work/src/a.txt\n+++ /work/src/a.txt\n@@ -1 +1 @@\n-x\n+y\n";
+        let (blocks, paths) = diff_blocks(
+            &json!({
+                "type": "diff",
+                "changes": [{"operation": "modify", "path": "/work/src/a.txt"}],
+                "patch": {"format": "git_patch", "text": patch},
+            }),
+            "/work/",
+        );
+        assert_eq!(paths, ["/work/src/a.txt"]);
+        let [DisplayBlock::Diff(diff)] = blocks.as_slice() else {
+            panic!("{blocks:?}");
+        };
+        assert_eq!(diff.path, "src/a.txt");
+        assert_eq!((diff.added, diff.removed), (1, 1));
     }
 }
