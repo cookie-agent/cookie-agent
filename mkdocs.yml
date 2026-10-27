@@ -190,6 +190,7 @@ nav:
           - MCP tool filters: specs/mcp-tool-filters.md
           - ACP agents: specs/acp-agents.md
           - Deferred tool loading in oven-sdk: specs/deferred-tools.md
+          - Deferred tools in cookie: specs/deferred-tools-cookie.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
           - Managing runtimes from clients: specs/runtime-management.md
           - Model configuration: specs/model-configuration.md

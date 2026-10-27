@@ -408,7 +408,8 @@ Decided by the user on 2026-10-27:
 
 ## 10. For the cookie spec that follows
 
-Not part of this work; noted so the oven API fits it.
+Not part of this work; noted so the oven API fits it. Carried out by
+[deferred tools in cookie](deferred-tools-cookie.md).
 
 **User decisions (2026-10-27):**
 
