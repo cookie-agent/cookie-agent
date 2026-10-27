@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.39.0
+
+- The ACP agent's own subagents ([ACP v2 spec](../specs/acp-v2.md) section
+  8) are child sessions of its session: `delegated` in origin, listed by
+  `session.children` and `session.tree`, whose log starts with
+  `acp_session_started` `how: subagent`. Their runs are the subagent's own
+  work, started by an `acp_agent` message ("Started with a task", the task
+  as its body); they report nothing to the parent and take no prompts. An
+  older client reads `how: subagent` as `new`. Plugin protocol 1.21.0
+  carries it in events the same way.
+
 ## 1.38.0
 
 - Work an ACP agent starts on its own ([ACP v2 spec](../specs/acp-v2.md)

@@ -33,7 +33,9 @@ pub(crate) mod permissions;
 pub(crate) mod process;
 pub(crate) mod prompt;
 pub(crate) mod runner;
+mod subagents;
 mod terminal;
+pub(crate) use subagents::is_acp_subagent;
 mod wakes;
 pub(crate) mod wire;
 
@@ -60,6 +62,9 @@ pub(crate) struct AcpState {
     /// (`_session/steering`), by session: they stay waiting, and no client
     /// can take them back, until the agent answers.
     pub(crate) steering: Mutex<HashMap<SessionId, Vec<u64>>>,
+    /// The cookie sessions of the agents' own subagents, by the
+    /// subagent's ACP session ID.
+    pub(crate) subagents: Mutex<HashMap<String, SessionId>>,
 }
 
 impl AcpState {
@@ -102,6 +107,7 @@ impl AcpState {
             processes: process::Processes::default(),
             questions: elicitation::Questions::default(),
             steering: Mutex::new(HashMap::new()),
+            subagents: Mutex::new(HashMap::new()),
         }
     }
 

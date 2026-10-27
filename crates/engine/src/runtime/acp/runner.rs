@@ -1186,8 +1186,39 @@ impl Turn<'_> {
                 }
                 Ok(())
             }
-            // Subagents (`subagent_update`) are not shown yet: their own
-            // sessions come with the subagent phase of the v2 port.
+            // The agent's own subagent: its cookie session, a child of this
+            // one; its work arrives in that session.
+            "subagent_update" => {
+                self.engine
+                    .acp_subagent_update(&self.live, Some(self.run), &update)
+                    .await;
+                Ok(())
+            }
+            // A message between the agent's sessions, such as the task a
+            // subagent got or the report it gave back: shown where it
+            // arrives, never sent anywhere.
+            "session_message" => {
+                let text = update
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(wire::content_text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.trim().is_empty() {
+                    return Ok(());
+                }
+                let to_self = update.get("recipientSessionId").and_then(Value::as_str)
+                    == Some(self.live.acp_session_id.as_str());
+                let title = if to_self {
+                    "Message from another of the agent's sessions"
+                } else {
+                    "Message to another of the agent's sessions"
+                };
+                self.notice(AcpNoticeSeverity::Info, title, Some(text.as_str()))
+                    .await
+            }
             "tool_call_update" => {
                 let fields: ToolCallFields =
                     serde_json::from_value(update.clone()).unwrap_or_default();
@@ -2135,6 +2166,14 @@ impl Engine {
                 Vec::new()
             };
             let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, &process);
+            // The agent's own subagent works only on what its parent gives
+            // it: cookie has no prompt to send it.
+            if !prompt.is_empty() && super::is_acp_subagent(&claim.events) {
+                return Err(EngineError::Acp(format!(
+                    "this is `{}`'s own subagent, which takes no messages; send them to its parent",
+                    turn.live.agent.id
+                )));
+            }
             turn.input_through_seq = claim.events.last().map_or(0, |event| event.seq);
             turn.claim = Some(claim);
             turn.last_text.clear();
@@ -2730,6 +2769,16 @@ impl Engine {
                 if record.acp_session_id == live.acp_session_id)
         {
             return Ok(live);
+        }
+        // An agent's own subagent lives only in the agent process that made
+        // it; cookie cannot open it again.
+        if let super::lifecycle::Plan::Resume(record) = &plan
+            && record.how == AcpSessionStart::Subagent
+        {
+            return Err(EngineError::Acp(format!(
+                "`{}`'s subagent ended with the agent's process; it takes no more turns",
+                agent.id
+            )));
         }
         self.remember_acp_input(agent, &process.init().capabilities.prompt());
         let cwd = self.acp_cwd(session, agent, process)?;

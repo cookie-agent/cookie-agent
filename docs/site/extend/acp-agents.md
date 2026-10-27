@@ -534,6 +534,14 @@ not in it.
   and questions, and cookie's tools. Stop stops that work too; a message you
   send meanwhile goes into it. It shows even after you stopped a run, since
   the agent is already working.
+- **The agent's own subagents.** A subagent the agent starts itself (Claude
+  Code's Task and Agent subagents) is a session of its own, nested under
+  the session that started it, as cookie's own subagents are. Its title is
+  the agent's name for it; its runs show what it does, starting with the
+  task it got; its permission requests and questions are asked in it. It
+  takes no messages: it works on what its parent gives it, and the parent
+  agent gets its result. Stop stops its work. It lives in the agent's
+  process: once that process ends, it takes no more turns.
 - **Questions.** A question from the agent (see [Questions from the
   agent](#questions-from-the-agent)) docks a panel above the TUI's status
   bar, titled `<agent> asks · waiting on you`: Tab moves between the fields

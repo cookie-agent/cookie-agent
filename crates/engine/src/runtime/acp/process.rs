@@ -13,7 +13,7 @@
 //! requests to; the runner of the session's turn reads it.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -89,9 +89,14 @@ pub(crate) struct AgentProcess {
     /// The live sessions' channels, by ACP session ID.
     sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SessionEvent>>>,
     /// Updates of sessions not routed yet, such as the commands an agent
-    /// announces right after answering `session/new`: they go to the
-    /// session's channel once it is routed.
-    early: Mutex<HashMap<String, Vec<Value>>>,
+    /// announces right after answering `session/new`, and the requests of
+    /// an expected subagent: they go to the session's channel once it is
+    /// routed.
+    early: Mutex<HashMap<String, Vec<SessionEvent>>>,
+    /// The agent's subagent sessions it announced (`subagent_update`) that
+    /// are not routed yet: their requests wait for the route rather than
+    /// being answered at once.
+    expected: Mutex<HashSet<String>>,
     /// Cancelled when the process is gone.
     pub exited: CancellationToken,
     exit_reason: Mutex<Option<String>>,
@@ -134,6 +139,7 @@ impl AgentProcess {
         self.exited.cancel();
         lock(&self.sessions).clear();
         lock(&self.early).clear();
+        lock(&self.expected).clear();
     }
 
     /// Routes session `session`'s updates and permission requests to the
@@ -144,9 +150,10 @@ impl AgentProcess {
         // (sessions, then early): an update delivered in between would
         // otherwise find no route and wait in `early` for good.
         let mut sessions = lock(&self.sessions);
-        for update in lock(&self.early).remove(session).unwrap_or_default() {
-            let _ = sender.send(SessionEvent::Update(update));
+        for event in lock(&self.early).remove(session).unwrap_or_default() {
+            let _ = sender.send(event);
         }
+        lock(&self.expected).remove(session);
         sessions.insert(session.to_owned(), sender);
         receiver
     }
@@ -177,19 +184,27 @@ impl AgentProcess {
     fn deliver(&self, session: &str, event: SessionEvent) -> Result<(), SessionEvent> {
         match lock(&self.sessions).get(session) {
             Some(sender) => sender.send(event).map_err(|error| error.0),
-            None => match event {
-                SessionEvent::Update(update) => {
-                    let mut early = lock(&self.early);
-                    if early.len() < MAX_EARLY_SESSIONS || early.contains_key(session) {
-                        let updates = early.entry(session.to_owned()).or_default();
-                        if updates.len() < MAX_EARLY_UPDATES {
-                            updates.push(update);
-                        }
-                    }
-                    Ok(())
+            None => {
+                // A subagent's request waits for its session's route; any
+                // other session's has no one to answer it.
+                let waits = matches!(event, SessionEvent::Update(_))
+                    || lock(&self.expected).contains(session);
+                if !waits {
+                    return Err(event);
                 }
-                other => Err(other),
-            },
+                let mut early = lock(&self.early);
+                if early.len() < MAX_EARLY_SESSIONS || early.contains_key(session) {
+                    let events = early.entry(session.to_owned()).or_default();
+                    if events.len() < MAX_EARLY_UPDATES {
+                        events.push(event);
+                        return Ok(());
+                    }
+                }
+                match event {
+                    SessionEvent::Update(_) => Ok(()),
+                    other => Err(other),
+                }
+            }
         }
     }
 }
@@ -356,6 +371,7 @@ impl Processes {
             init: std::sync::OnceLock::new(),
             sessions: Mutex::default(),
             early: Mutex::default(),
+            expected: Mutex::default(),
             exited: closed,
             exit_reason: Mutex::default(),
             url_completions: Default::default(),
@@ -578,6 +594,15 @@ async fn dispatch(
                     continue;
                 }
                 if let Ok(update) = notification.params::<wire::SessionNotification>() {
+                    // A subagent announced: its requests may come before
+                    // cookie has routed its session.
+                    if update.update.get("sessionUpdate").and_then(Value::as_str)
+                        == Some("subagent_update")
+                        && let Some(child) = update.update.get("sessionId").and_then(Value::as_str)
+                        && !lock(&process.sessions).contains_key(child)
+                    {
+                        lock(&process.expected).insert(child.to_owned());
+                    }
                     let _ =
                         process.deliver(&update.session_id, SessionEvent::Update(update.update));
                 }

@@ -35,6 +35,12 @@ impl Engine {
         else {
             return;
         };
+        // An ACP agent's own subagent reports nothing: its parent agent gets
+        // the child's result itself.
+        if super::acp::is_acp_subagent(&projection.log.event_snapshot()) {
+            self.notify_background_changed(parent_session_id);
+            return;
+        }
         // The report on its way wakes the parent: a push notification
         // waits for it (push notifications spec section 3.2).
         if ended {

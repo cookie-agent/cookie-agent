@@ -4372,6 +4372,49 @@ fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
 }
 
 #[test]
+fn an_acp_agents_own_subagent_session_refuses_messages() {
+    use cookie_agent_protocol::{AcpSessionRecord, AcpSessionStart};
+    let session_id = SessionId::new_v7();
+    let mut state = SessionState::default();
+    let started = |how| EventPayload::AcpSessionStarted {
+        record: AcpSessionRecord {
+            agent: AgentId::new("claude").unwrap(),
+            runtime_id: cookie_agent_protocol::RuntimeId::new("local").unwrap(),
+            runtime_agent: AgentId::new("claude").unwrap(),
+            acp_session_id: "s-1".into(),
+            cwd: "/work".into(),
+            protocol_version: 2,
+            agent_info: serde_json::Value::Null,
+            how,
+            steering: true,
+            forked_from: None,
+            fork: None,
+            fork_point: None,
+        },
+    };
+    let at = jiff::Timestamp::new(1, 0).expect("timestamp");
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        1,
+        at,
+        started(AcpSessionStart::New),
+    );
+    assert_eq!(state.acp.refusal(), None);
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        2,
+        at,
+        started(AcpSessionStart::Subagent),
+    );
+    let refusal = state.acp.refusal().expect("a subagent refuses messages");
+    assert!(refusal.contains("`claude`'s own subagent"), "{refusal}");
+}
+
+#[test]
 fn an_acp_sessions_steering_notices_and_late_tool_presentations_fold_from_its_events() {
     use cookie_agent_protocol::{
         AcpNotice, AcpNoticeSeverity, AcpSessionRecord, AcpSessionStart, AcpSessionUpdate,

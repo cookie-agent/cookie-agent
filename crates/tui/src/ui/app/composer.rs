@@ -338,6 +338,14 @@ impl App {
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
         }
+        if let Some(refusal) = self
+            .selected
+            .and_then(|id| self.store.sessions.get(&id))
+            .and_then(|state| state.acp.refusal())
+        {
+            self.status = refusal;
+            return;
+        }
         if self.input.as_str().trim().is_empty() && self.attachments.is_empty() {
             // Enter in an empty composer resumes a held session.
             if self.held_banner_text().is_some() {

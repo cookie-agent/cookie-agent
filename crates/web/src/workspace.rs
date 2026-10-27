@@ -1588,6 +1588,17 @@ impl Workspace {
                 .set("This session is owned by another cookie process; input is disabled.".into());
             return;
         }
+        if let Some(refusal) = self.selected.get_untracked().and_then(|session_id| {
+            self.with_store(|store| {
+                store
+                    .sessions
+                    .get(&session_id)
+                    .and_then(|state| state.acp.refusal())
+            })
+        }) {
+            self.status.set(refusal);
+            return;
+        }
         if self.new_session.get_untracked() && !self.may_create() {
             return;
         }

@@ -471,11 +471,11 @@ impl Engine {
                     invocation_id,
                     ..
                 } if parent_session_id == id
-                    && known.contains(&(
+                    && (known.contains(&(
                         invocation_id,
                         parent_session_id,
                         child.meta.session_id,
-                    )) =>
+                    )) || self.is_acp_subagent_session(child.meta.session_id)) =>
                 {
                     Some(ChildSummary {
                         session_id: child.meta.session_id,
@@ -489,6 +489,15 @@ impl Engine {
                 _ => None,
             })
             .collect())
+    }
+
+    /// Whether `session` is an ACP agent's own subagent, a child no
+    /// delegation of cookie's made.
+    fn is_acp_subagent_session(&self, session: SessionId) -> bool {
+        self.inner
+            .store
+            .get(session)
+            .is_ok_and(|child| super::acp::is_acp_subagent(&child.log.event_snapshot()))
     }
 
     pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {

@@ -244,6 +244,11 @@
           "const": "forked",
           "description": "`session/fork` of the session a fork or a revert left behind\n([`AcpSessionRecord::forked_from`]); client protocol 1.24.0.",
           "type": "string"
+        },
+        {
+          "const": "subagent",
+          "description": "A subagent session of the agent's own, which it announced with\n`subagent_update` in its parent's session: the cookie session is\na child of the parent's, its runs are the subagent's own work,\nand it takes no prompts (client protocol 1.39.0).",
+          "type": "string"
         }
       ],
       "x-open": true

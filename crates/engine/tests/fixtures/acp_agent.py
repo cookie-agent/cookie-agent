@@ -59,6 +59,16 @@ Each prompt's last text block is a command:
                          session/cancel
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
+  subagent <title> <task>
+                         announces a subagent session (subagent_update), gives it
+                         <task> (session_message), and the subagent works on its
+                         own stream (running, a read call, "subagent says:
+                         <task>", idle) while this session answers "subagent
+                         done"
+  subagent-ask <kind> <r>
+                         the same, titled "asker", but the subagent asks
+                         permission for a call of ACP kind <kind> on <r> and
+                         says "subagent asked: <outcome>"
   wake-later <s> <text>  answers "later", then <s> seconds after its work ended
                          starts work of its own (running, <text>, idle), as
                          Claude Code does when a background command ends
@@ -460,8 +470,50 @@ def wake_later(session_id, delay, work):
     threading.Thread(target=later, daemon=True).start()
 
 
+def subagent(parent, title, task, work):
+    """A subagent session of the agent's own: announced in `parent`, given
+    `task`, and doing `work` on its own stream."""
+    child = new_session_id() + "-sub"
+    sessions[child] = {"mode": "default", "model": "small", "history": [], "parent": parent}
+    update(parent, {"sessionUpdate": "subagent_update", "sessionId": child, "title": title,
+                    "description": "a fixture subagent", "capabilities": {"cancel": {}},
+                    "state": {"state": "running"}})
+    # As Claude Code's adapter: the child runs, then the task arrives, its
+    # parent's view of it first.
+    with state_lock:
+        running[child] = True
+        cancelled[child] = False
+        steered[child] = []
+    state(child, "running")
+    message = {"sessionUpdate": "session_message", "messageId": next_message_id("task"),
+               "senderSessionId": parent, "recipientSessionId": child,
+               "content": [{"type": "text", "text": task}]}
+    update(parent, message)
+    update(child, message)
+    work(child)
+    finish(child, "end_turn", USAGE)
+    update(parent, {"sessionUpdate": "subagent_update", "sessionId": child,
+                    "state": {"state": "idle", "stopReason": "end_turn"}})
+
+
 def run_command(request_id, session_id, session, word, rest, texts, kinds):
-    if word == "wake-later":
+    if word == "subagent":
+        title, _, task = rest.partition(" ")
+        def work(child):
+            tool_call(child, {"toolCallId": f"{child}-read", "title": "Read notes.txt", "kind": "read",
+                              "status": "completed", "rawInput": {"file_path": "/work/notes.txt"},
+                              "content": [{"type": "content", "content": {"type": "text", "text": "one"}}]})
+            say(child, "subagent says: " + task)
+        subagent(session_id, title, task, work)
+        say(session_id, "subagent done")
+    elif word == "subagent-ask":
+        kind, _, resource = rest.partition(" ")
+        def work(child):
+            outcome = permission(child, f"{child}-ask", kind, resource)
+            say(child, f"subagent asked: {outcome}")
+        subagent(session_id, "asker", "ask something", work)
+        say(session_id, "subagent done")
+    elif word == "wake-later":
         delay, _, text = rest.partition(" ")
         wake_later(session_id, float(delay), lambda: say(session_id, text or "woke"))
         say(session_id, "later")

@@ -46,6 +46,34 @@ fn starts_work(event: &SessionEvent) -> bool {
     }
 }
 
+/// The task a message to `live`'s session gave it among what the listener
+/// kept, such as a subagent's prompt from its parent: the wake's body.
+fn task_of(live: &LiveSession) -> Option<String> {
+    let carried = live
+        .carried
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    carried.iter().rev().find_map(|event| {
+        let SessionEvent::Update(update) = event else {
+            return None;
+        };
+        (update.get("sessionUpdate").and_then(Value::as_str) == Some("session_message")
+            && update.get("recipientSessionId").and_then(Value::as_str)
+                == Some(live.acp_session_id.as_str()))
+        .then(|| {
+            update
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(super::wire::content_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|text| !text.trim().is_empty())
+    })
+}
+
 impl Engine {
     /// Listens to `live`'s session between runs, until the session is no
     /// longer `live` or its process ends.
@@ -83,18 +111,38 @@ impl Engine {
                 }
                 event = events.recv() => event,
             };
-            drop(events);
             let Some(event) = event else {
                 return;
             };
+            // Work starts: what already came with it too, such as the task a
+            // subagent got, which follows its `running`.
+            let mut batch = vec![event];
+            if starts_work(&batch[0]) {
+                while let Ok(more) = events.try_recv() {
+                    batch.push(more);
+                }
+            }
+            drop(events);
             if !self.still_live(&live) {
                 return;
             }
-            let wakes = starts_work(&event);
-            live.carried
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(event);
+            let mut wakes = false;
+            for event in batch {
+                // A subagent announced between runs gets its session at
+                // once, so its own work shows while this session is idle.
+                if let SessionEvent::Update(update) = &event
+                    && update.get("sessionUpdate").and_then(Value::as_str)
+                        == Some("subagent_update")
+                {
+                    self.acp_subagent_update(&live, None, update).await;
+                    continue;
+                }
+                wakes |= starts_work(&event);
+                live.carried
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(event);
+            }
             if !wakes {
                 continue;
             }
@@ -104,8 +152,9 @@ impl Engine {
             let taken = round_taken.notified();
             tokio::pin!(taken);
             taken.as_mut().enable();
+            let task = task_of(&live);
             if self
-                .start_acp_wake(live.session, live.agent.id.clone())
+                .start_acp_wake(live.session, live.agent.id.clone(), task)
                 .await
                 .is_err()
             {
@@ -130,7 +179,12 @@ impl Engine {
     /// Records that the session's ACP agent `agent` started work on its
     /// own, which starts a run to show it; nothing when a run is already
     /// open, which takes the work in.
-    async fn start_acp_wake(&self, session: SessionId, agent: AgentId) -> Result<(), EngineError> {
+    async fn start_acp_wake(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        task: Option<String>,
+    ) -> Result<(), EngineError> {
         self.on_actor(session, move |engine| {
             let running = engine
                 .inner
@@ -156,9 +210,13 @@ impl Engine {
                         ProducerMessageId::new_v7().to_string(),
                     )
                     .expect("UUID idempotency key"),
-                    description: SafeDisplayText::new("Woke on its own")
-                        .expect("static description"),
-                    body: UserContent::text(WAKE_BODY),
+                    description: SafeDisplayText::new(if task.is_some() {
+                        "Started with a task"
+                    } else {
+                        "Woke on its own"
+                    })
+                    .expect("static description"),
+                    body: UserContent::text(task.as_deref().unwrap_or(WAKE_BODY)),
                     reminder: None,
                     agent_hop: None,
                     retained_output: None,

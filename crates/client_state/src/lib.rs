@@ -981,6 +981,9 @@ pub struct AcpSessionView {
     /// The `user_input_submitted` sequence numbers of the messages steered
     /// into the agent's running turn, which the transcript marks.
     pub steered: std::collections::HashSet<u64>,
+    /// The session is the ACP agent's own subagent (`how: subagent`,
+    /// client protocol 1.39.0): it takes no messages.
+    pub subagent: bool,
 }
 
 impl AcpSessionView {
@@ -1001,6 +1004,20 @@ impl AcpSessionView {
     /// when `run_agent` is not the session's ACP agent.
     pub fn steers_into_turn(&self, run_agent: Option<&AgentId>) -> Option<bool> {
         (self.agent.is_some() && self.agent.as_ref() == run_agent).then_some(self.steering)
+    }
+
+    /// Why the composer sends nothing in this session: it is the agent's
+    /// own subagent, which works only on what its parent gives it.
+    pub fn refusal(&self) -> Option<String> {
+        self.subagent.then(|| {
+            let agent = self
+                .agent
+                .as_ref()
+                .map_or_else(|| "the agent".to_owned(), |agent| format!("`{agent}`"));
+            format!(
+                "This is {agent}'s own subagent: it works on what its parent gives it and takes no messages."
+            )
+        })
     }
 
     /// Whether `name` is one of the agent's commands.

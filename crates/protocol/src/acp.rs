@@ -40,6 +40,11 @@ crate::open_enum! {
         /// `session/fork` of the session a fork or a revert left behind
         /// ([`AcpSessionRecord::forked_from`]); client protocol 1.24.0.
         Forked,
+        /// A subagent session of the agent's own, which it announced with
+        /// `subagent_update` in its parent's session: the cookie session is
+        /// a child of the parent's, its runs are the subagent's own work,
+        /// and it takes no prompts (client protocol 1.39.0).
+        Subagent,
     }
 }
 

@@ -20,6 +20,7 @@ use super::support::*;
 mod compaction;
 mod lifecycle;
 mod rounds;
+mod subagents;
 mod titles;
 mod wakes;
 use crate::{Engine, EngineOptions};

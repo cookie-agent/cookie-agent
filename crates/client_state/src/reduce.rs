@@ -1322,6 +1322,7 @@ pub(super) fn reduce_event_from(
             state.acp.agent = Some(record.agent.clone());
             state.acp.runtime_id = Some(record.runtime_id.clone());
             state.acp.steering = record.steering;
+            state.acp.subagent = record.how == cookie_agent_protocol::AcpSessionStart::Subagent;
             push_event(
                 state,
                 EventLevel::Debug,

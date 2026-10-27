@@ -2,7 +2,9 @@
 
 Status: **in progress** (2026-10-26). Phase 1 (v2 only) implemented
 2026-10-26 (`04b4b0e4d`); phase 2 (self-wakes) implemented 2026-10-26,
-client protocol 1.38.0 and plugin protocol 1.20.0.
+client protocol 1.38.0 and plugin protocol 1.20.0 (`0aacfd74b`); phase 3
+(subagent sessions) implemented 2026-10-26, client protocol 1.39.0 and
+plugin protocol 1.21.0.
 
 The user decided on 2026-10-26:
 
@@ -575,3 +577,25 @@ nested under its parent; a background terminal in the background bar.
 - **Holds.** A wake starts its run past any hold. A Stop records a hold
   only when the session could otherwise wake (held sessions, section 2),
   so a wake after a Stop is the case that needs this.
+
+**Phase 3 (2026-10-26, client protocol 1.39.0):**
+
+- **The marker.** A child is marked as the agent's own by its log, not by
+  `SessionMeta.acp_subagent`: its first `acp_session_started` has the new
+  `how: subagent`. The engine uses it to send no `<subagent_report>`, to
+  list the child without a delegation record (`session.children`), and to
+  refuse prompts and turns once the agent's process is gone. Clients use it
+  to refuse sending (`AcpSessionView::refusal`).
+- **The title.** The child's title is a runless `delegated_set` title
+  change, keyed by the child's invocation.
+- **The link to the parent.** The child's `parent_tool_call_id` names no
+  cookie call: the agent's own Task call is replaced by the
+  `session_message` that carries the task.
+- **Requests that come early.** The process marks a child announced by
+  `subagent_update` as expected. Requests for it wait for its route instead
+  of being answered `cancelled` at once.
+- **The task.** A `session_message` to the child before its work starts
+  becomes the wake's body ("Started with a task"). Messages during a run
+  show as notices.
+- **Cookie's tools.** A subagent's calls of cookie's tools go through its
+  parent's bridge and show in the parent's session.
