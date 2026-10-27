@@ -456,15 +456,27 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
                                 {format!(" · {}", elapsed_label(elapsed))}
                             </p>
                         </div>
-                        <button
-                            type="button"
-                            class=BUTTON
-                            data-stop=call.job.clone()
-                            on:click=move |_| workspace.stop_background(job.clone())
-                        >
-                            <Glyph icon=icondata::FaCircleStopSolid />
-                            "Stop"
-                        </button>
+                        // An ACP agent's own command: the agent runs it, and
+                        // only the agent can stop it.
+                        {if call.agent_task {
+                            view! {
+                                <span class=NOTE data-agent-task=call.job.clone()>"run by the agent"</span>
+                            }
+                            .into_any()
+                        } else {
+                            view! {
+                                <button
+                                    type="button"
+                                    class=BUTTON
+                                    data-stop=call.job.clone()
+                                    on:click=move |_| workspace.stop_background(job.clone())
+                                >
+                                    <Glyph icon=icondata::FaCircleStopSolid />
+                                    "Stop"
+                                </button>
+                            }
+                            .into_any()
+                        }}
                     </div>
                 }
             })

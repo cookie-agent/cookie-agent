@@ -96,7 +96,10 @@ impl Engine {
             }
             let mut events = tokio::select! {
                 events = live.events.lock() => events,
-                () = live.process.exited.cancelled() => return,
+                () = live.process.exited.cancelled() => {
+                    self.acp_commands_gone(live.session);
+                    return;
+                }
             };
             if live.waiting.load(Ordering::SeqCst) > 0 {
                 continue;
@@ -112,6 +115,9 @@ impl Engine {
                 event = events.recv() => event,
             };
             let Some(event) = event else {
+                if live.process.exited.is_cancelled() {
+                    self.acp_commands_gone(live.session);
+                }
                 return;
             };
             // Work starts: what already came with it too, such as the task a
@@ -128,6 +134,15 @@ impl Engine {
             }
             let mut wakes = false;
             for event in batch {
+                // A command running in the background ended.
+                if let SessionEvent::Update(update) = &event
+                    && update.get("sessionUpdate").and_then(Value::as_str)
+                        == Some("terminal_update")
+                    && update.get("exitStatus").is_some_and(Value::is_object)
+                    && let Some(terminal) = update.get("terminalId").and_then(Value::as_str)
+                {
+                    self.acp_terminal_exited(live.session, terminal);
+                }
                 // A subagent announced between runs gets its session at
                 // once, so its own work shows while this session is idle.
                 if let SessionEvent::Update(update) = &event

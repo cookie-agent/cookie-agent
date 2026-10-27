@@ -4,7 +4,8 @@ Status: **in progress** (2026-10-26). Phase 1 (v2 only) implemented
 2026-10-26 (`04b4b0e4d`); phase 2 (self-wakes) implemented 2026-10-26,
 client protocol 1.38.0 and plugin protocol 1.20.0 (`0aacfd74b`); phase 3
 (subagent sessions) implemented 2026-10-26, client protocol 1.39.0 and
-plugin protocol 1.21.0.
+plugin protocol 1.21.0 (`222198de1`); phase 4 (background work)
+implemented 2026-10-26, client protocol 1.40.0.
 
 The user decided on 2026-10-26:
 
@@ -599,3 +600,18 @@ nested under its parent; a background terminal in the background bar.
   show as notices.
 - **Cookie's tools.** A subagent's calls of cookie's tools go through its
   parent's bridge and show in the parent's session.
+
+**Phase 4 (2026-10-26, client protocol 1.40.0):**
+
+- **Checked against the adapter.** With claude-agent-acp 0.97.0, a
+  backgrounded command's terminal stays open after its call completes and
+  exits (`exitStatus: {}`) when the command ends; Claude Code then starts
+  work on its own to report it.
+- **When a command counts.** A command is background work from the end of
+  its call while its terminal has not exited. Its exit, between runs or in
+  a run, ends it, and so does the end of the agent's process.
+- **Keeping work alive.** Each such command holds a use of the agent's
+  process, so the process does not idle out, and pins its session against
+  eviction. An idle `daemon.restart` counts it among `background_calls`.
+- **Stop.** `session.background.stop` refuses it, naming the agent as the
+  one to ask. Clients show "run by the agent" in place of Stop.

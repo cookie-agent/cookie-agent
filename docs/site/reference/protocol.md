@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.39.0",
+    "protocol_version": "1.40.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.39.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.40.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -1258,10 +1258,13 @@ subscriptions to the deleted sessions end with them: no further
 | `onboarding.changed` | `onboarding.get`'s answer changed (since 1.22.0): the new answer, after a configuration apply or reload, a provider connected or disconnected, or a model becoming available or not |
 
 A background call in `session.background.list` and `background.changed` is
-`{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
-ID, the tool's name as the model called it, the call it came from, its
-display argument, when the call started and when it moved to the background,
-and who moved it (`model` or `user`). The list lives in the daemon, so it
+`{ job, tool, tool_call_id, display?, started_at, detached_at, by, agent_task? }`:
+the job ID, the tool's name as the model called it, the call it came from,
+its display argument, when the call started and when it moved to the
+background, and who moved it (`model` or `user`). `agent_task: true` (since
+1.40.0) marks an ACP agent's own command still running after its call ended:
+`job` is its terminal, and `session.background.stop` refuses it, since only
+the agent can stop it. The list lives in the daemon, so it
 never shows a call a daemon restart killed. `background.changed` reaches only
 connections subscribed to the session; one that falls behind gets every
 subscribed session's list again.

@@ -89,6 +89,7 @@ fn call(job: &str, tool: &str, display: &str, by: BackgroundActor) -> Background
         started_at: jiff::Timestamp::now(),
         detached_at: jiff::Timestamp::now(),
         by,
+        agent_task: false,
     }
 }
 

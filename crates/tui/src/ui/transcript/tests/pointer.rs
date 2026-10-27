@@ -236,6 +236,7 @@ fn background_call(job: &str) -> BackgroundCall {
         started_at: jiff::Timestamp::now(),
         detached_at: jiff::Timestamp::now(),
         by: BackgroundActor::Model,
+        agent_task: false,
     }
 }
 

@@ -534,6 +534,12 @@ not in it.
   and questions, and cookie's tools. Stop stops that work too; a message you
   send meanwhile goes into it. It shows even after you stopped a run, since
   the agent is already working.
+- **Commands left running.** A command the agent leaves running when its
+  call ends (Claude Code's background commands) shows in the session's
+  background calls, marked "run by the agent", until it exits. Cookie keeps
+  the agent's process and the session alive meanwhile, and an idle daemon
+  restart waits for it. Only the agent can stop it: ask it to. When the
+  command ends, the agent usually starts work on its own to report it.
 - **The agent's own subagents.** A subagent the agent starts itself (Claude
   Code's Task and Agent subagents) is a session of its own, nested under
   the session that started it, as cookie's own subagents are. Its title is

@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.40.0
+
+- A background call may be an ACP agent's own command still running after
+  its call ended ([ACP v2 spec](../specs/acp-v2.md) section 9), such as
+  Claude Code's backgrounded commands: `agent_task: true`, its terminal as
+  `job`. `session.background.stop` refuses it; it leaves the list when the
+  command's terminal exits. An idle `daemon.restart` waits for it, and it
+  counts in `background_calls`.
+
 ## 1.39.0
 
 - The ACP agent's own subagents ([ACP v2 spec](../specs/acp-v2.md) section

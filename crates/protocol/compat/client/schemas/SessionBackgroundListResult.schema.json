@@ -12,6 +12,10 @@
     "BackgroundCall": {
       "description": "One call running in the background.",
       "properties": {
+        "agent_task": {
+          "description": "An ACP agent's own command, still running after its call ended\n(client protocol 1.40.0): `job` is its terminal, and the agent runs\nit, so cookie cannot stop it.",
+          "type": "boolean"
+        },
         "by": {
           "$ref": "#/$defs/BackgroundActor"
         },

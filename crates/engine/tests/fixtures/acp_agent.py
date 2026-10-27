@@ -69,6 +69,9 @@ Each prompt's last text block is a command:
                          the same, titled "asker", but the subagent asks
                          permission for a call of ACP kind <kind> on <r> and
                          says "subagent asked: <outcome>"
+  background <s>         runs `sleep <s>` in the background: an execute call whose
+                         terminal stays open after the call completes, and exits
+                         <s> seconds later, between runs
   wake-later <s> <text>  answers "later", then <s> seconds after its work ended
                          starts work of its own (running, <text>, idle), as
                          Claude Code does when a background command ends
@@ -513,6 +516,20 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             say(child, f"subagent asked: {outcome}")
         subagent(session_id, "asker", "ask something", work)
         say(session_id, "subagent done")
+    elif word == "background":
+        delay = float(rest or "1")
+        tool_call(session_id, {"toolCallId": "call-bg", "name": "Bash", "title": "sleep", "kind": "execute",
+                               "status": "in_progress", "rawInput": {"command": f"sleep {rest}"},
+                               "content": [{"type": "terminal", "terminalId": "term-bg"}]})
+        update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-bg", "command": f"sleep {rest}"})
+        tool_call(session_id, {"toolCallId": "call-bg", "status": "completed"})
+        def later():
+            import time
+            time.sleep(delay)
+            update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-bg",
+                                "exitStatus": {"exitCode": 0}})
+        threading.Thread(target=later, daemon=True).start()
+        say(session_id, "started")
     elif word == "wake-later":
         delay, _, text = rest.partition(" ")
         wake_later(session_id, float(delay), lambda: say(session_id, text or "woke"))

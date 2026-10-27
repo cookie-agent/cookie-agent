@@ -177,7 +177,8 @@ impl Engine {
     /// The background calls of every session that have not committed their
     /// result yet.
     fn restart_background_calls(&self) -> u32 {
-        u32::try_from(self.inner.background.pending_count()).unwrap_or(u32::MAX)
+        u32::try_from(self.inner.background.pending_count() + self.acp_background_count())
+            .unwrap_or(u32::MAX)
     }
 
     /// Publishes the restart's progress until it is due, then calls the

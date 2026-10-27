@@ -209,6 +209,18 @@ impl AgentProcess {
     }
 }
 
+impl ProcessUse {
+    /// A use of `process` that keeps it from idling out while it is held.
+    pub(crate) fn hold(process: &Arc<AgentProcess>, inner: &Arc<super::super::Inner>) -> Self {
+        process.busy.fetch_add(1, Ordering::AcqRel);
+        process.used.fetch_add(1, Ordering::AcqRel);
+        Self {
+            process: Arc::clone(process),
+            processes: Arc::downgrade(inner),
+        }
+    }
+}
+
 /// Keeps a process from idling out while a run uses it.
 pub(crate) struct ProcessUse {
     process: Arc<AgentProcess>,

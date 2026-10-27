@@ -18,6 +18,8 @@ use super::{App, Modal, RpcUpdate, paint_panel, truncate_with_ellipsis};
 const DETAILS: &str = " [Details]";
 /// Each panel row's control that stops its call.
 const STOP: &str = " [stop]";
+/// In place of [`STOP`] for an ACP agent's own command, which only the agent stops.
+const AGENT_TASK: &str = " [agent's]";
 
 #[derive(Debug, Default)]
 pub(super) struct BackgroundPanelState {
@@ -138,7 +140,8 @@ impl App {
         );
         paint_panel(frame, area, &self.theme);
         let inner_width = usize::from(area.width.saturating_sub(2));
-        let row_width = inner_width.saturating_sub(UnicodeWidthStr::width(STOP));
+        let row_width = inner_width
+            .saturating_sub(UnicodeWidthStr::width(STOP).max(UnicodeWidthStr::width(AGENT_TASK)));
         let now = jiff::Timestamp::now();
         let lines = calls
             .iter()
@@ -173,6 +176,13 @@ impl App {
                 self.hit_map
                     .background_rows
                     .push((Rect::new(area.x + 1, y, row_width as u16, 1), index));
+                // An ACP agent's own command: only the agent stops it.
+                if call.agent_task {
+                    return Line::from(vec![
+                        Span::styled(row, style),
+                        Span::styled(AGENT_TASK, self.theme.muted()),
+                    ]);
+                }
                 self.hit_map.background_stops.push((
                     Rect::new(
                         area.x + 1 + row_width as u16,
@@ -235,6 +245,13 @@ impl App {
             return;
         };
         self.background_panel.selected = index;
+        if call.agent_task {
+            self.status = format!(
+                "{} is the agent's own command: the agent runs it, so ask the agent to stop it",
+                call.job
+            );
+            return;
+        }
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.status = format!("stopping {}…", call.job);

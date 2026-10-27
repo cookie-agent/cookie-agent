@@ -1251,6 +1251,9 @@ impl Turn<'_> {
                 let Some(read) = terminal::TerminalUpdate::read(&kind, &update) else {
                     return Ok(());
                 };
+                if read.exit.is_some() {
+                    self.engine.acp_terminal_exited(self.session(), &read.id);
+                }
                 let route = self.terminals.entry(read.id.clone()).or_default();
                 let meta = read.meta(route.written);
                 route.written += meta.output.as_ref().map_or(0, String::len);
@@ -1739,6 +1742,30 @@ impl Turn<'_> {
         let (mut blocks, mut text) =
             self.engine
                 .call_content(session, &shown.fields, shown.terminal.as_ref());
+        // A command still running when its call ends runs on in the
+        // background, as Claude Code's backgrounded commands do.
+        let backgrounded = shown
+            .terminal
+            .as_ref()
+            .filter(|terminal| terminal.exit.is_none())
+            .map(|terminal| {
+                let command = shown
+                    .fields
+                    .raw_input
+                    .as_ref()
+                    .and_then(|input| input.get("command"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                (
+                    terminal.id.clone(),
+                    shown.tool_call_id,
+                    shown.fields.tool_name().map_or_else(
+                        || kind_name(shown.fields.kind.as_deref()).as_str().to_owned(),
+                        str::to_owned,
+                    ),
+                    command.or_else(|| shown.fields.title.clone()),
+                )
+            });
         let terminal = shown.terminal.take();
         if let Some(output) = &shown.fields.raw_output {
             if text.is_empty() {
@@ -1802,6 +1829,10 @@ impl Turn<'_> {
         self.engine
             .submit_tool_result_status(self.session(), self.run, tool_call_id, outcome, false)
             .await?;
+        if let Some((terminal, tool_call_id, tool, display)) = backgrounded {
+            self.engine
+                .acp_command_backgrounded(&self.live, terminal, tool_call_id, tool, display);
+        }
         Ok(())
     }
 

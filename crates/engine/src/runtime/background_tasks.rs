@@ -345,10 +345,12 @@ impl Engine {
                     started_at: job.started_at,
                     detached_at: job.detached_at,
                     by: job.by,
+                    agent_task: false,
                 },
             )
             .collect::<Vec<_>>();
         calls.extend(self.running_subagent_turns(session));
+        calls.extend(self.acp_background_calls(session));
         calls.sort_by_key(|call| call.detached_at);
         calls
     }
@@ -389,6 +391,7 @@ impl Engine {
                     started_at,
                     detached_at: started_at,
                     by: BackgroundActor::Model,
+                    agent_task: false,
                 })
             })
             .collect()
@@ -521,6 +524,11 @@ impl Engine {
                     .stop_subagent(session, job, stop_reason(by))
                     .await
                     .map(|()| Stopped::Subagent);
+            }
+            if self.acp_terminal_running(session, job) {
+                return Err(EngineError::Runtime(format!(
+                    "`{job}` is the ACP agent's own command: the agent runs it, so ask the agent to stop it"
+                )));
             }
             return Err(EngineError::Runtime(format!(
                 "no running background call `{job}` in this session tree"

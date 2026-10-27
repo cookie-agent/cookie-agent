@@ -23,6 +23,7 @@ use cookie_agent_protocol::{AgentId, RuntimeId, SessionId};
 use super::Engine;
 use crate::runtime_snapshot::RuntimeAgent;
 
+mod background;
 pub(crate) mod compaction;
 mod diff;
 pub(crate) mod elicitation;
@@ -65,6 +66,8 @@ pub(crate) struct AcpState {
     /// The cookie sessions of the agents' own subagents, by the
     /// subagent's ACP session ID.
     pub(crate) subagents: Mutex<HashMap<String, SessionId>>,
+    /// The agents' commands still running after their calls ended.
+    pub(crate) background: Mutex<Vec<background::AgentCommand>>,
 }
 
 impl AcpState {
@@ -108,6 +111,7 @@ impl AcpState {
             questions: elicitation::Questions::default(),
             steering: Mutex::new(HashMap::new()),
             subagents: Mutex::new(HashMap::new()),
+            background: Mutex::new(Vec::new()),
         }
     }
 

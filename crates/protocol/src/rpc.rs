@@ -572,6 +572,11 @@ pub struct BackgroundCall {
     pub started_at: jiff::Timestamp,
     pub detached_at: jiff::Timestamp,
     pub by: BackgroundActor,
+    /// An ACP agent's own command, still running after its call ended
+    /// (client protocol 1.40.0): `job` is its terminal, and the agent runs
+    /// it, so cookie cannot stop it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_task: bool,
 }
 
 /// Who moved a call to the background.
