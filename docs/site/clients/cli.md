@@ -498,7 +498,9 @@ says jobs do not fire.
 
 `cookie cron show <ID>` prints a job: its schedule and its plain reading,
 target, state, next fire, runs against its limit, delivery or agent, model
-pin, and permission mode, failures in a row, who created it and when; then
+pin, and permission mode, failures in a row, who created it and when, and
+the session an agent created it in; the target and that session are named
+by title with their session IDs; then
 its prompt and its history, newest first, with each fire's outcome and the
 session it went to.
 
@@ -518,7 +520,7 @@ Creates a job and prints its ID and next fire.
 | `--prompt <TEXT>` | What each fire sends. |
 | `--schedule <SCHEDULE>` | Five cron fields in the daemon host's local time, such as `"0 3 * * *"`, or a delay, such as `"in 20m"` (`s`, `m`, `h`, or `d`, from `1s` to `365d`), which fires once. |
 | `--name <NAME>` | What lists show instead of the prompt's start. |
-| `--max-runs <RUNS>` | Cron schedules only: the fires the job delivers, a whole number from 1 or `unlimited`; 1 when omitted. |
+| `--max-runs <RUNS>` | Cron schedules only: the fires the job delivers, a whole number, 0 or less for no limit; 1 when omitted. |
 | `--session <SESSION_ID>` | Fire into this session, a root or a delegated one. |
 | `--delivery <MODE>` | With `--session`: `queue` (after the running turn, the default) or `steer` (into it). |
 | `--agent <AGENT>` | Start a new session with this agent per fire instead. |

@@ -519,13 +519,15 @@ by the committed turn.
 fires on a schedule, into a session or into a new session per fire. Each row
 shows the job's name (or the start of its prompt), its schedule read plainly
 (`every day at 03:00`, `every Monday to Friday at 09:30, once`, `once at
-2026-10-23 03:00`), how long until its next fire, its target (`this
-session`, `session <title>`, `subagent <title>`, or `new session · <agent>`),
+2026-10-23 03:00`), how long until its next fire, its target (the session's title, `subagent
+<title>`, or `new session · <agent>`),
 whether it is enabled or why not (`finished`, `failed 3 times in a row`,
 `disabled by you`), and what its last fire did. Under the list, **Details**
-gives the selected job's schedule, run count, delivery, template, and
-prompt, and **History** its fires, newest first, each with its outcome and
-how its run ended. The title says when the daemon's firing is off (`[cron]
+gives the selected job's target and, for a job an agent made, the session
+it was created in, both by title; a click on either, or `o` and `c`, shows
+that session's transcript. Then come its schedule, run count, delivery,
+template, and prompt. **History** lists its fires, newest first, each with
+its outcome and how its run ended. The title says when the daemon's firing is off (`[cron]
 enabled = false`).
 
 Up and Down select a job, or click its row. Each action is a key and a
@@ -538,6 +540,8 @@ button below the panel:
 | `t` | Enable or disable the selected job |
 | `r` | Run it now; the status line says what the fire did |
 | `d` | Delete it, after `y` confirms; its run sessions stay |
+| `o` | Show the transcript of the session it fires into |
+| `c` | Show the transcript of the session an agent created it in |
 | Esc | Cancel a confirmation or a refused form, else close the panel |
 
 `/cron new` in the command palette opens a new job's form for the session on
@@ -552,7 +556,7 @@ ignored.
 ```text
 name: Nightly dependency check
 schedule: 0 3 * * *
-max_runs: unlimited
+max_runs: 0
 target: new
 delivery: queue
 agent: builder
@@ -564,8 +568,8 @@ Check for outdated dependencies and open a summary.
 
 - `schedule` is five cron fields in the daemon host's local time, a delay
   (`in 20m`), or a time (`at 2026-10-23T03:00:00Z`).
-- `max_runs` applies to cron schedules: a number from 1, or `unlimited`;
-  left empty, the job fires once.
+- `max_runs` applies to cron schedules: a whole number, 0 or less for no
+  limit; left empty, the job fires once.
 - `target: session` fires into the session the form was opened for (or the
   job's own session when editing); `target: new` starts a session per fire.
 - `delivery` (`queue` or `steer`) applies to a session target; `agent`,

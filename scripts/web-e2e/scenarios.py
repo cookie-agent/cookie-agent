@@ -2248,7 +2248,7 @@ def cron_jobs(browser):
     set_text(browser, "#cron-prompt", "Check the build.")
     set_text(browser, "#cron-schedule", "0 3 * * *")
     cron_reading(browser, "every day at 03:00, once")
-    set_text(browser, "#cron-max-runs", "unlimited")
+    set_text(browser, "#cron-max-runs", "0")
     cron_reading(browser, "every day at 03:00")
     set_text(browser, "#cron-schedule", "0 3 * *")
     browser.wait("the refusal", lambda: "five cron fields" in browser.text("#cron-reading"))
@@ -2260,7 +2260,7 @@ def cron_jobs(browser):
     nightly = cron_row("E2E nightly")
     browser.wait("the job", lambda: count(browser, "#cron-form") == 0 and count(browser, nightly) == 1)
     text = browser.text(nightly)
-    for part in ("0 9 * * 1-5", "every Monday to Friday at 09:00", "this session", "enabled", "last: never"):
+    for part in ("0 9 * * 1-5", "every Monday to Friday at 09:00", session_title, "enabled", "last: never"):
         assert part in text, (part, text)
     assert re.search(r"next \d{4}-\d\d-\d\d 09:00 \(in \d+ (hour|day)s?\)", text), text
     # The new job is selected: its details, actions, and empty history.
@@ -2288,6 +2288,16 @@ def cron_jobs(browser):
     weekdays = cron_row("E2E weekdays")
     browser.wait("the renamed job", lambda: count(browser, weekdays) == 1 and count(browser, nightly) == 0)
     print("cron: run now, disable, enable, and edit")
+
+    # The target names its session by title, and opens it.
+    browser.wait("its details", lambda: count(browser, weekdays + " [data-cron-details]") == 1)
+    link = weekdays + " [data-cron-detail=target] [data-cron-session]"
+    assert browser.text(link) == session_title, browser.text(link)
+    browser.click(link)
+    browser.wait("the target's transcript", lambda: page_view(browser) == "chat"
+                 and browser.text("#session-title").strip() == session_title)
+    view(browser, "cron")
+    print("cron: the target links to its session")
 
     # A job that starts a new session each run: its run session's clock
     # opens it.

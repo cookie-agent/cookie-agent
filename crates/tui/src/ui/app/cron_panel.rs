@@ -8,14 +8,14 @@
 
 use cookie_agent_client_state::{
     cron::{
-        CronDraft, CronDraftTarget, bare_template, daemon_has_crons, delivery_label, detail_lines,
-        fire_outcome, job_title, last_outcome, local_minute, schedule_reading, state_label,
-        target_label, until, update_changes_anything,
+        CronDetail, CronDraft, CronDraftTarget, bare_template, daemon_has_crons, delivery_label,
+        detail_lines, fire_outcome, job_title, last_outcome, local_minute, schedule_reading,
+        state_label, target_label, until, update_changes_anything,
     },
     memory::message_of,
 };
 use cookie_agent_protocol::{
-    CronJob, CronJobId, CronTemplate, CronUpdateParams, CronsListResult, PermissionMode,
+    CronActor, CronJob, CronJobId, CronTemplate, CronUpdateParams, CronsListResult, PermissionMode,
     ProducerDeliveryMode, SessionId, SessionOrigin,
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -98,6 +98,9 @@ pub(in crate::ui) struct CronHits {
     /// (row rect, job index).
     pub(in crate::ui) rows: Vec<(Rect, usize)>,
     pub(in crate::ui) actions: Vec<(Rect, CronAction)>,
+    /// The selected job's details that name a session: its target and the
+    /// session that created it.
+    pub(in crate::ui) sessions: Vec<(Rect, SessionId)>,
 }
 
 #[derive(Default)]
@@ -202,7 +205,7 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
         "# A cron job. Lines starting with # are ignored; the prompt follows the --- line.\n\
          # schedule: five cron fields in the daemon host's local time (0 3 * * *),\n\
          #   a delay (in 20m), or a time (at 2026-10-23T03:00:00Z).\n\
-         # max_runs: cron schedules only: a whole number from 1, or unlimited; empty is 1.\n\
+         # max_runs: cron schedules only: a whole number, 0 or less for no limit; empty is 1.\n\
          # target: session or new (a new session per fire); {session}.\n\
          # delivery: session targets: queue (after the current turn) or steer (into it).\n\
          # agent, model, permission_mode: new-session targets. model is provider/model or\n\
@@ -359,7 +362,8 @@ fn row_line(job: &CronJob, target: &str, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn detail_text(panel: &CronPanelState, target: Option<&str>) -> String {
+/// The details pane's text, below the details that link to a session.
+fn detail_text(panel: &CronPanelState, details: &[CronDetail]) -> String {
     if let Some((_, message)) = &panel.pending {
         return format!("Not saved: {message}\n\ne edits your form again; Esc drops it.");
     }
@@ -379,15 +383,22 @@ fn detail_text(panel: &CronPanelState, target: Option<&str>) -> String {
                 or into a new session per fire."
             .into();
     };
-    let zone = TimeZone::system();
-    let mut lines: Vec<String> =
-        detail_lines(job, target.unwrap_or(""), jiff::Timestamp::now(), &zone)
-            .into_iter()
-            .map(|(label, value)| format!("{label}: {value}"))
-            .collect();
+    let mut lines: Vec<String> = details
+        .iter()
+        .filter(|detail| detail.session.is_none())
+        .map(|detail| format!("{}: {}", detail.label, detail.value))
+        .collect();
     lines.push(String::new());
     lines.push(job.prompt.clone());
     lines.join("\n")
+}
+
+/// Whether the details pane shows the selected job's details.
+fn shows_details(panel: &CronPanelState) -> bool {
+    panel.pending.is_none()
+        && panel.confirm_delete.is_none()
+        && matches!(panel.listing, Some(Ok(_)))
+        && panel.selected_job().is_some()
 }
 
 fn history_text(panel: &CronPanelState) -> String {
@@ -492,15 +503,18 @@ impl App {
         Some(template)
     }
 
+    /// A session's title, when this client knows it.
+    fn cron_session_title(&self, session: SessionId) -> Option<String> {
+        self.sessions
+            .iter()
+            .find(|meta| meta.session_id == session)
+            .and_then(|meta| meta.title.as_ref())
+            .map(ToString::to_string)
+    }
+
     /// How the panel names a job's target.
     fn cron_target_label(&self, job: &CronJob) -> String {
-        target_label(&job.target, self.viewed_session(), |session| {
-            self.sessions
-                .iter()
-                .find(|meta| meta.session_id == session)
-                .and_then(|meta| meta.title.as_ref())
-                .map(ToString::to_string)
-        })
+        target_label(&job.target, |session| self.cron_session_title(session))
     }
 
     fn session_target_label(&self, session: (SessionId, bool)) -> String {
@@ -509,13 +523,7 @@ impl App {
         } else {
             cookie_agent_protocol::CronTarget::Session(session.0)
         };
-        target_label(&target, self.viewed_session(), |id| {
-            self.sessions
-                .iter()
-                .find(|meta| meta.session_id == id)
-                .and_then(|meta| meta.title.as_ref())
-                .map(ToString::to_string)
-        })
+        target_label(&target, |id| self.cron_session_title(id))
     }
 
     /// Opens a new job's form: into the session on screen, or into a new
@@ -784,7 +792,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_cron_key(&mut self, key: KeyEvent) {
+    pub(super) async fn handle_cron_key(&mut self, key: KeyEvent) {
         let actions = self.cron_panel.actions();
         let action = match key.code {
             KeyCode::Esc if actions.contains(&CronAction::Cancel) => Some(CronAction::Cancel),
@@ -793,6 +801,22 @@ impl App {
                 return;
             }
             KeyCode::Enter => Some(CronAction::Edit),
+            KeyCode::Char(key @ ('o' | 'c')) if actions.contains(&CronAction::Edit) => {
+                let session = self.cron_panel.selected_job().and_then(|job| {
+                    if key == 'o' {
+                        job.target.session()
+                    } else {
+                        match &job.created_by {
+                            CronActor::Agent(agent) => Some(agent.session),
+                            CronActor::User => None,
+                        }
+                    }
+                });
+                if let Some(session) = session {
+                    self.open_cron_session(session).await;
+                }
+                return;
+            }
             KeyCode::Char(character) => actions
                 .iter()
                 .copied()
@@ -815,6 +839,12 @@ impl App {
         }
     }
 
+    /// Shows `session`'s transcript, closing the panel.
+    pub(in crate::ui) async fn open_cron_session(&mut self, session: SessionId) {
+        self.modal = Modal::None;
+        self.open_session(session).await;
+    }
+
     pub(super) fn render_cron_panel(&mut self, frame: &mut Frame) {
         let area = centered(frame.area(), 92, 80);
         paint_panel(frame, area, &self.theme);
@@ -824,7 +854,22 @@ impl App {
             .iter()
             .map(|job| self.cron_target_label(job))
             .collect();
-        self.hit_map.cron = render_cron(frame, area, &mut self.cron_panel, &targets, &self.theme);
+        let details = self.cron_panel.selected_job().map_or_else(Vec::new, |job| {
+            detail_lines(
+                job,
+                jiff::Timestamp::now(),
+                &TimeZone::system(),
+                |session| self.cron_session_title(session),
+            )
+        });
+        self.hit_map.cron = render_cron(
+            frame,
+            area,
+            &mut self.cron_panel,
+            &targets,
+            &details,
+            &self.theme,
+        );
     }
 }
 
@@ -858,6 +903,7 @@ fn render_cron(
     area: Rect,
     panel: &mut CronPanelState,
     targets: &[String],
+    details: &[CronDetail],
     theme: &Theme,
 ) -> CronHits {
     let mut hits = CronHits::default();
@@ -917,20 +963,54 @@ fn render_cron(
                 .push((Rect::new(inner.x, y, inner.width, 1), index));
         }
     }
-    let target = panel
-        .selection
-        .selected()
-        .and_then(|index| targets.get(index))
-        .map(String::as_str);
+    let detail_block = crate::ui::panel_block()
+        .border_style(theme.panel_border())
+        .title(crate::ui::panel_title("Details"));
+    let mut detail_inner = detail_block.inner(detail_area);
+    frame.render_widget(detail_block, detail_area);
+    // The details that name a session come first, one line each, so a
+    // click lands on the session it names.
+    let linked = if shows_details(panel) {
+        details
+            .iter()
+            .filter_map(|detail| Some((detail, detail.session?)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for (detail, session) in linked {
+        if detail_inner.height == 0 {
+            break;
+        }
+        let key = if detail.label == "target" { "o" } else { "c" };
+        let label = Span::raw(format!("{}: ", detail.label));
+        let value = Span::styled(detail.value.clone(), theme.link());
+        let row = Rect::new(detail_inner.x, detail_inner.y, detail_inner.width, 1);
+        let label_width = u16::try_from(label.width()).unwrap_or(u16::MAX);
+        let value_width = u16::try_from(value.width()).unwrap_or(u16::MAX);
+        let link = Rect::new(
+            row.x.saturating_add(label_width),
+            row.y,
+            value_width.min(row.width.saturating_sub(label_width)),
+            1,
+        );
+        if link.width > 0 {
+            hits.sessions.push((link, session));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                label,
+                value,
+                Span::styled(format!("  ({key})"), theme.muted()),
+            ])),
+            row,
+        );
+        detail_inner.y += 1;
+        detail_inner.height -= 1;
+    }
     frame.render_widget(
-        Paragraph::new(detail_text(panel, target))
-            .wrap(Wrap { trim: false })
-            .block(
-                crate::ui::panel_block()
-                    .border_style(theme.panel_border())
-                    .title(crate::ui::panel_title("Details")),
-            ),
-        detail_area,
+        Paragraph::new(detail_text(panel, details)).wrap(Wrap { trim: false }),
+        detail_inner,
     );
     frame.render_widget(
         Paragraph::new(history_text(panel))

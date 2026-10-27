@@ -47,7 +47,7 @@ pub(crate) const UPDATE: &str = "cron_update";
 pub(crate) const DELETE: &str = "cron_delete";
 pub(crate) const RUN: &str = "cron_run";
 
-const SCHEDULE_NOTES: &str = "Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; \"unlimited\" runs until the job is deleted or disabled.";
+const SCHEDULE_NOTES: &str = "Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.";
 
 const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's handle (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for=\"cron\").";
 
@@ -121,8 +121,9 @@ struct NewArg {
 struct CreateArgs {
     prompt: String,
     schedule: ScheduleArg,
+    /// 0 or less runs without a limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    max_runs: Option<CronMaxRuns>,
+    max_runs: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     /// `"self"` when omitted (decided 2026-10-23).
@@ -140,8 +141,9 @@ struct UpdateArgs {
     prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     schedule: Option<ScheduleArg>,
+    /// 0 or less runs without a limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    max_runs: Option<CronMaxRuns>,
+    max_runs: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,9 +214,20 @@ fn target_schema(description: &str) -> serde_json::Value {
 
 fn max_runs_schema() -> serde_json::Value {
     serde_json::json!({
-        "description": "Cron schedules only: how many fires before the job finishes, default 1, or \"unlimited\"",
-        "oneOf": [{"type": "integer", "minimum": 1}, {"type": "string", "enum": ["unlimited"]}]
+        "type": "integer",
+        "maximum": 4_294_967_295_u64,
+        "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled"
     })
+}
+
+/// A tool's `max_runs`: 0 or less is no limit.
+fn max_runs_arg(max_runs: Option<i64>) -> Result<Option<CronMaxRuns>, ToolError> {
+    max_runs
+        .map(|count| {
+            CronMaxRuns::from_count(count)
+                .ok_or_else(|| refused("max_runs must be at most 4294967295"))
+        })
+        .transpose()
 }
 
 fn spec(
@@ -564,7 +577,10 @@ fn when(at: jiff::Timestamp) -> String {
 
 fn schedule_text(job: &CronJob) -> String {
     match &job.schedule {
-        CronSchedule::Cron(expression) => format!("cron `{expression}`, max_runs {}", job.max_runs),
+        CronSchedule::Cron(expression) => match job.max_runs {
+            CronMaxRuns::Count(count) => format!("cron `{expression}`, max_runs {count}"),
+            CronMaxRuns::Unlimited => format!("cron `{expression}`, max_runs 0 (no limit)"),
+        },
         CronSchedule::At(at) => format!("once at {}", when(*at)),
         CronSchedule::In(delay) => format!("once in {delay}"),
     }
@@ -767,7 +783,7 @@ impl ToolProvider for CronTools {
                         name: args.name,
                         prompt: args.prompt,
                         schedule: args.schedule.into(),
-                        max_runs: args.max_runs,
+                        max_runs: max_runs_arg(args.max_runs)?,
                         target,
                         delivery: args.delivery,
                         permission_mode: None,
@@ -803,7 +819,7 @@ impl ToolProvider for CronTools {
                 params.name = args.name.map(Some);
                 params.prompt = args.prompt;
                 params.schedule = args.schedule.map(Into::into);
-                params.max_runs = args.max_runs;
+                params.max_runs = max_runs_arg(args.max_runs)?;
                 params.target = target;
                 params.delivery = args.delivery;
                 params.enabled = args.enabled;
@@ -1005,7 +1021,9 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{CreateArgs, TargetArg};
+    use cookie_agent_protocol::CronMaxRuns;
+
+    use super::{CreateArgs, TargetArg, max_runs_arg};
 
     #[test]
     fn a_create_without_a_target_fires_into_its_own_session() {
@@ -1015,5 +1033,27 @@ mod tests {
         }))
         .expect("a create without a target");
         assert!(matches!(args.target, TargetArg::Session(target) if target == "self"));
+    }
+
+    #[test]
+    fn max_runs_is_a_whole_number_and_zero_or_less_has_no_limit() {
+        let create = |max_runs: serde_json::Value| {
+            serde_json::from_value::<CreateArgs>(serde_json::json!({
+                "prompt": "check the build",
+                "schedule": {"cron": "*/30 * * * *"},
+                "max_runs": max_runs,
+            }))
+        };
+        for (given, limit) in [
+            (16, CronMaxRuns::Count(16)),
+            (0, CronMaxRuns::Unlimited),
+            (-1, CronMaxRuns::Unlimited),
+        ] {
+            let args = create(given.into()).expect("a whole number");
+            assert_eq!(max_runs_arg(args.max_runs).unwrap(), Some(limit));
+        }
+        assert!(create("unlimited".into()).is_err());
+        let past = create((i64::from(u32::MAX) + 1).into()).expect("a whole number");
+        assert!(max_runs_arg(past.max_runs).is_err());
     }
 }

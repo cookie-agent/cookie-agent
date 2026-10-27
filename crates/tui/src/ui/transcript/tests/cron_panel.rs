@@ -147,12 +147,12 @@ async fn the_panel_lists_jobs_with_their_reading_target_state_and_outcome() {
     for text in [
         "Cron jobs",
         "Nightly check  every day at 03:00  next in ",
-        "→ this session  enabled  last completed",
+        "→ Build fixes  enabled  last completed",
         "Summarize yesterday's commits.  every Monday to Friday at 09:30, once  no next fire",
         "→ new session · builder  failed 3 times in a row",
         "schedule: 0 3 * * *",
         "reads: every day at 03:00",
-        "target: this session",
+        "target: Build fixes",
         "delivery: queue",
         "Check for outdated dependencies.",
         "History, newest first",
@@ -185,6 +185,35 @@ async fn the_panel_lists_jobs_with_their_reading_target_state_and_outcome() {
     assert_eq!(app.cron_panel.selection.selected(), Some(index));
     app.handle_key(key(KeyCode::Esc)).await;
     assert_eq!(app.modal, Modal::None);
+}
+
+#[tokio::test]
+async fn a_click_on_the_target_shows_its_session() {
+    let (mut app, viewed, _) = cron_app("1.15.0").await;
+    let other: SessionId = "0190a5b2-0000-7000-8000-000000000002".parse().unwrap();
+    app.sessions.push(titled_meta(other, "Release prep", 2));
+    app.selected = Some(other);
+    app.tree_root = Some(other);
+    app.run_command(SlashCommand::Cron).await;
+    updates_until(&mut app, |app| {
+        matches!(app.cron_panel.listing, Some(Ok(_)))
+    })
+    .await;
+    let rows = frame_rows(&mut app, 160, 50).join("\n");
+    assert!(rows.contains("target: Build fixes"), "{rows}");
+    assert!(
+        !rows.contains("created in"),
+        "a job you made names no session:\n{rows}"
+    );
+    let (link, session) = app.hit_map.cron.sessions[0];
+    assert_eq!(session, viewed);
+    assert_eq!(
+        app.hover_target_at(link.x, link.y),
+        Some(PointerTarget::CronSession(viewed))
+    );
+    app.handle_click(link.x, link.y).await;
+    assert_eq!(app.modal, Modal::None);
+    assert_eq!(app.selected, Some(viewed));
 }
 
 #[tokio::test]
@@ -221,7 +250,7 @@ async fn cron_new_schedules_a_prompt_in_the_session_on_screen() {
         "target: session",
         "delivery: queue",
         "agent: primary",
-        "session fires into this session",
+        "session fires into Build fixes",
     ] {
         assert!(request.text.contains(line), "{line}:\n{}", request.text);
     }
@@ -312,7 +341,7 @@ async fn a_new_session_job_takes_its_agent_model_pin_and_mode_from_the_form() {
     let request = app.pending_cron_editor.take().expect("a new job's form");
     let form = with_field(&request.text, "target", "new");
     let form = with_field(&form, "schedule", "0 3 * * *");
-    let form = with_field(&form, "max_runs", "unlimited");
+    let form = with_field(&form, "max_runs", "0");
     let form = with_field(&form, "agent", "builder");
     let form = with_field(&form, "model", "deepseek/deepseek-flash[high]");
     let form = with_field(&form, "permission_mode", "ask");
@@ -400,11 +429,7 @@ async fn jobs_are_edited_toggled_run_now_and_deleted_by_key_and_button() {
         "{}",
         request.text
     );
-    assert!(
-        request.text.contains("max_runs: unlimited"),
-        "{}",
-        request.text
-    );
+    assert!(request.text.contains("max_runs: 0\n"), "{}", request.text);
     let edited = with_field(&request.text, "max_runs", "5");
     app.finish_cron_edit(request.clone(), Ok(edited));
     updates_until(&mut app, |app| app.status.starts_with("Saved")).await;

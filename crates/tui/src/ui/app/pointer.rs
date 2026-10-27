@@ -239,6 +239,9 @@ impl App {
                 if let Some((_, action)) = cron.actions.iter().find(|(rect, _)| over(*rect)) {
                     return Some(PointerTarget::CronAction(*action));
                 }
+                if let Some((_, session)) = cron.sessions.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::CronSession(*session));
+                }
                 return cron
                     .rows
                     .iter()
@@ -421,6 +424,7 @@ impl App {
             PointerTarget::MemoryAction(action) => self.activate_memory_action(action),
             PointerTarget::CronRow(index) => self.cron_panel.selection.select(Some(index)),
             PointerTarget::CronAction(action) => self.activate_cron_action(action),
+            PointerTarget::CronSession(session) => self.open_cron_session(session).await,
             PointerTarget::OnboardingNotice(action) | PointerTarget::OnboardingAction(action) => {
                 self.activate_onboarding_action(action);
             }
@@ -723,6 +727,15 @@ impl App {
             PointerTarget::CronRow(index) => {
                 (one(indexed_rect(&hits.cron.rows, index)), text_style)
             }
+            PointerTarget::CronSession(session) => (
+                one(hits
+                    .cron
+                    .sessions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == session)
+                    .map(|(rect, _)| *rect)),
+                text_style,
+            ),
             PointerTarget::CronAction(action) => (
                 one(hits
                     .cron

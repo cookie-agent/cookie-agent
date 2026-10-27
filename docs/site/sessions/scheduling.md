@@ -44,8 +44,8 @@ every month at 08:00`, `once at 2026-10-23 03:00`.
 
 ### How many times it runs
 
-`max_runs` limits a cron schedule's fires: a whole number from 1, or
-`unlimited`. **It defaults to 1**, so a job fires once unless it says
+`max_runs` limits a cron schedule's fires: a whole number, where 0 or less
+means no limit. **It defaults to 1**, so a job fires once unless it says
 otherwise. A delay always fires once.
 
 A job that has delivered `max_runs` fires, or a one-shot that has fired, is
@@ -56,7 +56,7 @@ finished:
   time has passed needs a new schedule first);
 - a job **an agent** created is deleted.
 
-A job with `max_runs: "unlimited"` runs until it is disabled or deleted.
+A job without a limit runs until it is disabled or deleted.
 There is no other expiry.
 
 ### Targets
@@ -225,7 +225,7 @@ session list opens its job. See [Web](../clients/web.md#scheduled-prompts).
 ```sh
 cookie cron create --name "Nightly dependency check" \
   --prompt "Check for outdated dependencies and open a summary." \
-  --schedule "0 3 * * *" --max-runs unlimited --agent builder
+  --schedule "0 3 * * *" --max-runs 0 --agent builder
 cookie cron list
 cookie cron run k3v9q2xa
 ```

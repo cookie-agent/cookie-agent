@@ -510,6 +510,9 @@ pub(super) enum PointerTarget {
     /// A `/cron` panel row (selects it) and an action it offers.
     CronRow(usize),
     CronAction(cron_panel::CronAction),
+    /// A `/cron` job detail naming a session: its target or the session
+    /// that created it, which a click shows.
+    CronSession(SessionId),
     /// A button of the onboarding notice.
     OnboardingNotice(onboarding::OnboardingAction),
     /// An onboarding panel step tab, a starter kit file row (selects it),

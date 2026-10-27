@@ -507,7 +507,7 @@ Execute one prepared Git Bash command. Single-quote native Windows paths (for ex
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `command` | `string` | yes |  |
-| `timeout` | `integer` | no | Milliseconds before the command is killed; 0 never times out. Default: `120000`. |
+| `timeout` | `integer` | no | Milliseconds before the command is killed; 0 or less never times out. Default: `120000`. |
 
 ??? note "Parameters JSON Schema"
 
@@ -520,9 +520,8 @@ Execute one prepared Git Bash command. Single-quote native Windows paths (for ex
         },
         "timeout": {
           "default": 120000,
-          "description": "Milliseconds before the command is killed; 0 never times out.",
-          "format": "uint64",
-          "minimum": 0,
+          "description": "Milliseconds before the command is killed; 0 or less never times out.",
+          "format": "int64",
           "type": "integer"
         }
       },
@@ -1975,13 +1974,13 @@ Agents never set a job's permission mode or pin its model.
 <!-- generated: tool cron_create -->
 
 ```text
-cron_create(delivery?: "queue" | "steer", max_runs?: integer | "unlimited", name?: string, prompt: string, schedule: object | object, target?: string | object)
+cron_create(delivery?: "queue" | "steer", max_runs?: integer, name?: string, prompt: string, schedule: object | object, target?: string | object)
 ```
 
 Description sent to the model:
 
 ```text
-Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; "unlimited" runs until the job is deleted or disabled.
+Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
@@ -1989,7 +1988,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `delivery` | `"queue" \| "steer"` | no |  |
-| `max_runs` | `integer \| "unlimited"` | no | Cron schedules only: how many fires before the job finishes, default 1, or "unlimited" |
+| `max_runs` | `integer` | no | Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled |
 | `name` | `string` | no | A short name, at most 80 characters |
 | `prompt` | `string` | yes | What to do at each fire |
 | `schedule` | `object \| object` | yes | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
@@ -2009,19 +2008,9 @@ Only when the session has the `global` runtime attached and the agent or the ses
           "type": "string"
         },
         "max_runs": {
-          "description": "Cron schedules only: how many fires before the job finishes, default 1, or \"unlimited\"",
-          "oneOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "enum": [
-                "unlimited"
-              ],
-              "type": "string"
-            }
-          ]
+          "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled",
+          "maximum": 4294967295,
+          "type": "integer"
         },
         "name": {
           "description": "A short name, at most 80 characters",
@@ -2201,13 +2190,13 @@ Only next to the other cron tools. It needs no rule of its own: it lists the job
 <!-- generated: tool cron_update -->
 
 ```text
-cron_update(delivery?: "queue" | "steer", enabled?: boolean, id: string, max_runs?: integer | "unlimited", name?: string, prompt?: string, schedule?: object | object, target?: string | object)
+cron_update(delivery?: "queue" | "steer", enabled?: boolean, id: string, max_runs?: integer, name?: string, prompt?: string, schedule?: object | object, target?: string | object)
 ```
 
 Description sent to the model:
 
 ```text
-Change a cron job: any member of cron_create, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; "unlimited" runs until the job is deleted or disabled.
+Change a cron job: any member of cron_create, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
@@ -2217,7 +2206,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
 | `delivery` | `"queue" \| "steer"` | no |  |
 | `enabled` | `boolean` | no |  |
 | `id` | `string` | yes | The job's ID, e.g. "k3v9q2xa" |
-| `max_runs` | `integer \| "unlimited"` | no | Cron schedules only: how many fires before the job finishes, default 1, or "unlimited" |
+| `max_runs` | `integer` | no | Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled |
 | `name` | `string` | no |  |
 | `prompt` | `string` | no |  |
 | `schedule` | `object \| object` | no | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
@@ -2244,19 +2233,9 @@ Only when the session has the `global` runtime attached and the agent or the ses
           "type": "string"
         },
         "max_runs": {
-          "description": "Cron schedules only: how many fires before the job finishes, default 1, or \"unlimited\"",
-          "oneOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "enum": [
-                "unlimited"
-              ],
-              "type": "string"
-            }
-          ]
+          "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled",
+          "maximum": 4294967295,
+          "type": "integer"
         },
         "name": {
           "type": "string"

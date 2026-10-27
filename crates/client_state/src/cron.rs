@@ -320,25 +320,14 @@ pub fn cron_reading(expression: &str) -> Option<String> {
     Some(reading)
 }
 
-/// How lists name a job's target: `this session`, `session <title>`,
-/// `subagent <title>`, or `new session · <agent>`. `title` names a session
-/// the client knows.
-pub fn target_label(
-    target: &CronTarget,
-    current: Option<SessionId>,
-    title: impl Fn(SessionId) -> Option<String>,
-) -> String {
-    let session = |kind: &str, session: SessionId| {
-        if Some(session) == current {
-            format!("this {kind}")
-        } else {
-            let name = title(session).unwrap_or_else(|| short_session(session));
-            format!("{kind} {name}")
-        }
-    };
+/// How lists name a job's target: the session's title,
+/// `subagent <title>` for a delegated one, or `new session · <agent>`.
+/// `title` names a session the client knows; another shows its id's start.
+pub fn target_label(target: &CronTarget, title: impl Fn(SessionId) -> Option<String>) -> String {
+    let name = |session: SessionId| title(session).unwrap_or_else(|| short_session(session));
     match target {
-        CronTarget::Session(id) => session("session", *id),
-        CronTarget::Subagent(id) => session("subagent", *id),
+        CronTarget::Session(id) => name(*id),
+        CronTarget::Subagent(id) => format!("subagent {}", name(*id)),
         CronTarget::New(template) => format!("new session · {}", template.agent),
     }
 }
@@ -450,58 +439,95 @@ pub const fn run_status_label(status: SessionStatus) -> &'static str {
     }
 }
 
-/// The detail lines of a job, each `label: value`, in the order clients
-/// show them.
+/// One detail of a job: `label: value`, and the session it names, which
+/// clients link to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CronDetail {
+    pub label: &'static str,
+    pub value: String,
+    pub session: Option<SessionId>,
+}
+
+impl CronDetail {
+    fn new(label: &'static str, value: String) -> Self {
+        Self {
+            label,
+            value,
+            session: None,
+        }
+    }
+}
+
+/// The details of a job, in the order clients show them: its target and,
+/// for an agent's job, the session that created it name their sessions.
+/// `title` names a session the client knows, as `target_label` reads it.
 pub fn detail_lines(
     job: &CronJob,
-    target: &str,
     now: Timestamp,
     zone: &TimeZone,
-) -> Vec<(&'static str, String)> {
+    title: impl Fn(SessionId) -> Option<String>,
+) -> Vec<CronDetail> {
     let mut lines = vec![
-        ("id", job.id.to_string()),
-        ("schedule", schedule_text(&job.schedule, zone)),
-        ("reads", schedule_reading(&job.schedule, job.max_runs, zone)),
-        ("target", target.to_owned()),
-        ("state", state_label(job)),
+        CronDetail::new("id", job.id.to_string()),
+        CronDetail::new("schedule", schedule_text(&job.schedule, zone)),
+        CronDetail::new("reads", schedule_reading(&job.schedule, job.max_runs, zone)),
+        CronDetail {
+            label: "target",
+            value: target_label(&job.target, &title),
+            session: job.target.session(),
+        },
+        CronDetail::new("state", state_label(job)),
     ];
     if let Some(next) = job.next_fire {
-        lines.push((
+        lines.push(CronDetail::new(
             "next fire",
             format!("{} ({})", local_minute(next, zone), until(next, now)),
         ));
     }
     if matches!(job.schedule, CronSchedule::Cron(_)) {
-        lines.push(("runs", format!("{} of {}", job.runs, job.max_runs)));
+        let runs = match job.max_runs {
+            CronMaxRuns::Count(count) => format!("{} of {count}", job.runs),
+            CronMaxRuns::Unlimited => format!("{}, no limit", job.runs),
+        };
+        lines.push(CronDetail::new("runs", runs));
     }
     if let Some(delivery) = job.delivery {
-        lines.push(("delivery", delivery_label(delivery).to_owned()));
+        lines.push(CronDetail::new(
+            "delivery",
+            delivery_label(delivery).to_owned(),
+        ));
     }
     if let CronTarget::New(template) = &job.target {
-        lines.push(("agent", template_agent(template)));
+        lines.push(CronDetail::new("agent", template_agent(template)));
         if let Some(model) = &template.model {
-            lines.push(("model", model.to_string()));
+            lines.push(CronDetail::new("model", model.to_string()));
         }
         if let Some(project) = &template.project {
-            lines.push(("project", project.to_string()));
+            lines.push(CronDetail::new("project", project.to_string()));
         }
         if !template.permission_rules.is_empty() {
-            lines.push((
+            lines.push(CronDetail::new(
                 "rules",
                 format!("{} added", template.permission_rules.len()),
             ));
         }
     }
     if let Some(mode) = job.permission_mode {
-        lines.push(("mode", permission_mode_label(mode).to_owned()));
+        lines.push(CronDetail::new(
+            "mode",
+            permission_mode_label(mode).to_owned(),
+        ));
     }
     if job.consecutive_failures > 0 {
-        lines.push(("failures", format!("{} in a row", job.consecutive_failures)));
+        lines.push(CronDetail::new(
+            "failures",
+            format!("{} in a row", job.consecutive_failures),
+        ));
     }
     if let Some(limit) = job.max_consecutive_failures {
-        lines.push(("failure limit", limit.to_string()));
+        lines.push(CronDetail::new("failure limit", limit.to_string()));
     }
-    lines.push((
+    lines.push(CronDetail::new(
         "created",
         format!(
             "{} by {}",
@@ -509,6 +535,13 @@ pub fn detail_lines(
             actor_label(&job.created_by)
         ),
     ));
+    if let cookie_agent_protocol::CronActor::Agent(agent) = &job.created_by {
+        lines.push(CronDetail {
+            label: "created in",
+            value: title(agent.session).unwrap_or_else(|| short_session(agent.session)),
+            session: Some(agent.session),
+        });
+    }
     lines
 }
 
@@ -552,21 +585,18 @@ pub fn parse_schedule(text: &str) -> Result<CronSchedule, String> {
     Err("a schedule is five cron fields (`0 3 * * *`) or a delay (`in 20m`)".to_owned())
 }
 
-/// Reads a run limit as typed: empty for the daemon's default, a whole
-/// number from 1, or `unlimited`.
+/// Reads a run limit as typed: empty for the daemon's default, or a whole
+/// number, where 0 or less runs until the job is deleted or disabled.
 pub fn parse_max_runs(text: &str) -> Result<Option<CronMaxRuns>, String> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(None);
     }
-    if text.eq_ignore_ascii_case("unlimited") {
-        return Ok(Some(CronMaxRuns::Unlimited));
-    }
-    text.parse::<u32>()
+    text.parse::<i64>()
         .ok()
-        .filter(|count| *count >= 1)
-        .map(|count| Some(CronMaxRuns::Count(count)))
-        .ok_or_else(|| "runs are a whole number from 1, or `unlimited`".to_owned())
+        .and_then(CronMaxRuns::from_count)
+        .map(Some)
+        .ok_or_else(|| "runs are a whole number; 0 or less runs without a limit".to_owned())
 }
 
 /// Reads a model pin as typed: empty for none, `provider/model`, or
@@ -724,7 +754,7 @@ impl CronDraft {
                 schedule => schedule_text(schedule, zone),
             },
             max_runs: match job.schedule {
-                CronSchedule::Cron(_) => job.max_runs.to_string(),
+                CronSchedule::Cron(_) => job.max_runs.count().to_string(),
                 _ => String::new(),
             },
             target,

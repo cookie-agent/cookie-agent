@@ -72,7 +72,8 @@ pub enum CronSchedule {
 }
 
 /// How many fires a cron schedule delivers before the job finishes: a whole
-/// number from 1, or `"unlimited"`.
+/// number from 1, or `"unlimited"`. Commands also take a whole number of 0
+/// or less for `"unlimited"`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CronMaxRuns {
     Count(u32),
@@ -81,6 +82,26 @@ pub enum CronMaxRuns {
 
 impl CronMaxRuns {
     const UNLIMITED: &'static str = "unlimited";
+
+    /// The limit `count` names: 0 or less is no limit; `None` past
+    /// `u32::MAX`.
+    #[must_use]
+    pub fn from_count(count: i64) -> Option<Self> {
+        if count <= 0 {
+            return Some(Self::Unlimited);
+        }
+        u32::try_from(count).ok().map(Self::Count)
+    }
+
+    /// The limit as a whole number, 0 for no limit, as `from_count` reads
+    /// it.
+    #[must_use]
+    pub fn count(self) -> i64 {
+        match self {
+            Self::Count(count) => i64::from(count),
+            Self::Unlimited => 0,
+        }
+    }
 
     /// Whether `runs` fires reach this limit.
     #[must_use]
@@ -121,18 +142,15 @@ impl<'de> Deserialize<'de> for CronMaxRuns {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Wire {
-            Count(u64),
+            Count(i64),
             Text(String),
         }
         match Wire::deserialize(deserializer)? {
-            Wire::Count(count) => u32::try_from(count)
-                .ok()
-                .filter(|count| *count >= 1)
-                .map(Self::Count)
-                .ok_or_else(|| serde::de::Error::custom("max_runs must be from 1 to 4294967295")),
+            Wire::Count(count) => Self::from_count(count)
+                .ok_or_else(|| serde::de::Error::custom("max_runs must be at most 4294967295")),
             Wire::Text(text) if text == Self::UNLIMITED => Ok(Self::Unlimited),
             Wire::Text(_) => Err(serde::de::Error::custom(
-                "max_runs must be a whole number from 1 or \"unlimited\"",
+                "max_runs must be a whole number (0 or less for no limit) or \"unlimited\"",
             )),
         }
     }
@@ -151,6 +169,29 @@ impl JsonSchema for CronMaxRuns {
         json_schema!({
             "oneOf": [
                 {"type": "integer", "minimum": 1, "maximum": 4_294_967_295_u64},
+                {"type": "string", "const": "unlimited"}
+            ]
+        })
+    }
+}
+
+/// `max_runs` as commands take it: [`CronMaxRuns`], or a whole number of 0
+/// or less for `"unlimited"` (client protocol 1.42.0).
+pub struct CronMaxRunsInput;
+
+impl JsonSchema for CronMaxRunsInput {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("CronMaxRunsInput")
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "oneOf": [
+                {"type": "integer", "maximum": 4_294_967_295_u64},
                 {"type": "string", "const": "unlimited"}
             ]
         })
@@ -442,6 +483,7 @@ pub struct CronCreateParams {
     pub schedule: CronSchedule,
     /// Cron schedules only; 1 when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<CronMaxRunsInput>")]
     pub max_runs: Option<CronMaxRuns>,
     pub target: CronTarget,
     /// In-session jobs only; `queue` when omitted.
@@ -476,6 +518,7 @@ pub struct CronUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<CronSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<CronMaxRunsInput>")]
     pub max_runs: Option<CronMaxRuns>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<CronTarget>,

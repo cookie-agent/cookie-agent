@@ -36,6 +36,9 @@ const SELECT: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px
 /// A field's label above it.
 const LABEL: &str = "flex flex-col gap-1 text-sm";
 
+/// A detail that opens a session.
+const LINK: &str = "text-left font-bold text-caramel underline-offset-2 hover:underline focus-visible:underline dark:text-maple";
+
 pub fn cron_page(workspace: Workspace) -> impl IntoView {
     // "in 5 minutes" moves on while the view shows.
     let now = RwSignal::new(jiff::Timestamp::now());
@@ -117,7 +120,7 @@ fn job_row(
     let title = job_title(&job);
     let reading = schedule_reading(&job.schedule, job.max_runs, &zone);
     let schedule = schedule_text(&job.schedule, &zone);
-    let target = target_label(&job.target, workspace.selected.get_untracked(), |session| {
+    let target = target_label(&job.target, |session| {
         workspace
             .sessions
             .with_untracked(|sessions| session_name(sessions, session))
@@ -140,11 +143,10 @@ fn job_row(
     };
     let details = {
         let job = job.clone();
-        let target = target.clone();
         move || {
             selected
                 .get()
-                .then(|| job_details(workspace, job.clone(), target.clone(), now, confirm_delete))
+                .then(|| job_details(workspace, job.clone(), now, confirm_delete))
         }
     };
     view! {
@@ -192,21 +194,44 @@ fn job_row(
     }
 }
 
-/// The selected job: its details, actions, and history, newest first.
+/// The selected job: its details, actions, and history, newest first. The
+/// target and the session that created the job link to their sessions.
 fn job_details(
     workspace: Workspace,
     job: CronJob,
-    target: String,
     now: RwSignal<jiff::Timestamp>,
     confirm_delete: RwSignal<Option<CronJobId>>,
 ) -> impl IntoView {
     let zone = zone_at(jiff::Timestamp::now());
-    let lines = detail_lines(&job, &target, now.get_untracked(), &zone)
+    let title = |session| {
+        workspace
+            .sessions
+            .with_untracked(|sessions| session_name(sessions, session))
+    };
+    let lines = detail_lines(&job, now.get_untracked(), &zone, title)
         .into_iter()
-        .map(|(label, value)| {
+        .map(|detail| {
+            let value = match detail.session {
+                Some(session) => view! {
+                    <button
+                        type="button"
+                        class=LINK
+                        data-cron-session=session.to_string()
+                        title="Open this session"
+                        on:click=move |_| {
+                            workspace.open_view(crate::layout::View::Chat, None);
+                            workspace.open_session(session);
+                        }
+                    >
+                        {detail.value}
+                    </button>
+                }
+                .into_any(),
+                None => detail.value.into_any(),
+            };
             view! {
-                <dt class="text-xs font-bold text-ink dark:text-sand">{label}</dt>
-                <dd class="min-w-0 text-sm break-words" data-cron-detail=label>{value}</dd>
+                <dt class="text-xs font-bold text-ink dark:text-sand">{detail.label}</dt>
+                <dd class="min-w-0 text-sm break-words" data-cron-detail=detail.label>{value}</dd>
             }
         })
         .collect_view();
@@ -357,7 +382,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
         }
     };
     let target_note = editing.as_ref().map(|job| {
-        target_label(&job.target, workspace.selected.get_untracked(), |id| {
+        target_label(&job.target, |id| {
             workspace
                 .sessions
                 .with_untracked(|sessions| session_name(sessions, id))
@@ -475,7 +500,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
             <p class=NOTE id="cron-reading" data-valid=move || reading().is_ok().to_string()>
                 {move || {
                     if schedule.with(|text| text.trim().is_empty()) {
-                        return "Five cron fields (minute hour day month weekday) in the daemon host's time, or a delay such as in 20m. Runs: a number, or unlimited; 1 when empty.".to_owned();
+                        return "Five cron fields (minute hour day month weekday) in the daemon host's time, or a delay such as in 20m. Runs: a whole number, 0 or less for no limit; 1 when empty.".to_owned();
                     }
                     reading().unwrap_or_else(|message| message)
                 }}

@@ -5,6 +5,12 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.42.0
+
+- `crons.create` and `crons.update` take `max_runs` as a whole number of 0
+  or less for no limit, besides `"unlimited"`. Jobs still report no limit
+  as `"unlimited"`.
+
 ## 1.41.0
 
 - `acp_session_updated` has `compaction` (`compaction_id`, `state`,

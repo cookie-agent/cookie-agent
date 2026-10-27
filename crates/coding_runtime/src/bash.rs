@@ -52,12 +52,12 @@ pub struct BashTool {
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct BashArgs {
     command: String,
-    /// Milliseconds before the command is killed; 0 never times out.
+    /// Milliseconds before the command is killed; 0 or less never times out.
     #[serde(default = "default_timeout")]
-    timeout: u64,
+    timeout: i64,
 }
 
-fn default_timeout() -> u64 {
+fn default_timeout() -> i64 {
     120_000
 }
 
@@ -506,10 +506,12 @@ impl ToolProvider for BashTool {
         _ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
-        let args: BashArgs = parse_args("bash", call.arguments)?;
+        let mut args: BashArgs = parse_args("bash", call.arguments)?;
         if args.command.trim().is_empty() {
             return Err(ToolError::execution("command must not be empty"));
         }
+        // Every timeout of 0 or less is the same: none.
+        args.timeout = args.timeout.max(0);
         let cwd_path = self.workspace.clone();
         let (executable, cwd) = crate::blocking(move || {
             let executable_path = resolve_executable("bash")?;
@@ -731,7 +733,7 @@ impl BashExecutor {
             Cancelled,
         }
         let outcome = {
-            let wait = within_timeout(self.args.timeout, tree.wait());
+            let wait = within_timeout(u64::try_from(self.args.timeout).unwrap_or(0), tree.wait());
             tokio::pin!(wait);
             tokio::select! {
                 result = &mut wait => match result {

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.41.0",
+    "protocol_version": "1.42.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.41.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.42.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -702,7 +702,9 @@ its state: `next_fire`, `runs`, `consecutive_failures`, `last_fire`, and the
   with OR when both are restricted; `{ in: "<n>s|m|h|d" }` (1s to 365d) on
   create and update, which the daemon stores as `{ at: <time> }`; or
   `{ at: <time> }` in the future. `max_runs` is a whole number from 1 or
-  `"unlimited"`, 1 when omitted, for cron schedules only. A job that reaches
+  `"unlimited"`, 1 when omitted, for cron schedules only; `crons.create`
+  and `crons.update` also take a whole number of 0 or less for
+  `"unlimited"` (1.42.0), which jobs report as `"unlimited"`. A job that reaches
   it is kept disabled as `finished` when you created it, and deleted when an
   agent did.
 - **Target.** `{ session: <root session ID> }`, `{ subagent: <delegated

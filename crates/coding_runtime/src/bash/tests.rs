@@ -792,6 +792,24 @@ async fn prepare_arguments(
 }
 
 #[tokio::test]
+async fn a_timeout_below_zero_is_no_timeout() {
+    let root = tempfile::tempdir().unwrap();
+    for timeout in [0, -1, -120_000] {
+        let prepared = prepare_arguments(
+            root.path(),
+            serde_json::json!({"command": "sleep 1", "timeout": timeout}),
+        )
+        .await
+        .expect("prepare");
+        assert_eq!(
+            prepared.normalized_arguments(),
+            &serde_json::json!({"command": "sleep 1", "timeout": 0}),
+            "{timeout}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn bash_reaches_its_detach_point_once_the_command_runs() {
     let root = tempfile::tempdir().unwrap();
     let artifacts = tempfile::tempdir().unwrap();

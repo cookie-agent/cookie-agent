@@ -10,8 +10,8 @@ use cookie_agent_client_state::cron::{
     update_changes_anything,
 };
 use cookie_agent_protocol::{
-    Client, CronJob, CronJobId, CronTarget, CronUpdateParams, ProducerDeliveryMode, ProjectName,
-    SessionGetParams, SessionId, SessionOrigin,
+    Client, CronActor, CronJob, CronJobId, CronTarget, CronUpdateParams, ProducerDeliveryMode,
+    ProjectName, SessionGetParams, SessionId, SessionOrigin,
 };
 use jiff::{Timestamp, tz::TimeZone};
 
@@ -91,9 +91,9 @@ pub(crate) struct CronCreateArgs {
     /// A name lists show instead of the prompt's start.
     #[arg(long)]
     name: Option<String>,
-    /// Cron schedules only: how many fires the job delivers, a whole number
-    /// from 1 or `unlimited`; 1 when omitted.
-    #[arg(long, value_name = "RUNS")]
+    /// Cron schedules only: how many fires the job delivers, a whole
+    /// number, 0 or less for no limit; 1 when omitted.
+    #[arg(long, value_name = "RUNS", allow_negative_numbers = true)]
     max_runs: Option<String>,
     /// Fire into this session (root or delegated).
     #[arg(
@@ -137,8 +137,8 @@ pub(crate) struct CronEditArgs {
     /// A new name; an empty one removes it.
     #[arg(long)]
     name: Option<String>,
-    /// A new run limit: a whole number from 1 or `unlimited`.
-    #[arg(long, value_name = "RUNS")]
+    /// A new run limit: a whole number, 0 or less for no limit.
+    #[arg(long, value_name = "RUNS", allow_negative_numbers = true)]
     max_runs: Option<String>,
     /// Fire into this session instead.
     #[arg(long, value_name = "SESSION_ID", conflicts_with = "agent")]
@@ -199,7 +199,7 @@ pub(crate) async fn run_cron_with<I: MemoryIo>(
             }
             let titles = SessionTitles::of(client, &listed.jobs).await;
             for job in &listed.jobs {
-                for line in job_lines(job, &titles.label(&job.target), Timestamp::now(), &zone) {
+                for line in job_lines(job, &titles.target(&job.target), Timestamp::now(), &zone) {
                     io.write_line(&line)?;
                 }
             }
@@ -208,7 +208,12 @@ pub(crate) async fn run_cron_with<I: MemoryIo>(
         CronCommand::Show { id } => {
             let job = find_job(client, &id).await?;
             let titles = SessionTitles::of(client, std::slice::from_ref(&job)).await;
-            for line in show_lines(&job, &titles.label(&job.target), Timestamp::now(), &zone) {
+            for line in show_lines(
+                &job,
+                |session| titles.title(session),
+                Timestamp::now(),
+                &zone,
+            ) {
                 io.write_line(&line)?;
             }
             Ok(())
@@ -326,14 +331,21 @@ async fn find_job(client: &Client, id: &CronJobId) -> anyhow::Result<CronJob> {
         .with_context(|| format!("there is no cron job {id}; see `cookie cron list`"))
 }
 
-/// The titles of the sessions jobs fire into, as far as `session.get`
-/// finds them.
+/// The titles of the sessions jobs fire into and were created in, as far
+/// as `session.get` finds them.
 struct SessionTitles(Vec<(SessionId, String)>);
 
 impl SessionTitles {
     async fn of(client: &Client, jobs: &[CronJob]) -> Self {
         let mut titles = Vec::new();
-        for session in jobs.iter().filter_map(|job| job.target.session()) {
+        let sessions = jobs.iter().flat_map(|job| {
+            let creator = match &job.created_by {
+                CronActor::Agent(agent) => Some(agent.session),
+                CronActor::User => None,
+            };
+            job.target.session().into_iter().chain(creator)
+        });
+        for session in sessions {
             if titles.iter().any(|(known, _)| *known == session) {
                 continue;
             }
@@ -350,13 +362,15 @@ impl SessionTitles {
         Self(titles)
     }
 
-    fn label(&self, target: &CronTarget) -> String {
-        cron::target_label(target, None, |session| {
-            self.0
-                .iter()
-                .find(|(known, _)| *known == session)
-                .map(|(_, title)| title.clone())
-        })
+    fn title(&self, session: SessionId) -> Option<String> {
+        self.0
+            .iter()
+            .find(|(known, _)| *known == session)
+            .map(|(_, title)| title.clone())
+    }
+
+    fn target(&self, target: &CronTarget) -> String {
+        cron::target_label(target, |session| self.title(session))
     }
 }
 
@@ -394,15 +408,18 @@ pub(crate) fn job_lines(
 /// newest first.
 pub(crate) fn show_lines(
     job: &CronJob,
-    target: &str,
+    title: impl Fn(SessionId) -> Option<String>,
     now: Timestamp,
     zone: &TimeZone,
 ) -> Vec<String> {
     let mut lines = vec![cron::job_title(job)];
     lines.extend(
-        cron::detail_lines(job, target, now, zone)
+        cron::detail_lines(job, now, zone, title)
             .into_iter()
-            .map(|(label, value)| format!("{label}: {value}")),
+            .map(|detail| match detail.session {
+                Some(session) => format!("{}: {} · session {session}", detail.label, detail.value),
+                None => format!("{}: {}", detail.label, detail.value),
+            }),
     );
     lines.push(String::new());
     lines.extend(job.prompt.lines().map(str::to_owned));

@@ -723,13 +723,15 @@ changes (`crons.changed`), from any client or agent.
   state (`enabled`, `finished`, `failed 3 times in a row`, `disabled by
   you`, …), its schedule with a plain reading (`0 9 * * 1-5 · every Monday
   to Friday at 09:00`, `once at 2026-10-23 03:00`), the next fire in this
-  browser's time with how long until it, the target (`this session`,
-  `session <title>`, `subagent <title>`, or `new session · <agent>`), and
+  browser's time with how long until it, the target (the session's title,
+  `subagent <title>`, or `new session · <agent>`), and
   how its last fire went. A banner says when the daemon's firing is off
   (`[cron] enabled = false`).
 - **A job.** Click a job for its details (schedule, runs counted against
   its limit, delivery, a new-session job's agent, model, project, and
-  mode, failures in a row, who made it), its prompt, its history (newest
+  mode, failures in a row, who made it, and the session an agent made it
+  in; the target and that session are links to their transcripts), its
+  prompt, its history (newest
   first: when, what the fire did, and **Open session** for the session it
   went to), and its actions: **Edit**, **Disable** or **Enable**, **Run
   now** (a fire now, recorded as `run now`, which counts toward neither
@@ -739,8 +741,8 @@ changes (`crons.changed`), from any client or agent.
   menu (for the open session), opens it:
   - **Name** (optional) and **Prompt**;
   - **Schedule**: five cron fields in the daemon host's local time, or a
-    delay such as `in 20m`; **Runs**: a number or `unlimited`, 1 when
-    empty, for cron schedules. The line under them reads what you typed
+    delay such as `in 20m`; **Runs**: a whole number, 0 or less for no
+    limit, 1 when empty, for cron schedules. The line under them reads what you typed
     as you type, or says why it is not a schedule;
   - **Target**, when creating: the open session (or subagent), or **A new
     session each run**. A job for a session has a **Delivery**: `queue`

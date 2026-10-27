@@ -4,7 +4,7 @@ use cookie_agent_protocol::{
 use jiff::{Timestamp, tz::TimeZone};
 
 use super::{
-    CronDraft, cron_reading, daemon_has_crons, fire_outcome, job_title, last_outcome,
+    CronDraft, cron_reading, daemon_has_crons, detail_lines, fire_outcome, job_title, last_outcome,
     parse_max_runs, parse_model_pin, parse_schedule, schedule_reading, state_label, target_label,
     until, update_changes_anything,
 };
@@ -135,25 +135,52 @@ fn a_job_without_a_name_shows_its_prompt_start() {
 }
 
 #[test]
-fn targets_name_the_current_session_and_known_titles() {
+fn targets_name_their_session_by_title() {
     let target = CronTarget::Session(session(1));
+    assert_eq!(target_label(&target, |_| None), "0190a5b2");
     assert_eq!(
-        target_label(&target, Some(session(1)), |_| None),
-        "this session"
+        target_label(&target, |_| Some("Build fixes".into())),
+        "Build fixes"
     );
     assert_eq!(
-        target_label(&target, Some(session(2)), |_| Some("Build fixes".into())),
-        "session Build fixes"
-    );
-    assert_eq!(
-        target_label(&CronTarget::Subagent(session(1)), None, |_| None),
+        target_label(&CronTarget::Subagent(session(1)), |_| None),
         "subagent 0190a5b2"
     );
     let new = job(serde_json::json!({"target": {"new": {"agent": "builder"}}}));
+    assert_eq!(target_label(&new.target, |_| None), "new session · builder");
+}
+
+#[test]
+fn details_link_the_target_and_the_creating_session() {
+    let titles = |id: SessionId| (id == session(1)).then(|| "Build fixes".to_owned());
+    let by_agent = job(serde_json::json!({
+        "created_by": {"agent": {"agent": "builder", "session": session(2)}}
+    }));
+    let details = detail_lines(&by_agent, Timestamp::UNIX_EPOCH, &TimeZone::UTC, titles);
+    let linked: Vec<_> = details
+        .iter()
+        .filter_map(|detail| Some((detail.label, detail.value.as_str(), detail.session?)))
+        .collect();
     assert_eq!(
-        target_label(&new.target, None, |_| None),
-        "new session · builder"
+        linked,
+        [
+            ("target", "Build fixes", session(1)),
+            ("created in", "0190a5b2", session(2)),
+        ]
     );
+    let runs = details.iter().find(|detail| detail.label == "runs");
+    assert_eq!(
+        runs.map(|detail| detail.value.as_str()),
+        Some("0, no limit")
+    );
+
+    let by_user = detail_lines(
+        &job(serde_json::json!({})),
+        Timestamp::UNIX_EPOCH,
+        &TimeZone::UTC,
+        |_| None,
+    );
+    assert!(by_user.iter().all(|detail| detail.label != "created in"));
 }
 
 #[test]
@@ -230,12 +257,11 @@ fn typed_schedules_runs_and_model_pins_parse() {
     assert!(parse_schedule("0 3 * *").is_err());
 
     assert_eq!(parse_max_runs(""), Ok(None));
-    assert_eq!(
-        parse_max_runs("Unlimited"),
-        Ok(Some(CronMaxRuns::Unlimited))
-    );
     assert_eq!(parse_max_runs("5"), Ok(Some(CronMaxRuns::Count(5))));
-    assert!(parse_max_runs("0").is_err());
+    assert_eq!(parse_max_runs("0"), Ok(Some(CronMaxRuns::Unlimited)));
+    assert_eq!(parse_max_runs(" -3 "), Ok(Some(CronMaxRuns::Unlimited)));
+    assert!(parse_max_runs("unlimited").is_err());
+    assert!(parse_max_runs("4294967296").is_err());
     assert!(parse_max_runs("many").is_err());
 
     assert_eq!(parse_model_pin(""), Ok(None));
@@ -283,7 +309,7 @@ fn a_new_session_form_sends_its_mode_agent_and_pin() {
     draft.name = " Nightly ".into();
     draft.prompt = "Check dependencies".into();
     draft.schedule = "0 3 * * *".into();
-    draft.max_runs = "unlimited".into();
+    draft.max_runs = "0".into();
     draft.agent = "reviewer".into();
     draft.model = "deepseek/deepseek-flash".into();
     draft.permission_mode = Some(cookie_agent_protocol::PermissionMode::Ask);
@@ -311,7 +337,7 @@ fn an_edit_sends_only_what_changed() {
     let existing = job(serde_json::json!({"name": "Nightly"}));
     let mut draft = CronDraft::of_job(&existing, &utc);
     assert_eq!(draft.schedule, "0 3 * * *");
-    assert_eq!(draft.max_runs, "unlimited");
+    assert_eq!(draft.max_runs, "0");
     let unchanged = draft.update_params(&existing, &utc).expect("params");
     assert!(!update_changes_anything(&unchanged));
 
