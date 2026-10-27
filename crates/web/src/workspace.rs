@@ -913,6 +913,20 @@ impl Workspace {
     fn apply_sessions_change(self, change: SessionsChangedNotification) {
         // A `session.list` answer on its way may predate this change.
         self.session_list.update_value(|list| list.note(&change));
+        // A child that joined the shown tree with no event of its parent's,
+        // as an ACP agent's own subagent does, shows once the tree is read
+        // again.
+        if let SessionsChangedNotification::Upserted { session } = &change
+            && self.tree.with_untracked(|tree| {
+                cookie_agent_client_state::tree::joins(
+                    self.tree_root.get_untracked(),
+                    tree.as_ref(),
+                    session,
+                )
+            })
+        {
+            self.refresh_tree();
+        }
         match change {
             SessionsChangedNotification::Upserted { .. } => {
                 // A project's session count follows its sessions, which

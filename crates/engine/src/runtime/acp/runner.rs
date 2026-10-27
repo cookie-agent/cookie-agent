@@ -2190,6 +2190,18 @@ impl Engine {
         };
         loop {
             if active.cancellation.is_cancelled() {
+                // A stop before the round still reaches the agent: a wake's
+                // work (a subagent's, say) is under way without a prompt.
+                let _ = process
+                    .peer
+                    .notify(
+                        wire::method::SESSION_CANCEL,
+                        &wire::SessionRef {
+                            session_id: &turn.live.acp_session_id,
+                        },
+                    )
+                    .await;
+                self.drop_stopped_acp_wakes(active.session).await?;
                 self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
@@ -2257,6 +2269,10 @@ impl Engine {
                     }
                 }
                 RoundEnd::Cancelled => {
+                    if let Some(claim) = turn.claim.as_mut() {
+                        claim.release().await?;
+                    }
+                    self.drop_stopped_acp_wakes(active.session).await?;
                     self.append_run_cancelled_once(&active, run_id, None)?;
                     return Ok(());
                 }

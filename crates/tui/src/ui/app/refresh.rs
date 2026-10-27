@@ -202,6 +202,16 @@ impl App {
         use cookie_agent_protocol::SessionsChangedNotification as Change;
         match change {
             Change::Upserted { session } => {
+                // A child that joined the shown tree with no event of its
+                // parent's, as an ACP agent's own subagent does, shows once
+                // the tree is read again.
+                if cookie_agent_client_state::tree::joins(
+                    self.tree_root,
+                    self.tree.as_ref(),
+                    &session,
+                ) {
+                    self.refresh_tree_background();
+                }
                 let session = self.merge_session_meta(*session);
                 if let Some(existing) = self
                     .sessions

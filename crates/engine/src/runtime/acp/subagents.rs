@@ -165,36 +165,32 @@ impl Engine {
             creation_agent: agent,
             revisions,
         };
-        let attachments = super::super::attachments::initial_attachment_events(
+        let process = Arc::clone(&parent.process);
+        // Marked as the agent's own from its first events: a client that
+        // reads the tree as the session is announced already finds it.
+        let mut initial = super::super::attachments::initial_attachment_events(
             &self.inherited_attachments(&projection)?,
         );
+        initial.push(Event::AcpSessionStarted {
+            record: AcpSessionRecord {
+                agent: parent.agent.id.clone(),
+                runtime_id: parent.agent.runtime.clone(),
+                runtime_agent: parent.agent.agent.clone(),
+                acp_session_id: child_acp.to_owned(),
+                cwd: parent.cwd.clone(),
+                protocol_version: process.init().protocol_version,
+                agent_info: process.init().info.clone(),
+                how: AcpSessionStart::Subagent,
+                steering: true,
+                forked_from: None,
+                fork: Some(false),
+                fork_point: None,
+            },
+        });
         let store = self.inner.store.clone();
         self.spawn_admission_blocking(move || {
-            store.create_with_initial(child, origin(), creation, attachments)
+            store.create_with_initial(child, origin(), creation, initial)
         })
-        .await?;
-        let process = Arc::clone(&parent.process);
-        self.append(
-            child,
-            None,
-            origin(),
-            Event::AcpSessionStarted {
-                record: AcpSessionRecord {
-                    agent: parent.agent.id.clone(),
-                    runtime_id: parent.agent.runtime.clone(),
-                    runtime_agent: parent.agent.agent.clone(),
-                    acp_session_id: child_acp.to_owned(),
-                    cwd: parent.cwd.clone(),
-                    protocol_version: process.init().protocol_version,
-                    agent_info: process.init().info.clone(),
-                    how: AcpSessionStart::Subagent,
-                    steering: true,
-                    forked_from: None,
-                    fork: Some(false),
-                    fork_point: None,
-                },
-            },
-        )
         .await?;
         let receiver = process.route(child_acp);
         let live = LiveSession {

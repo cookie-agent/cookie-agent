@@ -265,7 +265,9 @@ subagent reports then treat it like any automatic run.
 - **Inside.** A wake run records updates and answers requests exactly as
   a prompted run does (section 5).
   - Stop sends `session/cancel`, and the session is held as after any
-    Stop.
+    Stop. It does so even when the stop lands before the run's first
+    round, and it drops the wakes still waiting, so the stopped work does
+    not start another run.
   - User input steers into it (section 5.2).
 - **End.** `idle`, by its stop reason (section 5.1).
 - **Ending a run never stops the agent.** After `idle` the process idle

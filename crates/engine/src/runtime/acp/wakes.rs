@@ -242,4 +242,36 @@ impl Engine {
         })
         .await
     }
+
+    /// Drops the agent's wakes still waiting when a run of `session` is
+    /// stopped: the stop ended that work, so no run starts again to show
+    /// it. A wake a claim holds stays; the run releases it first.
+    pub(super) async fn drop_stopped_acp_wakes(
+        &self,
+        session: SessionId,
+    ) -> Result<(), EngineError> {
+        self.on_actor(session, move |engine| {
+            let projection = engine.goal_producer_projection(session)?;
+            for message in projection.messages.iter().filter(|message| {
+                !message.consumed
+                    && !message.discarded
+                    && message.claims.is_empty()
+                    && matches!(message.producer_owner, ProducerOwner::AcpAgent { .. })
+            }) {
+                engine.append_direct(
+                    session,
+                    None,
+                    event_origin("engine:acp"),
+                    Event::ProducerMessageDiscarded {
+                        message_id: message.message_id,
+                        reminder: None,
+                        producer_owner: message.producer_owner.clone(),
+                    },
+                )?;
+            }
+            engine.inner.store.persist_buffered_session(session)?;
+            Ok(())
+        })
+        .await
+    }
 }

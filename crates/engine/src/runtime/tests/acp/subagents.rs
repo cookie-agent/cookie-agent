@@ -181,11 +181,17 @@ async fn cookies_and_the_agents_own_subagents_show_and_stop_side_by_side() {
         matches!(outcome, RunOutcome::Cancelled { .. }),
         "{outcome:?}"
     );
-    assert!(acp.received().iter().any(|message| {
-        message["method"] == "session/cancel"
-            && message["params"]["sessionId"]
-                .as_str()
-                .is_some_and(|id| id.ends_with("-sub"))
-    }));
+    // The agent logs what it reads on its own time.
+    with_watchdog("the agent told to cancel its subagent", async {
+        while !acp.received().iter().any(|message| {
+            message["method"] == "session/cancel"
+                && message["params"]["sessionId"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with("-sub"))
+        }) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert!(engine.background_calls(session).is_empty());
 }
