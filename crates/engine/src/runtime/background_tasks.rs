@@ -610,6 +610,7 @@ fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> Persi
         metadata: serde_json::Value::Null,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     }
 }
 
@@ -645,6 +646,7 @@ pub(super) fn self_reporting_result(
         metadata: serde_json::Value::Null,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     }
 }
 
@@ -901,6 +903,7 @@ mod tests {
             metadata: serde_json::json!({"status": 0}),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         };
         let completed =
             render_background_result("job_1", "bash", "completed", None, Some(&result), None);

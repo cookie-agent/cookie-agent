@@ -937,6 +937,7 @@ pub(crate) fn tool_terminated(
                     metadata: serde_json::Value::Null,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
+                    loaded_tools: Vec::new(),
                 }),
                 error: (!completed).then(|| cookie_agent_protocol::SafeToolError {
                     code: SafeCode::new("exit_failure").expect("error code"),

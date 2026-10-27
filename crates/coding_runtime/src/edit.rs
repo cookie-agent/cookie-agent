@@ -403,6 +403,7 @@ impl PreparedExecutor for EditExecutor {
                 metadata: serde_json::json!({ "replacements": count }),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             },
         ))
     }

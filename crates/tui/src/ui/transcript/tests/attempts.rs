@@ -1560,6 +1560,7 @@ fn replayed_failure_diagnostic_precedes_output_beyond_the_render_budget() {
                 retained_output: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             });
         }
         let mut events = vec![

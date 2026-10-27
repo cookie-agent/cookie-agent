@@ -96,6 +96,13 @@ impl ToolProvider for GoalTools {
         "builtin.goal"
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "goal",
+            summary: "The session's goal and the checklist that tracks it.",
+        })
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::get_spec(), Self::update_spec()])
     }
@@ -323,6 +330,7 @@ fn goal_result(title: &str, result: serde_json::Value) -> Result<ToolResult, Too
         metadata: serde_json::Value::Null,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     })
 }
 

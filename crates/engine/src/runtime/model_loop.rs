@@ -1145,6 +1145,17 @@ impl Engine {
             }
             let policy = turn_policy.as_ref().unwrap_or(&active.policy);
             let mut published_tools = self.published_tool_definitions(active.session, policy)?;
+            // A round start and an announcement land before the request, so
+            // the history the request is built from holds them.
+            for payload in std::mem::take(&mut published_tools.pending) {
+                self.append(
+                    active.session,
+                    Some(run_id),
+                    event_origin("engine:deferred-tools"),
+                    payload,
+                )
+                .await?;
+            }
             let prompt_events = self.prompt_events(active.session, run_id).await?;
             let attempt = match self
                 .stream_attempt(
@@ -1312,6 +1323,15 @@ impl Engine {
                     .or_insert_with(|| OutputHub::new(*id, 64 * 1024))
                     .declare(&output_declaration);
                 let mut prepared_call = batch_prepared.next().expect("batch preparation count");
+                if published_tools.departed.contains(tool.as_str()) {
+                    // Still declared until the round ends (deferred tools in
+                    // cookie, section 8.2), but nothing serves it.
+                    prepared_call.prepared = Err(ToolFailure {
+                        partial_output: None,
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: format!("`{tool}` is no longer available in this session"),
+                    });
+                }
                 if attempt
                     .normalized_tool_calls
                     .contains(model_call_id.as_str())

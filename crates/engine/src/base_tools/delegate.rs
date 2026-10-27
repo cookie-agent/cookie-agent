@@ -287,6 +287,13 @@ impl ToolProvider for DelegateToolProvider {
         "builtin.delegate"
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "delegation",
+            summary: "Subagents: hand a focused task to another agent, and collect its result.",
+        })
+    }
+
     fn prompt_sections(&self, ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
         let Some(targets) = ctx.prompt_delegate_targets() else {
             return Ok(Vec::new());

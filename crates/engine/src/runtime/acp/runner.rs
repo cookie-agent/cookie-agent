@@ -2004,6 +2004,7 @@ impl Turn<'_> {
             }),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         };
         // A command's output is the call's output, retained as a native
         // command's is; a failed call keeps it too.
@@ -2069,6 +2070,7 @@ impl Turn<'_> {
                         metadata: serde_json::json!({"acp": {"kind": call.fields.kind}}),
                         attachments: Vec::new(),
                         additional_messages: Vec::new(),
+                        loaded_tools: Vec::new(),
                     };
                     partial_output =
                         Some(Box::new(terminal.finish(self.engine, result, true).await));

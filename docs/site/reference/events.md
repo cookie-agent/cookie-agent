@@ -193,6 +193,7 @@ never stored.
 | `run_started`, `run_finished` | state | run | A run's start and end |
 | `model_attempt_started`, `attempt_abandoned`, `model_fallback` | state | run | A model attempt's lifecycle |
 | `model_request_prepared`, `model_tools_published`, `model_output_started`, `model_replay_evaluated` | audit | run | Request and streaming bookkeeping |
+| `tool_round_started`, `deferred_tools_announced` | audit | run | [Deferred tools](#deferred-tools): a tool round's eager tools, and what the model was told it can load |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
 | `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, after a [thinking-binding mismatch](../specs/thinking-replay-recovery.md) |
 | `automatic_runs_held`, `automatic_runs_resumed` | state | runless | A [held session](../specs/held-sessions.md): its automatic runs stopped, and the resume that cleared it |
@@ -670,6 +671,29 @@ allows at most 1,024 names, each nonempty, at most 256 bytes, and free of
 control characters; a request whose names do not fit is still sent, without
 a record. The TUI shows the latest record as a collapsible tools block under
 the system prompt.
+
+### Deferred tools
+
+On a model that loads deferred tools
+([deferred tools in cookie](../specs/deferred-tools-cookie.md)), two records
+come before a request, after its run's input:
+
+- `tool_round_started` lists the eager tools the session declares until its
+  next compaction, each as `name`, `description`, `parameters` (its JSON
+  Schema), and optional `provider_options`, exactly as a request sends it.
+  `prompt_groups` names the tool groups whose prompt sections the system
+  prompt carries. A later record before the next checkpoint replaces the
+  round, when the loader tools join it.
+- `deferred_tools_announced` carries `added` and `removed`, lists of groups:
+  `name`, `source` (`mcp`, `plugin`, or `builtin`, an open set), `tools`,
+  and an optional `summary`, with `untrusted` when the summary is the
+  source's author's text. Model history renders it in place as a user turn.
+
+Both are audit events: an engine that does not know them defers nothing.
+At most 1,024 tools a record, and 2 MiB for a round's tools. A tool result's
+`loaded_tools` names the deferred tools it loaded (only `tool_load` sets
+it); its output reaches the model as text where the model cannot load
+natively.
 
 `tool_call_started` records the call's `presentation`: its `title`, an
 optional `hint` label (for icons and grouping), an optional

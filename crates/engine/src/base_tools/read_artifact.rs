@@ -94,6 +94,13 @@ impl ToolProvider for ReadArtifactTool {
         "builtin.read_artifact"
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "artifacts",
+            summary: "Tool output too large for the conversation, kept aside and read back by range.",
+        })
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::spec()])
     }
@@ -253,6 +260,7 @@ impl PreparedExecutor for ReadArtifactExecutor {
                 }),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             },
         ))
     }

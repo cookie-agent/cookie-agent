@@ -296,6 +296,7 @@ mod tests {
             metadata: serde_json::Value::Null,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         }
     }
 

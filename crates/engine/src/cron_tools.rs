@@ -683,6 +683,7 @@ fn text_result(title: &str, output: String) -> ToolCompletion {
         metadata: serde_json::json!({}),
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     })
 }
 
@@ -690,6 +691,13 @@ fn text_result(title: &str, output: String) -> ToolCompletion {
 impl ToolProvider for CronTools {
     fn provider_id(&self) -> &'static str {
         PROVIDER_ID
+    }
+
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "cron",
+            summary: "Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session.",
+        })
     }
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

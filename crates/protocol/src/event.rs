@@ -708,6 +708,11 @@ pub struct PersistedToolResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 4))]
     pub additional_messages: Vec<ToolEmittedMessage>,
+    /// Deferred tools this result loads: they become callable from it on
+    /// (client protocol 1.44.0). Only `tool_load` sets it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub loaded_tools: Vec<String>,
 }
 impl PersistedToolResult {
     pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -776,6 +781,9 @@ impl PersistedToolResult {
         if self.additional_messages.len() > Self::MAX_ADDITIONAL_MESSAGES {
             return Err(EventSchemaError::TooManyToolEmittedMessages);
         }
+        if !valid_model_tool_names(&self.loaded_tools) {
+            return Err(EventSchemaError::InvalidModelTools);
+        }
         for message in &self.additional_messages {
             message.validate()?;
         }
@@ -806,6 +814,8 @@ impl Serialize for PersistedToolResult {
             attachments: &'a [ToolAttachment],
             #[serde(skip_serializing_if = "<[_]>::is_empty")]
             additional_messages: &'a [ToolEmittedMessage],
+            #[serde(skip_serializing_if = "<[_]>::is_empty")]
+            loaded_tools: &'a [String],
         }
         #[derive(Serialize)]
         #[serde(untagged)]
@@ -844,6 +854,7 @@ impl Serialize for PersistedToolResult {
             metadata: &self.metadata,
             attachments: &self.attachments,
             additional_messages: &self.additional_messages,
+            loaded_tools: &self.loaded_tools,
         }
         .serialize(serializer)
     }
@@ -870,6 +881,8 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             attachments: Vec<ToolAttachment>,
             #[serde(default)]
             additional_messages: Vec<ToolEmittedMessage>,
+            #[serde(default)]
+            loaded_tools: Vec<String>,
         }
         let w = Wire::deserialize(d)?;
         let display = match (w.display, w.display_span) {
@@ -901,6 +914,7 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             metadata: w.metadata,
             attachments: w.attachments,
             additional_messages: w.additional_messages,
+            loaded_tools: w.loaded_tools,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -2009,6 +2023,73 @@ pub fn valid_model_tool_names(names: &[String]) -> bool {
         })
 }
 
+crate::open_enum! {
+    /// Where a tool group's tools come from (client protocol 1.44.0).
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ToolGroupSource {
+        /// An MCP server; the group is named after it.
+        Mcp,
+        /// A plugin; the group is named after it.
+        Plugin,
+        /// One of cookie's built-in tool providers.
+        Builtin,
+    }
+}
+
+/// One group of a `deferred_tools_announced` event: the tools of one source
+/// that became loadable, or that left (client protocol 1.44.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AnnouncedToolGroup {
+    #[schemars(length(min = 1, max = 256))]
+    pub name: String,
+    pub source: ToolGroupSource,
+    /// The group's summary as the announcement rendered it; present the
+    /// first time the group is announced in a round, and when it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 4096))]
+    pub summary: Option<String>,
+    /// Whether the summary comes from the source's author rather than from
+    /// cookie, and is rendered as untrusted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untrusted: bool,
+    #[schemars(length(min = 1, max = 1024))]
+    pub tools: Vec<String>,
+}
+
+impl AnnouncedToolGroup {
+    pub const MAX_SUMMARY_BYTES: usize = 4096;
+
+    fn valid(&self) -> bool {
+        !self.name.is_empty()
+            && self.name.len() <= MAX_MODEL_TOOL_NAME_BYTES
+            && !self.name.chars().any(char::is_control)
+            && self
+                .summary
+                .as_ref()
+                .is_none_or(|summary| summary.len() <= Self::MAX_SUMMARY_BYTES)
+            && !self.tools.is_empty()
+            && valid_model_tool_names(&self.tools)
+    }
+}
+
+/// A tool as a `tool_round_started` event declares it: exactly the
+/// definition a request of the round sends (client protocol 1.44.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RoundToolDefinition {
+    #[schemars(length(min = 1, max = 256))]
+    pub name: String,
+    pub description: String,
+    /// The tool's parameter JSON Schema.
+    pub parameters: Value,
+    /// Provider options the tool is sent with, such as `strict`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_options: BTreeMap<String, Value>,
+}
+
+/// The largest serialized `tool_round_started` event.
+pub const MAX_TOOL_ROUND_BYTES: usize = 2 * 1024 * 1024;
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AgentMdEntry {
     pub source: SafeDisplayText,
@@ -2790,6 +2871,27 @@ pub enum EventPayload {
         #[schemars(length(max = 1024))]
         tool_names: Vec<String>,
     },
+    /// Deferred tools that became loadable, and loadable ones that left,
+    /// grouped by source (client protocol 1.44.0). Rendered in place as a
+    /// user turn of the model's history.
+    DeferredToolsAnnounced {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[schemars(length(max = 1024))]
+        added: Vec<AnnouncedToolGroup>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[schemars(length(max = 1024))]
+        removed: Vec<AnnouncedToolGroup>,
+    },
+    /// A tool round started: the eager tools the session declares until the
+    /// next compaction, and the tool groups whose prompt sections the system
+    /// prompt carries (client protocol 1.44.0).
+    ToolRoundStarted {
+        #[schemars(length(max = 1024))]
+        tools: Vec<RoundToolDefinition>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[schemars(length(max = 1024))]
+        prompt_groups: Vec<String>,
+    },
     /// The attempt began streaming a text or reasoning part: its first
     /// output, or a switch between the two. The deltas themselves are
     /// live-only; this durably records where in the log, and when, each
@@ -3116,6 +3218,8 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "native_replay_cut",
     "model_request_prepared",
     "model_tools_published",
+    "deferred_tools_announced",
+    "tool_round_started",
     "model_turn_committed",
     "model_usage_recorded",
     "native_compaction_finished",
@@ -3263,6 +3367,11 @@ impl EventPayload {
             | Self::UserInputTransformed { .. }
             | Self::ModelRequestPrepared { .. }
             | Self::ModelToolsPublished { .. }
+            // Only an engine that defers tools reads these; one that does
+            // not know them defers nothing, so skipping them changes nothing
+            // it builds.
+            | Self::DeferredToolsAnnounced { .. }
+            | Self::ToolRoundStarted { .. }
             | Self::ModelOutputStarted { .. }
             | Self::ModelReplayEvaluated { .. }
             | Self::TextDelta { .. }
@@ -3538,6 +3647,28 @@ impl EventPayload {
             }
             Self::MemoryLoaded { snapshot } => snapshot.validate()?,
             Self::ModelToolsPublished { tool_names, .. } if !valid_model_tool_names(tool_names) => {
+                return Err(EventSchemaError::InvalidModelTools);
+            }
+            Self::DeferredToolsAnnounced { added, removed }
+                if added.len() + removed.len() > MAX_MODEL_TOOL_NAMES
+                    || !added.iter().chain(removed).all(AnnouncedToolGroup::valid) =>
+            {
+                return Err(EventSchemaError::InvalidModelTools);
+            }
+            Self::ToolRoundStarted {
+                tools,
+                prompt_groups,
+            } if tools.len() > MAX_MODEL_TOOL_NAMES
+                || !tools
+                    .iter()
+                    .all(|tool| valid_model_tool_names(std::slice::from_ref(&tool.name)))
+                || !valid_model_tool_names(prompt_groups)
+                || json_len_exceeds(
+                    &serde_json::to_value(tools).map_err(|_| EventSchemaError::InvalidJson)?,
+                    MAX_TOOL_ROUND_BYTES,
+                )
+                .map_err(|_| EventSchemaError::InvalidJson)? =>
+            {
                 return Err(EventSchemaError::InvalidModelTools);
             }
             Self::Diagnostic {

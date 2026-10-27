@@ -214,6 +214,7 @@ retained_output: None,
                 },
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             });
         }
         Err(ToolError::execution("streaming bash cancelled"))
@@ -530,6 +531,7 @@ impl PreparedExecutor for TestParallelToolExecutor {
                 metadata: serde_json::json!({"name":self.name}),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             })
         }
         .await;
@@ -769,6 +771,7 @@ impl PreparedExecutor for TestDelegateExecutor {
                     metadata,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
+                    loaded_tools: Vec::new(),
                 })
             } else {
                 // Like the real tool: a waiting call can stop waiting while
@@ -911,6 +914,7 @@ impl PreparedExecutor for TestWriteExecutor {
                 metadata: serde_json::Value::Null,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             })
         }
         .await;
@@ -1081,6 +1085,7 @@ impl PreparedExecutor for TestAliasExecutor {
                 metadata: serde_json::Value::Null,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             },
         ))
     }
@@ -1229,6 +1234,7 @@ impl PreparedExecutor for TestMediaReadExecutor {
                 metadata: serde_json::Value::Null,
                 attachments: vec![attachment],
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             })
         }
         .await;
@@ -1577,6 +1583,7 @@ impl PreparedExecutor for NamedOutputExecutor {
                 metadata: serde_json::Value::Null,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             });
         completion.failed = self.1;
         Ok(completion)

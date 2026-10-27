@@ -110,6 +110,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         metadata: metadata.clone(),
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     };
     let capture = OutputCapture::new(
         fixture.engine.inner.artifacts.clone(),
@@ -284,6 +285,7 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
             metadata,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         };
 
     let full = "zero\none\ntwo\nthree";
@@ -669,6 +671,7 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
             metadata: serde_json::json!({"retained_output": retained.uri}),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         },
         1,
     );
@@ -894,6 +897,7 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
             metadata: serde_json::json!({"retained_output": reference.uri}),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         }
     };
 

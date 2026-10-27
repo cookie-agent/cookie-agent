@@ -478,6 +478,13 @@ impl ToolProvider for AgentsTool {
         PROVIDER_ID
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "agents",
+            summary: "The agents this session can delegate to or schedule, and what each is for.",
+        })
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::spec()])
     }
@@ -590,6 +597,7 @@ impl PreparedExecutor for AgentsExecutor {
             metadata: serde_json::json!({}),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         }))
     }
 }

@@ -49,6 +49,11 @@ fn documented_specs() -> Vec<ToolSpec> {
 fn availability(name: &str) -> Option<&'static str> {
     Some(match name {
         "skill" => "Only when at least one skill is visible to the session.",
+        "tool_search" | "tool_load" => {
+            "Only when the request defers a tool: on a model that loads deferred tools, \
+             when an MCP or plugin tool is offered. Both come together and stay until the \
+             session's next compaction."
+        }
         "delegate_subagent" => {
             "Only when the agent can delegate to at least one subagent at this depth. The \
              `agent_type` enum lists those subagents; this page shows a placeholder. \

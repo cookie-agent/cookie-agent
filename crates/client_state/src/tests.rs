@@ -73,6 +73,7 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                         retained_output: None,
                         attachments: vec![],
                         additional_messages: vec![],
+                        loaded_tools: Vec::new(),
                     }),
                     error: (case != 4).then(|| cookie_agent_protocol::SafeToolError {
                         code: cookie_agent_protocol::SafeCode::new("not_found").unwrap(),
@@ -934,6 +935,7 @@ impl OldMemoryCall {
                         retained_output: None,
                         attachments: vec![],
                         additional_messages: vec![],
+                        loaded_tools: Vec::new(),
                     }),
                     error: None,
                 },
@@ -3111,6 +3113,7 @@ fn tool_termination_replaces_the_live_display_with_the_result_display() {
                         )
                         .unwrap(),
                     ],
+                    loaded_tools: Vec::new(),
                 }),
                 error: None,
             },
@@ -3164,6 +3167,7 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
                 metadata: serde_json::json!({"model_only": true}),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             }),
         },
     };
@@ -3334,6 +3338,7 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
                         metadata: serde_json::Value::Null,
                         attachments: Vec::new(),
                         additional_messages: Vec::new(),
+                        loaded_tools: Vec::new(),
                     }),
                     error: None,
                 },

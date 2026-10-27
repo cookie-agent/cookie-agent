@@ -546,6 +546,7 @@ impl PreparedExecutor for MediaExecutor {
             metadata: serde_json::Value::Null,
             attachments: vec![attachment],
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         }))
     }
 }
@@ -1673,6 +1674,7 @@ impl PreparedExecutor for ReportExecutor {
             metadata: serde_json::Value::Null,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         }))
     }
 }

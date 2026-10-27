@@ -99,6 +99,14 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
+/// A built-in provider's tool group: the name its deferred tools are
+/// announced under, and what its tools are for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ToolGroup {
+    pub name: &'static str,
+    pub summary: &'static str,
+}
+
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     /// Stable engine-facing identity used for system-prompt provenance labels.
@@ -124,6 +132,15 @@ pub trait ToolProvider: Send + Sync {
     fn tool_source(&self, _tool_name: &str) -> Option<ProvidedToolSource> {
         None
     }
+
+    /// The group a built-in provider's tools are announced under when they
+    /// are deferred, with its summary (deferred tools in cookie, section
+    /// 7.1). `None` groups them under the provider's ID with no summary; an
+    /// MCP server's or a plugin's tools group under their own source.
+    fn tool_group(&self) -> Option<ToolGroup> {
+        None
+    }
+
     /// Claims a currently undiscovered dynamic tool, allowing preparation to make it available.
     fn permission_for_unlisted_tool(
         &self,

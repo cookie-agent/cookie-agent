@@ -85,6 +85,7 @@ impl PreparedExecutor for SkillExecutor {
                 metadata: serde_json::json!({"skill": invocation.name}),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             })
         }
         .await;
@@ -113,6 +114,13 @@ impl SkillTool {
 impl ToolProvider for SkillTool {
     fn provider_id(&self) -> &'static str {
         "builtin.skill"
+    }
+
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "skills",
+            summary: "Skills: packaged instructions for a kind of task, loaded by name.",
+        })
     }
 
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

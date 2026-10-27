@@ -1569,6 +1569,8 @@ pub(super) fn reduce_event_from(
         | EventPayload::DelegationReserved { .. }
         | EventPayload::DelegationProgressed { .. }
         | EventPayload::ModelRequestPrepared { .. }
+        | EventPayload::DeferredToolsAnnounced { .. }
+        | EventPayload::ToolRoundStarted { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalId, ApprovalRequest, ApprovalTrigger,
@@ -412,8 +412,10 @@ impl Engine {
             Some(Some(published)) => {
                 // The tool must still be what the model was offered: same
                 // attachment, same instance generation, same declaration.
+                // The loaders are published only where a request offered
+                // them, so the check keeps them.
                 let current = self
-                    .compose_for_policy(session_id, policy)
+                    .compose_for_policy_with(session_id, policy, true)
                     .ok()
                     .and_then(|composition| composition.get(&call.name).cloned());
                 if current.is_some_and(|current| {
@@ -1166,11 +1168,23 @@ impl Engine {
     }
 
     /// The tool set `policy` publishes for `session`: enabled tools the
-    /// agent and the session overlay make visible, composed.
+    /// agent and the session overlay make visible, composed. The loader
+    /// tools are left out; only a request that defers a tool offers them.
     pub(crate) fn compose_for_policy(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
+    ) -> Result<Composition, EngineError> {
+        self.compose_for_policy_with(session, policy, false)
+    }
+
+    /// [`Self::compose_for_policy`], keeping the loader tools when
+    /// `keep_loaders`.
+    fn compose_for_policy_with(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+        keep_loaders: bool,
     ) -> Result<Composition, EngineError> {
         let session_projection = self.inner.store.get(session)?;
         let depth = session_depth(&session_projection.meta.origin);
@@ -1243,6 +1257,11 @@ impl Engine {
                     || offers_delegate
                     || !from_global(tool, crate::agents_tool::PROVIDER_ID))
         });
+        if !keep_loaders {
+            composition.tools.retain(|tool| {
+                tool.source.provider.provider_id() != crate::base_tools::LOADER_PROVIDER_ID
+            });
+        }
         // `stop_background` only makes sense next to a tool that can run in
         // the background.
         if !composition.tools.iter().any(|tool| tool.spec.background) {
@@ -1259,10 +1278,19 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<PublishedToolSet, EngineError> {
-        let composition = self.compose_for_policy(session, policy)?;
+        // Deferral follows the run's model: only a verified model defers
+        // until rejected deferral can fall back (deferred tools in cookie,
+        // section 13, decision 4).
+        let defers = policy.selected_suffix.first().is_some_and(|binding| {
+            cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor)
+                == cookie_agent_models::DeferredToolsSupport::Native
+        });
+        let composition = self.compose_for_policy_with(session, policy, defers)?;
         let notes = self.runtime_tool_notes(session);
         let mut output = Vec::with_capacity(composition.tools.len());
         let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
+        let mut candidates = Vec::new();
+        let mut loaders = Vec::new();
         for ComposedTool { name, source, spec } in composition.tools {
             spec.output.validate().map_err(EngineError::ToolFailed)?;
             let mut parameters = spec.parameters.clone();
@@ -1277,14 +1305,67 @@ impl Engine {
                 Some(note) => format!("{}\n\n{note}", spec.description),
                 None => spec.description.clone(),
             };
-            output.push(ToolDefinition::new(name.clone(), description, schema));
+            let definition = ToolDefinition::new(name.clone(), description, schema);
+            if defers {
+                if source.provider.provider_id() == crate::base_tools::LOADER_PROVIDER_ID {
+                    loaders.push(definition);
+                } else {
+                    candidates.push(crate::deferred_tools::Candidate {
+                        definition,
+                        group: crate::deferred_tools::group_of(&source, &spec.name),
+                        deferred: crate::deferred_tools::policy_defers(&source, &spec.name),
+                    });
+                }
+            } else {
+                output.push(definition);
+            }
             published.insert(name, PublishedTool { source, spec });
         }
-        output.sort_by(|left, right| left.name.cmp(&right.name));
+        if !defers {
+            output.sort_by(|left, right| left.name.cmp(&right.name));
+            return Ok(PublishedToolSet {
+                definitions: output,
+                tools: published,
+                departed: HashSet::new(),
+                pending: Vec::new(),
+            });
+        }
+        let fold = self.inner.store.get(session)?.log.deferral();
+        let plan = crate::deferred_tools::plan(candidates, &loaders, &fold);
+        // A loader tool is callable only where the request declares it.
+        let declared = plan
+            .definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<HashSet<_>>();
+        published.retain(|name, _| {
+            !crate::deferred_tools::is_loader(name) || declared.contains(name.as_str())
+        });
+        self.inner
+            .deferral_views
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session, Arc::new(plan.view));
         Ok(PublishedToolSet {
-            definitions: output,
+            definitions: plan.definitions,
             tools: published,
+            departed: plan.departed,
+            pending: plan.pending,
         })
+    }
+
+    /// What `session`'s loader tools see: its latest request's deferral.
+    pub(crate) fn deferral_view(
+        &self,
+        session: SessionId,
+    ) -> Arc<crate::deferred_tools::DeferralView> {
+        self.inner
+            .deferral_views
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -1452,6 +1533,7 @@ pub(super) fn incomplete_completion(message: &str) -> crate::ToolCompletion {
         metadata: Value::Null,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     })
 }
 

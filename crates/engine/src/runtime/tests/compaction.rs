@@ -146,6 +146,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 metadata: serde_json::Value::Null,
                 attachments: vec![image_attachment.clone()],
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             },
             20_000,
         );
@@ -214,6 +215,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                         .unwrap()
                     })
                     .collect(),
+                    loaded_tools: Vec::new(),
                 },
                 tool,
                 None,

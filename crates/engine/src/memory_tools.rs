@@ -541,6 +541,13 @@ impl ToolProvider for MemoryTools {
         PROVIDER_ID
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "memory",
+            summary: "Durable notes across sessions: what the user prefers, project decisions, and facts about machines.",
+        })
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(Self::specs())
     }
@@ -885,6 +892,7 @@ fn result(
         metadata,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     })
 }
 

@@ -516,6 +516,7 @@ fn assistant_and_tool_result_events_do_not_resort_siblings() {
                     metadata: serde_json::Value::Null,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
+                    loaded_tools: Vec::new(),
                 }),
                 error: None,
             },

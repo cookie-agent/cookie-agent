@@ -118,6 +118,7 @@ mod tests {
                     metadata: serde_json::json!({key: value}),
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
+                    loaded_tools: Vec::new(),
                 };
                 assert_eq!(delegate_result_matches_child(&result, child), expected);
             }

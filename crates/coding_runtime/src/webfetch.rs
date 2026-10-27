@@ -274,6 +274,7 @@ impl WebfetchArgs {
             metadata,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         })
     }
 }

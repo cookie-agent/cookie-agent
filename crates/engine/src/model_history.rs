@@ -994,6 +994,13 @@ fn assemble_history_with_replay(
                     }
                 }));
             }
+            // Rendered in place, so later bytes never move (deferred tools in
+            // cookie, section 7.2).
+            EventPayload::DeferredToolsAnnounced { added, removed } => {
+                logical.push(LogicalTurn::User(user_text(
+                    &crate::deferred_tools::render_announcement(added, removed),
+                )));
+            }
             // Injected messages carry text parts only.
             EventPayload::MessageInjected { role, content } => match role {
                 cookie_agent_protocol::ExtensionMessageRole::System => {
@@ -1616,6 +1623,16 @@ fn tool_result_part(
     result: &PersistedToolResult,
     store: SessionArtifacts<'_>,
 ) -> Result<ToolResultPart, HistoryError> {
+    if !result.loaded_tools.is_empty() {
+        // Oven encodes the load natively, or sends the output as text.
+        return Ok(ToolResultPart::new(
+            String::new(),
+            ToolContent::LoadTools {
+                names: result.loaded_tools.clone(),
+                text: result.output.clone(),
+            },
+        ));
+    }
     let mut values = vec![
         ContentValue::Text(result.output.clone()),
         ContentValue::Json(serde_json::json!({

@@ -339,6 +339,7 @@ impl PreparedExecutor for WriteExecutor {
                 metadata: serde_json::json!({ "bytes": bytes, "created": created }),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             },
         ))
     }

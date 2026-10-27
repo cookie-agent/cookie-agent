@@ -7,6 +7,7 @@ mod blocking;
 mod config_store;
 mod cron_tools;
 mod crons;
+mod deferred_tools;
 mod delegation_api;
 pub mod delegation_events;
 pub mod events;

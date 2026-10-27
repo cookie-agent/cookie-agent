@@ -100,6 +100,7 @@ impl Engine {
                     metadata: serde_json::json!({}),
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
+                    loaded_tools: Vec::new(),
                 },
             ));
         };

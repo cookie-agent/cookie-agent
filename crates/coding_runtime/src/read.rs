@@ -268,6 +268,7 @@ impl PreparedExecutor for ReadExecutor {
                     }),
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
+                    loaded_tools: Vec::new(),
                 });
             }
             let file = self.target.open_file()?;
@@ -365,6 +366,7 @@ fn attachment_result(
         metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":sha256}),
         attachments,
         additional_messages,
+        loaded_tools: Vec::new(),
     })
 }
 
@@ -411,6 +413,7 @@ fn text_result(
         }),
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     })
 }
 

@@ -160,11 +160,85 @@ struct EventIndex {
     last_model_tools: Option<Vec<String>>,
     /// The latest runtime revisions the log records.
     revisions: cookie_agent_protocol::RevisionFold,
+    /// Deferred tools since the latest checkpoint.
+    deferral: DeferralFold,
+}
+
+/// What a log records about deferred tools since its latest checkpoint
+/// (deferred tools in cookie, sections 6 to 8): the current tool round, the
+/// tools results loaded, and what announcements add up to. A checkpoint
+/// starts all three over.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct DeferralFold {
+    /// The latest `tool_round_started` record.
+    pub(crate) round: Option<ToolRound>,
+    /// Tools a result loaded.
+    pub(crate) loaded: std::collections::BTreeSet<String>,
+    /// Announced, still-loadable tools by group.
+    pub(crate) announced: std::collections::BTreeMap<String, AnnouncedGroupState>,
+}
+
+/// The eager tools of a tool round and the groups whose prompt sections the
+/// system prompt carries.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ToolRound {
+    pub(crate) tools: Vec<cookie_agent_protocol::RoundToolDefinition>,
+    pub(crate) prompt_groups: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AnnouncedGroupState {
+    pub(crate) tools: std::collections::BTreeSet<String>,
+    /// The summary the latest announcement of the group carried.
+    pub(crate) summary: Option<String>,
+}
+
+impl DeferralFold {
+    fn observe(&mut self, payload: &EventPayload) {
+        match payload {
+            EventPayload::ContextCheckpointCommitted { .. } => *self = Self::default(),
+            EventPayload::ToolRoundStarted {
+                tools,
+                prompt_groups,
+            } => {
+                self.round = Some(ToolRound {
+                    tools: tools.clone(),
+                    prompt_groups: prompt_groups.clone(),
+                });
+            }
+            EventPayload::ToolCallTerminated { termination } => {
+                if let Some(result) = &termination.result {
+                    self.loaded.extend(result.loaded_tools.iter().cloned());
+                }
+            }
+            EventPayload::DeferredToolsAnnounced { added, removed } => {
+                for group in removed {
+                    if let Some(state) = self.announced.get_mut(&group.name) {
+                        for tool in &group.tools {
+                            state.tools.remove(tool);
+                        }
+                        if state.tools.is_empty() {
+                            self.announced.remove(&group.name);
+                        }
+                    }
+                }
+                for group in added {
+                    let state = self.announced.entry(group.name.clone()).or_default();
+                    state.tools.extend(group.tools.iter().cloned());
+                    if group.summary.is_some() {
+                        state.summary.clone_from(&group.summary);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl EventIndex {
     fn observe(&mut self, event: &StoredEvent) {
         self.revisions.observe(&event.payload);
+        self.deferral.observe(&event.payload);
         match &event.payload {
             EventPayload::RunStarted { selection, .. } => {
                 if let Some(run) = event.run_id {
@@ -1364,6 +1438,16 @@ impl EventLog {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .index
             .last_run_started
+            .clone()
+    }
+
+    /// Deferred tools since the latest checkpoint, as the log records them.
+    pub(crate) fn deferral(&self) -> DeferralFold {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .deferral
             .clone()
     }
 

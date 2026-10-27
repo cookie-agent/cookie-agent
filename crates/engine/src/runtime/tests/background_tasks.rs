@@ -213,6 +213,7 @@ impl PreparedExecutor for JobExecutor {
                 metadata: serde_json::json!({"status": 0}),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             },
         ))
     }

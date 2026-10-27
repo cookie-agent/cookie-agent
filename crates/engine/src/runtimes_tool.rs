@@ -103,6 +103,13 @@ impl ToolProvider for RuntimesTool {
         PROVIDER_ID
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "runtimes",
+            summary: "The runtimes this session can work through: the machines and capabilities a subagent can be started on.",
+        })
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::spec()])
     }
@@ -202,6 +209,7 @@ impl PreparedExecutor for RuntimesExecutor {
             metadata: serde_json::json!({}),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         }))
     }
 }

@@ -98,6 +98,13 @@ impl ToolProvider for MessageToolProvider {
         "builtin.message"
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "messaging",
+            summary: "Messages between the agents of a session tree.",
+        })
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::spec()])
     }
@@ -224,6 +231,7 @@ impl PreparedExecutor for MessageExecutor {
             metadata,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         }))
     }
 }

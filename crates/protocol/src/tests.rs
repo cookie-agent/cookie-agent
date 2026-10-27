@@ -694,6 +694,7 @@ fn display_result(output: &str, display: Vec<Open<DisplayBlock>>) -> PersistedTo
         metadata: Value::Null,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     }
 }
 
@@ -985,6 +986,7 @@ fn tool_emitted_messages_round_trip_and_empty_results_stay_compact() {
             )
             .unwrap(),
         ],
+        loaded_tools: Vec::new(),
     };
 
     let wire = serde_json::to_value(&result).unwrap();

@@ -64,6 +64,13 @@ impl ToolProvider for StopBackgroundTool {
         "builtin.stop_background"
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "background",
+            summary: "Calls running in the background, and stopping them.",
+        })
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::spec()])
     }
@@ -186,6 +193,7 @@ impl PreparedExecutor for StopBackgroundExecutor {
                 metadata: serde_json::json!({"job": self.job}),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
             },
         ))
     }

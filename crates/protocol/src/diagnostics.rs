@@ -371,6 +371,7 @@ mod tests {
             retained_output: None,
             attachments: vec![],
             additional_messages: vec![],
+            loaded_tools: Vec::new(),
         };
         let message = headline(&tool_result(&result));
         assert!(message.as_str().len() >= 4090);
@@ -436,6 +437,7 @@ mod tests {
                 }),
                 attachments: vec![],
                 additional_messages: vec![],
+                loaded_tools: Vec::new(),
             };
             let text = tool_result(&result);
             assert!(text.contains("Custom final cause"), "{text}");

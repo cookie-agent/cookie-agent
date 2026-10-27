@@ -5,6 +5,22 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.44.0
+
+- Deferred tools ([deferred tools in cookie](../specs/deferred-tools-cookie.md)):
+  a model that loads tools natively is sent MCP and plugin tools deferred,
+  with `tool_search` and `tool_load` to find and load them.
+  - `tool_round_started` (`tools`, `prompt_groups`): the eager tools a
+    session declares until its next compaction.
+  - `deferred_tools_announced` (`added`, `removed`, each a list of groups
+    with `name`, `source` (`mcp`, `plugin`, `builtin`, open), an optional
+    `summary` and `untrusted`, and `tools`): what became loadable, and what
+    left, as the model was told.
+  - A tool result's `loaded_tools`: the deferred tools it loaded.
+
+  Both events are skippable audit events. Plugin protocol 1.23.0 carries
+  them, and the result field, in events the same way.
+
 ## 1.43.0
 
 - `runtimes.agents.*` take `runtime_id` `global` for the top-level

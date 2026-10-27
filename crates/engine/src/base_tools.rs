@@ -14,6 +14,7 @@ use crate::{Engine, EngineError, ToolLayer, ToolProvider, ToolSpec};
 
 pub(crate) mod delegate;
 mod goal;
+mod loader;
 mod message;
 mod read_artifact;
 mod skill;
@@ -21,11 +22,14 @@ mod stop_background;
 
 use delegate::DelegateToolProvider;
 use goal::GoalTools;
+use loader::LoaderTools;
 use message::MessageToolProvider;
 use read_artifact::ReadArtifactTool;
 use skill::SkillTool;
 use stop_background::StopBackgroundTool;
 pub(crate) use stop_background::TOOL_NAME as STOP_BACKGROUND_TOOL;
+/// The provider of the loader tools.
+pub(crate) const LOADER_PROVIDER_ID: &str = "builtin.loader";
 
 fn tool_error(error: impl std::fmt::Display) -> crate::ToolError {
     crate::ToolError::execution(error.to_string())
@@ -71,13 +75,14 @@ pub(crate) fn markdown_display(
 impl Engine {
     /// Registers the base layer's providers, in composition order.
     pub(crate) fn register_base_layer(&self) -> Result<(), EngineError> {
-        let providers: [Arc<dyn ToolProvider>; 6] = [
+        let providers: [Arc<dyn ToolProvider>; 7] = [
             Arc::new(DelegateToolProvider::new(self.clone())),
             Arc::new(MessageToolProvider::new(self.clone())),
             Arc::new(SkillTool::new(self.clone())),
             Arc::new(ReadArtifactTool),
             Arc::new(GoalTools::new(self.clone())),
             Arc::new(StopBackgroundTool::new(self.clone())),
+            Arc::new(LoaderTools::new(self.clone())),
         ];
         for provider in providers {
             self.try_register_tool_provider(ToolLayer::Base, provider)?;
@@ -115,6 +120,8 @@ pub fn base_layer_tool_specs(delegate_target: &str) -> Vec<ToolSpec> {
     specs.push(GoalTools::update_spec());
     specs.push(ReadArtifactTool::spec());
     specs.push(StopBackgroundTool::spec());
+    specs.push(LoaderTools::search_spec());
+    specs.push(LoaderTools::load_spec());
     specs
 }
 

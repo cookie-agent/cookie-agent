@@ -1,0 +1,416 @@
+//! `tool_search` and `tool_load`, the loader tools of deferred tools
+//! (`docs/site/specs/deferred-tools-cookie.md` section 5).
+//!
+//! Base-layer tools that declare no permission: they see and load only the
+//! tools the session's latest request already offers. The engine publishes
+//! them only when that request defers a tool.
+
+use async_trait::async_trait;
+use cookie_agent_protocol::{
+    ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
+    PreparedBindingLifetime,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::{
+    base_presentation, parse_args, prepared_operation, prepared_resource, safe_title, schema,
+    tool_error,
+};
+use crate::Engine;
+use crate::deferred_tools::{DeferralView, DeferredEntry, TOOL_LOAD, TOOL_SEARCH};
+
+/// Matches `tool_search` lists when the call sets no `limit`.
+const DEFAULT_SEARCH_LIMIT: usize = 10;
+
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ToolSearchArgs {
+    /// Words describing the tools you need, such as "browser click" or "calendar events".
+    query: String,
+    /// At most how many matches to list; 10 when absent, and every match when 0 or less.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ToolLoadArgs {
+    /// Exact names of the tools to load, as an announcement or tool_search lists them.
+    #[schemars(length(min = 1))]
+    names: Vec<String>,
+}
+
+/// The two loader tools; one provider so they are offered and withheld
+/// together.
+pub struct LoaderTools {
+    engine: Engine,
+}
+
+impl LoaderTools {
+    pub(crate) fn new(engine: Engine) -> Self {
+        Self { engine }
+    }
+
+    #[must_use]
+    pub fn search_spec() -> ToolSpec {
+        ToolSpec {
+            background: false,
+            background_default: false,
+            collision: Default::default(),
+            output: Default::default(),
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
+            result_truncation: Default::default(),
+            name: TOOL_SEARCH.into(),
+            permission_name: None,
+            description: "Search the tools you can load by keyword: their names, groups, descriptions, and parameters. It lists matching tools with their group and a one-line description, and never loads them; load one with tool_load before calling it.".into(),
+            parameters: schema::<ToolSearchArgs>(),
+        }
+    }
+
+    #[must_use]
+    pub fn load_spec() -> ToolSpec {
+        ToolSpec {
+            background: false,
+            background_default: false,
+            collision: Default::default(),
+            output: Default::default(),
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
+            result_truncation: Default::default(),
+            name: TOOL_LOAD.into(),
+            permission_name: None,
+            description: "Load deferred tools by exact name so you can call them. Tools listed in <tools_added> announcements or by tool_search load this way, several in one call; once loaded they stay callable.".into(),
+            parameters: schema::<ToolLoadArgs>(),
+        }
+    }
+
+    fn check(name: &str) -> Result<(), ToolError> {
+        if crate::deferred_tools::is_loader(name) {
+            Ok(())
+        } else {
+            Err(ToolError::execution(
+                "loader provider received another tool",
+            ))
+        }
+    }
+
+    fn argument(name: &str, arguments: &serde_json::Value) -> Result<String, ToolError> {
+        Self::check(name)?;
+        if name == TOOL_SEARCH {
+            Ok(parse_args::<ToolSearchArgs>(TOOL_SEARCH, arguments.clone())?.query)
+        } else {
+            Ok(parse_args::<ToolLoadArgs>(TOOL_LOAD, arguments.clone())?
+                .names
+                .join(", "))
+        }
+    }
+}
+
+#[async_trait]
+impl ToolProvider for LoaderTools {
+    fn provider_id(&self) -> &'static str {
+        "builtin.loader"
+    }
+
+    fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![Self::search_spec(), Self::load_spec()])
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Self::check(tool_name)?;
+        Ok(None)
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Ok((None, Some(Self::argument(name, arguments)?)))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Self::argument(name, arguments)
+    }
+
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        match Self::argument(&call.name, &call.arguments) {
+            Ok(argument) if call.name == TOOL_SEARCH => base_presentation(
+                &format!("Search tools: {argument}"),
+                cookie_agent_protocol::ToolHint::GENERIC,
+                &argument,
+                vec![("query", argument.clone())],
+            ),
+            Ok(argument) => base_presentation(
+                &format!("Load {argument}"),
+                cookie_agent_protocol::ToolHint::GENERIC,
+                &argument,
+                vec![("names", argument.clone())],
+            ),
+            Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        Self::check(&call.name)?;
+        let (normalized, request) = if call.name == TOOL_SEARCH {
+            let args: ToolSearchArgs = parse_args(TOOL_SEARCH, call.arguments)?;
+            let limit = match args.limit {
+                Some(limit) if limit <= 0 => usize::MAX,
+                Some(limit) => usize::try_from(limit).unwrap_or(usize::MAX),
+                None => DEFAULT_SEARCH_LIMIT,
+            };
+            (
+                serde_json::to_value(&args).map_err(tool_error)?,
+                LoaderRequest::Search {
+                    query: args.query,
+                    limit,
+                },
+            )
+        } else {
+            let args: ToolLoadArgs = parse_args(TOOL_LOAD, call.arguments)?;
+            if args.names.is_empty() {
+                return Err(ToolError::execution("names must list at least one tool"));
+            }
+            (
+                serde_json::to_value(&args).map_err(tool_error)?,
+                LoaderRequest::Load { names: args.names },
+            )
+        };
+        let name: &'static str = if call.name == TOOL_SEARCH {
+            TOOL_SEARCH
+        } else {
+            TOOL_LOAD
+        };
+        // No rule is evaluated; the capability only names the operation.
+        let action = PermissionAction::new(name).map_err(tool_error)?;
+        let binding = serde_json::to_vec(&normalized).map_err(tool_error)?;
+        let resource = prepared_resource(
+            action.clone(),
+            "deferred-tools",
+            name.as_bytes(),
+            &binding,
+            PreparedBindingLifetime::ProcessLocal,
+            ApprovalResourceSource::PrimaryOperation,
+        )?;
+        let operation = prepared_operation(
+            name,
+            &normalized,
+            vec![(action, "load")],
+            vec![resource],
+            ctx.session.to_string().as_bytes(),
+        )?;
+        PreparedTool::new(
+            operation,
+            normalized,
+            None,
+            Box::new(LoaderExecutor {
+                engine: self.engine.clone(),
+                request,
+            }),
+        )
+    }
+}
+
+enum LoaderRequest {
+    Search { query: String, limit: usize },
+    Load { names: Vec<String> },
+}
+
+struct LoaderExecutor {
+    engine: Engine,
+    request: LoaderRequest,
+}
+
+#[async_trait]
+impl PreparedExecutor for LoaderExecutor {
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
+        let view = self.engine.deferral_view(context.session);
+        let result = match self.request {
+            LoaderRequest::Search { query, limit } => search_result(&view, &query, limit),
+            LoaderRequest::Load { names } => load_result(&view, &names),
+        };
+        Ok(cookie_agent_runtime_api::ToolCompletion::single(result))
+    }
+}
+
+fn result(title: &str, output: String, loaded_tools: Vec<String>) -> ToolResult {
+    ToolResult {
+        title: safe_title(title),
+        output,
+        display: Vec::new(),
+        background: None,
+        retained_output: None,
+        metadata: serde_json::Value::Null,
+        attachments: Vec::new(),
+        additional_messages: Vec::new(),
+        loaded_tools,
+    }
+}
+
+/// The first sentence of a description, on one line.
+fn first_sentence(description: &str) -> String {
+    let line = description.lines().next().unwrap_or_default();
+    let end = line
+        .char_indices()
+        .find(|(index, character)| {
+            *character == '.'
+                && line[index + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+        })
+        .map_or(line.len(), |(index, _)| index + 1);
+    line[..end].trim().to_owned()
+}
+
+/// The words a tool is found by (section 5.1).
+fn haystack(entry: &DeferredEntry) -> String {
+    let mut text = format!(
+        "{} {} {} {} {}",
+        entry.name,
+        entry.name.replace(['_', '-'], " "),
+        entry.group.name,
+        entry.group.summary.as_deref().unwrap_or_default(),
+        entry.description
+    );
+    if let Some(properties) = entry
+        .parameters
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (name, property) in properties {
+            text.push(' ');
+            text.push_str(name);
+            if let Some(description) = property
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+            {
+                text.push(' ');
+                text.push_str(description);
+            }
+        }
+    }
+    text.to_lowercase()
+}
+
+pub(crate) fn search_result(view: &DeferralView, query: &str, limit: usize) -> ToolResult {
+    let terms = query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if view.deferred.is_empty() {
+        return result(
+            "No loadable tools",
+            "No tools are loadable in this session.".into(),
+            Vec::new(),
+        );
+    }
+    let mut matches = view
+        .deferred
+        .iter()
+        .filter_map(|entry| {
+            let haystack = haystack(entry);
+            let score = terms
+                .iter()
+                .filter(|term| haystack.contains(term.as_str()))
+                .count();
+            (score > 0).then_some((score, entry))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    if matches.is_empty() {
+        return result(
+            "No matching tools",
+            format!("No loadable tools match \"{query}\". Try other words, or a tool's group."),
+            Vec::new(),
+        );
+    }
+    let total = matches.len();
+    let lines = matches
+        .into_iter()
+        .take(limit)
+        .map(|(_, entry)| {
+            let loaded = if view.loaded.contains(&entry.name) {
+                " (loaded)"
+            } else {
+                ""
+            };
+            format!(
+                "{} [{}]{loaded}: {}",
+                entry.name,
+                entry.group.name,
+                first_sentence(&entry.description)
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut output = lines.join("\n");
+    if lines.len() < total {
+        output.push_str(&format!(
+            "\n{} more match; raise limit to list them.",
+            total - lines.len()
+        ));
+    }
+    output.push_str("\nLoad tools with tool_load before calling them.");
+    result("Tool search", output, Vec::new())
+}
+
+pub(crate) fn load_result(view: &DeferralView, names: &[String]) -> ToolResult {
+    let mut loaded = Vec::new();
+    let mut notes = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for name in names {
+        if !seen.insert(name.as_str()) {
+            continue;
+        }
+        if view.eager.contains(name) {
+            notes.push(format!("{name}: already callable, no need to load it"));
+        } else if !view.deferred.iter().any(|entry| &entry.name == name) {
+            notes.push(format!("{name}: no loadable tool has this name"));
+        } else if view.loaded.contains(name) {
+            notes.push(format!("{name}: already loaded"));
+        } else {
+            loaded.push(name.clone());
+        }
+    }
+    let mut output = if loaded.is_empty() {
+        "Loaded no new tools.".to_owned()
+    } else {
+        format!("Loaded tools: {}.", loaded.join(", "))
+    };
+    for note in notes {
+        output.push('\n');
+        output.push_str(&note);
+    }
+    result(
+        if loaded.is_empty() {
+            "No tools loaded"
+        } else {
+            "Tools loaded"
+        },
+        output,
+        loaded,
+    )
+}
+
+#[cfg(test)]
+mod tests;

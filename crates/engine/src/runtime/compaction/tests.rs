@@ -565,6 +565,7 @@ fn elision_and_estimator_share_emitted_part_byte_accounting() {
             )
             .unwrap(),
         ],
+        loaded_tools: Vec::new(),
     };
     let expected = fit_part_bytes(FitPart::Text(&result.output))
         + fit_part_bytes(FitPart::Text("e".repeat(4 * 1024).as_str()))

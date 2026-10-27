@@ -363,6 +363,7 @@ fn tool_result_materializes_output_and_metadata_as_separate_values() {
         metadata: serde_json::json!({"session_id": session_id, "status": "running"}),
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     };
     let part =
         tool_result_part(&result, store.for_session(Some(crate::test_session_id()))).unwrap();
@@ -411,6 +412,7 @@ fn a_missing_or_damaged_attachment_becomes_a_note_instead_of_an_error() {
         metadata: serde_json::Value::Null,
         attachments: vec![kept, lost, damaged],
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     };
     let part = tool_result_part(&result, store.for_session(Some(session))).unwrap();
     let oven_sdk::ToolContent::Mixed(values) = part.content else {
@@ -2332,6 +2334,7 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
                     metadata: serde_json::Value::Null,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
+                    loaded_tools: Vec::new(),
                 }),
                 error: None,
             },
@@ -2403,6 +2406,7 @@ fn assembled_tool_transcript_snapshot_is_stable() {
             )
             .expect("user emission"),
         ],
+        loaded_tools: Vec::new(),
     };
     let termination = EventPayload::ToolCallTerminated {
         termination: ToolCallTermination {

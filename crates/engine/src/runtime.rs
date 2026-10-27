@@ -624,6 +624,10 @@ struct PublishedTool {
 struct PublishedToolSet {
     definitions: Vec<ToolDefinition>,
     tools: HashMap<String, PublishedTool>,
+    /// Round tools still declared after leaving the session.
+    departed: HashSet<String>,
+    /// Deferral records to append before the request.
+    pending: Vec<Event>,
 }
 
 #[derive(Clone, Debug)]
@@ -984,6 +988,8 @@ pub(crate) struct Inner {
     pub(crate) acp: acp::AcpState,
     /// The providers native compaction does not work with.
     pub(crate) native_compaction: crate::native_compaction::NativeCompactionRecord,
+    /// What each session's loader tools see: its latest request's deferral.
+    pub(crate) deferral_views: Mutex<HashMap<SessionId, Arc<crate::deferred_tools::DeferralView>>>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     permissions: PermissionPipeline,
@@ -1261,6 +1267,7 @@ impl Engine {
                 native_compaction: crate::native_compaction::NativeCompactionRecord::open(
                     &options.data_dir,
                 ),
+                deferral_views: Mutex::new(HashMap::new()),
                 plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 permissions: PermissionPipeline::default(),

@@ -196,6 +196,7 @@ impl Log {
                             metadata: Value::Null,
                             attachments: Vec::new(),
                             additional_messages: Vec::new(),
+                            loaded_tools: Vec::new(),
                         }
                     }),
                     error: (outcome != ToolTerminationOutcome::Completed).then(|| {

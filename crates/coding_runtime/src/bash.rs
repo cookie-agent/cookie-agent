@@ -794,6 +794,7 @@ impl BashExecutor {
             metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
         })
     }
 }

@@ -42,6 +42,8 @@ block under the system prompt in the TUI transcript.
 | [`goal_update`](#goal_update) | *none* |
 | [`read_artifact`](#read_artifact) | *none* |
 | [`stop_background`](#stop_background) | *none* |
+| [`tool_search`](#tool_search) | *none* |
+| [`tool_load`](#tool_load) | *none* |
 | [`memory_search`](#memory_search) | *none* |
 | [`memory_read`](#memory_read) | `memory` |
 | [`memory_write`](#memory_write) | `memory_write` |
@@ -980,6 +982,113 @@ embedded resource blob as `media` in place of its placeholder, and
 `structured_content` that the text does not already hold as `json`.
 `structured_content` also stays in the result's metadata, which the model
 reads.
+
+## Deferred tools
+
+On a model that loads deferred tools natively (see
+[providers](../extend/providers.md#provider-fields) for which models do),
+MCP and plugin tools are sent deferred: the model sees their names in
+announcements, not their definitions, until it loads them. `tool_search`
+finds them and `tool_load` loads them; a loaded tool stays callable. The
+[deferred tools spec](../specs/deferred-tools-cookie.md) has the details:
+tool rounds, announcements, and compaction.
+
+### `tool_search`
+
+<!-- generated: tool tool_search -->
+
+```text
+tool_search(limit?: integer, query: string)
+```
+
+Description sent to the model:
+
+```text
+Search the tools you can load by keyword: their names, groups, descriptions, and parameters. It lists matching tools with their group and a one-line description, and never loads them; load one with tool_load before calling it.
+```
+
+Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool is offered. Both come together and stay until the session's next compaction.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `limit` | `integer` | no | At most how many matches to list; 10 when absent, and every match when 0 or less. |
+| `query` | `string` | yes | Words describing the tools you need, such as "browser click" or "calendar events". |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "At most how many matches to list; 10 when absent, and every match when 0 or less.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "Words describing the tools you need, such as \"browser click\" or \"calendar events\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "ToolSearchArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `tool_load`
+
+<!-- generated: tool tool_load -->
+
+```text
+tool_load(names: string[])
+```
+
+Description sent to the model:
+
+```text
+Load deferred tools by exact name so you can call them. Tools listed in <tools_added> announcements or by tool_search load this way, several in one call; once loaded they stay callable.
+```
+
+Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool is offered. Both come together and stay until the session's next compaction.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `names` | `string[]` | yes | Exact names of the tools to load, as an announcement or tool_search lists them. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "names": {
+          "description": "Exact names of the tools to load, as an announcement or tool_search lists them.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "names"
+      ],
+      "title": "ToolLoadArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
 
 ## Goal checklist tools
 

@@ -46,8 +46,8 @@ pub use prepared::{
 pub use producers::{ProducerChannel, ProducerMessage};
 pub use provider::{
     PromptSection, ProvidedToolSource, SessionToolContext, ToolCall, ToolCollision,
-    ToolConcurrency, ToolProvider, ToolResultTruncationPolicy, ToolSpec, tool_presentation,
-    tool_title_only,
+    ToolConcurrency, ToolGroup, ToolProvider, ToolResultTruncationPolicy, ToolSpec,
+    tool_presentation, tool_title_only,
 };
 pub use runtime::{
     CODING_RUNTIME_KIND, CodingToolsFactory, DiagnosticTail, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID,

@@ -538,6 +538,45 @@
       ],
       "type": "object"
     },
+    "AnnouncedToolGroup": {
+      "description": "One group of a `deferred_tools_announced` event: the tools of one source\nthat became loadable, or that left (client protocol 1.44.0).",
+      "properties": {
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/ToolGroupSource"
+        },
+        "summary": {
+          "description": "The group's summary as the announcement rendered it; present the\nfirst time the group is announced in a round, and when it changed.",
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "minItems": 1,
+          "type": "array"
+        },
+        "untrusted": {
+          "description": "Whether the summary comes from the source's author rather than from\ncookie, and is rendered as untrusted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "source",
+        "tools"
+      ],
+      "type": "object"
+    },
     "ApprovalBoundary": {
       "oneOf": [
         {
@@ -3608,6 +3647,61 @@
             "type",
             "attempt_id",
             "tool_names"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Deferred tools that became loadable, and loadable ones that left,\ngrouped by source (client protocol 1.44.0). Rendered in place as a\nuser turn of the model's history.",
+          "properties": {
+            "added": {
+              "items": {
+                "$ref": "#/$defs/AnnouncedToolGroup"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "removed": {
+              "items": {
+                "$ref": "#/$defs/AnnouncedToolGroup"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "type": {
+              "const": "deferred_tools_announced",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A tool round started: the eager tools the session declares until the\nnext compaction, and the tool groups whose prompt sections the system\nprompt carries (client protocol 1.44.0).",
+          "properties": {
+            "prompt_groups": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "tools": {
+              "items": {
+                "$ref": "#/$defs/RoundToolDefinition"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "type": {
+              "const": "tool_round_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tools"
           ],
           "type": "object"
         },
@@ -6971,6 +7065,14 @@
           },
           "type": "array"
         },
+        "loaded_tools": {
+          "description": "Deferred tools this result loads: they become callable from it on\n(client protocol 1.44.0). Only `tool_load` sets it.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "type": "array"
+        },
         "metadata": true,
         "output": {
           "type": "string"
@@ -7727,6 +7829,33 @@
         "byte_length",
         "line_count",
         "truncated"
+      ],
+      "type": "object"
+    },
+    "RoundToolDefinition": {
+      "description": "A tool as a `tool_round_started` event declares it: exactly the\ndefinition a request of the round sends (client protocol 1.44.0).",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "parameters": {
+          "description": "The tool's parameter JSON Schema."
+        },
+        "provider_options": {
+          "additionalProperties": true,
+          "description": "Provider options the tool is sent with, such as `strict`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "parameters"
       ],
       "type": "object"
     },
@@ -8555,6 +8684,27 @@
         "user"
       ],
       "type": "string"
+    },
+    "ToolGroupSource": {
+      "description": "Where a tool group's tools come from (client protocol 1.44.0).",
+      "oneOf": [
+        {
+          "const": "mcp",
+          "description": "An MCP server; the group is named after it.",
+          "type": "string"
+        },
+        {
+          "const": "plugin",
+          "description": "A plugin; the group is named after it.",
+          "type": "string"
+        },
+        {
+          "const": "builtin",
+          "description": "One of cookie's built-in tool providers.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     },
     "ToolIdentity": {
       "description": "The tool a call goes to, as the daemon knows it.",

@@ -16,6 +16,7 @@ mod compaction;
 mod configuration;
 mod crons;
 mod default_models;
+mod deferred_tools;
 mod delegation;
 mod delegation_queue;
 mod delegation_revert;

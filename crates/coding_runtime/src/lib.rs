@@ -289,6 +289,13 @@ impl ToolProvider for BuiltinTools {
         "builtin.tools"
     }
 
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(cookie_agent_runtime_api::ToolGroup {
+            name: "coding",
+            summary: "The workspace: reading, writing, and editing files, running shell commands, and fetching web pages.",
+        })
+    }
+
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         let mut tools = Vec::new();
         tools.extend(self.read.tools_for_session(ctx)?);

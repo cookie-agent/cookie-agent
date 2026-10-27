@@ -156,6 +156,7 @@ impl ToolResultExt for ToolResult {
                 metadata: self.metadata.unwrap_or(serde_json::Value::Null),
                 attachments: self.attachments,
                 additional_messages: self.additional_messages,
+                loaded_tools: Vec::new(),
             },
             failed: self.failed,
         }

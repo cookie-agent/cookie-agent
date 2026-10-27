@@ -2222,6 +2222,7 @@ fn map_tool_result(
         metadata,
         attachments,
         additional_messages,
+        loaded_tools: Vec::new(),
     })
 }
 

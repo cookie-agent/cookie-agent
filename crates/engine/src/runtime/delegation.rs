@@ -4078,6 +4078,7 @@ fn paginated_subagent_result(
         }),
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     })
 }
 
@@ -4199,6 +4200,7 @@ fn structured_delegate_result(
         metadata,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
+        loaded_tools: Vec::new(),
     }
 }
 
