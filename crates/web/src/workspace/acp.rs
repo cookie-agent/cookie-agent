@@ -1,6 +1,6 @@
 //! A session's ACP agent in the web client
 //! (`docs/site/specs/acp-agents.md` sections 5 and 10): its commands in the
-//! composer's suggestions, its model and effort options in the model chip
+//! session commands, its model and effort options in the model chip
 //! and sheet, and its other options in the agent options sheet.
 
 use cookie_agent_client_state::AcpSessionView;
@@ -32,19 +32,57 @@ impl Workspace {
             .is_some_and(|draft| cookie_agent_client_state::acp::is_acp_model(&draft.model))
     }
 
-    /// The agent's commands a composer draft starting with `/` matches:
-    /// its first word, without the `/`, is a prefix of the command's name.
-    /// Nothing once the draft has more than the command's name.
-    pub fn agent_command_suggestions(self, draft: &str) -> Vec<AcpCommand> {
-        let Some(name) = draft.strip_prefix('/') else {
-            return Vec::new();
-        };
-        if name.contains(char::is_whitespace) {
-            return Vec::new();
-        }
+    /// The viewed session's agent's commands, listed in the session
+    /// commands after cookie's own. None where the agent takes no prompts
+    /// (its own subagent's session).
+    pub fn agent_commands(self) -> Vec<AcpCommand> {
         self.acp()
-            .map(|acp| acp.commands_matching(name).cloned().collect())
+            .filter(|acp| acp.refusal().is_none())
+            .map(|acp| acp.commands)
             .unwrap_or_default()
+    }
+
+    /// Whether the agent's own command stands in for cookie's `name`.
+    pub fn agent_replaces(self, name: &str) -> bool {
+        self.acp().is_some_and(|acp| acp.replaces(name))
+    }
+
+    /// Chooses agent command `command`: a sheet asks for its optional
+    /// input. The agent's `compact` is cookie's compaction, which runs it.
+    pub fn choose_agent_command(self, command: AcpCommand) {
+        if command.name == "compact" {
+            self.run_command(crate::commands::Command::Compact);
+            return;
+        }
+        self.agent_command.set(Some(command));
+        self.panel.set(Some(super::Panel::AgentCommand));
+    }
+
+    /// Sends agent command `name` with `input` to the viewed session, as
+    /// ACP specifies: the prompt `/<name> <input>`.
+    pub fn run_agent_command(self, name: &str, input: &str) {
+        let input = input.trim();
+        let text = if input.is_empty() {
+            format!("/{name}")
+        } else {
+            format!("/{name} {input}")
+        };
+        if !self.writable() {
+            self.status
+                .set("This session is owned by another cookie process; input is disabled.".into());
+            return;
+        }
+        if let Some(refusal) = self.acp().and_then(|acp| acp.refusal()) {
+            self.status.set(refusal);
+            return;
+        }
+        self.panel.set(None);
+        self.send_content(
+            cookie_agent_protocol::UserContent::text(text.clone()),
+            cookie_agent_protocol::InputDelivery::Steer,
+            text,
+            Vec::new(),
+        );
     }
 
     /// The agents the agent picker lists: the root agents of the preset in

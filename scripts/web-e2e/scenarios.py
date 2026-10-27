@@ -5033,13 +5033,31 @@ def acp_agents(browser):
     )
     print("an image in the agent's reply shows as media")
 
+    # The agent's commands are in the session commands, badged as the
+    # agent's; its compact stands in for cookie's. The composer offers none.
     browser.type("#composer", "/re")
-    browser.wait("the agent's commands", lambda: count(browser, '#agent-commands [data-agent-command="review"]') == 1)
-    assert count(browser, '#agent-commands [data-agent-command="compact"]') == 0
-    browser.click('#agent-commands [data-agent-command="review"]')
-    browser.wait("the command in the composer", lambda: browser.script("return document.querySelector('#composer').value") == "/review ")
+    settle(browser)
+    assert count(browser, "[data-agent-command]") == 0
     clear_composer(browser)
-    print("the composer offers the agent's commands")
+    browser.script("document.querySelector('main button[aria-label=Commands]').click()")
+    review = '#sheet #agent-commands [data-agent-command="review"]'
+    browser.wait("the agent's commands", lambda: count(browser, review) == 1)
+    assert count(browser, '#sheet #agent-commands [data-agent-command="compact"]') == 1
+    assert count(browser, "#sheet [data-command=compact]") == 0, "cookie's compact gives way"
+    assert count(browser, "#sheet [data-command=goal]") == 1, "the agent offers no goal"
+    assert browser.text(review + " .agent-badge").lower() == "agent"
+    browser.type("#command-filter", "rev")
+    browser.wait("the filtered commands", lambda: count(browser, "#sheet [data-agent-command]") == 1)
+    assert count(browser, "#sheet [data-command]") == 0, "no cookie command says rev"
+    settle(browser)
+    browser.shot("acp-agent-commands")
+    browser.click(review)
+    browser.wait("the command's input", lambda: count(browser, "#agent-command-input") == 1)
+    assert browser.text("#agent-command-name") == "/review"
+    browser.type("#agent-command-input", "the parser")
+    browser.click("#agent-command-send")
+    browser.wait("the command sent", lambda: "/review the parser" in browser.text("#transcript"), timeout=60)
+    print("the session commands list the agent's commands, which ask for their input")
 
     # The model chip shows the agent's model and effort options as the
     # model and variant, and its sheet picks them.

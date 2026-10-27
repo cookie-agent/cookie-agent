@@ -27,6 +27,10 @@ never infers a goal from prompt content. Only root sessions can have a goal;
 the palette refuses the command in a delegated/child session with an
 explanatory status instead of prompting.
 
+A session whose ACP agent offers its own `goal` command has no goal mode:
+the clients list the agent's `/goal` in its place, and the agent keeps its
+goal itself ([ACP agents spec](acp-agents.md) section 10).
+
 - Activation errors if a goal is already `active` or `paused` (the user must
   cancel or complete the current goal first). An empty objective is refused in
   the prompt.

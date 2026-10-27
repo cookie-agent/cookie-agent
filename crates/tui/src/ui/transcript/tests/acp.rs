@@ -130,16 +130,19 @@ async fn acp_agents_show_where_they_run_and_ones_that_cannot_run_cannot_be_picke
 
 #[tokio::test]
 async fn the_agents_commands_are_in_the_palette_and_send_as_prompts() {
-    let (mut app, _) = acp_session_app().await;
+    let (mut app, session) = acp_session_app().await;
     app.open_command_palette();
     type_input(&mut app, "rev").await;
     let labels = app.palette_list_labels();
     assert!(
         labels
             .iter()
-            .any(|label| label == "/review what to review — (agent) Review the changes"),
+            .any(|label| label == "/review what to review — Review the changes"),
         "{labels:?}"
     );
+    // Marked as the agent's.
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(rendered.contains(" agent  /review"), "{rendered}");
     // A command that takes input asks for it.
     let index = labels
         .iter()
@@ -147,8 +150,27 @@ async fn the_agents_commands_are_in_the_palette_and_send_as_prompts() {
         .unwrap();
     app.activate_palette_row(index).await;
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("/review (the agent's)"), "{rendered}");
+    assert!(
+        rendered.contains("/review (the agent's command)"),
+        "{rendered}"
+    );
     assert!(rendered.contains("Input: what to review"), "{rendered}");
+    // One that names no input still asks for some, which may be left out.
+    app.close_command_palette();
+    app.open_command_palette();
+    type_input(&mut app, "context").await;
+    let index = app
+        .palette_list_labels()
+        .iter()
+        .position(|label| label.starts_with("/context"))
+        .unwrap();
+    app.activate_palette_row(index).await;
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(
+        rendered.contains("/context (the agent's command)"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Input (optional)"), "{rendered}");
     assert_eq!(
         crate::ui::app::agent_command_prompt_for_test("review", " the parser "),
         "/review the parser"
@@ -157,9 +179,45 @@ async fn the_agents_commands_are_in_the_palette_and_send_as_prompts() {
         crate::ui::app::agent_command_prompt_for_test("context", ""),
         "/context"
     );
-    // Cookie's own commands still come first, and another session's agent
-    // offers nothing here.
+    // Cookie's compact and goal give way to the agent's own.
     app.close_command_palette();
+    let has = |app: &App, prefix: &str| {
+        app.palette_list_labels()
+            .iter()
+            .any(|label| label.starts_with(prefix))
+    };
+    app.open_command_palette();
+    type_input(&mut app, "goal").await;
+    assert!(has(&app, "/goal"), "cookie's goal while the agent has none");
+    app.close_command_palette();
+    app.store
+        .sessions
+        .get_mut(&session)
+        .unwrap()
+        .acp
+        .commands
+        .extend(["compact", "goal"].map(|name| AcpCommand {
+            name: name.into(),
+            description: String::new(),
+            input_hint: None,
+        }));
+    for name in ["goal", "compact"] {
+        app.open_command_palette();
+        type_input(&mut app, name).await;
+        let labels = app.palette_list_labels();
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| label.starts_with(&format!("/{name}")))
+                .count(),
+            1,
+            "{labels:?}"
+        );
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains(&format!(" agent  /{name}")), "{rendered}");
+        app.close_command_palette();
+    }
+    // Another session's agent offers nothing here.
     app.selected = Some(SessionId::new_v7());
     app.tree_root = app.selected;
     app.open_command_palette();
@@ -167,7 +225,7 @@ async fn the_agents_commands_are_in_the_palette_and_send_as_prompts() {
     assert!(
         !app.palette_list_labels()
             .iter()
-            .any(|label| label.contains("(agent)"))
+            .any(|label| label.starts_with("/review"))
     );
 }
 

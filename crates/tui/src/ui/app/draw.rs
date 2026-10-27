@@ -950,6 +950,10 @@ impl App {
             PaletteAction::Run(SlashCommand::AutoAgentPanel) => {
                 self.agent_panel_mode != AgentPanelMode::Auto
             }
+            // The agent's own command stands in for these when it offers
+            // it.
+            PaletteAction::Compact => !self.agent_replaces("compact"),
+            PaletteAction::Goal => !self.agent_replaces("goal"),
             // Attaching is offered only when the model takes some file.
             PaletteAction::Attach => self.attachments_offered(),
             // Projects are offered by a daemon that keeps them.
@@ -1704,6 +1708,13 @@ impl App {
     pub(in crate::ui) fn render_command_palette(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         self.clamp_palette_selection();
         let labels = self.palette_list_labels();
+        // The agent's commands follow cookie's, each with its badge.
+        let own = self.palette_commands().len();
+        let badged = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| (label.clone(), (index >= own).then_some("agent")))
+            .collect::<Vec<_>>();
         let detail = self.palette_skill_detail();
         let Some(mut palette) = self.palette.take() else {
             return;
@@ -1711,7 +1722,7 @@ impl App {
         let theme = &self.theme;
         let (painted, rows) = match palette.steps.last_mut() {
             None => {
-                let rows = crate::ui::slash::render_list(
+                let rows = crate::ui::slash::render_badged_list(
                     frame,
                     area,
                     crate::ui::slash::ListChrome {
@@ -1724,7 +1735,7 @@ impl App {
                         &mut palette.search,
                         "Filter commands… (/ here types a literal /)",
                     )),
-                    labels,
+                    badged,
                     &mut palette.list,
                     theme,
                 );
@@ -1787,7 +1798,7 @@ impl App {
                         "enter: attach · esc: back",
                     ),
                     TextTarget::AgentCommand { name, hint } => (
-                        format!("/{name} (the agent's)"),
+                        format!("/{name} (the agent's command)"),
                         hint.as_deref().map_or_else(
                             || "Input (optional)".to_owned(),
                             |hint| format!("Input: {hint}"),

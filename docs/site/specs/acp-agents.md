@@ -289,9 +289,17 @@ no `acp` action)*:
 ## 10. Agent commands
 
 - `available_commands_update` gives the session's agent commands (name,
-  description, input hint). The TUI and web composers list them with cookie's
-  own commands, marked as the agent's.
-- Choosing one sends `/<name> <input>` as the prompt text, as ACP specifies.
+  description, input hint). The clients list them in the session's
+  commands (the TUI command palette, the web ⋮ menu) after cookie's own,
+  each with an `agent` badge.
+- Choosing one always asks for its input, which may be left empty, and
+  sends `/<name> <input>` as the prompt text, as ACP specifies.
+- The agent's `compact` and `goal` replace cookie's commands of those names
+  when the agent offers them (decision of 2026-10-27). The agent's
+  `compact` runs as cookie's compaction (`session.compact`, which waits for
+  it, section 15). With the agent's `goal`, the session has no cookie goal
+  mode: no goal bar, goal tools, or reminders; `/goal` is the agent's
+  command like any other, and the agent keeps its goal itself.
 
 ## 11. Protocols and storage
 
@@ -473,11 +481,13 @@ them.
 - **Commands.** The reducer folds `acp_session_updated` into the session's
   `acp` view (commands and options, each the latest whole value). The TUI
   lists the agent's commands in the command palette after cookie's own,
-  marked `(agent)`; one with an input hint asks for its input in a text
-  step. The web client, whose composer has no command palette, lists them
-  above the composer while the draft is `/` and a prefix of a name; one
-  that takes input puts `/<name> ` in the composer, one that takes none is
-  sent. Both send `/<name> <input>` as an ordinary prompt.
+  each behind an `agent` badge; choosing one asks for its optional input in
+  a text step. The web client lists them in the ⋮ menu (**Session
+  commands**) after cookie's own, badged, under one filter for both; one
+  opens a sheet with a box for its optional input. The web composer offers
+  no commands. Both send `/<name> <input>` as an ordinary prompt; the
+  agent's `compact` opens cookie's compaction instead (section 10), and
+  cookie's own `compact` and `goal` give way to the agent's.
 - **Options** are set with `session.agent_option.set`, and its answer
   replaces the session's options at once (the daemon's
   `acp_session_updated` follows).

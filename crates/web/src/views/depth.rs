@@ -28,7 +28,7 @@ use crate::{
 const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink hover:bg-toasted hover:text-espresso active:bg-crust disabled:cursor-not-allowed disabled:opacity-40 dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
 const BAR: &str =
     "flex flex-wrap items-center gap-2 border-t border-toasted px-3 py-1 text-sm dark:border-ember";
-const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+pub(super) const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 
 /// The root session's goal, with the controls its status allows.
 #[component]

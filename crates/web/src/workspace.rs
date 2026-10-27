@@ -100,6 +100,9 @@ pub enum Panel {
     Project,
     /// The session's ACP agent options (model, mode, effort).
     AgentOptions,
+    /// One of the ACP agent's commands ([`Workspace::agent_command`]),
+    /// with a box for its optional input.
+    AgentCommand,
 }
 
 /// Why the daemon did not create the new session, with the runtimes it was
@@ -184,6 +187,8 @@ pub struct Workspace {
     pub composer: RwSignal<String>,
     pub status: RwSignal<String>,
     pub panel: RwSignal<Option<Panel>>,
+    /// The agent's command [`Panel::AgentCommand`] asks the input of.
+    pub agent_command: RwSignal<Option<cookie_agent_protocol::AcpCommand>>,
     /// The viewed session's tree (`session.tree` of its root).
     pub tree: RwSignal<Option<cookie_agent_protocol::SessionTree>>,
     pub tree_root: RwSignal<Option<SessionId>>,
@@ -432,6 +437,7 @@ impl Workspace {
             composer: RwSignal::new(String::new()),
             status: RwSignal::new(String::new()),
             panel: RwSignal::new(None),
+            agent_command: RwSignal::new(None),
             tree: RwSignal::new(None),
             tree_root: RwSignal::new(None),
             tree_expanded: RwSignal::new(false),

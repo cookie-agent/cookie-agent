@@ -1013,7 +1013,10 @@ sessions are then absent from `session.list`.
   the composer's attach and Stop, the sidebar's New session, and the
   rail's views).
 - **The ⋮ menu** lists each command by a readable name with an icon and a
-  one-line description, never slash syntax, and each opens a sheet (a side
+  one-line description, never slash syntax (since 2026-10-27 a session's
+  ACP agent's commands follow, by their `/name` with an `agent` badge,
+  under a filter for the whole menu; see the
+  [ACP agents spec](acp-agents.md) section 10), and each opens a sheet (a side
   sheet on desktop, a bottom sheet on phones) with labelled fields and a
   main button:
   - **Compact context:** an optional **Focus** and **Compact**

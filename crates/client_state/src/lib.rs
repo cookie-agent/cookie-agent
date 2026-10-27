@@ -1050,7 +1050,17 @@ impl AcpSessionView {
     pub fn has_command(&self, name: &str) -> bool {
         self.commands.iter().any(|command| command.name == name)
     }
+
+    /// Whether the agent's own command stands in for cookie's `name`: the
+    /// clients list the agent's, not cookie's (`compact` and `goal`).
+    pub fn replaces(&self, name: &str) -> bool {
+        AGENT_REPLACED_COMMANDS.contains(&name) && self.has_command(name)
+    }
 }
+
+/// Cookie's commands an ACP agent's own command of the same name replaces.
+/// The agent's `compact` runs as cookie's compaction, which waits for it.
+pub const AGENT_REPLACED_COMMANDS: [&str; 2] = ["compact", "goal"];
 
 /// Per-session projection of persisted events and live output.
 #[derive(Clone, Debug, Default)]

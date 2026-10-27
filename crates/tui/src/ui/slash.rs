@@ -505,6 +505,21 @@ pub(crate) fn render_list(
     state: &mut ListState,
     theme: &crate::theme::Theme,
 ) -> Vec<(Rect, usize)> {
+    let entries = entries.into_iter().map(|label| (label, None)).collect();
+    render_badged_list(frame, area, chrome, search, entries, state, theme)
+}
+
+/// [`render_list`] whose rows may start with a badge, such as the agent's
+/// commands' `agent`.
+pub(crate) fn render_badged_list(
+    frame: &mut Frame,
+    area: Rect,
+    chrome: ListChrome<'_>,
+    search: Option<(&mut InputState, &str)>,
+    entries: Vec<(String, Option<&'static str>)>,
+    state: &mut ListState,
+    theme: &crate::theme::Theme,
+) -> Vec<(Rect, usize)> {
     super::app::paint_panel(frame, area, theme);
     let search_height = if search.is_some() {
         3.min(area.height)
@@ -548,17 +563,41 @@ pub(crate) fn render_list(
             ),
         );
     }
-    super::pickers::render(
+    // Labels end in an ellipsis rather than clip, after the selection
+    // marker's two columns and the badge.
+    let available = usize::from(list_area.width.saturating_sub(4));
+    let lines = entries
+        .into_iter()
+        .map(|(label, badge)| match badge {
+            Some(badge) => {
+                let badge = format!(" {badge} ");
+                let room = available.saturating_sub(badge.chars().count() + 1);
+                Line::from(vec![
+                    Span::styled(
+                        badge,
+                        theme
+                            .internal()
+                            .add_modifier(ratatui::style::Modifier::REVERSED),
+                    ),
+                    Span::raw(" "),
+                    Span::raw(super::app::truncate_with_ellipsis(&label, room)),
+                ])
+            }
+            None => Line::from(super::app::truncate_with_ellipsis(&label, available)),
+        })
+        .collect();
+    super::pickers::render_lines(
         frame,
         super::pickers::PickerChrome {
             title: chrome.title,
             empty_message: Some(chrome.empty_message),
             hint: Some(chrome.hint),
         },
-        entries,
+        lines,
         list_area,
         state,
         theme,
+        theme.selected(),
     )
 }
 

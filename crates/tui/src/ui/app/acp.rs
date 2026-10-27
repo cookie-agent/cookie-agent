@@ -8,16 +8,17 @@ use super::*;
 use cookie_agent_client_state::AcpSessionView;
 use cookie_agent_protocol::{AcpCommand, AcpConfigOption, AcpConfigOptionKind};
 
-/// A palette row for one of the agent's commands.
+/// A palette row for one of the agent's commands, drawn after its "agent"
+/// badge.
 pub(super) fn agent_command_label(command: &AcpCommand) -> String {
     let hint = command
         .input_hint
         .as_deref()
         .map_or(String::new(), |hint| format!(" {hint}"));
     if command.description.trim().is_empty() {
-        format!("/{}{hint} — (agent)", command.name)
+        format!("/{}{hint}", command.name)
     } else {
-        format!("/{}{hint} — (agent) {}", command.name, command.description)
+        format!("/{}{hint} — {}", command.name, command.description)
     }
 }
 
@@ -87,22 +88,34 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Chooses agent command `command`: one that takes input asks for it,
-    /// one that takes none is sent at once.
-    pub(super) async fn choose_agent_command(&mut self, command: AcpCommand) {
-        if command.input_hint.is_some() {
-            self.push_palette_step(PaletteStep::Text {
-                target: TextTarget::AgentCommand {
-                    name: command.name,
-                    hint: command.input_hint,
-                },
-                input: InputState::default(),
-            });
-            return;
+    /// Chooses agent command `command`: a box asks for its input, which may
+    /// be left empty.
+    pub(super) fn choose_agent_command(&mut self, command: AcpCommand) {
+        self.push_palette_step(PaletteStep::Text {
+            target: TextTarget::AgentCommand {
+                name: command.name,
+                hint: command.input_hint,
+            },
+            input: InputState::default(),
+        });
+    }
+
+    /// Runs agent command `name` with `input`: the agent's `compact` as
+    /// cookie's compaction, which waits for it, any other as a prompt.
+    pub(super) async fn run_agent_command(&mut self, name: &str, input: &str) {
+        let input = input.trim();
+        if name == "compact" {
+            self.compact_selected_session((!input.is_empty()).then(|| input.to_owned()))
+                .await;
+        } else {
+            self.submit_prompt(agent_command_prompt(name, input)).await;
         }
-        self.close_command_palette();
-        self.submit_prompt(agent_command_prompt(&command.name, ""))
-            .await;
+    }
+
+    /// Whether the session's agent offers its own `name`, which stands in
+    /// for cookie's.
+    pub(in crate::ui) fn agent_replaces(&self, name: &str) -> bool {
+        self.viewed_acp().is_some_and(|acp| acp.replaces(name))
     }
 
     /// The ACP agent the draft runs, when it runs one.

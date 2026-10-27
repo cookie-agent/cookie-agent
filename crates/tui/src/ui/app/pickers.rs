@@ -2,7 +2,7 @@
 
 use super::*;
 
-use super::acp::{agent_command_label, agent_command_prompt};
+use super::acp::agent_command_label;
 
 /// The exact `Agent • Model[Variant]` draft-selection title form.
 pub(super) fn draft_title(draft: &RunSelection) -> String {
@@ -449,7 +449,7 @@ impl App {
                     .and_then(|index| index.checked_sub(commands.len()))
                     .and_then(|index| self.palette_agent_commands().get(index).cloned())
                 {
-                    self.choose_agent_command(agent_command).await;
+                    self.choose_agent_command(agent_command);
                     return;
                 }
                 let Some(spec) = index.and_then(|index| commands.get(index).copied()) else {
@@ -494,8 +494,7 @@ impl App {
             }
             PaletteSubmit::Text(TextTarget::AgentCommand { name, .. }, input) => {
                 self.close_command_palette();
-                self.submit_prompt(agent_command_prompt(&name, &input))
-                    .await;
+                self.run_agent_command(&name, &input).await;
             }
             PaletteSubmit::Text(TextTarget::SkillArguments { name, .. }, args) => {
                 self.close_command_palette();

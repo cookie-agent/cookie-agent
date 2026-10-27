@@ -2264,64 +2264,8 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             </button>
         }
     };
-    // The session's ACP agent's commands a draft starting with `/` names:
-    // choosing one that takes input puts `/<name> ` in the composer for it;
-    // one that takes none is sent.
-    let suggestions = Memo::new(move |_| {
-        workspace
-            .composer
-            .with(|draft| workspace.agent_command_suggestions(draft))
-    });
-    let agent_commands = move || {
-        let suggestions = suggestions.get();
-        (!suggestions.is_empty()).then(|| {
-            let rows = suggestions
-                .into_iter()
-                .map(|command| {
-                    let name = command.name.clone();
-                    let takes_input = command.input_hint.is_some();
-                    let hint = command.input_hint.clone().unwrap_or_default();
-                    view! {
-                        <li>
-                            <button
-                                type="button"
-                                class="flex min-h-11 w-full flex-wrap items-baseline gap-x-2 rounded px-2 py-1 text-left hover:bg-toasted focus-visible:bg-toasted dark:hover:bg-ember dark:focus-visible:bg-ember"
-                                data-agent-command=name.clone()
-                                on:click=move |_| {
-                                    if takes_input {
-                                        workspace.composer.set(format!("/{name} "));
-                                        if let Some(textarea) = textarea.get_untracked() {
-                                            let _ = textarea.focus();
-                                        }
-                                    } else {
-                                        workspace.composer.set(format!("/{name}"));
-                                        workspace.submit(InputDelivery::Steer);
-                                    }
-                                }
-                            >
-                                <span class="font-mono text-sm font-bold">{format!("/{}", command.name)}</span>
-                                <span class=format!("font-mono {NOTE}")>{hint}</span>
-                                <span class="rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
-                                <span class=format!("min-w-0 {NOTE}")>{command.description.clone()}</span>
-                            </button>
-                        </li>
-                    }
-                })
-                .collect_view();
-            view! {
-                <ul
-                    id="agent-commands"
-                    class="mb-1 flex max-h-60 flex-col overflow-y-auto rounded-xl border border-crust bg-cream p-1 dark:border-smoke dark:bg-night"
-                    aria-label="The agent's commands"
-                >
-                    {rows}
-                </ul>
-            }
-        })
-    };
     view! {
         <div class="relative min-w-0 px-3 pt-2 pb-1 short:flex-1 short:pb-2">
-            {agent_commands}
             // One border, the box's: the text field inside has none, and
             // the buttons sit in its bottom corners.
             <div
@@ -2730,6 +2674,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Commands) => "Session commands",
         Some(Panel::Goal) => "Goal",
         Some(Panel::Compact) => "Compact context",
+        Some(Panel::AgentCommand) => "The agent's command",
         Some(Panel::Modes) => "Permission mode",
         Some(Panel::Background) => "Background calls",
         Some(Panel::Skills) => "Skills",
@@ -2789,6 +2734,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::Commands) => commands_sheet(workspace).into_any(),
                             Some(Panel::Goal) => goal_sheet(workspace).into_any(),
                             Some(Panel::Compact) => compact_sheet(workspace).into_any(),
+                            Some(Panel::AgentCommand) => agent_command_sheet(workspace).into_any(),
                             Some(Panel::Modes) => modes_sheet(workspace).into_any(),
                             Some(Panel::Background) => background_sheet(workspace).into_any(),
                             Some(Panel::Skills) => skills_sheet(workspace).into_any(),
@@ -3356,34 +3302,158 @@ fn events_sheet(workspace: Workspace) -> impl IntoView {
 }
 
 /// The session's ⋮ menu: every command, by name, icon, and what it does,
-/// in rows a finger can hit; each opens its sheet.
+/// in rows a finger can hit; each opens its sheet. The session's ACP
+/// agent's commands follow, each badged as the agent's; one of them stands
+/// in for cookie's command of its name. A filter on top narrows both.
 fn commands_sheet(workspace: Workspace) -> impl IntoView {
     let has_crons = workspace.has_crons.get_untracked();
-    MENU.iter()
-        .filter(|entry| crate::commands::offered(entry.command, has_crons))
-        .map(|entry| {
-            let command = entry.command;
-            view! {
-                <button
-                    type="button"
-                    class=format!("{ROW} min-h-12")
-                    data-command=entry.id
-                    on:click=move |_| {
-                        workspace.panel.set(None);
-                        workspace.run_command(command);
-                    }
-                >
-                    <span class="flex w-full items-center gap-3">
-                        <Glyph icon=entry.icon class="w-5 justify-center text-caramel dark:text-maple" />
-                        <span class="flex min-w-0 flex-1 flex-col">
-                            <span class="text-sm font-bold">{entry.label}</span>
-                            <span class=NOTE>{entry.description}</span>
+    let filter = RwSignal::new(String::new());
+    let query = move || filter.get().trim().trim_start_matches('/').to_lowercase();
+    let matches = |query: &str, texts: [&str; 2]| {
+        query.is_empty() || texts.iter().any(|text| text.to_lowercase().contains(query))
+    };
+    let own = move || {
+        let query = query();
+        MENU.iter()
+            .filter(|entry| crate::commands::offered(entry.command, has_crons))
+            .filter(|entry| !workspace.agent_replaces(entry.id))
+            .filter(|entry| matches(&query, [entry.label, entry.description]))
+            .map(|entry| {
+                let command = entry.command;
+                view! {
+                    <button
+                        type="button"
+                        class=format!("{ROW} min-h-12")
+                        data-command=entry.id
+                        on:click=move |_| {
+                            workspace.panel.set(None);
+                            workspace.run_command(command);
+                        }
+                    >
+                        <span class="flex w-full items-center gap-3">
+                            <Glyph icon=entry.icon class="w-5 justify-center text-caramel dark:text-maple" />
+                            <span class="flex min-w-0 flex-1 flex-col">
+                                <span class="text-sm font-bold">{entry.label}</span>
+                                <span class=NOTE>{entry.description}</span>
+                            </span>
                         </span>
-                    </span>
-                </button>
+                    </button>
+                }
+            })
+            .collect_view()
+    };
+    let commands = StoredValue::new(workspace.agent_commands());
+    let agent = move || {
+        let query = query();
+        let rows = commands.with_value(|commands| {
+            commands
+                .iter()
+                .filter(|command| {
+                    matches(
+                        &query,
+                        [command.name.as_str(), command.description.as_str()],
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        (!rows.is_empty()).then(|| {
+            let rows = rows
+                .into_iter()
+                .map(|command| {
+                    let name = command.name.clone();
+                    let hint = command.input_hint.clone().unwrap_or_default();
+                    let description = command.description.clone();
+                    view! {
+                        <button
+                            type="button"
+                            class=format!("{ROW} min-h-12")
+                            data-agent-command=name.clone()
+                            on:click=move |_| workspace.choose_agent_command(command.clone())
+                        >
+                            <span class="flex w-full min-w-0 flex-col">
+                                <span class="flex flex-wrap items-baseline gap-x-2">
+                                    <span class="agent-badge rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
+                                    <span class="font-mono text-sm font-bold">{format!("/{name}")}</span>
+                                    <span class=format!("font-mono {NOTE}")>{hint}</span>
+                                </span>
+                                <span class=NOTE>{description}</span>
+                            </span>
+                        </button>
+                    }
+                })
+                .collect_view();
+            view! {
+                <h3 class="mt-2 px-1 text-sm font-bold">"The agent's commands"</h3>
+                <div id="agent-commands" class="flex flex-col gap-2">{rows}</div>
             }
         })
-        .collect_view()
+    };
+    view! {
+        <input
+            id="command-filter"
+            type="search"
+            class=depth::FIELD
+            placeholder="Filter commands"
+            aria-label="Filter commands"
+            prop:value=move || filter.get()
+            on:input=move |event| filter.set(event_target_value(&event))
+        />
+        {own}
+        {agent}
+    }
+}
+
+/// One of the agent's commands: what it does, a box for its optional
+/// input, and **Send**, which sends `/<name> <input>` to the agent.
+fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
+    let Some(command) = workspace.agent_command.get_untracked() else {
+        return ().into_any();
+    };
+    let input = RwSignal::new(String::new());
+    let name = StoredValue::new(command.name.clone());
+    let send = move || workspace.run_agent_command(&name.get_value(), &input.get_untracked());
+    let placeholder = command
+        .input_hint
+        .clone()
+        .unwrap_or_else(|| "Input for the command".to_owned());
+    view! {
+        <p class="flex flex-wrap items-baseline gap-x-2">
+            <span class="agent-badge rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
+            <span id="agent-command-name" class="font-mono text-sm font-bold">{format!("/{}", command.name)}</span>
+        </p>
+        <p class=NOTE>{command.description.clone()}</p>
+        <label class="flex flex-col gap-1 text-sm">
+            <span class="font-bold">"Input " <span class="font-normal text-ink dark:text-sand">"(optional)"</span></span>
+            <textarea
+                id="agent-command-input"
+                rows="2"
+                class=depth::FIELD
+                placeholder=placeholder
+                prop:value=move || input.get()
+                on:input=move |event| input.set(event_target_value(&event))
+                on:keydown=move |event: web_sys::KeyboardEvent| {
+                    if event.key() == "Enter" && !event.shift_key() {
+                        event.prevent_default();
+                        send();
+                    }
+                }
+            ></textarea>
+        </label>
+        <div class="flex flex-wrap items-center gap-2">
+            <button
+                type="button"
+                id="agent-command-send"
+                class=PRIMARY
+                disabled=move || !workspace.writable()
+                on:click=move |_| send()
+            >
+                <Glyph icon=icondata::FaPaperPlaneSolid />
+                "Send to the agent"
+            </button>
+        </div>
+    }
+    .into_any()
 }
 
 /// The permission mode picker: every mode with its shield and what it
