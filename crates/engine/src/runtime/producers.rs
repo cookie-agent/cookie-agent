@@ -1574,7 +1574,8 @@ impl Engine {
     }
 
     /// What `session` waits on live, each kind once and in order: a
-    /// background call's registration, a background delegation's, an
+    /// background call's registration or an ACP agent's command running in
+    /// the background, a background delegation's, an
     /// external one, and a direct child that runs a turn on its own or
     /// itself waits on something live (`waking`). Agent mail slots, a
     /// subagent report's send, and the goal's own registration count for
@@ -1608,6 +1609,11 @@ impl Engine {
                 };
                 kinds.push(kind);
             }
+        }
+        // An ACP agent's own command still running in the background, as
+        // Claude Code's backgrounded commands, wakes it when it ends.
+        if self.acp_background_running(session) {
+            kinds.push(WaitingOn::BackgroundCall);
         }
         if self.inner.crons.waits_on(session) {
             kinds.push(WaitingOn::ScheduledJob);

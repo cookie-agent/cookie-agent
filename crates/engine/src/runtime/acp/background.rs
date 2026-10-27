@@ -69,6 +69,7 @@ impl Engine {
             });
         }
         self.notify_background_changed(live.session);
+        self.refresh_live_waiting(live.session);
     }
 
     /// Terminal `terminal` of `session` exited.
@@ -82,6 +83,7 @@ impl Engine {
         };
         if removed {
             self.notify_background_changed(session);
+            self.refresh_live_waiting(session);
         }
     }
 
@@ -96,6 +98,7 @@ impl Engine {
         };
         if removed {
             self.notify_background_changed(session);
+            self.refresh_live_waiting(session);
         }
     }
 

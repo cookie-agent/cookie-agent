@@ -39,6 +39,11 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
     // It keeps its session resident, and an idle restart waits for it.
     assert!(engine.acp_background_running(session));
     assert_eq!(engine.acp_background_count(), 1);
+    // The session waits on it, as on a background call of cookie's.
+    assert_eq!(
+        engine.get_session(session).unwrap().waiting_on,
+        [cookie_agent_protocol::WaitingOn::BackgroundCall]
+    );
     // Its exit, between runs, ends it.
     with_watchdog("the command's exit", async {
         while !engine.background_calls(session).is_empty() {
@@ -47,6 +52,7 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
     })
     .await;
     assert!(!engine.acp_background_running(session));
+    assert!(engine.get_session(session).unwrap().waiting_on.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

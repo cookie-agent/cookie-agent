@@ -619,5 +619,8 @@ nested under its parent; a background terminal in the background bar.
 - **Keeping work alive.** Each such command holds a use of the agent's
   process, so the process does not idle out, and pins its session against
   eviction. An idle `daemon.restart` counts it among `background_calls`.
+  While one runs, the session waits on a `background_call`
+  (`SessionMeta.waiting_on`, 2026-10-27), as on one of cookie's, so the
+  clients mark it waiting.
 - **Stop.** `session.background.stop` refuses it, naming the agent as the
   one to ask. Clients show "run by the agent" in place of Stop.

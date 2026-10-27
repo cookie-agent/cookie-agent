@@ -166,10 +166,13 @@ async fn cookies_and_the_agents_own_subagents_show_and_stop_side_by_side() {
     turn(engine, session, "native", "subagent-wait waiter").await;
     let native = with_watchdog("the agent's subagent working", async {
         loop {
+            // Its run lists as background work once it has started, a
+            // moment after its status says so.
             if let Some(child) = engine.children(session).unwrap().into_iter().find(|child| {
                 child.title.as_ref().map(|title| title.as_str()) == Some("waiter")
                     && child.status == cookie_agent_protocol::SessionStatus::Running
-            }) {
+            }) && !engine.background_calls(session).is_empty()
+            {
                 return child.session_id;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
