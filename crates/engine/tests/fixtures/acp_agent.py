@@ -65,6 +65,9 @@ Each prompt's last text block is a command:
                          own stream (running, a read call, "subagent says:
                          <task>", idle) while this session answers "subagent
                          done"
+  subagent-wait <title>  the same, but the subagent says "waiting" and waits (up to
+                         10 s) for session/cancel, while this session answers
+                         "subagent started" at once
   subagent-ask <kind> <r>
                          the same, titled "asker", but the subagent asks
                          permission for a call of ACP kind <kind> on <r> and
@@ -493,7 +496,9 @@ def subagent(parent, title, task, work):
                "content": [{"type": "text", "text": task}]}
     update(parent, message)
     update(child, message)
-    work(child)
+    if work(child) == "cancelled":
+        finish(child, "cancelled")
+        return
     finish(child, "end_turn", USAGE)
     update(parent, {"sessionUpdate": "subagent_update", "sessionId": child,
                     "state": {"state": "idle", "stopReason": "end_turn"}})
@@ -509,6 +514,14 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             say(child, "subagent says: " + task)
         subagent(session_id, title, task, work)
         say(session_id, "subagent done")
+    elif word == "subagent-wait":
+        def work(child):
+            say(child, "waiting")
+            if wait_for_steer(child, 10) is None:
+                return "cancelled"
+            say(child, "not stopped")
+        threading.Thread(target=subagent, args=(session_id, rest or "waiter", "wait", work), daemon=True).start()
+        say(session_id, "subagent started")
     elif word == "subagent-ask":
         kind, _, resource = rest.partition(" ")
         def work(child):

@@ -374,13 +374,20 @@ impl Engine {
                 else {
                     return None;
                 };
+                // An ACP agent's own subagent came from no call of
+                // `delegate_subagent`.
+                let tool = if super::acp::is_acp_subagent(&projection.log.event_snapshot()) {
+                    "subagent"
+                } else {
+                    "delegate_subagent"
+                };
                 Some(cookie_agent_protocol::BackgroundCall {
                     job: projection
                         .meta
                         .short_id
                         .clone()
                         .unwrap_or_else(|| child.to_string()),
-                    tool: "delegate_subagent".into(),
+                    tool: tool.into(),
                     tool_call_id: parent_tool_call_id,
                     display: projection
                         .meta

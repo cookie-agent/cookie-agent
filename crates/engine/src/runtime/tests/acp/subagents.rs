@@ -124,3 +124,68 @@ async fn a_subagent_takes_no_messages() {
         "{outcome:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cookies_and_the_agents_own_subagents_show_and_stop_side_by_side() {
+    let document = "---\ndescription: Fixture that delegates\nmode: all\nacp: {}\npermissions:\n  delegate: { fixture: allow }\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    // One of cookie's subagents, through the bridge, then one of the
+    // agent's own, still working.
+    let call = format!(
+        "mcp call delegate_subagent {}",
+        serde_json::json!({
+            "description": "Child turn",
+            "prompt": "say from the child",
+            "agent_type": "fixture",
+        })
+    );
+    let outcome = turn(engine, session, "delegate", &call).await;
+    assert!(final_text(&outcome).contains("from the child"));
+    turn(engine, session, "native", "subagent-wait waiter").await;
+    let native = with_watchdog("the agent's subagent working", async {
+        loop {
+            if let Some(child) = engine.children(session).unwrap().into_iter().find(|child| {
+                child.title.as_ref().map(|title| title.as_str()) == Some("waiter")
+                    && child.status == cookie_agent_protocol::SessionStatus::Running
+            }) {
+                return child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // Both show under the session.
+    let mut titles = engine
+        .children(session)
+        .unwrap()
+        .into_iter()
+        .filter_map(|child| child.title.map(|title| title.as_str().to_owned()))
+        .collect::<Vec<_>>();
+    titles.sort();
+    assert_eq!(titles, ["Child turn", "waiter"]);
+    assert_eq!(engine.tree(session).unwrap().children.len(), 2);
+    // The working one is background work of the session, as a subagent of
+    // the agent's own, and Stop stops its turn.
+    let calls = engine.background_calls(session);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].tool, "subagent");
+    assert_eq!(calls[0].display.as_deref(), Some("waiter"));
+    engine
+        .stop_background_as_user(session, &calls[0].job)
+        .await
+        .expect("the subagent's turn stops");
+    let outcome = first_run(engine, native).await;
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
+    assert!(acp.received().iter().any(|message| {
+        message["method"] == "session/cancel"
+            && message["params"]["sessionId"]
+                .as_str()
+                .is_some_and(|id| id.ends_with("-sub"))
+    }));
+    assert!(engine.background_calls(session).is_empty());
+}

@@ -2714,6 +2714,12 @@ impl Engine {
             reference,
             SubagentScope::DirectChildren,
         )?;
+        // An ACP agent's own subagent came from no delegation of cookie's:
+        // no call links it and no queue holds it, so only its turn stops.
+        let child = self.inner.store.get(child_session_id)?;
+        if super::acp::is_acp_subagent(&child.log.event_snapshot()) {
+            return self.stop_child_turn(child_session_id, reason).await;
+        }
         self.ensure_subagent_owned(caller_session_id, child_session_id)
             .await?;
         let admission_guard = self.inner.delegation.admission.lock().await;
@@ -2761,6 +2767,16 @@ impl Engine {
             return Ok(());
         }
         drop(admission_guard);
+        self.stop_child_turn(child_session_id, reason).await
+    }
+
+    /// Cancels the turn subagent `child_session_id` is running, and returns
+    /// once it has ended.
+    async fn stop_child_turn(
+        &self,
+        child_session_id: SessionId,
+        reason: Option<String>,
+    ) -> Result<(), EngineError> {
         let current_run = self
             .inner
             .sessions

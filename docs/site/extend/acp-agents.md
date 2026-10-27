@@ -546,7 +546,9 @@ not in it.
   the agent's name for it; its runs show what it does, starting with the
   task it got; its permission requests and questions are asked in it. It
   takes no messages: it works on what its parent gives it, and the parent
-  agent gets its result. Stop stops its work. It lives in the agent's
+  agent gets its result. While it works it is in its parent's background
+  calls as a `subagent`, beside cookie's own subagents (`delegate_subagent`);
+  Stop there or in its own session stops its work. It lives in the agent's
   process: once that process ends, it takes no more turns.
 - **Questions.** A question from the agent (see [Questions from the
   agent](#questions-from-the-agent)) docks a panel above the TUI's status
