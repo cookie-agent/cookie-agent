@@ -43,6 +43,7 @@ mod depth;
 mod install;
 mod machines;
 mod manage;
+mod media_viewer;
 mod memory;
 mod notifications;
 mod onboarding;
@@ -53,6 +54,7 @@ mod row_menu;
 mod shell;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
+pub(crate) use media_viewer::MediaViewer;
 pub(crate) use restart::{RestartBanner, RestartDialog};
 
 use depth::{
@@ -1538,6 +1540,15 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             "open-memory" => {
                 if let Some(url) = target.get_attribute("data-memory-url") {
                     workspace.open_memory_at(url);
+                }
+            }
+            "open-media" => {
+                if let Some(url) = target.get_attribute("data-src") {
+                    workspace.media_viewer.set(Some(crate::media::Viewing {
+                        url,
+                        media_type: target.get_attribute("data-media-type").unwrap_or_default(),
+                        alt: target.get_attribute("data-alt").unwrap_or_default(),
+                    }));
                 }
             }
             _ => {}

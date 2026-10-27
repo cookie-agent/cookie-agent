@@ -344,6 +344,8 @@ pub struct Workspace {
     pub config_status: RwSignal<Option<cookie_agent_protocol::ConfigStatus>>,
     /// The restart confirmation is open.
     pub restart_confirm: RwSignal<bool>,
+    /// The image or video open in the media viewer.
+    pub media_viewer: RwSignal<Option<crate::media::Viewing>>,
     /// A restart the daemon scheduled, as the page says it, until the
     /// connection closes.
     pub restarting: RwSignal<Option<String>>,
@@ -515,6 +517,7 @@ impl Workspace {
             can_restart: RwSignal::new(false),
             config_status: RwSignal::new(None),
             restart_confirm: RwSignal::new(false),
+            media_viewer: RwSignal::new(None),
             restarting: RwSignal::new(None),
             onboarding: Onboarding::default(),
         }

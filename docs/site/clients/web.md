@@ -390,6 +390,14 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     bundled highlight.js, diffs with the file's line numbers, terminal
     output with its colours, tables, JSON, links, session links, and media
     shown inline.
+  - **Images and videos** in messages, replies, and tool output open in the
+    media viewer when clicked. It shows the file's size in pixels and zooms
+    with the wheel, a pinch, its buttons, or `+`, `-`, and `0` (fit). A drag
+    moves the zoomed file, and a double click zooms in or back to fit.
+    Zoomed pixels show crisp rather than blurred. A video plays in the
+    viewer, with play and pause (Space), a frame back or forward (`,` and
+    `.`), five seconds back or forward (Left and Right), a seek bar, its
+    speed, and its sound. Escape, ✕, or a click beside the file closes it.
   - **Cut output** offers its complete content.
   - **Your messages** show the files they attached. Their **⋯** shows while
     the mouse is over the message's row (or the keyboard is in it); on a

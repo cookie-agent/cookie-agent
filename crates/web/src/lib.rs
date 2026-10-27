@@ -28,7 +28,7 @@ pub mod install;
 pub mod keys;
 pub mod layout;
 pub mod machines;
-mod media;
+pub mod media;
 pub mod memory;
 pub mod modes;
 pub mod oauth;

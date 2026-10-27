@@ -18,7 +18,10 @@ use crate::{
     oauth::{self, Lookup},
     push::{self, PUSH_DAEMON_URL_KEY},
     theme::ThemePreference,
-    views::{Install, InstallAction, InstallBanner, RestartBanner, RestartDialog, WorkspaceView},
+    views::{
+        Install, InstallAction, InstallBanner, MediaViewer, RestartBanner, RestartDialog,
+        WorkspaceView,
+    },
     workspace::Workspace,
 };
 
@@ -435,6 +438,7 @@ pub fn App() -> impl IntoView {
                         view! {
                             <RestartBanner workspace=connection.workspace />
                             <RestartDialog workspace=connection.workspace />
+                            <MediaViewer workspace=connection.workspace />
                             <InstallBanner />
                             <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
                         }

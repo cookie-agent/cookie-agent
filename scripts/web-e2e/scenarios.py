@@ -912,6 +912,78 @@ def pinned_rows(browser):
     browser.wait("the folded rows", lambda: count(browser, "[data-system-prompt], [data-model-tools]") == 0)
 
 
+def media_viewer(browser):
+    """A click on a picture in the transcript opens the media viewer, which
+    zooms (its buttons, the wheel) and closes on Escape; a video in it
+    plays, seeks, and steps a frame."""
+    browser.click("#transcript .user-message .media-open")
+    browser.wait("the media viewer", lambda: count(browser, "#media-viewer img#media-viewer-file") == 1)
+    browser.wait("the picture's size", lambda: browser.text("#media-viewer-size") == "64×48")
+    percent = lambda: int(browser.text("#media-viewer-fit").rstrip("%"))
+    assert percent() == 100, percent()
+    browser.click("#media-viewer-zoom-in")
+    browser.wait("the zoom button", lambda: percent() == 125)
+    stage = "document.getElementById('media-viewer-stage')"
+    browser.script(
+        stage + ".dispatchEvent(new WheelEvent('wheel',"
+        " {deltaY: -200, clientX: 100, clientY: 100, bubbles: true, cancelable: true}))"
+    )
+    browser.wait("the wheel's zoom", lambda: percent() > 125)
+    transform = browser.script("return document.getElementById('media-viewer-file').style.transform")
+    assert "scale(" in transform and "translate(" in transform, transform
+    browser.shot("media-viewer")
+    browser.click("#media-viewer-fit")
+    browser.wait("the fit", lambda: percent() == 100)
+    browser.type("#media-viewer", ESCAPE)
+    browser.wait("the closed viewer", lambda: count(browser, "#media-viewer") == 0)
+    print("a picture opens in the media viewer, zooms, and closes")
+
+    # A two-second video, recorded from a canvas, opened as the page opens
+    # a video in the transcript.
+    browser.script_async(
+        "const done = arguments[arguments.length - 1];"
+        "const canvas = Object.assign(document.createElement('canvas'), {width: 160, height: 120});"
+        "const context = canvas.getContext('2d');"
+        "const recorder = new MediaRecorder(canvas.captureStream(30), {mimeType: 'video/webm'});"
+        "const chunks = []; recorder.ondataavailable = (e) => chunks.push(e.data);"
+        "recorder.onstop = () => {"
+        " const button = Object.assign(document.createElement('button'), {type: 'button', id: 'test-video'});"
+        " button.dataset.action = 'open-media';"
+        " button.dataset.src = URL.createObjectURL(new Blob(chunks, {type: 'video/webm'}));"
+        " button.dataset.mediaType = 'video/webm'; button.dataset.alt = 'clip.webm';"
+        " button.textContent = 'clip'; document.getElementById('transcript').prepend(button); done();"
+        "};"
+        "let frame = 0; const draw = () => { context.fillStyle = `hsl(${frame++ * 6}, 80%, 50%)`;"
+        " context.fillRect(0, 0, 160, 120); };"
+        "const timer = setInterval(draw, 33); recorder.start();"
+        "setTimeout(() => { clearInterval(timer); recorder.stop(); }, 2000);"
+    )
+    browser.click("#test-video")
+    browser.wait("the video viewer", lambda: count(browser, "#media-viewer video#media-viewer-file") == 1)
+    browser.wait("the video's controls", lambda: count(browser, "#media-viewer-controls") == 1)
+    browser.wait("the video's size", lambda: browser.text("#media-viewer-size") == "160×120")
+    video = "document.getElementById('media-viewer-file')"
+    browser.wait("the video playing", lambda: browser.script("return !%s.paused" % video))
+    browser.click("#media-viewer-play")
+    browser.wait("the paused video", lambda: browser.script("return %s.paused" % video))
+    # A recorded WebM may not know its length; the seek bar works once it
+    # does, and the frame buttons work regardless.
+    browser.script(
+        "%s.currentTime = 0.5; %s.dispatchEvent(new Event('timeupdate'))" % (video, video)
+    )
+    browser.wait("the position", lambda: browser.text("#media-viewer-time") == "0:00.50")
+    browser.click("#media-viewer-forward")
+    browser.wait(
+        "a frame forward",
+        lambda: abs(browser.script("return %s.currentTime" % video) - (0.5 + 1 / 30)) < 0.01,
+    )
+    browser.shot("media-viewer-video")
+    browser.click("#media-viewer-close")
+    browser.wait("the closed video viewer", lambda: count(browser, "#media-viewer") == 0)
+    browser.script("document.getElementById('test-video').remove()")
+    print("a video in the media viewer plays, pauses, and steps a frame")
+
+
 def session_depth(browser):
     """Subagents, history edits, goals, background calls, media, skills, and
     permission overrides."""
@@ -1264,6 +1336,7 @@ def session_depth(browser):
     )
     print("a read's media block shows inline")
     browser.shot("media-block")
+    media_viewer(browser)
 
     # Run a skill.
     menu(browser, "skills")
