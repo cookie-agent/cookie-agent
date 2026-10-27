@@ -88,6 +88,13 @@ impl ReadArtifactTool {
     }
 }
 
+impl ReadArtifactTool {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "artifacts",
+        summary: "Tool output too large for the conversation, kept aside and read back by range.",
+    };
+}
 #[async_trait]
 impl ToolProvider for ReadArtifactTool {
     fn provider_id(&self) -> &'static str {
@@ -95,10 +102,7 @@ impl ToolProvider for ReadArtifactTool {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "artifacts",
-            summary: "Tool output too large for the conversation, kept aside and read back by range.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

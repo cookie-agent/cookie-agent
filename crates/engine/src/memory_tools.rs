@@ -535,6 +535,13 @@ fn display_argument(name: &str, arguments: &serde_json::Value) -> Option<String>
         .map(str::to_owned)
 }
 
+impl MemoryTools {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "memory",
+        summary: "Durable notes across sessions: what the user prefers, project decisions, and facts about machines.",
+    };
+}
 #[async_trait]
 impl ToolProvider for MemoryTools {
     fn provider_id(&self) -> &'static str {
@@ -542,10 +549,7 @@ impl ToolProvider for MemoryTools {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "memory",
-            summary: "Durable notes across sessions: what the user prefers, project decisions, and facts about machines.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

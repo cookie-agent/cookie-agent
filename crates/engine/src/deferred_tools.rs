@@ -82,10 +82,39 @@ pub(crate) fn group_of(source: &SourcedProvider, tool: &str) -> Group {
     }
 }
 
+/// A tool provider as prompt sections know it: its ID and the attachment
+/// that offers it.
+pub(crate) type ProviderKey = (String, Option<String>);
+
+/// How a round records a provider in `prompt_groups`.
+pub(crate) fn provider_label((id, attachment): &ProviderKey) -> String {
+    attachment
+        .as_ref()
+        .map_or_else(|| id.clone(), |attachment| format!("{id}@{attachment}"))
+}
+
+/// The providers whose prompt sections leave the system prompt: each has a
+/// tool, and none of its tools is eager (section 7.3).
+pub(crate) fn deferred_providers<'a>(
+    tools: impl IntoIterator<Item = (&'a str, &'a ProviderKey)>,
+    eager: &BTreeSet<String>,
+) -> BTreeSet<ProviderKey> {
+    let mut providers = BTreeMap::<&ProviderKey, bool>::new();
+    for (name, provider) in tools {
+        *providers.entry(provider).or_default() |= eager.contains(name);
+    }
+    providers
+        .into_iter()
+        .filter(|(_, has_eager)| !has_eager)
+        .map(|(provider, _)| provider.clone())
+        .collect()
+}
+
 /// One composed tool as the plan sees it.
 pub(crate) struct Candidate {
     pub(crate) definition: ToolDefinition,
     pub(crate) group: Group,
+    pub(crate) provider: ProviderKey,
     /// The policy defers it.
     pub(crate) deferred: bool,
 }
@@ -97,6 +126,7 @@ pub(crate) struct DeferredEntry {
     pub(crate) description: String,
     pub(crate) parameters: serde_json::Value,
     pub(crate) group: Group,
+    pub(crate) provider: ProviderKey,
 }
 
 /// What the loader tools of a session see: the deferred and eager tools of
@@ -106,6 +136,9 @@ pub(crate) struct DeferralView {
     pub(crate) deferred: Vec<DeferredEntry>,
     pub(crate) eager: BTreeSet<String>,
     pub(crate) loaded: BTreeSet<String>,
+    /// The rendered prompt sections of each deferred provider none of whose
+    /// tools is loaded yet; the first load of one of its tools carries them.
+    pub(crate) sections: BTreeMap<ProviderKey, String>,
 }
 
 /// A request's tools under deferral.
@@ -118,6 +151,8 @@ pub(crate) struct DeferralPlan {
     /// Records to append before the request: a round start, an announcement.
     pub(crate) pending: Vec<EventPayload>,
     pub(crate) view: DeferralView,
+    /// Providers whose prompt sections leave the system prompt.
+    pub(crate) deferred_providers: BTreeSet<ProviderKey>,
 }
 
 fn round_definition(definition: &ToolDefinition) -> RoundToolDefinition {
@@ -162,9 +197,16 @@ pub(crate) fn plan(
                 tools.extend(loaders.iter().map(round_definition));
             }
             tools.sort_by(|left, right| left.name.cmp(&right.name));
+            let mut prompt_groups = candidates
+                .iter()
+                .filter(|candidate| !candidate.deferred)
+                .map(|candidate| provider_label(&candidate.provider))
+                .collect::<Vec<_>>();
+            prompt_groups.sort();
+            prompt_groups.dedup();
             pending.push(EventPayload::ToolRoundStarted {
                 tools: tools.clone(),
-                prompt_groups: Vec::new(),
+                prompt_groups,
             });
             tools
         }
@@ -177,6 +219,12 @@ pub(crate) fn plan(
         .iter()
         .map(|candidate| candidate.definition.name.clone())
         .collect::<HashSet<_>>();
+    let deferred_providers = deferred_providers(
+        candidates
+            .iter()
+            .map(|candidate| (candidate.definition.name.as_str(), &candidate.provider)),
+        &eager_names,
+    );
     // A tool not in the round is deferred: the policy defers it, or it
     // arrived mid-round (section 8.2).
     let deferred = candidates
@@ -219,6 +267,7 @@ pub(crate) fn plan(
             description: candidate.definition.description.clone(),
             parameters: candidate.definition.input_schema.as_value().clone(),
             group: candidate.group,
+            provider: candidate.provider,
         });
         definitions.push(candidate.definition.deferred());
     }
@@ -234,7 +283,9 @@ pub(crate) fn plan(
             deferred: entries,
             eager,
             loaded: fold.loaded.clone(),
+            sections: BTreeMap::new(),
         },
+        deferred_providers,
     }
 }
 

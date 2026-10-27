@@ -401,7 +401,8 @@ pub(crate) fn load_result(view: &DeferralView, names: &[String]) -> ToolResult {
         output.push('\n');
         output.push_str(&note);
     }
-    result(
+    let instructions = provider_instructions(view, &loaded);
+    let mut result = result(
         if loaded.is_empty() {
             "No tools loaded"
         } else {
@@ -409,7 +410,42 @@ pub(crate) fn load_result(view: &DeferralView, names: &[String]) -> ToolResult {
         },
         output,
         loaded,
+    );
+    result.additional_messages.extend(instructions);
+    result
+}
+
+/// The prompt sections of the deferred providers whose tools `loaded`
+/// loads first, as one message after the result (deferred tools in cookie,
+/// section 7.3). Stored with the result, so history never shifts.
+fn provider_instructions(
+    view: &DeferralView,
+    loaded: &[String],
+) -> Option<cookie_agent_protocol::ToolEmittedMessage> {
+    let mut providers = Vec::new();
+    for name in loaded {
+        if let Some(entry) = view.deferred.iter().find(|entry| &entry.name == name)
+            && view.sections.contains_key(&entry.provider)
+            && !providers.contains(&&entry.provider)
+        {
+            providers.push(&entry.provider);
+        }
+    }
+    let blocks = providers
+        .into_iter()
+        .filter_map(|provider| view.sections.get(provider))
+        .cloned()
+        .collect::<Vec<_>>();
+    if blocks.is_empty() {
+        return None;
+    }
+    cookie_agent_protocol::ToolEmittedMessage::new(
+        cookie_agent_protocol::ToolEmittedMessageRole::System,
+        vec![cookie_agent_protocol::ToolEmittedContent::Text(
+            blocks.join("\n\n"),
+        )],
     )
+    .ok()
 }
 
 #[cfg(test)]

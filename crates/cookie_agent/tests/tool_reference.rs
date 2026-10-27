@@ -15,7 +15,8 @@ use std::fmt::Write as _;
 
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
 use cookie_agent_engine::{
-    agents_tool_spec, base_layer_tool_specs, cron_tool_specs, memory_tool_specs, runtimes_tool_spec,
+    agents_tool_spec, base_layer_tool_specs, builtin_tool_groups, cron_tool_specs,
+    memory_tool_specs, runtimes_tool_spec,
 };
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
@@ -119,6 +120,36 @@ fn render_table(specs: &[ToolSpec]) -> String {
     table
 }
 
+/// The table of built-in tool groups: the name a group's deferred tools are
+/// announced under, its tools, and its summary.
+fn render_groups() -> String {
+    let mut groups = builtin_tool_groups(DELEGATE_TARGET_PLACEHOLDER);
+    groups.push((
+        cookie_agent_coding_runtime::BuiltinTools::GROUP,
+        BuiltinTools::new(&WorkspaceContext::new(&std::env::temp_dir()).expect("workspace"))
+            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
+            .expect("built-in tool specs")
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect(),
+    ));
+    groups.sort_by_key(|(group, _)| group.name);
+    let mut table = String::from(
+        "| Group | Tools | Summary sent to the model |
+|---|---|---|
+",
+    );
+    for (group, tools) in groups {
+        let tools = tools
+            .iter()
+            .map(|tool| format!("[`{tool}`](#{tool})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(table, "| `{}` | {tools} | {} |", group.name, group.summary).unwrap();
+    }
+    table
+}
+
 /// Replaces the body of every generated region of `page`, checking that each
 /// tool has exactly one region, under a heading that names it.
 fn splice(page: &str, specs: &[ToolSpec]) -> Result<String, String> {
@@ -139,6 +170,8 @@ fn splice(page: &str, specs: &[ToolSpec]) -> Result<String, String> {
             .ok_or_else(|| format!("region `{key}` has no `{REGION_END}`"))?;
         let body = if key == "tool-table" {
             render_table(specs)
+        } else if key == "tool-groups" {
+            render_groups()
         } else if let Some(name) = key.strip_prefix("tool ") {
             let spec = specs
                 .iter()
@@ -165,7 +198,8 @@ fn splice(page: &str, specs: &[ToolSpec]) -> Result<String, String> {
         keys.push(key.to_owned());
     }
     spliced.push_str(rest);
-    let expected = std::iter::once("tool-table".to_owned())
+    let expected = ["tool-table".to_owned(), "tool-groups".to_owned()]
+        .into_iter()
         .chain(specs.iter().map(|spec| format!("tool {}", spec.name)));
     for key in expected {
         let count = keys.iter().filter(|seen| **seen == key).count();

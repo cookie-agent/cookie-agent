@@ -58,6 +58,13 @@ impl StopBackgroundTool {
     }
 }
 
+impl StopBackgroundTool {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "background",
+        summary: "Calls running in the background, and stopping them.",
+    };
+}
 #[async_trait]
 impl ToolProvider for StopBackgroundTool {
     fn provider_id(&self) -> &'static str {
@@ -65,10 +72,7 @@ impl ToolProvider for StopBackgroundTool {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "background",
-            summary: "Calls running in the background, and stopping them.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

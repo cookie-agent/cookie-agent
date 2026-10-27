@@ -19,6 +19,7 @@ fn entry(name: &str, group: &str, description: &str) -> DeferredEntry {
             summary: Some("Browser automation.".into()),
             untrusted: true,
         },
+        provider: (format!("mcp.{group}"), None),
     }
 }
 
@@ -35,6 +36,7 @@ fn view() -> DeferralView {
         ],
         eager: BTreeSet::from(["read".to_owned()]),
         loaded: BTreeSet::from(["chrome_type".to_owned()]),
+        sections: std::collections::BTreeMap::new(),
     }
 }
 
@@ -105,4 +107,26 @@ fn a_load_that_loads_nothing_is_plain_text() {
     let result = load_result(&view(), &["chrome_type".into()]);
     assert!(result.loaded_tools.is_empty());
     assert!(result.output.starts_with("Loaded no new tools."));
+}
+
+#[test]
+fn a_first_load_carries_its_deferred_providers_sections_once() {
+    let mut view = view();
+    view.sections.insert(
+        ("mcp.chrome".to_owned(), None),
+        "<tool_instructions provider=\"mcp.chrome\">\nSnapshot first.\n</tool_instructions>".into(),
+    );
+    let result = load_result(&view, &["chrome_click".into(), "calendar_list".into()]);
+    assert_eq!(result.additional_messages.len(), 1);
+    let cookie_agent_protocol::ToolEmittedContent::Text(text) =
+        &result.additional_messages[0].content[0]
+    else {
+        panic!("text instructions");
+    };
+    assert!(text.contains("Snapshot first."));
+    let plain = load_result(&view, &["calendar_list".into()]);
+    assert!(
+        plain.additional_messages.is_empty(),
+        "no sections for a provider that has none"
+    );
 }

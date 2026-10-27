@@ -97,6 +97,13 @@ fn check_name(tool: &str) -> Result<(), ToolError> {
     }
 }
 
+impl RuntimesTool {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "runtimes",
+        summary: "The runtimes this session can work through: the machines and capabilities a subagent can be started on.",
+    };
+}
 #[async_trait]
 impl ToolProvider for RuntimesTool {
     fn provider_id(&self) -> &'static str {
@@ -104,10 +111,7 @@ impl ToolProvider for RuntimesTool {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "runtimes",
-            summary: "The runtimes this session can work through: the machines and capabilities a subagent can be started on.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

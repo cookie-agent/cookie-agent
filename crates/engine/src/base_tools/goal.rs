@@ -90,6 +90,13 @@ output: Default::default(),
     }
 }
 
+impl GoalTools {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "goal",
+        summary: "The session's goal and the checklist that tracks it.",
+    };
+}
 #[async_trait]
 impl ToolProvider for GoalTools {
     fn provider_id(&self) -> &'static str {
@@ -97,10 +104,7 @@ impl ToolProvider for GoalTools {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "goal",
-            summary: "The session's goal and the checklist that tracks it.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

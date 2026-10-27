@@ -2761,7 +2761,7 @@ impl Engine {
             .hidden_tools();
         let offered = self.offered_tools(session, policy, &hide)?;
         let mut context = Vec::new();
-        context.extend(self.tool_prompt_block(policy, session, Some(&offered))?);
+        context.extend(self.tool_prompt_block(policy, session, Some(&offered), &|_, _| true)?);
         if offered.skill {
             context.extend(self.skill_listing(
                 session,

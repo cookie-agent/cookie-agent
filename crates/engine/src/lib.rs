@@ -40,7 +40,7 @@ pub mod testing;
 mod usage;
 
 pub use agents_tool::agents_tool_spec;
-pub use base_tools::base_layer_tool_specs;
+pub use base_tools::{base_layer_tool_specs, builtin_tool_groups};
 pub use cookie_agent_mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use cron_tools::cron_tool_specs;

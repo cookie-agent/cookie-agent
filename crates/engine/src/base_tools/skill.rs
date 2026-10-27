@@ -110,6 +110,13 @@ impl SkillTool {
     }
 }
 
+impl SkillTool {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "skills",
+        summary: "Skills: packaged instructions for a kind of task, loaded by name.",
+    };
+}
 #[async_trait]
 impl ToolProvider for SkillTool {
     fn provider_id(&self) -> &'static str {
@@ -117,10 +124,7 @@ impl ToolProvider for SkillTool {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "skills",
-            summary: "Skills: packaged instructions for a kind of task, loaded by name.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

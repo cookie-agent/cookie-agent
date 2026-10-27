@@ -1278,13 +1278,7 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<PublishedToolSet, EngineError> {
-        // Deferral follows the run's model: only a verified model defers
-        // until rejected deferral can fall back (deferred tools in cookie,
-        // section 13, decision 4).
-        let defers = policy.selected_suffix.first().is_some_and(|binding| {
-            cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor)
-                == cookie_agent_models::DeferredToolsSupport::Native
-        });
+        let defers = defers_tools(policy);
         let composition = self.compose_for_policy_with(session, policy, defers)?;
         let notes = self.runtime_tool_notes(session);
         let mut output = Vec::with_capacity(composition.tools.len());
@@ -1313,6 +1307,7 @@ impl Engine {
                     candidates.push(crate::deferred_tools::Candidate {
                         definition,
                         group: crate::deferred_tools::group_of(&source, &spec.name),
+                        provider: provider_key(&source),
                         deferred: crate::deferred_tools::policy_defers(&source, &spec.name),
                     });
                 }
@@ -1331,7 +1326,26 @@ impl Engine {
             });
         }
         let fold = self.inner.store.get(session)?.log.deferral();
-        let plan = crate::deferred_tools::plan(candidates, &loaders, &fold);
+        let mut plan = crate::deferred_tools::plan(candidates, &loaders, &fold);
+        for provider in &plan.deferred_providers {
+            // Delivered with the provider's first load; a provider with a
+            // loaded tool has had them.
+            if plan
+                .view
+                .deferred
+                .iter()
+                .any(|entry| &entry.provider == provider && fold.loaded.contains(&entry.name))
+            {
+                continue;
+            }
+            if let Some(block) =
+                self.tool_prompt_block(policy, session, None, &|id, attachment| {
+                    id == provider.0 && attachment == provider.1.as_deref()
+                })?
+            {
+                plan.view.sections.insert(provider.clone(), block);
+            }
+        }
         // A loader tool is callable only where the request declares it.
         let declared = plan
             .definitions
@@ -1354,6 +1368,40 @@ impl Engine {
         })
     }
 
+    /// The providers whose prompt sections the system prompt of a run of
+    /// `policy` leaves out: those whose every tool is deferred.
+    pub(crate) fn deferred_prompt_providers(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+    ) -> Result<HashSet<crate::deferred_tools::ProviderKey>, EngineError> {
+        if !defers_tools(policy) {
+            return Ok(HashSet::new());
+        }
+        let composition = self.compose_for_policy(session, policy)?;
+        let fold = self.inner.store.get(session)?.log.deferral();
+        let keys = composition
+            .tools
+            .iter()
+            .map(|tool| (tool.name.as_str(), provider_key(&tool.source)))
+            .collect::<Vec<_>>();
+        let eager = match &fold.round {
+            Some(round) => round.tools.iter().map(|tool| tool.name.clone()).collect(),
+            None => composition
+                .tools
+                .iter()
+                .filter(|tool| !crate::deferred_tools::policy_defers(&tool.source, &tool.spec.name))
+                .map(|tool| tool.name.clone())
+                .collect(),
+        };
+        Ok(crate::deferred_tools::deferred_providers(
+            keys.iter().map(|(name, key)| (*name, key)),
+            &eager,
+        )
+        .into_iter()
+        .collect())
+    }
+
     /// What `session`'s loader tools see: its latest request's deferral.
     pub(crate) fn deferral_view(
         &self,
@@ -1367,6 +1415,24 @@ impl Engine {
             .cloned()
             .unwrap_or_default()
     }
+}
+
+/// Whether a run of `policy` defers tools. Deferral follows the run's
+/// model: only a verified model defers until rejected deferral can fall
+/// back (deferred tools in cookie, section 13, decision 4).
+fn defers_tools(policy: &FrozenRunPolicy) -> bool {
+    policy.selected_suffix.first().is_some_and(|binding| {
+        cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor)
+            == cookie_agent_models::DeferredToolsSupport::Native
+    })
+}
+
+/// A source's provider as prompt sections key it.
+fn provider_key(source: &crate::runtimes::SourcedProvider) -> crate::deferred_tools::ProviderKey {
+    (
+        source.provider.provider_id().to_owned(),
+        source.attachment.as_ref().map(ToString::to_string),
+    )
 }
 
 /// Takes the host-owned `background` argument out of a call of a

@@ -38,7 +38,13 @@ impl Engine {
         policy: &mut FrozenRunPolicy,
         session: SessionId,
     ) -> Result<(), EngineError> {
-        let Some(block) = self.tool_prompt_block(policy, session, None)? else {
+        // A provider whose tools are all deferred gives its sections with
+        // its first load instead (deferred tools in cookie, section 7.3).
+        let deferred = self.deferred_prompt_providers(session, policy)?;
+        let Some(block) = self.tool_prompt_block(policy, session, None, &|id, attachment| {
+            !deferred.contains(&(id.to_owned(), attachment.map(str::to_owned)))
+        })?
+        else {
             return Ok(());
         };
         let composed_bytes = policy
@@ -79,6 +85,7 @@ impl Engine {
         policy: &FrozenRunPolicy,
         session: SessionId,
         offered: Option<&OfferedTools>,
+        keep: &dyn Fn(&str, Option<&str>) -> bool,
     ) -> Result<Option<String>, EngineError> {
         let projection = self.inner.store.get(session)?;
         let depth = session_depth(&projection.meta.origin);
@@ -122,6 +129,9 @@ impl Engine {
         {
             let provider_id = provider.provider_id();
             validate_provider_id(provider_id)?;
+            if !keep(provider_id, attachment.as_ref().map(|name| name.as_str())) {
+                continue;
+            }
             if let Some(offered) = offered
                 && provider_id != crate::memory_tools::PROVIDER_ID
                 && !offered.offers(provider_id, attachment.as_ref().map(|name| name.as_str()))

@@ -92,6 +92,13 @@ impl MessageToolProvider {
     }
 }
 
+impl MessageToolProvider {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "messaging",
+        summary: "Messages between the agents of a session tree.",
+    };
+}
 #[async_trait]
 impl ToolProvider for MessageToolProvider {
     fn provider_id(&self) -> &'static str {
@@ -99,10 +106,7 @@ impl ToolProvider for MessageToolProvider {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "messaging",
-            summary: "Messages between the agents of a session tree.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

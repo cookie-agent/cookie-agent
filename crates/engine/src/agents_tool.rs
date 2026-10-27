@@ -472,6 +472,13 @@ pub(crate) fn render_agent_list(
     output
 }
 
+impl AgentsTool {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "agents",
+        summary: "The agents this session can delegate to or schedule, and what each is for.",
+    };
+}
 #[async_trait]
 impl ToolProvider for AgentsTool {
     fn provider_id(&self) -> &'static str {
@@ -479,10 +486,7 @@ impl ToolProvider for AgentsTool {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "agents",
-            summary: "The agents this session can delegate to or schedule, and what each is for.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

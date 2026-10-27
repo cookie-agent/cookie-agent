@@ -27,6 +27,16 @@ impl ToolProvider for McpWrite {
         self.0.tools_for_session(ctx)
     }
 
+    fn prompt_sections(
+        &self,
+        _ctx: &SessionToolContext,
+    ) -> Result<Vec<cookie_agent_runtime_api::PromptSection>, ToolError> {
+        Ok(vec![cookie_agent_runtime_api::PromptSection {
+            title: "Chrome".into(),
+            body: "Snapshot the page before writing.".into(),
+        }])
+    }
+
     fn tool_source(&self, _tool_name: &str) -> Option<ProvidedToolSource> {
         Some(ProvidedToolSource::Mcp {
             server: "chrome".into(),
@@ -94,14 +104,17 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
             ),
         ),
         (
-            "system",
+            "Snapshot the page before writing.",
             scripted_tool_body("write-1", "write", serde_json::json!({"value": "x"})),
         ),
         ("tool", scripted_text_body("done")),
     ] {
-        responses
-            .send(MatchedScriptedResponse::last_message_role(role, reply))
-            .expect("scripted reply");
+        let response = if role.contains(' ') {
+            MatchedScriptedResponse::last_message_contains(role, reply)
+        } else {
+            MatchedScriptedResponse::last_message_role(role, reply)
+        };
+        responses.send(response).expect("scripted reply");
     }
     let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
         &endpoint,
@@ -170,16 +183,32 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
         "{announcement}"
     );
 
+    // The provider's instructions are not in the system prompt: every tool
+    // of it is deferred.
+    let system = first[0]["content"].as_str().expect("system prompt");
+    assert!(!system.contains("Snapshot the page"), "{system}");
+
     // Kimi's dialect loads the tool with a system message right after the
-    // load result.
+    // load result, and the provider's instructions follow.
     let second = requests[1]["messages"].as_array().expect("messages");
-    let loaded = second.last().expect("tools message");
+    let load_index = second
+        .iter()
+        .position(|message| message["role"] == "tool")
+        .expect("load result");
+    assert_eq!(second[load_index]["content"], "Loaded tools: write.");
+    let loaded = &second[load_index + 1];
     assert_eq!(loaded["role"], "system");
     assert!(loaded.get("content").is_none());
     assert_eq!(loaded["tools"][0]["function"]["name"], "write");
-    let load_result = &second[second.len() - 2];
-    assert_eq!(load_result["role"], "tool");
-    assert_eq!(load_result["content"], "Loaded tools: write.");
+    let instructions = second[load_index + 2]["content"]
+        .as_str()
+        .expect("instructions turn");
+    assert!(
+        instructions.contains(
+            "<tool_instructions provider=\"test.mcp_write\">\nSnapshot the page before writing."
+        ),
+        "{instructions}"
+    );
 
     assert!(executed.is_set(), "the loaded tool ran");
 

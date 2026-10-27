@@ -22,6 +22,7 @@ fn eager(name: &str) -> Candidate {
     Candidate {
         definition: definition(name),
         group: group("coding", ToolGroupSource::Builtin, None),
+        provider: ("runtime.protocol".into(), Some("local".into())),
         deferred: false,
     }
 }
@@ -30,6 +31,7 @@ fn mcp(name: &str, server: &str) -> Candidate {
     Candidate {
         definition: definition(name),
         group: group(server, ToolGroupSource::Mcp, Some("Browser automation.")),
+        provider: (format!("mcp.{server}"), None),
         deferred: true,
     }
 }
@@ -257,4 +259,35 @@ fn a_long_summary_is_cut_to_its_bound() {
     let cut = bounded_summary(&summary);
     assert!(cut.len() <= AnnouncedToolGroup::MAX_SUMMARY_BYTES);
     assert!(cut.ends_with(" [truncated]"));
+}
+
+#[test]
+fn a_provider_whose_tools_are_all_deferred_leaves_the_system_prompt() {
+    let plan = plan(
+        vec![
+            eager("read"),
+            mcp("chrome_click", "chrome"),
+            mcp("chrome_type", "chrome"),
+        ],
+        &loaders(),
+        &DeferralFold::default(),
+    );
+    assert_eq!(
+        plan.deferred_providers,
+        BTreeSet::from([("mcp.chrome".to_owned(), None)])
+    );
+    let Some(EventPayload::ToolRoundStarted { prompt_groups, .. }) = plan.pending.first() else {
+        panic!("round started");
+    };
+    assert_eq!(prompt_groups, &["runtime.protocol@local"]);
+}
+
+#[test]
+fn a_provider_with_an_eager_tool_keeps_its_sections() {
+    let shared = ("runtime.protocol".to_owned(), Some("local".to_owned()));
+    let providers = deferred_providers(
+        [("read", &shared), ("chrome_click", &shared)],
+        &BTreeSet::from(["read".to_owned()]),
+    );
+    assert!(providers.is_empty());
 }

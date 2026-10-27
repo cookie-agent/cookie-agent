@@ -125,6 +125,58 @@ pub fn base_layer_tool_specs(delegate_target: &str) -> Vec<ToolSpec> {
     specs
 }
 
+/// The engine's built-in tool groups with the tools each announces, for
+/// the tool reference (deferred tools in cookie, section 7.1). The coding
+/// runtime's group is its own crate's.
+#[must_use]
+pub fn builtin_tool_groups(
+    delegate_target: &str,
+) -> Vec<(cookie_agent_runtime_api::ToolGroup, Vec<String>)> {
+    let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|spec| spec.name).collect();
+    vec![
+        (
+            DelegateToolProvider::GROUP,
+            names(DelegateToolProvider::specs(
+                &[delegate_target],
+                crate::runtime::runtime_delegation::CapabilitiesParam::Optional,
+            )),
+        ),
+        (
+            MessageToolProvider::GROUP,
+            names(vec![MessageToolProvider::spec()]),
+        ),
+        (SkillTool::GROUP, names(vec![SkillTool::spec()])),
+        (
+            GoalTools::GROUP,
+            names(vec![GoalTools::get_spec(), GoalTools::update_spec()]),
+        ),
+        (
+            ReadArtifactTool::GROUP,
+            names(vec![ReadArtifactTool::spec()]),
+        ),
+        (
+            StopBackgroundTool::GROUP,
+            names(vec![StopBackgroundTool::spec()]),
+        ),
+        (
+            crate::memory_tools::MemoryTools::GROUP,
+            names(crate::memory_tools::memory_tool_specs()),
+        ),
+        (
+            crate::runtimes_tool::RuntimesTool::GROUP,
+            names(vec![crate::runtimes_tool::runtimes_tool_spec()]),
+        ),
+        (
+            crate::agents_tool::AgentsTool::GROUP,
+            names(vec![crate::agents_tool::agents_tool_spec()]),
+        ),
+        (
+            crate::cron_tools::CronTools::GROUP,
+            names(crate::cron_tools::cron_tool_specs()),
+        ),
+    ]
+}
+
 #[cfg(test)]
 fn test_turn_context() -> Arc<crate::TurnAgentContext> {
     Arc::new(crate::TurnAgentContext {

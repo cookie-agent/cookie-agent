@@ -283,6 +283,13 @@ pub fn runtime_options(workspace: impl Into<PathBuf>) -> RuntimeOptions {
     options
 }
 
+impl BuiltinTools {
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "coding",
+        summary: "The workspace: reading, writing, and editing files, running shell commands, and fetching web pages.",
+    };
+}
 #[async_trait]
 impl ToolProvider for BuiltinTools {
     fn provider_id(&self) -> &'static str {
@@ -290,10 +297,7 @@ impl ToolProvider for BuiltinTools {
     }
 
     fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(cookie_agent_runtime_api::ToolGroup {
-            name: "coding",
-            summary: "The workspace: reading, writing, and editing files, running shell commands, and fetching web pages.",
-        })
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

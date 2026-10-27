@@ -993,6 +993,33 @@ finds them and `tool_load` loads them; a loaded tool stays callable. The
 [deferred tools spec](../specs/deferred-tools-cookie.md) has the details:
 tool rounds, announcements, and compaction.
 
+Every tool belongs to a group: its MCP server, its plugin, or one of the
+built-in providers below. Announcements list deferred tools under their
+group, with the group's summary the first time a round announces it; an MCP
+server's summary is the `instructions` it sends when it connects, and is
+marked untrusted. A provider whose tools are all deferred sends its prompt
+sections (its `<tool_instructions>`, see the
+[system prompt](system-prompt.md)) with the first `tool_load` of one of its
+tools instead of in the system prompt.
+
+<!-- generated: tool-groups -->
+
+| Group | Tools | Summary sent to the model |
+|---|---|---|
+| `agents` | [`list_agents`](#list_agents) | The agents this session can delegate to or schedule, and what each is for. |
+| `artifacts` | [`read_artifact`](#read_artifact) | Tool output too large for the conversation, kept aside and read back by range. |
+| `background` | [`stop_background`](#stop_background) | Calls running in the background, and stopping them. |
+| `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash), [`webfetch`](#webfetch) | The workspace: reading, writing, and editing files, running shell commands, and fetching web pages. |
+| `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
+| `delegation` | [`delegate_subagent`](#delegate_subagent), [`get_subagent_result`](#get_subagent_result) | Subagents: hand a focused task to another agent, and collect its result. |
+| `goal` | [`goal_get`](#goal_get), [`goal_update`](#goal_update) | The session's goal and the checklist that tracks it. |
+| `memory` | [`memory_search`](#memory_search), [`memory_read`](#memory_read), [`memory_write`](#memory_write), [`memory_edit`](#memory_edit), [`memory_delete`](#memory_delete) | Durable notes across sessions: what the user prefers, project decisions, and facts about machines. |
+| `messaging` | [`send_message`](#send_message) | Messages between the agents of a session tree. |
+| `runtimes` | [`list_runtimes`](#list_runtimes) | The runtimes this session can work through: the machines and capabilities a subagent can be started on. |
+| `skills` | [`skill`](#skill) | Skills: packaged instructions for a kind of task, loaded by name. |
+
+<!-- /generated -->
+
 ### `tool_search`
 
 <!-- generated: tool tool_search -->
