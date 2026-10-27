@@ -1,11 +1,11 @@
 # Deferred tool loading in oven-sdk
 
-Status: **draft** (2026-10-27); approach and every decision in section 9
-made 2026-10-27, eight cookie-side decisions recorded in section 10. The
-OpenAI encoding was verified live on 2026-10-27, and the Kimi encoding
-against Moonshot's own client, Kimi Code (section 5.4). Covers oven-sdk only; how cookie
-decides which tools to defer, and its search tool, are a separate spec
-(section 10).
+Status: **oven-sdk implemented** (2026-10-27; oven-sdk b875054, core 0.8.0,
+anthropic 0.9.0), with the deviations in section 11. Every decision in section
+9 was made 2026-10-27, and eight cookie-side decisions are recorded in section
+10. The Anthropic and OpenAI encodings were verified live; the Kimi encoding
+follows Moonshot's own client, Kimi Code (section 5.4). Cookie does not use
+it yet: the pin bump and cookie's side are a separate spec (section 10).
 
 ## 1. Goal and scope
 
@@ -542,3 +542,55 @@ Not part of this work; noted so the oven API fits it.
   - **A remembered model is `Unsupported`:** no `tool_search` (decision 1),
     every tool up front.
   - **The configuration status lists the remembered models.**
+
+## 11. Implementation notes
+
+Landed in oven-sdk on 2026-10-27, from 06b5b17 to b875054. The crate
+versions are core, openai, google, and vertex 0.8.0; anthropic 0.9.0; azure
+and bedrock 0.7.0; cohere and open-responses 0.6.0. They are not on
+crates.io yet.
+
+**Deviations from the sections above:**
+
+- **`LoadTools.text` is a required `String`**, not an `Option` (section 4.2).
+  Every adapter then borrows it as it borrows any other text, so none renders
+  a default. A caller always writes the sentence, such as `Loaded tools: a, b`.
+  The "no new names" case (section 5.1) renders that text too.
+- **The Hugging Face and Open Responses transport** (`oven-sdk-open-responses`)
+  rejects a native declaration (section 5.3). Nothing documents
+  `additional_tools` there. OpenAI-compatible Responses gateways go through
+  `oven-sdk-openai`, which supports it.
+- **Kimi's `tokenization failed`** is not among the wire keywords (section
+  7). The text is generic enough to misclassify unrelated errors, and it only
+  comes from K2 models, which nothing declares. The keywords are
+  `defer_loading`, `tool_reference`, `tool reference` (Anthropic's wording for
+  an unknown reference), `additional_tools`, and `cannot be used with
+  content`.
+- **A request with `tool_choice: none` loads nothing natively.** The adapters
+  send no tools then, so loads render as text, on every surface.
+
+**Where it lives:**
+
+- **Core:** `ToolLoading`, `ToolDefinition::deferred`, `ToolContent::LoadTools`,
+  `DeferredToolsCapability`, and `DeferredTools`, the load plan every adapter
+  encodes from. Also `provider_support::DEFERRED_TOOLS_WIRE_KEYWORDS` and
+  `rejects_deferred_tools`.
+- **Kimi dialect:** `OpenAiCompatibleChatSettings::deferred_tools`, with the
+  value `CompatibleChatDeferredTools::SystemMessage`.
+- **Namespaces:** stored in a call's metadata under `openai.namespace`.
+
+**Verified live on 2026-10-27:**
+
+- **Anthropic,** through the user's gateway on claude-sonnet-5-5 and
+  claude-haiku-4-5: the model calls a tool loaded by `tool_reference`.
+- **OpenAI** on gpt-5.5 and gpt-5.4-mini: load, call, and a follow-up
+  replaying the call, both natively and normalized. That follow-up needs the
+  namespace.
+- Each is an ignored live test in its crate's `tests/live.rs`.
+
+**Found on the way, not fixed:** Azure's Responses stream parser copies the
+`output_item.added` item's fields over the `output_item.done` item. A
+function call whose arguments arrive only in the `done` item, with no delta
+events, ends with the empty arguments of `added` and fails as invalid JSON.
+Real Azure streams send argument deltas, so this has not been seen live.
+
