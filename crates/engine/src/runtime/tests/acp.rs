@@ -1563,13 +1563,14 @@ async fn a_steer_reaches_the_running_work_as_a_prompt_during_it() {
 
 /// A steer the agent declines stays waiting, as a model run's pending
 /// input does: it never reached the transcript, so any client can still
-/// take it back.
+/// take it back. The agent's work outlasts the test's steps (it ends with
+/// the cancel), so no timing decides what the test sees.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_steer_stays_waiting_and_can_be_taken_back() {
     let acp = acp_fixture(&[("ACP_FIXTURE_DECLINE_STEERS", "1")], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    let run = start(engine, session, "wait", "steer-wait 2").await;
+    let run = start(engine, session, "wait", "steer-wait 30").await;
     await_event(engine, session, "the agent waiting", |event| {
         matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
     })
@@ -1600,23 +1601,28 @@ async fn a_declined_steer_stays_waiting_and_can_be_taken_back() {
             content: "say later".into()
         }
     );
+    engine.cancel_run(run, origin()).await.expect("cancel");
     let outcome = finished(engine, session, run).await;
-    assert_eq!(final_text(&outcome), "no steer");
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
     assert_eq!(
         prompts(&acp).len(),
         2,
-        "the declined steer, and nothing left for another turn"
+        "the declined steer was not sent again, and nothing was left to send"
     );
 }
 
 /// A steer the agent declines, left waiting, goes with the agent's next
-/// turn, and the session records no steer for it.
+/// turn, and the session records no steer for it. The agent's work ends
+/// once it has declined, so the steer never comes after it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_steer_goes_with_the_agents_next_turn() {
     let acp = acp_fixture(&[("ACP_FIXTURE_DECLINE_STEERS", "1")], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    let run = start(engine, session, "wait", "steer-wait 1").await;
+    let run = start(engine, session, "wait", "decline-wait").await;
     await_event(engine, session, "the agent waiting", |event| {
         matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
     })

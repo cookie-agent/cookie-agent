@@ -48,6 +48,10 @@ Each prompt's last text block is a command:
   steer-wait [<s>]       says "waiting", then waits (up to <s>, else 10 s) for a message
                          steered into its work and answers "steered: <texts>",
                          or "no steer"; session/cancel ends it as cancelled
+  decline-wait           says "waiting", then waits (up to 30 s) for a steer it
+                         declines (ACP_FIXTURE_DECLINE_STEERS), and answers "no
+                         steer" once it has; a steer taken or a cancel ends it as
+                         steer-wait does
   recall                 answers "remembers: " and the commands of the session's
                          earlier prompts, joined by ", " (a forked session
                          remembers its source's up to the fork point)
@@ -138,6 +142,8 @@ sessions = {}
 cancelled = {}
 running = {}
 steered = {}
+# Whether the work running in each session declined a steer.
+declined = {}
 # What the client advertised in `initialize`.
 client_capabilities = {}
 session_count = [0]
@@ -633,6 +639,19 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             finish(session_id, "cancelled")
             return
         say(session_id, "steered: " + " | ".join(got) if got else "no steer")
+    elif word == "decline-wait":
+        say(session_id, "waiting")
+        with state_lock:
+            state_lock.wait_for(
+                lambda: steered[session_id] or cancelled[session_id] or declined.get(session_id),
+                timeout=30,
+            )
+            got = list(steered[session_id])
+            stopped = cancelled[session_id]
+        if stopped:
+            finish(session_id, "cancelled")
+            return
+        say(session_id, "steered: " + " | ".join(got) if got else "no steer")
     elif word == "stop":
         say(session_id, "stopping")
         finish(session_id, rest, {"inputTokens": 40, "outputTokens": 2, "totalTokens": 42})
@@ -834,10 +853,15 @@ def handle(message):
                 running[session_id] = True
                 cancelled[session_id] = False
                 steered[session_id] = []
+                declined[session_id] = False
         if busy:
             # A prompt during the work: a steer, inserted into it.
             if env("ACP_FIXTURE_DECLINE_STEERS"):
                 fail(request_id, -32603, "Internal error: the steer was not taken")
+                # Answered first: the work it was meant for may end now.
+                with state_lock:
+                    declined[session_id] = True
+                    state_lock.notify_all()
                 return
             insert(request_id, session_id, params)
             with state_lock:

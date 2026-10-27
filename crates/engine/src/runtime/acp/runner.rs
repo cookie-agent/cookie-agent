@@ -728,6 +728,10 @@ struct Turn<'a> {
     /// Input was taken to steer that the agent did not take: the next round
     /// sends it.
     unsteered: bool,
+    /// The user inputs the agent declined to take into its running work,
+    /// by admission sequence number: they wait for its next turn, and are
+    /// not steered again meanwhile.
+    declined_steers: HashSet<u64>,
     /// The summary text of each compaction in progress, by its ID.
     compactions: HashMap<String, String>,
     /// The names of the tools cookie offers the agent over its MCP bridge,
@@ -945,9 +949,10 @@ impl Turn<'_> {
             self.commit(ModelFinishReason::Stop).await?;
         }
         let (session, run, engine) = (self.session(), self.run, self.engine);
+        let declined = self.declined_steers.clone();
         let inputs = engine
             .on_actor(session, move |engine| {
-                Ok(engine.hold_inputs_to_steer(session, run))
+                Ok(engine.hold_inputs_to_steer(session, run, &declined))
             })
             .await?;
         let claim = match engine.prompt_events(session, run).await {
@@ -1042,6 +1047,9 @@ impl Turn<'_> {
             Err(reason) => {
                 self.engine.release_steered_inputs(session);
                 self.unsteered |= producers;
+                // They wait for the agent's next turn: a wake already on its
+                // way must not send them again.
+                self.declined_steers.extend(pending.inputs.iter().copied());
                 self.engine
                     .acp_notice(
                         self.session(),
@@ -2176,6 +2184,7 @@ impl Engine {
             terminals: HashMap::new(),
             steer_claims: Vec::new(),
             unsteered: false,
+            declined_steers: HashSet::new(),
             compactions: HashMap::new(),
             bridge_tools,
         };
@@ -2610,11 +2619,13 @@ impl Engine {
         &self,
         session: SessionId,
         run: RunId,
+        declined: &HashSet<u64>,
     ) -> Vec<super::super::PendingInput> {
         let Ok(log) = self.inner.store.log(session) else {
             return Vec::new();
         };
-        let inputs = super::super::mailbox::pending_inputs(&log.event_snapshot(), run);
+        let mut inputs = super::super::mailbox::pending_inputs(&log.event_snapshot(), run);
+        inputs.retain(|input| !declined.contains(&input.admission_seq));
         let held = inputs
             .iter()
             .map(|input| input.admission_seq)
