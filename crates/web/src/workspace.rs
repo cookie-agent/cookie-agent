@@ -235,6 +235,9 @@ pub struct Workspace {
     /// The daemon takes the page's own address as the OAuth redirect
     /// (client protocol 1.11), so the MCP servers offer sign-in.
     pub can_sign_in: RwSignal<bool>,
+    /// The daemon declares ACP agents for every runtime (client protocol
+    /// 1.43.0).
+    pub shares_acp_agents: RwSignal<bool>,
     /// The sign-ins this browser started that still wait, as
     /// `(state, server)`.
     pub sign_ins: RwSignal<Vec<(String, String)>>,
@@ -466,6 +469,7 @@ impl Workspace {
             machines: RwSignal::new(None),
             mcp_servers: RwSignal::new(None),
             can_sign_in: RwSignal::new(false),
+            shares_acp_agents: RwSignal::new(false),
             sign_ins: RwSignal::new(crate::oauth::waiting()),
             sign_in_outcome: RwSignal::new(None),
             sign_in_waiting: StoredValue::new(None),
@@ -608,6 +612,9 @@ impl Workspace {
             ));
         self.can_sign_in.set(
             cookie_agent_client_state::mcp::daemon_accepts_page_redirects(client.daemon_version()),
+        );
+        self.shares_acp_agents.set(
+            cookie_agent_client_state::runtimes::daemon_shares_acp_agents(client.daemon_version()),
         );
         self.has_crons
             .set(cookie_agent_client_state::cron::daemon_has_crons(

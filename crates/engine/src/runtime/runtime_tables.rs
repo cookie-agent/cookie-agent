@@ -59,16 +59,29 @@ fn runtime_servers(
         .unwrap_or_default()
 }
 
-/// `runtime`'s ACP agent declarations as `config` has them.
+/// `runtime`'s ACP agent declarations as `config` has them: `global`'s are
+/// `[acp.agents]`, those every runtime offers.
 fn runtime_agents(
     config: &LoadedConfiguration,
     runtime: &RuntimeId,
 ) -> std::collections::BTreeMap<cookie_agent_identity::AgentId, AcpAgentConfig> {
+    if runtime.as_str() == RuntimeId::GLOBAL {
+        return config.runtime.acp.agents.clone();
+    }
     config
         .runtimes
         .get(runtime)
         .map(|template| template.acp_agents.clone())
         .unwrap_or_default()
+}
+
+/// The configuration key of `runtime`'s declaration of `agent`:
+/// `[acp.agents.<agent>]` for `global`, which every runtime offers.
+fn agent_key(runtime: &RuntimeId, agent: &str) -> Vec<String> {
+    if runtime.as_str() == RuntimeId::GLOBAL {
+        return ["acp", "agents", agent].map(str::to_owned).to_vec();
+    }
+    runtime_key(runtime, &["acp", "agents", agent])
 }
 
 fn identity_agent(agent: &AgentId) -> Result<cookie_agent_identity::AgentId, EngineError> {
@@ -277,11 +290,17 @@ impl Engine {
     #[must_use]
     pub fn runtime_agent_declarations(&self, runtime: &RuntimeId) -> Vec<RuntimeAgentDeclaration> {
         let config = self.configuration();
-        let reported = self.inner.runtimes.acp_agents().remove(runtime.as_str());
+        let mut reports = self.inner.runtimes.acp_agents();
+        // One every runtime offers is available while some runtime runs it.
+        let reported = if runtime.as_str() == RuntimeId::GLOBAL {
+            reports.into_values().collect::<Vec<_>>()
+        } else {
+            reports.remove(runtime.as_str()).into_iter().collect()
+        };
         runtime_agents(&config, runtime)
             .into_iter()
             .filter_map(|(agent, declared)| {
-                let available = reported.as_ref().is_some_and(|reported| {
+                let available = reported.iter().any(|reported| {
                     reported.available
                         && reported
                             .agents
@@ -303,17 +322,17 @@ impl Engine {
             .collect()
     }
 
-    /// Adds or replaces `[runtimes.<runtime>.acp.agents.<agent>]`.
+    /// Adds or replaces `[runtimes.<runtime>.acp.agents.<agent>]`, or for
+    /// `global` `[acp.agents.<agent>]`, which every runtime offers.
     pub async fn set_runtime_agent(
         &self,
         runtime: RuntimeId,
         agent: AgentId,
         definition: AcpAgentDefinition,
     ) -> Result<Vec<RuntimeAgentDeclaration>, EngineError> {
-        table_runtime(&runtime)?;
         identity_agent(&agent)?;
         let value = toml_value(&format!("ACP agent `{agent}`"), &agent_config(definition))?;
-        let key = runtime_key(&runtime, &["acp", "agents", agent.as_str()]);
+        let key = agent_key(&runtime, agent.as_str());
         self.edit_configuration(move |_, candidate| set(candidate, key, Some(value)))
             .await?;
         Ok(self.runtime_agent_declarations(&runtime))
@@ -326,9 +345,8 @@ impl Engine {
         runtime: RuntimeId,
         agent: AgentId,
     ) -> Result<Vec<RuntimeAgentDeclaration>, EngineError> {
-        table_runtime(&runtime)?;
         self.known_runtime_agent(&runtime, &agent)?;
-        let key = runtime_key(&runtime, &["acp", "agents", agent.as_str()]);
+        let key = agent_key(&runtime, agent.as_str());
         self.edit_configuration(move |_, candidate| set(candidate, key, None))
             .await?;
         Ok(self.runtime_agent_declarations(&runtime))
@@ -346,7 +364,6 @@ impl Engine {
         agent: AgentId,
         new_agent: AgentId,
     ) -> Result<(Vec<RuntimeAgentDeclaration>, Vec<String>, Vec<String>), EngineError> {
-        table_runtime(&runtime)?;
         if agent == new_agent {
             return Err(refused("the new key is the agent's key"));
         }
@@ -372,7 +389,13 @@ impl Engine {
                     .acp_agents
                     .keys()
                     .any(|key| key.as_str() == agent.as_str())
-        });
+        }) || (runtime.as_str() != RuntimeId::GLOBAL
+            && config
+                .runtime
+                .acp
+                .agents
+                .keys()
+                .any(|key| key.as_str() == agent.as_str()));
         let own = format!("agents/{agent}.md");
         let moved = (!still_declared
             && config.agents.keys().any(|id| id.as_str() == agent.as_str()))
@@ -387,8 +410,8 @@ impl Engine {
         };
         let value = toml_value(&format!("ACP agent `{agent}`"), &declaration)?;
         let (old_key, new_key) = (
-            runtime_key(&runtime, &["acp", "agents", agent.as_str()]),
-            runtime_key(&runtime, &["acp", "agents", new_agent.as_str()]),
+            agent_key(&runtime, agent.as_str()),
+            agent_key(&runtime, new_agent.as_str()),
         );
         let move_document = moved
             .clone()

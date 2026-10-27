@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.43.0
+
+- `runtimes.agents.*` take `runtime_id` `global` for the top-level
+  `[acp.agents]` table: ACP agents every runtime offers, which a runtime's
+  own declaration of the same key replaces there. A `global` declaration is
+  `available` while some runtime runs it. Older daemons refuse `global`.
+
 ## 1.42.0
 
 - `crons.create` and `crons.update` take `max_runs` as a whole number of 0

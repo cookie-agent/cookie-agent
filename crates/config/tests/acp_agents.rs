@@ -90,6 +90,50 @@ fn an_agent_refuses_unknown_and_malformed_fields() {
 }
 
 #[test]
+fn agents_every_runtime_offers_parse_under_acp_and_are_checked_alike() {
+    let loaded = load(
+        r#"
+[acp]
+idle_shutdown_ms = 1000
+
+[acp.agents.claude]
+command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+description = "Claude Code"
+"#,
+        &[],
+    )
+    .expect("shared agents");
+    let claude = &loaded.runtime.acp.agents[&AgentId::new("claude").unwrap()];
+    assert_eq!(claude.command[0], "npx");
+    assert_eq!(claude.description, "Claude Code");
+    assert!(claude.enabled);
+    for (table, expected) in [
+        (
+            "[acp.agents.claude]
+command = []
+",
+            "nonempty",
+        ),
+        (
+            "[acp.agents.claude]
+command = [\"x\"]
+model = \"m\"
+",
+            "unknown field",
+        ),
+        (
+            "[acp.agents.Claude]
+command = [\"x\"]
+",
+            "agent IDs are lowercase",
+        ),
+    ] {
+        let error = rejected(table, &[]);
+        assert!(error.contains(expected), "{table}: {error}");
+    }
+}
+
+#[test]
 fn agent_keys_follow_the_agent_id_grammar() {
     for key in ["Claude", "claude_code", "-claude", "claude--code"] {
         let error = rejected(

@@ -398,30 +398,35 @@ pub(crate) fn runtime_settings(
     }
 }
 
-/// The ACP agents `[runtimes.<runtime_id>.acp.agents]` declares, as
-/// `runtime/initialize` carries them.
+/// The ACP agents runtime `runtime_id` offers, as `runtime/initialize`
+/// carries them: those `[acp.agents]` declares for every runtime, each
+/// replaced by `[runtimes.<runtime_id>.acp.agents]`'s of the same key, and
+/// that table's others. `global` offers none.
 pub(crate) fn acp_agent_settings(
     config: &cookie_agent_config::LoadedConfiguration,
     runtime_id: &str,
 ) -> Vec<protocol::AcpAgentSettings> {
-    config
+    if runtime_id == cookie_agent_protocol::RuntimeId::GLOBAL {
+        return Vec::new();
+    }
+    let mut agents = config.runtime.acp.agents.clone();
+    if let Some((_, template)) = config
         .runtimes
         .iter()
         .find(|(id, _)| id.as_str() == runtime_id)
-        .map(|(_, template)| {
-            template
-                .acp_agents
-                .iter()
-                .map(|(id, agent)| protocol::AcpAgentSettings {
-                    id: id.to_string(),
-                    command: agent.command.clone(),
-                    env: agent.env.clone(),
-                    description: agent.description.clone(),
-                    enabled: agent.enabled,
-                })
-                .collect()
+    {
+        agents.extend(template.acp_agents.clone());
+    }
+    agents
+        .into_iter()
+        .map(|(id, agent)| protocol::AcpAgentSettings {
+            id: id.to_string(),
+            command: agent.command,
+            env: agent.env,
+            description: agent.description,
+            enabled: agent.enabled,
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Registers a protocol template per configured `[runtimes.<id>]` other

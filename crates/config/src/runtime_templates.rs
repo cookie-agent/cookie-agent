@@ -38,10 +38,11 @@ struct RawAcpRuntime {
     agents: BTreeMap<String, RawAcpAgent>,
 }
 
-/// `[runtimes.<id>.acp.agents.<agent>]` as authored.
-#[derive(Clone, Debug, Deserialize)]
+/// `[runtimes.<id>.acp.agents.<agent>]` or `[acp.agents.<agent>]` as
+/// authored.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct RawAcpAgent {
+pub(crate) struct RawAcpAgent {
     command: Option<Vec<String>>,
     env: Option<BTreeMap<String, String>>,
     description: Option<String>,
@@ -260,6 +261,17 @@ fn validate_env(
         ));
     }
     Ok(env)
+}
+
+/// Checks `[acp.agents]`, the ACP agents every runtime offers, as a
+/// runtime's own declarations are checked.
+pub(crate) fn validate_shared_acp_agents(
+    agents: BTreeMap<String, RawAcpAgent>,
+) -> Result<BTreeMap<AgentId, AcpAgentConfig>, ConfigError> {
+    validate_acp_agents("acp", Some(RawAcpRuntime { agents })).map_err(|error| match error {
+        ConfigError::RuntimeTemplate { reason, .. } => ConfigError::SharedAcpAgent(reason),
+        other => other,
+    })
 }
 
 fn validate_acp_agents(

@@ -39,6 +39,8 @@ pub enum ConfigError {
     McpServer { server: String, reason: String },
     #[error("runtime template `{runtime}` is invalid: {reason}")]
     RuntimeTemplate { runtime: String, reason: String },
+    #[error("[acp.agents] is invalid: {0}")]
+    SharedAcpAgent(String),
     #[error("environment interpolation is invalid at `{0}`")]
     Interpolation(String),
     #[error("environment variable `{variable}` is missing at `{path}`")]

@@ -1065,11 +1065,23 @@ pub struct AcpConfig {
     /// is stopped.
     #[serde(default = "default_acp_idle_shutdown_ms")]
     pub idle_shutdown_ms: u64,
+    /// `[acp.agents.<agent>]`: the ACP agents every runtime offers (all but
+    /// `global`), each run on the runtime's machine. A runtime's own
+    /// `[runtimes.<id>.acp.agents.<agent>]` of the same key replaces it
+    /// there.
+    #[serde(skip)]
+    pub agents: BTreeMap<cookie_agent_identity::AgentId, crate::AcpAgentConfig>,
+    /// `[acp.agents]` as authored, checked into [`Self::agents`] once the
+    /// configuration's layers are applied.
+    #[serde(default, rename = "agents")]
+    pub(crate) authored_agents: BTreeMap<String, crate::runtime_templates::RawAcpAgent>,
 }
 impl Default for AcpConfig {
     fn default() -> Self {
         Self {
             idle_shutdown_ms: default_acp_idle_shutdown_ms(),
+            agents: BTreeMap::new(),
+            authored_agents: BTreeMap::new(),
         }
     }
 }

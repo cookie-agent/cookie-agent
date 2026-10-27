@@ -117,6 +117,33 @@ machine while the runtime is connected. A change to the table reaches the
 connected runtime at once, so adding an agent needs no restart. To keep it
 connected, run it as a [service](../runtimes/service.md).
 
+## On every runtime
+
+To offer an agent on every runtime without declaring it on each, declare
+it once under `[acp.agents.<agent>]`:
+
+```toml
+[acp.agents.claude]
+command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+description = "Claude Code"
+```
+
+Every runtime but `global` offers it, and runs it on its own machine, so
+the command must work there. A runtime's own declaration of the same key
+replaces it on that runtime: give it another command there, or leave it off
+with `enabled = false`:
+
+```toml
+[runtimes.labpc.acp.agents.claude]
+command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+enabled = false
+```
+
+In the web client, the Machines view lists these under **On every
+runtime**, where **ACP agent** adds one; each runtime's card shows the ones
+it offers with an `every runtime` badge, and **Turn off here** writes that
+runtime's own declaration with `enabled = false`.
+
 ## Which runtime runs it
 
 An agent's ID is the key of its declaration, whichever runtime declares it:

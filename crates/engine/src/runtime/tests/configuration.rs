@@ -613,3 +613,74 @@ async fn a_runtimes_acp_agents_are_set_listed_renamed_and_removed() {
     assert!(fixture.root.join("agents/claude-code.md").exists());
     assert!(engine.runtime_agent_declarations(&labpc).is_empty());
 }
+
+/// An ACP agent declared for every runtime is `global`'s, written to
+/// `[acp.agents]`, and every runtime but `global` is sent it; a runtime's
+/// own declaration of the same key replaces it there.
+#[tokio::test]
+async fn an_acp_agent_for_every_runtime_is_global_and_a_runtimes_own_wins() {
+    let fixture = reloadable();
+    let engine = &fixture.engine;
+    let global = cookie_agent_protocol::RuntimeId::new("global").unwrap();
+    let labpc = cookie_agent_protocol::RuntimeId::new("labpc").unwrap();
+    let claude = cookie_agent_protocol::AgentId::new("claude").unwrap();
+    let definition = |command: &str, enabled| cookie_agent_protocol::AcpAgentDefinition {
+        command: vec![command.into()],
+        env: std::collections::BTreeMap::new(),
+        description: String::new(),
+        enabled,
+    };
+    let listed = engine
+        .set_runtime_agent(
+            global.clone(),
+            claude.clone(),
+            definition("claude-acp", true),
+        )
+        .await
+        .expect("declared for every runtime");
+    assert_eq!(listed[0].agent, claude);
+    let written = std::fs::read_to_string(fixture.root.join("config.toml")).unwrap();
+    assert!(written.contains("[acp.agents.claude]"), "{written}");
+    let sent = |runtime: &str| {
+        crate::runtimes::runtime_settings(&engine.configuration(), runtime)
+            .acp_agents
+            .into_iter()
+            .map(|agent| (agent.id, agent.command[0].clone(), agent.enabled))
+            .collect::<Vec<_>>()
+    };
+    for runtime in ["local", "labpc", "anything"] {
+        assert_eq!(
+            sent(runtime),
+            [("claude".into(), "claude-acp".into(), true)]
+        );
+    }
+    assert!(sent("global").is_empty());
+    // labpc leaves it off, and only labpc.
+    engine
+        .set_runtime_agent(
+            labpc.clone(),
+            claude.clone(),
+            definition("claude-acp", false),
+        )
+        .await
+        .expect("labpc's own");
+    assert_eq!(
+        sent("labpc"),
+        [("claude".into(), "claude-acp".into(), false)]
+    );
+    assert_eq!(
+        sent("local"),
+        [("claude".into(), "claude-acp".into(), true)]
+    );
+    // Without its own, labpc offers every runtime's again.
+    engine
+        .remove_runtime_agent(labpc, claude.clone())
+        .await
+        .expect("labpc's own removed");
+    engine
+        .remove_runtime_agent(global.clone(), claude)
+        .await
+        .expect("removed for every runtime");
+    assert!(engine.runtime_agent_declarations(&global).is_empty());
+    assert!(sent("local").is_empty());
+}

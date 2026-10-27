@@ -209,6 +209,9 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
             preset_agents.entry(preset.to_owned()).or_default();
         }
     }
+    runtime.acp.agents = crate::runtime_templates::validate_shared_acp_agents(std::mem::take(
+        &mut runtime.acp.authored_agents,
+    ))?;
     AgentRegistry::validate_ref(&agents)?;
     let agent_presets = preset_agents
         .into_iter()

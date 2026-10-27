@@ -244,7 +244,8 @@ impl Manage {
     /// read yet.
     fn read_agents(self, workspace: Workspace, ids: impl IntoIterator<Item = RuntimeId>) {
         for id in ids {
-            if id.as_str() != RuntimeId::GLOBAL
+            // `global`'s are those every runtime offers.
+            if (id.as_str() != RuntimeId::GLOBAL || workspace.shares_acp_agents.get_untracked())
                 && !self
                     .agents
                     .with_untracked(|agents| agents.contains_key(&id))
@@ -293,6 +294,9 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
         <Show when=move || adding.get()>
             {add_runtime(workspace, adding)}
         </Show>
+        <Show when=move || workspace.shares_acp_agents.get()>
+            {shared_agents(workspace, manage)}
+        </Show>
         {open_forms(workspace, manage)}
         {move || {
             // The view reads both lists every second: only a change
@@ -321,10 +325,54 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
                             .iter()
                             .flat_map(|registry| registry.runtimes.iter().map(|runtime| runtime.runtime_id.clone())),
                     )
+                    .chain(std::iter::once(RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a runtime ID")))
                     .collect::<Vec<_>>(),
             );
             machine_cards(workspace, &machines, registry.as_ref(), &mcp, form, dragging, manage).into_any()
         }}
+    }
+}
+
+/// The ACP agents every runtime offers (`[acp.agents]`, `global`'s), with
+/// the button that adds one.
+fn shared_agents(workspace: Workspace, manage: Manage) -> impl IntoView {
+    let global = RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a runtime ID");
+    let listed = global.clone();
+    view! {
+        <section class="flex flex-col gap-2 rounded-lg border border-toasted p-3 dark:border-ember" data-shared-acp>
+            <div class="flex flex-wrap items-center gap-2">
+                <h3 class="min-w-0 flex-1 text-sm font-bold">"On every runtime"</h3>
+                <button
+                    type="button"
+                    class=BUTTON
+                    data-shared-add-acp
+                    on:click=move |_| {
+                        manage.acp_error.set(None);
+                        manage.acp.set(Some(AcpEdit {
+                            runtime: global.clone(),
+                            fields: AcpAgentFields::add(),
+                            editing: None,
+                        }));
+                    }
+                >
+                    <Glyph icon=icondata::FaPlusSolid />
+                    "ACP agent"
+                </button>
+            </div>
+            <p class=NOTE>
+                "ACP agents every runtime offers, each run on the runtime's own machine. A runtime's own declaration of the same ID replaces it there."
+            </p>
+            {move || {
+                let none = manage
+                    .agents
+                    .with(|agents| agents.get(&listed).is_some_and(|read| read.as_ref().is_ok_and(Vec::is_empty)));
+                if none {
+                    view! { <p class=NOTE data-shared-acp-empty>"None yet."</p> }.into_any()
+                } else {
+                    runtime_acp_agent_list(workspace, manage, listed.clone(), Vec::new()).into_any()
+                }
+            }}
+        </section>
     }
 }
 
@@ -360,9 +408,14 @@ fn acp_form(workspace: Workspace, manage: Manage, edit: AcpEdit) -> impl IntoVie
         editing,
     } = edit;
     let enabled = RwSignal::new(fields.enabled);
+    let place = if runtime.as_str() == RuntimeId::GLOBAL {
+        "every runtime".to_owned()
+    } else {
+        runtime.to_string()
+    };
     let title = match &editing {
-        Some(agent) => format!("Edit ACP agent {agent} on {runtime}"),
-        None => format!("New ACP agent on {runtime}"),
+        Some(agent) => format!("Edit ACP agent {agent} on {place}"),
+        None => format!("New ACP agent on {place}"),
     };
     let renames = editing.is_some();
     let submit = move || {
@@ -807,15 +860,49 @@ fn runtime_acp_agent_list(
         }
         None => Vec::new(),
     };
+    // Those every runtime offers that this one does not replace with its
+    // own; `global`'s own list is those.
+    let shared = if runtime.as_str() == RuntimeId::GLOBAL {
+        Vec::new()
+    } else {
+        let global = RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a runtime ID");
+        manage
+            .agents
+            .with(|agents| {
+                agents
+                    .get(&global)
+                    .and_then(|read| read.as_ref().ok())
+                    .cloned()
+            })
+            .unwrap_or_default()
+    };
+    let replaces = |agent: &AgentId| shared.iter().any(|offered| offered.agent == *agent);
+    let shared_here = shared
+        .iter()
+        .filter(|offered| {
+            !declarations
+                .iter()
+                .any(|declared| declared.agent == offered.agent)
+        })
+        .map(|offered| {
+            let available = catalog
+                .iter()
+                .any(|listed| listed.agent == offered.agent && listed.available);
+            (offered.clone(), available)
+        })
+        .collect::<Vec<_>>();
     let machine_only = catalog
         .into_iter()
         .filter(|offered| {
             !declarations
                 .iter()
                 .any(|declared| declared.agent == offered.agent)
+                && !shared
+                    .iter()
+                    .any(|declared| declared.agent == offered.agent)
         })
         .collect::<Vec<_>>();
-    if declarations.is_empty() && machine_only.is_empty() {
+    if declarations.is_empty() && machine_only.is_empty() && shared_here.is_empty() {
         return ().into_any();
     }
     let dot = |available: bool| {
@@ -869,6 +956,7 @@ fn runtime_acp_agent_list(
                 .collect_view();
             let (created, created_description) = (own.clone(), description.clone());
             let template_of = agent.to_string();
+            let replacing = replaces(&agent);
             view! {
                 <li
                     class="flex min-w-0 flex-col gap-0.5"
@@ -893,6 +981,11 @@ fn runtime_acp_agent_list(
                         <span class=format!("pl-4 {NOTE} truncate")>{description.clone()}</span>
                     })}
                     <span class=format!("pl-4 {NOTE} truncate font-mono") data-acp-command>{command}</span>
+                    {replacing.then(|| view! {
+                        <span class=format!("pl-4 {NOTE}") data-acp-replaces>
+                            "Replaces the one every runtime offers; Remove offers that one here again."
+                        </span>
+                    })}
                     <div class="flex flex-wrap items-center gap-2 pl-4">
                         {documents}
                         {(!has_own).then(|| view! {
@@ -945,6 +1038,70 @@ fn runtime_acp_agent_list(
             }
         })
         .collect_view();
+    let shared_rows = shared_here
+        .into_iter()
+        .map(|(declaration, available)| {
+            let enabled = declaration.definition.enabled;
+            let (icon, icon_class) = dot(available && enabled);
+            let agent = declaration.agent.clone();
+            let edited = AcpEdit {
+                runtime: RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a runtime ID"),
+                fields: AcpAgentFields::edit(&declaration),
+                editing: Some(agent.clone()),
+            };
+            let off = {
+                let mut fields = AcpAgentFields::edit(&declaration);
+                fields.enabled = false;
+                fields
+            };
+            let here = runtime.clone();
+            let command = declaration.definition.command.join(" ");
+            view! {
+                <li
+                    class="flex min-w-0 flex-col gap-0.5"
+                    data-acp-agent=agent.to_string()
+                    data-acp-shared
+                    data-acp-available=(available && enabled).then_some("true")
+                >
+                    <div class="flex min-w-0 items-center gap-2">
+                        <Glyph icon=icon class=format!("shrink-0 text-[0.6rem] {icon_class}") />
+                        <span class="min-w-16 flex-1 truncate font-mono text-sm">{agent.to_string()}</span>
+                        <span class=STATE>"every runtime"</span>
+                        <span class=STATE>
+                            {if !enabled {
+                                "disabled"
+                            } else if available {
+                                "available"
+                            } else {
+                                "unavailable"
+                            }}
+                        </span>
+                    </div>
+                    <span class=format!("pl-4 {NOTE} truncate font-mono") data-acp-command>{command}</span>
+                    <div class="flex flex-wrap gap-1 pl-3" data-acp-actions>
+                        <button type="button" class=ROW_ACTION data-acp-edit on:click=move |_| {
+                            manage.acp_error.set(None);
+                            manage.acp.set(Some(edited.clone()));
+                        }>
+                            "Edit"
+                        </button>
+                        {enabled.then(|| view! {
+                            <button type="button" class=ROW_ACTION data-acp-turn-off on:click=move |_| {
+                                let _ = workspace.submit_runtime_agent(
+                                    here.clone(),
+                                    &off,
+                                    None,
+                                    manage.agents,
+                                );
+                            }>
+                                "Turn off here"
+                            </button>
+                        })}
+                    </div>
+                </li>
+            }
+        })
+        .collect_view();
     let offered = machine_only
         .into_iter()
         .map(|offered| {
@@ -966,7 +1123,7 @@ fn runtime_acp_agent_list(
     view! {
         <div class="flex flex-col gap-1 rounded-md bg-parchment px-2 py-1.5 dark:bg-char" data-runtime-acp>
             <span class="text-xs font-bold opacity-70">"ACP agents"</span>
-            <ul class="flex flex-col gap-1">{declared}{offered}</ul>
+            <ul class="flex flex-col gap-1">{declared}{shared_rows}{offered}</ul>
         </div>
     }
     .into_any()

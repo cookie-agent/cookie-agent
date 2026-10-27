@@ -312,7 +312,10 @@ no `acp` action)*:
 - **Runtime protocol minor:** agent declarations and the relay (section 7),
   the MCP bridge frames (section 9).
 - **Plugin protocol minor:** the new events.
-- **Config:** `[runtimes.*.acp.agents.*]`, `[acp] idle_shutdown_ms`, and the
+- **Config:** `[runtimes.*.acp.agents.*]`, `[acp] idle_shutdown_ms`
+  (since 2026-10-27 also `[acp.agents.*]`, declared once for every runtime
+  but `global`, which a runtime's own declaration of the same key replaces
+  there; `runtimes.agents.*` reach it as `global`'s), and the
   agent document's `acp` block.
 
 ## 12. Tests

@@ -217,6 +217,20 @@ pub struct RuntimeAcpAgent {
     pub agents: Vec<AgentId>,
 }
 
+/// The client protocol minor from which `runtimes.agents.*` take `global`
+/// for the ACP agents every runtime offers (`[acp.agents]`).
+pub const SHARED_ACP_AGENTS_MINOR: u32 = 43;
+
+/// Whether a daemon speaking `version` declares ACP agents for every
+/// runtime.
+pub fn daemon_shares_acp_agents(version: Option<cookie_agent_protocol::SemVer>) -> bool {
+    version.is_some_and(|version| {
+        version
+            .shared_minor(cookie_agent_protocol::CLIENT_PROTOCOL_VERSION)
+            .is_some_and(|minor| minor >= SHARED_ACP_AGENTS_MINOR)
+    })
+}
+
 /// The ACP agent declarations `runtime_id` offers, by key, from the
 /// catalog's `agents`.
 pub fn runtime_acp_agents(

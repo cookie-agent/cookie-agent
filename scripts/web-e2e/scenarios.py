@@ -5459,6 +5459,40 @@ def runtime_mcp(browser):
     browser.click(helper + " [data-acp-remove]")
     browser.wait("the agent removed", lambda: count(browser, helper) == 0, timeout=40)
     print("an ACP agent is declared on and removed from a runtime in the Machines view")
+
+    # One declared for every runtime: listed on top, offered by the runtime,
+    # turned off there by the runtime's own, which removing undoes.
+    browser.click("#page [data-shared-add-acp]")
+    browser.wait("the shared agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
+    assert "every runtime" in browser.text("#machines-acp-form"), browser.text("#machines-acp-form")
+    browser.type("#acp-agent", "everywhere")
+    browser.script("document.querySelector('#acp-command').value = '';")
+    browser.type("#acp-command", '["true"]')
+    browser.click("#acp-save")
+    top = '#page [data-shared-acp] [data-acp-agent="everywhere"]'
+    here = machine_runtime + ' [data-acp-agent="everywhere"]'
+    browser.wait("the shared agent listed", lambda: count(browser, top) == 1, timeout=40)
+    browser.wait("offered by the runtime", lambda: count(browser, here + "[data-acp-shared]") == 1, timeout=40)
+    settle(browser)
+    browser.shot("runtime-acp-shared")
+    browser.click(here + " [data-acp-turn-off]")
+    browser.wait(
+        "turned off here",
+        lambda: count(browser, here + "[data-acp-shared]") == 0
+        and count(browser, here + " [data-acp-replaces]") == 1
+        and count(browser, here + "[data-acp-enabled]") == 0,
+        timeout=40,
+    )
+    assert count(browser, top + "[data-acp-enabled]") == 1, "the shared one stays on"
+    browser.click(here + " [data-acp-remove]")
+    browser.wait("offered again", lambda: count(browser, here + "[data-acp-shared]") == 1, timeout=40)
+    browser.click(top + " [data-acp-remove]")
+    browser.wait(
+        "the shared agent removed",
+        lambda: count(browser, top) == 0 and count(browser, here) == 0,
+        timeout=40,
+    )
+    print("an ACP agent declared for every runtime is offered by each, and one runtime can turn it off")
     close_sheet(browser)
 
 

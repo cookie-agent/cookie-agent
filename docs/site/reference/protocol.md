@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.42.0",
+    "protocol_version": "1.43.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.42.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.43.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -247,7 +247,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Every `runtimes` entry (built-in, configured, and dial-in, with lifetime, connection, capabilities, and machine) and the opened `instances` with status (see [Runtimes](#runtimes)) |
 | `runtimes.reconnect` | `runtime_id`, optional `capability`, `workspace` when the capability takes one | The `instance` afterwards, as `runtimes.list` reports it |
-| `runtimes.agents.list` | `runtime_id`; since 1.37.0 | `agents`: the runtime's `[runtimes.<id>.acp.agents]` declarations (see [Runtime tables](#runtime-tables)) |
+| `runtimes.agents.list` | `runtime_id`; since 1.37.0 | `agents`: the runtime's `[runtimes.<id>.acp.agents]` declarations, or for `global` (since 1.43.0) the `[acp.agents]` ones every runtime offers (see [Runtime tables](#runtime-tables)) |
 | `runtimes.agents.set` | `runtime_id`, `agent`, `definition` (`command`, `env`, `description`, `enabled`) | `agents` afterwards |
 | `runtimes.agents.remove` | `runtime_id`, `agent` | `agents` afterwards |
 | `runtimes.agents.rename` | `runtime_id`, `agent`, `new_agent` | `agents` afterwards, the `moved` documents, and the `stale_templates` that still name `agent` |
@@ -1395,6 +1395,13 @@ changed.
   server changed in the running daemon only, without `mcp.server.persist`,
   is refused, and a `global` server's OAuth sign-in does not follow its new
   name.
+- **Agents every runtime offers.** Since 1.43.0, `runtimes.agents.*` with
+  `runtime_id` `global` change the top-level `[acp.agents]` table: the ACP
+  agents every runtime but `global` offers, each run on the runtime's
+  machine. A runtime's own declaration of the same key replaces it there,
+  with another command or `enabled = false` to leave it off; removing that
+  one offers every runtime's again. A `global` declaration is `available`
+  while some runtime runs it. Before 1.43.0 a daemon refuses `global`.
 - **`runtimes.agents.list`** returns each declaration's `agent` (its key and
   the ID of the agent it offers), `definition`, `available` (the runtime
   reported it and a session that attaches the runtime can run it now), and
