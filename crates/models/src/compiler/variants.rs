@@ -384,6 +384,7 @@ mod tests {
             options: crate::AdaptorOptions::default(),
             pricing: None,
             compaction: crate::NativeCompactionConfig::Default,
+            deferred_tools: None,
             headers: BTreeMap::new(),
         }
     }

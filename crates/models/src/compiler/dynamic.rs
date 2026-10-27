@@ -82,6 +82,11 @@ pub struct CompiledDynamicModel {
     /// the adapters that have it; a variant that switches endpoint takes
     /// native compaction from this and its own adapter.
     pub native_compaction_allowed: bool,
+    /// The configured `deferred_tools`, or `native` from models.dev's
+    /// `dynamically_loaded_tools`; a variant that switches endpoint decides
+    /// deferral from this and its own adapter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred_tools_setting: Option<crate::DeferredToolsSetting>,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
@@ -149,6 +154,18 @@ impl CompiledDynamicModel {
             self.native_compaction_allowed,
             self.setup.as_ref(),
         );
+        selected.capabilities.deferred_tools = if loads_deferred_tools(selected.adapter) {
+            deferred_tools_support(
+                selected.adapter,
+                &selected.adapter_id,
+                self.deferred_tools_setting,
+                self.custom,
+                selected.endpoint.as_deref(),
+                selected.wire_model_id.as_str(),
+            )
+        } else {
+            crate::DeferredToolsSupport::Unsupported
+        };
         selected.capabilities.native_replay = self.replay_declaration.unwrap_or_else(|| {
             automatic_replay(
                 selected.adapter,
@@ -570,6 +587,25 @@ impl DynamicCompiler {
             override_.is_none_or(|value| value.compaction.allows_native());
         capabilities.compaction =
             native_compaction_capability(adapter, native_compaction_allowed, setup.as_ref());
+        let override_deferred_tools = override_.and_then(|value| value.deferred_tools);
+        let deferred_tools_setting = override_deferred_tools.or_else(|| {
+            (model.dynamically_loaded_tools == Some(true))
+                .then_some(crate::DeferredToolsSetting::Native)
+        });
+        capabilities.deferred_tools = if loads_deferred_tools(adapter) {
+            deferred_tools_support(
+                adapter,
+                &adapter_id,
+                deferred_tools_setting,
+                false,
+                endpoint.as_deref(),
+                wire_model_id.as_str(),
+            )
+        } else if override_deferred_tools == Some(crate::DeferredToolsSetting::Native) {
+            return Err(ModelLocalError::Provider(DynamicCompileError::CustomModel));
+        } else {
+            crate::DeferredToolsSupport::Unsupported
+        };
         let required_auth_method = match adapter {
             OvenAdapterFamily::AwsBedrockConverse => Some("aws-sigv4-credentials-v1"),
             OvenAdapterFamily::OpenaiResponses if resolved.recipe.family == FamilyKind::Bedrock => {
@@ -741,6 +777,7 @@ impl DynamicCompiler {
             capabilities,
             replay_declaration: None,
             native_compaction_allowed,
+            deferred_tools_setting,
             defaults,
             options,
             headers,
@@ -870,6 +907,22 @@ impl DynamicCompiler {
                 continue;
             }
             let endpoint = provider.endpoint.as_str().trim_end_matches('/').to_owned();
+            let deferred_tools_setting = model.capabilities.deferred_tools;
+            let custom_adapter_id = wire.adapter_id;
+            capabilities.deferred_tools = if loads_deferred_tools(resolved_adapter) {
+                deferred_tools_support(
+                    resolved_adapter,
+                    custom_adapter_id,
+                    deferred_tools_setting,
+                    true,
+                    Some(&endpoint),
+                    wire_model_id.as_str(),
+                )
+            } else if deferred_tools_setting == Some(crate::DeferredToolsSetting::Native) {
+                return Err(DynamicCompileError::CustomModel);
+            } else {
+                crate::DeferredToolsSupport::Unsupported
+            };
             let safe_headers = headers
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str()))
@@ -933,6 +986,7 @@ impl DynamicCompiler {
                     capabilities,
                     replay_declaration: model.capabilities.native_replay,
                     native_compaction_allowed,
+                    deferred_tools_setting,
                     defaults,
                     options,
                     headers,
@@ -1135,6 +1189,89 @@ const AZURE_DEPLOYMENT_SETUP: [&str; 3] = ["model", "version", "deployment_type"
 /// Native compaction for every Responses adapter the configuration allows:
 /// OpenAI Responses, official or compatible, and Azure OpenAI Responses with
 /// its deployment metadata in `setup`.
+/// Whether an adapter can load deferred tools at all.
+pub(crate) const fn loads_deferred_tools(adapter: OvenAdapterFamily) -> bool {
+    matches!(
+        adapter,
+        OvenAdapterFamily::Anthropic
+            | OvenAdapterFamily::AnthropicCompatible
+            | OvenAdapterFamily::OpenaiResponses
+            | OvenAdapterFamily::AzureOpenaiResponses
+            | OvenAdapterFamily::OpenaiCompatible
+    )
+}
+
+/// Whether a model on an adapter that can load deferred tools does
+/// (deferred tools in cookie, section 3): a setting wins; otherwise a Claude
+/// model that supports tool search on Anthropic's own endpoint, and OpenAI
+/// and Azure Responses, are verified, and any other model on an Anthropic
+/// adapter is attempted.
+fn deferred_tools_support(
+    adapter: OvenAdapterFamily,
+    adapter_id: &str,
+    setting: Option<crate::DeferredToolsSetting>,
+    custom: bool,
+    endpoint: Option<&str>,
+    wire_model_id: &str,
+) -> crate::DeferredToolsSupport {
+    use crate::{DeferredToolsSetting, DeferredToolsSupport};
+    match setting {
+        Some(DeferredToolsSetting::Native) => return DeferredToolsSupport::Native,
+        Some(DeferredToolsSetting::Unsupported) => return DeferredToolsSupport::Unsupported,
+        None => {}
+    }
+    match adapter {
+        OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
+            if claude_supports_tool_search(wire_model_id)
+                && endpoint.is_some_and(is_anthropic_endpoint)
+            {
+                DeferredToolsSupport::Native
+            } else {
+                DeferredToolsSupport::Attempted
+            }
+        }
+        OvenAdapterFamily::OpenaiResponses
+            if !custom && adapter_id == OvenAdapterFamily::OpenaiResponses.protocol_recipe() =>
+        {
+            DeferredToolsSupport::Native
+        }
+        OvenAdapterFamily::AzureOpenaiResponses => DeferredToolsSupport::Native,
+        _ => DeferredToolsSupport::Unsupported,
+    }
+}
+
+/// Claude models Anthropic lists for tool search: Opus, Sonnet, and Haiku 4.5
+/// and later, Fable, and Mythos.
+fn claude_supports_tool_search(wire_model_id: &str) -> bool {
+    let Some(rest) = wire_model_id.strip_prefix("claude-") else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    match parts.next() {
+        Some("fable" | "mythos") => true,
+        Some("opus" | "sonnet" | "haiku") => {
+            let major = parts.next().and_then(|part| part.parse::<u32>().ok());
+            // A date suffix (claude-sonnet-4-20250514) is not a minor version.
+            let minor = parts
+                .next()
+                .filter(|part| part.len() <= 2)
+                .and_then(|part| part.parse::<u32>().ok());
+            matches!((major, minor), (Some(5..), _) | (Some(4), Some(5..)))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `endpoint` is Anthropic's own API rather than a gateway.
+fn is_anthropic_endpoint(endpoint: &str) -> bool {
+    let rest = endpoint
+        .strip_prefix("https://")
+        .or_else(|| endpoint.strip_prefix("http://"))
+        .unwrap_or(endpoint);
+    let host = rest.split(['/', ':', '?']).next().unwrap_or_default();
+    host.eq_ignore_ascii_case("api.anthropic.com")
+}
+
 fn native_compaction_capability(
     adapter: OvenAdapterFamily,
     allowed: bool,

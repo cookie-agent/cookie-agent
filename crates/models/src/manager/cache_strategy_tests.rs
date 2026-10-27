@@ -25,6 +25,7 @@ fn video_media_capability_maps_to_open_oven_modality() {
         top_p: false,
         seed: false,
         compaction: crate::CompactionCapability::Unsupported,
+        deferred_tools: crate::DeferredToolsSupport::Unsupported,
         native_replay: crate::ReplayCapability::Unsupported,
         cancellation: crate::CancellationCapability::LocalOnly,
         media: BTreeMap::from([(
@@ -808,5 +809,59 @@ async fn openai_cache_controls_reach_all_four_provider_wires() {
             "{adapter:?}"
         );
         assert_eq!(wire_breakpoint_count(&body), 2, "{adapter:?}");
+    }
+}
+
+#[test]
+fn attempted_and_native_deferral_both_declare_native_loading_to_oven() {
+    let mut capabilities: crate::ModelCapabilities = serde_json::from_value(json!({
+        "input": ["text"], "output": ["text"], "context_tokens": 4096,
+        "output_tokens": 1024, "tool_calling": true, "parallel_tool_calls": false,
+        "structured_output": false, "reasoning": false, "temperature": false,
+        "top_p": false, "seed": false, "native_replay": "unsupported",
+        "cancellation": "local_only", "media": {}
+    }))
+    .unwrap();
+    for (support, expected) in [
+        (
+            crate::DeferredToolsSupport::Unsupported,
+            oven_sdk::DeferredToolsCapability::Unsupported,
+        ),
+        (
+            crate::DeferredToolsSupport::Native,
+            oven_sdk::DeferredToolsCapability::Native,
+        ),
+        (
+            crate::DeferredToolsSupport::Attempted,
+            oven_sdk::DeferredToolsCapability::Native,
+        ),
+    ] {
+        capabilities.deferred_tools = support;
+        let oven =
+            oven_capabilities(&capabilities, OvenAdapterFamily::AnthropicCompatible).unwrap();
+        assert_eq!(oven.deferred_tools, expected, "{support:?}");
+    }
+}
+
+#[test]
+fn a_descriptor_records_whether_its_model_defers() {
+    let (resolved, _) = resolved(false, 0);
+    let plain = resolved.model.descriptor().clone();
+    assert_eq!(
+        crate::DeferredToolsSupport::of_descriptor(&plain),
+        crate::DeferredToolsSupport::Unsupported
+    );
+    for support in [
+        crate::DeferredToolsSupport::Native,
+        crate::DeferredToolsSupport::Attempted,
+    ] {
+        let descriptor = plain.clone().with_provider_metadata(BTreeMap::from([(
+            crate::DeferredToolsSupport::METADATA_KEY.into(),
+            serde_json::Value::String(support.as_str().into()),
+        )]));
+        assert_eq!(
+            crate::DeferredToolsSupport::of_descriptor(&descriptor),
+            support
+        );
     }
 }

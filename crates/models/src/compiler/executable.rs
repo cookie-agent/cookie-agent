@@ -426,6 +426,13 @@ fn construct(
                     query: Vec::new(),
                     request_id_headers: vec!["x-request-id".into()],
                     strict_sse_content_type: false,
+                    // Kimi's system message carrying tools is the only Chat
+                    // dialect for loading deferred tools.
+                    deferred_tools: if model.capabilities.deferred_tools.defers() {
+                        oven_sdk_openai::CompatibleChatDeferredTools::SystemMessage
+                    } else {
+                        oven_sdk_openai::CompatibleChatDeferredTools::Unsupported
+                    },
                     routing_discriminator: combined_routing_discriminator(
                         api_key_header_route(model).as_deref(),
                         header_discriminator,

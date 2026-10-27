@@ -1825,6 +1825,9 @@ fn persist_tool_content(
                 .collect::<Result<_, HistoryError>>()?,
         },
         ToolContent::Denied { reason } => PersistedToolContent::Denied { reason },
+        // Only a tool message's result loads tools; a provider-executed
+        // result in an assistant turn never does, so its text is all of it.
+        ToolContent::LoadTools { text, .. } => PersistedToolContent::Text { text },
     })
 }
 

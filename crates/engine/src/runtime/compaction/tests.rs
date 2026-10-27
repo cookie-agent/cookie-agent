@@ -848,6 +848,11 @@ fn remove_tool_content_parts(content: &mut oven_sdk::ToolContent) -> usize {
             });
             part_bytes
         }
+        oven_sdk::ToolContent::LoadTools { text, .. } => {
+            let bytes = fit_part_bytes(FitPart::Text(text));
+            text.clear();
+            bytes
+        }
         oven_sdk::ToolContent::Json(_) | oven_sdk::ToolContent::Denied { .. } => 0,
     }
 }

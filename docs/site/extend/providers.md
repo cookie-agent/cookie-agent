@@ -125,7 +125,7 @@ stored); unconfigured providers report counts alone.
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
 | `cache` | table | family default | [Prompt-cache policy](#prompt-caching) matching the resolved adaptor family. |
 | `headers` | map of strings | empty | Provider request-header overrides. |
-| `models` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `model_id`, `generation_options`, `adaptor_options`, `variants`, `default_variant`, `compaction`, `headers`, `pricing`. Unmentioned catalog models remain available. Cannot invent models or directly change catalog capabilities. |
+| `models` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `model_id`, `generation_options`, `adaptor_options`, `variants`, `default_variant`, `compaction`, `deferred_tools`, `headers`, `pricing`. Unmentioned catalog models remain available. Cannot invent models or directly change catalog capabilities. |
 
 Every model on a Responses adaptor compacts natively by default (see
 [native compaction](../sessions/compaction.md#native-provider-compaction)):
@@ -137,6 +137,30 @@ accepted and redundant: they mean the default, on any recipe. A variant that
 switches `request_endpoint` compacts natively when its own adaptor does.
 Frozen manifests store the compiled native/unsupported capability, not this
 setting string. The removed `"v1"` fails with an error.
+
+Whether a model loads [deferred tools](../specs/deferred-tools-cookie.md) is
+decided per model, in this order:
+
+1. **`deferred_tools`** in a model override: `"native"` declares that the
+   model loads deferred tools, `"unsupported"` that it does not. Any other
+   value is an error. `"native"` on an adaptor that cannot load deferred tools
+   (Gemini, Vertex, Bedrock, Cohere, OpenAI or Azure Chat Completions) is an
+   error.
+2. **models.dev's `dynamically_loaded_tools: true`** declares `native`. On an
+   adaptor that cannot load, it is ignored.
+3. **Automatic rules:**
+   - A Claude model that Anthropic lists for tool search (Opus, Sonnet, and
+     Haiku 4.5 and later, Fable, Mythos), on `api.anthropic.com`, is `native`.
+   - OpenAI's own Responses and Azure OpenAI Responses are `native`.
+   - Any other model on an Anthropic or Anthropic-compatible adaptor, a Claude
+     model through a gateway included, is *attempted*: deferral is tried, and
+     a rejected request falls back to sending every tool up front.
+   - Everything else, an OpenAI-compatible gateway included, is
+     `unsupported`.
+
+A model on an OpenAI-compatible Chat adaptor that is `native` loads tools the
+way Kimi K3 does, with a system message carrying them. A variant that switches
+`request_endpoint` decides again for its own adaptor.
 
 `auth_override`:
 
@@ -395,6 +419,7 @@ Custom fields are required unless a default or omission rule is stated below.
 | `top_p` | boolean | Top-p parameter support. |
 | `seed` | boolean | Seed parameter support. |
 | `compaction` | string | Optional; `"unsupported"` is the only accepted value and turns native compaction off. Omitted, a model on a Responses adaptor (or an `openai-compatible` adaptor with `request_endpoint = "responses"`) compacts natively, and Azure Responses does so with `model`, `version`, and `deployment_type` in `setup`. |
+| `deferred_tools` | string | Optional `"native"` or `"unsupported"`; whether the model loads deferred tools. Omitted, the automatic rules under [provider fields](#provider-fields) decide: on an `anthropic` or `anthropic-compatible` adaptor a model is attempted (or `native` for a Claude model on `api.anthropic.com`), and every other custom model is unsupported. `"native"` on an adaptor that cannot load deferred tools is an error. |
 | `native_replay` | string | Optional `"unsupported"`, `"optional"`, or `"required"`; omission derives supported replay from the resolved adaptor and endpoint. |
 | `media` | map | Per-kind (`image`, `audio`, `pdf`, `video`) input limits: nonempty `mime_types` string array, positive `max_bytes` and `max_count`. `max_count` is per request: when the history holds more parts of a kind, the oldest are replaced by a text placeholder in the outgoing request (see [media reads](../reference/tools.md#media-reads)). Exactly the non-text input modalities need entries; text-only models use `{}`. |
 

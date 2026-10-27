@@ -246,6 +246,7 @@ mod tests {
             cost: None,
             interleaved: None,
             canonical_provenance: None,
+            dynamically_loaded_tools: None,
         }
     }
 

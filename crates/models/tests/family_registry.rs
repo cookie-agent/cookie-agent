@@ -56,6 +56,7 @@ fn model() -> CatalogModelRecord {
         cost: None,
         interleaved: Some(CatalogInterleaved::ReasoningContent),
         canonical_provenance: None,
+        dynamically_loaded_tools: None,
     }
 }
 

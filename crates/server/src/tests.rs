@@ -344,6 +344,7 @@ fn openai_catalog() -> Arc<CatalogSnapshot> {
         cost: None,
         interleaved: None,
         canonical_provenance: None,
+        dynamically_loaded_tools: None,
     };
     let record = CatalogProviderRecord {
         id: provider_id.clone(),

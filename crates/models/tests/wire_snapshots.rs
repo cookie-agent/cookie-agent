@@ -679,6 +679,7 @@ fn catalog_provider(base: &str, spec: &ManagedSpec) -> CatalogProviderEntry {
         cost: None,
         interleaved: spec.interleaved,
         canonical_provenance: None,
+        dynamically_loaded_tools: None,
     };
     CatalogProviderEntry {
         id: provider_id.clone(),

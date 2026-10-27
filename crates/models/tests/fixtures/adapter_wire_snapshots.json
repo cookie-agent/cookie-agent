@@ -6,6 +6,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -225,6 +226,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -453,6 +455,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -681,6 +684,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -885,6 +889,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -1089,6 +1094,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -1293,6 +1299,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -1477,6 +1484,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -1687,6 +1695,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -1897,6 +1906,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -2083,6 +2093,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -2295,6 +2306,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -2480,6 +2492,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -2685,6 +2698,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -2886,6 +2900,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -3071,6 +3086,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -3278,6 +3294,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -3485,6 +3502,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -3676,6 +3694,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -3877,6 +3896,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -4060,6 +4080,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -4268,6 +4289,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -4476,6 +4498,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -4664,6 +4687,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -4878,6 +4902,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -5092,6 +5117,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -5286,6 +5312,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -5494,6 +5521,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -5681,6 +5709,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -5897,6 +5926,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -6105,6 +6135,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -6309,6 +6340,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -6497,6 +6529,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -6707,6 +6740,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -6917,6 +6951,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -7111,6 +7146,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -7315,6 +7351,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -7572,6 +7609,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -7828,6 +7866,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -8086,6 +8125,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -8347,6 +8387,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -8608,6 +8649,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -8899,6 +8941,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -9198,6 +9241,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -9506,6 +9550,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -9814,6 +9859,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -10046,6 +10092,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -10293,6 +10340,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -10540,6 +10588,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -10775,6 +10824,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -11028,6 +11078,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -11281,6 +11332,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -11526,6 +11578,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -11773,6 +11826,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -12020,6 +12074,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -12255,6 +12310,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -12508,6 +12564,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -12755,6 +12812,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -13002,6 +13060,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -13237,6 +13296,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -13472,6 +13532,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -13717,6 +13778,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -13962,6 +14024,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -14207,6 +14270,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -14452,6 +14516,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -14685,6 +14750,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -14782,6 +14848,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -14886,6 +14953,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -14989,6 +15057,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -15089,6 +15158,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -15192,6 +15262,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -15295,6 +15366,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -15561,6 +15633,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -15856,6 +15929,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -16151,6 +16225,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -16419,6 +16494,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -16714,6 +16790,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -17009,6 +17086,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -17304,6 +17382,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -17599,6 +17678,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -17860,6 +17940,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -18124,6 +18205,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -18380,6 +18462,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -18644,6 +18727,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -18911,6 +18995,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -19178,6 +19263,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -19402,6 +19488,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -19629,6 +19716,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -20029,6 +20117,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -20246,6 +20335,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -20465,6 +20555,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -20686,6 +20777,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -20910,6 +21002,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -21318,6 +21411,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -21714,6 +21808,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -22122,6 +22217,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -22516,6 +22612,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -22932,6 +23029,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -23352,6 +23450,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -23772,6 +23871,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -24041,6 +24141,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -24339,6 +24440,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -24637,6 +24739,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -24908,6 +25011,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -25206,6 +25310,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -25504,6 +25609,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -25802,6 +25908,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -26100,6 +26207,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -26319,6 +26427,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -26541,6 +26650,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -26763,6 +26873,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -27003,6 +27114,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -27222,6 +27334,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -27444,6 +27557,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -27666,6 +27780,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -27850,6 +27965,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -28056,6 +28172,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -28246,6 +28363,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -28465,6 +28583,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "unsupported",
+        "deferred_tools": "unsupported",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -28687,6 +28806,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -29093,6 +29213,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -29503,6 +29624,7 @@
       "capabilities": {
         "cancellation": "local_only",
         "compaction": "native",
+        "deferred_tools": "native",
         "features": [
           "tool_calling",
           "parallel_tools",

@@ -156,6 +156,10 @@ pub struct CatalogModelRecord {
     pub cost: Option<CatalogModelCost>,
     pub interleaved: Option<CatalogInterleaved>,
     pub canonical_provenance: Option<CanonicalModelProvenance>,
+    /// models.dev's `dynamically_loaded_tools`: the model loads deferred
+    /// tools natively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamically_loaded_tools: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

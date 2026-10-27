@@ -17,6 +17,70 @@ pub enum CompactionCapability {
     Native,
 }
 
+/// Whether and how a compiled model loads deferred tools (deferred tools in
+/// cookie, section 3).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredToolsSupport {
+    /// No deferral: every tool is sent up front.
+    #[default]
+    Unsupported,
+    /// Verified to load deferred tools natively.
+    Native,
+    /// Tried without verification; a rejection falls back to no deferral.
+    Attempted,
+}
+
+impl DeferredToolsSupport {
+    /// The descriptor `provider_metadata` key carrying a deferring model's
+    /// support to the engine.
+    pub const METADATA_KEY: &'static str = "cookie_agent.deferred_tools";
+
+    /// Whether requests send deferred tools.
+    #[must_use]
+    pub const fn defers(self) -> bool {
+        !matches!(self, Self::Unsupported)
+    }
+
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub(crate) const fn is_unsupported(&self) -> bool {
+        matches!(self, Self::Unsupported)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Native => "native",
+            Self::Attempted => "attempted",
+        }
+    }
+
+    /// The support a descriptor's `provider_metadata` records; a model that
+    /// records none does not defer.
+    #[must_use]
+    pub fn of_descriptor(descriptor: &oven_sdk::LanguageModelDescriptor) -> Self {
+        match descriptor
+            .provider_metadata
+            .get(Self::METADATA_KEY)
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("native") => Self::Native,
+            Some("attempted") => Self::Attempted,
+            _ => Self::Unsupported,
+        }
+    }
+}
+
+/// A configured `deferred_tools` setting: a model override's, or a custom
+/// model's capability. Omitted, the automatic rules decide.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredToolsSetting {
+    Native,
+    Unsupported,
+}
+
 /// A model override's `compaction` setting. Native compaction is attempted
 /// on every Responses adapter unless the override says `"unsupported"`; the
 /// adapter-named values are accepted and mean the same as omitting the key.
@@ -109,6 +173,8 @@ pub struct ModelCapabilities {
     pub seed: bool,
     #[serde(default)]
     pub compaction: CompactionCapability,
+    #[serde(default, skip_serializing_if = "DeferredToolsSupport::is_unsupported")]
+    pub deferred_tools: DeferredToolsSupport,
     pub native_replay: ReplayCapability,
     pub cancellation: CancellationCapability,
     pub media: BTreeMap<MediaKind, MediaCapability>,

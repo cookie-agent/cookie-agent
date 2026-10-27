@@ -396,6 +396,7 @@ fn parse_model(
         .get("cost")
         .map(|value| parse_output_cost(value, reasoning))
         .transpose()?;
+    let dynamically_loaded_tools = optional_bool(&fields, "dynamically_loaded_tools")?;
     let interleaved = fields
         .get("interleaved")
         .map(|value| parse_interleaved(value))
@@ -429,6 +430,7 @@ fn parse_model(
         cost,
         interleaved,
         canonical_provenance,
+        dynamically_loaded_tools,
     })
 }
 

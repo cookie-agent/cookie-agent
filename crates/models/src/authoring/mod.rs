@@ -313,6 +313,9 @@ pub struct ManagedModelOverride {
     pub default_variant: Option<ConfiguredModelDefault>,
     #[serde(default)]
     pub compaction: NativeCompactionConfig,
+    /// Whether the model loads deferred tools; omitted, the automatic rules
+    /// decide.
+    pub deferred_tools: Option<crate::DeferredToolsSetting>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
 }

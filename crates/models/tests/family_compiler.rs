@@ -46,6 +46,7 @@ fn record(npm: &str, api: Option<&str>) -> CatalogProviderRecord {
         cost: None,
         interleaved: Some(CatalogInterleaved::Reasoning),
         canonical_provenance: None,
+        dynamically_loaded_tools: None,
     };
     CatalogProviderRecord {
         id: ProviderId::new("example").unwrap(),
@@ -1566,4 +1567,291 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, ou
         );
     }
     assert!(compile(&definition("temperature = false, top_p = false", "")).is_ok());
+}
+
+fn compiled_deferral(
+    npm: &str,
+    provider_id: &str,
+    api: &str,
+    authored: &str,
+    dynamically_loaded_tools: Option<bool>,
+) -> Result<cookie_agent_models::DeferredToolsSupport, String> {
+    let mut provider = record(npm, Some(api));
+    provider.id = ProviderId::new(provider_id).unwrap();
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .dynamically_loaded_tools = dynamically_loaded_tools;
+    let authored: ModelsDevProvider = toml::from_str(authored).unwrap();
+    DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, Some(&authored))
+        .map_err(|error| error.to_string())?
+        .models
+        .values()
+        .next()
+        .map(|model| model.capabilities.deferred_tools)
+        .ok_or_else(|| "no model compiled".to_owned())
+}
+
+#[test]
+fn deferral_follows_the_model_its_endpoint_and_its_setting() {
+    use cookie_agent_models::DeferredToolsSupport::{Attempted, Native, Unsupported};
+    let model = |wire: &str, extra: &str| {
+        format!("api_key = \"secret\"\n[models.\"model/1\"]\nmodel_id = \"{wire}\"\n{extra}")
+    };
+    let anthropic = "https://api.anthropic.com/v1";
+    let gateway = "https://llm-gateway.example/v1";
+    for (npm, provider_id, api, authored, catalog, expected) in [
+        // Claude models Anthropic lists for tool search, on its own endpoint.
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            anthropic,
+            model("claude-sonnet-5-5", ""),
+            None,
+            Native,
+        ),
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            anthropic,
+            model("claude-haiku-4-5-20251001", ""),
+            None,
+            Native,
+        ),
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            anthropic,
+            model("claude-fable-5-1", ""),
+            None,
+            Native,
+        ),
+        // An older Claude model, and any Claude model through a gateway, is tried.
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            anthropic,
+            model("claude-sonnet-4-20250514", ""),
+            None,
+            Attempted,
+        ),
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            gateway,
+            model("claude-sonnet-5-5", ""),
+            None,
+            Attempted,
+        ),
+        (
+            "@ai-sdk/anthropic",
+            "kimi-for-coding",
+            gateway,
+            model("kimi-for-coding", ""),
+            None,
+            Attempted,
+        ),
+        // A setting wins over the rules.
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            gateway,
+            model("claude-sonnet-5-5", "deferred_tools = \"native\""),
+            None,
+            Native,
+        ),
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            anthropic,
+            model("claude-sonnet-5-5", "deferred_tools = \"unsupported\""),
+            None,
+            Unsupported,
+        ),
+        // OpenAI's own Responses is verified; a compatible gateway is not.
+        (
+            "@ai-sdk/openai",
+            "openai",
+            gateway,
+            model(
+                "gpt-5.5",
+                "adaptor_options = { request_endpoint = \"responses\" }",
+            ),
+            None,
+            Native,
+        ),
+        (
+            "@ai-sdk/openai",
+            "openai",
+            gateway,
+            model(
+                "gpt-5.5",
+                "adaptor_options = { request_endpoint = \"completions\" }",
+            ),
+            None,
+            Unsupported,
+        ),
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            gateway,
+            model(
+                "model",
+                "adaptor_options = { request_endpoint = \"responses\" }",
+            ),
+            None,
+            Unsupported,
+        ),
+        // Compatible Chat loads only when declared, by setting or by models.dev.
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            gateway,
+            model("kimi-k3", ""),
+            None,
+            Unsupported,
+        ),
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            gateway,
+            model("kimi-k3", "deferred_tools = \"native\""),
+            None,
+            Native,
+        ),
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            gateway,
+            model("kimi-k3", ""),
+            Some(true),
+            Native,
+        ),
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            gateway,
+            model("kimi-k3", "deferred_tools = \"unsupported\""),
+            Some(true),
+            Unsupported,
+        ),
+    ] {
+        assert_eq!(
+            compiled_deferral(npm, provider_id, api, &authored, catalog),
+            Ok(expected),
+            "{npm} {provider_id} {api}: {authored} catalog={catalog:?}"
+        );
+    }
+}
+
+#[test]
+fn a_native_setting_on_an_adapter_without_loading_is_a_configuration_error() {
+    let authored = "api_key = \"secret\"\n[models.\"model/1\"]\ndeferred_tools = \"native\"\n";
+    assert!(
+        compiled_deferral(
+            "@ai-sdk/google",
+            "google",
+            "https://generativelanguage.googleapis.com/v1beta",
+            authored,
+            None
+        )
+        .is_err()
+    );
+    // models.dev's flag never breaks a model whose adapter cannot load.
+    assert_eq!(
+        compiled_deferral(
+            "@ai-sdk/google",
+            "google",
+            "https://generativelanguage.googleapis.com/v1beta",
+            "api_key = \"secret\"\n",
+            Some(true),
+        ),
+        Ok(cookie_agent_models::DeferredToolsSupport::Unsupported)
+    );
+}
+
+#[test]
+fn custom_anthropic_models_are_attempted_unless_declared() {
+    use cookie_agent_models::DeferredToolsSupport::{Attempted, Native, Unsupported};
+    for (adaptor, endpoint, setting, expected) in [
+        (
+            "anthropic-compatible",
+            "http://127.0.0.1:9/v1",
+            "",
+            Ok(Attempted),
+        ),
+        (
+            "anthropic-compatible",
+            "http://127.0.0.1:9/v1",
+            ", deferred_tools = \"unsupported\"",
+            Ok(Unsupported),
+        ),
+        (
+            "anthropic-compatible",
+            "http://127.0.0.1:9/v1",
+            ", deferred_tools = \"native\"",
+            Ok(Native),
+        ),
+        (
+            "openai-compatible",
+            "http://127.0.0.1:9/v1",
+            "",
+            Ok(Unsupported),
+        ),
+        (
+            "openai-compatible",
+            "http://127.0.0.1:9/v1",
+            ", deferred_tools = \"native\"",
+            Ok(Native),
+        ),
+    ] {
+        let definition: ProviderDefinition = toml::from_str(&format!(
+            r#"source = "custom"
+endpoint = "{endpoint}"
+adaptor = "{adaptor}"
+auth = {{ method = "no-auth-v1", values = {{}} }}
+
+[models.test]
+display_name = "Test"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, reasoning = false, temperature = false, top_p = false, seed = false, native_replay = "unsupported", media = {{}}{setting} }}
+"#
+        ))
+        .unwrap();
+        let ProviderDefinition::Custom(provider) = definition else {
+            unreachable!();
+        };
+        let compiled = DynamicCompiler::family_registry()
+            .compile_custom(&ProviderId::new("custom.test").unwrap(), &provider)
+            .map(|compiled| {
+                compiled
+                    .models
+                    .values()
+                    .next()
+                    .unwrap()
+                    .capabilities
+                    .deferred_tools
+            })
+            .map_err(|_| ());
+        assert_eq!(compiled, expected, "{adaptor} {setting}");
+    }
+}
+
+#[test]
+fn deferred_tools_setting_rejects_unknown_values() {
+    let attempted = toml::from_str::<ModelsDevProvider>(
+        r#"[models."model/1"]
+deferred_tools = "attempted"
+"#,
+    )
+    .expect_err("attempted is never configured");
+    assert!(
+        attempted.to_string().contains("unknown variant"),
+        "{attempted}"
+    );
 }

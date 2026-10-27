@@ -1311,6 +1311,7 @@ mod fit {
         Json(&'a serde_json::Value),
         Mixed(Vec<&'a ContentValue>),
         Denied { reason: &'a Option<String> },
+        LoadTools { names: &'a [String] },
     }
 
     impl<'a> FitTurn<'a> {
@@ -1440,6 +1441,10 @@ mod fit {
                         .collect(),
                 ),
                 ToolContent::Denied { reason } => FitToolContent::Denied { reason },
+                ToolContent::LoadTools { names, text } => {
+                    add(part_bytes, FitPart::Text(text));
+                    FitToolContent::LoadTools { names }
+                }
             };
             Self {
                 tool_call_id,
@@ -1683,6 +1688,7 @@ fn line_structured_content(content: &oven_sdk::ToolContent) -> serde_json::Resul
                 reason.as_deref().unwrap_or(""),
             );
         }
+        oven_sdk::ToolContent::LoadTools { text: body, .. } => text.push_str(body),
         oven_sdk::ToolContent::Mixed(parts) => {
             text.push_str(&format!(
                 "[tool content: mixed, {} part{}]\n",

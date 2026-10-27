@@ -646,6 +646,7 @@ pub(crate) fn bedrock_catalog() -> Arc<CatalogSnapshot> {
         cost: None,
         interleaved: None,
         canonical_provenance: None,
+        dynamically_loaded_tools: None,
     };
     let record = CatalogProviderRecord {
         id: provider_id.clone(),
@@ -810,6 +811,7 @@ adaptor_options = {{ request_endpoint = "responses" }}
         cost: None,
         interleaved: None,
         canonical_provenance: None,
+        dynamically_loaded_tools: None,
     };
     let record = CatalogProviderRecord {
         id: provider_id.clone(),

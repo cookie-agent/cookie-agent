@@ -119,6 +119,7 @@ fn push_result(content: &mut Vec<Open<HookContentPart>>, result: &ToolResultPart
             .collect::<Vec<_>>()
             .join("\n"),
         ToolContent::Denied { reason } => reason.clone().unwrap_or_default(),
+        ToolContent::LoadTools { text, .. } => text.clone(),
     };
     content.push(Open::Known(HookContentPart::ToolResult {
         tool_call_id: result.tool_call_id.clone(),

@@ -154,6 +154,11 @@ pub struct AuthoredCapabilities {
     /// turns it off, and is the only value accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionCapability>,
+    /// Omitted, the automatic rules decide whether the model loads deferred
+    /// tools; `"native"` declares that it does, `"unsupported"` that it does
+    /// not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_tools: Option<crate::DeferredToolsSetting>,
     pub native_replay: Option<ReplayCapability>,
     pub media: BTreeMap<MediaKind, MediaCapability>,
 }
@@ -174,6 +179,7 @@ impl AuthoredCapabilities {
             top_p: self.top_p,
             seed: self.seed,
             compaction: self.compaction.unwrap_or_default(),
+            deferred_tools: crate::DeferredToolsSupport::Unsupported,
             native_replay: self
                 .native_replay
                 .unwrap_or_else(|| adapter.automatic_replay(self.reasoning)),

@@ -194,6 +194,7 @@ pub(crate) fn production_openai_catalog(label: char, quarantined: bool) -> Arc<C
         cost: None,
         interleaved: None,
         canonical_provenance: None,
+        dynamically_loaded_tools: None,
     };
     let shape = quarantined.then(|| "unexpected".to_owned());
     let record = CatalogProviderRecord {

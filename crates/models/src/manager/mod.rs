@@ -2498,7 +2498,7 @@ fn safe_descriptor(
         oven_capabilities(&model.capabilities, model.adapter)?,
     )
     .map(|descriptor| {
-        descriptor.with_provider_metadata(BTreeMap::from([
+        let mut metadata = BTreeMap::from([
             (
                 "cookie_agent.wire_model_id".into(),
                 Value::String(model.wire_model_id.as_str().into()),
@@ -2514,7 +2514,16 @@ fn safe_descriptor(
                     .into(),
                 ),
             ),
-        ]))
+        ]);
+        // Only a deferring model records its support, so every other
+        // descriptor, and its fingerprints, stays as it was.
+        if model.capabilities.deferred_tools.defers() {
+            metadata.insert(
+                crate::DeferredToolsSupport::METADATA_KEY.into(),
+                Value::String(model.capabilities.deferred_tools.as_str().into()),
+            );
+        }
+        descriptor.with_provider_metadata(metadata)
     })
     .map_err(|_| ModelManagerError::RuntimeCompileFailed)
 }
@@ -2599,6 +2608,13 @@ fn oven_capabilities(
         compaction: match value.compaction {
             crate::CompactionCapability::Unsupported => OvenCompaction::Unsupported,
             crate::CompactionCapability::Native => OvenCompaction::Native,
+        },
+        // Oven encodes an attempted model's deferral as it does a verified
+        // one's; only the engine tells them apart, by the descriptor.
+        deferred_tools: if value.deferred_tools.defers() {
+            oven_sdk::DeferredToolsCapability::Native
+        } else {
+            oven_sdk::DeferredToolsCapability::Unsupported
         },
         replay: ReplayDeclaration {
             policy: if value.native_replay == crate::ReplayCapability::Unsupported {
