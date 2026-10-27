@@ -5344,6 +5344,33 @@ def runtime_mcp(browser):
     print("a tool is left out and taken back from the Machines view")
 
     # An ACP agent is declared on the runtime, listed, and removed.
+    # Its form opens over the page, in view however far the page scrolled,
+    # and its close button (Escape, the backdrop) closes it as Cancel does.
+    browser.click(machine_runtime + " [data-runtime-add-acp]")
+    browser.wait("the ACP agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
+    in_view = (
+        "const r = document.querySelector('#machines-acp-form').getBoundingClientRect();"
+        "return r.top >= 0 && r.bottom <= window.innerHeight && r.height > 0;"
+    )
+    assert browser.script(in_view), "the form opened out of view"
+    settle(browser)
+    browser.shot("runtime-acp-form-desktop")
+    browser.click("#machines-acp-form [data-edit-dialog-close]")
+    browser.wait("the form closed", lambda: count(browser, "[data-machines-acp-form]") == 0)
+    # A phone's is a page of its own, whose arrow goes back.
+    browser.phone(390, 844)
+    browser.script("document.querySelector(arguments[0]).click()", machine_runtime + " [data-runtime-add-acp]")
+    browser.wait("the phone's ACP agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
+    whole = browser.script(
+        "const r = document.querySelector('#machines-acp-form').getBoundingClientRect();"
+        "return [r.left, r.top, Math.round(r.width) - innerWidth, Math.round(r.height) - innerHeight];"
+    )
+    assert whole == [0, 0, 0, 0], whole
+    settle(browser)
+    browser.shot("runtime-acp-form-phone")
+    browser.click("#machines-acp-form [data-edit-dialog-close]")
+    browser.wait("the phone's form closed", lambda: count(browser, "[data-machines-acp-form]") == 0)
+    browser.resize(1280, 900)
     browser.click(machine_runtime + " [data-runtime-add-acp]")
     browser.wait("the ACP agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
     browser.type("#acp-agent", "helper")

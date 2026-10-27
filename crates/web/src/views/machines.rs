@@ -28,7 +28,10 @@ use wasm_bindgen::JsCast as _;
 
 use super::{
     BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, loading,
-    manage::{CONFIRM, FIELD, McpEdit, ROW_ACTION, STATE, field_value, mcp_form, poll_while_open},
+    manage::{
+        CONFIRM, FIELD, McpEdit, ROW_ACTION, STATE, edit_dialog, field_value, mcp_form,
+        poll_while_open,
+    },
 };
 use crate::{
     browser,
@@ -325,19 +328,27 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// The open MCP server or ACP agent form, above the cards.
+/// The open MCP server or ACP agent form, over the page.
 fn open_forms(workspace: Workspace, manage: Manage) -> impl IntoView {
     view! {
-        {move || manage.mcp.get().map(|edit| view! {
-            <div class="flex flex-col gap-2 rounded-lg border border-toasted p-3 dark:border-ember" data-machines-mcp-form>
-                {mcp_form(workspace, manage.mcp, manage.persist, manage.mcp_error, edit)}
-            </div>
-        })}
-        {move || manage.acp.get().map(|edit| view! {
-            <div class="flex flex-col gap-2 rounded-lg border border-toasted p-3 dark:border-ember" data-machines-acp-form>
-                {acp_form(workspace, manage, edit)}
-            </div>
-        })}
+        {move || manage.mcp.get().map(|edit| edit_dialog(
+            "machines-mcp-form",
+            move || manage.mcp.set(None),
+            view! {
+                <div class="flex flex-col gap-2" data-machines-mcp-form>
+                    {mcp_form(workspace, manage.mcp, manage.persist, manage.mcp_error, edit)}
+                </div>
+            },
+        ))}
+        {move || manage.acp.get().map(|edit| edit_dialog(
+            "machines-acp-form",
+            move || manage.acp.set(None),
+            view! {
+                <div class="flex flex-col gap-2" data-machines-acp-form>
+                    {acp_form(workspace, manage, edit)}
+                </div>
+            },
+        ))}
     }
 }
 

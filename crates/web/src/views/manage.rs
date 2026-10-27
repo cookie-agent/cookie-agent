@@ -25,7 +25,7 @@ use cookie_agent_protocol::{
 use leptos::prelude::*;
 use wasm_bindgen::JsCast as _;
 
-use super::{BUTTON, ERROR, NOTE, PRIMARY, ROW, empty_state, loading};
+use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading};
 use crate::{
     browser,
     icons::Glyph,
@@ -431,6 +431,40 @@ pub(crate) fn runtime_mcp_servers(
     }
 }
 
+/// An edit form over the page, so it opens in view however far the page
+/// was scrolled: a centered dialog over the dimmed page on a wider screen,
+/// and on a phone a page of its own, one level deeper, whose arrow goes
+/// back. Escape and the backdrop close it as the form's Cancel does.
+pub(crate) fn edit_dialog(
+    id: &'static str,
+    close: impl Fn() + Copy + Send + Sync + 'static,
+    body: impl IntoView + 'static,
+) -> impl IntoView {
+    view! {
+        <div class="fixed inset-0 z-40 hidden bg-espresso/30 sm:block dark:bg-black/50" on:click=move |_| close()></div>
+        <div
+            id=id
+            role="dialog"
+            aria-modal="true"
+            data-edit-dialog
+            class="fixed inset-0 z-50 flex flex-col overflow-y-auto bg-cream pb-[env(safe-area-inset-bottom)] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:max-h-[85vh] sm:w-[36rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl sm:border sm:border-toasted sm:pb-0 sm:shadow-lg dark:bg-night sm:dark:border-ember"
+            on:keydown=move |event| {
+                if event.key() == "Escape" {
+                    close();
+                }
+            }
+        >
+            <div class="sticky top-0 z-10 flex items-center border-b border-toasted bg-parchment p-1 sm:justify-end sm:border-0 sm:bg-cream dark:border-ember dark:bg-char sm:dark:bg-night">
+                <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" data-edit-dialog-close on:click=move |_| close()>
+                    <span class="inline-flex sm:hidden"><Glyph icon=icondata::FaArrowLeftSolid /></span>
+                    <span class="hidden sm:inline-flex"><Glyph icon=icondata::FaXmarkSolid /></span>
+                </button>
+            </div>
+            <div class="flex flex-col gap-2 px-3 pt-3 pb-3 sm:pt-0">{body}</div>
+        </div>
+    }
+}
+
 // ---- /mcp ------------------------------------------------------------------
 
 pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
@@ -516,27 +550,24 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
     }
     };
     view! {
-        {move || match form.get() {
-            None => view! {
-                {move || sign_in_outcome(workspace)}
-                {move || sign_ins(workspace)}
-                {list}
-                <button
-                    type="button"
-                    id="mcp-new"
-                    class=PRIMARY
-                    on:click=move |_| {
-                        error.set(None);
-                        form.set(Some(McpEdit::add(None)));
-                    }
-                >
-                    <Glyph icon=icondata::FaPlusSolid />
-                    "New server"
-                </button>
+        {move || sign_in_outcome(workspace)}
+        {move || sign_ins(workspace)}
+        {list}
+        <button
+            type="button"
+            id="mcp-new"
+            class=PRIMARY
+            on:click=move |_| {
+                error.set(None);
+                form.set(Some(McpEdit::add(None)));
             }
-                .into_any(),
-            Some(edit) => mcp_form(workspace, form, persist, error, edit).into_any(),
-        }}
+        >
+            <Glyph icon=icondata::FaPlusSolid />
+            "New server"
+        </button>
+        {move || form.get().map(|edit| {
+            edit_dialog("mcp-form", move || form.set(None), mcp_form(workspace, form, persist, error, edit))
+        })}
     }
 }
 
