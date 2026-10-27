@@ -47,31 +47,40 @@ fn starts_work(event: &SessionEvent) -> bool {
 }
 
 /// The task a message to `live`'s session gave it among what the listener
-/// kept, such as a subagent's prompt from its parent: the wake's body.
-fn task_of(live: &LiveSession) -> Option<String> {
-    let carried = live
+/// kept, such as a subagent's prompt from its parent: the wake's body. It
+/// is taken out of what the listener kept, so the run does not show it a
+/// second time.
+fn take_task(live: &LiveSession) -> Option<String> {
+    let mut carried = live
         .carried
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    carried.iter().rev().find_map(|event| {
-        let SessionEvent::Update(update) = event else {
-            return None;
-        };
-        (update.get("sessionUpdate").and_then(Value::as_str) == Some("session_message")
-            && update.get("recipientSessionId").and_then(Value::as_str)
-                == Some(live.acp_session_id.as_str()))
-        .then(|| {
-            update
-                .get("content")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(super::wire::content_text)
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .filter(|text| !text.trim().is_empty())
-    })
+    let (index, task) = carried
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, event)| {
+            let SessionEvent::Update(update) = event else {
+                return None;
+            };
+            (update.get("sessionUpdate").and_then(Value::as_str) == Some("session_message")
+                && update.get("recipientSessionId").and_then(Value::as_str)
+                    == Some(live.acp_session_id.as_str()))
+            .then(|| {
+                update
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(super::wire::content_text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .filter(|text| !text.trim().is_empty())
+            .map(|task| (index, task))
+        })?;
+    carried.remove(index);
+    Some(task)
 }
 
 impl Engine {
@@ -167,7 +176,7 @@ impl Engine {
             let taken = round_taken.notified();
             tokio::pin!(taken);
             taken.as_mut().enable();
-            let task = task_of(&live);
+            let task = take_task(&live);
             if self
                 .start_acp_wake(live.session, live.agent.id.clone(), task)
                 .await

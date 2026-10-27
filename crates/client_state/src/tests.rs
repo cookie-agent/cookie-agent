@@ -5066,3 +5066,102 @@ fn an_acp_reply_is_headed_by_the_agents_model_and_effort_as_it_started() {
         .unwrap();
     assert!(header.ends_with(" • Opus • High"), "{header}");
 }
+
+#[test]
+fn an_acp_agents_compaction_and_session_messages_show_as_rows_the_run_does_not_straddle() {
+    use cookie_agent_protocol::{
+        AcpCompaction, AcpCompactionState, AcpMessageDirection, AcpSessionMessage, AcpSessionUpdate,
+    };
+    let session_id = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let mut state = SessionState::default();
+    let apply = |state: &mut SessionState, seq, payload| {
+        reduce_event(
+            state,
+            session_id,
+            Some(run),
+            seq,
+            jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            payload,
+        );
+    };
+    let attempt = || EventPayload::ModelAttemptStarted {
+        attempt_id: AttemptId::new_v7(),
+        attempt_ordinal: 1,
+        fallback_index: 0,
+        retry_ordinal: 0,
+        resolved_model: resolved_model(),
+        prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+    };
+    let compaction = |state| EventPayload::AcpSessionUpdated {
+        update: AcpSessionUpdate {
+            compaction: Some(AcpCompaction {
+                compaction_id: "c1".into(),
+                state,
+                summary: (state == AcpCompactionState::Completed)
+                    .then(|| "We read notes.txt.".into()),
+            }),
+            ..AcpSessionUpdate::default()
+        },
+    };
+    apply(&mut state, 1, attempt());
+    let item_id = state.transcript[0].id();
+    append_assistant_delta(
+        &mut state,
+        item_id,
+        1,
+        "reading".into(),
+        AssistantPartKind::Text,
+        jiff::Timestamp::now(),
+    );
+    apply(&mut state, 2, compaction(AcpCompactionState::InProgress));
+    assert!(matches!(
+        state.transcript.last(),
+        Some(TranscriptItem::Compacting {
+            source: CompactingSource::Agent { compaction_id },
+            ..
+        }) if compaction_id == "c1"
+    ));
+    apply(&mut state, 3, compaction(AcpCompactionState::Completed));
+    apply(
+        &mut state,
+        4,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                session_message: Some(AcpSessionMessage {
+                    direction: AcpMessageDirection::Sent,
+                    peer: Some("reviewer".into()),
+                    text: "check the tests".into(),
+                }),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    // What the run shows next opens below them.
+    apply(&mut state, 5, attempt());
+    let rows = state
+        .transcript
+        .iter()
+        .map(|item| match item {
+            TranscriptItem::Assistant { .. } => "assistant".to_owned(),
+            TranscriptItem::AgentCompaction { summary, .. } => {
+                format!("compaction: {}", summary.as_deref().unwrap_or_default())
+            }
+            TranscriptItem::AgentSessionMessage { message, .. } => format!(
+                "{}: {}",
+                crate::rows::agent_session_message_summary(message),
+                message.text
+            ),
+            other => format!("{other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [
+            "assistant",
+            "compaction: We read notes.txt.",
+            "message to subagent reviewer: check the tests",
+            "assistant",
+        ]
+    );
+}

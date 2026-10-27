@@ -5,6 +5,16 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.41.0
+
+- `acp_session_updated` has `compaction` (`compaction_id`, `state`,
+  `summary`), a compaction of the ACP agent's own, recorded as it starts
+  and as it ends, and `session_message` (`direction`, `peer`, `text`), a
+  message between the agent's sessions. Both were `notice`s before; clients
+  show them as the session's own compaction and as producer messages. A
+  compaction's end the agent repeats is recorded once. Plugin protocol
+  1.22.0 carries them in events the same way.
+
 ## 1.40.0
 
 - A background call may be an ACP agent's own command still running after

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.40.0",
+    "protocol_version": "1.41.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.40.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.41.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -844,13 +844,23 @@ over the Agent Client Protocol (see the
   for the agent's next turn, and clients label the Steer action as
   queueing. `acp_session_updated` may carry, each shown once where it
   arrives, a `notice` (`severity` `info`/`warning`/`error`, `title`,
-  optional `description`), which is also how a compaction the agent
-  reports reaches clients; `steered` (`user_inputs`, the sequence numbers
+  optional `description`), which was also how a compaction the agent
+  reports reached clients before 1.41.0; `steered` (`user_inputs`, the sequence numbers
   of the `user_input_submitted` events, and `producer_messages`): input
   delivered into the running turn, which clients mark on the message; and
   `tool_presentation` (`tool_call_id`, `presentation`): a new title, hint,
   primary argument, arguments, and preview for one of the agent's tool
   calls, which replace the call's own (its tool identity stays).
+- Since 1.41.0, `acp_session_updated` may carry `compaction`
+  (`compaction_id`, `state` `in_progress`/`completed`/`failed`/`cancelled`,
+  and `summary` when it completed with one): a compaction of the agent's
+  own conversation, recorded once as it starts and once as it ends.
+  Clients show it as they show the session's own compaction; a failure
+  also carries a warning `notice` saying why. It may also carry
+  `session_message` (`direction` `received`/`sent`, `peer`, the other
+  session as the daemon named it then, and `text`): a message between the
+  agent's sessions, such as a subagent's task or its report, which clients
+  show as they show a producer message. Before 1.41.0 both were `notice`s.
 - Since 1.23.0, `acp_session_updated` may carry `context` (`used`, and
   `size` when the agent reports its window): the agent's context use from
   its latest `usage_update`, recorded as it changes. The agent's turns

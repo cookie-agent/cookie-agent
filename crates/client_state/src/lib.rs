@@ -94,6 +94,9 @@ pub enum CompactingSource {
     },
     /// A provider-native compaction call; `model` is its rendered model.
     Native { model: String },
+    /// A compaction of the session's ACP agent's own, by the agent's ID for
+    /// it (client protocol 1.41.0).
+    Agent { compaction_id: String },
 }
 
 /// A tool invocation displayed inside its owning assistant item. The compact
@@ -638,12 +641,28 @@ pub enum TranscriptItem {
         change: cookie_agent_protocol::MemoryChangeKind,
         url: String,
     },
-    /// A notice of a session's ACP agent (its `notice` update, or a
-    /// compaction it reported), shown where it arrived; no level filter
+    /// A notice of a session's ACP agent (its `notice` update, or before
+    /// client protocol 1.41.0 a compaction or a message between its
+    /// sessions), shown where it arrived; no level filter
     /// hides it (client protocol 1.20.0).
     AcpNotice {
         id: u64,
         notice: cookie_agent_protocol::AcpNotice,
+    },
+    /// A compaction of the session's ACP agent's own, at its end, shown as
+    /// the session's own compaction is (client protocol 1.41.0).
+    AgentCompaction {
+        id: u64,
+        seq: u64,
+        summary: Option<String>,
+    },
+    /// A message between the ACP agent's sessions, such as a subagent's task
+    /// or its report, shown as a producer message is (client protocol
+    /// 1.41.0).
+    AgentSessionMessage {
+        id: u64,
+        seq: u64,
+        message: cookie_agent_protocol::AcpSessionMessage,
     },
     /// An ACP agent's plan during one run: a checklist the agent replaces
     /// as it works, kept in place (`docs/site/specs/acp-agents.md`
@@ -784,6 +803,8 @@ impl TranscriptItem {
             | Self::Goal { id, .. }
             | Self::Plan { id, .. }
             | Self::AcpNotice { id, .. }
+            | Self::AgentCompaction { id, .. }
+            | Self::AgentSessionMessage { id, .. }
             | Self::ProducerMessage { id, .. } => *id,
         }
     }
@@ -799,7 +820,11 @@ impl TranscriptItem {
             | Self::AgentMd { version, .. }
             | Self::SkillLoaded { version, .. }
             | Self::Plan { version, .. } => *version,
-            Self::Goal { .. } | Self::MemoryChange { .. } | Self::AcpNotice { .. } => 0,
+            Self::Goal { .. }
+            | Self::MemoryChange { .. }
+            | Self::AcpNotice { .. }
+            | Self::AgentCompaction { .. }
+            | Self::AgentSessionMessage { .. } => 0,
             Self::ProducerMessage { status, .. } => match status {
                 ProducerMessageStatus::Pending => 0,
                 ProducerMessageStatus::Admitted => 1,

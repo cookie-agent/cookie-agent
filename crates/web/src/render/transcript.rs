@@ -14,13 +14,14 @@ use cookie_agent_client_state::{
     AssistantChild, CompactingSource, EventLevel, ModelDisplayNames, ProducerMessageStatus,
     SessionState, ToolCallState, ToolStatus, TranscriptItem,
     rows::{
-        MAX_SYSTEM_PROMPT_BODY_BYTES, MAX_SYSTEM_PROMPT_BODY_LINES, bounded_text, bounded_tools,
-        display_line_count, goal_status_label, model_tools_summary, producer_mode_label,
-        producer_owner_label, producer_summary, system_prompt_source, system_prompt_summary,
+        AGENT_COMPACTION_HEADER, MAX_SYSTEM_PROMPT_BODY_BYTES, MAX_SYSTEM_PROMPT_BODY_LINES,
+        agent_session_message_summary, bounded_text, bounded_tools, display_line_count,
+        goal_status_label, model_tools_summary, producer_mode_label, producer_owner_label,
+        producer_summary, system_prompt_source, system_prompt_summary,
     },
 };
 use cookie_agent_protocol::{
-    ContextCheckpoint, ExtensionMessageRole, PersistedFileSource, ToolCallId,
+    AcpMessageDirection, ContextCheckpoint, ExtensionMessageRole, PersistedFileSource, ToolCallId,
 };
 
 use super::{
@@ -318,6 +319,9 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 CompactingSource::Native { model } => {
                     format!("calling native compaction endpoint ({model})")
                 }
+                CompactingSource::Agent { .. } => {
+                    "the agent is compacting its conversation".to_owned()
+                }
             };
             collapsible(
                 view.expanded.block(&key),
@@ -359,6 +363,33 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 &header,
                 None,
                 &body,
+            )
+        }
+        TranscriptItem::AgentCompaction { summary, .. } => {
+            let key = block_key(item).unwrap_or_default();
+            collapsible(
+                view.expanded.block(&key),
+                &key,
+                icondata::FaBroomSolid,
+                AGENT_COMPACTION_HEADER,
+                None,
+                summary.as_deref().unwrap_or("the agent kept no summary"),
+            )
+        }
+        TranscriptItem::AgentSessionMessage { message, .. } => {
+            let key = block_key(item).unwrap_or_default();
+            let icon = if message.direction == AcpMessageDirection::Sent {
+                icondata::FaPaperPlaneSolid
+            } else {
+                icondata::FaInboxSolid
+            };
+            collapsible(
+                view.expanded.block(&key),
+                &key,
+                icon,
+                &agent_session_message_summary(message),
+                None,
+                &message.text,
             )
         }
         TranscriptItem::PluginMessage { role, input, .. } => {
@@ -932,7 +963,10 @@ fn hash_thinking_status(
 fn block_key(item: &TranscriptItem) -> Option<String> {
     Some(match item {
         TranscriptItem::Compacting { seq, .. } => format!("compacting:{seq}"),
-        TranscriptItem::Compaction { seq, .. } => format!("compaction:{seq}"),
+        TranscriptItem::Compaction { seq, .. } | TranscriptItem::AgentCompaction { seq, .. } => {
+            format!("compaction:{seq}")
+        }
+        TranscriptItem::AgentSessionMessage { seq, .. } => format!("session-message:{seq}"),
         TranscriptItem::PluginMessage { seq, .. } => format!("plugin:{seq}"),
         TranscriptItem::AgentMd { seq, .. } => format!("agent-md:{seq}"),
         TranscriptItem::SkillLoaded { seq, .. } => format!("skill:{seq}"),

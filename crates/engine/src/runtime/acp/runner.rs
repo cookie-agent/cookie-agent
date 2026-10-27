@@ -19,12 +19,13 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AcpConfigOption, AcpConfigOptionKind, AcpConfigValue, AcpNotice, AcpNoticeSeverity,
-    AcpSessionRecord, AcpSessionStart, AcpSessionUpdate, AssistantToolCallRef, AttemptId,
-    DisplayBlock, ModelCallId, ModelFinishReason, Open, PersistedAssistantPart, PersistedModelTurn,
-    PersistedToolResult, PlanEntry, PlanEntryPriority, PlanEntryStatus, PreparedPresentation,
-    RunId, SafeCode, SafeDisplayText, SessionId, StreamedOutputKind, ToolCallId, ToolCallStart,
-    ToolIdentity, ToolOutputDeclaration, ToolPresentation, ToolSource, Usage, UserContentPart,
+    AcpCompaction, AcpCompactionState, AcpConfigOption, AcpConfigOptionKind, AcpConfigValue,
+    AcpMessageDirection, AcpNotice, AcpNoticeSeverity, AcpSessionMessage, AcpSessionRecord,
+    AcpSessionStart, AcpSessionUpdate, AssistantToolCallRef, AttemptId, DisplayBlock, ModelCallId,
+    ModelFinishReason, Open, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
+    PlanEntry, PlanEntryPriority, PlanEntryStatus, PreparedPresentation, RunId, SafeCode,
+    SafeDisplayText, SessionId, StreamedOutputKind, ToolCallId, ToolCallStart, ToolIdentity,
+    ToolOutputDeclaration, ToolPresentation, ToolSource, Usage, UserContentPart,
 };
 use cookie_agent_runtime_api::{
     protocol::{AgentMcpOpenResult, AgentRef, method},
@@ -263,6 +264,17 @@ fn plan_block(plan: &Value) -> DisplayBlock {
     let mut block = DisplayBlock::Plan { entries };
     block.sanitize();
     block
+}
+
+/// How far one of the agent's compactions got in a turn.
+#[derive(Default)]
+struct CompactionProgress {
+    /// Its summary as it streams.
+    summary: String,
+    /// Its start was recorded.
+    started: bool,
+    /// Its end was recorded: a repeated end is not.
+    ended: bool,
 }
 
 /// Commands of an `available_commands_update`.
@@ -732,8 +744,8 @@ struct Turn<'a> {
     /// by admission sequence number: they wait for its next turn, and are
     /// not steered again meanwhile.
     declined_steers: HashSet<u64>,
-    /// The summary text of each compaction in progress, by its ID.
-    compactions: HashMap<String, String>,
+    /// The agent's compactions of the turn, by their IDs.
+    compactions: HashMap<String, CompactionProgress>,
     /// The names of the tools cookie offers the agent over its MCP bridge,
     /// recorded with each attempt as a model run's request tools are.
     bridge_tools: Option<Vec<String>>,
@@ -1214,18 +1226,30 @@ impl Turn<'_> {
                     .map(wire::content_text)
                     .collect::<Vec<_>>()
                     .join("\n");
-                if text.trim().is_empty() {
+                let text = text.trim();
+                if text.is_empty() {
                     return Ok(());
                 }
                 let to_self = update.get("recipientSessionId").and_then(Value::as_str)
                     == Some(self.live.acp_session_id.as_str());
-                let title = if to_self {
-                    "Message from another of the agent's sessions"
+                let (direction, peer) = if to_self {
+                    (AcpMessageDirection::Received, "senderSessionId")
                 } else {
-                    "Message to another of the agent's sessions"
+                    (AcpMessageDirection::Sent, "recipientSessionId")
                 };
-                self.notice(AcpNoticeSeverity::Info, title, Some(text.as_str()))
-                    .await
+                let peer = update
+                    .get(peer)
+                    .and_then(Value::as_str)
+                    .and_then(|peer| self.engine.acp_peer_label(self.session(), peer));
+                self.record_update(AcpSessionUpdate {
+                    session_message: Some(AcpSessionMessage {
+                        direction,
+                        peer: peer.map(|peer| truncate(&peer, 512)),
+                        text: truncate(text, 64 * 1024),
+                    }),
+                    ..AcpSessionUpdate::default()
+                })
+                .await
             }
             "tool_call_update" => {
                 let fields: ToolCallFields =
@@ -1372,20 +1396,46 @@ impl Turn<'_> {
                     self.compactions
                         .entry(id.to_owned())
                         .or_default()
+                        .summary
                         .push_str(&wire::content_text(content));
                 }
                 Ok(())
             }
+            // Recorded once as it starts and once as it ends: the agent may
+            // repeat its end, such as Claude Code's adapter with the
+            // compaction's token counts.
             "compaction_update" => {
                 let id = update
                     .get("compactionId")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
-                match update.get("status").and_then(Value::as_str) {
-                    Some("completed") => {
-                        let streamed = self.compactions.remove(&id).unwrap_or_default();
-                        let summary = update
+                let state = match update.get("status").and_then(Value::as_str) {
+                    Some("in_progress") => AcpCompactionState::InProgress,
+                    Some("completed") => AcpCompactionState::Completed,
+                    Some("failed") => AcpCompactionState::Failed,
+                    Some("cancelled") => AcpCompactionState::Cancelled,
+                    _ => return Ok(()),
+                };
+                let progress = self.compactions.entry(id.clone()).or_default();
+                if progress.ended || (state == AcpCompactionState::InProgress && progress.started) {
+                    return Ok(());
+                }
+                // An abandoned compaction that was never shown leaves nothing
+                // to close.
+                if state == AcpCompactionState::Cancelled && !progress.started {
+                    progress.ended = true;
+                    return Ok(());
+                }
+                if state == AcpCompactionState::InProgress {
+                    progress.started = true;
+                } else {
+                    progress.ended = true;
+                }
+                let streamed = std::mem::take(&mut progress.summary);
+                let summary = (state == AcpCompactionState::Completed)
+                    .then(|| {
+                        update
                             .get("summary")
                             .and_then(Value::as_array)
                             .map(|blocks| {
@@ -1396,36 +1446,36 @@ impl Turn<'_> {
                                     .join("\n")
                             })
                             .filter(|summary| !summary.trim().is_empty())
-                            .unwrap_or(streamed);
-                        self.notice(
-                            AcpNoticeSeverity::Info,
-                            "The agent compacted its conversation",
-                            Some(summary.trim()).filter(|summary| !summary.is_empty()),
-                        )
-                        .await
+                            .unwrap_or(streamed)
+                    })
+                    .map(|summary| truncate(summary.trim(), 64 * 1024))
+                    .filter(|summary| !summary.is_empty());
+                let notice = (state == AcpCompactionState::Failed).then(|| {
+                    let error = update.get("error").map(|error| match error {
+                        Value::String(error) => error.clone(),
+                        other => other
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .map_or_else(|| other.to_string(), str::to_owned),
+                    });
+                    AcpNotice {
+                        severity: AcpNoticeSeverity::Warning,
+                        title: "The agent could not compact its conversation".to_owned(),
+                        description: error
+                            .map(|error| truncate(error.trim(), 16 * 1024))
+                            .filter(|error| !error.is_empty()),
                     }
-                    Some("failed") => {
-                        self.compactions.remove(&id);
-                        let error = update.get("error").map(|error| match error {
-                            Value::String(error) => error.clone(),
-                            other => other
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .map_or_else(|| other.to_string(), str::to_owned),
-                        });
-                        self.notice(
-                            AcpNoticeSeverity::Warning,
-                            "The agent could not compact its conversation",
-                            error.as_deref(),
-                        )
-                        .await
-                    }
-                    Some("cancelled") => {
-                        self.compactions.remove(&id);
-                        Ok(())
-                    }
-                    _ => Ok(()),
-                }
+                });
+                self.record_update(AcpSessionUpdate {
+                    compaction: Some(AcpCompaction {
+                        compaction_id: truncate(&id, 256),
+                        state,
+                        summary,
+                    }),
+                    notice,
+                    ..AcpSessionUpdate::default()
+                })
+                .await
             }
             _ => Ok(()),
         }

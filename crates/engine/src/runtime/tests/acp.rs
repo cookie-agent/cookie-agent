@@ -1715,30 +1715,47 @@ async fn a_tool_calls_late_input_updates_its_presentation_and_its_content_render
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn notices_and_compactions_are_recorded_as_the_agents_notices() {
+async fn notices_and_compactions_are_recorded_as_the_agents_own() {
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "notices", "notices").await;
-    let notices = events(engine, session)
+    let updates = events(engine, session)
         .into_iter()
         .filter_map(|event| match event.payload {
-            EventPayload::AcpSessionUpdated { update } => update.notice,
+            EventPayload::AcpSessionUpdated { update } => Some(update),
             _ => None,
         })
         .collect::<Vec<_>>();
+    let notices = updates
+        .iter()
+        .filter_map(|update| update.notice.clone())
+        .collect::<Vec<_>>();
     assert_eq!(
         notices,
+        [cookie_agent_protocol::AcpNotice {
+            severity: cookie_agent_protocol::AcpNoticeSeverity::Warning,
+            title: "Rate limited".into(),
+            description: Some("Retrying in 1 s.".into()),
+        }]
+    );
+    // Its start and its end, once each though the agent repeats the end.
+    let compactions = updates
+        .iter()
+        .filter_map(|update| update.compaction.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        compactions,
         [
-            cookie_agent_protocol::AcpNotice {
-                severity: cookie_agent_protocol::AcpNoticeSeverity::Warning,
-                title: "Rate limited".into(),
-                description: Some("Retrying in 1 s.".into()),
+            cookie_agent_protocol::AcpCompaction {
+                compaction_id: "c1".into(),
+                state: cookie_agent_protocol::AcpCompactionState::InProgress,
+                summary: None,
             },
-            cookie_agent_protocol::AcpNotice {
-                severity: cookie_agent_protocol::AcpNoticeSeverity::Info,
-                title: "The agent compacted its conversation".into(),
-                description: Some("We read notes.txt.".into()),
+            cookie_agent_protocol::AcpCompaction {
+                compaction_id: "c1".into(),
+                state: cookie_agent_protocol::AcpCompactionState::Completed,
+                summary: Some("We read notes.txt.".into()),
             },
         ]
     );

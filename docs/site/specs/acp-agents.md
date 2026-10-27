@@ -616,6 +616,11 @@ the spec did not anticipate:
   `compaction_summary_chunk`s; its `error`) are recorded as
   `acp_session_updated.notice`; clients show it where it arrived, with no
   level filter. In progress and cancelled compactions show nothing.
+  Since client protocol 1.41.0 a compaction is
+  `acp_session_updated.compaction` instead, recorded once as it starts and
+  once as it ends (the agent may repeat its end); clients show a
+  compacting row, then a compaction row with the summary, as for the
+  session's own compaction. A failure still adds a warning `notice`.
 - **Usage and session info** were already handled (`usage_update`,
   `session_info_update`); Claude Code's `PromptResponse._meta.quota` is not
   read.

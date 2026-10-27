@@ -24,6 +24,57 @@
       ],
       "type": "object"
     },
+    "AcpCompaction": {
+      "description": "A compaction of the agent's own conversation (its `compaction_update`,\nclient protocol 1.41.0), recorded once as it starts and once as it\nends. Clients show it as they show the session's own compaction.",
+      "properties": {
+        "compaction_id": {
+          "description": "The agent's ID for it, the same in its start and its end.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/AcpCompactionState"
+        },
+        "summary": {
+          "description": "The summary the agent kept, when it completed with one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "compaction_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "AcpCompactionState": {
+      "description": "Where a compaction of the agent's own stands (client protocol\n1.41.0). An unknown state reads as `completed`.",
+      "oneOf": [
+        {
+          "enum": [
+            "completed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "in_progress",
+          "description": "The agent started compacting its conversation.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "It failed; a warning `notice` in the same update says why.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "It was abandoned, such as by a stop.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "AcpConfigOption": {
       "description": "One config option an ACP agent offers in a session, such as its model,\nmode, or reasoning effort. An agent that offers modes but no mode option\nis shown as an option `mode` of category `mode`.",
       "properties": {
@@ -170,6 +221,22 @@
       ],
       "type": "object"
     },
+    "AcpMessageDirection": {
+      "description": "Which way an [`AcpSessionMessage`] went (client protocol 1.41.0).\nAn unknown direction reads as `received`.",
+      "oneOf": [
+        {
+          "const": "received",
+          "description": "The session got it.",
+          "type": "string"
+        },
+        {
+          "const": "sent",
+          "description": "The session sent it.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "AcpNotice": {
       "description": "An advisory line an ACP agent sent (its `notice` update, or what the\ndaemon makes of a compaction update), shown where it arrives (client\nprotocol 1.20.0).",
       "properties": {
@@ -219,6 +286,29 @@
       "required": [
         "option_id",
         "value"
+      ],
+      "type": "object"
+    },
+    "AcpSessionMessage": {
+      "description": "A message between two of the agent's sessions (its `session_message`,\nclient protocol 1.41.0), such as the task a subagent got or the report\nit gave back: shown where it arrives, never sent anywhere.",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/AcpMessageDirection"
+        },
+        "peer": {
+          "description": "The other session, as the daemon named it when the message arrived:\na subagent's title or handle, or `parent` for its parent's session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "direction",
+        "text"
       ],
       "type": "object"
     },
@@ -4672,6 +4762,17 @@
                 "null"
               ]
             },
+            "compaction": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpCompaction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A compaction of the agent's own starting or ending (client protocol\n1.41.0; before, a `notice`)."
+            },
             "context": {
               "anyOf": [
                 {
@@ -4731,6 +4832,17 @@
                 }
               ],
               "description": "The agent's plan, a `plan` display block."
+            },
+            "session_message": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpSessionMessage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A message between the agent's sessions (client protocol 1.41.0;\nbefore, a `notice`)."
             },
             "starting_options": {
               "description": "The values the session's new ACP sessions start with, on top of the\nagent document's `acp.config` (client protocol 1.26.0): what\n`session.create`'s `agent_options` chose. Recorded once, as the\nsession is created.",

@@ -86,6 +86,26 @@ async fn the_agents_subagent_is_a_child_session_with_its_own_work() {
         Some("reviewer")
     );
     assert_eq!(prompts(&acp).len(), 1, "the subagent got no prompt");
+    // The parent shows the task it gave, naming the subagent; the subagent
+    // shows it once, as what its run started with.
+    let messages = |session| {
+        events(engine, session)
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::AcpSessionUpdated { update } => update.session_message,
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        messages(session),
+        [cookie_agent_protocol::AcpSessionMessage {
+            direction: cookie_agent_protocol::AcpMessageDirection::Sent,
+            peer: Some("reviewer".into()),
+            text: "check the tests".into(),
+        }]
+    );
+    assert_eq!(messages(child), []);
     // Its parent got no report of it: the parent agent has its result.
     assert!(!events(engine, session).iter().any(|event| matches!(
         &event.payload,

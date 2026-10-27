@@ -1133,6 +1133,11 @@ pub(super) fn reduce_event_from(
         ),
         EventPayload::RunFinished { outcome } => {
             close_open_assistant(state, timestamp);
+            // An agent's compaction its run left without an end ended with
+            // it.
+            while remove_compacting_where(state, |source| {
+                matches!(source, CompactingSource::Agent { .. })
+            }) {}
             let interrupted = outcome.status() == cookie_agent_protocol::SessionStatus::Interrupted;
             if interrupted {
                 // The run's open block keeps an `interrupted` footer marker.
@@ -1354,10 +1359,20 @@ pub(super) fn reduce_event_from(
             {
                 upsert_plan(state, run_id, entries, timestamp);
             }
+            if let Some(compaction) = update.compaction {
+                agent_compaction(state, timestamp, sequence, compaction);
+            }
             if let Some(notice) = update.notice {
-                push_item(state, timestamp, |id| TranscriptItem::AcpNotice {
+                push_split_item(state, timestamp, |id| TranscriptItem::AcpNotice {
                     id,
                     notice,
+                });
+            }
+            if let Some(message) = update.session_message {
+                push_split_item(state, timestamp, |id| TranscriptItem::AgentSessionMessage {
+                    id,
+                    seq: sequence,
+                    message,
                 });
             }
             if let Some(steered) = update.steered {
@@ -1777,6 +1792,58 @@ fn remove_native_compacting(state: &mut SessionState) -> bool {
     remove_compacting_where(state, |source| {
         matches!(source, CompactingSource::Native { .. })
     })
+}
+
+/// A compaction of the ACP agent's own: a compacting row while it runs, a
+/// compaction row once it completed, as the session's own compaction shows.
+fn agent_compaction(
+    state: &mut SessionState,
+    timestamp: jiff::Timestamp,
+    sequence: u64,
+    compaction: cookie_agent_protocol::AcpCompaction,
+) {
+    use cookie_agent_protocol::AcpCompactionState;
+    let compaction_id = compaction.compaction_id;
+    if compaction.state == AcpCompactionState::InProgress {
+        push_item(state, timestamp, |id| TranscriptItem::Compacting {
+            id,
+            version: 0,
+            seq: sequence,
+            source: CompactingSource::Agent { compaction_id },
+        });
+        return;
+    }
+    remove_compacting_where(
+        state,
+        |source| matches!(source, CompactingSource::Agent { compaction_id: running } if *running == compaction_id),
+    );
+    // A failure's warning comes as a notice; an abandoned one leaves nothing.
+    if matches!(
+        compaction.state,
+        AcpCompactionState::Failed | AcpCompactionState::Cancelled
+    ) {
+        return;
+    }
+    let summary = compaction.summary;
+    push_split_item(state, timestamp, |id| TranscriptItem::AgentCompaction {
+        id,
+        seq: sequence,
+        summary,
+    });
+}
+
+/// Pushes a row the run's output must not straddle, as a compaction row
+/// is: what the run shows next opens below it.
+fn push_split_item(
+    state: &mut SessionState,
+    timestamp: jiff::Timestamp,
+    item: impl FnOnce(u64) -> TranscriptItem,
+) {
+    let relocate = state.split_run_at_compaction();
+    push_item(state, timestamp, item);
+    if let Some(index) = relocate {
+        move_transcript_item_to_end(state, index);
+    }
 }
 
 fn remove_compacting_where(

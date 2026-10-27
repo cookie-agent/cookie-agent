@@ -257,6 +257,61 @@ pub struct AcpNotice {
     pub description: Option<String>,
 }
 
+crate::open_enum! {
+    /// Where a compaction of the agent's own stands (client protocol
+    /// 1.41.0). An unknown state reads as `completed`.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum AcpCompactionState {
+        /// The agent started compacting its conversation.
+        InProgress,
+        Completed,
+        /// It failed; a warning `notice` in the same update says why.
+        Failed,
+        /// It was abandoned, such as by a stop.
+        Cancelled,
+    }
+}
+
+/// A compaction of the agent's own conversation (its `compaction_update`,
+/// client protocol 1.41.0), recorded once as it starts and once as it
+/// ends. Clients show it as they show the session's own compaction.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpCompaction {
+    /// The agent's ID for it, the same in its start and its end.
+    pub compaction_id: String,
+    pub state: AcpCompactionState,
+    /// The summary the agent kept, when it completed with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+crate::open_enum! {
+    /// Which way an [`AcpSessionMessage`] went (client protocol 1.41.0).
+    /// An unknown direction reads as `received`.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum AcpMessageDirection {
+        /// The session got it.
+        Received,
+        /// The session sent it.
+        Sent,
+    }
+}
+
+/// A message between two of the agent's sessions (its `session_message`,
+/// client protocol 1.41.0), such as the task a subagent got or the report
+/// it gave back: shown where it arrives, never sent anywhere.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpSessionMessage {
+    pub direction: AcpMessageDirection,
+    /// The other session, as the daemon named it when the message arrived:
+    /// a subagent's title or handle, or `parent` for its parent's session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    pub text: String,
+}
+
 /// Input the daemon delivered into the agent's running work (an ACP v2
 /// prompt sent during the work; with an ACP v1 agent of an earlier build,
 /// its steering extension), by the events that took it: the
@@ -329,6 +384,14 @@ pub struct AcpSessionUpdate {
     /// session is created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starting_options: Option<Vec<AcpOptionChoice>>,
+    /// A compaction of the agent's own starting or ending (client protocol
+    /// 1.41.0; before, a `notice`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<AcpCompaction>,
+    /// A message between the agent's sessions (client protocol 1.41.0;
+    /// before, a `notice`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_message: Option<AcpSessionMessage>,
 }
 
 impl AcpSessionUpdate {
@@ -345,6 +408,8 @@ impl AcpSessionUpdate {
             && self.detached.is_none()
             && self.fork_point.is_none()
             && self.starting_options.is_none()
+            && self.compaction.is_none()
+            && self.session_message.is_none()
     }
 }
 

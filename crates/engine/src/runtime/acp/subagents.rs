@@ -219,6 +219,29 @@ impl Engine {
         Ok(child)
     }
 
+    /// How a message between the agent's sessions names `peer`, the other
+    /// ACP session, from `session`: a subagent's title or handle, or
+    /// `parent` from a subagent of the agent's own.
+    pub(super) fn acp_peer_label(&self, session: SessionId, peer: &str) -> Option<String> {
+        let child = self
+            .inner
+            .acp
+            .subagents
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(peer)
+            .copied();
+        if let Some(child) = child {
+            let meta = self.inner.store.get(child).ok()?.meta.clone();
+            return meta
+                .title
+                .map(|title| title.as_str().to_owned())
+                .or(meta.short_id);
+        }
+        let projection = self.inner.store.get(session).ok()?;
+        is_acp_subagent(&projection.log.event_snapshot()).then(|| "parent".to_owned())
+    }
+
     /// Names the subagent's session as the agent titles it, unless the
     /// user named it.
     async fn title_acp_subagent(&self, child: SessionId, title: &str) -> Result<(), EngineError> {

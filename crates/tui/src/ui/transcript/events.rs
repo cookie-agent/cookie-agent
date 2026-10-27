@@ -4,7 +4,10 @@ use super::*;
 
 pub(super) use cookie_agent_client_state::rows::goal_status_label;
 pub(in crate::ui) use cookie_agent_client_state::rows::producer_summary;
-use cookie_agent_client_state::rows::{producer_mode_label, producer_owner_label};
+use cookie_agent_client_state::rows::{
+    AGENT_COMPACTION_HEADER, agent_session_message_summary, producer_mode_label,
+    producer_owner_label,
+};
 
 pub(super) fn goal_activation_layout(
     goal: &GoalState,
@@ -355,6 +358,15 @@ pub(super) fn compacting_layout(
     )];
     let text = match source {
         crate::state::CompactingSource::Summary { text, .. } => text,
+        crate::state::CompactingSource::Agent { .. } => {
+            if is_expanded {
+                body.push(Line::styled(
+                    "the agent is compacting its conversation",
+                    context.theme.muted(),
+                ));
+            }
+            return collapsible_event_block(block_id, body, context.width, context.theme);
+        }
         crate::state::CompactingSource::Native { model } => {
             if is_expanded {
                 body.extend(bounded_safe_display_text(
@@ -458,6 +470,87 @@ pub(super) fn compaction_layout(
         ));
     }
     collapsible_event_block(block_id, body, context.width, context.theme)
+}
+
+/// A compaction of the ACP agent's own, as the session's own compaction
+/// row shows: its summary when opened.
+pub(super) fn agent_compaction_layout(
+    seq: u64,
+    summary: Option<&str>,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::Compaction(seq);
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let mut body = vec![Line::styled(
+        format!("🧹 {chevron} {AGENT_COMPACTION_HEADER}"),
+        context.theme.internal(),
+    )];
+    if is_expanded {
+        match summary {
+            Some(summary) => body.extend(bounded_safe_display_text(
+                summary,
+                context.theme.internal(),
+                MAX_EXPANDED_BODY_LINES,
+                MAX_EXPANDED_BODY_BYTES,
+            )),
+            None => body.push(Line::styled(
+                "the agent kept no summary",
+                context.theme.muted(),
+            )),
+        }
+    }
+    collapsible_event_block(block_id, body, context.width, context.theme)
+}
+
+/// A message between the ACP agent's sessions, as a producer message row
+/// shows: which way it went and the other session, its text when opened.
+pub(super) fn agent_session_message_layout(
+    seq: u64,
+    message: &cookie_agent_protocol::AcpSessionMessage,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::AgentSessionMessage(seq);
+    let expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if expanded { '▾' } else { '▸' };
+    let header = if context.width < 8 {
+        format!("[M] {chevron} …")
+    } else {
+        format!("◇ {chevron} {}", agent_session_message_summary(message))
+    };
+    let mut lines = vec![Line::styled(
+        crate::ui::app::truncate_with_ellipsis(&header, usize::from(context.width)),
+        context.theme.internal(),
+    )];
+    if expanded {
+        for line in bounded_safe_display_text(
+            &message.text,
+            context.theme.internal(),
+            MAX_EXPANDED_BODY_LINES,
+            MAX_EXPANDED_BODY_BYTES,
+        ) {
+            lines.extend(repeated_prefixed_wrapped_line(
+                vec![Span::styled("· ", context.theme.internal())],
+                line,
+                context.width,
+            ));
+        }
+    }
+    ItemLayout {
+        regions: vec![BlockRegion {
+            id: block_id,
+            start_line: 0,
+            end_line: lines.len(),
+            header_lines: Some(1),
+            header_gutter: None,
+        }],
+        lines,
+        user_seq: None,
+    }
 }
 
 pub(super) fn plugin_message_layout(

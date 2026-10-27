@@ -599,7 +599,11 @@ nested under its parent; a background terminal in the background bar.
   of being answered `cancelled` at once.
 - **The task.** A `session_message` to the child before its work starts
   becomes the wake's body ("Started with a task"). Messages during a run
-  show as notices.
+  show as notices; since client protocol 1.41.0 they are
+  `acp_session_updated.session_message` instead (`direction`, `peer`, the
+  other session as named then, `text`), shown on both sides as producer
+  messages are. The task a subagent's run starts with shows there once,
+  as that run's message.
 - **Cookie's tools.** A subagent's calls of cookie's tools go through its
   parent's bridge and show in the parent's session.
 

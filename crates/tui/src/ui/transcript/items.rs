@@ -115,7 +115,12 @@ pub(super) fn for_each_item_block_id(
             true
         }
         TranscriptItem::Compacting { seq, .. } => visit(BlockId::Compacting(*seq)),
-        TranscriptItem::Compaction { seq, .. } => visit(BlockId::Compaction(*seq)),
+        TranscriptItem::Compaction { seq, .. } | TranscriptItem::AgentCompaction { seq, .. } => {
+            visit(BlockId::Compaction(*seq))
+        }
+        TranscriptItem::AgentSessionMessage { seq, .. } => {
+            visit(BlockId::AgentSessionMessage(*seq))
+        }
         TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
         TranscriptItem::AgentMd { seq, .. } => visit(BlockId::AgentMd(*seq)),
         TranscriptItem::SkillLoaded { seq, .. } => visit(BlockId::SkillLoaded(*seq)),
@@ -198,6 +203,8 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
         | TranscriptItem::Goal { .. }
         | TranscriptItem::Plan { .. }
         | TranscriptItem::AcpNotice { .. }
+        | TranscriptItem::AgentCompaction { .. }
+        | TranscriptItem::AgentSessionMessage { .. }
         | TranscriptItem::ProducerMessage { .. } => false,
     }
 }
@@ -276,6 +283,12 @@ pub(super) fn transcript_item_layout(
         }
         TranscriptItem::Compacting { seq, source, .. } => compacting_layout(*seq, source, context),
         TranscriptItem::Compaction { seq, commit, .. } => compaction_layout(*seq, commit, context),
+        TranscriptItem::AgentCompaction { seq, summary, .. } => {
+            agent_compaction_layout(*seq, summary.as_deref(), context)
+        }
+        TranscriptItem::AgentSessionMessage { seq, message, .. } => {
+            agent_session_message_layout(*seq, message, context)
+        }
         TranscriptItem::PluginMessage {
             seq, role, input, ..
         } => plugin_message_layout(*seq, *role, input, context),

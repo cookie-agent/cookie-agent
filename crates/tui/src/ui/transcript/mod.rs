@@ -325,6 +325,8 @@ pub(super) enum BlockId {
     /// Memory panel at the memory.
     MemoryChange(u64),
     ProducerMessage(ProducerMessageId),
+    /// A message between the ACP agent's sessions, by its event's sequence.
+    AgentSessionMessage(u64),
     MediaFile {
         turn_seq: u64,
         content_index: u32,

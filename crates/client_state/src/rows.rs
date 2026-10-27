@@ -39,6 +39,28 @@ pub fn producer_summary(
     )
 }
 
+/// The one-line summary of a message between an ACP agent's sessions:
+/// which way it went, and the other session.
+pub fn agent_session_message_summary(message: &cookie_agent_protocol::AcpSessionMessage) -> String {
+    let peer = message
+        .peer
+        .as_deref()
+        .map(|peer| peer.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|peer| !peer.is_empty());
+    let received = message.direction != cookie_agent_protocol::AcpMessageDirection::Sent;
+    match (received, peer.as_deref()) {
+        (true, Some("parent")) => "message from the parent session".to_owned(),
+        (false, Some("parent")) => "message to the parent session".to_owned(),
+        (true, Some(peer)) => format!("message from subagent {peer}"),
+        (false, Some(peer)) => format!("message to subagent {peer}"),
+        (true, None) => "message from another of the agent's sessions".to_owned(),
+        (false, None) => "message to another of the agent's sessions".to_owned(),
+    }
+}
+
+/// The header of a compaction of an ACP agent's own.
+pub const AGENT_COMPACTION_HEADER: &str = "context compacted (by the agent)";
+
 /// Who produced a message, as a person reads it.
 pub fn producer_owner_label(owner: &ProducerOwner) -> String {
     match owner {

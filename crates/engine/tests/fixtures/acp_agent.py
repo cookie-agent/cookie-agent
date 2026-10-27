@@ -625,6 +625,8 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         update(session_id, {"sessionUpdate": "compaction_update", "compactionId": "c1", "status": "in_progress"})
         update(session_id, {"sessionUpdate": "compaction_summary_chunk", "compactionId": "c1", "content": {"type": "text", "text": "We read notes.txt."}})
         update(session_id, {"sessionUpdate": "compaction_update", "compactionId": "c1", "status": "completed"})
+        # As Claude Code's adapter: the end again, with the token counts.
+        update(session_id, {"sessionUpdate": "compaction_update", "compactionId": "c1", "status": "completed"})
         say(session_id, "noticed")
     elif word == "steer-wait":
         say(session_id, "waiting")
