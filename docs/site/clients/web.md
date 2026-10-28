@@ -449,6 +449,13 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   - **Up** in an empty composer takes back your newest pending or queued
     message.
 
+  Each session keeps its own draft, text and attached files: opening
+  another session shows its draft, and coming back brings yours back. A
+  new session's draft is kept the same way, its files held in the page,
+  until its first message creates the session. A message a session did
+  not take goes back to that session's draft, even when another is open.
+  Drafts stay in the page and end with it.
+
   The strip above the composer lists pending and queued messages; tap one
   to take it back into your composer, another client's too (a daemon
   before client protocol 1.31.0 lets only the client that sent it).

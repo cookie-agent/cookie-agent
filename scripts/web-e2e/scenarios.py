@@ -2760,6 +2760,40 @@ OPEN_SESSION_ROW = "aside [data-session-row]:has([aria-current=true])"
 TOOLTIP = "return document.querySelector(arguments[0] + ' [data-session]').title"
 
 
+def session_drafts(browser):
+    """Each session keeps its own composer draft: what is typed for one
+    stays with it while another is open and comes back with it, and a new
+    session's draft comes back to the next new session."""
+    value = lambda: browser.script("return document.querySelector('#composer').value")
+    made = []
+    for text in ("draft one", "draft two"):
+        new_session(browser)
+        send(browser, text)
+        idle(browser, text=text)
+        made.append(open_session_id(browser))
+    first, second = ('aside [data-session-row="%s"]' % session for session in made)
+
+    def show(row, session):
+        click_row(browser, row)
+        browser.wait("the session", lambda: open_session_id(browser) == session)
+
+    browser.type("#composer", "for the second")
+    show(first, made[0])
+    browser.wait("the first's empty draft", lambda: value() == "")
+    browser.type("#composer", "for the first")
+    show(second, made[1])
+    browser.wait("the second's draft", lambda: value() == "for the second")
+    browser.click("aside [data-new-session]")
+    browser.wait("the new session's empty draft", lambda: value() == "")
+    browser.type("#composer", "for a new one")
+    show(first, made[0])
+    browser.wait("the first's draft", lambda: value() == "for the first")
+    browser.click("aside [data-new-session]")
+    browser.wait("the new session's draft", lambda: value() == "for a new one")
+    clear_composer(browser)
+    print("each session, and the new one, kept its own draft")
+
+
 def open_session_id(browser):
     return browser.script(
         "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
@@ -5516,6 +5550,7 @@ SCENARIOS = [
     ("desktop_layout", desktop_layout, "chat", ["basics"]),
     ("runtime_cards", runtime_cards, "chat", []),
     ("draft_first_message", draft_first_message, "chat", []),
+    ("session_drafts", session_drafts, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),
     ("cron", cron_jobs, "chat", []),

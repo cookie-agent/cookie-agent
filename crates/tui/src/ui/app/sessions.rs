@@ -262,7 +262,7 @@ impl App {
             // A conversation-leg selection addresses rendered lines of the
             // session being left; kept across the switch it would paint and
             // copy rows of the newly watched session. The composer leg
-            // survives: the draft buffer persists across watches.
+            // goes with the session's draft (`follow_composer_slot`).
             if matches!(self.selection, Some(TextSelection::Conversation { .. })) {
                 self.selection = None;
             }
@@ -276,6 +276,7 @@ impl App {
             self.load_skills_for_session(session_id);
         }
         self.rebind_draft_to_selected_session();
+        self.follow_composer_slot();
         // Voided inputs (run-end casualties, cross-session recalls) are
         // restored exactly when their session is being viewed.
         self.restore_voided_inputs();

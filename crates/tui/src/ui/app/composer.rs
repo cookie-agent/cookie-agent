@@ -405,6 +405,8 @@ impl App {
             if self.new_session_draft.is_some() {
                 return;
             }
+            // The new session's draft is what this sends.
+            self.drop_new_session_draft();
         }
         let Some(session_id) = self.selected else {
             self.status = "create or select a session first".into();
@@ -1076,6 +1078,7 @@ impl App {
                 self.draft_permissions = DraftPermissions::default();
                 self.draft_agent_options.clear();
                 self.draft_runtimes = None;
+                self.follow_composer_slot();
                 // The conversation pane now shows the fresh session; a drag
                 // selection addresses lines of the one it replaced.
                 if matches!(self.selection, Some(TextSelection::Conversation { .. })) {

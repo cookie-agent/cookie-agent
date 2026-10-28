@@ -6,6 +6,7 @@ mod approvals;
 mod attachments;
 mod background;
 mod composer;
+mod composer_drafts;
 pub(in crate::ui) mod config_panel;
 pub(in crate::ui) mod cron_panel;
 mod draw;
@@ -944,6 +945,9 @@ pub struct App {
     /// the quit window exits.
     pub(super) last_quit_press: Option<Instant>,
     pub(super) input: InputState,
+    /// The drafts of the sessions not shown, and whose draft `input` and
+    /// `attachments` are.
+    composer_drafts: composer_drafts::ComposerDrafts,
     /// Files attached to the draft, sent with it as file parts.
     pub(super) attachments: Vec<cookie_agent_protocol::ArtifactRef>,
     /// A pasted path waiting for the user to attach it or paste it as text.
@@ -1688,6 +1692,7 @@ impl App {
             last_escape: None,
             last_quit_press: None,
             input: InputState::default(),
+            composer_drafts: composer_drafts::ComposerDrafts::default(),
             attachments: Vec::new(),
             attach_offer: None,
             modal: Modal::None,
@@ -2243,6 +2248,8 @@ async fn event_loop(
             render.mark_immediate();
         }
         if render.should_draw(Instant::now()) {
+            // Whatever changed the view, the composer shows its draft.
+            app.follow_composer_slot();
             drawn_wall_clock_view = app.wall_clock_view();
             if let Err(error) = terminal
                 .draw(|frame| app.draw(frame))
@@ -2270,6 +2277,9 @@ async fn event_loop(
                 // on it would handle each keystroke twice.
                 Ok(CrosstermEvent::Key(key)) if key.kind == KeyEventKind::Release => {}
                 Ok(CrosstermEvent::Key(key)) => {
+                    // A view change since the last frame takes its draft
+                    // along before the key edits one.
+                    app.follow_composer_slot();
                     app.handle_key(key).await;
                     app.note_input();
                     render.mark_immediate();
@@ -2302,6 +2312,7 @@ async fn event_loop(
                 }
                 Ok(CrosstermEvent::Paste(text)) => {
                     let text = Zeroizing::new(text);
+                    app.follow_composer_slot();
                     app.handle_paste(&text);
                     app.note_input();
                     render.mark_immediate();

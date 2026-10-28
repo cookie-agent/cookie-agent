@@ -1112,3 +1112,78 @@ async fn another_clients_model_pick_moves_this_draft_and_rapid_picks_publish_onc
         "primary"
     );
 }
+
+#[tokio::test]
+async fn each_session_keeps_its_own_composer_draft() {
+    let mut app = test_app().await;
+    app.agents = vec![descriptor("primary", true)];
+    app.models = vec![model_descriptor()];
+    let (first, second) = (SessionId::new_v7(), SessionId::new_v7());
+    let file = cookie_agent_protocol::ArtifactRef {
+        sha256: "ab".repeat(32),
+        byte_length: 10,
+        media_type: "image/png".into(),
+        filename: Some("a.png".into()),
+    };
+    app.set_selected_session(first);
+    app.input.set_buffer("for the first".into());
+    app.attachments.push(file.clone());
+    // Another session shows its own, empty draft.
+    app.set_selected_session(second);
+    assert_eq!(app.input.as_str(), "");
+    assert!(app.attachments.is_empty());
+    app.input.set_buffer("for the second".into());
+    // Back at the first, its text and file are back.
+    app.set_selected_session(first);
+    assert_eq!(app.input.as_str(), "for the first");
+    assert_eq!(app.attachments, [file]);
+    // A new session's draft is its own too, and outlives a look elsewhere.
+    app.run_command(SlashCommand::New).await;
+    assert_eq!(app.input.as_str(), "");
+    app.input.set_buffer("for a new one".into());
+    app.set_selected_session(second);
+    assert_eq!(app.input.as_str(), "for the second");
+    app.run_command(SlashCommand::New).await;
+    assert_eq!(app.input.as_str(), "for a new one");
+}
+
+#[tokio::test]
+async fn a_new_sessions_draft_is_spent_by_the_session_it_creates() {
+    let mut app = test_app().await;
+    app.agents = vec![descriptor("primary", true)];
+    app.models = vec![model_descriptor()];
+    let existing = SessionId::new_v7();
+    app.set_selected_session(existing);
+    app.input.set_buffer("for the existing one".into());
+    let (client, recorded, incoming) = live_recording_client();
+    app.client = client;
+    app.run_command(SlashCommand::New).await;
+    app.choose_picker_entry(0).await;
+    let created = SessionId::new_v7();
+    let meta = cookie_agent_protocol::SessionCreateResult {
+        session: session_meta(created),
+        runtimes: Vec::new(),
+    };
+    let recorded_for_response = recorded.clone();
+    let response = tokio::spawn(async move {
+        let id = wait_for_recorded_request(&recorded_for_response, "session.create", 1).await;
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": meta,
+            })))
+            .expect("script create result");
+    });
+    type_input(&mut app, "first message").await;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    response.await.expect("create response");
+    assert_eq!(app.selected, Some(created));
+    assert_eq!(app.input.as_str(), "");
+    // The next new session starts empty; the existing one kept its draft.
+    app.run_command(SlashCommand::New).await;
+    assert_eq!(app.input.as_str(), "");
+    app.set_selected_session(existing);
+    assert_eq!(app.input.as_str(), "for the existing one");
+}

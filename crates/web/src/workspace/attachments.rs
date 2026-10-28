@@ -215,16 +215,14 @@ impl Workspace {
         self.status.set(format!("attaching {name}…"));
         spawn_local(async move {
             match upload(&client, session_id, &name, Some(name.clone()), &bytes).await {
-                Ok(artifact) if self.selected.get_untracked() == Some(session_id) => {
+                // It joins its session's draft, shown or put aside.
+                Ok(artifact) => {
                     self.status.set(format!(
                         "attached {}",
                         cookie_agent_client_state::attachment_chip(&artifact)
                     ));
-                    self.add_attachment(artifact);
+                    self.attach_to_draft(session_id, artifact);
                 }
-                Ok(_) => self.status.set(format!(
-                    "{name} was uploaded for another session; attach it again"
-                )),
                 Err(failure) => self.refuse_upload(name, bytes, failure),
             }
         });
@@ -332,10 +330,6 @@ impl Workspace {
     }
 
     /// Forgets the files a new session's draft kept.
-    pub(super) fn drop_draft_files(self) {
-        self.draft_files.set_value(Vec::new());
-    }
-
     /// Takes the file `sha256` off the draft.
     pub fn remove_attachment(self, sha256: &str) {
         self.attachments

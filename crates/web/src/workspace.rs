@@ -37,6 +37,7 @@ mod attachments;
 mod background;
 mod cards;
 mod cron;
+mod drafts;
 mod goal;
 mod history;
 mod manage;
@@ -52,6 +53,8 @@ mod rename;
 mod restart;
 mod skills;
 mod tree;
+
+use drafts::ComposerSlot;
 
 pub use attachments::DownscaleOffer;
 pub use cards::CardSet;
@@ -226,6 +229,9 @@ pub struct Workspace {
     /// The bytes of a new session's files, uploaded once its first message
     /// created it.
     draft_files: StoredValue<Vec<attachments::DraftFile>>,
+    /// The drafts of the sessions not shown, and whose draft `composer`
+    /// and `attachments` are.
+    composer_drafts: StoredValue<drafts::ComposerDrafts>,
     next_draft_file: StoredValue<u64>,
     pub downscale_offer: RwSignal<Option<DownscaleOffer>>,
     offer_bytes: StoredValue<Vec<u8>>,
@@ -464,6 +470,7 @@ impl Workspace {
             permission_request: StoredValue::new(0),
             attachments: RwSignal::new(Vec::new()),
             draft_files: StoredValue::new(Vec::new()),
+            composer_drafts: StoredValue::new(drafts::ComposerDrafts::default()),
             next_draft_file: StoredValue::new(0),
             downscale_offer: RwSignal::new(None),
             offer_bytes: StoredValue::new(Vec::new()),
@@ -1004,6 +1011,7 @@ impl Workspace {
         if viewed && !self.new_session.get_untracked() {
             self.start_new_session();
         }
+        self.forget_composer_draft(session_id);
         // The daemon dropped its subscription already: nothing to send.
         self.subscriptions.update_value(|subscriptions| {
             subscriptions.release(session_id);
@@ -1283,7 +1291,8 @@ impl Workspace {
     /// Starts composing a new session: its runtime cards with only
     /// `global` selected, and the composer under them, whose first message
     /// creates the session. A project's defaults prefill the cards.
-    /// Nothing is remembered from an earlier draft.
+    /// Nothing else is remembered from an earlier draft: the composer
+    /// brings back the text and files typed for a new session before.
     pub fn start_new_session(self) {
         self.selection.set(crate::cards::Selection::global_only());
         self.new_project.set(None);
@@ -1295,12 +1304,9 @@ impl Workspace {
         self.selected.set(None);
         self.tree_root.set(None);
         self.tree.set(None);
-        self.attachments.set(Vec::new());
-        self.drop_draft_files();
-        self.downscale_offer.set(None);
+        self.follow_composer_slot();
         self.draft_rules.set(Vec::new());
         self.draft_agent_options.set(Default::default());
-        self.composer.set(String::new());
         self.draft.set(self.default_draft());
         self.panel.set(None);
         self.sidebar_open.set(false);
@@ -1310,13 +1316,9 @@ impl Workspace {
     /// Opens `session_id`: classifies who owns it, subscribes it, and reads
     /// its approvals and permission mode.
     pub fn open_session(self, session_id: SessionId) {
-        if self.selected.get_untracked() != Some(session_id) {
-            self.attachments.set(Vec::new());
-            self.drop_draft_files();
-            self.downscale_offer.set(None);
-        }
         self.new_session.set(false);
         self.selected.set(Some(session_id));
+        self.follow_composer_slot();
         self.panel.set(None);
         self.sidebar_open.set(false);
         self.view.set(crate::layout::View::Chat);
@@ -1660,7 +1662,7 @@ impl Workspace {
         };
         let new_session = self.new_session.get_untracked();
         if new_session && !self.may_create() {
-            self.bounce_draft(text, files);
+            self.return_to_draft(ComposerSlot::NewSession, text, files);
             return;
         }
         self.sent.notify();
@@ -1698,8 +1700,8 @@ impl Workspace {
                         }
                         Err(uploaded) => {
                             // As a failed submit: the message goes back to
-                            // the session's composer.
-                            self.bounce_draft(text, uploaded);
+                            // the session's draft.
+                            self.return_to_draft(ComposerSlot::Session(session_id), text, uploaded);
                             return;
                         }
                     }
@@ -1728,17 +1730,9 @@ impl Workspace {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    // The text goes back to the composer, as in the TUI.
-                    self.composer.update(|composer| {
-                        if composer.is_empty() {
-                            *composer = text;
-                        }
-                    });
-                    self.attachments.update(|attachments| {
-                        if attachments.is_empty() {
-                            *attachments = files;
-                        }
-                    });
+                    // The text goes back to the session's draft, as in the
+                    // TUI.
+                    self.return_to_draft(ComposerSlot::Session(session_id), text, files);
                     self.status.set(crate::errors::describe(&error));
                 }
             }
@@ -1767,23 +1761,6 @@ impl Workspace {
         }
     }
 
-    /// Puts a message the new session did not take back into the composer,
-    /// ahead of anything typed meanwhile.
-    fn bounce_draft(self, text: String, files: Vec<cookie_agent_protocol::ArtifactRef>) {
-        self.composer.update(|composer| {
-            *composer = match (text.is_empty(), composer.is_empty()) {
-                (_, true) => text,
-                (true, false) => std::mem::take(composer),
-                (false, false) => format!("{text}\n\n{composer}"),
-            };
-        });
-        self.attachments.update(|attachments| {
-            let typed = std::mem::take(attachments);
-            *attachments = files;
-            attachments.extend(typed);
-        });
-    }
-
     /// The daemon did not create the new session: the draft stays as it
     /// was, the message goes back into the composer, and the error shows on
     /// the card of the runtime it names, else beside the composer.
@@ -1793,8 +1770,9 @@ impl Workspace {
         text: String,
         files: Vec<cookie_agent_protocol::ArtifactRef>,
     ) {
-        // The page left the draft meanwhile: the message has nowhere to go
-        // back to but the status line.
+        self.return_to_draft(ComposerSlot::NewSession, text, files);
+        // The page left the draft meanwhile: the message waits in it, and
+        // the status line says why.
         if !self.new_session.get_untracked() {
             self.status.set(format!(
                 "the new session was not created: {}",
@@ -1802,7 +1780,6 @@ impl Workspace {
             ));
             return;
         }
-        self.bounce_draft(text, files);
         let card = crate::cards::failing_request(&refusal.message, &refusal.requests);
         match card {
             Some((key, index)) => {
@@ -1928,6 +1905,7 @@ impl Workspace {
         self.card_errors.set(HashMap::new());
         self.new_session.set(false);
         self.selected.set(Some(session_id));
+        self.composer_follows_created(session_id);
         self.reroot_tree(session_id);
         self.note_viewed(session_id);
         let subscribe = self

@@ -181,6 +181,8 @@ impl App {
                 None => self.leave_deleted_session(),
             }
         }
+        self.follow_composer_slot();
+        self.forget_composer_draft(session_id);
     }
 
     fn leave_deleted_session(&mut self) {

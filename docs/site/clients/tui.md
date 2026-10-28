@@ -62,6 +62,10 @@ follow it and say another client picked it. The latest pick wins. Ctrl-A
 selects the whole draft; typing or pasting over a selection replaces it. The
 composer keeps keyboard focus while you click around the conversation; only a
 panel, the command palette, or an approval on top of it takes focus away.
+Each session keeps its own draft, text and attached files: switching to another
+session shows that session's, and switching back brings yours back. A new
+session's draft (`/new`) is kept the same way until its first message creates
+the session. Drafts stay in the TUI's memory and end when it exits.
 
 The agent and model panels include search fields. Agent search matches agent IDs
 and descriptions; model search matches display names and `provider/model_id`.
