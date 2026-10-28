@@ -45,7 +45,7 @@ indexmap = { version = "2.12.1", features = ["serde"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 libc = "0.2.189"
 process-wrap = { version = "9.1.0", features = ["tokio1"] }
-pulldown-cmark = "=0.13.4"
+pulldown-cmark = "=0.13.5"
 ratatui = "0.30.2"
 rustix = { version = "1.1.2", features = ["fs", "process"] }
 schemars = { version = "1.2.2", features = ["derive", "uuid1", "jiff02"] }
