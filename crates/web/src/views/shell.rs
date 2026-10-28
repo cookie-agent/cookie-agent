@@ -78,6 +78,14 @@ pub fn Rail(
                         aria-hidden="true"
                     ></span>
                     <Glyph icon=view_icon(view) class="text-lg" />
+                    // A session is unread: a dot on the Chat button.
+                    <Show when=move || view == View::Chat && workspace.any_unread()>
+                        <span
+                            class="absolute top-2 right-2 h-2 w-2 rounded-full bg-caramel dark:bg-maple"
+                            data-unread-any
+                            aria-hidden="true"
+                        ></span>
+                    </Show>
                 </button>
             }
         })

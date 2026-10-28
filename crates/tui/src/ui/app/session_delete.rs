@@ -1,6 +1,6 @@
 //! The `/sessions` picker's session deletion, its action row (rename,
-//! delete), and its choice between this directory's sessions and every
-//! directory's.
+//! delete, mark read or unread), and its choice between this directory's
+//! sessions and every directory's.
 
 use cookie_agent_client_state::session_delete::{
     self, DAEMON_TOO_OLD_TO_DELETE, SessionDeleteOutcome,
@@ -15,6 +15,9 @@ pub(in crate::ui) enum SessionPickerAction {
     Rename,
     /// Asks to delete the highlighted session (Ctrl+D).
     Delete,
+    /// Marks the highlighted session read, or unread when it is read
+    /// (Ctrl+K; `docs/site/specs/unread-sessions.md`).
+    ToggleRead,
     /// Switches between this directory's sessions and every directory's
     /// (Ctrl+A).
     ToggleScope,
@@ -23,10 +26,12 @@ pub(in crate::ui) enum SessionPickerAction {
 }
 
 impl SessionPickerAction {
-    fn label(self, all_directories: bool, project: &str) -> String {
+    fn label(self, all_directories: bool, project: &str, unread: bool) -> String {
         match self {
             Self::Rename => " Rename (ctrl+r) ".to_owned(),
             Self::Delete => " Delete (ctrl+d) ".to_owned(),
+            Self::ToggleRead if unread => " Mark read (ctrl+k) ".to_owned(),
+            Self::ToggleRead => " Mark unread (ctrl+k) ".to_owned(),
             Self::ToggleScope if all_directories => " This directory (ctrl+a) ".to_owned(),
             Self::ToggleScope => " All directories (ctrl+a) ".to_owned(),
             Self::CycleProject => format!(" {project} (ctrl+p) "),
@@ -72,6 +77,42 @@ impl App {
     /// Ctrl+D, Delete, or the Delete button: asks to delete the highlighted
     /// session. Nothing is sent before the user confirms, and nothing at all
     /// to a daemon older than client protocol 1.5.
+    /// The session the picker highlights.
+    fn highlighted_session(&mut self) -> Option<SessionMeta> {
+        let index = self.picker_state.selected().unwrap_or(0);
+        let session_id = self.session_search_ids().get(index).copied()?;
+        self.sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .cloned()
+    }
+
+    /// Ctrl+K or the button: marks the highlighted session read, or unread
+    /// when it is read. The daemon announces the change to every client.
+    pub(in crate::ui) fn toggle_session_read(&mut self) {
+        if !cookie_agent_client_state::unread::daemon_keeps_unread(self.client.daemon_version()) {
+            self.status = "This daemon keeps no unread sessions; update it.".into();
+            return;
+        }
+        let Some(session) = self.highlighted_session() else {
+            self.status = "There is no session to mark.".into();
+            return;
+        };
+        let (session_id, unread) = (session.session_id, !session.unread);
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let update = match client.set_session_unread(vec![session_id], unread).await {
+                Ok(result) => RpcUpdate::Notice(cookie_agent_client_state::unread::marked_message(
+                    result.changed.len(),
+                    unread,
+                )),
+                Err(error) => RpcUpdate::failure(&error),
+            };
+            let _ = updates.send(update);
+        });
+    }
+
     pub(in crate::ui) fn begin_session_delete(&mut self) {
         let index = self.picker_state.selected().unwrap_or(0);
         let Some(session_id) = self.session_search_ids().get(index).copied() else {
@@ -219,19 +260,27 @@ impl App {
         let mut spans = Vec::new();
         let mut x = row.x;
         let project = self.session_project_filter_label();
-        let actions = [
+        let unread = self
+            .highlighted_session()
+            .is_some_and(|session| session.unread);
+        let keeps_unread =
+            cookie_agent_client_state::unread::daemon_keeps_unread(self.client.daemon_version());
+        let has_projects = self.daemon_has_projects();
+        let shown = [
             SessionPickerAction::Rename,
             SessionPickerAction::Delete,
+            SessionPickerAction::ToggleRead,
             SessionPickerAction::ToggleScope,
             SessionPickerAction::CycleProject,
-        ];
-        let shown = if self.daemon_has_projects() {
-            &actions[..]
-        } else {
-            &actions[..3]
-        };
-        for &action in shown {
-            let label = action.label(self.session_scope_all, &project);
+        ]
+        .into_iter()
+        .filter(|action| match action {
+            SessionPickerAction::ToggleRead => keeps_unread,
+            SessionPickerAction::CycleProject => has_projects,
+            _ => true,
+        });
+        for action in shown {
+            let label = action.label(self.session_scope_all, &project, unread);
             let width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
             if x.saturating_add(width) <= row.right() {
                 self.hit_map
@@ -310,6 +359,7 @@ impl App {
         match action {
             SessionPickerAction::Rename => self.begin_session_rename(),
             SessionPickerAction::Delete => self.begin_session_delete(),
+            SessionPickerAction::ToggleRead => self.toggle_session_read(),
             SessionPickerAction::ToggleScope => self.toggle_session_scope().await,
             SessionPickerAction::CycleProject => self.cycle_session_project_filter(),
         }

@@ -625,6 +625,7 @@ impl App {
                 KeyCode::Char('p') => return self.cycle_session_project_filter(),
                 KeyCode::Char('d') => return self.begin_session_delete(),
                 KeyCode::Char('r') => return self.begin_session_rename(),
+                KeyCode::Char('k') => return self.toggle_session_read(),
                 _ => {}
             }
         }

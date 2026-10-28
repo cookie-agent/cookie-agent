@@ -2794,6 +2794,66 @@ def session_drafts(browser):
     print("each session, and the new one, kept its own draft")
 
 
+def unread_and_select(browser):
+    """Select mode in the session list: rows toggle, Shift extends a range,
+    the selection is marked unread (a dot on each row and on the rail's
+    Chat button) and read again, and a batch delete skips the running
+    session, deletes the rest, and keeps the skipped one selected."""
+    made = []
+    for text in ("select one", "select two"):
+        new_session(browser)
+        send(browser, text)
+        idle(browser, text=text)
+        made.append(open_session_id(browser))
+    new_session(browser)
+    send(browser, "go slow")
+    browser.wait("the slow run", lambda: "word3" in browser.text("#transcript"))
+    running = open_session_id(browser)
+    row = lambda session: 'aside [data-session-row="%s"]' % session
+    dot = lambda session: count(browser, row(session) + " [data-unread]") == 1
+    picked = lambda: browser.text("#selection-bar [data-picked-count]")
+
+    browser.click("#select-sessions")
+    browser.wait("select mode", lambda: picked() == "Select sessions")
+    click_row(browser, row(made[0]))
+    browser.wait("one selected", lambda: picked() == "1 selected")
+    # Shift extends from the last row toggled.
+    browser.script(
+        "document.querySelector(arguments[0]).dispatchEvent("
+        "new MouseEvent('click', {bubbles: true, shiftKey: true}))",
+        row(made[1]) + " [data-session]",
+    )
+    browser.wait("the range", lambda: picked() == "2 selected")
+    # Read first: a session that settled while the page was not attended
+    # is unread already.
+    browser.click("#mark-picked-read")
+    browser.wait("read", lambda: not dot(made[0]) and not dot(made[1]))
+    browser.click("#mark-picked-unread")
+    browser.wait("the dots", lambda: dot(made[0]) and dot(made[1]))
+    assert count(browser, "[data-rail=primary] [data-view=chat] [data-unread-any]") == 1
+    browser.shot("unread-selected")
+    browser.click("#mark-picked-read")
+    browser.wait("read again", lambda: not dot(made[0]) and not dot(made[1]))
+    print("select mode marked two sessions unread and read again")
+
+    click_row(browser, row(running))
+    browser.wait("three selected", lambda: picked() == "3 selected")
+    browser.click("#delete-picked")
+    browser.wait("the confirmation", lambda: "Delete 3 sessions" in browser.text("[data-delete-picked-box]"))
+    browser.click("#delete-picked-confirm")
+    browser.wait("the deletes", lambda: count(browser, row(made[0])) == 0 and count(browser, row(made[1])) == 0, timeout=40)
+    browser.wait("the summary", lambda: "skipped" in browser.text("#status") and "(running)" in browser.text("#status"))
+    assert "Deleted 2 sessions" in browser.text("#status"), browser.text("#status")
+    assert count(browser, row(running)) == 1
+    assert picked() == "1 selected", picked()
+    print("a batch delete skipped the running session:", browser.text("#status"))
+    browser.click("#select-done")
+    browser.wait("the list's header", lambda: count(browser, "#selection-bar") == 0)
+    click_row(browser, row(running))
+    browser.type("#composer", ESCAPE)
+    idle(browser, "the cancelled run's end")
+
+
 def open_session_id(browser):
     return browser.script(
         "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
@@ -4373,7 +4433,8 @@ def projects(browser):
     items = browser.script(
         "return [...document.querySelectorAll(arguments[0] + ' [role=menuitem]')].map((b) => b.innerText.trim())", menu
     )
-    assert items == ["Move to project…"], items
+    # Moving it, then marking it read or unread (whichever it is not).
+    assert items[:1] == ["Move to project…"] and items[1:] in (["Mark read"], ["Mark unread"]), items
     trigger, box = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"
         "const t = r(arguments[0]), m = r(arguments[1]);"
@@ -5551,6 +5612,7 @@ SCENARIOS = [
     ("runtime_cards", runtime_cards, "chat", []),
     ("draft_first_message", draft_first_message, "chat", []),
     ("session_drafts", session_drafts, "chat", []),
+    ("unread_and_select", unread_and_select, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),
     ("cron", cron_jobs, "chat", []),

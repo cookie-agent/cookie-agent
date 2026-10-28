@@ -218,16 +218,18 @@ pub(crate) fn session_search_rows<'a>(
                     )
                 })
                 .unwrap_or_default();
-        // A session a cron job started leads with a clock.
+        // A session a cron job started leads with a clock, and an unread
+        // one with a dot before it.
         let cron = if session.cron.is_some() {
             format!("{} ", crate::ui::app::cron_panel::CRON_RUN_MARK)
         } else {
             String::new()
         };
+        let unread = if session.unread { "● " } else { "" };
         rows.push(SessionSearchRow::Session {
             session_id: session.session_id,
             label: format!(
-                "{cron}{title}{degraded}{}  ({project}{} · {}{directory})",
+                "{unread}{cron}{title}{degraded}{}  ({project}{} · {}{directory})",
                 activity_marker(session),
                 session.creation_selection.agent,
                 short_id(session)

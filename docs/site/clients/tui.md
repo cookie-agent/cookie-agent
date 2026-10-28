@@ -287,7 +287,14 @@ Enter or click a row to open one.
   project, then all again. The picker's title names the project shown.
   Each row names its project, with its emoji, before its agent.
 - A session a [cron job](#scheduled-prompts) started leads with a clock,
-  🕒, before its title.
+  🕒, before its title, and an unread one with `●`: it finished, or waits
+  on an approval or a question, while nobody was there to see it
+  ([unread sessions](../specs/unread-sessions.md)). Viewing it in a
+  focused terminal you used in the last 2 minutes reads it, in every
+  client.
+- **Ctrl+K**, or the **Mark read** / **Mark unread** button, marks the
+  highlighted session read, or unread when it is read (with a daemon of
+  client protocol 1.51 or later).
 - **Ctrl+R**, or the **Rename** button, renames the highlighted session:
   a field holding its title opens over the search. See
   [Renaming](#renaming).

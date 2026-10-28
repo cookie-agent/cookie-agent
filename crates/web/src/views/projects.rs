@@ -301,7 +301,8 @@ pub(super) fn project_list(
 }
 
 /// One section: its header, then its sessions while it is open, and its
-/// sessions at work (running, or waiting on a producer) while it is folded.
+/// sessions at work (running, or waiting on a producer) and its unread ones
+/// while it is folded.
 fn section_view(
     workspace: Workspace,
     section: ProjectSection,
@@ -334,7 +335,9 @@ fn section_view(
                     sessions
                         .iter()
                         .filter(|session| {
-                            open || cookie_agent_client_state::activity::session_at_work(session)
+                            open
+                                || session.unread
+                                || cookie_agent_client_state::activity::session_at_work(session)
                         })
                         .cloned()
                         .map(|session| session_row(workspace, session, now, actions, drag))

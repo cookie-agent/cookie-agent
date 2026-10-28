@@ -54,6 +54,43 @@ pub async fn delete_session(client: &Client, session: &SessionMeta) -> SessionDe
     SessionDeleteOutcome::of(client.delete_session(delete_params(session)).await)
 }
 
+/// Why a delete of several sessions left `error`'s session, as a list of
+/// what it skipped names it (`docs/site/specs/unread-sessions.md`
+/// section 7).
+pub fn skip_reason(error: &ClientError) -> String {
+    use cookie_agent_protocol::errors::{
+        SESSION_CHANGED, SESSION_OWNED_ELSEWHERE, SESSION_TREE_RUNNING,
+    };
+    if error.is(&SESSION_TREE_RUNNING) {
+        "running".to_owned()
+    } else if error.is(&SESSION_CHANGED) {
+        "changed since you selected it".to_owned()
+    } else if error.is(&SESSION_OWNED_ELSEWHERE) {
+        "open in another cookie process".to_owned()
+    } else {
+        error.to_string()
+    }
+}
+
+/// What the status line says after deleting several sessions: how many
+/// went, and each skipped session's title with why.
+pub fn batch_delete_message(deleted: usize, skipped: &[(String, String)]) -> String {
+    let deleted = match deleted {
+        0 => "Deleted no session".to_owned(),
+        1 => "Deleted 1 session".to_owned(),
+        count => format!("Deleted {count} sessions"),
+    };
+    if skipped.is_empty() {
+        return format!("{deleted}.");
+    }
+    let skipped = skipped
+        .iter()
+        .map(|(title, reason)| format!("{title} ({reason})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{deleted}; skipped {skipped}.")
+}
+
 impl SessionDeleteOutcome {
     /// Classifies a `session.delete` result.
     pub fn of(result: Result<cookie_agent_protocol::SessionDeleteResult, ClientError>) -> Self {
@@ -96,5 +133,40 @@ mod tests {
             })),
             SessionDeleteOutcome::DaemonTooOld
         ));
+    }
+
+    #[test]
+    fn a_batch_delete_names_what_it_skipped_and_why() {
+        let coded = |code: &str| {
+            ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+                code: -32000,
+                message: "refused".into(),
+                data: Some(serde_json::json!({ "code": code })),
+            })
+        };
+        assert_eq!(skip_reason(&coded("session_tree_running")), "running");
+        assert_eq!(
+            skip_reason(&coded("session_changed")),
+            "changed since you selected it"
+        );
+        assert_eq!(
+            skip_reason(&coded("session_owned_elsewhere")),
+            "open in another cookie process"
+        );
+        assert_eq!(batch_delete_message(3, &[]), "Deleted 3 sessions.");
+        assert_eq!(
+            batch_delete_message(
+                1,
+                &[
+                    ("“Build”".into(), "running".into()),
+                    ("“Docs”".into(), "changed since you selected it".into()),
+                ]
+            ),
+            "Deleted 1 session; skipped “Build” (running), “Docs” (changed since you selected it)."
+        );
+        assert_eq!(
+            batch_delete_message(0, &[("“Build”".into(), "running".into())]),
+            "Deleted no session; skipped “Build” (running)."
+        );
     }
 }

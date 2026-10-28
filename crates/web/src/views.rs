@@ -254,7 +254,7 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
 }
 
 /// A session's name in the list: its title, else its short ID.
-fn session_label(session: &SessionMeta) -> String {
+pub(crate) fn session_label(session: &SessionMeta) -> String {
     session
         .title
         .as_ref()
@@ -329,11 +329,26 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     let list = drag.list;
     view! {
         <div class="flex flex-col gap-2 p-3">
+            <Show when=move || !workspace.picking.active.get() fallback=move || selection_bar(workspace)>
             <div class="flex gap-2">
                 <button type="button" class=format!("{PRIMARY} flex-1") data-new-session on:click=move |_| workspace.start_new_session()>
                     <Glyph icon=icondata::FaPlusSolid />
                     "New session"
                 </button>
+                // Several sessions at once: mark them read or unread, or
+                // delete them.
+                <Show when=move || workspace.keeps_unread.get() || workspace.can_delete.get()>
+                    <button
+                        type="button"
+                        class=BUTTON
+                        id="select-sessions"
+                        aria-label="Select sessions"
+                        title="Select sessions"
+                        on:click=move |_| workspace.start_selecting()
+                    >
+                        <Glyph icon=icondata::FaListCheckSolid />
+                    </button>
+                </Show>
                 <Show when=move || workspace.has_projects.get()>
                     <button
                         type="button"
@@ -347,6 +362,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                     </button>
                 </Show>
             </div>
+            </Show>
             // A daemon without projects: the workspace filter instead of
             // project sections.
             <Show when=move || !workspace.has_projects.get()>
@@ -396,6 +412,80 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                     .into_any()
             }}
         </nav>
+    }
+}
+
+/// The session list's header in select mode: how many are selected,
+/// Select all and Done, and what the selection can do: mark read, mark
+/// unread, delete (behind a confirmation naming them).
+fn selection_bar(workspace: Workspace) -> impl IntoView {
+    let picking = workspace.picking;
+    let count = move || picking.picked.with(Vec::len);
+    let idle = move || count() == 0 || picking.deleting.get();
+    let actions = move || {
+        view! {
+            <div class="flex flex-wrap gap-2">
+                <Show when=move || workspace.keeps_unread.get()>
+                    <button type="button" class=BUTTON id="mark-picked-read" disabled=idle on:click=move |_| workspace.mark_picked(false)>
+                        <Glyph icon=icondata::FaEnvelopeOpenSolid />
+                        "Mark read"
+                    </button>
+                    <button type="button" class=BUTTON id="mark-picked-unread" disabled=idle on:click=move |_| workspace.mark_picked(true)>
+                        <Glyph icon=icondata::FaEnvelopeSolid />
+                        "Mark unread"
+                    </button>
+                </Show>
+                <Show when=move || workspace.can_delete.get()>
+                    <button type="button" class=BUTTON id="delete-picked" disabled=idle on:click=move |_| picking.confirming.set(true)>
+                        <Glyph icon=icondata::FaTrashCanSolid />
+                        {move || if picking.deleting.get() { "Deleting…" } else { "Delete" }}
+                    </button>
+                </Show>
+            </div>
+        }
+    };
+    view! {
+        <div class="flex flex-col gap-2" id="selection-bar">
+            <div class="flex items-center gap-2">
+                <span class="min-w-0 flex-1 truncate text-sm font-bold" data-picked-count>
+                    {move || match count() {
+                        0 => "Select sessions".to_owned(),
+                        1 => "1 selected".to_owned(),
+                        count => format!("{count} selected"),
+                    }}
+                </span>
+                <button type="button" class=BUTTON id="select-all" on:click=move |_| workspace.pick_all()>
+                    "Select all"
+                </button>
+                <button type="button" class=BUTTON id="select-done" on:click=move |_| workspace.stop_selecting()>
+                    "Done"
+                </button>
+            </div>
+            <Show when=move || picking.confirming.get() fallback=actions>
+                <div class="flex flex-col gap-2 rounded-lg border border-caramel bg-cream p-2 text-sm dark:border-maple dark:bg-night" role="alertdialog" data-delete-picked-box>
+                    <p>
+                        {move || {
+                            let sessions = match count() {
+                                1 => "1 session".to_owned(),
+                                count => format!("{count} sessions"),
+                            };
+                            format!(
+                                "Delete {sessions} and their subagents: {}? This cannot be undone. Running ones are skipped.",
+                                workspace.picked_titles(),
+                            )
+                        }}
+                    </p>
+                    <div class="flex flex-wrap gap-2">
+                        <button type="button" class=PRIMARY id="delete-picked-confirm" on:click=move |_| workspace.delete_picked()>
+                            "Delete"
+                        </button>
+                        <button type="button" class=BUTTON id="delete-picked-cancel" on:click=move |_| picking.confirming.set(false)>
+                            "Cancel"
+                        </button>
+                    </div>
+                </div>
+            </Show>
+        </div>
     }
 }
 
@@ -465,6 +555,7 @@ fn session_row(
         _ => mark.label.to_owned(),
     };
     let last_activity = session.last_activity;
+    let unread = session.unread;
     // A run session of a cron job: its clock opens the job.
     let cron = session.cron.clone();
     // Where it runs, once the runtimes are known; the tooltip lists every
@@ -510,10 +601,14 @@ fn session_row(
         ..
     } = actions;
     let is_renaming = move || renaming.get() == Some(session_id);
+    // In select mode a click selects the row, and its buttons stay away.
+    let picking = move || workspace.picking.active.get();
+    let picked = move || workspace.is_picked(session_id);
     // The hover buttons stay while their ⋮ menu is open.
     let shown = move || {
         (hovered.get() == Some(session_id) || menu.get() == Some((session_id, false)))
             && !is_renaming()
+            && !picking()
     };
     // The ⋮ menu's actions; a long press's row lets go of its buttons
     // first.
@@ -533,13 +628,30 @@ fn session_row(
                     }),
                 });
             }
+            if workspace.keeps_unread.get() {
+                items.push(row_menu::MenuItem {
+                    id: if unread { "mark-read" } else { "mark-unread" },
+                    label: if unread { "Mark read" } else { "Mark unread" },
+                    icon: if unread {
+                        icondata::FaEnvelopeOpenSolid
+                    } else {
+                        icondata::FaEnvelopeSolid
+                    },
+                    act: Callback::new(move |()| {
+                        if revealed_row {
+                            revealed.set(None);
+                        }
+                        workspace.set_unread(vec![session_id], !unread);
+                    }),
+                });
+            }
             items
         }
     };
     // A mouse drags the row onto a project's header at once; a finger
     // after a long press, which let go in place reveals the buttons.
     let on_pointerdown = move |event: ev::PointerEvent| {
-        if !is_renaming() {
+        if !is_renaming() && !picking() {
             drag.press(workspace, session_id, &event);
         }
     };
@@ -584,9 +696,10 @@ fn session_row(
                 // it would be dropped each time it changes.
                 class=move || format!(
                     "{ROW} no-callout select-none pr-3 {} group-hover:bg-toasted group-has-focus-visible:bg-toasted dark:group-hover:bg-ember dark:group-has-focus-visible:bg-ember",
-                    if current() { "bg-toasted dark:bg-ember" } else { "" },
+                    if current() || (picking() && picked()) { "bg-toasted dark:bg-ember" } else { "" },
                 )
                 aria-current=move || current().then_some("true")
+                aria-pressed=move || picking().then(|| picked().to_string())
                 data-session=session_id.to_string()
                 title=title.clone()
                 on:pointerdown=on_pointerdown
@@ -600,7 +713,11 @@ fn session_row(
                 // The open session's row switches its subagent tree between
                 // the running ones and all of them.
                 aria-expanded=move || tree_root().then(|| workspace.tree_expanded.get().to_string())
-                on:click=move |_| {
+                on:click=move |event: ev::MouseEvent| {
+                    if picking() {
+                        workspace.toggle_pick(session_id, event.shift_key());
+                        return;
+                    }
                     if !drag.take_click() {
                         if current() && workspace.sidebar_open.get_untracked() && !workspace.new_session.get_untracked() {
                             // The sessions as the page, over the open
@@ -615,6 +732,12 @@ fn session_row(
                 }
             >
                 <span class="flex w-full items-center gap-2">
+                    // In select mode, whether the row is selected.
+                    <Show when=picking>
+                        <span class="inline-flex shrink-0 text-caramel dark:text-maple" data-pick=move || picked().to_string()>
+                            <Glyph icon=Signal::derive(move || if picked() { icondata::FaSquareCheckSolid } else { icondata::FaSquareRegular }) />
+                        </span>
+                    </Show>
                     // The status slot, only when there is a mark.
                     {status_mark.map(|mark| view! {
                         <span class="inline-flex shrink-0" data-session-activity=mark.label>
@@ -624,8 +747,16 @@ fn session_row(
                     <span class="sr-only">{status_text.clone()}</span>
                     // Before the title: the row's buttons cover its right
                     // end on hover.
+                    {unread.then(|| view! {
+                        <span
+                            class="h-2 w-2 shrink-0 rounded-full bg-caramel dark:bg-maple"
+                            data-unread
+                            title="Unread: it finished, or asked for you, while you were away"
+                        ></span>
+                        <span class="sr-only">"unread"</span>
+                    })}
                     {cron.clone().map(|cron| cron::clock_mark(workspace, cron))}
-                    <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title>{label.clone()}</span>
+                                        <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title>{label.clone()}</span>
                     // The time sits beside the title, so the badges have
                     // the whole second line.
                     <span class=format!("shrink-0 {NOTE}") data-session-time>

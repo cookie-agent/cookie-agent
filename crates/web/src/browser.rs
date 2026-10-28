@@ -484,6 +484,24 @@ pub fn attribute_at(x: f64, y: f64, selector: &str, attribute: &str) -> Option<S
     element.closest(selector).ok()??.get_attribute(attribute)
 }
 
+/// The `attribute` of every element `selector` matches, in page order.
+pub fn attributes_in_order(selector: &str, attribute: &str) -> Vec<String> {
+    let Some(found) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector_all(selector).ok())
+    else {
+        return Vec::new();
+    };
+    (0..found.length())
+        .filter_map(|index| found.item(index))
+        .filter_map(|node| {
+            node.dyn_into::<web_sys::Element>()
+                .ok()?
+                .get_attribute(attribute)
+        })
+        .collect()
+}
+
 /// Scrolls the element `selector` matches when `y` is near its top or
 /// bottom edge, so a drag reaches what is out of view.
 pub fn scroll_near_edge(selector: &str, y: f64) {

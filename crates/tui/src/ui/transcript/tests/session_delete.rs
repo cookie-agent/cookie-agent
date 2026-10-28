@@ -1,5 +1,6 @@
-//! `/sessions`: deleting the highlighted session behind a confirmation, and
-//! Ctrl+A between this directory's sessions and every directory's.
+//! `/sessions`: deleting the highlighted session behind a confirmation,
+//! marking it read or unread, and Ctrl+A between this directory's sessions
+//! and every directory's.
 
 use std::sync::{Arc, Mutex};
 
@@ -63,6 +64,7 @@ async fn picker_app(version: &str) -> (App, SessionId, SessionId, Arc<Mutex<Vec<
             }]
         }})),
         "session.delete" => Ok(json!({ "deleted": [params["session_id"]] })),
+        "session.unread.set" => Ok(json!({ "changed": params["session_ids"] })),
         "session.list" => Ok(json!({ "sessions": [] })),
         _ => Err(json!({"code": -32601, "message": "not scripted"})),
     });
@@ -283,4 +285,45 @@ async fn a_removed_viewed_session_is_left_for_a_new_session() {
             .any(|session| session.session_id == other)
     );
     assert_eq!(app.status, "The session was deleted.");
+}
+
+#[tokio::test]
+async fn an_unread_session_shows_a_dot_and_ctrl_k_marks_it_read() {
+    let (mut app, _, other, recorded) = picker_app("1.51.0").await;
+    app.sessions
+        .iter_mut()
+        .find(|session| session.session_id == other)
+        .expect("other")
+        .unread = true;
+    app.note_sessions_changed();
+    highlight(&mut app, other);
+    let frame = frame_rows(&mut app, 120, 30).join("\n");
+    assert!(frame.contains("● other session"), "{frame}");
+    assert!(!frame.contains("● viewed session"), "{frame}");
+    assert!(frame.contains("Mark read (ctrl+k)"), "{frame}");
+
+    app.handle_key(ctrl('k')).await;
+    while app.status.is_empty() || !app.status.starts_with("Marked") {
+        next_update(&mut app).await;
+    }
+    assert_eq!(app.status, "Marked 1 session read.");
+    assert_eq!(
+        requests(&recorded, "session.unread.set"),
+        [json!({ "session_ids": [other], "unread": false })]
+    );
+}
+
+#[tokio::test]
+async fn an_older_daemon_offers_no_read_toggle() {
+    let (mut app, _, other, recorded) = picker_app("1.50.0").await;
+    highlight(&mut app, other);
+    let frame = frame_rows(&mut app, 120, 30).join("\n");
+    assert!(!frame.contains("ctrl+k"), "{frame}");
+    app.handle_key(ctrl('k')).await;
+    assert!(
+        app.status.contains("keeps no unread sessions"),
+        "{}",
+        app.status
+    );
+    assert!(requests(&recorded, "session.unread.set").is_empty());
 }

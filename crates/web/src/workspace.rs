@@ -51,8 +51,10 @@ mod provider_sign_in;
 mod reads;
 mod rename;
 mod restart;
+mod selection;
 mod skills;
 mod tree;
+mod unread;
 
 use drafts::ComposerSlot;
 
@@ -283,6 +285,10 @@ pub struct Workspace {
     pub crons: RwSignal<Option<Result<cookie_agent_protocol::CronsListResult, String>>>,
     /// The daemon has push notifications (client protocol 1.30).
     pub has_push: RwSignal<bool>,
+    /// Whether the daemon keeps unread sessions (client protocol 1.51.0).
+    pub keeps_unread: RwSignal<bool>,
+    /// The session list's select mode and its selection.
+    pub picking: selection::Picking,
     /// `notifications.get`, once read.
     pub notifications:
         RwSignal<Option<Result<cookie_agent_protocol::NotificationsGetResult, String>>>,
@@ -498,6 +504,8 @@ impl Workspace {
             has_crons: RwSignal::new(false),
             crons: RwSignal::new(None),
             has_push: RwSignal::new(false),
+            keeps_unread: RwSignal::new(false),
+            picking: selection::Picking::new(),
             notifications: RwSignal::new(None),
             push_context: RwSignal::new(crate::push::PushContext::default()),
             push_busy: RwSignal::new(false),
@@ -638,6 +646,10 @@ impl Workspace {
             ));
         self.has_push
             .set(crate::push::daemon_has_push(client.daemon_version()));
+        self.keeps_unread
+            .set(cookie_agent_client_state::unread::daemon_keeps_unread(
+                client.daemon_version(),
+            ));
         // A new connection has heard nothing of what the page shows.
         self.presence_sent.set_value(None);
         self.restarting.set(None);
@@ -1015,6 +1027,7 @@ impl Workspace {
             self.start_new_session();
         }
         self.forget_composer_draft(session_id);
+        self.unpick(session_id);
         // The daemon dropped its subscription already: nothing to send.
         self.subscriptions.update_value(|subscriptions| {
             subscriptions.release(session_id);

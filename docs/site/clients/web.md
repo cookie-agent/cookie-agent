@@ -175,6 +175,15 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     The open session's row has a chevron before its badges, which turns
     with its subagent tree. Hover over a row for its status and every
     workspace with its machine, runtime, and path.
+  - **Unread.** A session that finished, or that waits on an approval or
+    a question, while you were away has a dot before its title, and the
+    rail's Chat button a dot while any session has one
+    ([unread sessions](../specs/unread-sessions.md)). "Away" is what
+    suppresses a push: no client shows the session (or one of its
+    subagents) in a visible, focused window used in the last 2 minutes.
+    Showing it that way clears the dot in every client; a row's **⋮** has
+    **Mark read** and **Mark unread** too. A daemon older than client
+    protocol 1.51 keeps no unread sessions.
   - **Badges** show machines, not runtimes. The `global` attachment never
     counts:
     - nothing else: no badge;
@@ -227,6 +236,16 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     session leaves every client's list, and a page showing it starts a new
     session. A daemon older than client protocol 1.5 cannot delete, and
     the page offers no trash.
+  - **Selecting several.** The list's select button (beside **New
+    session**) turns its header into a selection bar: a click on a root
+    session's row selects it or lets it go, **Shift**+click selects the
+    rows from the last one clicked, and **Select all** selects every root
+    row the list shows. **Mark read** and **Mark unread** mark the
+    selection and keep it; **Delete** asks once, naming up to five, then
+    deletes each tree as its row showed it. A tree that cannot go (it
+    runs, changed since you selected it, or another cookie process holds
+    it) is skipped and stays selected, the rest are deleted, and the
+    status says what was skipped and why. **Done** leaves select mode.
 - **Projects.** The sessions sidebar has a section for each project,
   oldest project first, so a new one goes last and the others keep their
   places, then **No project** last.
