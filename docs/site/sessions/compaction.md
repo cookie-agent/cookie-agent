@@ -56,6 +56,26 @@ a summary. Such a checkpoint still serves its own model. On any other model the
 engine first summarizes the events it covers from the saved log, once, and
 commits that as a new checkpoint; the request then proceeds on it.
 
+### In-stream compaction
+
+A model with `compaction = "in-stream"`, and every [ChatGPT](../extend/providers.md#chatgpt)
+model, compacts inside its own requests instead of with the standalone call:
+
+- **The server compacts at the trigger.** Each request carries
+  `context_management` with `compact_threshold` set to the
+  [trigger threshold](#the-trigger-threshold). When the rendered input
+  reaches it, the server compacts before it answers and streams `compaction`
+  items beside the answer.
+- **The items travel with their turn.** They are kept in the turn's native
+  replay and sent back to the same model, which continues from them. Another
+  model replays the turn without them, from the turns themselves.
+- **The engine's own checkpoint is a backstop.** It waits until the latest
+  turn's usage reaches halfway from the trigger to the input budget (85% of
+  the budget with the default 70% trigger), so it fires only when the server
+  did not compact. The context-length retry is unchanged.
+- **No standalone call.** Such a model declares compaction unsupported, so a
+  checkpoint holds the summary alone.
+
 ### The provider record
 
 The daemon remembers, per provider ID, what native compaction answered, in

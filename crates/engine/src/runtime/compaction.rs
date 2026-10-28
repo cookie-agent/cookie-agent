@@ -145,6 +145,9 @@ pub(super) struct CompactionInput<'a> {
     pub(super) events: crate::events::EventSnapshot,
     pub(super) force: bool,
     pub(super) overflow_recovery: bool,
+    /// The server compacts the model's context in the stream at the trigger,
+    /// so the engine's own checkpoint waits for the backstop.
+    pub(super) compacts_in_stream: bool,
     pub(super) focus: Option<&'a str>,
     pub(super) origin: cookie_agent_protocol::EventOrigin,
 }
@@ -300,6 +303,7 @@ impl Engine {
                 events,
                 force: true,
                 overflow_recovery: false,
+                compacts_in_stream: false,
                 focus,
                 origin,
             })
@@ -360,6 +364,11 @@ impl Engine {
         .unwrap_or(context_limit);
         let config = &self.inner.config.load().runtime.context_compaction;
         let trigger_tokens = resolve_compaction_trigger(input_budget, &config.trigger);
+        let trigger_tokens = if input.compacts_in_stream {
+            in_stream_backstop(trigger_tokens, input_budget)
+        } else {
+            trigger_tokens
+        };
         if !compaction_gate(input.force, config.auto_compaction, trigger_tokens) {
             return Ok(input.events);
         }
@@ -1208,6 +1217,39 @@ pub(super) fn resolve_compaction_trigger(
     }
 }
 
+/// The engine's own checkpoint for a model the server compacts in the
+/// stream at `trigger_tokens`: halfway from the trigger to the input budget,
+/// so it fires only when the server did not compact.
+pub(super) fn in_stream_backstop(trigger_tokens: u64, input_budget: u64) -> u64 {
+    if trigger_tokens == 0 {
+        return 0;
+    }
+    trigger_tokens + input_budget.saturating_sub(trigger_tokens) / 2
+}
+
+impl Engine {
+    /// The `compact_threshold` a request of `binding` sends to a model the
+    /// server compacts in the stream: the configured trigger, or none while
+    /// automatic compaction is off.
+    pub(super) fn in_stream_compact_threshold(
+        &self,
+        binding: &cookie_agent_protocol::FrozenModelBinding,
+        policy: &FrozenRunPolicy,
+    ) -> Option<u64> {
+        let context_limit = binding.descriptor.capabilities.limits.context?;
+        let input_budget = policy::input_token_budget(
+            binding,
+            policy::effective_max_output_tokens(binding, policy.agent.max_output_tokens),
+        )
+        .unwrap_or(context_limit);
+        let config = &self.inner.config.load().runtime.context_compaction;
+        if !config.auto_compaction {
+            return None;
+        }
+        Some(resolve_compaction_trigger(input_budget, &config.trigger)).filter(|tokens| *tokens > 0)
+    }
+}
+
 fn compaction_gate(force: bool, auto: bool, trigger_tokens: u64) -> bool {
     force || (auto && trigger_tokens > 0)
 }
@@ -1828,3 +1870,17 @@ fn should_elide_tool_output(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod in_stream_tests {
+    use super::in_stream_backstop;
+
+    #[test]
+    fn the_backstop_sits_halfway_from_the_trigger_to_the_budget() {
+        // percent = 70 of a 272k budget: the server at 190,400, the engine at 85%.
+        assert_eq!(in_stream_backstop(190_400, 272_000), 231_200);
+        assert_eq!(in_stream_backstop(272_000, 272_000), 272_000);
+        // A trigger of 0 keeps automatic compaction off.
+        assert_eq!(in_stream_backstop(0, 272_000), 0);
+    }
+}

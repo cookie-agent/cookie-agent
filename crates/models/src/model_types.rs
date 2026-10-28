@@ -84,6 +84,8 @@ pub enum DeferredToolsSetting {
 /// A model override's `compaction` setting. Native compaction is attempted
 /// on every Responses adapter unless the override says `"unsupported"`; the
 /// adapter-named values are accepted and mean the same as omitting the key.
+/// `"in-stream"` asks an OpenAI Responses model for server-side compaction
+/// inside its requests instead of the standalone compact call.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub enum NativeCompactionConfig {
     #[default]
@@ -91,13 +93,15 @@ pub enum NativeCompactionConfig {
     Unsupported,
     OpenAiResponsesCompact,
     AzureResponsesCompact,
+    InStream,
 }
 
 impl NativeCompactionConfig {
-    /// Whether the setting allows native compaction where the adapter has it.
+    /// Whether the setting allows the standalone native compaction call where
+    /// the adapter has it.
     #[must_use]
     pub const fn allows_native(self) -> bool {
-        !matches!(self, Self::Unsupported)
+        !matches!(self, Self::Unsupported | Self::InStream)
     }
 }
 
@@ -110,11 +114,12 @@ impl<'de> Deserialize<'de> for NativeCompactionConfig {
             "unsupported" => Ok(Self::Unsupported),
             "openai-responses-compact" => Ok(Self::OpenAiResponsesCompact),
             "azure-responses-compact" => Ok(Self::AzureResponsesCompact),
+            "in-stream" => Ok(Self::InStream),
             "v1" => Err(serde::de::Error::custom(
                 "compaction = \"v1\" was removed; omit `compaction` for native compaction or set \"unsupported\"",
             )),
             _ => Err(serde::de::Error::custom(
-                "compaction must be \"unsupported\" (\"openai-responses-compact\" and \"azure-responses-compact\" are accepted and redundant)",
+                "compaction must be \"unsupported\" or \"in-stream\" (\"openai-responses-compact\" and \"azure-responses-compact\" are accepted and redundant)",
             )),
         }
     }

@@ -3146,6 +3146,19 @@ fn the_built_in_chatgpt_provider_lists_its_plan_and_compiles_once_signed_in() {
         cookie_agent_models::DeferredToolsSupport::Native
     );
     assert_eq!(model.capabilities.input_tokens, Some(272_000));
+    // Token sharing compacts in the stream: the request carries the threshold.
+    let resolved = runtime
+        .resolve(&cookie_agent_identity::ModelSelection {
+            model: luna.clone(),
+            variant: None,
+        })
+        .unwrap();
+    assert!(resolved.compacts_in_stream());
+    let request = resolved.with_compact_threshold(oven_sdk::Request::new(vec![]), 190_400);
+    assert_eq!(
+        request.provider_options["openai"]["responses"]["compact_threshold"],
+        190_400
+    );
 
     let replaced = manager
         .replace_chatgpt_models(
@@ -3217,4 +3230,47 @@ fn without_the_built_in_provider_there_is_no_chatgpt_row_and_its_source_is_refus
             "{refused}"
         );
     }
+}
+
+#[test]
+fn in_stream_compaction_is_an_openai_responses_override() {
+    let temporary = TempDir::new().unwrap();
+    let openai = ProviderId::new("openai").unwrap();
+    let mini = ModelKey::new(openai.clone(), ProviderModelId::new("gpt-5-mini").unwrap()).unwrap();
+    let compile = |compaction: &str| {
+        let definition = toml::from_str::<ProviderDefinition>(&format!(
+            "source = \"models_dev\"\napi_key = \"test-key\"\n[models.\"gpt-5-mini\"]\ncompaction = \"{compaction}\"\n"
+        ))
+        .unwrap();
+        ModelManager::new(
+            BTreeMap::from([(openai.clone(), definition)]),
+            catalog(),
+            store(&temporary),
+        )
+    };
+    let manager = compile("in-stream").unwrap();
+    let runtime = manager.current();
+    let model = &runtime.model(&mini).unwrap().model;
+    assert!(model.in_stream_compaction);
+    assert_eq!(
+        model.capabilities.compaction,
+        cookie_agent_models::CompactionCapability::Unsupported
+    );
+    assert!(
+        runtime
+            .resolve(&cookie_agent_identity::ModelSelection {
+                model: mini.clone(),
+                variant: None,
+            })
+            .unwrap()
+            .compacts_in_stream()
+    );
+    let unsupported = compile("unsupported").unwrap().current();
+    assert!(!unsupported.model(&mini).unwrap().model.in_stream_compaction);
+    assert!(
+        toml::from_str::<ProviderDefinition>(
+            "source = \"models_dev\"\n[models.\"gpt-5-mini\"]\ncompaction = \"in_stream\"\n"
+        )
+        .is_err()
+    );
 }

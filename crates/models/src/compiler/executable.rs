@@ -241,6 +241,18 @@ fn compatible_responses(model: &CompiledDynamicModel) -> bool {
             || model.auth.method == "no-auth-v1")
 }
 
+/// An OpenAI Responses model's compaction surface: the standalone call, the
+/// server's in-stream compaction, or neither.
+fn responses_compaction(model: &CompiledDynamicModel) -> OpenAiResponsesCompaction {
+    if native_compaction(model) {
+        OpenAiResponsesCompaction::V1
+    } else if model.in_stream_compaction {
+        OpenAiResponsesCompaction::InStream
+    } else {
+        OpenAiResponsesCompaction::Unsupported
+    }
+}
+
 fn native_compaction(model: &CompiledDynamicModel) -> bool {
     model.capabilities.compaction == crate::CompactionCapability::Native
         && match model.adapter {
@@ -389,11 +401,7 @@ fn construct(
                                 .as_deref(),
                             header_discriminator,
                         ),
-                        compaction: if native_compaction(model) {
-                            OpenAiResponsesCompaction::V1
-                        } else {
-                            OpenAiResponsesCompaction::Unsupported
-                        },
+                        compaction: responses_compaction(model),
                         wire_profile: if model.auth.method == crate::recipes::CHATGPT_SIGN_IN_METHOD
                         {
                             OpenAiResponsesWireProfile::ChatGptTokenSharing
@@ -420,11 +428,7 @@ fn construct(
                         None,
                         header_discriminator,
                     ),
-                    compaction: if native_compaction(model) {
-                        OpenAiResponsesCompaction::V1
-                    } else {
-                        OpenAiResponsesCompaction::Unsupported
-                    },
+                    compaction: responses_compaction(model),
                     wire_profile: OpenAiResponsesWireProfile::Standard,
                     client: timeouts.shared_client(),
                     timeouts: timeouts.openai(),

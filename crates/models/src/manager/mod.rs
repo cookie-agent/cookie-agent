@@ -141,6 +141,8 @@ struct ExecutableBehavior {
     behavior_fingerprint: Sha256Digest,
     /// Resource parent that qualifies an explicit Google cache name for this wire.
     cached_content_parent: Option<String>,
+    /// Requests ask OpenAI Responses for server-side compaction in the stream.
+    compacts_in_stream: bool,
 }
 
 /// Exact executable model behavior retained by one runtime publication.
@@ -153,9 +155,39 @@ pub struct ResolvedExecutableModel {
     behavior_fingerprint: Sha256Digest,
     adapter: OvenAdapterFamily,
     cached_content_parent: Option<String>,
+    compacts_in_stream: bool,
 }
 
 impl ResolvedExecutableModel {
+    /// Whether the server compacts this model's context inside its requests,
+    /// given a threshold with [`Self::with_compact_threshold`].
+    #[must_use]
+    pub const fn compacts_in_stream(&self) -> bool {
+        self.compacts_in_stream
+    }
+
+    /// Asks the server to compact once the request's rendered input passes
+    /// `threshold` tokens. Models that do not compact in the stream ignore it.
+    #[must_use]
+    pub fn with_compact_threshold(&self, mut request: Request, threshold: u64) -> Request {
+        if !self.compacts_in_stream || threshold == 0 {
+            return request;
+        }
+        let openai = request
+            .provider_options
+            .entry("openai".to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(openai) = openai.as_object_mut() {
+            let responses = openai
+                .entry("responses".to_owned())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(responses) = responses.as_object_mut() {
+                responses.insert("compact_threshold".to_owned(), threshold.into());
+            }
+        }
+        request
+    }
+
     #[must_use]
     pub fn selection(&self) -> &ModelSelection {
         &self.selection
@@ -841,6 +873,7 @@ impl CompiledRuntimeModel {
             provider_options: behavior.provider_options.clone(),
             behavior_fingerprint: behavior.behavior_fingerprint.clone(),
             cached_content_parent: behavior.cached_content_parent.clone(),
+            compacts_in_stream: behavior.compacts_in_stream,
         })
     }
 
@@ -2030,6 +2063,8 @@ fn compile_behaviors(
         provider_options: base.provider_options,
         behavior_fingerprint: model.behavior_fingerprint.clone(),
         cached_content_parent: google_cached_content_parent(model),
+        compacts_in_stream: model.in_stream_compaction
+            && model.adapter == OvenAdapterFamily::OpenaiResponses,
     };
     let variants = model
         .variants
@@ -2073,6 +2108,7 @@ fn compile_behaviors(
                     provider_options: compiled.provider_options,
                     behavior_fingerprint,
                     cached_content_parent: google_cached_content_parent(&selected),
+                    compacts_in_stream: selected.in_stream_compaction,
                 },
             ))
         })

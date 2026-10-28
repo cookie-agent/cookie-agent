@@ -82,6 +82,11 @@ pub struct CompiledDynamicModel {
     /// the adapters that have it; a variant that switches endpoint takes
     /// native compaction from this and its own adapter.
     pub native_compaction_allowed: bool,
+    /// Whether OpenAI Responses requests ask for server-side compaction in
+    /// the stream: the built-in ChatGPT provider by default, or
+    /// `compaction = "in-stream"`. Variants that leave Responses lose it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_stream_compaction: bool,
     /// The configured `deferred_tools`, or `native` from models.dev's
     /// `dynamically_loaded_tools`; a variant that switches endpoint decides
     /// deferral from this and its own adapter.
@@ -149,6 +154,8 @@ impl CompiledDynamicModel {
             selected.adapter.protocol_recipe().into()
         };
         selected.options = options.clone();
+        selected.in_stream_compaction =
+            self.in_stream_compaction && selected.adapter == OvenAdapterFamily::OpenaiResponses;
         selected.capabilities.compaction = native_compaction_capability(
             selected.adapter,
             self.native_compaction_allowed,
@@ -598,9 +605,24 @@ impl DynamicCompiler {
             .map_err(ModelLocalError::Provider)?;
         capabilities.native_replay =
             automatic_replay(adapter, capabilities.reasoning, &wire_model_id);
-        // Token sharing refuses the standalone `/responses/compact`.
-        let native_compaction_allowed =
-            !chatgpt && override_.is_none_or(|value| value.compaction.allows_native());
+        // Token sharing refuses the standalone `/responses/compact` but
+        // compacts in the stream.
+        let compaction_setting = override_.map(|value| value.compaction);
+        let in_stream_compaction = match compaction_setting {
+            Some(crate::NativeCompactionConfig::InStream) => true,
+            Some(crate::NativeCompactionConfig::Unsupported) => false,
+            _ => chatgpt,
+        };
+        if in_stream_compaction && adapter != OvenAdapterFamily::OpenaiResponses {
+            return Err(ModelLocalError::Provider(
+                DynamicCompileError::EndpointSelection(
+                    "compaction = \"in-stream\" needs an OpenAI Responses model".into(),
+                ),
+            ));
+        }
+        let native_compaction_allowed = !chatgpt
+            && !in_stream_compaction
+            && override_.is_none_or(|value| value.compaction.allows_native());
         capabilities.compaction =
             native_compaction_capability(adapter, native_compaction_allowed, setup.as_ref());
         let override_deferred_tools = override_.and_then(|value| value.deferred_tools);
@@ -795,6 +817,7 @@ impl DynamicCompiler {
             capabilities,
             replay_declaration: None,
             native_compaction_allowed,
+            in_stream_compaction,
             deferred_tools_setting,
             defaults,
             options,
@@ -1004,6 +1027,7 @@ impl DynamicCompiler {
                     capabilities,
                     replay_declaration: model.capabilities.native_replay,
                     native_compaction_allowed,
+                    in_stream_compaction: false,
                     deferred_tools_setting,
                     defaults,
                     options,

@@ -79,6 +79,7 @@ fn resolved(prompt_caching: bool, steps: usize) -> (ResolvedExecutableModel, Scr
         provider_options: BTreeMap::new(),
         behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
         cached_content_parent: None,
+        compacts_in_stream: false,
     };
     (resolved, scripted)
 }
@@ -684,6 +685,7 @@ fn real_openai_resolved(adapter: OvenAdapterFamily, endpoint: String) -> Resolve
         provider_options: BTreeMap::new(),
         behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
         cached_content_parent: None,
+        compacts_in_stream: false,
     }
 }
 

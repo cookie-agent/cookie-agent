@@ -1,8 +1,7 @@
 # Sign in with ChatGPT as a provider
 
-Status: **phases 1 to 5 implemented** (2026-10-28; client protocol 1.49.0,
-oven-sdk `7e41f54`), with the notes of [section 16](#16-implementation-notes);
-phase 6, in-stream compaction, next. Every decision made by the user on
+Status: **implemented** (2026-10-28; client protocol 1.49.0, oven-sdk
+`61361b4`), with the notes of [section 16](#16-implementation-notes). Every decision made by the user on
 2026-10-27 and 2026-10-28 ([section 12](#12-decisions)); phase 0 run on
 2026-10-28 ([section 13](#13-phase-0-results)). Builds on
 [engine configuration](engine-configuration.md) (provider connect),
@@ -810,3 +809,16 @@ above, this section is what the code does.
     and the paste-back field.
 - **Default headers.** `session-id` and `thread-id` are shipped for every
   provider (section 7.2).
+- **Phase 6, in-stream compaction** (oven-sdk `013d9a3`). It is simpler
+  than section 7.4's "Recording the window":
+  - No window checkpoint and no background summary. The `compaction`
+    items stay in their turn's native replay, which oven-sdk replays to the
+    same model only. Phase 0 showed that the server continues from them, and
+    another model replays the turn without them.
+  - The override value is `compaction = "in-stream"` (kebab-case like the
+    existing values), the default of `chatgpt`.
+  - Each request carries the configured trigger as `compact_threshold`, and
+    the engine's own checkpoint waits for the backstop of section 7.4.
+  - oven-sdk accepts a compacted response's empty terminal `output` when
+    its streamed compaction items were finalized.
+  - No protocol or history change.

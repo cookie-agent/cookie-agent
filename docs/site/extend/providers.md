@@ -138,6 +138,13 @@ switches `request_endpoint` compacts natively when its own adaptor does.
 Frozen manifests store the compiled native/unsupported capability, not this
 setting string. The removed `"v1"` fails with an error.
 
+`compaction = "in-stream"` asks an OpenAI Responses model for server-side
+compaction inside its own requests instead of the standalone compact call
+(see [in-stream compaction](../sessions/compaction.md#in-stream-compaction)).
+It is the default of the [ChatGPT](#chatgpt) provider, where `"unsupported"`
+turns it off. On a model that is not OpenAI Responses it is an error, and a
+variant that leaves Responses through `request_endpoint` drops it.
+
 Whether a model loads [deferred tools](../specs/deferred-tools-cookie.md) is
 decided per model, in this order:
 
@@ -277,13 +284,16 @@ a sign-in can no longer refresh, the provider says **sign-in expired: sign
 in again**, its models fail with that reason, and signing in again restores
 them. Disconnecting signs out and revokes the sign-in.
 
+**Compaction.** The route refuses the standalone `/responses/compact`, so
+ChatGPT models compact in the stream: each request asks the server to
+compact once its input reaches the configured trigger (see
+[in-stream compaction](../sessions/compaction.md#in-stream-compaction)).
+
 **Models.** The list comes from the account's `GET /v1/models`: at sign-in
 and hourly after. Codex's `ultra` reasoning (its multi-agent mode) is left
 out. Requests never send `max_output_tokens`, `temperature`, `top_p`,
 `truncation`, `user`, `service_tier`, or prompt-cache retention, which the
-route refuses; a setting that names one is dropped with a warning. Cookie's
-standalone native compaction is unavailable on this route, so its own
-summary compacts.
+route refuses; a setting that names one is dropped with a warning.
 
 **Usage limits.** A plan that has reached its limit answers with
 `subscription_sharing_usage_limit_exceeded`, which is not retried. OpenAI

@@ -1872,6 +1872,7 @@ impl Engine {
                         events: request_events,
                         force: false,
                         overflow_recovery: false,
+                        compacts_in_stream: model.compacts_in_stream(),
                         focus: None,
                         origin: event_origin("engine:auto-compact"),
                     })
@@ -1912,6 +1913,7 @@ impl Engine {
                                 events: request_events,
                                 force: true,
                                 overflow_recovery: false,
+                                compacts_in_stream: model.compacts_in_stream(),
                                 focus: None,
                                 origin: event_origin("engine:auto-compact"),
                             })
@@ -1990,6 +1992,11 @@ impl Engine {
                 let cache_strategy = policy.cache_strategy(binding, session);
                 let mut request =
                     model.prepare_request_before_cache_strategy(request, cache_strategy.as_ref());
+                if model.compacts_in_stream()
+                    && let Some(threshold) = self.in_stream_compact_threshold(binding, policy)
+                {
+                    request = model.with_compact_threshold(request, threshold);
+                }
                 let context_id = crate::plugin::plugin_context_id();
                 // Serialized once and refreshed only after a plugin replaces the request.
                 let mut extension_view = None;
@@ -2507,6 +2514,7 @@ impl Engine {
                                 events: Arc::clone(&recovery_claim.events),
                                 force: true,
                                 overflow_recovery: true,
+                                compacts_in_stream: model.compacts_in_stream(),
                                 focus: None,
                                 origin: event_origin("engine:auto-compact"),
                             })
