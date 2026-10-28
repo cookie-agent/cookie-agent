@@ -1431,8 +1431,16 @@ impl Turn<'_> {
                 let Some(read) = terminal::TerminalUpdate::read(&kind, &update) else {
                     return Ok(());
                 };
-                if read.exit.is_some() {
-                    self.engine.acp_terminal_exited(self.session(), &read.id);
+                if let Some(exit) = read.exit.clone()
+                    && let Some(ended) =
+                        self.engine
+                            .acp_terminal_exited(self.session(), &read.id, exit)
+                {
+                    self.record_update(AcpSessionUpdate {
+                        background_ended: Some(ended),
+                        ..AcpSessionUpdate::default()
+                    })
+                    .await?;
                 }
                 let route = self.terminals.entry(read.id.clone()).or_default();
                 let meta = read.meta(route.written);

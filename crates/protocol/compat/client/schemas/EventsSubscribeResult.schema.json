@@ -1,5 +1,52 @@
 {
   "$defs": {
+    "AcpBackgroundEnded": {
+      "description": "A command of the agent's that kept running in the background after its\ntool call ended, and has now ended (client protocol 1.50.0), such as\nClaude Code's background shell. Recorded where the end arrives, between\nruns too, so the transcript shows it before the run it may wake.",
+      "properties": {
+        "display": {
+          "description": "The call's display argument, such as the command line.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit_code": {
+          "description": "Its exit code, when the agent says it; Claude Code does not.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "signal": {
+          "description": "The signal that ended it, when the agent says it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "description": "When it moved to the background.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "tool": {
+          "description": "Its tool, as the agent names it.",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "description": "The tool call that started it.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "tool",
+        "started_at"
+      ],
+      "type": "object"
+    },
     "AcpCommand": {
       "description": "One slash command an ACP agent offers in a session.",
       "properties": {
@@ -4862,6 +4909,17 @@
         {
           "description": "What the ACP agent reported about its session changed: its\ncommands, its config options, or its plan (client protocol 1.17.0).",
           "properties": {
+            "background_ended": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpBackgroundEnded"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A command of the agent's running in the background ended (client\nprotocol 1.50.0)."
+            },
             "commands": {
               "items": {
                 "$ref": "#/$defs/AcpCommand"

@@ -664,6 +664,16 @@ pub enum TranscriptItem {
         seq: u64,
         message: cookie_agent_protocol::AcpSessionMessage,
     },
+    /// A command of the ACP agent's that ran in the background ended,
+    /// such as Claude Code's background shell, shown as a background
+    /// call's report is (client protocol 1.50.0). `ended_at` is when the
+    /// session recorded it.
+    AgentBackgroundEnded {
+        id: u64,
+        seq: u64,
+        ended_at: jiff::Timestamp,
+        ended: cookie_agent_protocol::AcpBackgroundEnded,
+    },
     /// An ACP agent's plan during one run: a checklist the agent replaces
     /// as it works, kept in place (`docs/site/specs/acp-agents.md`
     /// section 6). Each run's plan is its own row.
@@ -805,6 +815,7 @@ impl TranscriptItem {
             | Self::AcpNotice { id, .. }
             | Self::AgentCompaction { id, .. }
             | Self::AgentSessionMessage { id, .. }
+            | Self::AgentBackgroundEnded { id, .. }
             | Self::ProducerMessage { id, .. } => *id,
         }
     }
@@ -824,7 +835,8 @@ impl TranscriptItem {
             | Self::MemoryChange { .. }
             | Self::AcpNotice { .. }
             | Self::AgentCompaction { .. }
-            | Self::AgentSessionMessage { .. } => 0,
+            | Self::AgentSessionMessage { .. }
+            | Self::AgentBackgroundEnded { .. } => 0,
             Self::ProducerMessage { status, .. } => match status {
                 ProducerMessageStatus::Pending => 0,
                 ProducerMessageStatus::Admitted => 1,

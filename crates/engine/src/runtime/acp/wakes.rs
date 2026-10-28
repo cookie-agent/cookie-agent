@@ -13,14 +13,15 @@ use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 
 use cookie_agent_protocol::{
-    AgentId, ProducerDeliveryMode, ProducerIdempotencyKey, ProducerMessageId, ProducerOwner,
-    SafeDisplayText, SessionId, SessionStatus, UserContent,
+    AcpSessionUpdate, AgentId, ProducerDeliveryMode, ProducerIdempotencyKey, ProducerMessageId,
+    ProducerOwner, SafeDisplayText, SessionId, SessionStatus, UserContent,
 };
 use serde_json::Value;
 
 use super::super::{Engine, EngineError, Event, event_origin};
 use super::process::SessionEvent;
 use super::runner::LiveSession;
+use super::terminal::TerminalUpdate;
 
 /// How long the listener waits for a wake's run to take the session's
 /// updates before it listens again.
@@ -143,14 +144,29 @@ impl Engine {
             }
             let mut wakes = false;
             for event in batch {
-                // A command running in the background ended.
+                // A command running in the background ended: the session
+                // shows it before the run it may wake. The run that takes
+                // the update finds the command already gone.
                 if let SessionEvent::Update(update) = &event
                     && update.get("sessionUpdate").and_then(Value::as_str)
                         == Some("terminal_update")
-                    && update.get("exitStatus").is_some_and(Value::is_object)
-                    && let Some(terminal) = update.get("terminalId").and_then(Value::as_str)
+                    && let Some(read) = TerminalUpdate::read("terminal_update", update)
+                    && let Some(exit) = read.exit
+                    && let Some(ended) = self.acp_terminal_exited(live.session, &read.id, exit)
                 {
-                    self.acp_terminal_exited(live.session, terminal);
+                    let _ = self
+                        .append(
+                            live.session,
+                            None,
+                            event_origin("engine:acp"),
+                            Event::AcpSessionUpdated {
+                                update: AcpSessionUpdate {
+                                    background_ended: Some(ended),
+                                    ..AcpSessionUpdate::default()
+                                },
+                            },
+                        )
+                        .await;
                 }
                 // A subagent announced between runs gets its session at
                 // once, so its own work shows while this session is idle.

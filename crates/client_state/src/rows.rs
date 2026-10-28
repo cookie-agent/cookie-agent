@@ -58,6 +58,46 @@ pub fn agent_session_message_summary(message: &cookie_agent_protocol::AcpSession
     }
 }
 
+/// The one-line summary of an ACP agent's command that ended after running
+/// in the background, as a background call's report reads: what it ran,
+/// else its tool.
+pub fn agent_background_ended_summary(ended: &cookie_agent_protocol::AcpBackgroundEnded) -> String {
+    let what = ended
+        .display
+        .as_deref()
+        .map(|display| display.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|display| !display.is_empty())
+        .unwrap_or_else(|| ended.tool.clone());
+    format!("Background: {what} ended")
+}
+
+/// What an opened row of an ACP agent's ended background command says
+/// before the command itself: its tool, how long it ran until `ended_at`,
+/// and how it exited when the agent said so.
+pub fn agent_background_ended_details(
+    ended: &cookie_agent_protocol::AcpBackgroundEnded,
+    ended_at: jiff::Timestamp,
+) -> String {
+    let ran = ended_at
+        .duration_since(ended.started_at)
+        .unsigned_abs()
+        .as_secs();
+    let ran = match ran {
+        0..60 => format!("{ran}s"),
+        60..3600 => format!("{}m {}s", ran / 60, ran % 60),
+        _ => format!("{}h {}m", ran / 3600, ran % 3600 / 60),
+    };
+    let exit = match (&ended.signal, ended.exit_code) {
+        (Some(signal), _) => format!("ended by {signal}"),
+        (None, Some(code)) => format!("exit code {code}"),
+        (None, None) => "no exit code reported".to_owned(),
+    };
+    format!(
+        "the agent's {} call · ran in the background for {ran} · {exit}",
+        ended.tool
+    )
+}
+
 /// The header of a compaction of an ACP agent's own.
 pub const AGENT_COMPACTION_HEADER: &str = "context compacted (by the agent)";
 

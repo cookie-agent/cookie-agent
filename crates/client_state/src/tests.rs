@@ -5170,3 +5170,79 @@ fn an_acp_agents_compaction_and_session_messages_show_as_rows_the_run_does_not_s
         ]
     );
 }
+
+#[test]
+fn an_acp_agents_ended_background_command_shows_as_a_row_with_how_it_ran() {
+    use cookie_agent_protocol::{AcpBackgroundEnded, AcpSessionUpdate};
+    let at = |seconds| jiff::Timestamp::new(seconds, 0).expect("timestamp");
+    let ended = AcpBackgroundEnded {
+        tool_call_id: ToolCallId::new_v7(),
+        tool: "Bash".into(),
+        display: Some("cargo   test\n --workspace".into()),
+        started_at: at(48),
+        exit_code: None,
+        signal: None,
+    };
+    let mut state = SessionState::default();
+    // Between runs: no run records it.
+    reduce_event(
+        &mut state,
+        SessionId::new_v7(),
+        None,
+        7,
+        at(300),
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                background_ended: Some(ended.clone()),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    let [
+        TranscriptItem::AgentBackgroundEnded {
+            seq,
+            ended_at,
+            ended: shown,
+            ..
+        },
+    ] = state.transcript.as_slice()
+    else {
+        panic!("{:?}", state.transcript);
+    };
+    assert_eq!((*seq, *ended_at, shown), (7, at(300), &ended));
+    assert_eq!(
+        crate::rows::agent_background_ended_summary(shown),
+        "Background: cargo test --workspace ended"
+    );
+    assert_eq!(
+        crate::rows::agent_background_ended_details(shown, *ended_at),
+        "the agent's Bash call · ran in the background for 4m 12s · no exit code reported"
+    );
+    let details = |exit_code, signal: Option<&str>, ended_at| {
+        crate::rows::agent_background_ended_details(
+            &AcpBackgroundEnded {
+                display: None,
+                exit_code,
+                signal: signal.map(str::to_owned),
+                ..ended.clone()
+            },
+            at(ended_at),
+        )
+    };
+    assert_eq!(
+        details(Some(2), None, 50),
+        "the agent's Bash call · ran in the background for 2s · exit code 2"
+    );
+    assert_eq!(
+        details(None, Some("SIGTERM"), 48 + 3 * 3600 + 5 * 60 + 9),
+        "the agent's Bash call · ran in the background for 3h 5m · ended by SIGTERM"
+    );
+    // Without a command, the row names its tool.
+    assert_eq!(
+        crate::rows::agent_background_ended_summary(&AcpBackgroundEnded {
+            display: Some("  ".into()),
+            ..ended
+        }),
+        "Background: Bash ended"
+    );
+}

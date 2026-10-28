@@ -9,11 +9,14 @@
 //! agent's process from idling out. It ends when the terminal exits, or with
 //! the agent's process.
 
-use cookie_agent_protocol::{BackgroundActor, BackgroundCall, SessionId, ToolCallId};
+use cookie_agent_protocol::{
+    AcpBackgroundEnded, BackgroundActor, BackgroundCall, SessionId, ToolCallId,
+};
 
 use super::super::Engine;
 use super::process::ProcessUse;
 use super::runner::LiveSession;
+use super::terminal::Exit;
 
 /// One command of the agent's, running after its call ended.
 pub(crate) struct AgentCommand {
@@ -72,19 +75,41 @@ impl Engine {
         self.refresh_live_waiting(live.session);
     }
 
-    /// Terminal `terminal` of `session` exited.
-    pub(super) fn acp_terminal_exited(&self, session: SessionId, terminal: &str) {
-        let removed = {
+    /// Terminal `terminal` of `session` exited, as `exit` says: the
+    /// command that ran in the background on it, when one did, for the
+    /// session to record that it ended.
+    pub(super) fn acp_terminal_exited(
+        &self,
+        session: SessionId,
+        terminal: &str,
+        exit: Exit,
+    ) -> Option<AcpBackgroundEnded> {
+        let AgentCommand {
+            tool_call_id,
+            tool,
+            display,
+            since,
+            _use: held,
+            ..
+        } = {
             let mut commands = self.acp_commands();
-            let before = commands.len();
-            commands
-                .retain(|command| !(command.session == session && command.terminal == terminal));
-            commands.len() != before
+            let index = commands
+                .iter()
+                .position(|command| command.session == session && command.terminal == terminal)?;
+            commands.remove(index)
         };
-        if removed {
-            self.notify_background_changed(session);
-            self.refresh_live_waiting(session);
-        }
+        // The process may idle once nothing else holds it.
+        drop(held);
+        self.notify_background_changed(session);
+        self.refresh_live_waiting(session);
+        Some(AcpBackgroundEnded {
+            tool_call_id,
+            tool,
+            display,
+            started_at: since,
+            exit_code: exit.code,
+            signal: exit.signal,
+        })
     }
 
     /// The agent's process that ran `session`'s commands is gone, and they

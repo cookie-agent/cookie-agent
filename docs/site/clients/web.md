@@ -416,7 +416,11 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   composer for it; one that takes none is sent. The agent's plan shows in
   the transcript as a checklist, its own tool calls name it and fill in
   their arguments as the agent sends them, and its notices show where they
-  arrive. A message steered into the agent's running turn stays in the
+  arrive. A command of the agent's that ran in the background (such as
+  Claude Code's background shell) shows a **Background: … ended** row when
+  it ends, before the run the end may wake; opening it shows how long the
+  command ran, its exit code when the agent says it, and the whole command.
+  A message steered into the agent's running turn stays in the
   strip above the composer until the agent takes it, then shows as any
   message. Every ACP v2 agent can be steered; only a session last run by an
   ACP v1 agent of an earlier build shows the Steer button as "Queue (this

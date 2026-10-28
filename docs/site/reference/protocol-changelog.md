@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.50.0
+
+- `acp_session_updated` has an optional `background_ended`
+  (`AcpBackgroundEnded`: `tool_call_id`, `tool`, `display`, `started_at`,
+  `exit_code`, `signal`): a command of an ACP agent's that ran in the
+  background ended. Clients show it as a background call's report, so a
+  wake the end causes no longer arrives unexplained
+  ([ACP v2](../specs/acp-v2.md) section 9).
+
 ## 1.49.0
 
 - Providers can be connected by a browser sign-in instead of typed

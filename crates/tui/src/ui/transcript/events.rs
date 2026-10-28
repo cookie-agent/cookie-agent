@@ -5,8 +5,8 @@ use super::*;
 pub(super) use cookie_agent_client_state::rows::goal_status_label;
 pub(in crate::ui) use cookie_agent_client_state::rows::producer_summary;
 use cookie_agent_client_state::rows::{
-    AGENT_COMPACTION_HEADER, agent_session_message_summary, producer_mode_label,
-    producer_owner_label,
+    AGENT_COMPACTION_HEADER, agent_background_ended_details, agent_background_ended_summary,
+    agent_session_message_summary, producer_mode_label, producer_owner_label,
 };
 
 pub(super) fn goal_activation_layout(
@@ -524,27 +524,76 @@ pub(super) fn agent_session_message_layout(
     message: &cookie_agent_protocol::AcpSessionMessage,
     context: &TranscriptRenderContext<'_>,
 ) -> ItemLayout {
-    let block_id = BlockId::AgentSessionMessage(seq);
+    let body = bounded_safe_display_text(
+        &message.text,
+        context.theme.internal(),
+        MAX_EXPANDED_BODY_LINES,
+        MAX_EXPANDED_BODY_BYTES,
+    );
+    agent_row_layout(
+        BlockId::AgentSessionMessage(seq),
+        "[M]",
+        &agent_session_message_summary(message),
+        body,
+        context,
+    )
+}
+
+/// A command of the ACP agent's that ended after running in the
+/// background, as a background call's report row shows: what it ran, and
+/// when opened how long it ran, how it exited, and the whole command.
+pub(super) fn agent_background_ended_layout(
+    seq: u64,
+    ended_at: jiff::Timestamp,
+    ended: &cookie_agent_protocol::AcpBackgroundEnded,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let mut body = vec![Line::styled(
+        agent_background_ended_details(ended, ended_at),
+        context.theme.internal(),
+    )];
+    if let Some(display) = ended.display.as_deref() {
+        body.extend(bounded_safe_display_text(
+            display,
+            context.theme.internal(),
+            MAX_EXPANDED_BODY_LINES,
+            MAX_EXPANDED_BODY_BYTES,
+        ));
+    }
+    agent_row_layout(
+        BlockId::AgentBackgroundEnded(seq),
+        "[B]",
+        &agent_background_ended_summary(ended),
+        body,
+        context,
+    )
+}
+
+/// A collapsible row of the ACP agent's, as a producer message row shows:
+/// `summary` (`tag` where the transcript is too narrow), and `body` when
+/// opened.
+fn agent_row_layout(
+    block_id: BlockId,
+    tag: &str,
+    summary: &str,
+    body: Vec<Line<'static>>,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
     let expanded = context
         .expanded
         .is_some_and(|blocks| blocks.contains(&block_id));
     let chevron = if expanded { '▾' } else { '▸' };
     let header = if context.width < 8 {
-        format!("[M] {chevron} …")
+        format!("{tag} {chevron} …")
     } else {
-        format!("◇ {chevron} {}", agent_session_message_summary(message))
+        format!("◇ {chevron} {summary}")
     };
     let mut lines = vec![Line::styled(
         crate::ui::app::truncate_with_ellipsis(&header, usize::from(context.width)),
         context.theme.internal(),
     )];
     if expanded {
-        for line in bounded_safe_display_text(
-            &message.text,
-            context.theme.internal(),
-            MAX_EXPANDED_BODY_LINES,
-            MAX_EXPANDED_BODY_BYTES,
-        ) {
+        for line in body {
             lines.extend(repeated_prefixed_wrapped_line(
                 vec![Span::styled("· ", context.theme.internal())],
                 line,

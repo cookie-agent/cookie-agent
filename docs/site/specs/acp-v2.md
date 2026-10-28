@@ -362,6 +362,14 @@ What v2 does report is the agent's terminals.
     `display` is the terminal's command, and its tool call is the call
     that shows it.
   - It leaves the list when the terminal exits.
+  - Its end is recorded where it arrives (client protocol 1.50.0,
+    `acp_session_updated.background_ended`): its tool call, tool,
+    command, when it moved to the background, and the exit code or
+    signal when the agent reports one (Claude's adapter reports none).
+    Clients show it as a background call's report. Between runs it is
+    recorded before the wake it may start, whose row still says only
+    that the agent woke on its own: v2 names no cause. Added
+    2026-10-28 at the user's request.
   - It has no Stop: v2 gives clients no terminal kill.
 
   Phase 1 checks that Claude's adapter keeps a backgrounded command's

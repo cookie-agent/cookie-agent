@@ -121,6 +121,9 @@ pub(super) fn for_each_item_block_id(
         TranscriptItem::AgentSessionMessage { seq, .. } => {
             visit(BlockId::AgentSessionMessage(*seq))
         }
+        TranscriptItem::AgentBackgroundEnded { seq, .. } => {
+            visit(BlockId::AgentBackgroundEnded(*seq))
+        }
         TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
         TranscriptItem::AgentMd { seq, .. } => visit(BlockId::AgentMd(*seq)),
         TranscriptItem::SkillLoaded { seq, .. } => visit(BlockId::SkillLoaded(*seq)),
@@ -205,6 +208,7 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
         | TranscriptItem::AcpNotice { .. }
         | TranscriptItem::AgentCompaction { .. }
         | TranscriptItem::AgentSessionMessage { .. }
+        | TranscriptItem::AgentBackgroundEnded { .. }
         | TranscriptItem::ProducerMessage { .. } => false,
     }
 }
@@ -289,6 +293,12 @@ pub(super) fn transcript_item_layout(
         TranscriptItem::AgentSessionMessage { seq, message, .. } => {
             agent_session_message_layout(*seq, message, context)
         }
+        TranscriptItem::AgentBackgroundEnded {
+            seq,
+            ended_at,
+            ended,
+            ..
+        } => agent_background_ended_layout(*seq, *ended_at, ended, context),
         TranscriptItem::PluginMessage {
             seq, role, input, ..
         } => plugin_message_layout(*seq, *role, input, context),

@@ -312,6 +312,29 @@ pub struct AcpSessionMessage {
     pub text: String,
 }
 
+/// A command of the agent's that kept running in the background after its
+/// tool call ended, and has now ended (client protocol 1.50.0), such as
+/// Claude Code's background shell. Recorded where the end arrives, between
+/// runs too, so the transcript shows it before the run it may wake.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpBackgroundEnded {
+    /// The tool call that started it.
+    pub tool_call_id: ToolCallId,
+    /// Its tool, as the agent names it.
+    pub tool: String,
+    /// The call's display argument, such as the command line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+    /// When it moved to the background.
+    pub started_at: jiff::Timestamp,
+    /// Its exit code, when the agent says it; Claude Code does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// The signal that ended it, when the agent says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+}
+
 /// Input the daemon delivered into the agent's running work (an ACP v2
 /// prompt sent during the work; with an ACP v1 agent of an earlier build,
 /// its steering extension), by the events that took it: the
@@ -392,6 +415,10 @@ pub struct AcpSessionUpdate {
     /// before, a `notice`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_message: Option<AcpSessionMessage>,
+    /// A command of the agent's running in the background ended (client
+    /// protocol 1.50.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_ended: Option<AcpBackgroundEnded>,
 }
 
 impl AcpSessionUpdate {
@@ -410,6 +437,7 @@ impl AcpSessionUpdate {
             && self.starting_options.is_none()
             && self.compaction.is_none()
             && self.session_message.is_none()
+            && self.background_ended.is_none()
     }
 }
 

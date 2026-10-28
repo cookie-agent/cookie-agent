@@ -44,15 +44,38 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
         engine.get_session(session).unwrap().waiting_on,
         [cookie_agent_protocol::WaitingOn::BackgroundCall]
     );
-    // Its exit, between runs, ends it.
+    let started = calls[0].clone();
+    // Its exit, between runs, ends it, and the session records the end
+    // outside any run, once.
+    let ended = || {
+        events(engine, session)
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::AcpSessionUpdated { update } => {
+                    update.background_ended.map(|ended| (event.run_id, ended))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
     with_watchdog("the command's exit", async {
-        while !engine.background_calls(session).is_empty() {
+        while !engine.background_calls(session).is_empty() || ended().is_empty() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
     assert!(!engine.acp_background_running(session));
     assert!(engine.get_session(session).unwrap().waiting_on.is_empty());
+    let ended = ended();
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    let (run, ended) = &ended[0];
+    assert_eq!(*run, None);
+    assert_eq!(ended.tool_call_id, started.tool_call_id);
+    assert_eq!(ended.tool, "Bash");
+    assert_eq!(ended.display.as_deref(), Some("sleep 1.5"));
+    assert_eq!(ended.started_at, started.started_at);
+    assert_eq!(ended.exit_code, Some(0));
+    assert_eq!(ended.signal, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -74,4 +97,28 @@ async fn a_running_command_keeps_the_agents_process_from_idling_out() {
         }
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_that_ends_during_a_run_is_recorded_in_that_run() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "background 1").await;
+    // The next run waits past the command's exit.
+    let run = start(engine, session, "second", "steer-wait 3").await;
+    finished(engine, session, run).await;
+    let ended = events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::AcpSessionUpdated { update } => {
+                update.background_ended.map(|ended| (event.run_id, ended))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0].0, Some(run));
+    assert_eq!(ended[0].1.display.as_deref(), Some("sleep 1"));
+    assert!(engine.background_calls(session).is_empty());
 }

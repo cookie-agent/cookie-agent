@@ -1375,6 +1375,16 @@ pub(super) fn reduce_event_from(
                     message,
                 });
             }
+            if let Some(ended) = update.background_ended {
+                push_split_item(state, timestamp, |id| {
+                    TranscriptItem::AgentBackgroundEnded {
+                        id,
+                        seq: sequence,
+                        ended_at: timestamp,
+                        ended,
+                    }
+                });
+            }
             if let Some(steered) = update.steered {
                 for seq in steered.user_inputs {
                     state.acp.steered.insert(seq);

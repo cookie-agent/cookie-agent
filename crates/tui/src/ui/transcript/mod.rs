@@ -327,6 +327,9 @@ pub(super) enum BlockId {
     ProducerMessage(ProducerMessageId),
     /// A message between the ACP agent's sessions, by its event's sequence.
     AgentSessionMessage(u64),
+    /// A command of the ACP agent's that ended after running in the
+    /// background, by its event's sequence.
+    AgentBackgroundEnded(u64),
     MediaFile {
         turn_seq: u64,
         content_index: u32,

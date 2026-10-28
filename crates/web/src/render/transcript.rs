@@ -15,6 +15,7 @@ use cookie_agent_client_state::{
     SessionState, ToolCallState, ToolStatus, TranscriptItem,
     rows::{
         AGENT_COMPACTION_HEADER, MAX_SYSTEM_PROMPT_BODY_BYTES, MAX_SYSTEM_PROMPT_BODY_LINES,
+        agent_background_ended_details, agent_background_ended_summary,
         agent_session_message_summary, bounded_text, bounded_tools, display_line_count,
         goal_status_label, model_tool_groups, model_tools_summary, producer_mode_label,
         producer_owner_label, producer_summary, system_prompt_source, system_prompt_summary,
@@ -390,6 +391,19 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 &agent_session_message_summary(message),
                 None,
                 &message.text,
+            )
+        }
+        TranscriptItem::AgentBackgroundEnded {
+            ended_at, ended, ..
+        } => {
+            let key = block_key(item).unwrap_or_default();
+            collapsible(
+                view.expanded.block(&key),
+                &key,
+                icondata::FaTerminalSolid,
+                &agent_background_ended_summary(ended),
+                Some(&agent_background_ended_details(ended, *ended_at)),
+                ended.display.as_deref().unwrap_or_default(),
             )
         }
         TranscriptItem::PluginMessage { role, input, .. } => {
@@ -967,6 +981,7 @@ fn block_key(item: &TranscriptItem) -> Option<String> {
             format!("compaction:{seq}")
         }
         TranscriptItem::AgentSessionMessage { seq, .. } => format!("session-message:{seq}"),
+        TranscriptItem::AgentBackgroundEnded { seq, .. } => format!("background-ended:{seq}"),
         TranscriptItem::PluginMessage { seq, .. } => format!("plugin:{seq}"),
         TranscriptItem::AgentMd { seq, .. } => format!("agent-md:{seq}"),
         TranscriptItem::SkillLoaded { seq, .. } => format!("skill:{seq}"),

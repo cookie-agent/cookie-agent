@@ -359,6 +359,51 @@ fn a_notice_and_a_steered_message_render() {
     }
 }
 
+#[test]
+fn an_ended_background_command_folds_to_its_command_and_opens_to_how_it_ran() {
+    let at = |seconds| jiff::Timestamp::new(seconds, 0).unwrap();
+    let mut state = SessionState::default();
+    state.transcript.push(TranscriptItem::AgentBackgroundEnded {
+        id: 1,
+        seq: 9,
+        ended_at: at(75),
+        ended: cookie_agent_protocol::AcpBackgroundEnded {
+            tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+            tool: "Bash".into(),
+            display: Some("cargo test --workspace".into()),
+            started_at: at(10),
+            exit_code: Some(1),
+            signal: None,
+        },
+    });
+    let render = |expanded: &HashSet<BlockId>| {
+        snapshot_lines(
+            &transcript_layout_with(
+                &state,
+                Some(expanded),
+                80,
+                &Theme::default(),
+                &PlainHighlighter,
+            )
+            .lines,
+        )
+    };
+    let folded = render(&HashSet::new());
+    assert!(
+        folded.contains("◇ ▸ Background: cargo test --workspace ended"),
+        "{folded}"
+    );
+    assert!(!folded.contains("exit code"), "{folded}");
+    let opened = render(&HashSet::from([BlockId::AgentBackgroundEnded(9)]));
+    for line in [
+        "◇ ▾ Background: cargo test --workspace ended",
+        "· the agent's Bash call · ran in the background for 1m 5s · exit code 1",
+        "· cargo test --workspace",
+    ] {
+        assert!(opened.contains(line), "{line}\n{opened}");
+    }
+}
+
 #[tokio::test]
 async fn the_status_line_shows_the_agents_context_of_its_own_window() {
     let (mut app, session) = acp_session_app().await;

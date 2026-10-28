@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.49.0",
+    "protocol_version": "1.50.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.49.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.50.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -866,6 +866,13 @@ over the Agent Client Protocol (see the
   session as the daemon named it then, and `text`): a message between the
   agent's sessions, such as a subagent's task or its report, which clients
   show as they show a producer message. Before 1.41.0 both were `notice`s.
+- Since 1.50.0, `acp_session_updated` may carry `background_ended`
+  (`tool_call_id`, `tool`, `display`, `started_at`, and `exit_code` and
+  `signal` when the agent reports them): a command of the agent's that ran
+  in the background after its tool call ended, such as Claude Code's
+  background shell, has ended. It is recorded where the end arrives,
+  between runs too, before the run the end may wake, and clients show it
+  as they show a background call's report.
 - Since 1.23.0, `acp_session_updated` may carry `context` (`used`, and
   `size` when the agent reports its window): the agent's context use from
   its latest `usage_update`, recorded as it changes. The agent's turns

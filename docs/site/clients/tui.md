@@ -610,6 +610,14 @@ its subagents. See
 [Background calls](../reference/tools.md#background-calls) for what the model
 sees.
 
+An [ACP agent](../extend/acp-agents.md)'s own command that keeps running after
+its call ended (such as Claude Code's background shell) is listed in the bar
+too, without a stop. When it ends, the transcript shows a row where the end
+arrived, `◇ ▸ Background: <command> ended`; opening it shows the agent's tool,
+how long the command ran in the background, its exit code when the agent says
+it, and the whole command. When the end wakes the agent, the row comes before
+the agent's own run, which still says only that the agent woke on its own.
+
 ## Approvals
 
 An approval docks above the status bar in place of the composer, leaving the
