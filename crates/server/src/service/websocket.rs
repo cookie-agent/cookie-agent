@@ -31,11 +31,35 @@ struct WebSocketStream {
     /// Set when the daemon shuts down to restart, which the closing frame
     /// says.
     restarting: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// A client's stream pings once the connection has been quiet this
+    /// long.
+    ping_after: Option<Duration>,
+    /// When a frame last went either way.
+    active: tokio::time::Instant,
 }
 
 /// How long a closing stream waits for its handler to choose the close
 /// frame.
 const CLOSE_CHOICE_WAIT: Duration = Duration::from_secs(1);
+
+/// How long a client's connection may be quiet before the daemon pings it.
+/// A browser cannot ping, but answers a ping with a pong, so a connection
+/// to a quiet session still carries traffic: a proxy in front of the
+/// daemon ends an idle one (a Cloudflare tunnel after 100 s), which the
+/// page took for a lost daemon and reconnected.
+const CLIENT_PING_AFTER: Duration = Duration::from_secs(30);
+
+/// [`CLIENT_PING_AFTER`], or in a test what it set in milliseconds.
+fn client_ping_after() -> Duration {
+    #[cfg(test)]
+    {
+        let millis = tests::PING_AFTER_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if millis > 0 {
+            return Duration::from_millis(millis);
+        }
+    }
+    CLIENT_PING_AFTER
+}
 
 impl WebSocketStream {
     /// A client's stream: it closes with a normal closure, or saying the
@@ -48,6 +72,8 @@ impl WebSocketStream {
             socket,
             closing: None,
             restarting: Some(restarting),
+            ping_after: Some(client_ping_after()),
+            active: tokio::time::Instant::now(),
         }
     }
 
@@ -66,6 +92,8 @@ impl WebSocketStream {
                 socket,
                 closing: Some(closing),
                 restarting: None,
+                ping_after: None,
+                active: tokio::time::Instant::now(),
             },
             choice,
         )
@@ -100,6 +128,7 @@ impl WebSocketStream {
 #[async_trait]
 impl MessageStream for WebSocketStream {
     async fn send(&mut self, frame: MessageFrame) -> Result<(), TransportError> {
+        self.active = tokio::time::Instant::now();
         self.socket
             .send(axum::extract::ws::Message::Text(frame.into_text()?.into()))
             .await
@@ -108,7 +137,25 @@ impl MessageStream for WebSocketStream {
 
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
         loop {
-            match self.socket.next().await {
+            let message = match self.ping_after {
+                Some(ping_after) => {
+                    let due = tokio::time::sleep_until(self.active + ping_after);
+                    tokio::select! {
+                        message = self.socket.next() => Some(message),
+                        () = due => None,
+                    }
+                }
+                None => Some(self.socket.next().await),
+            };
+            self.active = tokio::time::Instant::now();
+            let Some(message) = message else {
+                self.socket
+                    .send(axum::extract::ws::Message::Ping(Default::default()))
+                    .await
+                    .map_err(|error| TransportError::Other(error.to_string()))?;
+                continue;
+            };
+            match message {
                 Some(Ok(axum::extract::ws::Message::Text(text))) => {
                     return Ok(Some(MessageFrame::Bytes(text.into())));
                 }
@@ -498,6 +545,11 @@ mod tests {
 
     use super::authorized;
 
+    /// A test's client ping interval in milliseconds; zero keeps the
+    /// daemon's.
+    pub(super) static PING_AFTER_MS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
     fn bearer(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -754,6 +806,35 @@ mod authentication_tests {
                 Ok(Some(Ok(_))) => {}
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_daemon_pings_a_quiet_client_and_a_pong_keeps_it() {
+        super::tests::PING_AFTER_MS.store(100, std::sync::atomic::Ordering::Relaxed);
+        let daemon = Daemon::start().await;
+        let mut socket = daemon
+            .connect("/ws", Some(daemon.token.as_str()), None)
+            .await
+            .expect("upgrade");
+        let reply = call(&mut socket, 1, "handshake", hello(None)).await;
+        assert!(reply["result"]["origin"].is_string(), "{reply}");
+        // Quiet, the connection is pinged again and again; reading answers
+        // each ping with a pong, as a browser does.
+        let mut pings = 0;
+        while pings < 3 {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+                .await
+                .expect("a frame of the quiet connection")
+                .expect("an open connection")
+                .expect("a readable frame");
+            if matches!(frame, Message::Ping(_)) {
+                pings += 1;
+            }
+        }
+        // It still answers.
+        let reply = call(&mut socket, 2, "session.list", json!({})).await;
+        assert!(reply["result"]["sessions"].is_array(), "{reply}");
+        daemon.stop().await;
     }
 
     #[tokio::test]
