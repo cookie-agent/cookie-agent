@@ -186,6 +186,7 @@ mod tests {
             error: None,
             diagnostics: Vec::new(),
             native_compaction: Vec::new(),
+            deferred_tools: Vec::new(),
         }
     }
 

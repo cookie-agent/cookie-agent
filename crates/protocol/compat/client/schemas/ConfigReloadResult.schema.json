@@ -20,6 +20,14 @@
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         },
+        "deferred_tools": {
+          "description": "Models the daemon stopped sending deferred tools to after they\nrejected them, until the mark expires or the model's configuration\nchanges (client protocol 1.46.0).",
+          "items": {
+            "$ref": "#/$defs/DeferredToolsMark"
+          },
+          "maxItems": 1024,
+          "type": "array"
+        },
         "diagnostics": {
           "description": "What the applied configuration names that does not exist yet, such\nas a delegation target no agent has (an ACP agent whose runtime has\nnot reported it, or a typo); the configuration still applies, and a\ndiagnostic clears once the agent appears (client protocol 1.18.0).",
           "items": {
@@ -53,6 +61,34 @@
       },
       "required": [
         "applied_revision"
+      ],
+      "type": "object"
+    },
+    "DeferredToolsMark": {
+      "description": "One model in the daemon's deferred tools record.",
+      "properties": {
+        "age_seconds": {
+          "description": "How long ago it was marked.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "What the provider answered that marked it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id",
+        "reason",
+        "age_seconds"
       ],
       "type": "object"
     },

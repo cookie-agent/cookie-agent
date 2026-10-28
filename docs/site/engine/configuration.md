@@ -182,6 +182,29 @@ for, one entry per provider ID:
 `config_digest`. Delete the file, or an entry, to try native compaction again.
 The daemon writes the file through a temporary file and a rename.
 
+`deferred-tools.json` is the record of models that refused
+[deferred tools](../reference/tools.md#deferred-tools), one entry per
+`provider/model`, each with `since`, `reason`, and `config_digest`:
+
+```json
+{
+  "models": {
+    "my-gateway/claude-opus-4-6": {
+      "since": "2026-10-27T12:00:00Z",
+      "reason": "a request with deferred tools was refused (HTTP 400)",
+      "config_digest": "sha256:…"
+    }
+  }
+}
+```
+
+A recorded model is sent every tool up front. An entry expires 7 days after
+`since`, and is dropped when the model's provider configuration, or the
+deferral support it is compiled with, no longer matches `config_digest`.
+Delete the file, or an entry, to try deferral again. `cookie config`, the
+TUI's `/config`, and the web client's settings list both records' entries as
+notes.
+
 ## Strictness and limits
 
 Every authored file is parsed strictly. Unknown keys, leftover `schema` or

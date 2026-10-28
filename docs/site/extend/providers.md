@@ -155,6 +155,13 @@ decided per model, in this order:
    - Any other model on an Anthropic or Anthropic-compatible adaptor, a Claude
      model through a gateway included, is *attempted*: deferral is tried, and
      a rejected request falls back to sending every tool up front.
+
+A request with deferred tools that an attempted model refuses (any HTTP 400
+or 422), or that a `native` model refuses naming deferral, is tried once more
+with every tool up front. When that retry succeeds, the daemon records the
+model in `deferred-tools.json` (see
+[state kept beside the configuration](../engine/configuration.md#state-kept-beside-the-configuration))
+and sends it every tool up front until the entry expires.
    - Everything else, an OpenAI-compatible gateway included, is
      `unsupported`.
 

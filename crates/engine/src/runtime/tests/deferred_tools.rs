@@ -402,3 +402,89 @@ async fn a_checkpoint_drops_the_calls_of_a_tool_that_left() {
         "the run's input stays: {messages}"
     );
 }
+
+/// A custom Anthropic-compatible model: deferral is attempted, not verified.
+const ATTEMPTED_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 64000\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\nmedia = {}";
+
+fn deferred_names(request: &serde_json::Value) -> Vec<&str> {
+    request["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|tool| tool["defer_loading"] == true)
+        .filter_map(|tool| tool["name"].as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_refused_deferral_is_retried_up_front_and_remembered() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Status400,
+        AnthropicReplayResponse::Text("hello"),
+        AnthropicReplayResponse::Text("again"),
+    ])
+    .await;
+    let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
+        &endpoint,
+        "---\ndescription: Deferral test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nUse the tools.\n",
+        None,
+        None,
+        false,
+        None,
+        None,
+        64_000,
+        None,
+        "anthropic-compatible",
+        Some(ATTEMPTED_CAPABILITIES),
+        None,
+    );
+    fixture.engine.register_base_layer().expect("base layer");
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(McpWrite(
+            TestWriteProvider {
+                executed: Arc::new(TestFlag::default()),
+            },
+            Arc::new(AtomicBool::new(true)),
+        )),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("deferral session");
+    run(&fixture, session.session_id, &selection, "deferral-1", "hi").await;
+    run(
+        &fixture,
+        session.session_id,
+        &selection,
+        "deferral-2",
+        "more",
+    )
+    .await;
+    let requests = with_watchdog("captured deferral requests", captured)
+        .await
+        .expect("captured requests")
+        .iter()
+        .map(|request| request_body(request))
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(deferred_names(&requests[0]), ["write"], "attempted");
+    assert!(
+        deferred_names(&requests[1]).is_empty(),
+        "the retry sends every tool up front"
+    );
+    let marks = fixture.engine.inner.deferred_tools_record.marks();
+    assert_eq!(marks.len(), 1);
+    assert!(marks[0].reason.contains("HTTP 400"), "{}", marks[0].reason);
+    // The marked model is no longer sent deferred tools, nor the loaders.
+    let names = requests[2]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(deferred_names(&requests[2]).is_empty());
+    assert!(names.contains(&"write"), "{names:?}");
+    assert!(!names.contains(&"tool_load"), "{names:?}");
+    fixture.engine.shutdown().await;
+}

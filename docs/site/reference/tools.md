@@ -985,9 +985,9 @@ reads.
 
 ## Deferred tools
 
-On a model that loads deferred tools natively (see
-[providers](../extend/providers.md#provider-fields) for which models do),
-MCP and plugin tools are sent deferred: the model sees their names in
+On a model that loads deferred tools natively, or one deferral is attempted
+on (see [providers](../extend/providers.md#provider-fields) for which models
+are), MCP and plugin tools are sent deferred: the model sees their names in
 announcements, not their definitions, until it loads them. `tool_search`
 finds them and `tool_load` loads them; a loaded tool stays callable. The
 [deferred tools spec](../specs/deferred-tools-cookie.md) has the details:

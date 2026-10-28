@@ -1809,9 +1809,12 @@ impl Engine {
         sticky_entry: &mut usize,
         replay_base: &mut ReplayEvaluationBase,
         prompt_events: super::producer_claims::ClaimedPrompt,
-        tools: Vec<ToolDefinition>,
+        mut tools: Vec<ToolDefinition>,
     ) -> Result<AttemptTurn, EngineError> {
         let chain = &policy.selected_suffix;
+        // The fallback entry whose refusal of deferred tools was retried
+        // without them, and why: it marks the model once a retry succeeds.
+        let mut deferral_retry = None::<(usize, String)>;
         let composed_prompt = &policy.agent.composed_prompt;
         let prompt_fingerprint = &policy.agent.prompt_fingerprint;
         let mut entry = *sticky_entry;
@@ -2251,6 +2254,11 @@ impl Engine {
                 }
                 match result {
                     Ok(turn) => {
+                        if let Some((_, reason)) =
+                            deferral_retry.take_if(|(retried, _)| *retried == entry)
+                        {
+                            self.inner.deferred_tools_record.mark(binding, reason);
+                        }
                         // Provider tool-call names that persist-time
                         // normalization rewrites are tracked by model call ID so
                         // dispatch can refuse a normalized alias instead of
@@ -2499,6 +2507,37 @@ impl Engine {
                         .await?;
                         replay_cut_retries = 1;
                         self.cut_native_replay(session, run).await?;
+                        continue;
+                    }
+                    // A request with deferred tools the model refused is tried
+                    // once more with every tool up front; its success marks
+                    // the model (deferred tools in cookie, section 9).
+                    Err(error)
+                        if !meaningful_output
+                            && deferral_retry.is_none()
+                            && !is_thinking_binding_mismatch(&error)
+                            && tools.iter().any(ToolDefinition::is_deferred)
+                            && let Some(reason) = crate::deferred_tools::record::retry_reason(
+                                &error,
+                                cookie_agent_models::DeferredToolsSupport::of_descriptor(
+                                    &binding.descriptor,
+                                ),
+                            ) =>
+                    {
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned {
+                                attempt_id,
+                                model_error: Some(model_error_summary(&error)),
+                            },
+                        )
+                        .await?;
+                        for tool in &mut tools {
+                            tool.loading = oven_sdk::ToolLoading::Eager;
+                        }
+                        deferral_retry = Some((entry, reason));
                         continue;
                     }
                     Err(error) if classify_model_error(&error) == ErrorPolicy::FailRun => {

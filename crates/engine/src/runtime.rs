@@ -988,6 +988,8 @@ pub(crate) struct Inner {
     pub(crate) acp: acp::AcpState,
     /// The providers native compaction does not work with.
     pub(crate) native_compaction: crate::native_compaction::NativeCompactionRecord,
+    /// The models that rejected deferred tools.
+    pub(crate) deferred_tools_record: crate::deferred_tools::record::DeferredToolsRecord,
     /// What each session's loader tools see: its latest request's deferral.
     pub(crate) deferral_views: Mutex<HashMap<SessionId, Arc<crate::deferred_tools::DeferralView>>>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
@@ -1265,6 +1267,9 @@ impl Engine {
                 mcp_hub,
                 acp,
                 native_compaction: crate::native_compaction::NativeCompactionRecord::open(
+                    &options.data_dir,
+                ),
+                deferred_tools_record: crate::deferred_tools::record::DeferredToolsRecord::open(
                     &options.data_dir,
                 ),
                 deferral_views: Mutex::new(HashMap::new()),

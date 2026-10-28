@@ -1278,7 +1278,7 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<PublishedToolSet, EngineError> {
-        let defers = defers_tools(policy);
+        let defers = defers_tools(policy, &self.inner.deferred_tools_record);
         let composition = self.compose_for_policy_with(session, policy, defers)?;
         let notes = self.runtime_tool_notes(session);
         let mut output = Vec::with_capacity(composition.tools.len());
@@ -1375,7 +1375,7 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<HashSet<crate::deferred_tools::ProviderKey>, EngineError> {
-        if !defers_tools(policy) {
+        if !defers_tools(policy, &self.inner.deferred_tools_record) {
             return Ok(HashSet::new());
         }
         let composition = self.compose_for_policy(session, policy)?;
@@ -1421,12 +1421,15 @@ impl Engine {
 }
 
 /// Whether a run of `policy` defers tools. Deferral follows the run's
-/// model: only a verified model defers until rejected deferral can fall
-/// back (deferred tools in cookie, section 13, decision 4).
-fn defers_tools(policy: &FrozenRunPolicy) -> bool {
+/// model: one verified or attempted that has not rejected deferral
+/// (deferred tools in cookie, section 9).
+fn defers_tools(
+    policy: &FrozenRunPolicy,
+    record: &crate::deferred_tools::record::DeferredToolsRecord,
+) -> bool {
     policy.selected_suffix.first().is_some_and(|binding| {
-        cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor)
-            == cookie_agent_models::DeferredToolsSupport::Native
+        cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor).defers()
+            && !record.rejects(binding)
     })
 }
 

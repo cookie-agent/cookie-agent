@@ -52,6 +52,23 @@ pub struct ConfigStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 1024))]
     pub native_compaction: Vec<NativeCompactionMark>,
+    /// Models the daemon stopped sending deferred tools to after they
+    /// rejected them, until the mark expires or the model's configuration
+    /// changes (client protocol 1.46.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub deferred_tools: Vec<DeferredToolsMark>,
+}
+
+/// One model in the daemon's deferred tools record.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct DeferredToolsMark {
+    pub provider_id: String,
+    pub model_id: String,
+    /// What the provider answered that marked it.
+    pub reason: String,
+    /// How long ago it was marked.
+    pub age_seconds: u64,
 }
 
 /// One provider in the daemon's native compaction record.

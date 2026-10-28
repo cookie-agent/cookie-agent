@@ -102,41 +102,52 @@ pub fn diagnostic_lines(status: &ConfigStatus) -> Vec<String> {
         .iter()
         .map(|diagnostic| format!("Note: {diagnostic}"))
         .chain(
-            native_compaction_lines(status)
+            record_lines(status)
                 .into_iter()
                 .map(|line| format!("Note: {line}")),
         )
         .collect()
 }
 
-/// The providers the daemon's native compaction record marks, one line
-/// each: the provider, why native compaction is off for it, and how long
-/// ago it was marked. Deleting the record file or changing the provider's
-/// configuration clears a mark; it also expires on its own.
-pub fn native_compaction_lines(status: &ConfigStatus) -> Vec<String> {
-    status
-        .native_compaction
-        .iter()
-        .map(|mark| {
-            let state = match mark.state {
-                NativeCompactionState::Unsupported => "native compaction unsupported",
-                NativeCompactionState::RejectsWindows => "compacted windows rejected",
-                NativeCompactionState::Unknown => "native compaction off",
-            };
-            let epoch = jiff::Timestamp::UNIX_EPOCH;
-            let marked = epoch
-                .checked_add(jiff::SignedDuration::from_secs(
-                    i64::try_from(mark.age_seconds).unwrap_or(i64::MAX),
-                ))
-                .unwrap_or(jiff::Timestamp::MAX);
-            format!(
-                "`{}`: {state} ({}), {}",
-                mark.provider_id,
-                mark.reason,
-                crate::memory::ago(epoch, marked)
-            )
-        })
-        .collect()
+/// What the daemon's records mark, one line each: the providers its native
+/// compaction record marks, with why native compaction is off for them,
+/// then the models its deferred tools record marks, each with the refusal
+/// that marked it and how long ago. Deleting a record file or changing the
+/// provider's or model's configuration clears a mark; it also expires on
+/// its own.
+pub fn record_lines(status: &ConfigStatus) -> Vec<String> {
+    let ago = |age_seconds: u64| {
+        let epoch = jiff::Timestamp::UNIX_EPOCH;
+        let marked = epoch
+            .checked_add(jiff::SignedDuration::from_secs(
+                i64::try_from(age_seconds).unwrap_or(i64::MAX),
+            ))
+            .unwrap_or(jiff::Timestamp::MAX);
+        crate::memory::ago(epoch, marked)
+    };
+    let native = status.native_compaction.iter().map(|mark| {
+        let state = match mark.state {
+            NativeCompactionState::Unsupported => "native compaction unsupported",
+            NativeCompactionState::RejectsWindows => "compacted windows rejected",
+            NativeCompactionState::Unknown => "native compaction off",
+        };
+        format!(
+            "`{}`: {state} ({}), {}",
+            mark.provider_id,
+            mark.reason,
+            ago(mark.age_seconds)
+        )
+    });
+    let deferred = status.deferred_tools.iter().map(|mark| {
+        format!(
+            "`{}/{}`: deferred tools rejected, sent up front ({}), {}",
+            mark.provider_id,
+            mark.model_id,
+            mark.reason,
+            ago(mark.age_seconds)
+        )
+    });
+    native.chain(deferred).collect()
 }
 
 /// What a change needs the daemon restarted for, as a sentence.
@@ -308,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn native_compaction_marks_read_as_notes_with_their_reason_and_age() {
+    fn record_marks_read_as_notes_with_their_reason_and_age() {
         let status = serde_json::from_value(serde_json::json!({
             "applied_revision": format!("sha256:{}", "a".repeat(64)),
             "diagnostics": ["an agent is missing"],
@@ -317,6 +328,10 @@ mod tests {
                  "reason": "the compact endpoint answered HTTP 404", "age_seconds": 7200},
                 {"provider_id": "openai", "state": "rejects_windows",
                  "reason": "a request carrying a compacted window was refused", "age_seconds": 30}
+            ],
+            "deferred_tools": [
+                {"provider_id": "gateway", "model_id": "claude-opus",
+                 "reason": "a request with deferred tools was refused (HTTP 400)", "age_seconds": 7200}
             ]
         }))
         .expect("status");
@@ -326,6 +341,7 @@ mod tests {
                 "Note: an agent is missing",
                 "Note: `gateway`: native compaction unsupported (the compact endpoint answered HTTP 404), 2 hours ago",
                 "Note: `openai`: compacted windows rejected (a request carrying a compacted window was refused), less than a minute ago",
+                "Note: `gateway/claude-opus`: deferred tools rejected, sent up front (a request with deferred tools was refused (HTTP 400)), 2 hours ago",
             ]
         );
     }

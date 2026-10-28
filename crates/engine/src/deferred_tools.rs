@@ -16,6 +16,8 @@ use oven_sdk::{JsonSchema, ToolDefinition};
 use crate::events::DeferralFold;
 use crate::runtimes::SourcedProvider;
 
+pub(crate) mod record;
+
 /// The loader that lists matching deferred tools.
 pub(crate) const TOOL_SEARCH: &str = "tool_search";
 /// The loader that loads deferred tools by name.

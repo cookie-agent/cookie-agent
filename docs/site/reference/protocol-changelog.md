@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.46.0
+
+- `ConfigStatus` has an optional `deferred_tools`, a list of
+  `DeferredToolsMark` (`provider_id`, `model_id`, `reason`, `age_seconds`):
+  the models the daemon sends every tool up front after they refused
+  deferred tools ([deferred tools in cookie](../specs/deferred-tools-cookie.md)
+  section 9).
+
 ## 1.45.0
 
 - A summary checkpoint's `folded_tools` (`context_checkpoint_committed`,

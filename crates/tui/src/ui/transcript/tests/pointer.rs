@@ -568,6 +568,7 @@ pub(super) fn restart_waiting_status() -> cookie_agent_protocol::ConfigStatus {
         error: None,
         diagnostics: Vec::new(),
         native_compaction: Vec::new(),
+        deferred_tools: Vec::new(),
     }
 }
 

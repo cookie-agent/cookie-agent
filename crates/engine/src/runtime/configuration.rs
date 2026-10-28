@@ -86,6 +86,7 @@ pub struct ConfigurationStatus {
     pub diagnostics: Vec<String>,
     /// The providers the native compaction record marks.
     pub native_compaction: Vec<cookie_agent_protocol::NativeCompactionMark>,
+    pub deferred_tools: Vec<cookie_agent_protocol::DeferredToolsMark>,
 }
 
 impl Engine {
@@ -133,6 +134,7 @@ impl Engine {
             restart_required,
             diagnostics: self.configuration_diagnostics(),
             native_compaction: self.inner.native_compaction.marks(),
+            deferred_tools: self.inner.deferred_tools_record.marks(),
             error: self
                 .inner
                 .config_error

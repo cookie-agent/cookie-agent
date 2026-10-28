@@ -203,7 +203,7 @@ impl NativeCompactionRecord {
 
 /// Writes `file` through a temporary file renamed over `path`, so a reader
 /// never sees half of it.
-fn write_atomic(path: &Path, file: &RecordFile) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, file: &impl Serialize) -> std::io::Result<()> {
     let bytes = serde_json::to_vec_pretty(file).map_err(std::io::Error::other)?;
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, bytes)?;
@@ -291,7 +291,7 @@ pub(crate) fn rejected_window_reason(error: &ModelError) -> Option<String> {
     })
 }
 
-fn vendor_detail(error: &ModelError) -> String {
+pub(crate) fn vendor_detail(error: &ModelError) -> String {
     error
         .diagnostics
         .vendor_code
