@@ -30,6 +30,8 @@ result is limited to 64 entries, 128 bytes per name, 8192 bytes per value, and
 | `x-session-affinity` | `${session_id}` |
 | `x-opencode-session` | `${session_id}`; OpenCode Zen/Go pins a session to one upstream with it |
 | `x-session-parent-id` | `${parent_session_id}`; omitted for root sessions |
+| `session-id` | `${session_id}`; the ChatGPT sign-in route keys prompt-cache affinity on it |
+| `thread-id` | `${session_id}`; sent beside `session-id`, as Codex sends it |
 
 `${session_id}` and `${parent_session_id}` are expanded for each request.
 Templates, rather than resolved session IDs or environment values, are stored in
