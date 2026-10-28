@@ -44,6 +44,17 @@
     },
     "McpServerDefinition": {
       "properties": {
+        "always_load": {
+          "description": "On a model that loads deferred tools, every tool of the server is\nsent up front (client protocol 1.47.0).",
+          "type": "boolean"
+        },
+        "always_load_tools": {
+          "description": "Patterns over the server's own tool names (`*`, `?`): matching tools\nare sent up front (client protocol 1.47.0). No pattern may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "args": {
           "items": {
             "type": "string"
@@ -93,6 +104,10 @@
             "array",
             "null"
           ]
+        },
+        "instructions": {
+          "description": "Whether the server's `initialize` instructions are its summary in\ndeferred tool announcements (client protocol 1.47.0); absent reads\nas `true`.",
+          "type": "boolean"
         },
         "oauth": {
           "anyOf": [

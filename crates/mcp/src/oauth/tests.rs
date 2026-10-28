@@ -550,6 +550,9 @@ fn remote_config(url: String) -> McpServerConfig {
         scope: None,
         include_tools: None,
         exclude_tools: Vec::new(),
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     }
 }
 

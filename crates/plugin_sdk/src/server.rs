@@ -1233,6 +1233,7 @@ impl Server {
             version: self.version.clone(),
             capabilities,
             tools: self.handlers.tools(),
+            summary: None,
         })
     }
 

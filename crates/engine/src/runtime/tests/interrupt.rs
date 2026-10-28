@@ -299,6 +299,9 @@ fn hanging_mcp_server(cancel_file: &Path) -> LoadedMcpServer {
             scope: None,
             include_tools: None,
             exclude_tools: Vec::new(),
+            always_load: false,
+            always_load_tools: Vec::new(),
+            instructions: true,
         },
     }
 }

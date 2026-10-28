@@ -462,6 +462,9 @@ pub(crate) fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option
                 include_tools: None,
                 exclude_tools: Vec::new(),
                 scope: None,
+                always_load: false,
+                always_load_tools: Vec::new(),
+                instructions: true,
             },
         ),
     };
@@ -531,6 +534,9 @@ fn definition_to_wire(config: &McpServerConfig) -> McpServerDefinition {
         timeout_ms: config.timeout_ms,
         include_tools: config.include_tools.clone(),
         exclude_tools: config.exclude_tools.clone(),
+        always_load: config.always_load,
+        always_load_tools: config.always_load_tools.clone(),
+        instructions: config.instructions,
         scope: config.scope.map(|scope| match scope {
             cookie_agent_config::McpServerScope::Runtime => {
                 cookie_agent_protocol::McpServerScope::Runtime
@@ -577,6 +583,9 @@ pub(crate) fn definition_from_wire(definition: McpServerDefinition) -> McpServer
         }),
         include_tools: definition.include_tools,
         exclude_tools: definition.exclude_tools,
+        always_load: definition.always_load,
+        always_load_tools: definition.always_load_tools,
+        instructions: definition.instructions,
     }
 }
 

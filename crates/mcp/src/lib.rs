@@ -40,9 +40,9 @@ use cookie_agent_protocol::{
     ToolEmittedMessageRole, ToolHint,
 };
 use cookie_agent_runtime_api::{
-    PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolCompletion,
-    ToolConcurrency, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProgress,
-    ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedTool, ProgressSink, ProvidedToolSource, SessionToolContext, ToolCall,
+    ToolCompletion, ToolConcurrency, ToolError, ToolExecutionContext, ToolPreparationContext,
+    ToolProgress, ToolProvider, ToolSpec,
     reconnect::{ReconnectOutcome, ReconnectPolicy},
 };
 use process_wrap::tokio::CommandWrap;
@@ -111,6 +111,27 @@ pub struct McpServerStatus {
     /// order, with whether the filters left it out.
     pub server_tools: Vec<cookie_agent_protocol::McpServerTool>,
     pub auth_in_progress: bool,
+    /// The `instructions` the server sent when it last connected, cut to
+    /// [`MAX_INSTRUCTIONS_CHARS`]; `None` when it sent none or its
+    /// configuration sets `instructions = false`.
+    pub instructions: Option<String>,
+}
+
+/// The most characters of a server's `instructions` kept as its summary.
+pub const MAX_INSTRUCTIONS_CHARS: usize = 2_048;
+
+/// `instructions` cut to [`MAX_INSTRUCTIONS_CHARS`], marked when cut.
+fn bounded_instructions(instructions: &str) -> String {
+    const MARKER: &str = " [truncated]";
+    if instructions.chars().count() <= MAX_INSTRUCTIONS_CHARS {
+        return instructions.to_owned();
+    }
+    let mut cut = instructions
+        .chars()
+        .take(MAX_INSTRUCTIONS_CHARS - MARKER.len())
+        .collect::<String>();
+    cut.push_str(MARKER);
+    cut
 }
 
 #[derive(Clone)]
@@ -131,6 +152,8 @@ struct ServerRuntime {
     filtered_tools: AtomicUsize,
     /// The last listing, as [`McpServerStatus::server_tools`].
     server_tools: Mutex<Vec<cookie_agent_protocol::McpServerTool>>,
+    /// As [`McpServerStatus::instructions`].
+    instructions: Mutex<Option<String>>,
     list_generation: AtomicU64,
     publication: Mutex<()>,
     tool_refresh: Mutex<ToolRefreshDebounce>,
@@ -943,6 +966,13 @@ impl McpRegistry {
         Ok(())
     }
 
+    /// The server that publishes the tool `generated`.
+    fn publisher(&self, generated: &str) -> Option<Arc<ServerRuntime>> {
+        self.servers()
+            .into_iter()
+            .find(|server| server.publishes(generated))
+    }
+
     fn servers(&self) -> Vec<Arc<ServerRuntime>> {
         self.inner
             .servers
@@ -993,6 +1023,7 @@ impl ServerRuntime {
                 filtered_tools: 0,
                 server_tools: Vec::new(),
                 auth_in_progress: false,
+                instructions: None,
             }),
             name,
             sanitized_name,
@@ -1000,6 +1031,7 @@ impl ServerRuntime {
             tools: Mutex::new(Vec::new()),
             filtered_tools: AtomicUsize::new(0),
             server_tools: Mutex::new(Vec::new()),
+            instructions: Mutex::new(None),
             list_generation: AtomicU64::new(0),
             publication: Mutex::new(()),
             tool_refresh: Mutex::new(ToolRefreshDebounce::default()),
@@ -1097,6 +1129,11 @@ impl ServerRuntime {
             status.filtered_tools = self.filtered_tools.load(Ordering::Acquire);
             status.server_tools = self
                 .server_tools
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            status.instructions = self
+                .instructions
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
@@ -1269,6 +1306,15 @@ impl ServerRuntime {
                 .unwrap_or_else(|p| p.into_inner())
                 .retain(|_, owner| owner != &self.name);
         }
+    }
+
+    /// Whether this server publishes the tool `generated`.
+    fn publishes(&self, generated: &str) -> bool {
+        self.tools
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .any(|tool| tool.spec.name == generated)
     }
 
     fn raw_tool_name(&self, generated: &str) -> Option<String> {
@@ -1485,6 +1531,16 @@ impl ServerRuntime {
                 Ok(Ok(service)) => service,
             }
         };
+        // The server's instructions are its summary; each connection
+        // refreshes them.
+        *self.instructions.lock().unwrap_or_else(|p| p.into_inner()) = self
+            .loaded
+            .config
+            .instructions
+            .then(|| service.peer().peer_info())
+            .flatten()
+            .and_then(|info| info.instructions.as_deref().map(bounded_instructions))
+            .filter(|instructions| !instructions.trim().is_empty());
         let generation = self.next_list_generation();
         let tools = tokio::select! {
             result = tokio::time::timeout(timeout, service.peer().list_all_tools()) => result,
@@ -1707,6 +1763,7 @@ impl ServerRuntime {
             .map(|tool| cookie_agent_protocol::McpServerTool {
                 name: tool.name.to_string(),
                 filtered: !self.loaded.config.publishes_tool(tool.name.as_ref()),
+                always_load: self.loaded.config.always_loads_tool(tool.name.as_ref()),
             })
             .collect::<Vec<_>>();
         let converted = tools
@@ -1809,6 +1866,29 @@ impl ServerRuntime {
 impl ToolProvider for McpRegistry {
     fn provider_id(&self) -> &'static str {
         "mcp"
+    }
+
+    fn tool_source(&self, tool_name: &str) -> Option<ProvidedToolSource> {
+        self.publisher(tool_name)
+            .map(|server| ProvidedToolSource::Mcp {
+                server: server.name.clone(),
+            })
+    }
+
+    fn source_summary(&self, tool_name: &str) -> Option<String> {
+        self.publisher(tool_name)?
+            .instructions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn always_load(&self, tool_name: &str) -> bool {
+        self.publisher(tool_name).is_some_and(|server| {
+            server
+                .raw_tool_name(tool_name)
+                .is_some_and(|raw| server.loaded.config.always_loads_tool(&raw))
+        })
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

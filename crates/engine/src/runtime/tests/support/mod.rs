@@ -1748,6 +1748,7 @@ pub(crate) fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> P
         interception_timeout_ms: 2_000,
         startup_timeout_ms: 10_000,
         shutdown_grace_ms: 3_000,
+        always_load: false,
     }
 }
 
@@ -2355,6 +2356,9 @@ pub(crate) fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
             scope: None,
             include_tools: None,
             exclude_tools: Vec::new(),
+            always_load: false,
+            always_load_tools: Vec::new(),
+            instructions: true,
         },
     }
 }

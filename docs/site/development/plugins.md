@@ -156,7 +156,7 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":"1.24.0","engine_version":"0.3.0",
+  "protocol_version":"1.25.0","engine_version":"0.3.0",
   "features":["producer_messaging"],"interception_timeout_ms":2000}}
 ```
 
@@ -169,14 +169,14 @@ version, its features, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":"1.24.0","name":"issues","version":"1.2.0","features":[],
+  "protocol_version":"1.25.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":["run_*","tool_call_*"],
     "subscribe_bus":false,"publish_bus":false,
     "intercept":[{"hook":"tool_before_call","on_error":"block"}]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is a semver string, currently `1.24.0`
+The protocol version is a semver string, currently `1.25.0`
 (`PLUGIN_PROTOCOL_VERSION`, which the SDK re-exports). Each end reads the
 other's `protocol_version` from the raw JSON before anything else, and refuses
 an incompatible one with `unsupported_protocol` naming both versions: the
@@ -186,7 +186,9 @@ patch never matters (see [Compatibility](../reference/compatibility.md)). A
 different name also fails the start. No plugin feature is defined
 yet; the daemon ignores one it does not know and shows it in the plugin's
 status. Capabilities are fixed for the connection; `tools` is the runtime
-protocol's `RuntimeTools`. The SDK exposes what the handshake said about the
+protocol's `RuntimeTools`. An optional `summary` (since 1.25.0) says in a
+sentence or two what the plugin's tools are for, shown with them when they are
+[deferred](../reference/tools.md#deferred-tools) (see Tools below). The SDK exposes what the handshake said about the
 daemon to handlers as `PluginContext::daemon()`: its protocol version,
 `engine_version`, features, and interception timeout. Before
 `plugin/initialize` the SDK refuses every request with `not_initialized`.
@@ -301,6 +303,14 @@ are `fallback`). Two overrides of one name are both prefixed, with a
 diagnostic. Base-layer
 names, such as `skill`, are never taken. While a plugin is not connected its
 tools are not published.
+
+**Deferred tools.** On a model that loads
+[deferred tools](../reference/tools.md#deferred-tools), a plugin's tools are
+sent deferred: the model sees their names under the plugin's name, with the
+handshake's `summary` the first time they are announced (cut to 4 KiB and
+marked as the plugin author's text), and loads one with `tool_load` before
+calling it. `always_load = true` in the plugin's `[plugins.<name>]` table
+sends them up front instead.
 
 **Permissions.** A call is approved under the action its declaration names
 and the resource its preparation reports, like a runtime tool; the agent

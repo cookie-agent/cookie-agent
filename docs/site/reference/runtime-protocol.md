@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.10.0**
+The protocol version is a semver string, currently **1.11.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -208,6 +208,13 @@ runtime's whole new settings, which a runtime applies without reconnecting
 gets its MCP servers and ACP agents from the daemon's `[runtimes.<id>]` as a
 template does; a `cookie runtime serve` of this version no longer reads its
 own machine's `[runtimes.local]`.
+1.11.0 added, for [deferred tools](tools.md#deferred-tools), an MCP server
+report's optional `instructions` (what the server sent when it connected,
+at most 2,048 characters, absent when its configuration sets `instructions =
+false`) and a `server_tools` entry's `always_load: true` when the server's
+`always_load` or `always_load_tools` sends the tool up front. A report's
+`tools` lists the unfiltered `server_tools` entries' published names in the
+same order.
 
 ## Capabilities and instances
 

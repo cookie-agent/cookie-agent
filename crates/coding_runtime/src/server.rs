@@ -450,6 +450,7 @@ fn configured_reports(servers: &BTreeMap<String, LoadedMcpServer>) -> Vec<McpSer
             scope: Some(protocol::McpServerScope::Workspace),
             filtered_tools: None,
             server_tools: Vec::new(),
+            instructions: None,
         })
         .collect()
 }
@@ -1612,6 +1613,7 @@ fn mcp_report(status: McpServerStatus) -> McpServerReport {
         filtered_tools: (status.filtered_tools > 0)
             .then(|| u32::try_from(status.filtered_tools).unwrap_or(u32::MAX)),
         server_tools: status.server_tools,
+        instructions: status.instructions,
     }
 }
 

@@ -265,6 +265,13 @@
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
       "type": "string"
     },
+    "summary": {
+      "description": "What the plugin's tools are for, in a sentence or two: its summary in\ndeferred tool announcements (plugin protocol 1.25.0), cut to 4 KiB.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "tools": {
       "$ref": "#/$defs/RuntimeTools",
       "default": {

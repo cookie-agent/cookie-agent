@@ -37,6 +37,9 @@ pub(super) enum McpFormFocus {
     Cwd,
     IncludeTools,
     ExcludeTools,
+    AlwaysLoadTools,
+    AlwaysLoad,
+    Instructions,
     Enabled,
     Persist,
     Submit,
@@ -53,6 +56,9 @@ pub(super) struct McpForm {
     pub(super) cwd: InputState,
     pub(super) include_tools: InputState,
     pub(super) exclude_tools: InputState,
+    pub(super) always_load_tools: InputState,
+    pub(super) always_load: bool,
+    pub(super) instructions: bool,
     pub(super) enabled: bool,
     pub(super) persist: PersistChoice,
     /// The runtime other than `global` whose table holds the server; `None`
@@ -81,6 +87,9 @@ impl McpForm {
             cwd: InputState::default(),
             include_tools: InputState::default(),
             exclude_tools: InputState::default(),
+            always_load_tools: InputState::default(),
+            always_load: false,
+            instructions: true,
             enabled: true,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
@@ -103,6 +112,9 @@ impl McpForm {
             cwd: json_input(&fields.cwd),
             include_tools: json_input(&fields.include_tools),
             exclude_tools: json_input(&fields.exclude_tools),
+            always_load_tools: json_input(&fields.always_load_tools),
+            always_load: fields.always_load,
+            instructions: fields.instructions,
             enabled: fields.enabled,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
@@ -111,7 +123,7 @@ impl McpForm {
     }
 
     pub(super) fn move_focus(&mut self, backward: bool) {
-        const STDIO_FIELDS: [McpFormFocus; 11] = [
+        const STDIO_FIELDS: [McpFormFocus; 14] = [
             McpFormFocus::Name,
             McpFormFocus::Transport,
             McpFormFocus::Endpoint,
@@ -120,17 +132,23 @@ impl McpForm {
             McpFormFocus::Cwd,
             McpFormFocus::IncludeTools,
             McpFormFocus::ExcludeTools,
+            McpFormFocus::AlwaysLoadTools,
+            McpFormFocus::AlwaysLoad,
+            McpFormFocus::Instructions,
             McpFormFocus::Enabled,
             McpFormFocus::Persist,
             McpFormFocus::Submit,
         ];
-        const HTTP_FIELDS: [McpFormFocus; 9] = [
+        const HTTP_FIELDS: [McpFormFocus; 12] = [
             McpFormFocus::Name,
             McpFormFocus::Transport,
             McpFormFocus::Endpoint,
             McpFormFocus::Extras,
             McpFormFocus::IncludeTools,
             McpFormFocus::ExcludeTools,
+            McpFormFocus::AlwaysLoadTools,
+            McpFormFocus::AlwaysLoad,
+            McpFormFocus::Instructions,
             McpFormFocus::Enabled,
             McpFormFocus::Persist,
             McpFormFocus::Submit,
@@ -163,6 +181,8 @@ impl McpForm {
                 });
             }
             McpFormFocus::Enabled => self.enabled = !self.enabled,
+            McpFormFocus::AlwaysLoad => self.always_load = !self.always_load,
+            McpFormFocus::Instructions => self.instructions = !self.instructions,
             // A runtime's server is in its table already; the row says how
             // many copies run instead.
             McpFormFocus::Persist if self.runtime.is_some() => self.shared = !self.shared,
@@ -185,6 +205,7 @@ impl McpForm {
             McpFormFocus::Cwd => Some(&mut self.cwd),
             McpFormFocus::IncludeTools => Some(&mut self.include_tools),
             McpFormFocus::ExcludeTools => Some(&mut self.exclude_tools),
+            McpFormFocus::AlwaysLoadTools => Some(&mut self.always_load_tools),
             _ => None,
         }
     }
@@ -200,6 +221,9 @@ impl McpForm {
             enabled: self.enabled,
             include_tools: self.include_tools.as_str().to_owned(),
             exclude_tools: self.exclude_tools.as_str().to_owned(),
+            always_load: self.always_load,
+            always_load_tools: self.always_load_tools.as_str().to_owned(),
+            instructions: self.instructions,
         }
         .definition(&self.base)
         .map(|(name, mut definition)| {
@@ -571,6 +595,21 @@ fn render_mcp_form(frame: &mut Frame, area: Rect, form: &McpForm, theme: &Theme)
             McpFormFocus::ExcludeTools,
             "Exclude tools (patterns, comma-separated)",
             form.exclude_tools.as_str().to_owned(),
+        ),
+        (
+            McpFormFocus::AlwaysLoadTools,
+            "Always load tools (patterns sent up front on models that load tools on demand)",
+            form.always_load_tools.as_str().to_owned(),
+        ),
+        (
+            McpFormFocus::AlwaysLoad,
+            "Always load every tool",
+            form.always_load.to_string(),
+        ),
+        (
+            McpFormFocus::Instructions,
+            "Show the server's instructions with its tools",
+            form.instructions.to_string(),
         ),
         (McpFormFocus::Enabled, "Enabled", form.enabled.to_string()),
         if form.runtime.is_some() {

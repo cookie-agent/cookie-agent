@@ -47,6 +47,7 @@ them.
 | `interception_timeout_ms` | integer | `2000` | How long one hook may take. |
 | `startup_timeout_ms` | integer | `10000` | How long the plugin may take to start and answer `plugin/initialize`. |
 | `shutdown_grace_ms` | integer | `3000` | How long the plugin may take to exit before it is killed. |
+| `always_load` | boolean | `false` | On a model that loads [deferred tools](../reference/tools.md#deferred-tools), send the plugin's tools up front rather than deferred. |
 
 Plugin entries reject unknown fields. `command` must name a program,
 `cwd` must be nonempty when set, and every timeout must be greater than zero.

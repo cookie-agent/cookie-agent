@@ -2295,6 +2295,22 @@ impl RemoteToolProvider {
     }
 }
 
+impl RemoteToolProvider {
+    /// `read` of the MCP server whose report publishes `tool_name`.
+    fn publisher<T>(&self, tool_name: &str, read: impl FnOnce(&McpServerReport) -> T) -> Option<T> {
+        let mcp = lock(&self.client.inner.mcp);
+        let servers = match self.instance.as_deref() {
+            Some(instance) => mcp.instances.get(instance)?.servers.as_deref()?,
+            None if self.composition_source.is_some() => mcp.runtime.as_slice(),
+            None => return None,
+        };
+        servers
+            .iter()
+            .find(|server| server.tools.iter().any(|tool| tool == tool_name))
+            .map(read)
+    }
+}
+
 #[async_trait]
 impl ToolProvider for RemoteToolProvider {
     fn provider_id(&self) -> &'static str {
@@ -2322,18 +2338,32 @@ impl ToolProvider for RemoteToolProvider {
     /// An MCP server's tool, by the instance's last MCP report, or the
     /// runtime's for its own tools.
     fn tool_source(&self, tool_name: &str) -> Option<cookie_agent_runtime_api::ProvidedToolSource> {
-        let mcp = lock(&self.client.inner.mcp);
-        let servers = match self.instance.as_deref() {
-            Some(instance) => mcp.instances.get(instance)?.servers.as_deref()?,
-            None if self.composition_source.is_some() => mcp.runtime.as_slice(),
-            None => return None,
-        };
-        servers
-            .iter()
-            .find(|server| server.tools.iter().any(|tool| tool == tool_name))
-            .map(|server| cookie_agent_runtime_api::ProvidedToolSource::Mcp {
+        self.publisher(tool_name, |server| {
+            cookie_agent_runtime_api::ProvidedToolSource::Mcp {
                 server: server.name.clone(),
-            })
+            }
+        })
+    }
+
+    fn source_summary(&self, tool_name: &str) -> Option<String> {
+        self.publisher(tool_name, |server| server.instructions.clone())
+            .flatten()
+    }
+
+    /// The report's `server_tools` lists every tool the server lists, and
+    /// `tools` the published ones, the unfiltered entries in the same order.
+    fn always_load(&self, tool_name: &str) -> bool {
+        self.publisher(tool_name, |server| {
+            let index = server.tools.iter().position(|tool| tool == tool_name)?;
+            server
+                .server_tools
+                .iter()
+                .filter(|tool| !tool.filtered)
+                .nth(index)
+                .map(|tool| tool.always_load)
+        })
+        .flatten()
+        .unwrap_or(false)
     }
 
     fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError>

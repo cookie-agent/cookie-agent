@@ -2121,6 +2121,28 @@ pub struct McpServerDefinition {
     /// none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<crate::runtime_protocol::McpServerScope>,
+    /// On a model that loads deferred tools, every tool of the server is
+    /// sent up front (client protocol 1.47.0).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub always_load: bool,
+    /// Patterns over the server's own tool names (`*`, `?`): matching tools
+    /// are sent up front (client protocol 1.47.0). No pattern may be empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub always_load_tools: Vec<String>,
+    /// Whether the server's `initialize` instructions are its summary in
+    /// deferred tool announcements (client protocol 1.47.0); absent reads
+    /// as `true`.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub instructions: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

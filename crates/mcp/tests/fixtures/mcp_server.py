@@ -55,6 +55,7 @@ for line in sys.stdin:
             "protocolVersion": "2025-11-25",
             "capabilities": {"tools": {"listChanged": True}},
             "serverInfo": {"name": "cookie-test-mcp", "version": "1.0.0"},
+            "instructions": "Echo text back.",
         })
     elif method == "tools/list":
         time.sleep(int(os.environ.get("MCP_FIXTURE_LIST_DELAY_MS", "0")) / 1000)

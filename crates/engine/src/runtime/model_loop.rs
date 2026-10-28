@@ -1144,6 +1144,7 @@ impl Engine {
                 fallback_entry = 0;
             }
             let policy = turn_policy.as_ref().unwrap_or(&active.policy);
+            self.reconnect_loaded_mcp(active.session).await;
             let mut published_tools = self.published_tool_definitions(active.session, policy)?;
             // A round start and an announcement land before the request, so
             // the history the request is built from holds them.

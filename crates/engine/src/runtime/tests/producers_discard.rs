@@ -905,6 +905,7 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
+            always_load: false,
         },
     );
     drop(fixture.engine);

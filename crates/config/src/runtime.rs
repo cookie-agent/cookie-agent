@@ -48,6 +48,10 @@ pub struct PluginConfig {
     pub startup_timeout_ms: u64,
     #[serde(default = "default_plugin_shutdown_grace_ms")]
     pub shutdown_grace_ms: u64,
+    /// On a model that loads deferred tools, the plugin's tools are sent up
+    /// front rather than deferred.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub always_load: bool,
 }
 
 impl PluginConfig {
@@ -113,6 +117,28 @@ pub struct McpServerConfig {
     /// `include_tools`: a matching tool is not published.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_tools: Vec<String>,
+    /// On a model that loads deferred tools, every tool of the server is
+    /// sent up front rather than deferred.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub always_load: bool,
+    /// Patterns over the server's own tool names, as `include_tools` takes
+    /// them: matching tools are sent up front rather than deferred.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub always_load_tools: Vec<String>,
+    /// Whether the `instructions` the server sends when it connects are its
+    /// summary in deferred tool announcements; `false` leaves them out.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub instructions: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_true(value: &bool) -> bool {
+    *value
 }
 
 /// `scope` of a runtime template's MCP server.
@@ -269,6 +295,18 @@ impl McpServerConfig {
             && !self.exclude_tools.iter().any(matches)
     }
 
+    /// Whether the tool the server lists as `tool` is sent up front on a
+    /// model that loads deferred tools: `always_load`, or a matching
+    /// `always_load_tools` pattern.
+    #[must_use]
+    pub fn always_loads_tool(&self, tool: &str) -> bool {
+        self.always_load
+            || self
+                .always_load_tools
+                .iter()
+                .any(|pattern| crate::simple_wildcard_match(pattern, tool))
+    }
+
     pub fn validate(&self, name: &str) -> Result<(), ConfigError> {
         if self.include_tools.as_ref().is_some_and(Vec::is_empty) {
             return Err(ConfigError::McpServer {
@@ -283,11 +321,14 @@ impl McpServerConfig {
             .iter()
             .flatten()
             .chain(&self.exclude_tools)
+            .chain(&self.always_load_tools)
             .any(String::is_empty)
         {
             return Err(ConfigError::McpServer {
                 server: name.to_owned(),
-                reason: "`include_tools` and `exclude_tools` patterns may not be empty".into(),
+                reason: "`include_tools`, `exclude_tools`, and `always_load_tools` patterns \
+                         may not be empty"
+                    .into(),
             });
         }
         let invalid_name =

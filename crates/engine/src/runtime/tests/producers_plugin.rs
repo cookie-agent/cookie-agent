@@ -161,6 +161,7 @@ async fn installed_plugin_producer_callbacks_are_durable_and_drive_a_model_turn(
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
+            always_load: false,
         },
     );
     drop(fixture.engine);
@@ -381,6 +382,7 @@ async fn a_plugin_runs_named_producers_each_with_its_own_keys() {
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
+            always_load: false,
         },
     );
     drop(fixture.engine);

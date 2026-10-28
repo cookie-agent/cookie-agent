@@ -64,6 +64,13 @@
             "null"
           ]
         },
+        "instructions": {
+          "description": "The `instructions` the server sent when it connected, at most 2,048\ncharacters (runtime protocol 1.11.0): its summary in deferred tool\nannouncements. Absent when it sent none, or when its configuration\nsets `instructions = false`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "message": {
           "default": null,
           "description": "Why the server failed, or what it is doing.",
@@ -98,7 +105,7 @@
         },
         "tools": {
           "default": [],
-          "description": "The names of its tools as the runtime declares them.",
+          "description": "The names of its tools as the runtime declares them: one for each\nunfiltered entry of `server_tools`, in the same order.",
           "items": {
             "type": "string"
           },
@@ -151,6 +158,10 @@
     "McpServerTool": {
       "description": "One tool an MCP server lists, by the server's own name: the name its\n`include_tools` and `exclude_tools` match (runtime protocol 1.9.0, client\nprotocol 1.36.0).",
       "properties": {
+        "always_load": {
+          "description": "The server's `always_load` or `always_load_tools` sends it up front\non a model that loads deferred tools (runtime protocol 1.11.0, client\nprotocol 1.47.0).",
+          "type": "boolean"
+        },
         "filtered": {
           "description": "The server's filters left it out, so it is not offered.",
           "type": "boolean"

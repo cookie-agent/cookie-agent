@@ -226,6 +226,9 @@ async fn mcp_management_is_reachable_through_protocol() {
         include_tools: None,
         exclude_tools: Vec::new(),
         scope: None,
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     };
     client
         .add_mcp_server(McpServerAddParams {
@@ -1295,6 +1298,9 @@ async fn mcp_connection_failures_reach_clients_viewing_affected_sessions() {
                     scope: None,
                     include_tools: None,
                     exclude_tools: Vec::new(),
+                    always_load: false,
+                    always_load_tools: Vec::new(),
+                    instructions: true,
                 },
             },
         )]),

@@ -791,6 +791,8 @@ pub(crate) fn mcp_form(
     let on_runtime = edit.table_runtime().cloned();
     let transport = RwSignal::new(fields.transport);
     let enabled = RwSignal::new(fields.enabled);
+    let always_load = RwSignal::new(fields.always_load);
+    let instructions = RwSignal::new(fields.instructions);
     let extras = RwSignal::new(fields.extras.clone());
     // One copy for the runtime, shared by its workspaces.
     let shared = RwSignal::new(
@@ -811,6 +813,9 @@ pub(crate) fn mcp_form(
             enabled: enabled.get_untracked(),
             include_tools: field_value("mcp-include-tools"),
             exclude_tools: field_value("mcp-exclude-tools"),
+            always_load: always_load.get_untracked(),
+            always_load_tools: field_value("mcp-always-load-tools"),
+            instructions: instructions.get_untracked(),
         };
         fields.transport = transport.get_untracked();
         if fields.transport == McpTransport::Http {
@@ -889,6 +894,19 @@ pub(crate) fn mcp_form(
         <label class="flex flex-col gap-1 text-sm">
             <span>"Exclude tools"</span>
             <input type="text" id="mcp-exclude-tools" class=FIELD value=fields.exclude_tools.clone() />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Always load tools"</span>
+            <input type="text" id="mcp-always-load-tools" class=FIELD value=fields.always_load_tools.clone() />
+            <span class=NOTE>"Tools sent up front on models that load tools on demand, as patterns"</span>
+        </label>
+        <label class="flex min-h-11 items-center gap-2 text-sm">
+            <input type="checkbox" id="mcp-always-load" class="h-5 w-5" prop:checked=move || always_load.get() on:change=move |_| always_load.update(|on| *on = !*on) />
+            <span>"Always load every tool"</span>
+        </label>
+        <label class="flex min-h-11 items-center gap-2 text-sm">
+            <input type="checkbox" id="mcp-instructions" class="h-5 w-5" prop:checked=move || instructions.get() on:change=move |_| instructions.update(|on| *on = !*on) />
+            <span>"Show the server's instructions with its tools"</span>
         </label>
         <label class="flex min-h-11 items-center gap-2 text-sm">
             <input type="checkbox" id="mcp-enabled" class="h-5 w-5" prop:checked=move || enabled.get() on:change=move |_| enabled.update(|on| *on = !*on) />

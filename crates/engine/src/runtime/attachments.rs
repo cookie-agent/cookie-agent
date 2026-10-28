@@ -375,6 +375,54 @@ impl Engine {
         }
     }
 
+    /// Reconnects the failed MCP servers of `session`'s attachments that a
+    /// tool it loaded comes from, and waits for the attempts (deferred tools
+    /// in cookie, section 11), so a loaded tool does not leave the request
+    /// for a server that would come back. Servers nobody loaded from are
+    /// left to the session's own retries.
+    pub(crate) async fn reconnect_loaded_mcp(&self, session: SessionId) {
+        let Ok(stored) = self.inner.store.get(session) else {
+            return;
+        };
+        let fold = stored.log.deferral();
+        drop(stored);
+        // A loaded tool is announced under its server's name.
+        let servers = fold
+            .announced
+            .iter()
+            .filter(|(_, group)| group.tools.iter().any(|tool| fold.loaded.contains(tool)))
+            .map(|(name, _)| name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if servers.is_empty() {
+            return;
+        }
+        for attachment in self.session_runtimes(session).unwrap_or_default() {
+            if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
+                for status in self.inner.mcp.statuses() {
+                    if status.state == crate::McpServerState::Failed
+                        && servers.contains(status.server.as_str())
+                    {
+                        let _ = self.inner.mcp.reconnect_server(&status.server).await;
+                    }
+                }
+            } else if let Some(connection) = self
+                .inner
+                .runtimes
+                .instance(&attachment)
+                .and_then(|instance| instance.connection())
+            {
+                for server in connection.mcp_servers() {
+                    if server.report.state
+                        == cookie_agent_runtime_api::protocol::McpServerState::Failed
+                        && servers.contains(server.report.name.as_str())
+                    {
+                        let _ = connection.reconnect_mcp(&server.report.name).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Retries the global runtime's failed MCP servers (see
     /// [`Self::connect_session`]).
     fn retry_global_mcp(&self) {

@@ -156,6 +156,37 @@ where space toggles one, and in the web client's Machines view a tool is a
 button. Toggling edits the filters by the tool's exact name and never
 rewrites a pattern.
 
+### Deferred tools: sent up front, and the server's summary
+
+On a model that loads [deferred tools](../reference/tools.md#deferred-tools),
+an MCP server's tools are sent deferred: the model sees their names, under
+the server's name, and loads one with `tool_load` before calling it. Two keys
+send tools up front instead, wherever a server is configured:
+
+```toml
+[mcp.servers.my_chrome]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest"]
+always_load_tools = ["browser_snapshot", "tab_*"]   # just these up front
+# always_load = true                                 # every tool up front
+# instructions = false                               # no summary
+```
+
+`always_load = true` sends every tool of the server up front;
+`always_load_tools` takes patterns over the server's own tool names, as
+`include_tools` does, and sends the matching tools up front. An empty pattern
+is a configuration error. A tool joins the up-front tools at the session's
+next compaction, as any tool that arrives mid-round does.
+
+The `instructions` a server sends when it connects are its summary: the
+model sees them, marked as the server author's text rather than the user's,
+with the server's tools when they are first announced. They are cut to
+2,048 characters. `instructions = false` leaves them out.
+
+When a session has loaded a tool of a server that has since failed, the
+daemon reconnects that server before the session's next request, and waits
+for the attempt, so the tool stays callable when the server comes back.
+
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers
 are enabled by default. `timeout_ms` bounds connection, listing, and calls and
@@ -333,8 +364,9 @@ definitions of global-runtime servers only; a coding runtime's servers come
 from its runtime template. Add/edit forms accept either a command, JSON string array
 of arguments, JSON string object of environment variables, and optional working
 directory, or a URL plus a JSON string object of headers, and for both the
-`include_tools` and `exclude_tools` patterns, comma-separated (an empty
-include field publishes every tool). The list shows a server's tool count
+`include_tools`, `exclude_tools`, and `always_load_tools` patterns,
+comma-separated (an empty include field publishes every tool), with
+`always_load` and `instructions` toggles. The list shows a server's tool count
 with how many its filters left out. Choose
 `runtime only` or `user config.toml` before submitting.
 Edits do not rename a server; remove the old name and add the new one instead.
@@ -441,6 +473,9 @@ described in [config.toml](../engine/configuration.md).
 | `timeout_ms` | integer | `30000` | Positive timeout for connect, list, and call operations. |
 | `include_tools` | array of strings | every tool | Patterns (`*`, `?`) over the server's own tool names; only matching tools are published. Present, it may not be empty. See [choosing a server's tools](#choosing-a-servers-tools). |
 | `exclude_tools` | array of strings | empty | Patterns over the server's own tool names, applied after `include_tools`: matching tools are not published. |
+| `always_load` | boolean | `false` | On a model that loads deferred tools, send every tool of the server up front. See [deferred tools](#deferred-tools-sent-up-front-and-the-servers-summary). |
+| `always_load_tools` | array of strings | empty | Patterns over the server's own tool names: matching tools are sent up front on a model that loads deferred tools. No pattern may be empty. |
+| `instructions` | boolean | `true` | Whether the `instructions` the server sends when it connects are its summary in deferred tool announcements. |
 
 ## Runtime layers and persistence
 

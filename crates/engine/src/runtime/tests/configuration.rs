@@ -381,6 +381,9 @@ async fn persisting_an_mcp_server_writes_and_applies_the_configuration() {
         include_tools: None,
         exclude_tools: Vec::new(),
         scope: None,
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     };
     fixture
         .engine
@@ -457,6 +460,9 @@ fn runtime_server(command: &str) -> cookie_agent_protocol::McpServerDefinition {
         include_tools: None,
         exclude_tools: Vec::new(),
         scope: Some(cookie_agent_protocol::McpServerScope::Runtime),
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     }
 }
 

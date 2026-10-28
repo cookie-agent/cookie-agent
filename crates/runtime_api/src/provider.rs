@@ -141,6 +141,20 @@ pub trait ToolProvider: Send + Sync {
         None
     }
 
+    /// The summary of the source of `tool_name`, written by its author: an
+    /// MCP server's `initialize` instructions, a plugin's declared summary.
+    /// Announcements show it, marked untrusted, under the source's group.
+    fn source_summary(&self, _tool_name: &str) -> Option<String> {
+        None
+    }
+
+    /// Whether `tool_name` is sent up front on a model that loads deferred
+    /// tools, whatever the deferral policy says: its source's
+    /// `always_load` (deferred tools in cookie, section 10).
+    fn always_load(&self, _tool_name: &str) -> bool {
+        false
+    }
+
     /// Claims a currently undiscovered dynamic tool, allowing preparation to make it available.
     fn permission_for_unlisted_tool(
         &self,

@@ -22,8 +22,8 @@ use cookie_agent_runtime_api::{
 };
 
 use super::{
-    McpRegistry, McpRegistryOptions, McpServerFailure, McpServerState, TOOL_LIST_DEBOUNCE,
-    convert_tool, sanitize_name,
+    MAX_INSTRUCTIONS_CHARS, McpRegistry, McpRegistryOptions, McpServerFailure, McpServerState,
+    TOOL_LIST_DEBOUNCE, bounded_instructions, convert_tool, sanitize_name,
 };
 
 #[cfg(unix)]
@@ -98,6 +98,9 @@ fn fixture_config() -> McpServerConfig {
         scope: None,
         include_tools: None,
         exclude_tools: Vec::new(),
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     }
 }
 
@@ -1716,10 +1719,12 @@ fn a_refreshed_listing_is_filtered_and_its_count_reported() {
             cookie_agent_protocol::McpServerTool {
                 name: "browser_click".into(),
                 filtered: false,
+                always_load: false,
             },
             cookie_agent_protocol::McpServerTool {
                 name: "browser_install".into(),
                 filtered: true,
+                always_load: false,
             },
         ]
     );
@@ -1753,4 +1758,60 @@ async fn stdio_listing_and_list_changed_refresh_are_filtered() {
     .expect("filtered list_changed refresh");
     assert_eq!(tool_names(&registry), ["fixture_echo_text"]);
     registry.shutdown().await;
+}
+
+#[test]
+fn always_loaded_tools_are_marked_and_the_registry_names_their_server() {
+    let mut config = fixture_config();
+    config.always_load_tools = vec!["tab_*".into()];
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "my_chrome".to_owned(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        McpRegistryOptions::default(),
+    )
+    .expect("MCP registry");
+    let server = registry.server("my_chrome").expect("server");
+    server.set_status(McpServerState::Connected, None);
+    publish_listing(&registry, "my_chrome", &["browser_click", "tab_new"]);
+    *server.instructions.lock().unwrap() = Some("Snapshot first.".into());
+    server.set_status(McpServerState::Connected, None);
+    let status = &registry.statuses()[0];
+    assert_eq!(
+        status
+            .server_tools
+            .iter()
+            .map(|tool| (tool.name.as_str(), tool.always_load))
+            .collect::<Vec<_>>(),
+        [("browser_click", false), ("tab_new", true)]
+    );
+    assert_eq!(status.instructions.as_deref(), Some("Snapshot first."));
+    assert_eq!(
+        registry.tool_source("my_chrome_tab_new"),
+        Some(cookie_agent_runtime_api::ProvidedToolSource::Mcp {
+            server: "my_chrome".into()
+        })
+    );
+    assert!(registry.always_load("my_chrome_tab_new"));
+    assert!(!registry.always_load("my_chrome_browser_click"));
+    assert_eq!(
+        registry
+            .source_summary("my_chrome_browser_click")
+            .as_deref(),
+        Some("Snapshot first.")
+    );
+    assert_eq!(registry.tool_source("unknown"), None);
+}
+
+#[test]
+fn long_instructions_are_cut_and_marked() {
+    let long = "é".repeat(MAX_INSTRUCTIONS_CHARS + 10);
+    let cut = bounded_instructions(&long);
+    assert_eq!(cut.chars().count(), MAX_INSTRUCTIONS_CHARS);
+    assert!(cut.ends_with(" [truncated]"));
+    assert_eq!(bounded_instructions("short"), "short");
 }

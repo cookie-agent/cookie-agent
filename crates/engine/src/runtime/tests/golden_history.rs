@@ -1078,6 +1078,7 @@ fn reference_plugin() -> cookie_agent_config::PluginConfig {
         interception_timeout_ms: 10_000,
         startup_timeout_ms: 10_000,
         shutdown_grace_ms: 3_000,
+        always_load: false,
     }
 }
 

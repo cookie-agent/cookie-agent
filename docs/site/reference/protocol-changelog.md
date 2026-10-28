@@ -5,6 +5,20 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.47.0
+
+- MCP server definitions (`mcp.server.*`) take `always_load`,
+  `always_load_tools` (patterns over the server's own tool names, none
+  empty), and `instructions` (absent reads as `true`), for
+  [deferred tools](../specs/deferred-tools-cookie.md) section 10: tools sent
+  up front, and whether the server's `initialize` instructions are its
+  summary. A `server_tools` entry has `always_load: true` for a tool sent up
+  front. Runtime protocol 1.11.0 carries the instructions and the flag in
+  MCP reports.
+- Plugin protocol 1.25.0: the initialize result's optional `summary`, what
+  the plugin's tools are for, shown with them in deferred tool
+  announcements.
+
 ## 1.46.0
 
 - `ConfigStatus` has an optional `deferred_tools`, a list of

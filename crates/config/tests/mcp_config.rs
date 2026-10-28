@@ -117,6 +117,9 @@ fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
         scope: None,
         include_tools: Some(vec!["browser_*".into()]),
         exclude_tools: vec!["browser_install".into()],
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     };
     let original = ConfigTree::read(Some(directory.path())).expect("read the tree");
     let mut candidate = original.clone();
@@ -150,6 +153,9 @@ fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
         scope: None,
         include_tools: None,
         exclude_tools: Vec::new(),
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     };
     let mut candidate = ConfigTree::read(Some(directory.path())).expect("read the tree");
     candidate
@@ -184,6 +190,32 @@ fn tool_filters_load_and_decide_which_listed_tools_are_published() {
 }
 
 #[test]
+fn always_load_keys_decide_which_tools_are_sent_up_front() {
+    let directory = root(
+        "[mcp.servers.my_chrome]\nurl = \"https://example.test/mcp\"\n\
+         always_load_tools = [\"tab_*\"]\ninstructions = false\n\
+         [mcp.servers.docs]\ncommand = \"docs-mcp\"\nalways_load = true\n",
+    );
+    let loaded = load_from_user_root(Some(directory.path())).expect("always_load");
+    let chrome = &loaded.mcp_servers["my_chrome"].config;
+    assert!(chrome.always_loads_tool("tab_new"));
+    assert!(!chrome.always_loads_tool("browser_click"));
+    assert!(!chrome.instructions);
+    assert!(
+        loaded.mcp_servers["docs"]
+            .config
+            .always_loads_tool("anything")
+    );
+    assert!(loaded.mcp_servers["docs"].config.instructions);
+    let directory = root("[mcp.servers.bad]\ncommand = \"server\"\nalways_load_tools = [\"\"]\n");
+    let error = load_from_user_root(Some(directory.path())).expect_err("empty pattern");
+    assert!(
+        matches!(&error, ConfigError::McpServer { reason, .. } if reason.contains("patterns may not be empty")),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn absent_filters_publish_every_tool_and_stay_absent_when_written() {
     let directory = root("[mcp.servers.docs]\ncommand = \"docs-mcp\"\n");
     let loaded = load_from_user_root(Some(directory.path())).expect("no filters");
@@ -192,6 +224,9 @@ fn absent_filters_publish_every_tool_and_stay_absent_when_written() {
     let table = toml::Value::try_from(config).expect("table");
     assert!(table.get("include_tools").is_none());
     assert!(table.get("exclude_tools").is_none());
+    assert!(table.get("always_load").is_none());
+    assert!(table.get("always_load_tools").is_none());
+    assert!(table.get("instructions").is_none());
 }
 
 #[test]

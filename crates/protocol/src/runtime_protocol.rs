@@ -365,7 +365,8 @@ pub struct McpServerReport {
     /// Why the server failed, or what it is doing.
     #[serde(default)]
     pub message: Option<String>,
-    /// The names of its tools as the runtime declares them.
+    /// The names of its tools as the runtime declares them: one for each
+    /// unfiltered entry of `server_tools`, in the same order.
     #[serde(default)]
     pub tools: Vec<String>,
     /// Where the runtime hosts the server (runtime protocol 1.5.0); absent
@@ -382,6 +383,12 @@ pub struct McpServerReport {
     /// from older runtimes and while the server has listed nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub server_tools: Vec<McpServerTool>,
+    /// The `instructions` the server sent when it connected, at most 2,048
+    /// characters (runtime protocol 1.11.0): its summary in deferred tool
+    /// announcements. Absent when it sent none, or when its configuration
+    /// sets `instructions = false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// One tool an MCP server lists, by the server's own name: the name its
@@ -393,6 +400,11 @@ pub struct McpServerTool {
     /// The server's filters left it out, so it is not offered.
     #[serde(default, skip_serializing_if = "is_false")]
     pub filtered: bool,
+    /// The server's `always_load` or `always_load_tools` sends it up front
+    /// on a model that loads deferred tools (runtime protocol 1.11.0, client
+    /// protocol 1.47.0).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub always_load: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

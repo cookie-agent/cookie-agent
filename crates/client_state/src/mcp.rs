@@ -76,6 +76,12 @@ pub struct McpFields {
     pub include_tools: String,
     /// The `exclude_tools` patterns, comma-separated.
     pub exclude_tools: String,
+    /// `always_load`: every tool up front on a model that defers tools.
+    pub always_load: bool,
+    /// The `always_load_tools` patterns, comma-separated.
+    pub always_load_tools: String,
+    /// `instructions`: the server's instructions are its summary.
+    pub instructions: bool,
 }
 
 impl McpFields {
@@ -91,6 +97,9 @@ impl McpFields {
             enabled: true,
             include_tools: String::new(),
             exclude_tools: String::new(),
+            always_load: false,
+            always_load_tools: String::new(),
+            instructions: true,
         }
     }
 
@@ -128,6 +137,9 @@ impl McpFields {
                 .unwrap_or_default()
                 .join(", "),
             exclude_tools: server.definition.exclude_tools.join(", "),
+            always_load: server.definition.always_load,
+            always_load_tools: server.definition.always_load_tools.join(", "),
+            instructions: server.definition.instructions,
         }
     }
 
@@ -159,6 +171,9 @@ impl McpFields {
         let include = tool_patterns(&self.include_tools);
         definition.include_tools = (!include.is_empty()).then_some(include);
         definition.exclude_tools = tool_patterns(&self.exclude_tools);
+        definition.always_load = self.always_load;
+        definition.always_load_tools = tool_patterns(&self.always_load_tools);
+        definition.instructions = self.instructions;
         match self.transport {
             McpTransport::Stdio => {
                 definition.command = Some(endpoint);
@@ -210,6 +225,9 @@ pub fn new_definition() -> McpServerDefinition {
         include_tools: None,
         exclude_tools: Vec::new(),
         scope: None,
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     }
 }
 
@@ -688,6 +706,9 @@ mod tests {
                 include_tools: None,
                 exclude_tools: Vec::new(),
                 scope: None,
+                always_load: false,
+                always_load_tools: Vec::new(),
+                instructions: true,
             },
             state,
             tool_count: 0,
@@ -966,6 +987,22 @@ mod tests {
     }
 
     #[test]
+    fn a_form_edits_what_is_sent_up_front_and_the_instructions_toggle() {
+        let mut fields = McpFields::add();
+        fields.name = "my_chrome".into();
+        fields.endpoint = "chrome-mcp".into();
+        fields.always_load_tools = " tab_*, ".into();
+        fields.instructions = false;
+        let (_, definition) = fields.definition(&new_definition()).expect("always load");
+        assert_eq!(definition.always_load_tools, ["tab_*"]);
+        assert!(!definition.always_load);
+        assert!(!definition.instructions);
+        fields.always_load = true;
+        let (_, definition) = fields.definition(&new_definition()).expect("always load");
+        assert!(definition.always_load);
+    }
+
+    #[test]
     fn a_form_edits_the_tool_filters_as_comma_separated_patterns() {
         let mut fields = McpFields::add();
         fields.name = "my_chrome".into();
@@ -1018,6 +1055,7 @@ mod tests {
         let tool = |name: &str, filtered| cookie_agent_protocol::McpServerTool {
             name: name.into(),
             filtered,
+            always_load: false,
         };
         browser.server_tools = vec![
             tool("click", false),

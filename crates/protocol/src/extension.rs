@@ -205,6 +205,10 @@ pub struct ExtensionInitializeResult {
     /// messages.
     #[serde(default)]
     pub tools: crate::runtime_protocol::RuntimeTools,
+    /// What the plugin's tools are for, in a sentence or two: its summary in
+    /// deferred tool announcements (plugin protocol 1.25.0), cut to 4 KiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

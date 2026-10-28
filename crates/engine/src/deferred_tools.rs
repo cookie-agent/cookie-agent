@@ -34,7 +34,7 @@ pub(crate) fn policy_defers(source: &SourcedProvider, tool: &str) -> bool {
     matches!(
         source.provider.tool_source(tool),
         Some(ProvidedToolSource::Mcp { .. } | ProvidedToolSource::Plugin { .. })
-    )
+    ) && !source.provider.always_load(tool)
 }
 
 /// The group a tool is announced under (section 7.1).
@@ -52,13 +52,13 @@ pub(crate) fn group_of(source: &SourcedProvider, tool: &str) -> Group {
         Some(ProvidedToolSource::Mcp { server }) => Group {
             name: server,
             source: ToolGroupSource::Mcp,
-            summary: None,
+            summary: source.provider.source_summary(tool),
             untrusted: true,
         },
         Some(ProvidedToolSource::Plugin { plugin }) => Group {
             name: plugin,
             source: ToolGroupSource::Plugin,
-            summary: None,
+            summary: source.provider.source_summary(tool),
             untrusted: true,
         },
         None => match source.provider.tool_group() {

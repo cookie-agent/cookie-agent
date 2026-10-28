@@ -1070,6 +1070,9 @@ fn local_mcp_config(
         scope: None,
         include_tools: None,
         exclude_tools: Vec::new(),
+        always_load: false,
+        always_load_tools: vec!["echo/text".into()],
+        instructions: true,
     };
     config.runtimes.insert(
         cookie_agent_identity::RuntimeId::new("local").unwrap(),
@@ -1163,6 +1166,18 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
             server: "fixture".into()
         })
     );
+    // Its server's instructions are its summary, and `always_load_tools`
+    // sends it up front, by the server's own name.
+    assert_eq!(
+        echo.source
+            .provider
+            .source_summary(&echo.spec.name)
+            .as_deref(),
+        Some("Echo text back.")
+    );
+    assert!(echo.source.provider.always_load(&echo.spec.name));
+    let fail = composition.get("fixture_fail").expect("MCP tool");
+    assert!(!fail.source.provider.always_load(&fail.spec.name));
 
     // A reconnect is routed to the local runtime; a failed one reaches
     // clients with the runtime and workspace.
@@ -2798,6 +2813,9 @@ fn fixture_server(
         scope,
         include_tools: None,
         exclude_tools: Vec::new(),
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
     }
 }
 

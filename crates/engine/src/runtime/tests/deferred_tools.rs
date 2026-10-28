@@ -16,8 +16,9 @@ use cookie_agent_runtime_api::{
 use super::support::*;
 
 /// `TestWriteProvider`'s `write`, published as an MCP server's tool, which
-/// the deferral policy defers, while `present` holds.
-struct McpWrite(TestWriteProvider, Arc<AtomicBool>);
+/// the deferral policy defers unless the server always loads it, while
+/// `present` holds.
+struct McpWrite(TestWriteProvider, Arc<AtomicBool>, bool);
 
 #[async_trait]
 impl ToolProvider for McpWrite {
@@ -46,6 +47,14 @@ impl ToolProvider for McpWrite {
         Some(ProvidedToolSource::Mcp {
             server: "chrome".into(),
         })
+    }
+
+    fn source_summary(&self, _tool_name: &str) -> Option<String> {
+        Some("Browser automation.".into())
+    }
+
+    fn always_load(&self, _tool_name: &str) -> bool {
+        self.2
     }
 
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
@@ -97,6 +106,13 @@ fn body(request: &str) -> serde_json::Value {
 }
 
 fn deferral_fixture(endpoint: &str) -> (Fixture, RunSelection, Arc<TestFlag>, Arc<AtomicBool>) {
+    always_load_fixture(endpoint, false)
+}
+
+fn always_load_fixture(
+    endpoint: &str,
+    always_load: bool,
+) -> (Fixture, RunSelection, Arc<TestFlag>, Arc<AtomicBool>) {
     let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
         endpoint,
         "---\ndescription: Deferral test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nUse the tools.\n",
@@ -121,6 +137,7 @@ fn deferral_fixture(endpoint: &str) -> (Fixture, RunSelection, Arc<TestFlag>, Ar
                 executed: Arc::clone(&executed),
             },
             Arc::clone(&present),
+            always_load,
         )),
     );
     (fixture, selection, executed, present)
@@ -214,7 +231,9 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
         .find(|content| content.starts_with("[cookie: deferred tools]"))
         .expect("announcement turn");
     assert!(
-        announcement.contains("<group name=\"chrome\" source=\"mcp\">\nwrite\n</group>"),
+        announcement.contains(
+            "<group name=\"chrome\" source=\"mcp\">\n<summary untrusted=\"true\">\nBrowser automation.\n</summary>\nwrite\n</group>"
+        ),
         "{announcement}"
     );
 
@@ -446,6 +465,7 @@ async fn a_refused_deferral_is_retried_up_front_and_remembered() {
                 executed: Arc::new(TestFlag::default()),
             },
             Arc::new(AtomicBool::new(true)),
+            false,
         )),
     );
     let session = fixture
@@ -486,5 +506,35 @@ async fn a_refused_deferral_is_retried_up_front_and_remembered() {
     assert!(deferred_names(&requests[2]).is_empty());
     assert!(names.contains(&"write"), "{names:?}");
     assert!(!names.contains(&"tool_load"), "{names:?}");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_always_loaded_mcp_tool_is_sent_up_front() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body("hello"),
+        ))
+        .expect("scripted reply");
+    let (fixture, selection, _, _) = always_load_fixture(&endpoint, true);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("deferral session");
+    run(&fixture, session.session_id, &selection, "deferral-1", "hi").await;
+    let requests = with_watchdog("captured deferral requests", captured)
+        .await
+        .expect("captured requests");
+    let request = body(&requests[0]);
+    let names = tool_names(&request);
+    assert!(names.contains(&"write".to_owned()), "{names:?}");
+    assert!(
+        !names.iter().any(|name| name.starts_with("tool_")),
+        "nothing is deferred, so no loaders: {names:?}"
+    );
+    let messages = serde_json::to_string(&request["messages"]).expect("messages");
+    assert!(!messages.contains("[cookie: deferred tools]"), "{messages}");
     fixture.engine.shutdown().await;
 }

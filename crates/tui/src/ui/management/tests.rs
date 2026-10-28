@@ -141,6 +141,9 @@ fn mcp_panel_renders_live_state_and_connection() {
             include_tools: None,
             exclude_tools: Vec::new(),
             scope: None,
+            always_load: false,
+            always_load_tools: Vec::new(),
+            instructions: true,
         },
         state: McpServerState::Disconnected,
         tool_count: 0,
@@ -193,6 +196,9 @@ fn mcp_panel_renders_copyable_oauth_wait() {
             include_tools: None,
             exclude_tools: Vec::new(),
             scope: None,
+            always_load: false,
+            always_load_tools: Vec::new(),
+            instructions: true,
         },
         state: McpServerState::NeedsAuth,
         tool_count: 0,
@@ -1138,6 +1144,9 @@ fn hosted_server(
             include_tools: None,
             exclude_tools: Vec::new(),
             scope: None,
+            always_load: false,
+            always_load_tools: Vec::new(),
+            instructions: true,
         },
         state,
         tool_count,
@@ -1304,6 +1313,7 @@ fn the_machines_view_lists_a_runtimes_tools_and_acp_agents() {
         .map(|name| McpServerTool {
             name: name.into(),
             filtered: name == "install",
+            always_load: false,
         })
         .collect();
     panel.install_mcp_servers(vec![browser]);
@@ -1360,6 +1370,9 @@ fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
             include_tools: None,
             exclude_tools: Vec::new(),
             scope: None,
+            always_load: false,
+            always_load_tools: Vec::new(),
+            instructions: true,
         },
         state: McpServerState::Failed,
         tool_count: 0,

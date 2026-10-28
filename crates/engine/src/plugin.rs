@@ -299,6 +299,8 @@ impl Drop for PluginContextLease {
 struct Connected {
     client: RuntimeClient,
     capabilities: ExtensionPluginCapabilities,
+    /// What the plugin's tools are for, as its handshake declared it.
+    summary: Option<String>,
     /// What the daemon ignored in its handshake, shown as the plugin's
     /// reason once it is connected.
     notes: Vec<String>,
@@ -1011,6 +1013,10 @@ impl PluginRuntime {
         result.map(|handshake| Connected {
             client: handshake.client,
             capabilities: handshake.result.capabilities,
+            summary: handshake
+                .result
+                .summary
+                .filter(|summary| !summary.trim().is_empty()),
             notes: handshake.notes,
         })
     }
@@ -1273,6 +1279,16 @@ impl ToolProvider for PluginToolProvider {
         Some(cookie_agent_runtime_api::ProvidedToolSource::Plugin {
             plugin: self.plugin.name.clone(),
         })
+    }
+
+    fn source_summary(&self, _tool_name: &str) -> Option<String> {
+        lock(&self.plugin.connection)
+            .as_ref()
+            .and_then(|connected| connected.summary.clone())
+    }
+
+    fn always_load(&self, _tool_name: &str) -> bool {
+        self.plugin.config.always_load
     }
 
     fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError>

@@ -58,6 +58,7 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
+            always_load: false,
         },
     );
     let mut other = fixture.config.plugins["fixture"].clone();
@@ -276,6 +277,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
+            always_load: false,
         },
     );
     drop(fixture.engine);
