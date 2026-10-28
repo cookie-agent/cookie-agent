@@ -2274,6 +2274,25 @@ impl Engine {
                         reason,
                     );
                 }
+                // A request with deferred tools the model refused is tried
+                // once more with every tool up front; its success marks the
+                // model (deferred tools in cookie, section 9).
+                let mut deferral_reason = match &result {
+                    Err(error)
+                        if !meaningful_output
+                            && deferral_retry.is_none()
+                            && !is_thinking_binding_mismatch(error)
+                            && tools.iter().any(ToolDefinition::is_deferred) =>
+                    {
+                        crate::deferred_tools::record::retry_reason(
+                            error,
+                            cookie_agent_models::DeferredToolsSupport::of_descriptor(
+                                &binding.descriptor,
+                            ),
+                        )
+                    }
+                    _ => None,
+                };
                 match result {
                     Ok(turn) => {
                         if let Some((_, reason)) =
@@ -2531,21 +2550,8 @@ impl Engine {
                         self.cut_native_replay(session, run).await?;
                         continue;
                     }
-                    // A request with deferred tools the model refused is tried
-                    // once more with every tool up front; its success marks
-                    // the model (deferred tools in cookie, section 9).
-                    Err(error)
-                        if !meaningful_output
-                            && deferral_retry.is_none()
-                            && !is_thinking_binding_mismatch(&error)
-                            && tools.iter().any(ToolDefinition::is_deferred)
-                            && let Some(reason) = crate::deferred_tools::record::retry_reason(
-                                &error,
-                                cookie_agent_models::DeferredToolsSupport::of_descriptor(
-                                    &binding.descriptor,
-                                ),
-                            ) =>
-                    {
+                    Err(error) if deferral_reason.is_some() => {
+                        let reason = deferral_reason.take().expect("checked by the guard");
                         self.append(
                             session,
                             Some(run),
