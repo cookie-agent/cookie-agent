@@ -3620,6 +3620,26 @@ impl Engine {
     }
 
     /// The live ACP session of `session`, if any.
+    /// Tells the agent of `session`'s live ACP session to stop, for a run
+    /// cancelled before its runner started: a wake's work (the agent's own
+    /// subagent's, say) is under way and would not hear otherwise. Starts no
+    /// process and opens no session.
+    pub(crate) async fn cancel_live_acp_session(&self, session: SessionId) {
+        if let Some(live) = self.live_session(session).filter(LiveSession::is_live) {
+            let _ = live
+                .process
+                .peer
+                .notify(
+                    wire::method::SESSION_CANCEL,
+                    &wire::SessionRef {
+                        session_id: &live.acp_session_id,
+                    },
+                )
+                .await;
+        }
+        let _ = self.drop_stopped_acp_wakes(session).await;
+    }
+
     pub(crate) fn live_session(&self, session: SessionId) -> Option<LiveSession> {
         self.inner
             .acp

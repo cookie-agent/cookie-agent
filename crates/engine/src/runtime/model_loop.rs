@@ -816,8 +816,9 @@ impl Engine {
                 .terminalize_run_setup_failure(&active, run_id, error)
                 .await);
         }
-        // A sweeper may have terminalized this durable run before active-run
-        // registration. Never resurrect a cancelled run with a live loop.
+        // A sweeper, or a stop, may have terminalized this durable run before
+        // its loop started. Never resurrect a cancelled run with a live loop,
+        // but tell an ACP agent: its own work may be running.
         if self.run_cancelled_recorded(params.session_id, run_id)? {
             self.inner
                 .sessions
@@ -825,15 +826,9 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&run_id);
-            return Ok(RunStartResult { run_id });
-        }
-        if self.run_cancelled_recorded(params.session_id, run_id)? {
-            self.inner
-                .sessions
-                .active
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&run_id);
+            if active.policy.acp_agent().is_some() {
+                self.cancel_live_acp_session(params.session_id).await;
+            }
             return Ok(RunStartResult { run_id });
         }
         let engine = self.clone();
