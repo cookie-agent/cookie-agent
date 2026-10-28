@@ -161,6 +161,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Unread sessions: specs/unread-sessions.md
           - Sign in with ChatGPT: specs/chatgpt-sign-in.md
           - "ACP v2: self-wakes, subagents, background work": specs/acp-v2.md
           - Push notifications: specs/push-notifications.md
@@ -184,7 +185,6 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - Unread sessions: specs/unread-sessions.md
           - Projects: specs/projects.md
           - Delegating to runtimes: specs/runtime-delegation.md
           - Cron jobs: specs/cron.md

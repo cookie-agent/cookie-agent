@@ -1,6 +1,6 @@
 # Unread sessions and selecting several sessions
 
-Status: **approved** (2026-10-28), with the user's decisions of 2026-10-28 in
+Status: **implemented** (2026-10-28; client protocol 1.51.0), with the user's decisions of 2026-10-28 in
 [section 9](#9-decisions). Builds on
 [push notifications](push-notifications.md) (the settle rule, section 3,
 and presence, section 8) and on session deletion
@@ -204,3 +204,29 @@ The user decided on 2026-10-28:
 - unread does not follow `[notifications]` (section 2): a session that
   sent no push because notifications, approval pushes, or cron-session
   pushes are off is still marked unread.
+
+## 10. Implementation notes (2026-10-28)
+
+- **Where it lives.** The engine's session store keeps the file
+  (`crates/engine/src/session/unread.rs`) and sets `unread` where every
+  `SessionMeta` leaves for clients (`SessionStore::for_clients`); the
+  engine's `mark_unread`, `mark_tree_read`, and `set_session_unread`
+  (`crates/engine/src/runtime/unread.rs`) announce each change. The
+  daemon's push service marks a root on a settle or needs-you signal
+  before it reads `[notifications]`, and reads the tree on every
+  `client.presence` naming a session.
+- **Deviations.**
+  - A file that does not read is reported on standard error and replaced
+    by the next change, instead of keeping the daemon from starting.
+  - The store reads nothing under the sessions folder when it opens, so
+    entries are dropped when their session is deleted, not at startup; an
+    entry for a session removed some other way is never shown.
+  - The web's long press keeps revealing a row's actions and lifting it
+    for a drag; select mode starts from the list's select button on every
+    screen. Escape does not leave select mode (it already cancels a run
+    from the composer); **Done** does.
+  - The web marks one session from its row's ⋮ menu as well as from
+    select mode.
+  - The TUI's key is Ctrl+K: Ctrl+U clears the search field.
+  - The tests do not cover `[notifications] enabled = false`: the mark
+    happens before the configuration is read.
