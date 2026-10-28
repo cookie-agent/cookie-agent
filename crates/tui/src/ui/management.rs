@@ -1,4 +1,4 @@
-use cookie_agent_client_state::usage::{CacheHit, format_count};
+use cookie_agent_client_state::usage::{CacheHit, format_cost, format_count, models_by_cost};
 use cookie_agent_protocol::{
     McpServerDefinition, McpServerInfo, McpServerScope, McpServerState, ModelUsageRollup,
     PermissionAction, RuntimeId, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
@@ -15,7 +15,7 @@ use ratatui::{
 use crate::theme::Theme;
 
 use super::{
-    app::{format_cost_usd, paint_panel, truncate_with_ellipsis},
+    app::{paint_panel, truncate_with_ellipsis},
     input::InputState,
 };
 
@@ -977,19 +977,8 @@ impl TableWidths {
     fn lines(&self, usage: &UsageRollup, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let columns = self.columns(width);
         let mut lines = vec![self.header_line(&columns, theme)];
-        let mut models = usage.by_model.iter().collect::<Vec<_>>();
-        models.sort_by(|(name_a, usage_a), (name_b, usage_b)| {
-            match (usage_a.estimated_cost_usd, usage_b.estimated_cost_usd) {
-                (Some(a), Some(b)) => b.total_cmp(&a),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-            .then_with(|| usage_b.input_tokens.cmp(&usage_a.input_tokens))
-            .then_with(|| name_a.cmp(name_b))
-        });
         lines.extend(
-            models
+            models_by_cost(usage)
                 .into_iter()
                 .map(|(name, model)| self.model_line(name.to_string(), model, &columns, theme)),
         );
@@ -1107,10 +1096,6 @@ struct TableColumns {
 /// A hit rate, or `n/a` where the column has no room to explain why.
 fn format_hit_rate(hit: CacheHit) -> String {
     hit.percent().unwrap_or_else(|| "n/a".to_owned())
-}
-
-fn format_cost(cost: Option<f64>) -> String {
-    cost.map_or_else(|| "unpriced".to_owned(), format_cost_usd)
 }
 
 pub(super) fn action_label(action: &PermissionAction) -> &str {

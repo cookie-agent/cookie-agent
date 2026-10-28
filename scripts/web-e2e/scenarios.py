@@ -1605,6 +1605,14 @@ return figures;
 """
 
 
+# The usage sheet's rows by model for `arguments[0]` (session or tree):
+# each model's name and request count.
+USAGE_MODELS = """
+return [...document.querySelectorAll('#sheet [data-usage-models="' + arguments[0] + '"] tbody tr')]
+  .map((row) => [row.dataset.model, row.cells[1].innerText]);
+"""
+
+
 def cache_hit_rate(browser):
     """Checks the usage sheet's hit rate: every scripted reply read 800 of
     its 1,000 prompt tokens from the cache, so a session with requests
@@ -1624,6 +1632,12 @@ def cache_hit_rate(browser):
         context = browser.text("#sheet #usage-context")
         assert re.fullmatch(r"Context: \d{1,3}(,\d{3})* tokens in the last request", context), context
         assert "1000" not in context, context
+        # Both the session and its tree break their figures down by model,
+        # as the TUI's usage panel does.
+        for scope in ("session", "tree"):
+            models = browser.script(USAGE_MODELS, scope)
+            assert models, "no models in the %s's usage" % scope
+            assert all(model[1] != "0" for model in models), (scope, models)
     else:
         assert detail == "No input tokens yet.", detail
     return figures

@@ -10,7 +10,7 @@ use cookie_agent_client_state::{
     EventLevel, ToolStatus,
     badges::{badges_tooltip, session_badges},
     permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
-    usage::{CacheHit, format_count},
+    usage::{CacheHit, format_cost, format_count, models_by_cost},
 };
 use cookie_agent_protocol::{
     ApprovalUserDecision, InputDelivery, ModelSelection, PermissionEffect, PermissionRuleSource,
@@ -3422,6 +3422,7 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
                         </dd>
                     </dl>
                     <p class=format!("{NOTE} pb-1") data-cache-detail=scope>{detail}</p>
+                    {usage_models(usage, scope)}
                 }
             };
             let session = match &usage.session {
@@ -3456,6 +3457,50 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
             .into_any()
         }
     }
+}
+
+/// A rollup's figures by model, as the TUI's usage panel lists them; on a
+/// narrow screen the table scrolls sideways.
+fn usage_models(
+    usage: &cookie_agent_protocol::UsageRollup,
+    scope: &'static str,
+) -> Option<impl IntoView + use<>> {
+    if usage.by_model.is_empty() {
+        return None;
+    }
+    const CELL: &str = "whitespace-nowrap py-1 pl-3 text-right font-mono";
+    let rows = models_by_cost(usage)
+        .into_iter()
+        .map(|(model, usage)| {
+            let hit = CacheHit::of_model(usage);
+            view! {
+                <tr class="border-b border-toasted dark:border-ember" data-model=model.to_string()>
+                    <td class="break-all py-1 font-mono">{model.to_string()}</td>
+                    <td class=CELL>{format_count(usage.request_count)}</td>
+                    <td class=CELL>{format_count(usage.input_tokens)}</td>
+                    <td class=CELL>{format_count(usage.output_tokens)}</td>
+                    <td class=CELL>{format_count(usage.reasoning_tokens)}</td>
+                    <td class=CELL title=hit.detail()>{hit.label()}</td>
+                    <td class=CELL>{format_cost(usage.estimated_cost_usd)}</td>
+                </tr>
+            }
+        })
+        .collect_view();
+    Some(view! {
+        <div class="overflow-x-auto pb-1">
+            <table class="w-full text-sm" data-usage-models=scope>
+                <thead class="text-left text-xs text-ink dark:text-sand">
+                    <tr class="border-b border-toasted dark:border-ember">
+                        <th class="py-1 font-normal">"model"</th>
+                        {["requests", "input", "output", "reasoning", "cache hit", "cost"]
+                            .map(|name| view! { <th class="whitespace-nowrap py-1 pl-3 text-right font-normal">{name}</th> })
+                            .collect_view()}
+                    </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div>
+    })
 }
 
 fn events_sheet(workspace: Workspace) -> impl IntoView {

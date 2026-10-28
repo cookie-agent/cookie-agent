@@ -19,7 +19,7 @@
 //! cache does not count as a miss; a client shows that rate as it comes
 //! and never recomputes it from the totals, which include such requests.
 
-use cookie_agent_protocol::{ModelUsageRollup, UsageRollup};
+use cookie_agent_protocol::{ModelKey, ModelUsageRollup, UsageRollup};
 
 /// What a client shows for an unavailable hit rate, where it has room for
 /// a dash: no input yet, or no request reported cache use.
@@ -147,6 +147,29 @@ pub fn format_cost_usd(cost: f64) -> String {
     } else {
         format!("${cost:.4}")
     }
+}
+
+/// A cost, or `unpriced` for a model without known prices.
+pub fn format_cost(cost: Option<f64>) -> String {
+    cost.map_or_else(|| "unpriced".to_owned(), format_cost_usd)
+}
+
+/// A rollup's models in the order a breakdown lists them: the costliest
+/// first, unpriced ones after the priced, then by input tokens, then by
+/// name.
+pub fn models_by_cost(usage: &UsageRollup) -> Vec<(&ModelKey, &ModelUsageRollup)> {
+    let mut models = usage.by_model.iter().collect::<Vec<_>>();
+    models.sort_by(|(name_a, usage_a), (name_b, usage_b)| {
+        match (usage_a.estimated_cost_usd, usage_b.estimated_cost_usd) {
+            (Some(a), Some(b)) => b.total_cmp(&a),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| usage_b.input_tokens.cmp(&usage_a.input_tokens))
+        .then_with(|| name_a.cmp(name_b))
+    });
+    models
 }
 
 #[cfg(test)]
