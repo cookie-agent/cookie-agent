@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.51.0
+
+- `SessionMeta` has an optional `unread` (left out when false): a root
+  session with a finished turn, an approval, or a question the user has not
+  seen ([unread sessions](../specs/unread-sessions.md)). The daemon marks it
+  when a settle or a needs-you push signal comes while nobody is present on
+  the tree, and `client.presence` on the tree marks it read;
+  `sessions.changed` `upserted` announces each change.
+- `session.unread.set` (`session_ids`, `unread`) marks root sessions unread
+  or read, answering the `changed` ones and the `skipped` ones with a
+  `reason` (`session_not_found`, `not_a_root_session` with its
+  `root_session_id`).
+
 ## 1.50.0
 
 - `acp_session_updated` has an optional `background_ended`

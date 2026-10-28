@@ -24,7 +24,7 @@ fn listed_waiting(engine: &Engine, session: SessionId) -> Vec<WaitingOn> {
     engine
         .inner
         .store
-        .with_live_waiting(engine.inner.store.summary(session).expect("summary").meta)
+        .for_clients(engine.inner.store.summary(session).expect("summary").meta)
         .waiting_on
 }
 

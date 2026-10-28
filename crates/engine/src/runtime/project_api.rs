@@ -289,7 +289,7 @@ impl Engine {
         meta: SessionMeta,
         known: impl Fn(&ProjectId) -> bool,
     ) -> SessionMeta {
-        let mut meta = self.inner.store.with_live_waiting(meta);
+        let mut meta = self.inner.store.for_clients(meta);
         if let SessionOrigin::Delegated {
             root_session_id, ..
         } = meta.origin

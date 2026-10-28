@@ -186,6 +186,7 @@ fn projection_fold_with(
         delegated_attachments: Vec::new(),
         cron,
         held: None,
+        unread: false,
     };
     let mut projection = SessionProjection {
         meta,

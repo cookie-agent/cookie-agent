@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Marks the root sessions `session_ids` (1 to\n[`MAX_UNREAD_SET_SESSIONS`]) unread or read (client protocol 1.51.0,\n`docs/site/specs/unread-sessions.md` section 5).",
+  "properties": {
+    "session_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "unread": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "session_ids",
+    "unread"
+  ],
+  "title": "SessionUnreadSetParams",
+  "type": "object"
+}

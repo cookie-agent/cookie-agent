@@ -596,3 +596,31 @@ async fn a_restart_asked_by_a_device_without_notifications_tells_them_all() {
     assert_eq!(fixture.requests(), 1);
     fixture.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_signal_nobody_watched_marks_its_root_unread_and_presence_reads_it() {
+    let fixture = fixture().await;
+    let unread = || {
+        std::fs::read_to_string(fixture.harness.engine.data_root().join("unread.json"))
+            .unwrap_or_default()
+    };
+    let (watched, settled_away, asked_away) = (
+        SessionId::new_v7(),
+        SessionId::new_v7(),
+        SessionId::new_v7(),
+    );
+    fixture.service.set_presence(7, Some(watched));
+    fixture.service.signal(settled(watched));
+    fixture.service.signal(settled(settled_away));
+    fixture.service.signal(approval(asked_away, "bash"));
+    let file = unread();
+    assert!(!file.contains(&watched.to_string()), "{file}");
+    assert!(file.contains(&settled_away.to_string()), "{file}");
+    assert!(file.contains(&asked_away.to_string()), "{file}");
+    // Presence on it reads it.
+    fixture.service.set_presence(7, Some(settled_away));
+    let file = unread();
+    assert!(!file.contains(&settled_away.to_string()), "{file}");
+    assert!(file.contains(&asked_away.to_string()), "{file}");
+    fixture.shutdown().await;
+}

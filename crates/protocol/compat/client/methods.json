@@ -964,6 +964,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.unread.set",
+      "params": "SessionUnreadSetParams",
+      "params_role": "command",
+      "result": "SessionUnreadSetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.usage",
       "params": "SessionUsageParams",
       "params_role": "command",

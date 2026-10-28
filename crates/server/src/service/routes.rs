@@ -892,6 +892,13 @@ impl ServerProtocol for Server {
             .map_err(|error| RpcFault::push(error).into())
     }
 
+    async fn set_session_unread(
+        &self,
+        params: cookie_agent_protocol::SessionUnreadSetParams,
+    ) -> Result<cookie_agent_protocol::SessionUnreadSetResult> {
+        Ok(self.engine.set_session_unread(params))
+    }
+
     async fn set_client_presence(
         &self,
         params: cookie_agent_protocol::ClientPresenceParams,

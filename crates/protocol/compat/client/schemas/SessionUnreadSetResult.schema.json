@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "SessionUnreadSkip": {
+      "description": "A session `session.unread.set` left, and why.",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/SessionUnreadSkipReason"
+        },
+        "root_session_id": {
+          "description": "For `not_a_root_session`, its root.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "SessionUnreadSkipReason": {
+      "description": "Why `session.unread.set` left a session.",
+      "oneOf": [
+        {
+          "enum": [
+            "session_not_found"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "not_a_root_session",
+          "description": "A delegated session: its root is the one marked.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What `session.unread.set` did: the sessions whose state changed, each\nalso announced by `sessions.changed`, and the IDs it left.",
+  "properties": {
+    "changed": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "skipped": {
+      "items": {
+        "$ref": "#/$defs/SessionUnreadSkip"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "changed"
+  ],
+  "title": "SessionUnreadSetResult",
+  "type": "object"
+}

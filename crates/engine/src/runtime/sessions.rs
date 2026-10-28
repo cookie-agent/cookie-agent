@@ -515,7 +515,7 @@ impl Engine {
             session: self
                 .inner
                 .store
-                .with_live_waiting(self.inner.store.summary(id)?.meta),
+                .for_clients(self.inner.store.summary(id)?.meta),
             children: self
                 .children(id)?
                 .into_iter()
@@ -550,7 +550,7 @@ impl Engine {
         }
         self.connect_session(id).await;
         self.drain_queued_input(id).await;
-        Ok(self.inner.store.with_live_waiting(meta))
+        Ok(self.inner.store.for_clients(meta))
     }
     /// Delegated sessions a revert to `cut` deletes: children whose
     /// reservation the cut removes (and no kept reservation resumes), with all
@@ -637,6 +637,7 @@ impl Engine {
         self.inner.delegation_events.forget_sessions(deleted);
         self.inner.memory_seen.forget_sessions(deleted);
         self.forget_live_waiting(deleted);
+        self.inner.store.forget_unread(deleted);
         self.delete_crons_targeting(deleted);
         // A wait on a deleted subagent ends now rather than at its recheck.
         for session in deleted {

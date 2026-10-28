@@ -2681,7 +2681,7 @@ fn live_waits_join_the_goal_in_announcements_but_never_the_cache() {
     assert_eq!(meta.waiting_on, [WaitingOn::Goal]);
     assert_eq!(read_test_meta_cache(&store, session_id), meta);
     assert_eq!(
-        store.with_live_waiting(meta.clone()).waiting_on,
+        store.for_clients(meta.clone()).waiting_on,
         [
             WaitingOn::Goal,
             WaitingOn::BackgroundCall,
@@ -2724,7 +2724,7 @@ fn live_waits_join_the_goal_in_announcements_but_never_the_cache() {
     );
     set_live_waiting(&store, session_id, vec![WaitingOn::Subagent]);
     store.forget_live_waiting(&HashSet::from([session_id]));
-    assert_eq!(store.with_live_waiting(meta).waiting_on, [WaitingOn::Goal]);
+    assert_eq!(store.for_clients(meta).waiting_on, [WaitingOn::Goal]);
 }
 
 /// Records `kinds` for `id` and announces it when that changed, as the

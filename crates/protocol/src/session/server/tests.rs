@@ -508,6 +508,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::ClientPresenceResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn set_session_unread(
+        &self,
+        _: crate::SessionUnreadSetParams,
+    ) -> Result<crate::SessionUnreadSetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: crate::PluginsListParams,

@@ -105,6 +105,7 @@ pub(crate) mod tests;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
+mod unread;
 pub(crate) mod uploads;
 
 pub(crate) use artifact_reads::read_artifact_async;

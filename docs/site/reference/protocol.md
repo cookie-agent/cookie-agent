@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.50.0",
+    "protocol_version": "1.51.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.50.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.51.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -280,6 +280,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `notifications.unsubscribe` | Subscription `id` | Empty object |
 | `notifications.test` | Subscription `id` | `status` (`sent`, `gone`, or `failed`) and an optional `detail` |
 | `client.presence` | `session`: the session this connection shows the user, or `null` when the user is not there | Empty object |
+| `session.unread.set` | `session_ids` (1 to 256 root sessions) and `unread` (since 1.51.0; see [Unread sessions](#unread-sessions)) | `changed`: the sessions whose state changed, each also announced by `sessions.changed`; `skipped`: the IDs it left, each with its `reason` (`session_not_found`, or `not_a_root_session` with its `root_session_id`) |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -757,7 +758,8 @@ configures them.
   sent back. A subscription the push service reports gone is removed.
 - **Presence.** `client.presence` names the session a connection shows the
   user; the daemon pushes nothing for that session's tree while any
-  connection shows it. It lasts until the next call or the connection's end.
+  connection shows it, and since 1.51.0 it marks the tree's root read. It
+  lasts until the next call or the connection's end.
 - **Errors.** An unknown subscription is `push_subscription_not_found`, a
   refused value `push_subscription_invalid`, and a push folder the daemon
   cannot read or write `push_unavailable`. Each subscription change sends
@@ -1127,6 +1129,23 @@ external registration made or dropped; a child started or stopped waiting
 on something live. A session the daemon evicted from memory keeps reporting
 what it waits on. A 1.8 daemon sends no `waiting_on`.
 
+### Unread sessions
+
+Since 1.51.0 a root session's `SessionMeta` carries `unread: true` (left out
+when false) while it has a finished turn, an approval, or a question the
+user has not seen ([spec](../specs/unread-sessions.md)). The daemon marks a
+root unread when it settles (the case that sends a settle push), or when an
+approval in its tree escalates to the user or an ACP agent there asks a
+question, while no connection reports presence (`client.presence`) on a
+session of its tree; `[notifications]` decides only whether a push goes
+out. A `client.presence` naming any session of the tree marks the root
+read, and `session.unread.set` marks roots either way. The state lives in
+`<data_root>/unread.json` and survives restarts; it is not in the session
+log, so it moves neither `last_event_seq` nor the activity times.
+Delegated sessions are never unread. Each change sends `sessions.changed`
+`upserted`. A 1.50 daemon sends no `unread` and answers
+`session.unread.set` with `-32601`.
+
 ### Held sessions
 
 Since 1.34.0 a session whose run the user stopped (`run.cancel`) while
@@ -1333,7 +1352,7 @@ notification methods they do not know.
 
 | `change` | Fields | Sent when |
 |---|---|---|
-| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, delegated attachments, project, or what it waits on (`waiting_on`) change |
+| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, delegated attachments, project, what it waits on (`waiting_on`), or whether it is unread (`unread`, since 1.51.0) change |
 | `removed` | `session_id` | A revert deleted a delegated session, or `session.delete` deleted a session of a tree; the connection's subscription to it has ended |
 | `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
 | `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |

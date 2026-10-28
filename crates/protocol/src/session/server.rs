@@ -690,6 +690,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: crate::ClientPresenceParams,
         context: &ServerContext,
     ) -> Result<crate::ClientPresenceResult, ServerFault>;
+    /// Marks root sessions unread or read.
+    async fn set_session_unread(
+        &self,
+        params: crate::SessionUnreadSetParams,
+    ) -> Result<crate::SessionUnreadSetResult, ServerFault>;
     /// Lists the configured plugins.
     async fn list_plugins(
         &self,
@@ -1348,6 +1353,18 @@ async fn dispatch<S: ServerProtocol>(
         }
         crate::CLIENT_PRESENCE_METHOD => {
             value(server.set_client_presence(decode(params)?, context).await?)
+        }
+        crate::SESSION_UNREAD_SET_METHOD => {
+            let params: crate::SessionUnreadSetParams = decode(params)?;
+            if params.session_ids.is_empty()
+                || params.session_ids.len() > crate::MAX_UNREAD_SET_SESSIONS
+            {
+                return Err(ServerFault::invalid_params(format!(
+                    "session_ids must name 1 to {} sessions",
+                    crate::MAX_UNREAD_SET_SESSIONS
+                )));
+            }
+            value(server.set_session_unread(params).await?)
         }
         crate::PLUGINS_LIST_METHOD => value(server.list_plugins(decode_default(params)?).await?),
         crate::PLUGINS_RESTART_METHOD => value(server.restart_plugin(decode(params)?).await?),

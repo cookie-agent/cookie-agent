@@ -15,6 +15,10 @@ pub const NOTIFICATIONS_UNSUBSCRIBE_METHOD: &str = "notifications.unsubscribe";
 pub const NOTIFICATIONS_TEST_METHOD: &str = "notifications.test";
 pub const NOTIFICATIONS_CHANGED_METHOD: &str = "notifications.changed";
 pub const CLIENT_PRESENCE_METHOD: &str = "client.presence";
+pub const SESSION_UNREAD_SET_METHOD: &str = "session.unread.set";
+
+/// The most sessions one `session.unread.set` marks.
+pub const MAX_UNREAD_SET_SESSIONS: usize = 256;
 
 /// The most characters a subscription's label may have.
 pub const PUSH_LABEL_MAX_CHARS: usize = 80;
@@ -126,3 +130,43 @@ pub struct ClientPresenceParams {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ClientPresenceResult {}
+
+/// Marks the root sessions `session_ids` (1 to
+/// [`MAX_UNREAD_SET_SESSIONS`]) unread or read (client protocol 1.51.0,
+/// `docs/site/specs/unread-sessions.md` section 5).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUnreadSetParams {
+    pub session_ids: Vec<SessionId>,
+    pub unread: bool,
+}
+
+/// What `session.unread.set` did: the sessions whose state changed, each
+/// also announced by `sessions.changed`, and the IDs it left.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SessionUnreadSetResult {
+    pub changed: Vec<SessionId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SessionUnreadSkip>,
+}
+
+crate::open_enum! {
+    /// Why `session.unread.set` left a session.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SessionUnreadSkipReason {
+        SessionNotFound,
+        /// A delegated session: its root is the one marked.
+        NotARootSession,
+    }
+}
+
+/// A session `session.unread.set` left, and why.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SessionUnreadSkip {
+    pub session_id: SessionId,
+    pub reason: SessionUnreadSkipReason,
+    /// For `not_a_root_session`, its root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<SessionId>,
+}

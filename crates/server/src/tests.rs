@@ -2637,3 +2637,31 @@ async fn notifications_are_reachable_through_rpc() {
     harness.server.shutdown();
     harness.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn session_unread_set_checks_its_ids_and_skips_unknown_sessions() {
+    let harness = harness();
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let (empty, _) = request(
+        &mut client,
+        2,
+        "session.unread.set",
+        json!({ "session_ids": [], "unread": true }),
+    )
+    .await;
+    assert_eq!(empty["error"]["code"], -32602, "{empty}");
+    let unknown = cookie_agent_protocol::SessionId::new_v7();
+    let (skipped, _) = request(
+        &mut client,
+        3,
+        "session.unread.set",
+        json!({ "session_ids": [unknown], "unread": true }),
+    )
+    .await;
+    assert_eq!(skipped["result"]["changed"], json!([]), "{skipped}");
+    assert_eq!(
+        skipped["result"]["skipped"],
+        json!([{ "session_id": unknown, "reason": "session_not_found" }]),
+        "{skipped}"
+    );
+}

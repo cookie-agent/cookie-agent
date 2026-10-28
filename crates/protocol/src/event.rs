@@ -372,6 +372,14 @@ pub struct SessionMeta {
     /// older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<Open<HeldReason>>,
+    /// Whether the root session has a finished turn, an approval, or a
+    /// question the user has not seen
+    /// (`docs/site/specs/unread-sessions.md`, client protocol 1.51.0): it
+    /// became unread while nobody was present on its tree, and nobody has
+    /// been since. Never set on a delegated session; false from an older
+    /// daemon.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unread: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -429,6 +437,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             cron: Option<crate::SessionCron>,
             #[serde(default)]
             held: Option<Open<HeldReason>>,
+            #[serde(default)]
+            unread: bool,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -457,6 +467,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             delegated_attachments: w.delegated_attachments,
             cron: w.cron,
             held: w.held,
+            unread: w.unread,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

@@ -953,6 +953,7 @@ pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
     SessionMeta {
         cron: None,
         held: None,
+        unread: false,
         project: None,
         short_id: None,
         session_id: id,

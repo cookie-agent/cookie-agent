@@ -1319,6 +1319,23 @@ impl Client {
         .await
     }
 
+    /// Marks the root sessions `session_ids` unread or read (client
+    /// protocol 1.51.0).
+    pub async fn set_session_unread(
+        &self,
+        session_ids: Vec<crate::SessionId>,
+        unread: bool,
+    ) -> Result<crate::SessionUnreadSetResult, ClientError> {
+        self.call(
+            crate::SESSION_UNREAD_SET_METHOD,
+            &crate::SessionUnreadSetParams {
+                session_ids,
+                unread,
+            },
+        )
+        .await
+    }
+
     /// The configured plugins, in the order their hooks run.
     pub async fn list_plugins(&self) -> Result<crate::PluginsListResult, ClientError> {
         self.call(crate::PLUGINS_LIST_METHOD, &crate::PluginsListParams {})

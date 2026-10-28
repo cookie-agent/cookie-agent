@@ -329,6 +329,10 @@
           "minimum": 0,
           "type": "integer"
         },
+        "unread": {
+          "description": "Whether the root session has a finished turn, an approval, or a\nquestion the user has not seen\n(`docs/site/specs/unread-sessions.md`, client protocol 1.51.0): it\nbecame unread while nobody was present on its tree, and nobody has\nbeen since. Never set on a delegated session; false from an older\ndaemon.",
+          "type": "boolean"
+        },
         "waiting_on": {
           "description": "What will start the session's next run without the user, in this\norder and each once (client protocol 1.9.0): an active goal, folded\nfrom the log, and the daemon's live background calls, subagent\nturns, and external producer registrations. Reported whatever\n`status` says; a client shows a running session as running. Empty\nwhen nothing will wake the session, from an older daemon, and for a\nsession whose metadata an older build wrote and that has recorded\nnothing since.",
           "items": {

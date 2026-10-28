@@ -6,6 +6,7 @@ mod delete;
 mod fold;
 mod in_flight;
 mod tree_load;
+mod unread;
 mod workdir;
 
 pub(crate) use cache::meta_path;
@@ -414,6 +415,8 @@ pub struct SessionStore {
     /// [`Self::record_live_waiting`]. Never persisted: a daemon restart ends
     /// every one of them.
     live_waiting: Mutex<HashMap<SessionId, Vec<WaitingOn>>>,
+    /// The unread root sessions (`<data_root>/unread.json`).
+    unread: unread::UnreadSessions,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
     closed: AtomicBool,
@@ -525,16 +528,18 @@ impl SessionStore {
     fn notify_upserted(&self, meta: &SessionMeta) {
         self.notify_index_change(
             cookie_agent_protocol::SessionsChangedNotification::Upserted {
-                session: Box::new(self.with_live_waiting(meta.clone())),
+                session: Box::new(self.for_clients(meta.clone())),
             },
         );
     }
 
     /// `meta` as clients see it: its `waiting_on`, the fold's active goal,
     /// with what the engine's live producers make the session wait on, in
-    /// `WaitingOn` order.
+    /// `WaitingOn` order; and for a root, whether it is unread.
     #[must_use]
-    pub(crate) fn with_live_waiting(&self, mut meta: SessionMeta) -> SessionMeta {
+    pub(crate) fn for_clients(&self, mut meta: SessionMeta) -> SessionMeta {
+        meta.unread =
+            matches!(meta.origin, SessionOrigin::Root) && self.unread.contains(meta.session_id);
         let live = self
             .live_waiting
             .lock()
@@ -590,6 +595,18 @@ impl SessionStore {
             } => Some(parent_session_id),
             _ => None,
         }
+    }
+
+    /// Marks the root sessions `ids` unread or read, returning those whose
+    /// state changed; the caller announces them
+    /// ([`Self::announce_live_waiting`]).
+    pub(crate) fn set_unread(&self, ids: &[SessionId], unread: bool) -> Vec<SessionId> {
+        self.unread.set(ids, unread, jiff::Timestamp::now())
+    }
+
+    /// Forgets the unread state of deleted sessions, announcing nothing.
+    pub(crate) fn forget_unread(&self, deleted: &HashSet<SessionId>) {
+        self.unread.forget(deleted.iter().copied());
     }
 
     /// Drops what deleted sessions waited on, announcing nothing.
@@ -674,6 +691,7 @@ impl SessionStore {
             subscribers: Mutex::new(HashMap::new()),
             index_changes: tokio::sync::broadcast::channel(INDEX_CHANGE_CAPACITY).0,
             live_waiting: Mutex::default(),
+            unread: unread::UnreadSessions::open(data_root),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             closed: AtomicBool::new(false),
             #[cfg(test)]

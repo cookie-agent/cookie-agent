@@ -2163,6 +2163,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     let meta = SessionMeta {
         cron: None,
         held: None,
+        unread: false,
         session_id: SessionId::new_v7(),
         origin: SessionOrigin::Root,
         short_id: None,
@@ -3737,6 +3738,7 @@ fn meta_fixture() -> SessionMeta {
     SessionMeta {
         cron: None,
         held: None,
+        unread: false,
         session_id: SessionId::new_v7(),
         origin: SessionOrigin::Root,
         short_id: None,

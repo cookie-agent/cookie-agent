@@ -164,6 +164,16 @@ impl PushService {
     }
 
     fn signal(self: &Arc<Self>, signal: PushSignal) {
+        // A signal nobody present on the tree saw marks its root unread,
+        // whatever `[notifications]` says of pushing it (unread sessions
+        // spec section 2).
+        let root = match &signal {
+            PushSignal::Settled(settled) => settled.root,
+            PushSignal::NeedsYou(needs) => needs.root,
+        };
+        if !self.watched(root) {
+            self.engine.mark_unread(root);
+        }
         let config = self.config();
         if !config.enabled {
             return;
@@ -263,6 +273,11 @@ impl PushService {
             None => {
                 presence.remove(&connection);
             }
+        }
+        drop(presence);
+        // The user is there: the tree is read.
+        if let Some(session) = session {
+            self.engine.mark_tree_read(session);
         }
         first && session.is_some()
     }

@@ -344,6 +344,7 @@ mod tests {
             waiting_on: Vec::new(),
             delegated_attachments: Vec::new(),
             held: None,
+            unread: false,
         }
     }
 

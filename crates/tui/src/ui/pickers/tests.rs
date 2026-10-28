@@ -64,6 +64,7 @@ fn session_meta(session_id: SessionId) -> SessionMeta {
     SessionMeta {
         cron: None,
         held: None,
+        unread: false,
         project: None,
         session_id,
         origin: SessionOrigin::Root,
