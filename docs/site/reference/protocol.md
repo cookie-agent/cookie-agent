@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.48.0",
+    "protocol_version": "1.49.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.48.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.49.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -217,6 +217,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `runtime.snapshot.get` | Empty object | The daemon's current [catalog view](#the-catalog-view) |
 | `provider.connect` | Provider, the `expected_revision` of the catalog view, setup/auth values, client ID | Durable connection, effective auth, the new catalog view, replay state |
 | `provider.disconnect` | Provider, the `expected_revision` of the catalog view, expected connection generation, client ID | Disconnect receipt (ID and time), effective auth, the new catalog view, replay state |
+| `provider.auth.begin` | `provider_id`, one of its `sign_in_methods` as `method`, and `redirect_uri`: `http://127.0.0.1:<port><redirect_path>` the client catches or the user pastes back, or null for the daemon to catch it on its own machine (since 1.49.0; see [Provider sign-in](#provider-sign-in)) | `authorization_url` to open in a browser and the `redirect_uri` the sign-in uses |
+| `provider.auth.complete` | `provider_id` and `callback_url`, the address the browser landed on (since 1.49.0) | The signed-in `account` (`email`, `sign_in_required`); the provider is connected and the catalog view republished |
+| `provider.auth.cancel` | `provider_id` (since 1.49.0) | `provider_id`; the sign-in in progress and the daemon's listener for it end |
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
@@ -933,6 +936,36 @@ The run waits on it, and clients show it as waiting on the user.
   daemon cannot show), and the daemon's `reason` when it answered. Clients
   stop showing a question when it is resolved or its run finishes.
 
+### Provider sign-in
+
+A provider whose descriptor lists `sign_in_methods` is connected by a browser
+sign-in instead of typed credentials (since 1.49.0); a sign-in method is
+never in `auth_methods`, so older clients do not offer it, and
+`provider.connect` refuses one with `provider_sign_in_rejected`. The daemon
+holds the PKCE verifier, does the code exchange, and keeps the tokens; only
+the single-use authorization code crosses the connection.
+
+1. The client binds a loopback listener on `redirect_path` and calls
+   `provider.auth.begin` with its `http://127.0.0.1:<port><redirect_path>`.
+   A client that cannot listen (a web page) names any port and asks the user
+   to paste the address the browser fails to load; a page served from
+   loopback, on the daemon's machine, passes null and lets the daemon listen.
+2. The user signs in at `authorization_url`.
+3. The client hands the address the browser landed on to
+   `provider.auth.complete`. When the daemon listened itself,
+   `provider.auth.completed` reports the outcome instead.
+
+The connected provider's `sign_in_account` names the account, and
+`sign_in_required` turns true when the sign-in can no longer refresh; the
+user signs in again with the same flow. `provider.disconnect` signs out and
+revokes the sign-in. Every failure is `provider_sign_in_rejected`, whose
+`reason` starts with the sign-in's own code: `sign_in_denied`,
+`sign_in_not_eligible`, `sign_in_scope_missing`, `sign_in_state_mismatch`,
+`sign_in_expired`, `sign_in_not_pending`, `sign_in_client_rejected`,
+`invalid_redirect_uri`, `invalid_callback`, `sign_in_required`,
+`sign_in_failed`, `sign_in_unsupported`, `sign_in_method_unknown`, or
+`sign_in_method_not_connectable`.
+
 ### The catalog view
 
 `runtime.snapshot.get` returns, and `runtime.changed` carries, a
@@ -1268,6 +1301,7 @@ subscriptions to the deleted sessions end with them: no further
 | `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
 | `daemon.restarting` | A restart is scheduled: `when` (`idle` or `now`), the `active_runs` and `background_calls` (since 1.35.0, omitted when zero) it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
 | `onboarding.changed` | `onboarding.get`'s answer changed (since 1.22.0): the new answer, after a configuration apply or reload, a provider connected or disconnected, or a model becoming available or not |
+| `provider.auth.completed` | A sign-in whose redirect the daemon caught itself ended (since 1.49.0): `provider_id`, and the `account` or the `error` |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by, agent_task? }`:

@@ -5,6 +5,23 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.49.0
+
+- Providers can be connected by a browser sign-in instead of typed
+  credentials ([Sign in with ChatGPT](../specs/chatgpt-sign-in.md)).
+  `ProviderDescriptor` has an optional `sign_in_methods`
+  (`SignInMethodDescriptor`: `id`, `display_name`, `redirect_path`) and
+  `sign_in_account` (`SignInAccountDescriptor`: `email`,
+  `sign_in_required`). A sign-in method is never listed in `auth_methods`.
+- `provider.auth.begin` (`provider_id`, `method`, `redirect_uri`, null for
+  the daemon to catch the redirect itself), `provider.auth.complete`
+  (`provider_id`, `callback_url`), and `provider.auth.cancel` run it; the
+  daemon holds the PKCE verifier and the tokens. `provider.auth.completed`
+  announces a sign-in whose redirect the daemon caught.
+- `provider.connect` refuses a sign-in method with
+  `provider_sign_in_rejected`, the error of every failed `provider.auth.*`
+  request.
+
 ## 1.48.0
 
 - `model_tools_published` has an optional `deferred_tool_names`: the tools

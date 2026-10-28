@@ -3060,3 +3060,161 @@ fn remote_providers_still_need_credentials_and_https() {
         assert!(rejected, "{base_url}");
     }
 }
+
+fn offline_chatgpt(temporary: &TempDir) -> Arc<cookie_agent_models::chatgpt::ChatGptCredentials> {
+    cookie_agent_models::chatgpt::ChatGptCredentials::open(
+        cookie_agent_models::secure_store::SecureDirectory::open_in(temporary.path(), "chatgpt")
+            .unwrap(),
+        cookie_agent_models::chatgpt::ChatGptEndpoints::default(),
+        reqwest::Client::new(),
+    )
+    .unwrap()
+}
+
+fn chatgpt_model(slug: &str, priority: i64) -> cookie_agent_models::chatgpt::ChatGptModel {
+    cookie_agent_models::chatgpt::ChatGptModel {
+        slug: slug.to_owned(),
+        display_name: slug.to_uppercase(),
+        description: String::new(),
+        context_window: Some(272_000),
+        input_modalities: vec!["text".to_owned(), "image".to_owned()],
+        efforts: vec!["low".to_owned(), "high".to_owned()],
+        priority: Some(priority),
+    }
+}
+
+#[test]
+fn the_built_in_chatgpt_provider_lists_its_plan_and_compiles_once_signed_in() {
+    let temporary = TempDir::new().unwrap();
+    let provider = ProviderId::new("chatgpt").unwrap();
+    let luna = ModelKey::new(
+        provider.clone(),
+        ProviderModelId::new("gpt-6-luna").unwrap(),
+    )
+    .unwrap();
+    let manager = ModelManager::new_with_chatgpt(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        catalog(),
+        store(&temporary),
+        Some(cookie_agent_models::manager::ChatGptManagerInputs {
+            credentials: offline_chatgpt(&temporary),
+            models: vec![chatgpt_model("gpt-6-luna", 5)],
+        }),
+    )
+    .unwrap();
+    let runtime = manager.current();
+    let state = runtime
+        .providers()
+        .iter()
+        .find(|state| state.id == provider)
+        .unwrap();
+    assert_eq!(state.display_name, "Codex / ChatGPT");
+    assert_eq!(state.effective_auth, EffectiveCredentialSource::Unavailable);
+    assert_ne!(
+        runtime.model(&luna).unwrap().model.status,
+        cookie_agent_models::compiler::CompiledModelStatus::Available
+    );
+
+    manager
+        .connect(
+            ProviderConnectRequest {
+                provider_id: provider.clone(),
+                expected_catalog_revision: runtime.catalog().revision.clone(),
+                setup_values: BTreeMap::new(),
+                auth_method: AuthMethodId::new("chatgpt-sign-in-v1").unwrap(),
+                auth_values: auth_values(&[("subject", "user-123")]),
+                client_connect_id: ClientConnectId::new("chatgpt-sign-in").unwrap(),
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let runtime = manager.current();
+    let model = &runtime.model(&luna).unwrap().model;
+    assert_eq!(
+        model.status,
+        cookie_agent_models::compiler::CompiledModelStatus::Available
+    );
+    assert_eq!(model.adapter, OvenAdapterFamily::OpenaiResponses);
+    assert_eq!(model.adapter_id, "oven.openai-compatible.responses.chatgpt");
+    assert_eq!(
+        model.capabilities.compaction,
+        cookie_agent_models::CompactionCapability::Unsupported
+    );
+    assert_eq!(
+        model.capabilities.deferred_tools,
+        cookie_agent_models::DeferredToolsSupport::Native
+    );
+    assert_eq!(model.capabilities.input_tokens, Some(272_000));
+
+    let replaced = manager
+        .replace_chatgpt_models(
+            vec![
+                chatgpt_model("gpt-6.1-sol", 1),
+                chatgpt_model("gpt-6-luna", 5),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(replaced.is_some());
+    let runtime = manager.current();
+    assert_eq!(
+        runtime
+            .models()
+            .keys()
+            .filter(|key| key.provider_id() == provider)
+            .count(),
+        2
+    );
+    // The same list changes nothing.
+    assert!(
+        manager
+            .replace_chatgpt_models(
+                vec![
+                    chatgpt_model("gpt-6.1-sol", 1),
+                    chatgpt_model("gpt-6-luna", 5)
+                ],
+                |_| Ok(()),
+            )
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn without_the_built_in_provider_there_is_no_chatgpt_row_and_its_source_is_refused() {
+    let temporary = TempDir::new().unwrap();
+    let manager = ModelManager::new(BTreeMap::new(), catalog(), store(&temporary)).unwrap();
+    assert!(
+        manager
+            .current()
+            .providers()
+            .iter()
+            .all(|state| state.id.as_str() != "chatgpt")
+    );
+    let parse = |id: &str, toml_text: &str| {
+        toml::from_str::<ProviderDefinition>(toml_text)
+            .unwrap()
+            .validate_for(&ProviderId::new(id).unwrap())
+    };
+    assert!(parse("chatgpt", "source = \"chatgpt\"\n").is_ok());
+    assert!(
+        parse(
+            "chatgpt",
+            "source = \"chatgpt\"\n[headers]\nx-extra = \"1\"\n"
+        )
+        .is_ok()
+    );
+    assert!(parse("other", "source = \"chatgpt\"\n").is_err());
+    assert!(parse("chatgpt", "source = \"models_dev\"\n").is_err());
+    for refused in [
+        "api_key = \"key\"",
+        "base_url = \"https://example.test/v1\"",
+        "setup = { region = \"x\" }",
+    ] {
+        assert!(
+            parse("chatgpt", &format!("source = \"chatgpt\"\n{refused}\n")).is_err(),
+            "{refused}"
+        );
+    }
+}

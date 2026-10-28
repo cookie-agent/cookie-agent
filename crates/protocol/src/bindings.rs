@@ -386,6 +386,14 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(RUNTIME_SNAPSHOT_GET_METHOD, ToDaemon, RuntimeSnapshotGetParams => RuntimeSnapshotResult),
         request!(PROVIDER_CONNECT_METHOD, ToDaemon, ProviderConnectParams => ProviderConnectResult),
         request!(PROVIDER_DISCONNECT_METHOD, ToDaemon, ProviderDisconnectParams => ProviderDisconnectResult),
+        request!(PROVIDER_AUTH_BEGIN_METHOD, ToDaemon, ProviderAuthBeginParams => ProviderAuthBeginResult),
+        request!(PROVIDER_AUTH_COMPLETE_METHOD, ToDaemon, ProviderAuthCompleteParams => ProviderAuthCompleteResult),
+        request!(PROVIDER_AUTH_CANCEL_METHOD, ToDaemon, ProviderAuthCancelParams => ProviderAuthCancelResult),
+        notification!(
+            PROVIDER_AUTH_COMPLETED_METHOD,
+            FromDaemon,
+            ProviderAuthCompletedNotification
+        ),
         notification!("events.subscription", FromDaemon, EventSubscriptionMessage),
         notification!("events.plugin", FromDaemon, ExtensionBusEventParams),
         notification!(

@@ -85,12 +85,18 @@ pub(crate) enum AuthConfig {
         secret_access_key: String,
         session_token: Option<String>,
     },
+    /// A refreshing Bearer token from an interactive sign-in. `account` is the
+    /// signed-in account, which replay is bound to instead of the token.
+    TokenSource {
+        source: crate::DynTokenSource,
+        account: String,
+    },
 }
 
 impl Drop for AuthConfig {
     fn drop(&mut self) {
         match self {
-            Self::None => {}
+            Self::None | Self::TokenSource { .. } => {}
             Self::ApiKey { value } => value.zeroize(),
             Self::Bearer { token } | Self::AccessToken { token } => token.zeroize(),
             Self::HeaderApiKey { value, .. } => value.zeroize(),
@@ -156,6 +162,9 @@ impl AuthConfig {
                     value: secret(value),
                 },
             ))),
+            Self::TokenSource { source, .. } => {
+                Ok(OpenAiCompatibleAuth::token_source(Arc::clone(source)))
+            }
             _ => Err(wrong_auth(
                 "OpenAI-compatible",
                 "none, bearer, or header_api_key",
@@ -563,6 +572,7 @@ impl TimeoutsConfig {
             connect: self.connect,
             headers: self.headers,
             stream_idle: self.stream_idle,
+            credentials: self.credentials,
         }
     }
     pub(crate) fn google(self) -> GoogleTimeouts {

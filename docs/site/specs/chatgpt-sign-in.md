@@ -1,7 +1,10 @@
 # Sign in with ChatGPT as a provider
 
-Status: **draft** (2026-10-27); every decision made by the user on
-2026-10-27 ([section 12](#12-decisions)); phase 0 run on 2026-10-28 ([section 13](#13-phase-0-results)). Builds on
+Status: **phases 1 to 5 implemented** (2026-10-28; client protocol 1.49.0,
+oven-sdk `7e41f54`), with the notes of [section 16](#16-implementation-notes);
+phase 6, in-stream compaction, next. Every decision made by the user on
+2026-10-27 and 2026-10-28 ([section 12](#12-decisions)); phase 0 run on
+2026-10-28 ([section 13](#13-phase-0-results)). Builds on
 [engine configuration](engine-configuration.md) (provider connect),
 [default models and onboarding](default-models-and-onboarding.md),
 [web MCP OAuth](web-mcp-oauth.md) (whose section 1 left "model-provider
@@ -739,3 +742,71 @@ done.
 - The Fast service tier in v1 (D9). The route accepts `service_tier:
   "priority"`, and every model lists it (7.2), so a later version can add
   it without new research.
+
+## 16. Implementation notes
+
+Phases 1 to 5 landed on 2026-10-28. Where they differ from the sections
+above, this section is what the code does.
+
+- **oven-sdk** (`7e41f54`).
+  - `OpenAiTokenSource` is awaited before each compatible Responses request.
+  - A `401` authentication refusal is reported through `rejected` and
+    retried once. A `401` from `rejected_by_hardened_oauth_boundary` is
+    `Unsupported` and is never retried.
+  - A token source requires a `routing_discriminator` and cannot be combined
+    with Bearer or header-provider auth. Replay is scoped without the
+    `authorization` header.
+  - `OpenAiResponsesWireProfile::ChatGptTokenSharing` drops
+    `max_output_tokens` silently and every other refused field with a
+    warning.
+  - The crate versions are bumped with phase 6's oven-sdk change.
+- **Where the sign-in lives.** It is in the provider store's directory:
+  `~/.cookie-agent/providers/chatgpt-sign-in.json` (the host, the issued
+  client ID, the account, and the tokens) and `chatgpt-models.json` (the
+  list, per account), each with its own lock file. Section 6.1's generic
+  OAuth file was not extracted: the MCP store is left alone, and this file
+  has one writer.
+- **The ID token's signature is not checked.** It arrives straight from
+  the token endpoint over TLS, which authenticates its issuer (OpenID
+  Connect Core 1.0, section 3.1.3.7). Its `iss`, `aud`, `exp`, and `nonce`
+  are checked, as is the granted `chatgpt.tokens.use.direct` scope.
+- **Refresh.** It happens 5 minutes before expiry, or for a refused token.
+  `earliest_refresh_at` is not a floor (phase 0).
+- **Built-in provider.** The model manager merges a `chatgpt` catalog row,
+  built from the cached model list, into whatever catalog it compiles. The
+  row uses the family `chatgpt` (recipe key `cookie-agent/chatgpt`) and the
+  adapter ID `oven.openai-compatible.responses.chatgpt`.
+  - Model limits: the input limit is Codex's `context_window`, and the
+    context is input plus output. Output comes from the models.dev `openai`
+    record of the same model, else 128k.
+  - Deferred tools are native and standalone compaction is off.
+  - `request_endpoint` is refused.
+- **Protocol (client 1.49.0).**
+  - The account is `ProviderDescriptor.sign_in_account`, not part of
+    `DurableConnectionDescriptor`; `EffectiveAuthState` is unchanged.
+  - `provider.auth.complete` returns the account rather than a
+    `ProviderConnectResult`. The connect is republished as a runtime change.
+  - Every failure is `provider_sign_in_rejected`, whose reason starts with
+    the sign-in's own code. The plugin and runtime protocols are unchanged.
+- **Sign-out.** It is the server's `provider.disconnect` for `chatgpt`: the
+  connection is removed, then the refresh token revoked.
+- **Expired sign-ins and held sessions.** A run that fails with
+  `provider_sign_in_required` counts like any failed run, so automatic runs
+  hold after the retries (section 6.2 said they would not). The user's next
+  message is unaffected.
+- **Daemon listener (D3).** The daemon binds an ephemeral port, waits 10
+  minutes, and announces `provider.auth.completed`.
+  - The web client uses it when the page's host is `127.0.0.1`,
+    `localhost`, or `[::1]`. It finishes when the provider's account
+    appears, and does not read the notification.
+  - Pages elsewhere name port 1455 and ask for paste-back.
+- **Clients.**
+  - TUI: the sign-in is shown in the provider's details, with the address
+    to copy, paste-back, and disconnect.
+  - `cookie connect chatgpt`: it prints the address and an SSH
+    port-forwarding hint, then catches the redirect or takes a pasted
+    address.
+  - Web: the connect sheet shows **Continue with ChatGPT**, **Sign out**,
+    and the paste-back field.
+- **Default headers.** `session-id` and `thread-id` are shipped for every
+  provider (section 7.2).

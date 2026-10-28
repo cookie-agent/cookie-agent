@@ -507,6 +507,15 @@ impl DynamicCompiler {
     ) -> Result<CompiledDynamicModel, ModelLocalError> {
         let options =
             override_.map_or_else(ProviderOptions::default, |value| value.options.resolve());
+        let chatgpt = resolved.recipe.family == FamilyKind::ChatGpt;
+        if chatgpt && options.request_endpoint.is_some() {
+            return Err(ModelLocalError::Provider(
+                DynamicCompileError::EndpointSelection(
+                    "ChatGPT models are served only through Responses; omit request_endpoint"
+                        .into(),
+                ),
+            ));
+        }
         let endpoint_family = if resolved.recipe.family == FamilyKind::OpenAiCompatibleChat {
             OvenAdapterFamily::OpenaiCompatible
         } else {
@@ -536,6 +545,12 @@ impl DynamicCompiler {
                     "oven.anthropic-compatible.messages.{}",
                     provider_id.as_str()
                 )
+            }
+            // Token sharing is OpenAI's route, but with its own wire profile,
+            // account-scoped replay, and refreshing auth: a caller-named
+            // compatible adapter rather than the official one.
+            OvenAdapterFamily::OpenaiResponses if chatgpt => {
+                format!("oven.openai-compatible.responses.{}", provider_id.as_str())
             }
             _ => adapter.protocol_recipe().to_owned(),
         };
@@ -583,13 +598,16 @@ impl DynamicCompiler {
             .map_err(ModelLocalError::Provider)?;
         capabilities.native_replay =
             automatic_replay(adapter, capabilities.reasoning, &wire_model_id);
+        // Token sharing refuses the standalone `/responses/compact`.
         let native_compaction_allowed =
-            override_.is_none_or(|value| value.compaction.allows_native());
+            !chatgpt && override_.is_none_or(|value| value.compaction.allows_native());
         capabilities.compaction =
             native_compaction_capability(adapter, native_compaction_allowed, setup.as_ref());
         let override_deferred_tools = override_.and_then(|value| value.deferred_tools);
+        // Token sharing loads deferred tools through `additional_tools` items,
+        // verified on the live route.
         let deferred_tools_setting = override_deferred_tools.or_else(|| {
-            (model.dynamically_loaded_tools == Some(true))
+            (chatgpt || model.dynamically_loaded_tools == Some(true))
                 .then_some(crate::DeferredToolsSetting::Native)
         });
         capabilities.deferred_tools = if loads_deferred_tools(adapter) {
@@ -1179,6 +1197,7 @@ pub(crate) fn managed_provider_adapter(
         FamilyKind::Azure if responses => OvenAdapterFamily::AzureOpenaiResponses,
         FamilyKind::Azure => OvenAdapterFamily::AzureOpenaiChat,
         FamilyKind::Cohere => OvenAdapterFamily::CohereV2Chat,
+        FamilyKind::ChatGpt => OvenAdapterFamily::OpenaiResponses,
     }
 }
 

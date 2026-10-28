@@ -118,7 +118,7 @@ stored); unconfigured providers report counts alone.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `source` | string | *(required)* | Must be `"models_dev"`. |
+| `source` | string | *(required)* | Must be `"models_dev"`, or `"chatgpt"` for the built-in [ChatGPT](#chatgpt) provider, which takes only `headers` and `models`. |
 | `base_url` | string | *(none)* | Override of the provider-level API URL; per-model catalog endpoints follow the rules above. Must be `https`, or `http` to `localhost`, `127.0.0.1`, or `::1`. Requires same-definition auth (`api_key` or `auth_override`) unless it is such a loopback URL, and never inherits provider-store setup or credentials. Forbidden for families that compute their endpoint from setup (Vertex, Bedrock, Azure). |
 | `setup` | map of string values | empty | Setup fields the provider recipe requires (for example `project`, `location`, `region`, `resource_name`). Azure Responses compacts natively only with `model`, `version`, and `deployment_type`. Interpolates `${env:NAME}`. |
 | `api_key` | string | *(none)* | Single-secret default auth. Allowed only for providers whose default method is an unambiguous single API key. Interpolates `${env:NAME}`. |
@@ -246,6 +246,61 @@ Alibaba Cloud Model Studio (`alibaba`, `alibaba-cn`); and
 `reasoning_effort = "none"` for Kimi Code, which has no `on` variant. Kimi Code
 serves thinking-off K3 requests with its K2.8 Preview model. Other providers,
 including Moonshot, get no toggle variants.
+
+## ChatGPT
+
+The built-in `chatgpt` provider, shown as **Codex / ChatGPT**, runs models
+on a ChatGPT plan (Go, Plus, Pro, Business, and others) through OpenAI's
+[Sign in with ChatGPT](https://developers.openai.com/siwc) token sharing,
+with no API key and no per-token billing. It is not in models.dev: its
+models are the ones the signed-in plan lists.
+
+**Sign in** from `/connect` in the TUI, the web client's provider list, or
+`cookie connect chatgpt`, and choose **Continue with ChatGPT**. The first
+sign-in registers cookie with OpenAI as **Cookie Agent**, which then appears
+in ChatGPT's connected apps.
+
+- The browser returns to `http://127.0.0.1:<port>/auth/callback`. The TUI and
+  `cookie connect` listen for it on the machine they run on, so a daemon on
+  another machine works the same way.
+- When the browser runs somewhere else, the page it returns to fails to
+  load: paste that page's address into the sign-in.
+- A web page the daemon serves from `127.0.0.1` or `localhost` shares the
+  daemon's machine, so the daemon catches the redirect itself.
+
+**What is stored.** The tokens live beside the provider store, in
+`~/.cookie-agent/providers/chatgpt-sign-in.json`, and the plan's model list
+in `chatgpt-models.json` there. The provider store keeps only the account.
+Access tokens last an hour and refresh on their own; a daemon refreshes at
+least daily, so the 30-day refresh token stays valid while it is idle. When
+a sign-in can no longer refresh, the provider says **sign-in expired: sign
+in again**, its models fail with that reason, and signing in again restores
+them. Disconnecting signs out and revokes the sign-in.
+
+**Models.** The list comes from the account's `GET /v1/models`: at sign-in
+and hourly after. Codex's `ultra` reasoning (its multi-agent mode) is left
+out. Requests never send `max_output_tokens`, `temperature`, `top_p`,
+`truncation`, `user`, `service_tier`, or prompt-cache retention, which the
+route refuses; a setting that names one is dropped with a warning. Cookie's
+standalone native compaction is unavailable on this route, so its own
+summary compacts.
+
+**Usage limits.** A plan that has reached its limit answers with
+`subscription_sharing_usage_limit_exceeded`, which is not retried. OpenAI
+gives no reset time; ChatGPT's settings show the plan's usage.
+
+`[providers.chatgpt]` is optional, and only `source = "chatgpt"` with
+`headers` and `models` (managed model overrides) is accepted:
+
+```toml
+[providers.chatgpt]
+source = "chatgpt"
+models = { "gpt-6-luna" = { display_name = "Luna" } }
+```
+
+`source = "chatgpt"` names this provider and no other, and the `chatgpt` ID
+accepts no other source. `api_key`, `auth_override`, `base_url`, `setup`, and
+`cache` are refused: ChatGPT is signed in, not configured.
 
 ## Custom providers
 

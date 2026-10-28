@@ -52,6 +52,35 @@ impl Server {
         });
     }
 
+    /// Forwards `provider.auth.completed` for sign-ins the daemon's own
+    /// listener finished.
+    pub(super) fn start_provider_auth_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_provider_auth();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                let completed = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    completed = receiver.recv() => match completed {
+                        Ok(completed) => completed,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                };
+                if context
+                    .notify(
+                        cookie_agent_protocol::PROVIDER_AUTH_COMPLETED_METHOD,
+                        &completed,
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Sends `onboarding.changed` whenever `onboarding.get`'s answer
     /// changes. It changes only with the configuration or the runtime, both
     /// of which publish a runtime change; the engine computes it once per

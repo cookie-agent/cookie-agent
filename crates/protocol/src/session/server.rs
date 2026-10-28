@@ -838,6 +838,33 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: ProviderDisconnectParams,
     ) -> Result<ProviderDisconnectResult, ServerFault>;
+    /// Starts a provider's interactive sign-in.
+    async fn begin_provider_auth(
+        &self,
+        _params: crate::ProviderAuthBeginParams,
+    ) -> Result<crate::ProviderAuthBeginResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            crate::PROVIDER_AUTH_BEGIN_METHOD,
+        ))
+    }
+    /// Finishes a provider's sign-in with the browser's landing address.
+    async fn complete_provider_auth(
+        &self,
+        _params: crate::ProviderAuthCompleteParams,
+    ) -> Result<crate::ProviderAuthCompleteResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            crate::PROVIDER_AUTH_COMPLETE_METHOD,
+        ))
+    }
+    /// Drops a provider's sign-in in progress.
+    async fn cancel_provider_auth(
+        &self,
+        _params: crate::ProviderAuthCancelParams,
+    ) -> Result<crate::ProviderAuthCancelResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            crate::PROVIDER_AUTH_CANCEL_METHOD,
+        ))
+    }
 }
 
 /// JSON-RPC failure returned by a [`ServerProtocol`] implementation.
@@ -1247,6 +1274,15 @@ async fn dispatch<S: ServerProtocol>(
         "mcp.auth.begin" => value(server.begin_mcp_auth(decode(params)?).await?),
         "mcp.auth.complete" => value(server.complete_mcp_auth(decode(params)?).await?),
         "mcp.auth.cancel" => value(server.cancel_mcp_auth(decode(params)?).await?),
+        crate::PROVIDER_AUTH_BEGIN_METHOD => {
+            value(server.begin_provider_auth(decode(params)?).await?)
+        }
+        crate::PROVIDER_AUTH_COMPLETE_METHOD => {
+            value(server.complete_provider_auth(decode(params)?).await?)
+        }
+        crate::PROVIDER_AUTH_CANCEL_METHOD => {
+            value(server.cancel_provider_auth(decode(params)?).await?)
+        }
         crate::SESSION_RUNTIME_ATTACH_METHOD => {
             value(server.attach_runtime(decode(params)?, context).await?)
         }

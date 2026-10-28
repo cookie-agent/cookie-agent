@@ -381,14 +381,43 @@ pub struct CustomProvider {
 pub enum ProviderDefinition {
     ModelsDev(ModelsDevProvider),
     Custom(CustomProvider),
+    /// The built-in ChatGPT provider (`source = "chatgpt"`), which is signed
+    /// in rather than configured: only `headers` and `models` apply.
+    #[serde(rename = "chatgpt")]
+    ChatGpt(ModelsDevProvider),
 }
 
 impl ProviderDefinition {
+    /// The managed (catalog-backed or built-in) provider definition.
+    #[must_use]
+    pub fn managed(&self) -> Option<&ModelsDevProvider> {
+        match self {
+            Self::ModelsDev(provider) | Self::ChatGpt(provider) => Some(provider),
+            Self::Custom(_) => None,
+        }
+    }
+
     pub fn validate_for(
         &self,
-        _provider_id: &cookie_agent_identity::ProviderId,
+        provider_id: &cookie_agent_identity::ProviderId,
     ) -> Result<(), AuthoringError> {
+        let chatgpt = provider_id.as_str() == crate::chatgpt::PROVIDER_ID;
         match self {
+            Self::ModelsDev(_) | Self::Custom(_) if chatgpt => {
+                return Err(AuthoringError::ChatGptSource);
+            }
+            Self::ChatGpt(_) if !chatgpt => return Err(AuthoringError::ChatGptSource),
+            Self::ChatGpt(provider) => {
+                if provider.base_url.is_some()
+                    || !provider.setup.is_empty()
+                    || provider.api_key.is_some()
+                    || provider.auth_override.is_some()
+                    || provider.cache.is_some()
+                {
+                    return Err(AuthoringError::ChatGptFields);
+                }
+                validate_display_overrides(provider)?;
+            }
             Self::ModelsDev(provider) => {
                 if provider.api_key.is_some() && provider.auth_override.is_some() {
                     return Err(AuthoringError::AuthConflict);
@@ -751,6 +780,14 @@ pub enum AuthoringError {
     HeaderValue,
     #[error("api_key and auth_override are mutually exclusive")]
     AuthConflict,
+    #[error(
+        "`source = \"chatgpt\"` is the built-in ChatGPT provider: use it for `[providers.chatgpt]`, and only there"
+    )]
+    ChatGptSource,
+    #[error(
+        "ChatGPT is signed in, not configured: `[providers.chatgpt]` accepts only `headers` and `models`; sign in with /connect or `cookie connect chatgpt`"
+    )]
+    ChatGptFields,
     #[error("authored non-loopback base_url requires same-definition auth")]
     BaseUrlWithoutAuth,
     #[error("authored base_url is forbidden by this provider recipe")]

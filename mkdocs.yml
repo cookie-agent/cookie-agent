@@ -161,6 +161,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Sign in with ChatGPT: specs/chatgpt-sign-in.md
           - "ACP v2: self-wakes, subagents, background work": specs/acp-v2.md
           - Push notifications: specs/push-notifications.md
           - Native compaction: specs/native-compaction.md
@@ -192,7 +193,6 @@ nav:
           - Deferred tool loading in oven-sdk: specs/deferred-tools.md
           - Deferred tools in cookie: specs/deferred-tools-cookie.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
-          - Sign in with ChatGPT: specs/chatgpt-sign-in.md
           - Managing runtimes from clients: specs/runtime-management.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md

@@ -250,6 +250,12 @@ on standard input, output, and error: credentials are never accepted as
 arguments. Answering anything but `y` or `yes` to the confirmation cancels it
 with an error. See [Providers](../extend/providers.md).
 
+A provider connected by a browser sign-in, such as `chatgpt`, prints the
+sign-in address instead of asking for credentials. The redirect returns to a
+listener this command opens on `127.0.0.1`; when the browser runs on another
+machine, paste the address it fails to load, or forward the printed port over
+SSH first. See [ChatGPT](../extend/providers.md#chatgpt).
+
 ### `cookie disconnect`
 
 ```text
@@ -257,7 +263,8 @@ cookie disconnect [PROVIDER_ID] [--url <URL>] [--token <TOKEN>]
 ```
 
 Removes a managed provider connection after a `[y/N]` confirmation; it needs
-an interactive terminal like `connect`.
+an interactive terminal like `connect`. Disconnecting `chatgpt` signs out and
+revokes the sign-in.
 
 ### `cookie runtime serve`
 

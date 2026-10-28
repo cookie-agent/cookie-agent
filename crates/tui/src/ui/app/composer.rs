@@ -209,6 +209,11 @@ impl App {
             self.session_search_changed();
             return;
         }
+        if self.modal == Modal::ConnectDetails && self.provider_sign_in.is_some() {
+            self.dispatch_provider_auth_complete(text.trim().to_owned());
+            self.status = "Finishing the sign-in…".into();
+            return;
+        }
         if self.modal == Modal::ConnectProviders {
             let sanitized = text.replace(['\r', '\n'], "");
             self.provider_search.focus_input();

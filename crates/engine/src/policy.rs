@@ -1025,7 +1025,8 @@ fn resolve_authored_cache_strategy(
         .authored()
         .get(&binding.selection.model.provider_id())
         .and_then(|provider| match provider {
-            cookie_agent_models::ProviderDefinition::ModelsDev(provider) => provider.cache.as_ref(),
+            cookie_agent_models::ProviderDefinition::ModelsDev(provider)
+            | cookie_agent_models::ProviderDefinition::ChatGpt(provider) => provider.cache.as_ref(),
             cookie_agent_models::ProviderDefinition::Custom(provider) => provider.cache.as_ref(),
         });
     let strategy = match family {

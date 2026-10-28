@@ -1191,12 +1191,26 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
             .context("load cached models.dev catalog")?,
     );
     let provider_store = open_provider_store().context("open provider store 3")?;
+    // A sign-in record this build cannot read leaves ChatGPT out rather than
+    // the daemon down.
+    let chatgpt =
+        match cookie_agent_models::chatgpt::ChatGptCredentials::open_beside(&provider_store) {
+            Ok(credentials) => Some(cookie_agent_models::manager::ChatGptManagerInputs {
+                models: credentials.cached_models(),
+                credentials,
+            }),
+            Err(error) => {
+                eprintln!("cookie-agent: ChatGPT sign-in unavailable: {error}");
+                None
+            }
+        };
     let model_manager = Arc::new(
-        ModelManager::new_with_headers(
+        ModelManager::new_with_chatgpt(
             configuration.runtime.providers.clone(),
             configuration.runtime.headers.clone(),
             catalog,
             provider_store,
+            chatgpt,
         )
         .context("compose effective providers and current model runtime")?,
     );
@@ -1216,6 +1230,10 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         engine.clone(),
         catalog_refresh_shutdown.clone(),
         CATALOG_REFRESH_INTERVAL,
+    ));
+    tokio::spawn(engine.clone().run_chatgpt_maintenance(
+        catalog_refresh_shutdown.clone(),
+        cookie_agent_engine::CHATGPT_MAINTENANCE_INTERVAL,
     ));
     Ok(Runtime {
         engine,
@@ -1582,6 +1600,10 @@ async fn connect_provider_flow<I: ConnectIo>(
         anyhow::bail!("provider connection cancelled");
     }
 
+    if let Some(method) = cookie_agent_client_state::providers::sign_in_method(provider) {
+        return sign_in_provider_flow(client, provider, method, io).await;
+    }
+
     // The TUI's order: the auth method, its setup values, then credentials.
     let auth_method = choose_auth_method(provider, io)?;
     let setup_values = collect_setup_values(provider, |prompt| io.read_public(prompt))?;
@@ -1607,6 +1629,112 @@ async fn connect_provider_flow<I: ConnectIo>(
         result.durable_connection.provider_id,
         result.runtime.revision,
         if result.replayed { " (replayed)" } else { "" }
+    ))?;
+    Ok(())
+}
+
+/// A provider's browser sign-in. The redirect returns to a listener on this
+/// machine; when the browser runs elsewhere, the user pastes the address it
+/// could not load instead.
+async fn sign_in_provider_flow<I: ConnectIo>(
+    client: &Client,
+    provider: &cookie_agent_protocol::ProviderDescriptor,
+    method: &cookie_agent_protocol::SignInMethodDescriptor,
+    io: &mut I,
+) -> anyhow::Result<()> {
+    let listener = OAuthCallbackListener::bind_on_path(method.redirect_path.as_str())
+        .await
+        .context("listen for the sign-in redirect")?;
+    let redirect_uri = listener.redirect_uri();
+    let port = redirect_uri
+        .trim_start_matches("http://127.0.0.1:")
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let began = client
+        .begin_provider_auth(cookie_agent_protocol::ProviderAuthBeginParams {
+            provider_id: provider.id.clone(),
+            method: method.id.clone(),
+            redirect_uri: Some(redirect_uri),
+        })
+        .await
+        .context("provider.auth.begin failed")?;
+    io.write_line(&format!(
+        "{}: open this address in a browser and sign in:\n\n{}\n",
+        method.display_name, began.authorization_url
+    ))?;
+    io.write_line(&format!(
+        "{} To catch the redirect from another machine instead, forward its port first: \
+         ssh -N -L {port}:127.0.0.1:{port} <this machine>",
+        cookie_agent_client_state::providers::SIGN_IN_PASTE_HINT
+    ))?;
+    let caught = Arc::new(std::sync::Mutex::new(None));
+    let background = {
+        let client = client.clone();
+        let caught = Arc::clone(&caught);
+        let provider_id = provider.id.clone();
+        tokio::spawn(async move {
+            while let Ok(callback) = listener.accept().await {
+                let result = client
+                    .complete_provider_auth(cookie_agent_protocol::ProviderAuthCompleteParams {
+                        provider_id: provider_id.clone(),
+                        callback_url: callback.url().to_owned(),
+                    })
+                    .await;
+                let _ = callback.respond(result.is_ok()).await;
+                let done = result.is_ok();
+                match &result {
+                    Ok(_) => println!("\nSigned in. Press Enter to finish."),
+                    Err(error) => println!("\nThe sign-in failed: {error}"),
+                }
+                *caught
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+                if done {
+                    return;
+                }
+            }
+        })
+    };
+    let outcome = loop {
+        let line = io.read_public(
+            "Paste the address the browser landed on, or press Enter once it says signed in: ",
+        )?;
+        let line = line.trim();
+        if line.is_empty() {
+            let finished = caught
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            match finished {
+                Some(Ok(result)) => break result,
+                Some(Err(error)) => io.write_line(&format!("The sign-in failed: {error}"))?,
+                None => io.write_line("Still waiting for the browser.")?,
+            }
+            continue;
+        }
+        match client
+            .complete_provider_auth(cookie_agent_protocol::ProviderAuthCompleteParams {
+                provider_id: provider.id.clone(),
+                callback_url: line.to_owned(),
+            })
+            .await
+        {
+            Ok(result) => break result,
+            Err(error) => io.write_line(&format!("The sign-in failed: {error}"))?,
+        }
+    };
+    background.abort();
+    io.write_line(&format!(
+        "Signed in to {}{}.",
+        outcome.provider_id,
+        outcome
+            .account
+            .email
+            .as_ref()
+            .map(|email| format!(" as {email}"))
+            .unwrap_or_default()
     ))?;
     Ok(())
 }

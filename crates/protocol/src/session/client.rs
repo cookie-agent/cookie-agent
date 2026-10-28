@@ -879,6 +879,31 @@ impl Client {
         self.call("mcp.auth.cancel", &params).await
     }
 
+    /// Starts a provider's interactive sign-in (client protocol 1.49.0).
+    pub async fn begin_provider_auth(
+        &self,
+        params: crate::ProviderAuthBeginParams,
+    ) -> Result<crate::ProviderAuthBeginResult, ClientError> {
+        self.call(crate::PROVIDER_AUTH_BEGIN_METHOD, &params).await
+    }
+
+    /// Finishes a provider's sign-in with the address the browser landed on.
+    pub async fn complete_provider_auth(
+        &self,
+        params: crate::ProviderAuthCompleteParams,
+    ) -> Result<crate::ProviderAuthCompleteResult, ClientError> {
+        self.call(crate::PROVIDER_AUTH_COMPLETE_METHOD, &params)
+            .await
+    }
+
+    /// Drops a provider's sign-in in progress.
+    pub async fn cancel_provider_auth(
+        &self,
+        params: crate::ProviderAuthCancelParams,
+    ) -> Result<crate::ProviderAuthCancelResult, ClientError> {
+        self.call(crate::PROVIDER_AUTH_CANCEL_METHOD, &params).await
+    }
+
     /// Attaches a runtime to a session with no active run.
     pub async fn attach_runtime(
         &self,

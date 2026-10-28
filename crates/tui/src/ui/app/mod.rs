@@ -813,6 +813,8 @@ pub struct App {
     pending_fallback_resets: HashMap<ClientRunId, PendingFallbackReset>,
     pub(super) connect_provider: Option<ProviderDescriptor>,
     pub(super) provider_form: Option<ProviderForm>,
+    /// A provider sign-in in progress, shown in the provider's details.
+    pub(super) provider_sign_in: Option<ProviderSignInView>,
     pub(super) provider_operations: HashMap<cookie_agent_protocol::ProviderId, ProviderOperation>,
     /// The running connect or disconnect of each provider; one at a time
     /// per provider.
@@ -1309,6 +1311,14 @@ pub(in crate::ui) enum RpcUpdate {
     McpAuthBegan {
         result: Result<McpAuthBeginResult, String>,
     },
+    ProviderAuthBegan {
+        provider_id: cookie_agent_protocol::ProviderId,
+        result: Result<cookie_agent_protocol::ProviderAuthBeginResult, String>,
+    },
+    ProviderAuthCompleted {
+        provider_id: cookie_agent_protocol::ProviderId,
+        result: Result<cookie_agent_protocol::ProviderAuthCompleteResult, String>,
+    },
     McpAuthCompleted {
         server: String,
         result: Result<(), String>,
@@ -1593,6 +1603,7 @@ impl App {
             pending_fallback_resets: HashMap::new(),
             connect_provider: None,
             provider_form: None,
+            provider_sign_in: None,
             provider_operations: HashMap::new(),
             connect_tasks: HashMap::new(),
             tree: None,
@@ -1919,6 +1930,15 @@ impl App {
     {
         tokio::spawn(task);
     }
+}
+
+/// A provider sign-in waiting for the browser: its URL once the daemon has
+/// begun it, and the loopback listener catching the redirect.
+pub(super) struct ProviderSignInView {
+    pub(super) provider_id: cookie_agent_protocol::ProviderId,
+    pub(super) authorization_url: Option<String>,
+    pub(super) error: Option<String>,
+    pub(super) listener: Option<AuthListener>,
 }
 
 fn latest_resolved_model_key(state: &crate::state::SessionState) -> Option<&ModelKey> {

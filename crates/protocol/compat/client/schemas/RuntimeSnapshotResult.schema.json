@@ -936,6 +936,25 @@
           },
           "type": "array"
         },
+        "sign_in_account": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SignInAccountDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The account a sign-in connected (client protocol 1.49.0)."
+        },
+        "sign_in_methods": {
+          "description": "Interactive sign-ins the provider offers instead of typed credentials,\nconnected with `provider.auth.begin` and `provider.auth.complete`\n(client protocol 1.49.0). Empty when it offers none, and from older\ndaemons.",
+          "items": {
+            "$ref": "#/$defs/SignInMethodDescriptor"
+          },
+          "maxItems": 4,
+          "type": "array"
+        },
         "support": {
           "$ref": "#/$defs/ProviderSupport"
         },
@@ -1204,6 +1223,58 @@
         "max_length",
         "minimum",
         "maximum"
+      ],
+      "type": "object"
+    },
+    "SignInAccountDescriptor": {
+      "description": "The account a sign-in connected.",
+      "properties": {
+        "email": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sign_in_required": {
+          "default": false,
+          "description": "The sign-in can no longer refresh; the user must sign in again.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "SignInMethodDescriptor": {
+      "description": "An interactive sign-in. The browser must return to\n`http://127.0.0.1:<any port><redirect_path>`, which the client catches with\na loopback listener, or the user pastes back.",
+      "properties": {
+        "display_name": {
+          "description": "The sign-in button's label, as the provider's branding requires.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "redirect_path": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "redirect_path"
       ],
       "type": "object"
     },

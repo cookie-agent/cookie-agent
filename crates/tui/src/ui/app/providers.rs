@@ -108,6 +108,11 @@ impl App {
                             self.provider_search.reset();
                             self.modal = Modal::ConnectDetails;
                         }
+                        _ if cookie_agent_client_state::providers::sign_in_method(&provider)
+                            .is_some() =>
+                        {
+                            self.begin_provider_sign_in(provider);
+                        }
                         ProviderRowState::Disconnected
                         | ProviderRowState::ConnectedReconnect
                         | ProviderRowState::Removed => self.begin_provider_form(provider),
@@ -142,6 +147,120 @@ impl App {
         }
     }
 
+    /// Starts the provider's sign-in in its details: binds the loopback
+    /// listener the redirect returns to, asks the daemon for the URL, and
+    /// forwards every redirect the browser sends until one completes it.
+    pub(in crate::ui) fn begin_provider_sign_in(&mut self, provider: ProviderDescriptor) {
+        let Some(method) = cookie_agent_client_state::providers::sign_in_method(&provider) else {
+            return;
+        };
+        let method_id = method.id.clone();
+        let path = method.redirect_path.as_str().to_owned();
+        self.clear_connect_secrets();
+        self.provider_search.reset();
+        let provider_id = provider.id.clone();
+        self.connect_provider = Some(provider);
+        self.modal = Modal::ConnectDetails;
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        let task_provider = provider_id.clone();
+        let task = tokio::spawn(async move {
+            let provider_id = task_provider;
+            let listener = match OAuthCallbackListener::bind_on_path(path).await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    let _ = updates.send(RpcUpdate::ProviderAuthBegan {
+                        provider_id,
+                        result: Err(format!(
+                            "could not listen for the sign-in redirect: {error}"
+                        )),
+                    });
+                    return;
+                }
+            };
+            let result = client
+                .begin_provider_auth(cookie_agent_protocol::ProviderAuthBeginParams {
+                    provider_id: provider_id.clone(),
+                    method: method_id,
+                    redirect_uri: Some(listener.redirect_uri()),
+                })
+                .await
+                .map_err(|error| error.to_string());
+            let began = result.is_ok();
+            let _ = updates.send(RpcUpdate::ProviderAuthBegan {
+                provider_id: provider_id.clone(),
+                result,
+            });
+            if !began {
+                return;
+            }
+            while let Ok(callback) = listener.accept().await {
+                let result = client
+                    .complete_provider_auth(cookie_agent_protocol::ProviderAuthCompleteParams {
+                        provider_id: provider_id.clone(),
+                        callback_url: callback.url().to_owned(),
+                    })
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = callback.respond(result.is_ok()).await;
+                let completed = result.is_ok();
+                let _ = updates.send(RpcUpdate::ProviderAuthCompleted {
+                    provider_id: provider_id.clone(),
+                    result,
+                });
+                if completed {
+                    return;
+                }
+            }
+        });
+        self.provider_sign_in = Some(ProviderSignInView {
+            provider_id,
+            authorization_url: None,
+            error: None,
+            listener: Some(AuthListener(task.abort_handle())),
+        });
+        self.status = "Starting the sign-in…".into();
+    }
+
+    /// The paste fallback for a browser on another machine, whose redirect
+    /// to this machine's loopback never arrives.
+    pub(super) fn dispatch_provider_auth_complete(&self, callback_url: String) {
+        let Some(sign_in) = &self.provider_sign_in else {
+            return;
+        };
+        let provider_id = sign_in.provider_id.clone();
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .complete_provider_auth(cookie_agent_protocol::ProviderAuthCompleteParams {
+                    provider_id: provider_id.clone(),
+                    callback_url,
+                })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::ProviderAuthCompleted {
+                provider_id,
+                result,
+            });
+        });
+    }
+
+    /// Ends the sign-in on both sides.
+    pub(super) fn cancel_provider_sign_in(&mut self) {
+        let Some(sign_in) = self.provider_sign_in.take() else {
+            return;
+        };
+        let client = self.client.clone();
+        self.spawn_rpc(async move {
+            let _ = client
+                .cancel_provider_auth(cookie_agent_protocol::ProviderAuthCancelParams {
+                    provider_id: sign_in.provider_id,
+                })
+                .await;
+        });
+    }
+
     pub(in crate::ui) fn begin_provider_form(&mut self, provider: ProviderDescriptor) {
         self.clear_connect_secrets();
         self.connect_provider = Some(provider.clone());
@@ -162,6 +281,26 @@ impl App {
             self.modal = Modal::None;
             return;
         };
+        if let Some(sign_in) = &self.provider_sign_in {
+            match key.code {
+                KeyCode::Esc => {
+                    self.cancel_provider_sign_in();
+                    self.modal = Modal::None;
+                    self.status = "Sign-in cancelled.".into();
+                }
+                KeyCode::Char('c') => {
+                    if let Some(url) = sign_in.authorization_url.clone() {
+                        self.copy_to_clipboard(url);
+                    }
+                }
+                KeyCode::Char('d' | 'D') if provider.durable_connection.is_some() => {
+                    self.cancel_provider_sign_in();
+                    self.modal = Modal::DisconnectConfirm;
+                }
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Esc => {
                 self.clear_connect_secrets();

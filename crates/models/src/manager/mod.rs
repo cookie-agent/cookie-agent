@@ -708,6 +708,8 @@ pub struct CompiledModelRuntime {
     /// Each catalog-backed provider's compiled output, kept so the next
     /// compile can reuse a provider whose inputs did not change.
     managed: Arc<BTreeMap<ProviderId, Arc<CompiledManagedProvider>>>,
+    /// The built-in ChatGPT provider's signed-in account when it was compiled.
+    chatgpt_account: Option<crate::chatgpt::AccountSummary>,
 }
 
 /// One catalog-backed provider's compiled row and models. It is a pure
@@ -747,6 +749,12 @@ impl CompiledModelRuntime {
     #[must_use]
     pub fn runtime_revision(&self) -> &RuntimeRevision {
         &self.runtime_revision
+    }
+
+    /// The built-in ChatGPT provider's signed-in account.
+    #[must_use]
+    pub fn chatgpt_account(&self) -> Option<&crate::chatgpt::AccountSummary> {
+        self.chatgpt_account.as_ref()
     }
 
     #[must_use]
@@ -1051,6 +1059,21 @@ pub struct ModelManager {
     store: ProviderStore,
     current: ArcSwap<CompiledModelRuntime>,
     mutation: Mutex<()>,
+    chatgpt: Option<ChatGptInputs>,
+}
+
+/// The built-in ChatGPT provider: the signed-in account's token source and
+/// the plan's model list, which becomes the provider's catalog row.
+pub struct ChatGptManagerInputs {
+    pub credentials: Arc<crate::chatgpt::ChatGptCredentials>,
+    /// The plan's last known model list; the cached one at startup.
+    pub models: Vec<crate::chatgpt::ChatGptModel>,
+}
+
+struct ChatGptInputs {
+    credentials: Arc<crate::chatgpt::ChatGptCredentials>,
+    token_source: crate::DynTokenSource,
+    models: Mutex<Arc<Vec<crate::chatgpt::ChatGptModel>>>,
 }
 
 impl ModelManager {
@@ -1068,19 +1091,123 @@ impl ModelManager {
         catalog: Arc<CatalogSnapshot>,
         store: ProviderStore,
     ) -> Result<Self, ModelManagerError> {
+        Self::new_with_chatgpt(authored, global_headers, catalog, store, None)
+    }
+
+    /// [`Self::new_with_headers`] with the built-in ChatGPT provider, which
+    /// is listed only when `chatgpt` is given.
+    pub fn new_with_chatgpt(
+        authored: BTreeMap<ProviderId, ProviderDefinition>,
+        global_headers: BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>,
+        catalog: Arc<CatalogSnapshot>,
+        store: ProviderStore,
+        chatgpt: Option<ChatGptManagerInputs>,
+    ) -> Result<Self, ModelManagerError> {
+        let chatgpt = chatgpt.map(|inputs| ChatGptInputs {
+            token_source: inputs.credentials.token_source(),
+            credentials: inputs.credentials,
+            models: Mutex::new(Arc::new(inputs.models)),
+        });
         let store_snapshot = store.load()?;
         let initial = Arc::new(compile_runtime(
             None,
             Arc::new(authored),
             Arc::new(global_headers),
-            catalog,
+            with_builtin_providers(catalog, chatgpt.as_ref()),
             store_snapshot,
+            chatgpt.as_ref().map(|inputs| &inputs.token_source),
+            chatgpt
+                .as_ref()
+                .and_then(|inputs| inputs.credentials.account()),
         )?);
         Ok(Self {
             store,
             current: ArcSwap::from(initial),
             mutation: Mutex::new(()),
+            chatgpt,
         })
+    }
+
+    /// Compiles with the built-in providers merged into `catalog`.
+    fn compile(
+        &self,
+        previous: Option<&CompiledModelRuntime>,
+        authored: Arc<BTreeMap<ProviderId, ProviderDefinition>>,
+        global_headers: Arc<BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>>,
+        catalog: Arc<CatalogSnapshot>,
+        store: ProviderStoreSnapshot,
+    ) -> Result<CompiledModelRuntime, ModelManagerError> {
+        compile_runtime(
+            previous,
+            authored,
+            global_headers,
+            with_builtin_providers(catalog, self.chatgpt.as_ref()),
+            store,
+            self.chatgpt.as_ref().map(|inputs| &inputs.token_source),
+            self.chatgpt
+                .as_ref()
+                .and_then(|inputs| inputs.credentials.account()),
+        )
+    }
+
+    /// Recompiles and publishes when the signed-in ChatGPT account differs
+    /// from the one the current runtime was compiled with.
+    pub fn refresh_chatgpt_account<P>(
+        &self,
+        prepare_publication: impl FnOnce(&Arc<CompiledModelRuntime>) -> Result<P, ModelManagerError>,
+    ) -> Result<Option<(Arc<CompiledModelRuntime>, P)>, ModelManagerError> {
+        let Some(chatgpt) = &self.chatgpt else {
+            return Ok(None);
+        };
+        let _guard = lock(&self.mutation);
+        let current = self.current();
+        if current.chatgpt_account == chatgpt.credentials.account() {
+            return Ok(None);
+        }
+        let candidate = Arc::new(self.compile(
+            Some(&current),
+            Arc::clone(&current.authored),
+            Arc::clone(&current.global_headers),
+            Arc::clone(&current.catalog),
+            current.store.clone(),
+        )?);
+        let publication = prepare_publication(&candidate)?;
+        self.current.store(Arc::clone(&candidate));
+        Ok(Some((candidate, publication)))
+    }
+
+    /// The built-in ChatGPT provider's sign-in, when the provider is built in.
+    #[must_use]
+    pub fn chatgpt(&self) -> Option<&Arc<crate::chatgpt::ChatGptCredentials>> {
+        self.chatgpt.as_ref().map(|inputs| &inputs.credentials)
+    }
+
+    /// Replaces the ChatGPT plan's model list and publishes the runtime it
+    /// compiles to. Without the built-in provider this changes nothing.
+    pub fn replace_chatgpt_models<P>(
+        &self,
+        models: Vec<crate::chatgpt::ChatGptModel>,
+        prepare_publication: impl FnOnce(&Arc<CompiledModelRuntime>) -> Result<P, ModelManagerError>,
+    ) -> Result<Option<(Arc<CompiledModelRuntime>, P)>, ModelManagerError> {
+        let Some(chatgpt) = &self.chatgpt else {
+            return Ok(None);
+        };
+        let _guard = lock(&self.mutation);
+        if **lock(&chatgpt.models) == models {
+            return Ok(None);
+        }
+        *lock(&chatgpt.models) = Arc::new(models);
+        let current = self.current();
+        let candidate = Arc::new(self.compile(
+            Some(&current),
+            Arc::clone(&current.authored),
+            Arc::clone(&current.global_headers),
+            Arc::clone(&current.catalog),
+            current.store.clone(),
+        )?);
+        let publication = prepare_publication(&candidate)?;
+        self.current.store(Arc::clone(&candidate));
+        Ok(Some((candidate, publication)))
     }
 
     #[must_use]
@@ -1113,7 +1240,7 @@ impl ModelManager {
                 })
             }
             ConnectProposal::Proposed(proposal) => {
-                let candidate = Arc::new(compile_runtime(
+                let candidate = Arc::new(self.compile(
                     Some(&current),
                     Arc::clone(&current.authored),
                     Arc::clone(&current.global_headers),
@@ -1175,7 +1302,7 @@ impl ModelManager {
                 })
             }
             DisconnectProposal::Proposed(proposal) => {
-                let candidate = Arc::new(compile_runtime(
+                let candidate = Arc::new(self.compile(
                     Some(&current),
                     Arc::clone(&current.authored),
                     Arc::clone(&current.global_headers),
@@ -1208,7 +1335,7 @@ impl ModelManager {
         let Some(store) = self.store.reload_if_changed(current.store.generation())? else {
             return Ok(None);
         };
-        let candidate = Arc::new(compile_runtime(
+        let candidate = Arc::new(self.compile(
             Some(&current),
             Arc::clone(&current.authored),
             Arc::clone(&current.global_headers),
@@ -1248,7 +1375,7 @@ impl ModelManager {
         } else {
             Arc::new(global_headers)
         };
-        let candidate = Arc::new(compile_runtime(
+        let candidate = Arc::new(self.compile(
             Some(&current),
             Arc::new(authored),
             global_headers,
@@ -1268,6 +1395,41 @@ impl fmt::Debug for ModelManager {
             .field("current", &self.current())
             .finish_non_exhaustive()
     }
+}
+
+/// `catalog` with the built-in providers' current rows: the ChatGPT row when
+/// the provider is built in, and no ChatGPT row otherwise. The catalog is
+/// copied only when its row differs.
+fn with_builtin_providers(
+    catalog: Arc<CatalogSnapshot>,
+    chatgpt: Option<&ChatGptInputs>,
+) -> Arc<CatalogSnapshot> {
+    let id =
+        ProviderId::new(crate::chatgpt::PROVIDER_ID).expect("the ChatGPT provider ID is valid");
+    let wanted = chatgpt.map(|inputs| {
+        let models = Arc::clone(&lock(&inputs.models));
+        let openai = ProviderId::new("openai").ok().and_then(|openai| {
+            catalog
+                .provider(&openai)
+                .and_then(|entry| entry.record.clone())
+        });
+        crate::chatgpt::provider_entry(&models, openai.as_ref())
+    });
+    if catalog.provider(&id) == wanted.as_ref() {
+        return catalog;
+    }
+    let mut merged = (*catalog).clone();
+    let mut providers = (*merged.providers).clone();
+    match wanted {
+        Some(entry) => {
+            providers.insert(id, entry);
+        }
+        None => {
+            providers.remove(&id);
+        }
+    }
+    merged.providers = Arc::new(providers);
+    Arc::new(merged)
 }
 
 fn validate_unresolved_managed_cache(
@@ -1307,6 +1469,8 @@ fn compile_runtime(
     global_headers: Arc<BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>>,
     catalog: Arc<CatalogSnapshot>,
     store: ProviderStoreSnapshot,
+    chatgpt_token: Option<&crate::DynTokenSource>,
+    chatgpt_account: Option<crate::chatgpt::AccountSummary>,
 ) -> Result<CompiledModelRuntime, ModelManagerError> {
     let registry = family_registry();
     let compiler = DynamicCompiler::family_registry();
@@ -1314,7 +1478,7 @@ fn compile_runtime(
     provider_ids.extend(
         authored
             .iter()
-            .filter(|(_, definition)| matches!(definition, ProviderDefinition::ModelsDev(_)))
+            .filter(|(_, definition)| definition.managed().is_some())
             .map(|(id, _)| id.clone()),
     );
     provider_ids.extend(store.providers().keys().cloned());
@@ -1353,6 +1517,7 @@ fn compile_runtime(
                 &global_headers,
                 &catalog,
                 &store,
+                chatgpt_token,
             )?),
         };
         for model in &compiled.models {
@@ -1393,6 +1558,7 @@ fn compile_runtime(
                 .iter()
                 .map(|(field, value)| (field.clone(), value.expose().to_owned()))
                 .collect(),
+            token_source: None,
         };
         for (model_id, model) in compiled.models {
             let key = ModelKey::new(provider_id.clone(), model_id)
@@ -1463,6 +1629,7 @@ fn compile_runtime(
         providers: Arc::new(providers),
         models: Arc::new(models),
         managed: Arc::new(managed),
+        chatgpt_account,
     })
 }
 
@@ -1498,12 +1665,13 @@ fn compile_managed_provider(
     global_headers: &BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>,
     catalog: &CatalogSnapshot,
     store: &ProviderStoreSnapshot,
+    chatgpt_token: Option<&crate::DynTokenSource>,
 ) -> Result<CompiledManagedProvider, ModelManagerError> {
     let registry = family_registry();
     let compiler = DynamicCompiler::family_registry();
     let mut models = Vec::new();
     let authored_managed = match authored.get(provider_id) {
-        Some(ProviderDefinition::ModelsDev(provider)) => Some(provider),
+        Some(definition) => definition.managed(),
         _ => None,
     };
     let stored = store.provider(provider_id);
@@ -1589,11 +1757,16 @@ fn compile_managed_provider(
             .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
         let model = with_effective_status(model, effective.credential_source);
         let model_credentials = if model.status == CompiledModelStatus::Available {
-            mapped_credentials(&effective.credentials, &model.auth)?
+            let mut credentials = mapped_credentials(&effective.credentials, &model.auth)?;
+            if credentials.method == crate::recipes::CHATGPT_SIGN_IN_METHOD {
+                credentials.token_source = chatgpt_token.cloned();
+            }
+            credentials
         } else {
             ExecutableCredentialMaterial {
                 method: model.auth.method.clone(),
                 values: BTreeMap::new(),
+                token_source: None,
             }
         };
         let (executable, variant_executables) =
@@ -1673,7 +1846,8 @@ fn effective_managed(
     // base_url, else catalog API URL) is a loopback URL: a local server such
     // as LM Studio, Ollama, or QVAC. Local catalog providers stay opt-in so
     // servers that are not running never show up as available.
-    let local = record.environment.is_empty()
+    let local = recipe.family != crate::recipes::FamilyKind::ChatGpt
+        && record.environment.is_empty()
         || authored.is_some_and(|authored| {
             authored
                 .base_url
@@ -1730,6 +1904,7 @@ fn effective_managed(
                     .expose()
                     .to_owned(),
             )]),
+            token_source: None,
         },
         EffectiveCredentialSource::AuthoredOverride => {
             let override_ = authored
@@ -1742,6 +1917,7 @@ fn effective_managed(
                     .iter()
                     .map(|(field, value)| (field.clone(), value.expose().to_owned()))
                     .collect(),
+                token_source: None,
             }
         }
         EffectiveCredentialSource::ProviderStore => {
@@ -1760,6 +1936,7 @@ fn effective_managed(
                         ))
                     })
                     .collect::<Result<_, ModelManagerError>>()?,
+                token_source: None,
             }
         }
         EffectiveCredentialSource::NoAuth => ExecutableCredentialMaterial {
@@ -1767,10 +1944,12 @@ fn effective_managed(
                 .ok_or(ModelManagerError::RuntimeCompileFailed)?
                 .to_owned(),
             values: BTreeMap::new(),
+            token_source: None,
         },
         EffectiveCredentialSource::Unavailable => ExecutableCredentialMaterial {
             method: recipe.default_auth_method.to_owned(),
             values: BTreeMap::new(),
+            token_source: None,
         },
     };
     if credential_source == EffectiveCredentialSource::ProviderStore {
@@ -1909,6 +2088,7 @@ fn mapped_credentials(
         return Ok(ExecutableCredentialMaterial {
             method: target.method.clone(),
             values: BTreeMap::new(),
+            token_source: None,
         });
     }
     let values = target
@@ -1946,6 +2126,7 @@ fn mapped_credentials(
     Ok(ExecutableCredentialMaterial {
         method: target.method.clone(),
         values,
+        token_source: None,
     })
 }
 
@@ -2256,7 +2437,7 @@ pub fn safe_definition_fingerprint(
     definition: &ProviderDefinition,
 ) -> Sha256Digest {
     let value = match definition {
-        ProviderDefinition::ModelsDev(provider) => json!({
+        ProviderDefinition::ModelsDev(provider) | ProviderDefinition::ChatGpt(provider) => json!({
             "provider_id": provider_id,
             "source": "models_dev",
             "base_url": provider.base_url.as_ref().map(crate::EndpointUrl::as_str),
@@ -2312,7 +2493,9 @@ pub fn safe_definition_fingerprint(
     };
     let mut value = value;
     let cache = match definition {
-        ProviderDefinition::ModelsDev(provider) => provider.cache.as_ref(),
+        ProviderDefinition::ModelsDev(provider) | ProviderDefinition::ChatGpt(provider) => {
+            provider.cache.as_ref()
+        }
         ProviderDefinition::Custom(provider) => provider.cache.as_ref(),
     };
     if let Some(cache) = cache {

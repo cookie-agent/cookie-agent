@@ -1019,6 +1019,127 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// A provider whose connection is a browser sign-in: the sign-in button,
+/// then either "finish in the new tab" or the paste-back field.
+fn sign_in_view(
+    workspace: Workspace,
+    provider: ProviderDescriptor,
+    method: cookie_agent_protocol::SignInMethodDescriptor,
+    open: RwSignal<Option<ProviderDescriptor>>,
+    confirm_disconnect: RwSignal<bool>,
+) -> impl IntoView {
+    use crate::workspace::ProviderSignIn;
+
+    let summary = model_counts_summary(&provider);
+    let status = cookie_agent_client_state::providers::sign_in_status(&provider)
+        .unwrap_or_else(|| "not signed in".to_owned());
+    let connected = provider.durable_connection.is_some();
+    let state = RwSignal::new(ProviderSignIn::Idle);
+    let begin_provider = provider.clone();
+    let finish_id = provider.id.clone();
+    let cancel_id = provider.id.clone();
+    let disconnect_provider = provider.clone();
+    // A sign-in the daemon caught itself ends when the account shows up.
+    let watched = provider.id.clone();
+    let was_connected = provider
+        .sign_in_account
+        .as_ref()
+        .filter(|account| !account.sign_in_required)
+        .and_then(|account| account.email.clone());
+    Effect::new(move |_| {
+        let account = workspace.providers().into_iter().find_map(|listed| {
+            (listed.id == watched)
+                .then(|| listed.sign_in_account.clone())
+                .flatten()
+        });
+        if matches!(
+            state.get_untracked(),
+            ProviderSignIn::Waiting {
+                caught_by_daemon: true,
+                ..
+            }
+        ) && account
+            .is_some_and(|account| !account.sign_in_required && account.email != was_connected)
+        {
+            state.set(ProviderSignIn::Idle);
+            open.set(None);
+        }
+    });
+    view! {
+        <p class="text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</p>
+        <p class=NOTE>{summary}</p>
+        <p class="text-sm" id="provider-sign-in-status">{status}</p>
+        {move || match state.get() {
+            ProviderSignIn::Idle => None,
+            ProviderSignIn::Waiting { caught_by_daemon: true, authorization_url } => Some(view! {
+                <p class=NOTE>"Finish signing in in the new tab. "
+                    <a class="underline" href=authorization_url target="_blank" rel="noopener">"Open it again"</a>
+                </p>
+            }.into_any()),
+            ProviderSignIn::Waiting { caught_by_daemon: false, authorization_url } => Some(view! {
+                <p class=NOTE>"Sign in in the new tab. "
+                    <a class="underline" href=authorization_url target="_blank" rel="noopener">"Open it again"</a>
+                </p>
+                <p class=NOTE>{cookie_agent_client_state::providers::SIGN_IN_PASTE_HINT}</p>
+                <label class="flex flex-col gap-1 text-sm">
+                    <span>"Address the tab could not load"</span>
+                    <input type="text" id="provider-sign-in-callback" class=FIELD autocomplete="off" spellcheck="false" />
+                </label>
+                <button type="button" id="provider-sign-in-finish" class=PRIMARY on:click={
+                    let provider_id = finish_id.clone();
+                    move |_| {
+                        let pasted = field_value("provider-sign-in-callback");
+                        if !pasted.trim().is_empty() {
+                            workspace.finish_provider_sign_in(provider_id.clone(), pasted.trim().to_owned(), state);
+                        }
+                    }
+                }>"Finish sign-in"</button>
+            }.into_any()),
+            ProviderSignIn::Failed(message) => Some(view! {
+                <p class=ERROR id="provider-error">{message}</p>
+            }.into_any()),
+        }}
+        <div class="flex flex-wrap gap-2">
+            <button type="button" id="provider-sign-in" class=PRIMARY on:click={
+                let provider = begin_provider.clone();
+                move |_| workspace.sign_in_provider(provider.clone(), state)
+            }>
+                <Glyph icon=icondata::FaPlugSolid />
+                {if connected { format!("{} again", method.display_name) } else { method.display_name.to_string() }}
+            </button>
+            <button type="button" class=BUTTON on:click=move |_| {
+                if matches!(state.get_untracked(), ProviderSignIn::Waiting { .. }) {
+                    workspace.cancel_provider_sign_in(cancel_id.clone(), state);
+                }
+                open.set(None);
+            }>"Cancel"</button>
+            <Show when=move || connected>
+                <button type="button" id="provider-disconnect" class=BUTTON on:click=move |_| confirm_disconnect.set(true)>
+                    "Sign out"
+                </button>
+            </Show>
+        </div>
+        <Show when=move || confirm_disconnect.get()>
+            <div class=CONFIRM>
+                <p class="text-sm">"Sign out and revoke this sign-in?"</p>
+                <div class="flex gap-2">
+                    <button type="button" id="provider-disconnect-confirm" class=PRIMARY on:click={
+                        let provider = disconnect_provider.clone();
+                        move |_| {
+                            confirm_disconnect.set(false);
+                            open.set(None);
+                            workspace.disconnect_provider(provider.clone());
+                        }
+                    }>
+                        "Sign out"
+                    </button>
+                    <button type="button" class=BUTTON on:click=move |_| confirm_disconnect.set(false)>"Keep it"</button>
+                </div>
+            </div>
+        </Show>
+    }
+}
+
 /// A provider's connect form, or its details when it cannot be connected.
 /// Credentials stay in their password fields: they are read once when the
 /// form is sent and never kept in the page's state.
@@ -1044,6 +1165,9 @@ fn provider_view(
             <button type="button" class=BUTTON on:click=back>"Back"</button>
         }
         .into_any();
+    }
+    if let Some(method) = cookie_agent_client_state::providers::sign_in_method(&provider).cloned() {
+        return sign_in_view(workspace, provider, method, open, confirm_disconnect).into_any();
     }
     let Some(initial) = initial_auth_method(&provider).cloned() else {
         return view! {

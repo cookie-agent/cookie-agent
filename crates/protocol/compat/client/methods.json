@@ -556,6 +556,38 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "provider.auth.begin",
+      "params": "ProviderAuthBeginParams",
+      "params_role": "command",
+      "result": "ProviderAuthBeginResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "provider.auth.cancel",
+      "params": "ProviderAuthCancelParams",
+      "params_role": "command",
+      "result": "ProviderAuthCancelResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "provider.auth.complete",
+      "params": "ProviderAuthCompleteParams",
+      "params_role": "command",
+      "result": "ProviderAuthCompleteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "provider.auth.completed",
+      "params": "ProviderAuthCompletedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "provider.connect",
       "params": "ProviderConnectParams",
       "params_role": "command",

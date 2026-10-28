@@ -383,17 +383,39 @@ fn provider_descriptor(
         .map(|id| setup_descriptor(id))
         .collect::<Result<Vec<_>, EngineError>>()?;
     setup_fields.sort_by(|left, right| left.id.cmp(&right.id));
-    let mut auth_methods = if let Some(recipe) = recipe {
-        recipe
-            .allowed_auth_methods
-            .iter()
-            .filter_map(|id| auth_method(id))
-            .map(auth_descriptor)
-            .collect::<Result<Vec<_>, EngineError>>()?
-    } else {
-        Vec::new()
-    };
+    let methods = recipe
+        .map(|recipe| {
+            recipe
+                .allowed_auth_methods
+                .iter()
+                .filter_map(|id| auth_method(id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // A sign-in method has no credentials to type; older clients, which
+    // know only `auth_methods`, never see it.
+    let mut auth_methods = methods
+        .iter()
+        .filter(|method| !method.is_sign_in())
+        .map(|method| auth_descriptor(method))
+        .collect::<Result<Vec<_>, EngineError>>()?;
     auth_methods.sort_by(|left, right| left.id.cmp(&right.id));
+    let sign_in_methods = methods
+        .iter()
+        .filter(|method| method.is_sign_in())
+        .map(|method| sign_in_descriptor(method))
+        .collect::<Result<Vec<_>, EngineError>>()?;
+    let sign_in_account = (provider.id.as_str() == cookie_agent_models::chatgpt::PROVIDER_ID
+        && provider.stored)
+        .then(|| runtime.chatgpt_account())
+        .flatten()
+        .map(|account| protocol::SignInAccountDescriptor {
+            email: account
+                .email
+                .as_deref()
+                .and_then(|email| protocol::SafeDisplayText::new(email).ok()),
+            sign_in_required: account.needs_sign_in,
+        });
     let (model_counts, unavailable_models) = model_availability(provider, record, compiled);
     let documentation_url = record
         .map(|record| record.documentation_url.trim())
@@ -438,6 +460,8 @@ fn provider_descriptor(
                 .expect("static quarantine message is valid"),
         }),
         documentation_url,
+        sign_in_methods,
+        sign_in_account,
         environment,
         model_counts,
         unavailable_models,
@@ -464,6 +488,20 @@ fn setup_descriptor(field: &str) -> Result<protocol::SetupFieldDescriptor, Engin
     })
 }
 
+fn sign_in_descriptor(
+    method: &cookie_agent_models::recipes::AuthMethodRecipe,
+) -> Result<protocol::SignInMethodDescriptor, EngineError> {
+    Ok(protocol::SignInMethodDescriptor {
+        id: protocol::AuthMethodId::new(method.id)
+            .map_err(|_| EngineError::RuntimeCompileFailed)?,
+        // OpenAI's branding asks for this label on the sign-in action.
+        display_name: protocol::SafeDisplayText::new("Continue with ChatGPT")
+            .map_err(|_| EngineError::RuntimeCompileFailed)?,
+        redirect_path: protocol::SafeDisplayText::new(cookie_agent_models::chatgpt::REDIRECT_PATH)
+            .map_err(|_| EngineError::RuntimeCompileFailed)?,
+    })
+}
+
 fn auth_descriptor(
     method: &cookie_agent_models::recipes::AuthMethodRecipe,
 ) -> Result<protocol::AuthMethodDescriptor, EngineError> {
@@ -487,6 +525,10 @@ fn auth_descriptor(
                         protocol::CredentialFieldType::SecretAccessKey
                     }
                     CredentialKind::SessionToken => protocol::CredentialFieldType::SessionToken,
+                    // Sign-in methods are listed as `sign_in_methods`.
+                    CredentialKind::AccountSubject => {
+                        return Err(EngineError::RuntimeCompileFailed);
+                    }
                 },
             })
         })

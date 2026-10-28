@@ -55,6 +55,7 @@ mod artifact_reads;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
+pub mod chatgpt;
 mod runtime_producers;
 mod subagent_reports;
 pub(crate) use background_tasks::{BackgroundActor, Stopped};
@@ -318,6 +319,12 @@ pub enum EngineError {
     InvalidRuntimeAgent(AgentId),
     #[error("MCP configuration error: {0}")]
     Mcp(String),
+    /// A provider sign-in failed, or a connect named a sign-in method.
+    #[error("sign-in to {provider_id} failed: {reason}")]
+    ProviderSignIn {
+        provider_id: cookie_agent_protocol::ProviderId,
+        reason: String,
+    },
     #[error("cache strategy configuration error: {0}")]
     CacheStrategy(String),
     #[error("session permission error: {0}")]
@@ -964,6 +971,12 @@ pub(crate) struct Inner {
     runtime_mutation: Mutex<()>,
     runtime_notifications: broadcast::Sender<RuntimeChangedNotification>,
     engine_events: broadcast::Sender<crate::EngineEvent>,
+    /// `provider.auth.completed` for sign-ins the daemon's own listener
+    /// finished.
+    provider_auth_events:
+        broadcast::Sender<cookie_agent_protocol::ProviderAuthCompletedNotification>,
+    /// The daemon's listener for a sign-in's redirect, while one waits.
+    chatgpt_listener: Mutex<Option<tokio::task::AbortHandle>>,
     plugin_diagnostics: PluginDiagnosticsState,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     /// The base layer, runtime templates, and running runtime instances.
@@ -1250,6 +1263,8 @@ impl Engine {
                 runtime_mutation: Mutex::new(()),
                 runtime_notifications,
                 engine_events,
+                provider_auth_events: broadcast::channel(16).0,
+                chatgpt_listener: Mutex::new(None),
                 plugin_diagnostics: PluginDiagnosticsState {
                     accumulator: Arc::clone(&plugin_diagnostics),
                     task: Mutex::new(None),
@@ -1412,6 +1427,15 @@ impl Engine {
             ClientConnectId, ProviderAuthValues, ProviderStoreMutation,
         };
 
+        if cookie_agent_models::recipes::auth_method(params.auth_method.as_str())
+            .is_some_and(cookie_agent_models::recipes::AuthMethodRecipe::is_sign_in)
+        {
+            return Err(EngineError::ProviderSignIn {
+                provider_id: params.provider_id,
+                reason: "sign_in_method_not_connectable: sign in with provider.auth.begin instead"
+                    .into(),
+            });
+        }
         let _mutation = self
             .inner
             .runtime_mutation

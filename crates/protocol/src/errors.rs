@@ -498,6 +498,17 @@ error_codes! {
         hint: None,
         description: "An `mcp.server.*` or `mcp.auth.*` request the daemon could not carry out.",
     }
+    PROVIDER_SIGN_IN_REJECTED {
+        code: "provider_sign_in_rejected",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("provider_id", "The provider."),
+            required("reason", "The sign-in's own code, such as `sign_in_state_mismatch`, then why."),
+        ],
+        message: "The sign-in to {provider_id} failed: {reason}.",
+        hint: Some("Start the sign-in again from /connect or `cookie connect`."),
+        description: "A `provider.auth.*` request the daemon could not carry out, or a `provider.connect` that names a sign-in method, which only the sign-in can connect.",
+    }
     MACHINE_NOT_FOUND {
         code: "machine_not_found",
         rpc: APPLICATION_ERROR,

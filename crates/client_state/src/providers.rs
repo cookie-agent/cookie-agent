@@ -79,6 +79,32 @@ pub fn authored_override_effective(
         })
 }
 
+/// The interactive sign-in a provider offers in place of a credentials form
+/// (client protocol 1.49.0).
+pub fn sign_in_method(
+    provider: &ProviderDescriptor,
+) -> Option<&cookie_agent_protocol::SignInMethodDescriptor> {
+    provider.sign_in_methods.first()
+}
+
+/// The signed-in account, or the need to sign in again, for a provider row:
+/// `signed in as me@example.com`, `sign-in expired: sign in again`.
+pub fn sign_in_status(provider: &ProviderDescriptor) -> Option<String> {
+    let account = provider.sign_in_account.as_ref()?;
+    Some(if account.sign_in_required {
+        "sign-in expired: sign in again".to_owned()
+    } else {
+        account.email.as_ref().map_or_else(
+            || "signed in".to_owned(),
+            |email| format!("signed in as {email}"),
+        )
+    })
+}
+
+/// What to do with the page the browser could not load: the sign-in's
+/// paste-back instructions, shared by every client.
+pub const SIGN_IN_PASTE_HINT: &str = "If the browser runs on another machine, the page it returns to will fail to load: copy that page's address and paste it here.";
+
 /// Whether the user expressed intent to use the provider: an authored config
 /// entry or a stored connection. Only these providers list per-model reasons.
 pub fn provider_configured(provider: &ProviderDescriptor) -> bool {

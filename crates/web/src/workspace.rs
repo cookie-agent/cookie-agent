@@ -46,6 +46,7 @@ mod oauth;
 mod onboarding;
 mod permissions;
 mod projects;
+mod provider_sign_in;
 mod reads;
 mod rename;
 mod restart;
@@ -61,6 +62,7 @@ pub(crate) use notifications::release_push;
 pub use onboarding::Onboarding;
 pub use permissions::RuleRef;
 pub use projects::{EditorFields, ProjectEditor};
+pub use provider_sign_in::ProviderSignIn;
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);

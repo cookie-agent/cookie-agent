@@ -12,6 +12,7 @@ mod approvals;
 mod artifacts;
 mod background_tasks;
 mod background_waits;
+mod chatgpt;
 mod compaction;
 mod configuration;
 mod crons;

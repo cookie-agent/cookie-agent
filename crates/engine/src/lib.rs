@@ -51,6 +51,7 @@ pub use memory_tools::memory_tool_specs;
 pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
 pub use projects::ProjectError;
 pub use runtime::attachments::{DialInClaim, SessionRuntimeRequest, SessionRuntimes};
+pub use runtime::chatgpt::CHATGPT_MAINTENANCE_INTERVAL;
 pub use runtime::configuration::{
     ConfigChange, ConfigDocumentText, ConfigDocuments, ConfigurationStatus, RestartRequiredPart,
 };

@@ -24,6 +24,8 @@ pub enum FamilyKind {
     Bedrock,
     Azure,
     Cohere,
+    /// OpenAI Responses on a ChatGPT plan through Sign in with ChatGPT.
+    ChatGpt,
 }
 
 impl FamilyKind {
@@ -39,6 +41,7 @@ impl FamilyKind {
             Self::Bedrock => "bedrock",
             Self::Azure => "azure",
             Self::Cohere => "cohere",
+            Self::ChatGpt => "chatgpt",
         }
     }
 }
@@ -145,6 +148,13 @@ const RECIPES: &[FamilyRecipe] = &[
         &["azure-api-key-v1", "bearer-api-key-v1"],
     ),
     family(
+        CHATGPT_NPM,
+        FamilyKind::ChatGpt,
+        Some("https://api.openai.com/v1"),
+        crate::recipes::CHATGPT_SIGN_IN_METHOD,
+        &[crate::recipes::CHATGPT_SIGN_IN_METHOD],
+    ),
+    family(
         "@ai-sdk/cohere",
         FamilyKind::Cohere,
         Some("https://api.cohere.com/v2/chat"),
@@ -152,6 +162,10 @@ const RECIPES: &[FamilyRecipe] = &[
         &["bearer-api-key-v1"],
     ),
 ];
+
+/// The family key of the built-in ChatGPT provider record. It is cookie's own,
+/// never a models.dev `npm` value, so no catalog provider can claim it.
+pub const CHATGPT_NPM: &str = "cookie-agent/chatgpt";
 
 const fn compatible(npm: &'static str, endpoint: Option<&'static str>) -> FamilyRecipe {
     family(
@@ -289,7 +303,7 @@ pub fn compatible_auth_method(
             }
         }
         FamilyKind::Vertex | FamilyKind::VertexAnthropic => return None,
-        FamilyKind::Bedrock => return None,
+        FamilyKind::Bedrock | FamilyKind::ChatGpt => return None,
     };
     effective
         .allowed_auth_methods
@@ -312,6 +326,7 @@ pub fn compatible_credential_field(
             Some("secret_access_key")
         }
         "session_token" if source_method == "aws-sigv4-credentials-v1" => Some("session_token"),
+        "subject" if source_method == crate::recipes::CHATGPT_SIGN_IN_METHOD => Some("subject"),
         _ => None,
     }
 }
@@ -381,13 +396,13 @@ pub fn resolve_model(
             ManagedModelShape::Responses => ResolvedShape::Responses,
         })
         .or(catalog_shape)
-        .unwrap_or_else(|| {
-            if recipe.family == FamilyKind::OpenAi {
+        .unwrap_or(
+            if matches!(recipe.family, FamilyKind::OpenAi | FamilyKind::ChatGpt) {
                 ResolvedShape::Responses
             } else {
                 ResolvedShape::Chat
-            }
-        });
+            },
+        );
     let adapter = adapter(recipe.family, shape)?;
     Ok(ResolvedFamilyModel {
         recipe,
@@ -424,6 +439,10 @@ fn adapter(
             ResolvedShape::Responses => OvenAdapterFamily::AzureOpenaiResponses,
         },
         FamilyKind::Cohere => OvenAdapterFamily::CohereV2Chat,
+        FamilyKind::ChatGpt => match shape {
+            ResolvedShape::Responses => OvenAdapterFamily::OpenaiResponses,
+            ResolvedShape::Chat => return Err(FamilyResolutionError::UnsupportedShape),
+        },
     })
 }
 

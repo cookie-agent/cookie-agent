@@ -79,6 +79,12 @@ pub struct ProviderStore {
 }
 
 impl ProviderStore {
+    /// The store's private directory, where the ChatGPT sign-in lives too.
+    #[must_use]
+    pub fn directory_path(&self) -> &std::path::Path {
+        self.directory.path()
+    }
+
     /// Opens the approved fixed per-user path.
     pub fn standard() -> Result<Self, ProviderStoreError> {
         Self::from_directory(SecureDirectory::user_data("providers")?)

@@ -36,6 +36,7 @@ impl ServerProtocol for Server {
     async fn connected(&self, context: ServerContext) {
         self.start_runtime_notifications(context.clone());
         self.start_onboarding_notifications(context.clone());
+        self.start_provider_auth_notifications(context.clone());
         self.start_session_change_notifications(context.clone());
         self.start_mcp_change_notifications(context.clone());
         self.start_runtime_instance_notifications(context.clone());
@@ -1437,11 +1438,50 @@ impl ServerProtocol for Server {
     ) -> Result<ProviderDisconnectResult> {
         // Provider disconnect takes the cross-process store lock; keep the
         // synchronous disk work off the async worker.
+        let chatgpt = params.provider_id.as_str() == cookie_agent_models::chatgpt::PROVIDER_ID
+            && self.engine.model_manager_chatgpt_enabled();
         let server = self.clone();
-        tokio::task::spawn_blocking(move || Server::disconnect_provider(&server, params))
+        let result: ProviderDisconnectResult =
+            tokio::task::spawn_blocking(move || Server::disconnect_provider(&server, params))
+                .await
+                .map_err(|_| ServerFault::from(RpcFault::internal()))??;
+        // The connection is gone; the sign-in's tokens go with it.
+        if chatgpt && result.disconnected && !result.replayed {
+            self.engine
+                .sign_out_chatgpt()
+                .await
+                .map_err(protocol_fault)?;
+        }
+        Ok(result)
+    }
+
+    async fn begin_provider_auth(
+        &self,
+        params: cookie_agent_protocol::ProviderAuthBeginParams,
+    ) -> Result<cookie_agent_protocol::ProviderAuthBeginResult> {
+        self.engine
+            .begin_provider_auth(params)
             .await
-            .map_err(|_| ServerFault::from(RpcFault::internal()))?
-            .map_err(Into::into)
+            .map_err(protocol_fault)
+    }
+
+    async fn complete_provider_auth(
+        &self,
+        params: cookie_agent_protocol::ProviderAuthCompleteParams,
+    ) -> Result<cookie_agent_protocol::ProviderAuthCompleteResult> {
+        self.engine
+            .complete_provider_auth(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn cancel_provider_auth(
+        &self,
+        params: cookie_agent_protocol::ProviderAuthCancelParams,
+    ) -> Result<cookie_agent_protocol::ProviderAuthCancelResult> {
+        self.engine
+            .cancel_provider_auth(params)
+            .map_err(protocol_fault)
     }
 }
 

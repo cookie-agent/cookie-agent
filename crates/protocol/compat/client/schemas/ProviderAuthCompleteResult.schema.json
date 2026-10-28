@@ -1,0 +1,43 @@
+{
+  "$defs": {
+    "SignInAccountDescriptor": {
+      "description": "The account a sign-in connected.",
+      "properties": {
+        "email": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sign_in_required": {
+          "default": false,
+          "description": "The sign-in can no longer refresh; the user must sign in again.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "account": {
+      "$ref": "#/$defs/SignInAccountDescriptor"
+    },
+    "provider_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider_id",
+    "account"
+  ],
+  "title": "ProviderAuthCompleteResult",
+  "type": "object"
+}

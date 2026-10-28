@@ -275,7 +275,21 @@ pub(crate) fn row_label(
         {
             "disconnected · config override active · Enter: create global stored connection".into()
         }
+        ProviderRowState::Disconnected
+            if cookie_agent_client_state::providers::sign_in_method(provider).is_some() =>
+        {
+            "not signed in · Enter: sign in".into()
+        }
         ProviderRowState::Disconnected => "disconnected".into(),
+        ProviderRowState::ConnectedReconnect
+            if cookie_agent_client_state::providers::sign_in_method(provider).is_some() =>
+        {
+            format!(
+                "{} · Enter: sign in again",
+                cookie_agent_client_state::providers::sign_in_status(provider)
+                    .unwrap_or_else(|| "signed in".into())
+            )
+        }
         ProviderRowState::ConnectedReconnect => "connected · Enter: reconnect/update".into(),
         ProviderRowState::Removed => {
             "removed from current catalog · Enter: reconnect/update".into()

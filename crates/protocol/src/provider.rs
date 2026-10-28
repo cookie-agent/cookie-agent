@@ -471,6 +471,37 @@ pub struct ProviderDescriptor {
     /// report counts alone.
     #[schemars(length(max = 4096))]
     pub unavailable_models: Vec<UnavailableModelDescriptor>,
+    /// Interactive sign-ins the provider offers instead of typed credentials,
+    /// connected with `provider.auth.begin` and `provider.auth.complete`
+    /// (client protocol 1.49.0). Empty when it offers none, and from older
+    /// daemons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 4))]
+    pub sign_in_methods: Vec<SignInMethodDescriptor>,
+    /// The account a sign-in connected (client protocol 1.49.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_account: Option<SignInAccountDescriptor>,
+}
+
+/// An interactive sign-in. The browser must return to
+/// `http://127.0.0.1:<any port><redirect_path>`, which the client catches with
+/// a loopback listener, or the user pastes back.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SignInMethodDescriptor {
+    pub id: AuthMethodId,
+    /// The sign-in button's label, as the provider's branding requires.
+    pub display_name: SafeDisplayText,
+    pub redirect_path: SafeDisplayText,
+}
+
+/// The account a sign-in connected.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SignInAccountDescriptor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<SafeDisplayText>,
+    /// The sign-in can no longer refresh; the user must sign in again.
+    #[serde(default)]
+    pub sign_in_required: bool,
 }
 impl<'de> Deserialize<'de> for ProviderDescriptor {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
@@ -496,6 +527,10 @@ impl<'de> Deserialize<'de> for ProviderDescriptor {
             environment: Vec<CredentialFieldName>,
             model_counts: ProviderModelCounts,
             unavailable_models: Vec<UnavailableModelDescriptor>,
+            #[serde(default)]
+            sign_in_methods: Vec<SignInMethodDescriptor>,
+            #[serde(default)]
+            sign_in_account: Option<SignInAccountDescriptor>,
         }
         let wire = Wire::deserialize(d)?;
         if wire.setup_fields.len() > 32
@@ -540,6 +575,8 @@ impl<'de> Deserialize<'de> for ProviderDescriptor {
             environment: wire.environment,
             model_counts: wire.model_counts,
             unavailable_models: wire.unavailable_models,
+            sign_in_methods: wire.sign_in_methods,
+            sign_in_account: wire.sign_in_account,
         })
     }
 }
@@ -794,3 +831,79 @@ impl fmt::Display for ProviderSchemaError {
     }
 }
 impl std::error::Error for ProviderSchemaError {}
+
+/// `provider.auth.begin` (client protocol 1.49.0): starts a provider's
+/// interactive sign-in. The daemon holds the PKCE verifier and does the code
+/// exchange; tokens never cross the connection.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAuthBeginParams {
+    pub provider_id: ProviderId,
+    /// One of the provider's `sign_in_methods`.
+    pub method: AuthMethodId,
+    /// Where the browser returns: `http://127.0.0.1:<port><redirect_path>`,
+    /// caught by the client or pasted back to `provider.auth.complete`. Null
+    /// asks the daemon to catch it on its own machine and announce the
+    /// outcome with `provider.auth.completed`, for a client whose browser
+    /// runs beside the daemon.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub redirect_uri: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ProviderAuthBeginResult {
+    pub provider_id: ProviderId,
+    pub authorization_url: String,
+    /// The redirect the sign-in uses: the client's, or the daemon's own.
+    pub redirect_uri: String,
+}
+
+/// The address the browser landed on, carried back to the daemon. Only the
+/// single-use authorization code crosses the connection.
+#[derive(Clone, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAuthCompleteParams {
+    pub provider_id: ProviderId,
+    pub callback_url: String,
+}
+
+impl std::fmt::Debug for ProviderAuthCompleteParams {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderAuthCompleteParams")
+            .field("provider_id", &self.provider_id)
+            .field("callback_url", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ProviderAuthCompleteResult {
+    pub provider_id: ProviderId,
+    pub account: SignInAccountDescriptor,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAuthCancelParams {
+    pub provider_id: ProviderId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ProviderAuthCancelResult {
+    pub provider_id: ProviderId,
+}
+
+/// `provider.auth.completed`: a sign-in whose redirect the daemon caught
+/// itself has finished, successfully or not.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ProviderAuthCompletedNotification {
+    pub provider_id: ProviderId,
+    /// The signed-in account when it succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<SignInAccountDescriptor>,
+    /// Why it failed, as `code: message`, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<SafeDisplayText>,
+}

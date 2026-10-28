@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`provider.auth.begin` (client protocol 1.49.0): starts a provider's\ninteractive sign-in. The daemon holds the PKCE verifier and does the code\nexchange; tokens never cross the connection.",
+  "properties": {
+    "method": {
+      "description": "One of the provider's `sign_in_methods`.",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "provider_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "redirect_uri": {
+      "description": "Where the browser returns: `http://127.0.0.1:<port><redirect_path>`,\ncaught by the client or pasted back to `provider.auth.complete`. Null\nasks the daemon to catch it on its own machine and announce the\noutcome with `provider.auth.completed`, for a client whose browser\nruns beside the daemon.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "provider_id",
+    "method",
+    "redirect_uri"
+  ],
+  "title": "ProviderAuthBeginParams",
+  "type": "object"
+}

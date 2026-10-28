@@ -260,6 +260,10 @@ pub const RUNTIME_SNAPSHOT_GET_METHOD: &str = "runtime.snapshot.get";
 pub const RUNTIME_CHANGED_METHOD: &str = "runtime.changed";
 pub const PROVIDER_CONNECT_METHOD: &str = "provider.connect";
 pub const PROVIDER_DISCONNECT_METHOD: &str = "provider.disconnect";
+pub const PROVIDER_AUTH_BEGIN_METHOD: &str = "provider.auth.begin";
+pub const PROVIDER_AUTH_COMPLETE_METHOD: &str = "provider.auth.complete";
+pub const PROVIDER_AUTH_CANCEL_METHOD: &str = "provider.auth.cancel";
+pub const PROVIDER_AUTH_COMPLETED_METHOD: &str = "provider.auth.completed";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

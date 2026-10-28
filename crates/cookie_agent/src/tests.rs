@@ -286,6 +286,8 @@ fn provider(state: ProviderSupportState) -> ProviderDescriptor {
         environment: Vec::new(),
         model_counts: cookie_agent_protocol::ProviderModelCounts::default(),
         unavailable_models: Vec::new(),
+        sign_in_methods: Vec::new(),
+        sign_in_account: None,
     }
 }
 
@@ -1025,7 +1027,16 @@ async fn empty_startup_uses_injected_offline_catalog_and_composes_before_fronten
     assert_eq!(fetches.load(Ordering::SeqCst), 1);
     let snapshot = runtime.engine.runtime_snapshot().unwrap();
     assert!(snapshot.snapshot.models.is_empty());
-    assert_eq!(snapshot.snapshot.providers.len(), 1);
+    // The catalog's one provider and the built-in ChatGPT sign-in.
+    assert_eq!(snapshot.snapshot.providers.len(), 2);
+    assert!(
+        snapshot
+            .snapshot
+            .providers
+            .iter()
+            .any(|provider| provider.id.as_str() == "chatgpt"
+                && !provider.sign_in_methods.is_empty())
+    );
     runtime.server.shutdown();
     runtime.stop_catalog_refresh().await;
     runtime.engine.shutdown().await;

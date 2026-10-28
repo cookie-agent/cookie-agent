@@ -794,6 +794,59 @@ impl App {
                 }
                 Err(error) => self.status = format!("MCP update failed: {error}"),
             },
+            RpcUpdate::ProviderAuthBegan {
+                provider_id,
+                result,
+            } => {
+                let Some(sign_in) = self
+                    .provider_sign_in
+                    .as_mut()
+                    .filter(|sign_in| sign_in.provider_id == provider_id)
+                else {
+                    return;
+                };
+                match result {
+                    Ok(result) => {
+                        sign_in.authorization_url = Some(result.authorization_url);
+                        sign_in.error = None;
+                        self.status = "Waiting for the browser sign-in.".into();
+                    }
+                    Err(error) => {
+                        sign_in.listener = None;
+                        sign_in.error = Some(error.clone());
+                        self.status = format!("Sign-in failed: {error}");
+                    }
+                }
+            }
+            RpcUpdate::ProviderAuthCompleted {
+                provider_id,
+                result,
+            } => {
+                let current = self
+                    .provider_sign_in
+                    .as_ref()
+                    .is_some_and(|sign_in| sign_in.provider_id == provider_id);
+                match result {
+                    Ok(result) => {
+                        if current {
+                            self.provider_sign_in = None;
+                            if self.modal == Modal::ConnectDetails {
+                                self.modal = Modal::None;
+                            }
+                        }
+                        self.status = result.account.email.as_ref().map_or_else(
+                            || format!("Signed in to {provider_id}."),
+                            |email| format!("Signed in to {provider_id} as {email}."),
+                        );
+                    }
+                    Err(error) => {
+                        if let Some(sign_in) = self.provider_sign_in.as_mut().filter(|_| current) {
+                            sign_in.error = Some(error.clone());
+                        }
+                        self.status = format!("Sign-in failed: {error}");
+                    }
+                }
+            }
             RpcUpdate::McpAuthBegan { result } => match result {
                 Ok(result) => {
                     self.mcp_panel.auth = Some(McpAuthView {

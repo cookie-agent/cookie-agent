@@ -227,11 +227,13 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         .iter()
         .flat_map(|(provider_id, provider)| {
             let prices: Vec<_> = match provider {
-                ProviderDefinition::ModelsDev(provider) => provider
-                    .model_overrides
-                    .iter()
-                    .filter_map(|(id, model)| model.pricing.map(|pricing| (id, pricing)))
-                    .collect(),
+                ProviderDefinition::ModelsDev(provider) | ProviderDefinition::ChatGpt(provider) => {
+                    provider
+                        .model_overrides
+                        .iter()
+                        .filter_map(|(id, model)| model.pricing.map(|pricing| (id, pricing)))
+                        .collect()
+                }
                 ProviderDefinition::Custom(provider) => provider
                     .models
                     .iter()

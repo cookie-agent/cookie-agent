@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "authorization_url": {
+      "type": "string"
+    },
+    "provider_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "redirect_uri": {
+      "description": "The redirect the sign-in uses: the client's, or the daemon's own.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider_id",
+    "authorization_url",
+    "redirect_uri"
+  ],
+  "title": "ProviderAuthBeginResult",
+  "type": "object"
+}

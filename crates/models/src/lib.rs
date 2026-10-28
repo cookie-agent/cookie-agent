@@ -11,6 +11,7 @@ pub mod adapters;
 pub mod authoring;
 #[path = "catalog/mod.rs"]
 pub mod catalog;
+pub mod chatgpt;
 pub mod compiler;
 #[path = "manager/mod.rs"]
 pub mod manager;
@@ -42,5 +43,8 @@ pub use manager::{
     safe_definition_fingerprint,
 };
 pub use model_types::*;
+
+/// A refreshing Bearer token source, such as a signed-in ChatGPT account.
+pub type DynTokenSource = std::sync::Arc<dyn oven_sdk_openai::OpenAiTokenSource>;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{ScriptedModel, ScriptedStep};

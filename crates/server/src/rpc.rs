@@ -402,6 +402,13 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()
             .field("reason", reason_text(reason)),
+        EngineError::ProviderSignIn {
+            provider_id,
+            reason,
+        } => errors::PROVIDER_SIGN_IN_REJECTED
+            .error()
+            .field("provider_id", provider_id)
+            .field("reason", reason_text(reason)),
         EngineError::UnreadableModelBinding(model) => errors::UNREADABLE_MODEL_BINDING
             .error()
             .field("model", model),

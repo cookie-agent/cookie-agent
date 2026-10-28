@@ -37,7 +37,8 @@ use oven_sdk_openai::{
     CompatibleChatOptions, MaxTokensField, OpenAiChatModel, OpenAiChatOptions, OpenAiChatSettings,
     OpenAiCompatibleChatModel, OpenAiCompatibleChatSettings, OpenAiNoAuth,
     OpenAiResponsesCompaction, OpenAiResponsesModel, OpenAiResponsesOptions,
-    OpenAiResponsesSettings, ReasoningField, StructuredOutputSupport, SystemMessageRole,
+    OpenAiResponsesSettings, OpenAiResponsesWireProfile, ReasoningField, StructuredOutputSupport,
+    SystemMessageRole,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -58,6 +59,8 @@ use crate::{
 pub(crate) struct ExecutableCredentialMaterial {
     pub method: String,
     pub values: BTreeMap<AuthFieldName, String>,
+    /// The token source of a sign-in method; `None` for every other method.
+    pub token_source: Option<crate::DynTokenSource>,
 }
 
 pub(crate) struct ExecutableBehaviorInput<'a> {
@@ -210,6 +213,13 @@ fn executable_auth(
         "oauth-access-token-v1" => AuthConfig::AccessToken {
             token: credential(material, "access_token")?.to_owned(),
         },
+        crate::recipes::CHATGPT_SIGN_IN_METHOD => AuthConfig::TokenSource {
+            source: material
+                .token_source
+                .clone()
+                .ok_or_else(|| wrong_auth("ChatGPT", "a signed-in account"))?,
+            account: credential(material, "subject")?.to_owned(),
+        },
         "aws-sigv4-credentials-v1" => AuthConfig::AwsStatic {
             access_key_id: credential(material, "access_key_id")?.to_owned(),
             secret_access_key: credential(material, "secret_access_key")?.to_owned(),
@@ -238,6 +248,15 @@ fn native_compaction(model: &CompiledDynamicModel) -> bool {
             OvenAdapterFamily::AzureOpenaiResponses => azure_revision(model).is_some(),
             _ => false,
         }
+}
+
+/// Routing label for a signed-in account, so replay of one account is never
+/// sent to another.
+fn sign_in_account_route(auth: &AuthConfig) -> Option<String> {
+    match auth {
+        AuthConfig::TokenSource { account, .. } => Some(format!("account:{account}")),
+        _ => None,
+    }
 }
 
 /// Routing label for a caller-selected API-key header, so replay scopes of
@@ -365,13 +384,21 @@ fn construct(
                     declaration,
                     OpenAiResponsesSettings {
                         routing_discriminator: combined_routing_discriminator(
-                            api_key_header_route(model).as_deref(),
+                            api_key_header_route(model)
+                                .or_else(|| sign_in_account_route(auth))
+                                .as_deref(),
                             header_discriminator,
                         ),
                         compaction: if native_compaction(model) {
                             OpenAiResponsesCompaction::V1
                         } else {
                             OpenAiResponsesCompaction::Unsupported
+                        },
+                        wire_profile: if model.auth.method == crate::recipes::CHATGPT_SIGN_IN_METHOD
+                        {
+                            OpenAiResponsesWireProfile::ChatGptTokenSharing
+                        } else {
+                            OpenAiResponsesWireProfile::Standard
                         },
                         client: timeouts.shared_client(),
                         timeouts: timeouts.openai(),
@@ -398,6 +425,7 @@ fn construct(
                     } else {
                         OpenAiResponsesCompaction::Unsupported
                     },
+                    wire_profile: OpenAiResponsesWireProfile::Standard,
                     client: timeouts.shared_client(),
                     timeouts: timeouts.openai(),
                 },

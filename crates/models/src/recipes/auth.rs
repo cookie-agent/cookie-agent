@@ -13,6 +13,9 @@ pub enum CredentialKind {
     AccessKeyId,
     SecretAccessKey,
     SessionToken,
+    /// The account a sign-in connected; a reference to tokens kept outside
+    /// the provider store, not itself a secret.
+    AccountSubject,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -33,6 +36,8 @@ pub enum WireAuth {
     OAuthAccessToken,
     AwsSigV4Static,
     AzureApiKey,
+    /// A refreshing Bearer token from an interactive sign-in.
+    SignInToken,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -51,6 +56,11 @@ const API_KEY: &[AuthCredential] = &[AuthCredential {
 const ACCESS_TOKEN: &[AuthCredential] = &[AuthCredential {
     name: "access_token",
     kind: CredentialKind::AccessToken,
+    required: true,
+}];
+const SIGN_IN_ACCOUNT: &[AuthCredential] = &[AuthCredential {
+    name: "subject",
+    kind: CredentialKind::AccountSubject,
     required: true,
 }];
 const AWS_STATIC: &[AuthCredential] = &[
@@ -126,7 +136,26 @@ const METHODS: &[AuthMethodRecipe] = &[
         wire: WireAuth::AzureApiKey,
         owned_headers: &["api-key"],
     },
+    AuthMethodRecipe {
+        id: CHATGPT_SIGN_IN_METHOD,
+        credentials: SIGN_IN_ACCOUNT,
+        wire: WireAuth::SignInToken,
+        owned_headers: &["authorization"],
+    },
 ];
+
+/// Sign in with ChatGPT. Only the sign-in flow connects it; configuration and
+/// `provider.connect` cannot supply it.
+pub const CHATGPT_SIGN_IN_METHOD: &str = "chatgpt-sign-in-v1";
+
+impl AuthMethodRecipe {
+    /// Whether the method is connected by an interactive sign-in rather than
+    /// typed credentials.
+    #[must_use]
+    pub const fn is_sign_in(&self) -> bool {
+        matches!(self.wire, WireAuth::SignInToken)
+    }
+}
 
 #[must_use]
 pub fn auth_method(id: &str) -> Option<&'static AuthMethodRecipe> {
@@ -181,6 +210,9 @@ fn validate(
         return Err(AuthValidationError::UnsupportedAuthMethod);
     }
     let method = auth_method(id).ok_or(AuthValidationError::UnsupportedAuthMethod)?;
+    if method.is_sign_in() {
+        return Err(AuthValidationError::UnsupportedAuthMethod);
+    }
     let actual = values
         .keys()
         .map(AuthFieldName::as_str)

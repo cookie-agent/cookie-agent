@@ -19,19 +19,30 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 pub struct OAuthCallbackListener {
     listener: TcpListener,
     port: u16,
+    path: String,
 }
 
 impl OAuthCallbackListener {
     /// Binds an ephemeral port on `127.0.0.1` (RFC 8252 §7.3).
     pub async fn bind() -> io::Result<Self> {
+        Self::bind_on_path(CALLBACK_PATH).await
+    }
+
+    /// [`Self::bind`] for a redirect on `path`, such as a provider sign-in's
+    /// `redirect_path`.
+    pub async fn bind_on_path(path: impl Into<String>) -> io::Result<Self> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let port = listener.local_addr()?.port();
-        Ok(Self { listener, port })
+        Ok(Self {
+            listener,
+            port,
+            path: path.into(),
+        })
     }
 
     #[must_use]
     pub fn redirect_uri(&self) -> String {
-        format!("http://127.0.0.1:{}{CALLBACK_PATH}", self.port)
+        format!("http://127.0.0.1:{}{}", self.port, self.path)
     }
 
     /// Waits for the browser's `GET` on the callback path. Any other request
@@ -40,7 +51,7 @@ impl OAuthCallbackListener {
         loop {
             let (mut stream, _) = self.listener.accept().await?;
             match read_target(&mut stream).await {
-                Some(target) if target.split('?').next() == Some(CALLBACK_PATH) => {
+                Some(target) if target.split('?').next() == Some(self.path.as_str()) => {
                     return Ok(OAuthCallback {
                         stream,
                         url: format!("http://127.0.0.1:{}{target}", self.port),

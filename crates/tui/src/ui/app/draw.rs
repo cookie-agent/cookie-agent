@@ -1364,6 +1364,37 @@ impl App {
         let Some(provider) = self.connect_provider.as_ref() else {
             return;
         };
+        if let Some(sign_in) = &self.provider_sign_in {
+            let method = cookie_agent_client_state::providers::sign_in_method(provider)
+                .map_or("Sign in", |method| method.display_name.as_str());
+            let mut content = format!("{}\n\n{method}\n\n", provider.display_name);
+            match &sign_in.authorization_url {
+                Some(url) => {
+                    content.push_str("Open this address in a browser and sign in:\n\n");
+                    content.push_str(url);
+                    content.push_str("\n\nWaiting for the browser to return to this machine. ");
+                    content.push_str(cookie_agent_client_state::providers::SIGN_IN_PASTE_HINT);
+                }
+                None => content.push_str("Starting the sign-in…"),
+            }
+            if let Some(error) = &sign_in.error {
+                content.push_str(&format!("\n\nSign-in failed: {error}"));
+            }
+            content.push_str(if provider.durable_connection.is_some() {
+                "\n\nc: copy address · paste: finish · d: disconnect · Esc: cancel"
+            } else {
+                "\n\nc: copy address · paste: finish · Esc: cancel"
+            });
+            frame.render_widget(
+                Paragraph::new(content).wrap(Wrap { trim: false }).block(
+                    crate::ui::panel_block()
+                        .border_style(self.theme.panel_border())
+                        .title(crate::ui::panel_title("Sign in")),
+                ),
+                area,
+            );
+            return;
+        }
         let state = row_state(
             provider,
             &self.models,

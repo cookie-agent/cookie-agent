@@ -63,7 +63,7 @@ fn model() -> CatalogModelRecord {
 #[test]
 fn classifies_every_supported_npm_family() {
     let registry = family_registry();
-    assert_eq!(registry.recipes().len(), 25);
+    assert_eq!(registry.recipes().len(), 26);
     for recipe in registry.recipes() {
         assert_eq!(registry.by_npm(recipe.npm), Some(recipe));
     }
