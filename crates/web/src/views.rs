@@ -756,7 +756,8 @@ fn session_row(
                         <span class="sr-only">"unread"</span>
                     })}
                     {cron.clone().map(|cron| cron::clock_mark(workspace, cron))}
-                                        <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title>{label.clone()}</span>
+                    // The whole title on hover, as a long one is cut here.
+                    <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title title=label.clone()>{label.clone()}</span>
                     // The time sits beside the title, so the badges have
                     // the whole second line.
                     <span class=format!("shrink-0 {NOTE}") data-session-time>

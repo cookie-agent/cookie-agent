@@ -174,7 +174,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     [Scheduled prompts](#scheduled-prompts).
     The open session's row has a chevron before its badges, which turns
     with its subagent tree. Hover over a row for its status and every
-    workspace with its machine, runtime, and path.
+    workspace with its machine, runtime, and path, and over its title for
+    the whole title when the row cuts it.
   - **Unread.** A session that finished, or that waits on an approval or
     a question, while you were away has a dot before its title, and the
     rail's Chat button a dot while any session has one
