@@ -152,7 +152,8 @@ impl Engine {
                         == Some("terminal_update")
                     && let Some(read) = TerminalUpdate::read("terminal_update", update)
                     && let Some(exit) = read.exit
-                    && let Some(ended) = self.acp_terminal_exited(live.session, &read.id, exit)
+                    && let Some(ended) =
+                        self.acp_terminal_exited(live.session, &read.id, exit, true)
                 {
                     let _ = self
                         .append(

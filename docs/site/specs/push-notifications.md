@@ -116,6 +116,7 @@ here and in every subagent below the root. So:
 |---|---|
 | an active goal | `goal` |
 | a running background call | `background_call` |
+| an ACP agent's own command still running after its call ended, or one that ended between runs less than 5 s ago (its wake grace: the agent's follow-up, such as Claude Code's, starts within it; a run starting ends it) | `background_call` |
 | a subagent turn running, a background delegation queued or running, or a child that can still wake | `subagent` |
 | a live external producer registration (plugin or runtime) | `external_producer` |
 | a one-time job aimed at it | `scheduled_job` |

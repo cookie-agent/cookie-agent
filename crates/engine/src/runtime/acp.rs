@@ -24,6 +24,8 @@ use super::Engine;
 use crate::runtime_snapshot::RuntimeAgent;
 
 mod background;
+#[cfg(test)]
+pub(crate) use background::WAKE_GRACE;
 pub(crate) mod compaction;
 mod diff;
 pub(crate) mod elicitation;
@@ -68,6 +70,9 @@ pub(crate) struct AcpState {
     pub(crate) subagents: Mutex<HashMap<String, SessionId>>,
     /// The agents' commands still running after their calls ended.
     pub(crate) background: Mutex<Vec<background::AgentCommand>>,
+    /// When a command of each session's agent last ended between runs, for
+    /// the grace in which the agent may still start work about it.
+    pub(crate) background_ended: Mutex<HashMap<SessionId, std::time::Instant>>,
 }
 
 impl AcpState {
@@ -112,6 +117,7 @@ impl AcpState {
             steering: Mutex::new(HashMap::new()),
             subagents: Mutex::new(HashMap::new()),
             background: Mutex::new(Vec::new()),
+            background_ended: Mutex::new(HashMap::new()),
         }
     }
 

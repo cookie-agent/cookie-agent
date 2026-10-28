@@ -122,3 +122,68 @@ async fn a_command_that_ends_during_a_run_is_recorded_in_that_run() {
     assert_eq!(ended[0].1.display.as_deref(), Some("sleep 1"));
     assert!(engine.background_calls(session).is_empty());
 }
+
+/// The next settle of `signals`: its root and the reply it ended with.
+async fn next_settle(
+    signals: &mut tokio::sync::broadcast::Receiver<crate::PushSignal>,
+) -> (cookie_agent_protocol::SessionId, Option<String>) {
+    loop {
+        let signal = with_watchdog("a settle", async {
+            signals.recv().await.expect("push signal")
+        })
+        .await;
+        if let crate::PushSignal::Settled(settled) = signal {
+            let text = match settled.outcome {
+                crate::SettledOutcome::Completed { final_text } => final_text,
+                crate::SettledOutcome::Failed { error } => panic!("failed: {error}"),
+            };
+            return (settled.root, text);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_left_running_holds_the_settle_until_its_grace_ends() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let mut signals = engine.subscribe_push_signals();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "background 1").await;
+    // The turn ended with the command running: the session can still wake,
+    // as with a background call of cookie's.
+    let early = tokio::time::timeout(Duration::from_millis(500), signals.recv()).await;
+    assert!(early.is_err(), "a settle while the command runs: {early:?}");
+    with_watchdog("the command's exit", async {
+        while engine.acp_background_running(session) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let ended = std::time::Instant::now();
+    // The agent never follows up: the settle comes once the grace is over.
+    let (root, text) = next_settle(&mut signals).await;
+    assert_eq!(root, session);
+    assert_eq!(text.as_deref(), Some("started"));
+    let waited = ended.elapsed();
+    let grace = super::super::super::acp::WAKE_GRACE;
+    assert!(
+        waited + Duration::from_millis(100) >= grace,
+        "settled {waited:?} after the exit, within the {grace:?} grace"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_follows_up_within_the_grace_settles_once_after_it() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let mut signals = engine.subscribe_push_signals();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "background-wake 1 1").await;
+    // One settle, for the follow-up, not one for the turn that left the
+    // command running and another after it.
+    let (root, text) = next_settle(&mut signals).await;
+    assert_eq!(root, session);
+    assert_eq!(text.as_deref(), Some("woke"));
+    let late = tokio::time::timeout(super::super::super::acp::WAKE_GRACE, signals.recv()).await;
+    assert!(late.is_err(), "a second settle: {late:?}");
+}

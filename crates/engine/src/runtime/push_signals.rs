@@ -162,6 +162,8 @@ impl Engine {
         match payload {
             Event::RunStarted { .. } | Event::UserInputAdmitted { .. } => {
                 lock(&self.inner.push.armed).remove(&session);
+                // The follow-up an ended command's grace waits for came.
+                self.end_acp_wake_grace(session);
             }
             Event::RunFinished { outcome } => {
                 if self.inner.store.parent_of(session).is_some() {
@@ -353,8 +355,10 @@ impl Engine {
     /// jobs and not recurring ones: a background call, a background
     /// delegation, an external producer, a one-time job, or a direct child
     /// that runs a turn or itself wakes so (`waking_once`), a child's
-    /// report on its way, or a wake already scheduled for a producer
-    /// message that arrived. The goal is checked apart, from the fold.
+    /// report on its way, a wake already scheduled for a producer message
+    /// that arrived, or an ACP agent's command that runs or just ended
+    /// between runs (its wake grace). The goal is checked apart, from the
+    /// fold.
     pub(super) fn wakes_once(
         &self,
         session: SessionId,
@@ -387,6 +391,8 @@ impl Engine {
             || self.inner.crons.waits_on_once(session)
             || waking_once.values().any(|parent| *parent == session)
             || self.has_running_subagent_turn(session)
+            || self.acp_background_running(session)
+            || self.acp_wake_grace(session)
     }
 
     /// Sends `NeedsYou` for an approval that escalated to the user in

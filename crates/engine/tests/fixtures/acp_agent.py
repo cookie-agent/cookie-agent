@@ -79,6 +79,10 @@ Each prompt's last text block is a command:
   background <s>         runs `sleep <s>` in the background: an execute call whose
                          terminal stays open after the call completes, and exits
                          <s> seconds later, between runs
+  background-wake <s> <w>
+                         the same, and <w> seconds after the command exits starts
+                         work of its own that says "woke", as Claude Code follows
+                         up on its backgrounded commands
   wake-later <s> <text>  answers "later", then <s> seconds after its work ended
                          starts work of its own (running, <text>, idle), as
                          Claude Code does when a background command ends
@@ -535,18 +539,21 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             say(child, f"subagent asked: {outcome}")
         subagent(session_id, "asker", "ask something", work)
         say(session_id, "subagent done")
-    elif word == "background":
-        delay = float(rest or "1")
+    elif word in ("background", "background-wake"):
+        seconds, _, wake = rest.partition(" ")
+        delay = float(seconds or "1")
         tool_call(session_id, {"toolCallId": "call-bg", "name": "Bash", "title": "sleep", "kind": "execute",
-                               "status": "in_progress", "rawInput": {"command": f"sleep {rest}"},
+                               "status": "in_progress", "rawInput": {"command": f"sleep {seconds}"},
                                "content": [{"type": "terminal", "terminalId": "term-bg"}]})
-        update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-bg", "command": f"sleep {rest}"})
+        update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-bg", "command": f"sleep {seconds}"})
         tool_call(session_id, {"toolCallId": "call-bg", "status": "completed"})
         def later():
             import time
             time.sleep(delay)
             update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-bg",
                                 "exitStatus": {"exitCode": 0}})
+            if word == "background-wake":
+                wake_later(session_id, float(wake or "1"), lambda: say(session_id, "woke"))
         threading.Thread(target=later, daemon=True).start()
         say(session_id, "started")
     elif word == "wake-later":

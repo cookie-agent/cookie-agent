@@ -1434,7 +1434,7 @@ impl Turn<'_> {
                 if let Some(exit) = read.exit.clone()
                     && let Some(ended) =
                         self.engine
-                            .acp_terminal_exited(self.session(), &read.id, exit)
+                            .acp_terminal_exited(self.session(), &read.id, exit, false)
                 {
                     self.record_update(AcpSessionUpdate {
                         background_ended: Some(ended),
