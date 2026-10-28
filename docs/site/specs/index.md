@@ -49,6 +49,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
+| [The user's shell environment for runtimes](shell-environment.md) | Draft (2026-10-28), decisions made; runtimes capture the user's interactive shell environment (`[shell_environment] capture`, default `interactive`, `off` to disable) for every process they start, a bash snapshot of functions and aliases for the `bash` tool, refresh on reload, runtime protocol 1.12.0 for remote runtimes |
 | [Managing runtimes from clients](runtime-management.md) | In progress (2026-10-26), decisions made, phase 1 implemented (client protocol 1.36.0, runtime protocol 1.9.0: each MCP server's tools by their own names, and the tools and ACP agents of each runtime in both machines views); per-runtime MCP servers and ACP agents in the daemon's configuration applied live, the machines panel's server, tool, and agent editors, every-runtime profiles, restarting template and dial-in runtimes, and MCP OAuth for servers on any runtime |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
