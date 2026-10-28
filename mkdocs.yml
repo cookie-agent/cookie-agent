@@ -184,6 +184,7 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
+          - Unread sessions: specs/unread-sessions.md
           - Projects: specs/projects.md
           - Delegating to runtimes: specs/runtime-delegation.md
           - Cron jobs: specs/cron.md
