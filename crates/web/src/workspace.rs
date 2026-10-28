@@ -191,6 +191,8 @@ pub struct Workspace {
     pub expanded: RwSignal<HashMap<SessionId, crate::render::transcript::Expanded>>,
     pub composer: RwSignal<String>,
     pub status: RwSignal<String>,
+    /// Whether the page shows `status` now (`views::follow_status`).
+    pub status_live: RwSignal<bool>,
     pub panel: RwSignal<Option<Panel>>,
     /// The agent's command [`Panel::AgentCommand`] asks the input of.
     pub agent_command: RwSignal<Option<cookie_agent_protocol::AcpCommand>>,
@@ -449,6 +451,7 @@ impl Workspace {
             expanded: RwSignal::new(HashMap::new()),
             composer: RwSignal::new(String::new()),
             status: RwSignal::new(String::new()),
+            status_live: RwSignal::new(false),
             panel: RwSignal::new(None),
             agent_command: RwSignal::new(None),
             tree: RwSignal::new(None),

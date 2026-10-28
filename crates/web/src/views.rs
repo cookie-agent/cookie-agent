@@ -244,7 +244,8 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 <cards::DraftNotice workspace=workspace />
                 // A phone puts the bottom bar above the composer, and a
                 // short window (a phone on its side) beside it.
-                <div class="flex flex-col short:flex-row short:items-end">
+                <div class="relative flex flex-col short:flex-row short:items-end">
+                    <StatusTip workspace=workspace />
                     <Composer workspace=workspace composing=composing />
                     <BottomBar workspace=workspace composing=composing />
                 </div>
@@ -2439,15 +2440,15 @@ fn context_title(tokens: u64, window: Option<u64>) -> String {
     }
 }
 
-/// How long a phone's status line keeps a new status message.
+/// How long a new status message shows.
 const STATUS_LIVE: Duration = Duration::from_secs(8);
 
 /// The bottom bar: the session's agent, model, permission mode, and cost.
-/// A wide window shows it under the composer and adds the approvals, the
-/// status message, and the context size; a phone shows it above the
-/// composer, on the composer's background, with the approvals and the
-/// status in the status line above it, and hides it while the composer has
-/// focus.
+/// A wide window shows it under the composer and adds the approvals and the
+/// context size; a phone shows it above the composer, on the composer's
+/// background, with the approvals in the status line above it, and hides it
+/// while the composer has focus. A status message shows over the composer
+/// ([`StatusTip`]), not in the bar.
 #[component]
 fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let cost = move || {
@@ -2576,14 +2577,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     {move || approvals_label(approvals.get())}
                 </button>
             </Show>
-            <span
-                class="min-w-[4rem] flex-1 truncate px-2 text-ink compact:hidden dark:text-sand"
-                id="status"
-                role="status"
-                title=move || workspace.status.get()
-            >
-                {move || workspace.status.get()}
-            </span>
+            <span class="flex-1 compact:hidden" aria-hidden="true"></span>
             {move || context().map(|(tokens, window)| view! {
                 <span
                     id="context"
@@ -2612,58 +2606,78 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     }
 }
 
-/// A phone's line above the composer: the approvals waiting and a new
-/// status message for a few seconds; it shows only while one of them does.
-/// Wider windows have these in the bottom bar. The working spinner is the
-/// transcript's last row.
+/// A phone's line above the composer: the approvals waiting; it shows only
+/// while some do. Wider windows have them in the bottom bar. The working
+/// spinner is the transcript's last row.
 #[component]
 fn StatusLine(workspace: Workspace) -> impl IntoView {
-    let live = RwSignal::new(false);
-    let generation = StoredValue::new(0_u64);
-    Effect::new(move |previous: Option<String>| {
-        let status = workspace.status.get();
-        if previous.is_some_and(|previous| previous != status) && !status.is_empty() {
-            generation.update_value(|generation| *generation += 1);
-            let current = generation.get_value();
-            live.set(true);
-            // The line may be gone by then, `generation` with it.
-            set_timeout(
-                move || {
-                    if generation.try_get_value() == Some(current) {
-                        live.set(false);
-                    }
-                },
-                STATUS_LIVE,
-            );
-        }
-        status
-    });
     let approvals = Memo::new(move |_| workspace.approvals().len());
-    let shown = move || approvals.get() > 0 || live.get();
     view! {
-        <Show when=shown>
+        <Show when=move || { approvals.get() > 0 }>
             <div
                 id="status-line"
                 class="hidden min-h-11 items-center gap-1 border-t border-toasted px-2 text-xs compact:flex dark:border-ember"
             >
-                <Show when=move || { approvals.get() > 0 }>
-                    <button
-                        type="button"
-                        data-approvals
-                        class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full bg-caramel px-3 font-bold text-cream hover:bg-espresso active:bg-ink dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand"
-                        title="Approvals waiting: tap to answer"
-                        on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
-                    >
-                        <Glyph icon=icondata::FaBellSolid />
-                        {move || approvals_label(approvals.get())}
-                    </button>
-                </Show>
-                <Show when=move || live.get()>
-                    <span class="min-w-0 flex-1 truncate px-2 text-ink dark:text-sand" title=move || workspace.status.get()>
-                        {move || workspace.status.get()}
-                    </span>
-                </Show>
+                <button
+                    type="button"
+                    data-approvals
+                    class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full bg-caramel px-3 font-bold text-cream hover:bg-espresso active:bg-ink dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand"
+                    title="Approvals waiting: tap to answer"
+                    on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
+                >
+                    <Glyph icon=icondata::FaBellSolid />
+                    {move || approvals_label(approvals.get())}
+                </button>
             </div>
+        </Show>
+    }
+}
+
+/// Keeps [`Workspace::status_live`]: set by a new status message, and
+/// cleared [`STATUS_LIVE`] later, unless the message is of work in progress
+/// ("reconnecting to the daemon…"), which stays until the next replaces it.
+/// The page calls it once: the views remount with every reconnection, a
+/// message they would have to show among it.
+pub(crate) fn follow_status(workspace: Workspace) {
+    let generation = StoredValue::new(0_u64);
+    Effect::new(move |previous: Option<String>| {
+        let status = workspace.status.get();
+        if status.is_empty() {
+            workspace.status_live.set(false);
+        } else if previous.is_some_and(|previous| previous != status) {
+            generation.update_value(|generation| *generation += 1);
+            let current = generation.get_value();
+            workspace.status_live.set(true);
+            if !status.ends_with('…') {
+                set_timeout(
+                    move || {
+                        if generation.get_value() == current {
+                            workspace.status_live.set(false);
+                        }
+                    },
+                    STATUS_LIVE,
+                );
+            }
+        }
+        status
+    });
+}
+
+/// A new status message, such as "reconnected to the daemon", as a tooltip
+/// over the composer while [`Workspace::status_live`] says: they come
+/// rarely, so they take no room of the bottom bar's. It never takes a click
+/// from what it covers.
+#[component]
+fn StatusTip(workspace: Workspace) -> impl IntoView {
+    view! {
+        <Show when=move || workspace.status_live.get()>
+            <span
+                id="status"
+                role="status"
+                class="pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-md border border-toasted bg-parchment px-2 py-1 text-xs break-words text-ink shadow-md dark:border-ember dark:bg-char dark:text-sand"
+            >
+                {move || workspace.status.get()}
+            </span>
         </Show>
     }
 }

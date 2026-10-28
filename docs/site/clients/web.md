@@ -456,6 +456,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   not take goes back to that session's draft, even when another is open.
   Drafts stay in the page and end with it.
 
+  A status message, such as "reconnected to the daemon", shows for a few
+  seconds as a tip over the composer's top left corner, on every width;
+  one of work in progress, ending in "…", stays until the next replaces it.
+
   The strip above the composer lists pending and queued messages; tap one
   to take it back into your composer, another client's too (a daemon
   before client protocol 1.31.0 lets only the client that sent it).
@@ -560,7 +564,6 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   - the approvals waiting, when there are any (click to answer them); each
     card shows the call and, when the approval reviewer passed it to you,
     its reason ("The reviewer asks: …", or that its review failed);
-  - the last status message;
   - where the session works, its workspaces under
     their runtimes' homes, after a dot in each runtime's machine's colour (click for
     **Runtimes**; not on a phone);
@@ -796,8 +799,7 @@ changes (`crons.changed`), from any client or agent.
     context size. Every picker, and every sheet of the ⋮ menu, opens from
     the bottom.
   - **Status line:** a thin line above the bottom bar, only while
-    approvals wait (tap the badge to answer), or for a few seconds after a
-    status message.
+    approvals wait (tap the badge to answer).
 - **Two levels.** Each view has a first level, its list, and a second
   level, the item open in it. The first level fills the screen beside the
   rail, which stays an icon strip with the theme button at its foot; the

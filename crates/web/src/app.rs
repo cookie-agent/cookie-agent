@@ -420,6 +420,7 @@ pub fn App() -> impl IntoView {
         }
     });
     browser::follow_visual_viewport();
+    crate::views::follow_status(workspace);
     if connects_by_itself(
         Some(&connection.url.get_untracked()),
         Some(&connection.token.get_untracked()),
