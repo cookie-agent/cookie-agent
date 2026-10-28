@@ -109,20 +109,34 @@ run_set() {
     # for it. A debug daemon compiles the model catalog before it is ready,
     # seconds of CPU, while every group starts its daemons and browser at
     # once: on a cold four-core runner that takes longer than 20 s.
+    #
+    # `free_port` frees the port it finds, so a group starting beside this one
+    # can take it before the daemon binds it: a daemon refused its port starts
+    # again on another, written into its config.toml. `daemon_port` is the
+    # port it listens on.
     start_daemon() {
-        local home="$1"
-        (cd "$home/workspace" && HOME="$home" exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
-        pids+=("$!")
-        echo "$!" >"$home/daemon.pid"
-        for _ in $(seq 1 600); do
-            grep -q '^daemon-ready ' "$home/daemon.out" 2>/dev/null && break
-            sleep 0.1
+        local home="$1" attempt pid
+        for attempt in 1 2 3 4 5; do
+            (cd "$home/workspace" && HOME="$home" exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
+            pid="$!"
+            pids+=("$pid")
+            echo "$pid" >"$home/daemon.pid"
+            for _ in $(seq 1 600); do
+                grep -q '^daemon-ready ' "$home/daemon.out" 2>/dev/null && break
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.1
+            done
+            grep -q '^daemon-ready ' "$home/daemon.out" && break
+            grep -q 'Address already in use' "$home/daemon.err" || break
+            wait "$pid" 2>/dev/null || true
+            sed -i "s/^port = [0-9]*$/port = $(free_port)/" "$home/.cookie-agent/config.toml"
         done
         if ! grep -q '^daemon-ready ' "$home/daemon.out"; then
-            echo "the daemon in $home did not get ready:" >&2
+            echo "the daemon in $home did not get ready (attempt $attempt):" >&2
             cat "$home/daemon.err" >&2
             exit 1
         fi
+        daemon_port="$(sed -n 's/^port = \([0-9]*\)$/\1/p' "$home/.cookie-agent/config.toml" | head -1)"
         link="$(HOME="$home" "$cookie" web)"
     }
 
@@ -283,6 +297,7 @@ TOML
     # `e2e` at start, which the memory scenario writes into.
     mkdir -p "$allowing/.cookie-agent/memory/projects/e2e"
     start_daemon "$allowing"
+    port="$daemon_port"
     allowing_link="$link"
     mkdir -p "$allowing/second" "$allowing/elsewhere"
     # A runtime that dialled in once and went away: its card is offline.
@@ -301,6 +316,7 @@ TOML
     other_port="$(free_port)"
     write_config "$scratch/other" "$other_port" </dev/null
     start_daemon "$scratch/other"
+    other_port="$daemon_port"
     other_link="$link"
 
     driver_port="$(free_port)"
