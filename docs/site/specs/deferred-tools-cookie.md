@@ -1,6 +1,7 @@
 # Deferred tools in cookie
 
-Status: **draft** (2026-10-27), decisions made, not yet implemented. Builds on
+Status: **implemented** (2026-10-27, in six phases; see
+[section 14](#14-implementation-notes) for where the code differs). Builds on
 [deferred tool loading in oven-sdk](deferred-tools.md) (implemented, oven-sdk
 b875054) and carries out the cookie-side decisions in its section 10.
 
@@ -634,3 +635,56 @@ As decided (oven spec, section 10, decision 3):
    - its `include_tools` or `exclude_tools` change live;
    - a session permission change now offers its tools;
    - `always_load` itself is turned on mid-session.
+
+## 14. Implementation notes
+
+Implemented in the phase order of section 13, each phase pushed on its own.
+Where the code differs from the sections above:
+
+- **Versions.** Each phase bumped the protocols it touched, rather than one
+  bump for all: client protocol 1.44.0 (events, `loaded_tools`), 1.45.0
+  (`folded_tools`), 1.46.0 (`ConfigStatus.deferred_tools`), 1.47.0 (MCP
+  `always_load`, `always_load_tools`, `instructions`), and 1.48.0
+  (`deferred_tool_names`); plugin protocol 1.23.0 to 1.26.0, with 1.25.0
+  adding the plugin `summary`; runtime protocol 1.11.0.
+- **Announcements (7.2).** The first request's announcement is appended
+  before the request is built, so it renders before that run's input
+  rather than after it.
+- **Built-in groups in the docs (7.1).** The tools reference shows every
+  built-in group's summary in one generated table; the detailed
+  instructions are the system prompt's `<tool_instructions>` sections,
+  which the [system prompt reference](../reference/system-prompt.md)
+  documents, rather than one generated region per group.
+- **Compaction (8.3).** The messages a checkpoint keeps raw are rendered
+  against the round after it, as the user specified while phase 3 was
+  under way: calls to a tool that left go with their results, `tool_load`
+  calls go with their results and the instructions their first load
+  carried, earlier announcements go, and a turn left with only reasoning
+  goes too. Calls to a folded tool stay. Keeping the `tool_load` calls was
+  considered: oven sends a load of a declared tool as text, which every
+  provider takes, but the provider instructions it carried would then
+  reach the model twice. The native compaction request declares the
+  folded tools up front.
+- **Retry (9).** A retry that fails is reported, and handled, as its own
+  error, not the original one. A thinking-binding mismatch never starts the
+  deferral retry, so it cannot mark a model by mistake; the replay-cut
+  retry handles it as before.
+- **The daemon's own MCP servers (10).** Before phase 5 their tools did not
+  report an MCP source, so only runtime-hosted servers' tools were
+  deferred, and calls to the daemon's own servers were presented as base
+  tools. They now report their source, summary, and `always_load` like a
+  runtime's.
+- **`always_load` over the runtime protocol (10).** A report's `tools`
+  lists the unfiltered `server_tools` entries' published names in the same
+  order; the daemon maps a published tool to its `always_load` flag by that
+  order.
+- **Plugins (10).** No client has a plugin editor, so a plugin's
+  `always_load` is set in `config.toml` only.
+- **Reconnects (11).** The server a loaded tool comes from is found by the
+  group the tool was announced under. After a checkpoint folds the tool,
+  the fold no longer names it as loaded, so a failed server of a folded tool
+  is left to the session's usual retries; its tool stays declared until
+  the round ends.
+- **The tools row (12).** The summary keeps the `(last request)` suffix:
+  `tools · 12 provided, 40 searchable (last request)`.
+

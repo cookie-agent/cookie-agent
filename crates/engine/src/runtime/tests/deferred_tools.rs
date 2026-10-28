@@ -287,6 +287,18 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
         (1, 1),
         "recorded once, then reused"
     );
+    // Clients see `write` searchable, then provided once loaded.
+    let published = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelToolsPublished {
+                deferred_tool_names,
+                ..
+            } => Some(deferred_tool_names.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(published, [vec!["write".to_owned()], Vec::new()]);
 }
 
 /// A first run, a run that loads and calls `write`, a compaction that keeps

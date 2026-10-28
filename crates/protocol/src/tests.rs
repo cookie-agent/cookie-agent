@@ -1463,6 +1463,7 @@ fn model_tools_event_round_trips_and_bounds_names() {
         payload: EventPayload::ModelToolsPublished {
             attempt_id: AttemptId::new_v7(),
             tool_names: vec!["bash".into(), "read".into()],
+            deferred_tool_names: Vec::new(),
         },
     };
     let value = serde_json::to_value(&event).unwrap();
@@ -1480,6 +1481,7 @@ fn model_tools_event_round_trips_and_bounds_names() {
             payload: EventPayload::ModelToolsPublished {
                 attempt_id: AttemptId::new_v7(),
                 tool_names,
+                deferred_tool_names: Vec::new(),
             },
             ..event.clone()
         };

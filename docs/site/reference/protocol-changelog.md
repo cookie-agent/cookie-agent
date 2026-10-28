@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.48.0
+
+- `model_tools_published` has an optional `deferred_tool_names`: the tools
+  of `tool_names` the request sent deferred and not yet loaded, which
+  clients show as searchable apart from the provided ones
+  ([deferred tools in cookie](../specs/deferred-tools-cookie.md) section 12).
+  Each must also be in `tool_names`. Plugin protocol 1.26.0 carries it in
+  events the same way.
+
 ## 1.47.0
 
 - MCP server definitions (`mcp.server.*`) take `always_load`,

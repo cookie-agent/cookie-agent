@@ -1747,19 +1747,37 @@ impl Engine {
     }
 
     /// Records the names of the tools about to be sent so clients can show
-    /// them, skipping the record when the session's latest one already matches.
+    /// them, skipping the record when the session's latest one already
+    /// matches. A deferred tool no result loaded yet is searchable, on a
+    /// model that loads deferred tools; elsewhere oven sends it up front.
     async fn record_model_tools(
         &self,
         session: SessionId,
         run: RunId,
         attempt_id: cookie_agent_protocol::AttemptId,
-        tools: &[ToolDefinition],
+        request: &ModelRequest,
+        binding: &cookie_agent_protocol::FrozenModelBinding,
     ) -> Result<(), EngineError> {
-        let tool_names = tools
+        let tool_names = request
+            .tools
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
-        self.record_model_tool_names(session, run, attempt_id, tool_names)
+        let deferred_tool_names =
+            if cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor)
+                .defers()
+            {
+                let plan = oven_sdk::DeferredTools::of(request);
+                request
+                    .tools
+                    .iter()
+                    .filter(|tool| tool.is_deferred() && !plan.is_loaded(&tool.name))
+                    .map(|tool| tool.name.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        self.record_model_tool_names(session, run, attempt_id, tool_names, deferred_tool_names)
             .await
     }
 
@@ -1773,16 +1791,18 @@ impl Engine {
         run: RunId,
         attempt_id: cookie_agent_protocol::AttemptId,
         tool_names: Vec<String>,
+        deferred_tool_names: Vec<String>,
     ) -> Result<(), EngineError> {
         // Names a record cannot carry are still sent; clients keep showing
         // the previous record.
         if !cookie_agent_protocol::valid_model_tool_names(&tool_names)
+            || !cookie_agent_protocol::valid_model_tool_names(&deferred_tool_names)
             || self
                 .inner
                 .store
                 .get(session)?
                 .log
-                .last_model_tools_match(&tool_names)
+                .last_model_tools_match(&tool_names, &deferred_tool_names)
         {
             return Ok(());
         }
@@ -1793,6 +1813,7 @@ impl Engine {
             Event::ModelToolsPublished {
                 attempt_id,
                 tool_names,
+                deferred_tool_names,
             },
         )
         .await
@@ -2087,7 +2108,7 @@ impl Engine {
                 crate::media::elide_excess_media(&mut request.history, &capabilities)
                     .map_err(ModelError::invalid_request)?;
                 let prompt_fingerprint = request_fingerprint(&request)?;
-                self.record_model_tools(session, run, attempt_id, &request.tools)
+                self.record_model_tools(session, run, attempt_id, &request, binding)
                     .await?;
                 self.append(
                     session,

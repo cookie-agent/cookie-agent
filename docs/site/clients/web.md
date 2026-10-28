@@ -359,9 +359,11 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     created with), with
     `· next: <agent>` when the bottom bar's agent differs, and the tools
     the last model request offered (`tools · 12 available (last
-    request)`). Click one to open it: the prompt in monospace with its
-    line breaks and indentation, up to 256 lines or 32 KiB, and the tool
-    names as chips, up to 8 KiB of names.
+    request)`, or `tools · 12 provided, 40 searchable (last request)` when
+    it [deferred](../reference/tools.md#deferred-tools) some). Click one to
+    open it: the prompt in monospace with its line breaks and indentation,
+    up to 256 lines or 32 KiB, and the tool names as chips, up to 8 KiB of
+    names, the provided and searchable ones under their own headings.
   - **Replies** end with the TUI's footer line, `⚡ 42.1 tps · 12.5K ctx ·
     $0.0040`: generation speed, the context the reply left, and its
     estimated cost when every request was priced, then `interrupted` when

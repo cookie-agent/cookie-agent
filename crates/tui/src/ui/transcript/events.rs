@@ -262,8 +262,20 @@ pub(super) fn model_tools_layout(
         theme.internal(),
     )];
     if is_expanded {
+        // A request that deferred tools lists them apart, under headings.
+        let text = if state.model_deferred_tools.is_empty() {
+            tools.join(", ")
+        } else {
+            let (provided, searchable) =
+                cookie_agent_client_state::rows::model_tool_groups(state, tools);
+            format!(
+                "Provided: {}\nSearchable: {}",
+                provided.join(", "),
+                searchable.join(", ")
+            )
+        };
         body.extend(bounded_safe_display_text(
-            &tools.join(", "),
+            &text,
             theme.internal(),
             MAX_EXPANDED_BODY_LINES,
             MAX_EXPANDED_BODY_BYTES,

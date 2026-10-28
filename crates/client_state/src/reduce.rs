@@ -1541,8 +1541,13 @@ pub(super) fn reduce_event_from(
                 });
             }
         }
-        EventPayload::ModelToolsPublished { tool_names, .. } => {
+        EventPayload::ModelToolsPublished {
+            tool_names,
+            deferred_tool_names,
+            ..
+        } => {
             state.model_tools = Some(tool_names.into());
+            state.model_deferred_tools = deferred_tool_names.into();
         }
         EventPayload::SkillLoaded {
             name,

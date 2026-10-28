@@ -935,7 +935,13 @@ impl Turn<'_> {
             .await?;
         if let Some(names) = &self.bridge_tools {
             self.engine
-                .record_model_tool_names(self.session(), self.run, attempt_id, names.clone())
+                .record_model_tool_names(
+                    self.session(),
+                    self.run,
+                    attempt_id,
+                    names.clone(),
+                    Vec::new(),
+                )
                 .await?;
         }
         self.step = Some(Step {

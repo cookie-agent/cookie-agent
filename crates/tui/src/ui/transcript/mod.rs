@@ -707,6 +707,7 @@ struct SystemPromptLayoutKey {
     expanded: bool,
     /// The pinned tools block renders with the system prompt.
     model_tools: Option<std::sync::Arc<[String]>>,
+    model_deferred_tools: std::sync::Arc<[String]>,
     model_tools_expanded: bool,
     /// Whose bridge the tools are, which the block's title names.
     acp_agent: Option<AgentId>,
@@ -999,6 +1000,7 @@ pub(super) fn ensure_cached_transcript_layout(
             draft_agent: draft_agent.cloned(),
             expanded: expanded.is_some_and(|blocks| blocks.contains(&BlockId::SystemPrompt)),
             model_tools: state.model_tools.clone(),
+            model_deferred_tools: state.model_deferred_tools.clone(),
             model_tools_expanded: expanded
                 .is_some_and(|blocks| blocks.contains(&BlockId::ModelTools)),
             acp_agent: state.acp.agent.clone(),

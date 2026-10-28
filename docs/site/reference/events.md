@@ -669,8 +669,12 @@ It is recorded only when the names differ from the session's latest visible
 record, so an unchanged tool set adds nothing to later attempts. Validation
 allows at most 1,024 names, each nonempty, at most 256 bytes, and free of
 control characters; a request whose names do not fit is still sent, without
-a record. The TUI shows the latest record as a collapsible tools block under
-the system prompt.
+a record. `deferred_tool_names` (since 1.48.0, absent when empty) lists the
+ones of `tool_names` the request sent [deferred](#deferred-tools) and not yet
+loaded, each also in `tool_names`; the record is skipped only when both lists
+match. The TUI and the web client show the latest record as a collapsible
+tools block under the system prompt, split into provided and searchable tools
+when the request deferred any.
 
 ### Deferred tools
 

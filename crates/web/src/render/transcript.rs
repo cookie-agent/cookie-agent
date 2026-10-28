@@ -16,8 +16,8 @@ use cookie_agent_client_state::{
     rows::{
         AGENT_COMPACTION_HEADER, MAX_SYSTEM_PROMPT_BODY_BYTES, MAX_SYSTEM_PROMPT_BODY_LINES,
         agent_session_message_summary, bounded_text, bounded_tools, display_line_count,
-        goal_status_label, model_tools_summary, producer_mode_label, producer_owner_label,
-        producer_summary, system_prompt_source, system_prompt_summary,
+        goal_status_label, model_tool_groups, model_tools_summary, producer_mode_label,
+        producer_owner_label, producer_summary, system_prompt_source, system_prompt_summary,
     },
 };
 use cookie_agent_protocol::{
@@ -1022,20 +1022,34 @@ pub fn pinned_rows(
             &model_tools_summary(state, tools),
             expanded,
             || {
-                let (shown, omitted) = bounded_tools(tools);
-                let mut html =
-                    String::from("<ul class=\"flex flex-wrap gap-1\" data-model-tools>");
-                for tool in shown {
-                    html.push_str(&format!(
-                        "<li class=\"rounded border border-toasted px-1.5 font-mono text-xs leading-5 dark:border-ember\">{}</li>",
-                        escape(tool)
-                    ));
+                let list = |tools: &[&str], group: &str| {
+                    let (shown, omitted) = bounded_tools(tools);
+                    let mut html = format!(
+                        "<ul class=\"flex flex-wrap gap-1\" data-model-tools{group}>"
+                    );
+                    for tool in shown {
+                        html.push_str(&format!(
+                            "<li class=\"rounded border border-toasted px-1.5 font-mono text-xs leading-5 dark:border-ember\">{}</li>",
+                            escape(tool)
+                        ));
+                    }
+                    html.push_str("</ul>");
+                    if omitted > 0 {
+                        html.push_str(&format!("<p class=\"{NOTE}\">… and {omitted} more</p>"));
+                    }
+                    html
+                };
+                let (provided, searchable) = model_tool_groups(state, tools);
+                if searchable.is_empty() {
+                    list(&provided, "")
+                } else {
+                    // A request that deferred tools lists them apart.
+                    format!(
+                        "<p class=\"{NOTE}\">Provided</p>{}<p class=\"{NOTE}\">Searchable</p>{}",
+                        list(&provided, "=\"provided\""),
+                        list(&searchable, "=\"searchable\"")
+                    )
                 }
-                html.push_str("</ul>");
-                if omitted > 0 {
-                    html.push_str(&format!("<p class=\"{NOTE}\">… and {omitted} more</p>"));
-                }
-                html
             },
         ));
     }
@@ -1851,6 +1865,12 @@ mod tests {
         );
         assert_eq!(open.matches("<li ").count(), 2);
         assert_ne!(open_key, folded_key, "opening changes its key");
+        // A request that deferred a tool lists it apart.
+        state.model_deferred_tools = vec!["bash".to_owned()].into();
+        let (_, split) = pinned_rows(&state, &expanded, None).unwrap();
+        assert!(split.contains("tools · 1 provided, 1 searchable (last request)"));
+        assert!(split.contains("data-model-tools=\"provided\""), "{split}");
+        assert!(split.contains("data-model-tools=\"searchable\""), "{split}");
     }
 
     /// A session whose one reply has a folded thinking block, a finished

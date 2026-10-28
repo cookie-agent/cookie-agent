@@ -1085,6 +1085,7 @@ async fn model_tools_are_recorded_once_while_unchanged() {
             EventPayload::ModelToolsPublished {
                 attempt_id,
                 tool_names,
+                ..
             } => Some((event.seq, attempt_id, tool_names)),
             _ => None,
         })

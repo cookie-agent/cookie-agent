@@ -1100,6 +1100,9 @@ pub struct SessionState {
     /// Tool names of the latest `ModelToolsPublished`: what the model was
     /// last offered.
     pub model_tools: Option<std::sync::Arc<[String]>>,
+    /// The tools of `model_tools` that request sent deferred and not yet
+    /// loaded: searchable rather than provided.
+    pub model_deferred_tools: std::sync::Arc<[String]>,
     pub model_selection: cookie_agent_protocol::SessionModelState,
     /// The session's runtime attachments, folded from its attach and detach
     /// events.

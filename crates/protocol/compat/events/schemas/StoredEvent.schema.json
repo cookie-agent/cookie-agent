@@ -3638,6 +3638,14 @@
               "format": "uuid",
               "type": "string"
             },
+            "deferred_tool_names": {
+              "description": "The tools of `tool_names` the request sent deferred and not yet\nloaded (client protocol 1.48.0): searchable rather than provided.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
             "tool_names": {
               "items": {
                 "type": "string"

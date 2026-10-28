@@ -157,7 +157,7 @@ struct EventIndex {
     /// Visible `ModelAttemptStarted` records per run.
     run_attempts: HashMap<RunId, u32>,
     /// Tool names of the latest visible `ModelToolsPublished` record.
-    last_model_tools: Option<Vec<String>>,
+    last_model_tools: Option<(Vec<String>, Vec<String>)>,
     /// The latest runtime revisions the log records.
     revisions: cookie_agent_protocol::RevisionFold,
     /// Deferred tools since the latest checkpoint.
@@ -272,8 +272,12 @@ impl EventIndex {
                     *self.run_attempts.entry(run).or_default() += 1;
                 }
             }
-            EventPayload::ModelToolsPublished { tool_names, .. } => {
-                self.last_model_tools = Some(tool_names.clone());
+            EventPayload::ModelToolsPublished {
+                tool_names,
+                deferred_tool_names,
+                ..
+            } => {
+                self.last_model_tools = Some((tool_names.clone(), deferred_tool_names.clone()));
             }
             _ => {}
         }
@@ -1460,14 +1464,14 @@ impl EventLog {
     }
 
     /// Whether the latest recorded tool names sent to the model are `names`.
-    pub(crate) fn last_model_tools_match(&self, names: &[String]) -> bool {
+    pub(crate) fn last_model_tools_match(&self, names: &[String], deferred: &[String]) -> bool {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .index
             .last_model_tools
-            .as_deref()
-            == Some(names)
+            .as_ref()
+            .is_some_and(|(last, last_deferred)| last == names && last_deferred == deferred)
     }
 
     pub(crate) fn latest_checkpoint_seq(&self) -> u64 {

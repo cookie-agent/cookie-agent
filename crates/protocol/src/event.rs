@@ -2889,6 +2889,11 @@ pub enum EventPayload {
         attempt_id: AttemptId,
         #[schemars(length(max = 1024))]
         tool_names: Vec<String>,
+        /// The tools of `tool_names` the request sent deferred and not yet
+        /// loaded (client protocol 1.48.0): searchable rather than provided.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[schemars(length(max = 1024))]
+        deferred_tool_names: Vec<String>,
     },
     /// Deferred tools that became loadable, and loadable ones that left,
     /// grouped by source (client protocol 1.44.0). Rendered in place as a
@@ -3665,7 +3670,22 @@ impl EventPayload {
                 }
             }
             Self::MemoryLoaded { snapshot } => snapshot.validate()?,
-            Self::ModelToolsPublished { tool_names, .. } if !valid_model_tool_names(tool_names) => {
+            Self::ModelToolsPublished {
+                tool_names,
+                deferred_tool_names,
+                ..
+            } if !valid_model_tool_names(tool_names)
+                || !valid_model_tool_names(deferred_tool_names)
+                || (!deferred_tool_names.is_empty() && {
+                    let declared = tool_names
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<std::collections::HashSet<_>>();
+                    !deferred_tool_names
+                        .iter()
+                        .all(|name| declared.contains(name.as_str()))
+                }) =>
+            {
                 return Err(EventSchemaError::InvalidModelTools);
             }
             Self::DeferredToolsAnnounced { added, removed }

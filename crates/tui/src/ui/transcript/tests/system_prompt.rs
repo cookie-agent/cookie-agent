@@ -1264,6 +1264,7 @@ async fn model_tools_block_lists_the_latest_tool_names_under_the_system_prompt()
         published.payload = EventPayload::ModelToolsPublished {
             attempt_id: AttemptId::new_v7(),
             tool_names: names.into_iter().map(str::to_owned).collect(),
+            deferred_tool_names: Vec::new(),
         };
         assert!(app.store.apply_event(published));
     }

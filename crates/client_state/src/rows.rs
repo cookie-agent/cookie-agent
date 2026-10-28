@@ -194,9 +194,34 @@ pub fn system_prompt_summary(
 pub fn model_tools_summary(state: &SessionState, tools: &[String]) -> String {
     if bridged_tools(state) {
         format!("cookie tools · {} offered to the agent", tools.len())
-    } else {
+    } else if state.model_deferred_tools.is_empty() {
         format!("tools · {} available (last request)", tools.len())
+    } else {
+        let (provided, searchable) = model_tool_groups(state, tools);
+        format!(
+            "tools · {} provided, {} searchable (last request)",
+            provided.len(),
+            searchable.len()
+        )
     }
+}
+
+/// The latest request's tools split in two: the ones it provided (sent up
+/// front, or deferred and loaded) and the ones it left searchable
+/// (deferred, not loaded), each in the request's order.
+pub fn model_tool_groups<'a>(
+    state: &SessionState,
+    tools: &'a [String],
+) -> (Vec<&'a str>, Vec<&'a str>) {
+    let deferred = state
+        .model_deferred_tools
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    tools
+        .iter()
+        .map(String::as_str)
+        .partition(|tool| !deferred.contains(tool))
 }
 
 /// Whether the session's tools row lists what cookie offers an ACP agent
@@ -259,11 +284,11 @@ pub fn bounded_text(text: &str, max_lines: usize, max_bytes: usize) -> BoundedTe
 /// The tools the opened tools row lists: as many as fit
 /// [`MAX_EXPANDED_BODY_BYTES`] joined with `, `, as the TUI's line does,
 /// and how many more there are.
-pub fn bounded_tools(tools: &[String]) -> (&[String], usize) {
+pub fn bounded_tools<T: AsRef<str>>(tools: &[T]) -> (&[T], usize) {
     let mut bytes = 0usize;
     let mut shown = 0usize;
     for tool in tools {
-        let next = bytes + tool.len() + if shown == 0 { 0 } else { 2 };
+        let next = bytes + tool.as_ref().len() + if shown == 0 { 0 } else { 2 };
         if next > MAX_EXPANDED_BODY_BYTES {
             break;
         }
@@ -338,6 +363,21 @@ mod tests {
         assert_eq!(
             model_tools_summary(&state, &tools),
             "tools · 2 available (last request)"
+        );
+        // A request that deferred tools splits them.
+        let with_deferred = vec![
+            "read".to_owned(),
+            "chrome_click".to_owned(),
+            "bash".to_owned(),
+        ];
+        state.model_deferred_tools = vec!["chrome_click".to_owned()].into();
+        assert_eq!(
+            model_tools_summary(&state, &with_deferred),
+            "tools · 2 provided, 1 searchable (last request)"
+        );
+        assert_eq!(
+            model_tool_groups(&state, &with_deferred),
+            (vec!["read", "bash"], vec!["chrome_click"])
         );
         // An ACP agent's run lists the tools cookie's bridge offers it.
         let claude = AgentId::new("claude").unwrap();

@@ -4,8 +4,8 @@ Status: **oven-sdk implemented** (2026-10-27; oven-sdk b875054, core 0.8.0,
 anthropic 0.9.0), with the deviations in section 11. Every decision in section
 9 was made 2026-10-27, and eight cookie-side decisions are recorded in section
 10. The Anthropic and OpenAI encodings were verified live; the Kimi encoding
-follows Moonshot's own client, Kimi Code (section 5.4). Cookie does not use
-it yet: the pin bump and cookie's side are a separate spec (section 10).
+follows Moonshot's own client, Kimi Code (section 5.4). Cookie's side is
+implemented in [deferred tools in cookie](deferred-tools-cookie.md).
 
 ## 1. Goal and scope
 
