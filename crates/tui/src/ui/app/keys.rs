@@ -1301,7 +1301,10 @@ impl App {
                 self.handle_wheel(mouse.column, mouse.row, false);
                 true
             }
-            MouseEventKind::Moved => self.update_hover(mouse.column, mouse.row),
+            MouseEventKind::Moved => {
+                self.pointer = Some((mouse.column, mouse.row));
+                self.update_hover(mouse.column, mouse.row)
+            }
             _ => false,
         }
     }
@@ -1330,6 +1333,7 @@ impl App {
                     column,
                     row,
                     target: PressTarget::Conversation,
+                    clicked: self.pointer_target_at(column, row),
                 });
                 return;
             }
@@ -1349,6 +1353,7 @@ impl App {
                         column,
                         row,
                         target: PressTarget::Composer,
+                        clicked: self.pointer_target_at(column, row),
                     });
                     return;
                 }
@@ -1413,7 +1418,8 @@ impl App {
     }
 
     /// Button release: a finished drag keeps its selection; a pending press
-    /// that never became a drag dispatches its click at the press position.
+    /// that never became a drag dispatches its click on what was under the
+    /// press.
     pub(super) async fn handle_release(&mut self) {
         self.scrollbar_drag = None;
         if self.selection.is_some() {
@@ -1423,7 +1429,8 @@ impl App {
         let Some(press) = self.pending_press.take() else {
             return;
         };
-        self.handle_click(press.column, press.row).await;
+        self.handle_click_on(press.clicked, press.column, press.row)
+            .await;
     }
 
     /// A conversation cell in content coordinates: `(logical line, display

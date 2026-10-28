@@ -535,6 +535,7 @@ impl App {
         self.apply_selection(frame);
         // Hover is the very last pass: a pure cell-style patch over whatever
         // was rendered, so it can never change layout or hit geometry.
+        self.refresh_hover();
         self.apply_hover(frame);
         emoji_backend::bind_emoji_shadows(frame.buffer_mut());
         fence_emoji_spill(frame.buffer_mut());

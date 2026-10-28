@@ -345,12 +345,23 @@ impl App {
     }
 
     pub(in crate::ui) async fn handle_click(&mut self, column: u16, row: u16) {
-        self.handle_click_inner(column, row).await;
+        self.handle_click_on(self.pointer_target_at(column, row), column, row)
+            .await;
+    }
+
+    /// A click at `column`/`row` on `target`, resolved where the press
+    /// landed.
+    pub(in crate::ui) async fn handle_click_on(
+        &mut self,
+        target: Option<PointerTarget>,
+        column: u16,
+        row: u16,
+    ) {
+        self.handle_click_inner(target, column, row).await;
         self.resume_onboarding();
     }
 
-    async fn handle_click_inner(&mut self, column: u16, row: u16) {
-        let target = self.pointer_target_at(column, row);
+    async fn handle_click_inner(&mut self, target: Option<PointerTarget>, column: u16, row: u16) {
         if self.command_palette_visible() {
             if let Some(target) = target {
                 self.activate_pointer_target(target, column, row).await;
@@ -577,6 +588,19 @@ impl App {
                 // only; the tree root snapshot is retained.
                 self.watch_session(session_id);
             }
+        }
+    }
+
+    /// Hover what is under the pointer in the hit map just drawn: content
+    /// that moved under a still pointer changes what a click would hit.
+    /// A held button keeps the hover it had: a drag's selection shows
+    /// instead.
+    pub(super) fn refresh_hover(&mut self) {
+        if self.pending_press.is_some() {
+            return;
+        }
+        if let Some((column, row)) = self.pointer {
+            self.update_hover(column, row);
         }
     }
 

@@ -777,6 +777,55 @@ def streaming_scroll(browser):
     idle(browser, "the last reply's end", text="gamma 599 ")
 
 
+# The newest tool row's header button, kept as `window.__header`, and its
+# centre; whether the page still shows that very node and the mouse is on
+# it; the newest row's output.
+HEADER = """
+const rows = document.querySelectorAll('#transcript [data-tool]');
+const button = rows[rows.length - 1].querySelector('[data-action=toggle-tool]');
+window.__header = button;
+const box = button.getBoundingClientRect();
+return [box.left + 24, box.top + box.height / 2];
+"""
+SAME_HEADER = "return document.contains(window.__header) && window.__header.matches(':hover')"
+NEWEST_OUTPUT = """
+const rows = document.querySelectorAll('#transcript [data-tool]');
+const body = rows[rows.length - 1].querySelector('[data-tool-body]');
+return body ? body.textContent : '';
+"""
+
+
+def open_row_streams(browser):
+    """An open call whose output still changes keeps its header: the hover
+    stays on it and a click that its output outlasts still folds it."""
+    new_session(browser)
+    send(browser, "ticking")
+    browser.wait("the approval", lambda: browser.text("#approvals-badge") != "")
+    browser.click("#approvals-badge")
+    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    browser.click("#sheet [data-decision=approve_once]")
+    close_sheet(browser)
+    row = "#transcript [data-tool]"
+    browser.wait("the running call", lambda: count(browser, row + " [data-progress]") > 0, timeout=20)
+    browser.click(row + " [data-action=toggle-tool]")
+    browser.wait("the open row", lambda: expanded(browser, row) == "true")
+    browser.wait("its output", lambda: "tick" in browser.script(NEWEST_OUTPUT))
+    x, y = browser.script(HEADER)
+    mouse(browser, "mouseMoved", x, y, button="none")
+    before = browser.script(NEWEST_OUTPUT)
+    time.sleep(0.5)
+    assert browser.script(NEWEST_OUTPUT) != before, "the output stopped changing"
+    assert browser.script(SAME_HEADER), "the open row's header was drawn anew under the mouse"
+    # Held while the output changes, as a click often is.
+    mouse(browser, "mousePressed", x, y)
+    time.sleep(0.3)
+    mouse(browser, "mouseReleased", x, y)
+    browser.wait("the folded row", lambda: expanded(browser, row) == "false", timeout=1)
+    assert count(browser, row + " [data-progress]") > 0, "the call ended before the click"
+    print("an open call whose output changes keeps its hover and folds on a click")
+    idle(browser, "the call's end", timeout=30)
+
+
 FRAME_STATS = """
 const done = arguments[arguments.length - 1];
 const span = arguments[0];
@@ -5599,6 +5648,7 @@ SCENARIOS = [
     ("tool_rows", tool_rows, "chat", []),
     ("pinned_rows", pinned_rows, "chat", ["tool_rows"]),
     ("streaming_scroll", streaming_scroll, "chat", []),
+    ("open_row_streams", open_row_streams, "chat", []),
     ("long_session", long_session, "long", []),
     ("message_menu", message_menu, "chat", ["basics"]),
     ("session_depth", session_depth, "depth", []),

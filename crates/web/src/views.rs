@@ -1918,18 +1918,20 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
     if !reply {
         let html = move || {
             row.with(|row| match row {
-                Some(RowHtml::Html(html)) => html.to_string(),
-                _ => String::new(),
+                Some(RowHtml::Html(html)) => Arc::clone(html),
+                _ => Arc::from(""),
             })
         };
         let node = NodeRef::<html::Div>::new();
         drawn_later(node);
+        let first = untrack(&html);
+        patched_later(node, first.clone(), html);
         return view! {
             <div
                 class="transcript-item min-w-0"
                 id=row_element_id(id)
                 node_ref=node
-                inner_html=html
+                inner_html=first.to_string()
             ></div>
         }
         .into_any();
@@ -1999,21 +2001,23 @@ fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl Int
     if !markdown {
         let html = move || {
             part.with(|part| match part {
-                Some(PartHtml::Html(html)) => html.to_string(),
-                _ => String::new(),
+                Some(PartHtml::Html(html)) => Arc::clone(html),
+                _ => Arc::from(""),
             })
         };
         // A block of its own, not `contents`: the node stays while its
         // HTML changes, so it keeps the height it last showed at.
         let node = NodeRef::<html::Div>::new();
         drawn_later(node);
+        let first = untrack(&html);
+        patched_later(node, first.clone(), html);
         return view! {
             <div
                 class="min-w-0"
                 data-part
                 id=part_element_id(row, id)
                 node_ref=node
-                inner_html=html
+                inner_html=first.to_string()
             ></div>
         }
         .into_any();
@@ -2033,6 +2037,24 @@ fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl Int
         drawn.update_value(|drawn| draw_blocks(&element, drawn, &blocks));
     });
     view! { <div class="markdown" data-part node_ref=node></div> }.into_any()
+}
+
+/// Brings `node`, drawn with `first`, in step with each later `html` in
+/// place ([`crate::morph`]): replaced whole, a block still streaming would
+/// lose the header button under the pointer at every change, its hover
+/// flickering and a click on it lost.
+fn patched_later(node: NodeRef<html::Div>, first: Arc<str>, html: impl Fn() -> Arc<str> + 'static) {
+    Effect::new(move |drawn: Option<Arc<str>>| {
+        let drawn = drawn.unwrap_or_else(|| first.clone());
+        let html = html();
+        let Some(element) = node.get() else {
+            return drawn;
+        };
+        if html != drawn {
+            crate::morph::patch(&element, &html);
+        }
+        html
+    });
 }
 
 /// Marks the transcript row or reply part `node` as drawn (`data-drawn`)

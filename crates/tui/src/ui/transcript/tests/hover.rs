@@ -1,8 +1,8 @@
 use crate::ui::transcript::*;
 
-use cookie_agent_protocol::{ApprovalUserDecision, AttemptId, SessionId, SessionTree};
+use cookie_agent_protocol::{ApprovalUserDecision, AttemptId, RunId, SessionId, SessionTree};
 
-use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use ratatui::{Terminal, backend::TestBackend};
 
@@ -53,9 +53,7 @@ async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
     assert!(!app.handle_mouse(moved(0, 0)).await);
 
     // The hovered button is visibly filled with the glaze hover color.
-    app.hover = Some(PointerTarget::ApprovalAction(
-        ApprovalUserDecision::ApproveOnce,
-    ));
+    assert!(app.handle_mouse(moved(target.x, target.y)).await);
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     terminal
@@ -260,4 +258,125 @@ async fn first_launch_and_fresh_session_show_guidance_without_system_prompt() {
     let rendered = rendered_frame(&mut app, 100, 30);
     assert!(rendered.contains("hello"), "{rendered}");
     assert!(!rendered.contains("Fresh session"), "{rendered}");
+}
+
+fn mouse_at(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// An app following a reply whose thinking streams, opened by a click on
+/// its header, with the pointer left on that header: the app, the
+/// session, the run, the attempt, the next sequence, and the header cell.
+async fn open_streaming_thinking() -> (App, SessionId, RunId, AttemptId, u64, (u16, u16)) {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let attempt = AttemptId::new_v7();
+    for event in [
+        session_created(session, 1),
+        attempt_started(session, 2, run, attempt, None),
+        reasoning_delta(session, 3, run, attempt, "line one\n"),
+    ] {
+        assert!(app.store.apply_event(event));
+    }
+    app.selected = Some(session);
+    let _ = rendered_frame(&mut app, 100, 40);
+    let header = app
+        .hit_map
+        .blocks
+        .iter()
+        .find(|hit| matches!(hit.id, BlockId::Thinking(_)))
+        .and_then(|hit| hit.toggle_rect)
+        .expect("the thinking header");
+    let (column, row) = (header.x + 4, header.y);
+    app.handle_mouse(mouse_at(
+        MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+    ))
+    .await;
+    app.handle_mouse(mouse_at(MouseEventKind::Up(MouseButton::Left), column, row))
+        .await;
+    app.handle_mouse(mouse_at(MouseEventKind::Moved, column, row))
+        .await;
+    let _ = rendered_frame(&mut app, 100, 40);
+    assert!(
+        matches!(
+            app.hover,
+            Some(PointerTarget::TranscriptBlock(BlockId::Thinking(_)))
+        ),
+        "{:?}",
+        app.hover
+    );
+    (app, session, run, attempt, 4, (column, row))
+}
+
+/// Streams thinking into the open block, drawing each delta, until the
+/// following view has scrolled its header off `row`.
+fn stream_header_off(
+    app: &mut App,
+    (session, run, attempt): (SessionId, RunId, AttemptId),
+    seq: &mut u64,
+    row: u16,
+) {
+    for line in 0..100 {
+        assert!(app.store.apply_event(reasoning_delta(
+            session,
+            *seq,
+            run,
+            attempt,
+            &format!("more thinking {line}\n"),
+        )));
+        *seq += 1;
+        let _ = rendered_frame(app, 100, 40);
+        let header = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| matches!(hit.id, BlockId::Thinking(_)))
+            .and_then(|hit| hit.toggle_rect);
+        if header.is_none_or(|header| header.y != row) {
+            return;
+        }
+    }
+    panic!("the header never scrolled");
+}
+
+#[tokio::test]
+async fn hover_follows_content_that_streams_under_a_still_pointer() {
+    let (mut app, session, run, attempt, mut seq, (_, row)) = open_streaming_thinking().await;
+    stream_header_off(&mut app, (session, run, attempt), &mut seq, row);
+    // The pointer is on the thinking's text now, which a click does not
+    // toggle: nothing hovers.
+    assert_eq!(app.hover, None);
+}
+
+#[tokio::test]
+async fn a_click_acts_on_what_its_press_landed_on_while_content_streams() {
+    let (mut app, session, run, attempt, mut seq, (column, row)) = open_streaming_thinking().await;
+    let open = |app: &App| {
+        app.expanded_blocks
+            .get(&session)
+            .is_some_and(|open| open.iter().any(|id| matches!(id, BlockId::Thinking(_))))
+    };
+    assert!(open(&app));
+    app.handle_mouse(mouse_at(
+        MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+    ))
+    .await;
+    // The header scrolls away while the button is held.
+    stream_header_off(&mut app, (session, run, attempt), &mut seq, row);
+    app.handle_mouse(mouse_at(MouseEventKind::Up(MouseButton::Left), column, row))
+        .await;
+    assert!(
+        !open(&app),
+        "the release missed the header it was pressed on"
+    );
 }

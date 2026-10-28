@@ -17,6 +17,8 @@ otherwise the last user text decides.
 - containing "sleepy": a `bash` call that sleeps, to move to the background;
 - containing "chatty": a `bash` call that prints a line, then sleeps, so it
   reports progress while it runs;
+- containing "ticking": a `bash` call that prints a tick every 100 ms for
+  about 10 s, so an open call's output changes while it is clicked;
 - containing "many lines": a `bash` call that prints 100 lines;
 - containing "picture": a `read` call on `dot.png`, whose result is a media
   block;
@@ -195,6 +197,8 @@ def reply(request):
         return long_reply(text)
     if "stream long" in text:
         return tool_reply("bash", {"command": "for i in $(seq 1 40); do echo tick $i; sleep 0.05; done"})
+    if "ticking" in text:
+        return tool_reply("bash", {"command": "for i in $(seq 1 100); do echo tick $i; sleep 0.1; done"})
     if "chatty" in text:
         return tool_reply("bash", {"command": "printf 'step one\\n'; sleep 6; printf 'done\\n'"})
     if "many lines" in text:

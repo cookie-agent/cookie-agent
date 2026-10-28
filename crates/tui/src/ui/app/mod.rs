@@ -286,6 +286,9 @@ pub(super) struct PendingPress {
     pub(super) column: u16,
     pub(super) row: u16,
     pub(super) target: PressTarget,
+    /// What the click acts on: what was under the press when it landed,
+    /// however far streaming content moved it before the release.
+    pub(super) clicked: Option<PointerTarget>,
 }
 
 /// Which pane a pending press can start a selection in.
@@ -882,9 +885,12 @@ pub struct App {
     pub(super) theme: Theme,
     pub(super) highlighter: Box<dyn Highlighter>,
     pub(super) hit_map: UiHitMap,
-    /// Interactive element under the pointer as of the last mouse move;
-    /// resolved against the hit map at render time and purely visual.
+    /// Interactive element under the pointer as of the last mouse event or
+    /// frame; resolved against the hit map at render time and purely visual.
     pub(super) hover: Option<PointerTarget>,
+    /// Where the last mouse move put the pointer, so each frame hovers what
+    /// is under it now: content that streams moves under a still pointer.
+    pub(super) pointer: Option<(u16, u16)>,
     /// Monotonic frame counter driving the streaming "thinking…" ellipsis;
     /// advanced by the frame tick only while animation is active.
     pub(super) animation_ticks: u64,
@@ -1701,6 +1707,7 @@ impl App {
             should_quit: false,
             selection: None,
             pending_press: None,
+            pointer: None,
             user_menu: None,
             clipboard_sink: ClipboardSink::default(),
             title_sequences: HashMap::new(),
