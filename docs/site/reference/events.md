@@ -689,6 +689,13 @@ come before a request, after its run's input:
   and an optional `summary`, with `untrusted` when the summary is the
   source's author's text. Model history renders it in place as a user turn.
 
+A checkpoint starts the round, the announcements, and the loads over. The
+first request after it records a new round, which declares the tools the
+checkpoint folded (`folded_tools`), and announces every tool still
+deferred afresh. In the messages the checkpoint keeps raw, announcements,
+`tool_load` calls, and calls to tools the new round does not declare are
+left out with their results.
+
 Both are audit events: an engine that does not know them defers nothing.
 At most 1,024 tools a record, and 2 MiB for a round's tools. A tool result's
 `loaded_tools` names the deferred tools it loaded (only `tool_load` sets
@@ -857,6 +864,7 @@ The retention fields:
 | `boundaries.recent_from_seq` | `u64` or `null` | Inclusive starting sequence of the retained original-message suffix. `null` means no retained suffix. |
 | `budgets.keep_recent_tokens` | `u64` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
 | `checkpoint.native` | object, optional | On an `internal_summary` checkpoint, the provider window compacted from the same events (`window`) and the last event it covers (`source_through_seq`). Absent when native compaction was not attempted or failed. |
+| `checkpoint.folded_tools` | string array, optional | On an `internal_summary` checkpoint, the [deferred tools](#deferred-tools) loaded before it, and the previous checkpoint's: the next tool round declares them up front. Absent when empty; at most 1,024 names. |
 
 The effective budget is at most `min(configured keep_recent_tokens,
 input_budget / 4)` and is further limited by actual post-checkpoint available

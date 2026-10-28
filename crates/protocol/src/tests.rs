@@ -1807,6 +1807,7 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint,
             native: None,
+            folded_tools: Vec::new(),
         },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 1,
@@ -1846,6 +1847,7 @@ fn checkpoint_recent_tail_is_required_and_stays_within_source() {
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint,
             native: None,
+            folded_tools: Vec::new(),
         },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 2,
@@ -1966,6 +1968,7 @@ fn summary_commit(native: Option<CheckpointNativeWindow>) -> ContextCheckpointCo
             )
             .unwrap(),
             native,
+            folded_tools: Vec::new(),
         },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 2,

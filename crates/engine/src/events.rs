@@ -167,7 +167,7 @@ struct EventIndex {
 /// What a log records about deferred tools since its latest checkpoint
 /// (deferred tools in cookie, sections 6 to 8): the current tool round, the
 /// tools results loaded, and what announcements add up to. A checkpoint
-/// starts all three over.
+/// starts all three over, keeping the tools it folded.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DeferralFold {
     /// The latest `tool_round_started` record.
@@ -176,6 +176,9 @@ pub(crate) struct DeferralFold {
     pub(crate) loaded: std::collections::BTreeSet<String>,
     /// Announced, still-loadable tools by group.
     pub(crate) announced: std::collections::BTreeMap<String, AnnouncedGroupState>,
+    /// Tools the latest checkpoint folded: the next round declares them up
+    /// front (section 8.3).
+    pub(crate) folded: std::collections::BTreeSet<String>,
 }
 
 /// The eager tools of a tool round and the groups whose prompt sections the
@@ -196,7 +199,12 @@ pub(crate) struct AnnouncedGroupState {
 impl DeferralFold {
     fn observe(&mut self, payload: &EventPayload) {
         match payload {
-            EventPayload::ContextCheckpointCommitted { .. } => *self = Self::default(),
+            EventPayload::ContextCheckpointCommitted { commit } => {
+                *self = Self {
+                    folded: commit.folded_tools().iter().cloned().collect(),
+                    ..Self::default()
+                };
+            }
             EventPayload::ToolRoundStarted {
                 tools,
                 prompt_groups,

@@ -1094,6 +1094,7 @@ fn summary_commit(
             )
             .expect("checkpoint"),
             native: None,
+            folded_tools: Vec::new(),
         },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq,
@@ -1710,6 +1711,7 @@ fn checkpoint_before_new_user_keeps_summary_and_user_live() {
                     checkpoint: ContextCheckpoint::InternalSummary {
                         checkpoint,
                         native: None,
+                        folded_tools: Vec::new(),
                     },
                     boundaries: ContextCheckpointBoundaries {
                         source_from_seq: 1,
@@ -3053,6 +3055,7 @@ fn summary_with_window(window: cookie_agent_protocol::NativeContextWindow) -> Co
             window,
             source_through_seq: 3,
         }),
+        folded_tools: Vec::new(),
     }
 }
 

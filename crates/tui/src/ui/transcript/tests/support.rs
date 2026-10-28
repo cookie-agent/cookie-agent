@@ -481,6 +481,7 @@ pub(crate) fn checkpoint_commit(summary: &str) -> cookie_agent_protocol::Context
             )
             .expect("summary checkpoint"),
             native: None,
+            folded_tools: Vec::new(),
         },
         boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
             source_from_seq: 2,

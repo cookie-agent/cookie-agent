@@ -2225,6 +2225,11 @@ pub enum ContextCheckpoint {
         /// ignores it uses the summary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         native: Option<CheckpointNativeWindow>,
+        /// Deferred tools loaded before this checkpoint, and the previous
+        /// checkpoint's: the next tool round declares them up front
+        /// (client protocol 1.45.0).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        folded_tools: Vec<String>,
     },
     /// A provider window alone, which builds before 1.29.0 wrote; read
     /// only. A request that cannot use it compacts the covered events
@@ -2274,6 +2279,11 @@ impl ContextCheckpointCommit {
             {
                 Err(EventSchemaError::SummaryTooLarge)
             }
+            ContextCheckpoint::InternalSummary { folded_tools, .. }
+                if !valid_model_tool_names(folded_tools) =>
+            {
+                Err(EventSchemaError::InvalidModelTools)
+            }
             _ => Ok(()),
         }
     }
@@ -2303,6 +2313,15 @@ impl ContextCheckpointCommit {
                 native.as_ref().map(|native| &native.window)
             }
             ContextCheckpoint::NativeWindow { window } => Some(window),
+        }
+    }
+
+    /// The deferred tools this checkpoint folded into the next tool round.
+    #[must_use]
+    pub fn folded_tools(&self) -> &[String] {
+        match &self.checkpoint {
+            ContextCheckpoint::InternalSummary { folded_tools, .. } => folded_tools,
+            ContextCheckpoint::NativeWindow { .. } => &[],
         }
     }
 }

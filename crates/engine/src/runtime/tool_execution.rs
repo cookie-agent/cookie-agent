@@ -1390,7 +1390,10 @@ impl Engine {
             None => composition
                 .tools
                 .iter()
-                .filter(|tool| !crate::deferred_tools::policy_defers(&tool.source, &tool.spec.name))
+                .filter(|tool| {
+                    !crate::deferred_tools::policy_defers(&tool.source, &tool.spec.name)
+                        || fold.folded.contains(&tool.name)
+                })
                 .map(|tool| tool.name.clone())
                 .collect(),
         };

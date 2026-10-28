@@ -318,6 +318,59 @@ struct AssistantRecord<'a> {
     /// The turn is at or before a `native_replay_cut`: its reasoning is not
     /// replayed.
     reasoning_cut: bool,
+    /// The checkpoint tail left out one of its calls.
+    tail_dropped: bool,
+}
+
+/// The raw events the latest checkpoint keeps from before it, rendered
+/// against the first tool round after it (deferred tools in cookie,
+/// section 8.3).
+#[derive(Default)]
+struct CheckpointTail<'a> {
+    /// The latest checkpoint's sequence number.
+    checkpoint_seq: Option<u64>,
+    /// The eager tools of the first round after it.
+    round: Option<HashSet<&'a str>>,
+}
+
+impl<'a> CheckpointTail<'a> {
+    fn of(events: &[&'a StoredEvent]) -> Self {
+        let Some(checkpoint) = events.iter().rposition(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ContextCheckpointCommitted { .. }
+            )
+        }) else {
+            return Self::default();
+        };
+        let round = events[checkpoint..]
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ToolRoundStarted { tools, .. } => {
+                    Some(tools.iter().map(|tool| tool.name.as_str()).collect())
+                }
+                _ => None,
+            });
+        Self {
+            checkpoint_seq: Some(events[checkpoint].seq),
+            round,
+        }
+    }
+
+    /// Whether the event at `seq` is from before the checkpoint.
+    fn covers(&self, seq: u64) -> bool {
+        self.checkpoint_seq
+            .is_some_and(|checkpoint| seq < checkpoint)
+    }
+
+    /// Whether a call to `tool` at `seq` is left out: its tool left with the
+    /// round, or it loaded tools the round now declares up front.
+    fn drops_call(&self, seq: u64, tool: &str) -> bool {
+        self.covers(seq)
+            && self.round.as_ref().is_some_and(|round| {
+                !round.contains(tool) || tool == crate::deferred_tools::TOOL_LOAD
+            })
+    }
 }
 
 struct CallRecord<'a> {
@@ -972,6 +1025,7 @@ fn assemble_history_with_replay(
         (!loaded.is_empty()).then(|| agent_md_turn(&loaded))
     };
     let loaded_memory = latest_memory_turn(context_events);
+    let tail = CheckpointTail::of(context_events);
     let mut logical = Vec::<LogicalTurn<'_>>::new();
     let mut submitted = HashMap::<u64, &UserContent>::new();
     let mut pending_model_calls = HashMap::<
@@ -995,7 +1049,9 @@ fn assemble_history_with_replay(
                 }));
             }
             // Rendered in place, so later bytes never move (deferred tools in
-            // cookie, section 7.2).
+            // cookie, section 7.2). The first request after a checkpoint
+            // announces afresh, so earlier announcements are left out.
+            EventPayload::DeferredToolsAnnounced { .. } if tail.covers(envelope.seq) => {}
             EventPayload::DeferredToolsAnnounced { added, removed } => {
                 logical.push(LogicalTurn::User(user_text(
                     &crate::deferred_tools::render_announcement(added, removed),
@@ -1034,6 +1090,7 @@ fn assemble_history_with_replay(
             } => {
                 let logical_index = logical.len();
                 let mut calls = Vec::new();
+                let mut tail_dropped = false;
                 let in_stream_results = turn
                     .content
                     .iter()
@@ -1045,7 +1102,7 @@ fn assemble_history_with_replay(
                     })
                     .collect::<std::collections::HashSet<_>>();
                 for part in &turn.content {
-                    if let PersistedAssistantPart::ToolCall { id, .. } = part {
+                    if let PersistedAssistantPart::ToolCall { id, name, .. } = part {
                         let call_index = calls.len();
                         let in_stream_result = in_stream_results.contains(id.as_str());
                         calls.push(CallRecord {
@@ -1055,7 +1112,14 @@ fn assemble_history_with_replay(
                             additional_messages: &[],
                             in_stream_result,
                         });
-                        if !in_stream_result && let Some(run_id) = envelope.run_id {
+                        // A call that never gets its result is dropped.
+                        let dropped =
+                            !in_stream_result && tail.drops_call(envelope.seq, name.as_str());
+                        tail_dropped |= dropped;
+                        if !in_stream_result
+                            && !dropped
+                            && let Some(run_id) = envelope.run_id
+                        {
                             pending_model_calls
                                 .entry((run_id, id))
                                 .or_default()
@@ -1076,6 +1140,7 @@ fn assemble_history_with_replay(
                     // interrupt.
                     interrupted: turn.finish_reason == ModelFinishReason::Aborted,
                     reasoning_cut: replay_cut.is_some_and(|cut| envelope.seq <= cut),
+                    tail_dropped,
                 })));
             }
             EventPayload::ToolCallStarted { start } => {
@@ -1263,6 +1328,18 @@ fn assemble_history_with_replay(
                 };
                 if !assistant.turn.content.iter().all(keep) {
                     assistant.turn.to_mut().content.retain(keep);
+                }
+                // A turn the checkpoint tail left only reasoning goes too.
+                if assistant.tail_dropped
+                    && !assistant.turn.content.iter().any(|part| {
+                        matches!(
+                            part,
+                            PersistedAssistantPart::Text { .. }
+                                | PersistedAssistantPart::ToolCall { .. }
+                        )
+                    })
+                {
+                    assistant.turn.to_mut().content.clear();
                 }
                 let reasoning_cut =
                     assistant.reasoning_cut

@@ -180,7 +180,7 @@ fn declared(definition: &RoundToolDefinition) -> Option<ToolDefinition> {
 /// `loaders` are the loader tools' definitions. The tool round comes from
 /// `fold`, or starts here when the log has none since its checkpoint.
 pub(crate) fn plan(
-    candidates: Vec<Candidate>,
+    mut candidates: Vec<Candidate>,
     loaders: &[ToolDefinition],
     fold: &DeferralFold,
 ) -> DeferralPlan {
@@ -188,6 +188,10 @@ pub(crate) fn plan(
     let mut round = match &fold.round {
         Some(round) => round.tools.clone(),
         None => {
+            // A round after a checkpoint declares the tools it folded.
+            for candidate in candidates.iter_mut() {
+                candidate.deferred &= !fold.folded.contains(&candidate.definition.name);
+            }
             let mut tools = candidates
                 .iter()
                 .filter(|candidate| !candidate.deferred)

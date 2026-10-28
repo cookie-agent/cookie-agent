@@ -474,6 +474,19 @@ departures settled at the same point:
 - **After either:** the first request after the checkpoint appends one
   announcement whose `added` lists every tool still loadable. Announcements
   before the checkpoint are no longer folded.
+- **The retained messages** (the recent tail the checkpoint keeps raw, and
+  anything else from before it that the request still sends) are rendered
+  against the new round:
+  - **a tool that left:** its calls and their results are left out. A turn
+    left with only reasoning goes too;
+  - **a folded tool:** its calls stay, sent as calls to a declared tool (no
+    `namespace`), while the `tool_load` calls that loaded it are left out
+    with their results and the instructions their first load carried. Those
+    instructions are back in the system prompt, so keeping the load would
+    send them twice; without them a kept load would still be valid, since
+    oven sends a load of a declared tool as text;
+  - **announcements** before the checkpoint are left out: the fresh one
+    replaces them.
 - **An older engine** that ignores `folded_tools` defers nothing anyway, so
   nothing is lost.
 

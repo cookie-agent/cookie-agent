@@ -110,9 +110,9 @@ fn last_outcome(engine: &Engine, session: SessionId) -> RunOutcome {
 
 fn summary_and_window(commit: &ContextCheckpointCommit) -> (&str, Option<&CheckpointNativeWindow>) {
     match &commit.checkpoint {
-        ContextCheckpoint::InternalSummary { checkpoint, native } => {
-            (checkpoint.summary(), native.as_ref())
-        }
+        ContextCheckpoint::InternalSummary {
+            checkpoint, native, ..
+        } => (checkpoint.summary(), native.as_ref()),
         ContextCheckpoint::NativeWindow { .. } => panic!("a window alone is never written"),
     }
 }

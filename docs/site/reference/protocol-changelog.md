@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.45.0
+
+- A summary checkpoint's `folded_tools` (`context_checkpoint_committed`,
+  `internal_summary` only, left out when empty): the deferred tools loaded
+  before it, and the previous checkpoint's. The next tool round declares
+  them up front ([deferred tools in cookie](../specs/deferred-tools-cookie.md)
+  section 8.3). Plugin protocol 1.24.0 carries it in events the same way.
+
 ## 1.44.0
 
 - Deferred tools ([deferred tools in cookie](../specs/deferred-tools-cookie.md)):

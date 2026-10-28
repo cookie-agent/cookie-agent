@@ -291,3 +291,27 @@ fn a_provider_with_an_eager_tool_keeps_its_sections() {
     );
     assert!(providers.is_empty());
 }
+
+#[test]
+fn a_round_after_a_checkpoint_declares_the_tools_it_folded() {
+    let fold = DeferralFold {
+        folded: BTreeSet::from(["chrome_click".to_owned()]),
+        ..DeferralFold::default()
+    };
+    let plan = plan(
+        vec![
+            eager("read"),
+            mcp("chrome_click", "chrome"),
+            mcp("chrome_type", "chrome"),
+        ],
+        &loaders(),
+        &fold,
+    );
+    assert_eq!(
+        names(&plan.definitions, false),
+        ["chrome_click", "read", "tool_load", "tool_search"]
+    );
+    assert_eq!(names(&plan.definitions, true), ["chrome_type"]);
+    let (added, _) = announced(&plan).expect("announced");
+    assert_eq!(added[0].tools, ["chrome_type"]);
+}

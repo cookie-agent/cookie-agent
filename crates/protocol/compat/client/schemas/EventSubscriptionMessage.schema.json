@@ -1213,6 +1213,13 @@
               "minimum": 0,
               "type": "integer"
             },
+            "folded_tools": {
+              "description": "Deferred tools loaded before this checkpoint, and the previous\ncheckpoint's: the next tool round declares them up front\n(client protocol 1.45.0).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "internal_run_id": {
               "format": "uuid",
               "type": "string"

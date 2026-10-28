@@ -1,11 +1,13 @@
 //! Deferred tools end to end (`docs/site/specs/deferred-tools-cookie.md`):
 //! a model that loads deferred tools natively gets an MCP tool deferred,
-//! announced, loaded with `tool_load`, and then called.
+//! announced, loaded with `tool_load`, and then called; a checkpoint folds
+//! the loaded tool into the next round.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use cookie_agent_protocol::{ClientRunId, EventPayload, RunStartParams};
+use cookie_agent_protocol::{ClientRunId, EventPayload, RunSelection, RunStartParams};
 use cookie_agent_runtime_api::{
     PreparedTool, ProvidedToolSource, SessionToolContext, ToolCall, ToolError,
     ToolPreparationContext, ToolProvider, ToolSpec,
@@ -14,8 +16,8 @@ use cookie_agent_runtime_api::{
 use super::support::*;
 
 /// `TestWriteProvider`'s `write`, published as an MCP server's tool, which
-/// the deferral policy defers.
-struct McpWrite(TestWriteProvider);
+/// the deferral policy defers, while `present` holds.
+struct McpWrite(TestWriteProvider, Arc<AtomicBool>);
 
 #[async_trait]
 impl ToolProvider for McpWrite {
@@ -24,6 +26,9 @@ impl ToolProvider for McpWrite {
     }
 
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        if !self.1.load(Ordering::SeqCst) {
+            return Ok(Vec::new());
+        }
         self.0.tools_for_session(ctx)
     }
 
@@ -91,9 +96,61 @@ fn body(request: &str) -> serde_json::Value {
     serde_json::from_str(body).expect("request JSON")
 }
 
-#[tokio::test]
-async fn an_mcp_tool_is_announced_loaded_and_called() {
-    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+fn deferral_fixture(endpoint: &str) -> (Fixture, RunSelection, Arc<TestFlag>, Arc<AtomicBool>) {
+    let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
+        endpoint,
+        "---\ndescription: Deferral test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nUse the tools.\n",
+        None,
+        None,
+        false,
+        None,
+        None,
+        64_000,
+        None,
+        "openai-compatible",
+        Some(NATIVE_CAPABILITIES),
+        None,
+    );
+    fixture.engine.register_base_layer().expect("base layer");
+    let executed = Arc::new(TestFlag::default());
+    let present = Arc::new(AtomicBool::new(true));
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(McpWrite(
+            TestWriteProvider {
+                executed: Arc::clone(&executed),
+            },
+            Arc::clone(&present),
+        )),
+    );
+    (fixture, selection, executed, present)
+}
+
+async fn run(
+    fixture: &Fixture,
+    session: cookie_agent_protocol::SessionId,
+    selection: &RunSelection,
+    id: &str,
+    content: &str,
+) {
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: ClientRunId::new(id).unwrap(),
+                selection: selection.clone(),
+                content: content.into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("deferral run");
+    wait_for_session_not_running(&fixture.engine, session).await;
+}
+
+fn load_then_write(responses: &tokio::sync::mpsc::UnboundedSender<MatchedScriptedResponse>) {
     for (role, reply) in [
         (
             "user",
@@ -116,47 +173,25 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
         };
         responses.send(response).expect("scripted reply");
     }
-    let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
-        &endpoint,
-        "---\ndescription: Deferral test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nUse the tools.\n",
-        None,
-        None,
-        false,
-        None,
-        None,
-        64_000,
-        None,
-        "openai-compatible",
-        Some(NATIVE_CAPABILITIES),
-        None,
-    );
-    fixture.engine.register_base_layer().expect("base layer");
-    let executed = Arc::new(TestFlag::default());
-    fixture.engine.register_tool_provider(
-        crate::ToolLayer::Local,
-        Arc::new(McpWrite(TestWriteProvider {
-            executed: Arc::clone(&executed),
-        })),
-    );
+}
+
+#[tokio::test]
+async fn an_mcp_tool_is_announced_loaded_and_called() {
+    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    load_then_write(&responses);
+    let (fixture, selection, executed, _) = deferral_fixture(&endpoint);
     let session = fixture
         .engine
         .create_session(selection.clone())
         .expect("deferral session");
-    fixture
-        .engine
-        .start_run(
-            RunStartParams {
-                reset_fallback: false,
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new("deferral-1").unwrap(),
-                selection,
-                content: "write x".into(),
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
-        .await
-        .expect("deferral run");
-    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    run(
+        &fixture,
+        session.session_id,
+        &selection,
+        "deferral-1",
+        "write x",
+    )
+    .await;
     let requests = with_watchdog("captured deferral requests", captured)
         .await
         .expect("captured requests")
@@ -232,5 +267,138 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
         (rounds, announcements),
         (1, 1),
         "recorded once, then reused"
+    );
+}
+
+/// A first run, a run that loads and calls `write`, a compaction that keeps
+/// the second run raw, then a third run whose request it returns, with
+/// `write` still published or not.
+async fn after_a_compaction(keep_write: bool) -> serde_json::Value {
+    let (endpoint, responses, captured) = scripted_channel_server(6).await;
+    let (fixture, selection, _, present) = deferral_fixture(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("deferral session");
+    let reply = |text: &str| {
+        responses
+            .send(MatchedScriptedResponse::last_message_role(
+                "user",
+                scripted_text_body(text),
+            ))
+            .expect("scripted reply");
+    };
+    // Long enough that its summary is shorter.
+    reply(&"hello ".repeat(600));
+    run(&fixture, session.session_id, &selection, "deferral-1", "hi").await;
+    load_then_write(&responses);
+    run(
+        &fixture,
+        session.session_id,
+        &selection,
+        "deferral-2",
+        "write x",
+    )
+    .await;
+    reply("the summary");
+    assert!(
+        fixture
+            .engine
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("compaction")
+    );
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let commit = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ContextCheckpointCommitted { commit } => Some(commit.clone()),
+            _ => None,
+        })
+        .expect("checkpoint");
+    assert_eq!(commit.folded_tools(), ["write"]);
+    assert!(
+        commit.boundaries.recent_from_seq.is_some(),
+        "the second run stays raw"
+    );
+    present.store(keep_write, Ordering::SeqCst);
+    reply("again");
+    run(
+        &fixture,
+        session.session_id,
+        &selection,
+        "deferral-3",
+        "go on",
+    )
+    .await;
+    let requests = with_watchdog("captured deferral requests", captured)
+        .await
+        .expect("captured requests");
+    fixture.engine.shutdown().await;
+    body(&requests[5])
+}
+
+#[tokio::test]
+async fn a_checkpoint_folds_a_loaded_tool_into_the_next_round() {
+    let request = after_a_compaction(true).await;
+    // Up front now, with nothing left to load.
+    let names = tool_names(&request);
+    assert!(names.contains(&"write".to_owned()), "{names:?}");
+    assert!(
+        !names.iter().any(|name| name.starts_with("tool_")),
+        "{names:?}"
+    );
+    let messages = serde_json::to_string(&request["messages"]).expect("messages");
+    // The call to it stays, as a call to a declared tool; the load and its
+    // announcement go.
+    assert!(messages.contains("write-1"), "{messages}");
+    assert!(!messages.contains("load-1"), "{messages}");
+    assert!(!messages.contains("[cookie: deferred tools]"), "{messages}");
+    assert!(
+        !messages.contains("\"tools\""),
+        "no load message: {messages}"
+    );
+    // Its provider's instructions are back in the system prompt, once.
+    assert_eq!(
+        messages.matches("Snapshot the page").count(),
+        1,
+        "{messages}"
+    );
+    assert!(
+        request["messages"][0]["content"]
+            .as_str()
+            .expect("system prompt")
+            .contains("Snapshot the page")
+    );
+}
+
+#[tokio::test]
+async fn a_checkpoint_drops_the_calls_of_a_tool_that_left() {
+    let request = after_a_compaction(false).await;
+    let names = tool_names(&request);
+    assert!(
+        !names
+            .iter()
+            .any(|name| name == "write" || name.starts_with("tool_")),
+        "{names:?}"
+    );
+    let messages = serde_json::to_string(&request["messages"]).expect("messages");
+    assert!(!messages.contains("write-1"), "{messages}");
+    assert!(!messages.contains("load-1"), "{messages}");
+    assert!(!messages.contains("[cookie: deferred tools]"), "{messages}");
+    assert!(
+        messages.contains("write x"),
+        "the run's input stays: {messages}"
     );
 }

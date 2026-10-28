@@ -390,6 +390,7 @@ fn checkpoint_dedup_includes_the_exact_snapshot_boundary() {
                 checkpoint: ContextCheckpoint::InternalSummary {
                     checkpoint,
                     native: None,
+                    folded_tools: Vec::new(),
                 },
                 boundaries: ContextCheckpointBoundaries {
                     source_from_seq: 1,

@@ -864,6 +864,11 @@ impl Engine {
             checkpoint: ContextCheckpoint::InternalSummary {
                 checkpoint,
                 native: native.window,
+                folded_tools: self
+                    .folded_tools(&input)?
+                    .into_iter()
+                    .take(cookie_agent_protocol::MAX_MODEL_TOOL_NAMES)
+                    .collect(),
             },
             boundaries,
             budgets,
@@ -952,6 +957,22 @@ impl Engine {
         }
     }
 
+    /// The tools a checkpoint folds (deferred tools in cookie, section 8.3):
+    /// the latest checkpoint's, and every tool loaded since, that the
+    /// request still declares.
+    fn folded_tools(
+        &self,
+        input: &CompactionInput<'_>,
+    ) -> Result<std::collections::BTreeSet<String>, EngineError> {
+        let fold = self.inner.store.get(input.session)?.log.deferral();
+        Ok(fold
+            .folded
+            .into_iter()
+            .chain(fold.loaded)
+            .filter(|name| input.tools.iter().any(|tool| &tool.name == name))
+            .collect())
+    }
+
     /// One native compaction call beside the summary: the window it returns,
     /// or how its failure marks the provider.
     async fn native_compaction_attempt(
@@ -973,8 +994,22 @@ impl Engine {
         let Some(capabilities) = input.owner_policy.model_capabilities(input.binding) else {
             return NativeOutcome::default();
         };
+        // The window serves requests whose round declares the tools this
+        // checkpoint folds, so it is built with them up front.
+        let folded = self.folded_tools(input).unwrap_or_default();
+        let tools = input
+            .tools
+            .iter()
+            .cloned()
+            .map(|mut tool| {
+                if folded.contains(&tool.name) {
+                    tool.loading = oven_sdk::ToolLoading::Eager;
+                }
+                tool
+            })
+            .collect();
         let mut request = ModelRequest::new(view.history)
-            .with_tools(input.tools.to_vec())
+            .with_tools(tools)
             .with_header_context(header_context);
         let adapter = input.binding.descriptor.adapter_id.as_str();
         crate::media::fit_media(
