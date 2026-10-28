@@ -234,7 +234,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     none) and its name; when its defaults attach runtimes, a second line
     shows them as badges, by the session rows' rules. Click a header to
     fold or unfold its section; the browser remembers it. A folded section
-    still shows its running sessions. **+**, always
+    still shows its sessions at work: running, or waiting on a producer
+    (a goal, a background call, a subagent) to start their next run, but
+    not held ones. **+**, always
     there, starts a new session in the project. Hover over a header (on a
     touch screen, press it for about half a second) for its pencil, which
     opens the project editor, and its trash. **No project** has only its

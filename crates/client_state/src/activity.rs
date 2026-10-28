@@ -65,6 +65,17 @@ pub fn session_activity(meta: &SessionMeta) -> SessionActivity {
     }
 }
 
+/// Whether a session is at work: running, or waiting on a producer that
+/// will start its next run. A held session waits for the user and is not.
+/// A folded project section still shows these.
+#[must_use]
+pub fn session_at_work(meta: &SessionMeta) -> bool {
+    matches!(
+        session_activity(meta),
+        SessionActivity::Running | SessionActivity::Waiting(_)
+    )
+}
+
 /// What a waiting row's tooltip says: `waiting on: goal, background call`,
 /// each kind once, in `kinds` order.
 #[must_use]
@@ -90,7 +101,9 @@ pub fn waiting_label(kinds: &[WaitingOn]) -> String {
 mod tests {
     use cookie_agent_protocol::{HeldReason, Open, SemVer, SessionMeta, SessionStatus, WaitingOn};
 
-    use super::{SessionActivity, daemon_reports_waiting, session_activity, waiting_label};
+    use super::{
+        SessionActivity, daemon_reports_waiting, session_activity, session_at_work, waiting_label,
+    };
 
     fn meta(status: SessionStatus, waiting_on: &[WaitingOn]) -> SessionMeta {
         let revision = format!("sha256:{}", "a".repeat(64));
@@ -131,6 +144,20 @@ mod tests {
         assert_eq!(session_activity(&held), SessionActivity::Held(stopped));
         held.status = SessionStatus::Running;
         assert_eq!(session_activity(&held), SessionActivity::Running);
+    }
+
+    #[test]
+    fn running_and_waiting_sessions_are_at_work_and_a_held_one_is_not() {
+        assert!(session_at_work(&meta(SessionStatus::Running, &[])));
+        assert!(session_at_work(&meta(
+            SessionStatus::Idle,
+            &[WaitingOn::Goal]
+        )));
+        assert!(!session_at_work(&meta(SessionStatus::Idle, &[])));
+        assert!(!session_at_work(&meta(SessionStatus::Failed, &[])));
+        let mut held = meta(SessionStatus::Cancelled, &[WaitingOn::BackgroundCall]);
+        held.held = Some(Open::Known(HeldReason::Stopped {}));
+        assert!(!session_at_work(&held));
     }
 
     #[test]

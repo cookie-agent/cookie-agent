@@ -8,7 +8,7 @@ use cookie_agent_client_state::{
     badges::{project_badges, project_badges_tooltip},
     projects::{ProjectSection, delete_question, project_label, project_sections, validate_emoji},
 };
-use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId, SessionStatus};
+use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId};
 use leptos::{ev, html, prelude::*};
 
 use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, RowActions, choice_line, session_row};
@@ -301,7 +301,7 @@ pub(super) fn project_list(
 }
 
 /// One section: its header, then its sessions while it is open, and its
-/// running sessions while it is folded.
+/// sessions at work (running, or waiting on a producer) while it is folded.
 fn section_view(
     workspace: Workspace,
     section: ProjectSection,
@@ -333,7 +333,9 @@ fn section_view(
                     // as a folded subagent tree shows its running agents.
                     sessions
                         .iter()
-                        .filter(|session| open || session.status == SessionStatus::Running)
+                        .filter(|session| {
+                            open || cookie_agent_client_state::activity::session_at_work(session)
+                        })
                         .cloned()
                         .map(|session| session_row(workspace, session, now, actions, drag))
                         .collect_view()
