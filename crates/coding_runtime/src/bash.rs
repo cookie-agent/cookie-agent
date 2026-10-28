@@ -41,6 +41,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use cookie_agent_runtime_api::WorkspaceContext;
+use cookie_agent_runtime_api::shell_environment::{self, ShellEnvironment};
 
 use crate::{fs_cap, parse_args, schema};
 
@@ -636,12 +637,32 @@ async fn within_timeout<F: std::future::Future>(timeout_ms: u64, future: F) -> O
     }
 }
 
+/// What `bash -c` runs for `command`: the command itself, after sourcing
+/// the shell environment's snapshot of the user's options, aliases, and
+/// functions when there is one. The command goes on a line of its own
+/// because bash expands an alias only in commands it parses after the alias
+/// is defined.
+fn bash_script<'a>(
+    command: &'a str,
+    environment: Option<&ShellEnvironment>,
+) -> std::borrow::Cow<'a, str> {
+    match environment.and_then(ShellEnvironment::snapshot) {
+        Some(snapshot) => format!(
+            "source '{}' 2>/dev/null\n{command}",
+            snapshot.to_string_lossy().replace('\'', "'\\''")
+        )
+        .into(),
+        None => command.into(),
+    }
+}
+
 impl BashExecutor {
-    fn spawn(&self) -> Result<SpawnedShell, ToolError> {
+    fn spawn(&self, environment: Option<&ShellEnvironment>) -> Result<SpawnedShell, ToolError> {
         let mut command = Command::new(self.executable.proc_fd_path());
+        shell_environment::apply(environment, &mut command);
         command
             .arg("-c")
-            .arg(&self.args.command)
+            .arg(bash_script(&self.args.command, environment).as_ref())
             .current_dir(self.cwd.proc_fd_path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -705,11 +726,18 @@ impl BashExecutor {
         if cancellation.is_cancelled() {
             return Err(ToolError::execution("prepared bash cancelled"));
         }
+        // Held until the command ends: its snapshot file goes with it.
+        let environment = tokio::select! {
+            environment = shell_environment::environment() => environment,
+            () = cancellation.cancelled() => {
+                return Err(ToolError::execution("prepared bash cancelled"));
+            }
+        };
         let SpawnedShell {
             mut tree,
             stdout,
             stderr,
-        } = self.spawn()?;
+        } = self.spawn(environment.as_deref())?;
         // Once the command runs, the call may move to the background.
         detach.reached(tree.pid().map(|pid| format!("Process {pid}")));
         let merged = Arc::new(Mutex::new(MergedOutput::default()));

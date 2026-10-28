@@ -165,7 +165,7 @@ fn global_is_reserved_and_local_takes_only_mcp_servers_and_acp_agents() {
     ] {
         let error = rejected(&format!("[runtimes.local]\n{field}\n"));
         assert!(
-            error.contains("only `mcp` and `acp` tables"),
+            error.contains("only `mcp`, `acp`, and `shell_environment` tables"),
             "{field}: {error}"
         );
     }

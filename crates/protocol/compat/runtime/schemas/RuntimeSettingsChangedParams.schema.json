@@ -89,6 +89,17 @@
           },
           "type": "array"
         },
+        "shell_environment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShellEnvironmentSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the runtime captures the user's shell environment for the\nprocesses it starts (runtime protocol 1.12.0). Absent, as from an\nolder daemon, the runtime keeps its own environment."
+        },
         "tool_output": {
           "$ref": "#/$defs/ToolOutputLimits",
           "description": "`[tool_output]`: preview limits of tool output."
@@ -97,6 +108,48 @@
       "required": [
         "tool_output",
         "agent_md"
+      ],
+      "type": "object"
+    },
+    "ShellCapture": {
+      "description": "How a runtime starts the shell it captures the environment of.",
+      "oneOf": [
+        {
+          "const": "interactive",
+          "description": "An interactive login shell (`-l -i`): the environment of a new\nterminal.",
+          "type": "string"
+        },
+        {
+          "const": "login",
+          "description": "A login shell (`-l`), which misses rc files that return early when\nnot interactive.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "No capture: the runtime's own environment.",
+          "type": "string"
+        }
+      ]
+    },
+    "ShellEnvironmentSettings": {
+      "description": "`[shell_environment]` as it applies to one runtime\n(`docs/site/specs/shell-environment.md`; runtime protocol 1.12.0).",
+      "properties": {
+        "capture": {
+          "$ref": "#/$defs/ShellCapture"
+        },
+        "shell": {
+          "description": "The shell to capture with; the runtime's `$SHELL` when empty, else\n`/bin/sh`.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "How long a capture may take; 0 or less waits indefinitely.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "capture",
+        "timeout_ms"
       ],
       "type": "object"
     },

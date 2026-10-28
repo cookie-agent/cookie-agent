@@ -323,6 +323,16 @@ impl RuntimeTemplate for ProtocolTemplate {
             .unwrap_or_default()
     }
 
+    fn shell_environment(&self) -> Option<super::registry::RuntimeShellEnvironment> {
+        live(&self.connection).map(|client| client.shell_environment())
+    }
+
+    fn refresh_shell_environment(&self) {
+        if let Some(client) = live(&self.connection) {
+            client.refresh_shell_environment();
+        }
+    }
+
     async fn reconnect_runtime_mcp(&self, server: &str) -> Result<(), EngineError> {
         match live(&self.connection) {
             Some(client) => client.reconnect_runtime_mcp(server).await,
@@ -395,6 +405,7 @@ pub(crate) fn runtime_settings(
             })
             .unwrap_or_default(),
         acp_agents: acp_agent_settings(config, runtime_id),
+        shell_environment: Some(config.shell_environment(runtime_id).settings()),
     }
 }
 
@@ -725,7 +736,15 @@ struct ClientInner {
     acp_agents: Mutex<Vec<protocol::AcpAgentReport>>,
     /// The runtime's protocol version, from its initialize reply.
     protocol_version: OnceLock<cookie_agent_protocol::SemVer>,
+    /// How the runtime's latest capture of the user's shell environment
+    /// went, from its latest `runtime/shell_environment`.
+    shell_environment: Mutex<Option<protocol::ShellEnvironmentReport>>,
 }
+
+/// The first runtime protocol whose runtimes capture the user's shell
+/// environment and take `runtime/shell_environment_refresh`.
+const SHELL_ENVIRONMENT_SINCE: cookie_agent_protocol::SemVer =
+    cookie_agent_protocol::SemVer::new(1, 12, 0);
 
 /// The first runtime protocol whose runtimes take
 /// `runtime/settings_changed`.
@@ -882,6 +901,7 @@ impl RuntimeClient {
             probe: super::liveness::Probe::default(),
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
+            shell_environment: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let reply: serde_json::Value = inner
@@ -986,6 +1006,30 @@ impl RuntimeClient {
         }
     }
 
+    /// What the daemon knows of the runtime's shell environment: its
+    /// protocol version and the report of its latest capture.
+    pub(crate) fn shell_environment(&self) -> super::registry::RuntimeShellEnvironment {
+        super::registry::RuntimeShellEnvironment {
+            protocol_version: self.inner.protocol_version.get().copied(),
+            report: lock(&self.inner.shell_environment).clone(),
+        }
+    }
+
+    /// Asks the runtime to capture the user's shell environment again; a
+    /// runtime older than runtime protocol 1.12.0 does not capture.
+    pub(crate) fn refresh_shell_environment(&self) {
+        let captures = self
+            .inner
+            .protocol_version
+            .get()
+            .is_some_and(|version| *version >= SHELL_ENVIRONMENT_SINCE);
+        if captures {
+            self.inner
+                .peer
+                .notify_detached(method::SHELL_ENVIRONMENT_REFRESH, &protocol::Empty {});
+        }
+    }
+
     /// The ACP agents the runtime reported last.
     pub(crate) fn acp_agents(&self) -> Vec<protocol::AcpAgentReport> {
         lock(&self.inner.acp_agents).clone()
@@ -1072,6 +1116,7 @@ impl RuntimeClient {
             probe: super::liveness::Probe::default(),
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
+            shell_environment: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let client = Self { inner };
@@ -1874,9 +1919,16 @@ impl ClientInner {
             | method::AGENT_EXITED
             | method::AGENT_MCP
             | method::AGENT_MCP_CLOSED
+            | method::SHELL_ENVIRONMENT
                 if plugin =>
             {
                 ignored(&"only a runtime sends it");
+            }
+            method::SHELL_ENVIRONMENT => {
+                match notification.params::<protocol::ShellEnvironmentReport>() {
+                    Ok(report) => *lock(&self.shell_environment) = Some(report),
+                    Err(error) => ignored(&error),
+                }
             }
             method::AGENTS_CHANGED => {
                 match notification.params::<protocol::AgentsChangedParams>() {

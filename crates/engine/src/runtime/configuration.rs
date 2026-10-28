@@ -229,8 +229,25 @@ impl Engine {
         }
         diagnostics.extend(self.official_skills_diagnostic());
         diagnostics.extend(self.approval_cache_diagnostics(&published));
+        diagnostics.extend(self.shell_environment_diagnostics());
         diagnostics.truncate(256);
         diagnostics
+    }
+
+    /// The connected runtimes whose capture of the user's shell environment
+    /// failed, and those too old to capture it while their configuration
+    /// asks for it (`docs/site/specs/shell-environment.md` section 10).
+    fn shell_environment_diagnostics(&self) -> Vec<String> {
+        let config = self.inner.config.load();
+        self.inner
+            .runtimes
+            .shell_environments()
+            .into_iter()
+            .filter_map(|(runtime, known)| {
+                let capture = config.shell_environment(&runtime).capture;
+                shell_environment_diagnostic(&runtime, known, capture)
+            })
+            .collect()
     }
 
     /// What `[approval] cache_ttl` does on each model the approval reviewer
@@ -408,6 +425,9 @@ impl Engine {
         match candidate {
             Ok(candidate) => {
                 self.apply_configuration_locked(candidate).await?;
+                // The rc files may have changed too, which nothing here
+                // can see.
+                self.inner.runtimes.refresh_shell_environments();
                 Ok(self.configuration_status())
             }
             Err(error) => {
@@ -568,6 +588,33 @@ type RuntimeLaunch<'a> = (
 );
 
 /// How the daemon starts each runtime `config` has a template for.
+/// What the daemon says of runtime `runtime`'s shell environment, as it
+/// knows it, when the runtime's configuration asks for `capture`: a failed
+/// capture, or a runtime too old to capture at all.
+pub(super) fn shell_environment_diagnostic(
+    runtime: &str,
+    known: crate::runtimes::RuntimeShellEnvironment,
+    capture: cookie_agent_runtime_api::protocol::ShellCapture,
+) -> Option<String> {
+    const CAPTURES_SINCE: cookie_agent_protocol::SemVer =
+        cookie_agent_protocol::SemVer::new(1, 12, 0);
+    if let Some(error) = known.report.and_then(|report| report.error) {
+        return Some(format!(
+            "runtime `{runtime}`: shell environment capture failed ({error}); using the \
+             runtime's own environment"
+        ));
+    }
+    let version = known
+        .protocol_version
+        .filter(|version| *version < CAPTURES_SINCE)?;
+    (capture != cookie_agent_runtime_api::protocol::ShellCapture::Off).then(|| {
+        format!(
+            "runtime `{runtime}`: runtime protocol {version} does not capture the shell \
+             environment; update cookie on its machine"
+        )
+    })
+}
+
 fn runtime_launches(config: &LoadedConfiguration) -> Vec<RuntimeLaunch<'_>> {
     config
         .runtimes

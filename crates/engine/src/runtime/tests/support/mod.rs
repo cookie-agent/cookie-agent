@@ -568,6 +568,10 @@ pub(crate) fn empty_catalog() -> Arc<CatalogSnapshot> {
 pub(crate) fn empty_configuration() -> LoadedConfiguration {
     LoadedConfiguration {
         runtime: EngineConfig {
+            shell_environment: cookie_agent_config::ShellEnvironmentConfig {
+                capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
+                ..Default::default()
+            },
             default_model: None,
             small_model: None,
             cron: Default::default(),

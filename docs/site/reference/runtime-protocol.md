@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.11.0**
+The protocol version is a semver string, currently **1.12.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -215,6 +215,9 @@ false`) and a `server_tools` entry's `always_load: true` when the server's
 `always_load` or `always_load_tools` sends the tool up front. A report's
 `tools` lists the unfiltered `server_tools` entries' published names in the
 same order.
+1.12.0 added the [shell environment](#shell-environment): the optional
+`shell_environment` of the settings, `runtime/shell_environment_refresh`,
+and `runtime/shell_environment`.
 
 ## Capabilities and instances
 
@@ -353,6 +356,8 @@ that dials in after its instances failed reopens them. Calls are never retried t
 | `runtime/shutdown` | daemon → runtime | request | Stop gracefully |
 | `runtime/settings_changed` | daemon → runtime | notification | The runtime's whole new settings, as `runtime/initialize` carries them; since 1.10.0 (see [Settings changes](#settings-changes)) |
 | `runtime/ping` | daemon → runtime | request | Answer `{}` at once; since 1.4.0 (see [Liveness](#liveness)) |
+| `runtime/shell_environment_refresh` | daemon → runtime | notification | Capture the user's shell environment again; since 1.12.0 (see [Shell environment](#shell-environment)) |
+| `runtime/shell_environment` | runtime → daemon | notification | How the latest capture of the user's shell environment went; since 1.12.0 |
 | `tool/prepare` | daemon → runtime | request | Prepare one turn's calls to an instance |
 | `tool/revalidate` | daemon → runtime | request | Check a prepared call can still run as approved |
 | `tool/execute` | daemon → runtime | request | Run a prepared call; returns its terminal result |
@@ -538,6 +543,31 @@ as usual, and the instances' own `mcp/changed` and
 `capability/tools_changed`. Changed agents are reported with
 `runtime/agents_changed`. Settings it cannot apply leave the runtime as it
 was, and it says why on its standard error.
+
+### Shell environment
+
+Since 1.12.0 the settings carry `shell_environment`: `capture`
+(`interactive`, `login`, or `off`), `timeout_ms` (0 or less waits
+indefinitely), and `shell` (absent or empty: the runtime's `$SHELL`, else
+`/bin/sh`), resolved from `[shell_environment]` and the runtime's own
+`[runtimes.<id>.shell_environment]`. A runtime captures the user's shell
+environment on its own machine when it initializes and when the setting
+changes, and starts the processes of its work in it: the `bash` tool's
+commands, MCP servers, and ACP agents. Settings without it, as from an older
+daemon, leave the runtime's own environment. What a capture does is
+described in [Shell Environment](../engine/shell_environment.md).
+
+The daemon sends `runtime/shell_environment_refresh` (params `{}`) to every
+connected runtime of 1.12.0 or later when the configuration is reloaded,
+since the user may have edited their rc files; a runtime whose capture is
+off ignores it. After each capture, and once after its initialize reply when
+a capture already finished, a runtime sends `runtime/shell_environment` to a
+daemon of 1.12.0 or later: `captured` (whether processes get the captured
+environment), `shell`, `variables` (how many), `snapshot` (whether the
+`bash` tool sources a bash snapshot), `duration_ms`, and `error` when the
+capture failed. It never carries variable names or values. The daemon lists a
+failed capture, and a runtime older than 1.12.0 whose configuration asks for
+a capture, in its configuration diagnostics.
 
 ### `runtime/context`
 

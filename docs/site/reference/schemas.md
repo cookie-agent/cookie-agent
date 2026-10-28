@@ -12,7 +12,7 @@ emit only their current version and reject unsupported versions.
 | Agent document | unversioned | unversioned current shape |
 | Client protocol | 1.51.0 | 1.x |
 | Plugin protocol | 1.27.0 | 1.x |
-| Runtime protocol | 1.11.0 | 1.x |
+| Runtime protocol | 1.12.0 | 1.x |
 | Session history (events JSONL) | history format 1 | format 1; older formats are converted |
 | Session metadata | unversioned | unversioned current shape |
 | Machine registry (`machines.json`) | 2 | 1 (read with no runtime records), 2 |
@@ -25,7 +25,7 @@ The three protocols have semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes: the
 client protocol `CLIENT_PROTOCOL_VERSION` (`1.51.0`), the plugin protocol
 `PLUGIN_PROTOCOL_VERSION` (`1.27.0`), and the runtime protocol
-`RUNTIME_PROTOCOL_VERSION` (`1.11.0`), all in `cookie_agent_protocol`. All
+`RUNTIME_PROTOCOL_VERSION` (`1.12.0`), all in `cookie_agent_protocol`. All
 three froze at `1.0.0`. Each handshake sends its side's version and accepts a
 peer of the same major; the two use what the lower minor includes, and the
 patch never matters. No `0.x` build from before the freeze connects to a 1.x

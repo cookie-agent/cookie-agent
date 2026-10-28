@@ -71,6 +71,10 @@ impl RuntimeConnector for ProcessConnector {
         let mut command = tokio::process::Command::new(
             cookie_agent_protocol::paths::resolve_program(program, &self.env),
         );
+        // The user's shell environment of this machine, under the
+        // configured `env`.
+        let environment = cookie_agent_runtime_api::shell_environment::environment().await;
+        cookie_agent_runtime_api::shell_environment::apply(environment.as_deref(), &mut command);
         command
             .args(arguments)
             .envs(&self.env)

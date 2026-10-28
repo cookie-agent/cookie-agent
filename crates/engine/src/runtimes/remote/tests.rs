@@ -1077,6 +1077,7 @@ fn local_mcp_config(
     config.runtimes.insert(
         cookie_agent_identity::RuntimeId::new("local").unwrap(),
         cookie_agent_config::RuntimeTemplateConfig {
+            shell_environment: Default::default(),
             command: Vec::new(),
             env: std::collections::BTreeMap::new(),
             startup_timeout_ms: 10_000,
@@ -2831,6 +2832,7 @@ async fn open_with_servers(
     config.runtimes.insert(
         cookie_agent_identity::RuntimeId::new("local").unwrap(),
         cookie_agent_config::RuntimeTemplateConfig {
+            shell_environment: Default::default(),
             command: Vec::new(),
             env: std::collections::BTreeMap::new(),
             startup_timeout_ms: 10_000,
@@ -3295,6 +3297,7 @@ async fn a_dial_in_runtime_hosts_its_daemon_table_and_follows_changes() {
         config.runtimes.insert(
             labpc.clone(),
             cookie_agent_config::RuntimeTemplateConfig {
+                shell_environment: Default::default(),
                 command: Vec::new(),
                 env: std::collections::BTreeMap::new(),
                 startup_timeout_ms: 10_000,
@@ -3392,4 +3395,83 @@ async fn a_dial_in_runtime_hosts_its_daemon_table_and_follows_changes() {
     stop.cancel();
     let _ = served.await;
     engine.shutdown().await;
+}
+
+/// A runtime's `runtime/shell_environment` report is kept for the
+/// configuration diagnostics, and only a runtime that captures (runtime
+/// protocol 1.12.0) is asked to capture again.
+#[tokio::test]
+async fn shell_environment_reports_are_kept_and_refreshes_reach_capturing_runtimes() {
+    for (version, refreshed) in [
+        (cookie_agent_protocol::SemVer::new(1, 12, 0), true),
+        (cookie_agent_protocol::SemVer::new(1, 11, 0), false),
+    ] {
+        let (daemon, mut runtime) = in_process_pair(8);
+        let fake = tokio::spawn(async move {
+            let request = runtime.recv().await.unwrap().unwrap();
+            let request: serde_json::Value =
+                serde_json::from_str(&request.into_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "runtime/initialize");
+            let hello = serde_json::json!({ "protocol_version": version, "capabilities": [] });
+            let reply =
+                serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": hello });
+            runtime
+                .send(MessageFrame::Text(reply.to_string()))
+                .await
+                .unwrap();
+            let report = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "runtime/shell_environment",
+                "params": {
+                    "captured": false,
+                    "shell": "/bin/zsh",
+                    "duration_ms": 10,
+                    "error": "timed out after 10 ms",
+                },
+            });
+            runtime
+                .send(MessageFrame::Text(report.to_string()))
+                .await
+                .unwrap();
+            runtime
+        });
+        let settings = runtime_settings(&custom_fixture().0.config, "fake");
+        let (client, _) = RuntimeClient::initialize(
+            cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
+            "fake",
+            &settings,
+            Duration::from_secs(1),
+            None,
+        )
+        .await
+        .expect("initialized");
+        let mut runtime = fake.await.unwrap();
+        let known = tokio::time::timeout(WAIT, async {
+            loop {
+                let known = client.shell_environment();
+                if known.report.is_some() {
+                    break known;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the report arrives");
+        assert_eq!(known.protocol_version, Some(version));
+        assert_eq!(
+            known.report.and_then(|report| report.error).as_deref(),
+            Some("timed out after 10 ms")
+        );
+
+        client.refresh_shell_environment();
+        let sent = tokio::time::timeout(Duration::from_millis(300), runtime.recv()).await;
+        if refreshed {
+            let frame = sent.expect("a refresh").unwrap().unwrap();
+            let message: serde_json::Value =
+                serde_json::from_str(&frame.into_text().unwrap()).unwrap();
+            assert_eq!(message["method"], "runtime/shell_environment_refresh");
+        } else {
+            assert!(sent.is_err(), "{version} is not asked to capture");
+        }
+    }
 }

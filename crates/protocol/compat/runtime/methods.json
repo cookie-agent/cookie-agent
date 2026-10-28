@@ -218,6 +218,22 @@
       "result": null
     },
     {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "runtime/shell_environment",
+      "params": "ShellEnvironmentReport",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "runtime/shell_environment_refresh",
+      "params": "Empty",
+      "params_role": "information",
+      "result": null
+    },
+    {
       "direction": "from_daemon",
       "kind": "request",
       "method": "runtime/shutdown",

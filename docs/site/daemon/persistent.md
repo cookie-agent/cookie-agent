@@ -218,12 +218,16 @@ whoever can read your user journal. `systemctl --user restart cookie-daemon`
 restarts it, for example to upgrade it after installing a new version.
 [Remove it](#remove-the-linux-service) when you no longer want it.
 
-A user service starts with a minimal environment, not your shell's. A daemon
-running as a service has no `SSH_AUTH_SOCK` from your shell, so an ssh
-`[runtimes.<id>]` template needs a key file in its arguments (`-i`) or an
-agent socket set with the unit's `Environment=`. The same goes for anything
-a `local` MCP server finds through `PATH`: set `Environment=PATH=...` in the
-unit if its command is not in systemd's default.
+A user service starts with a minimal environment, not your shell's. The
+daemon's runtimes capture your shell's environment instead (see
+[Shell Environment](../engine/shell_environment.md)): `bash` commands, MCP
+servers, ACP agents, plugins, and `[runtimes.<id>]` template commands start
+with the `PATH` and variables a new terminal of yours has. A `.bashrc` edit
+takes effect at the next `cookie config reload`, with no unit change and no
+restart. The daemon's own process keeps the unit's environment; set
+`Environment=` in the unit only for what your shell does not set, such as an
+agent socket for an ssh template when no rc file starts one (an ssh
+`[runtimes.<id>]` template can also name a key file with `-i`).
 
 #### Remove the Linux service
 

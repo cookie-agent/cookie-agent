@@ -107,9 +107,12 @@ loginctl enable-linger "$USER"
 Without it the runtime runs only while you are logged in. Follow the output
 with `journalctl --user -u cookie-runtime -f`.
 
-A user service starts with a minimal environment: MCP servers that need
-`PATH` entries or variables of your shell need `Environment=` lines in the
-unit.
+A user service starts with a minimal environment, not your shell's. The
+runtime captures your shell's environment when it connects, so the commands,
+MCP servers, and ACP agents it starts find what your rc files set (see
+[Shell Environment](../engine/shell_environment.md)); the daemon's
+`[runtimes.<id>.shell_environment]` controls it. `Environment=` lines in the
+unit are only needed for what your shell does not set.
 
 To remove the service, stop it, delete the unit, which holds the token,
 and tell systemd:

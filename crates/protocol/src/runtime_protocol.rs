@@ -99,6 +99,14 @@ pub mod method {
     /// as `runtime/initialize` would, starting, stopping, or restarting only
     /// the MCP servers and ACP agents that changed.
     pub const SETTINGS_CHANGED: &str = "runtime/settings_changed";
+    /// daemon → runtime (notification): capture the user's shell
+    /// environment again, as after the configuration was reloaded (since
+    /// 1.12.0). A runtime whose capture is off ignores it.
+    pub const SHELL_ENVIRONMENT_REFRESH: &str = "runtime/shell_environment_refresh";
+    /// runtime → daemon (notification): how the runtime's latest capture of
+    /// the user's shell environment went (since 1.12.0). Sent after each
+    /// capture, and once after `runtime/initialize` when one already ran.
+    pub const SHELL_ENVIRONMENT: &str = "runtime/shell_environment";
     /// daemon → runtime: answer at once, with an empty result, while the
     /// connection is up (since 1.4.0). The daemon pings a connection it has
     /// heard nothing on for a while and drops one that stays silent; any
@@ -219,6 +227,64 @@ pub struct RuntimeSettings {
     /// rejects a nonempty list; one that gets none hosts its own machine's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acp_agents: Vec<AcpAgentSettings>,
+    /// How the runtime captures the user's shell environment for the
+    /// processes it starts (runtime protocol 1.12.0). Absent, as from an
+    /// older daemon, the runtime keeps its own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_environment: Option<ShellEnvironmentSettings>,
+}
+
+/// `[shell_environment]` as it applies to one runtime
+/// (`docs/site/specs/shell-environment.md`; runtime protocol 1.12.0).
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ShellEnvironmentSettings {
+    pub capture: ShellCapture,
+    /// How long a capture may take; 0 or less waits indefinitely.
+    pub timeout_ms: i64,
+    /// The shell to capture with; the runtime's `$SHELL` when empty, else
+    /// `/bin/sh`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shell: String,
+}
+
+/// How a runtime starts the shell it captures the environment of.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellCapture {
+    /// An interactive login shell (`-l -i`): the environment of a new
+    /// terminal.
+    Interactive,
+    /// A login shell (`-l`), which misses rc files that return early when
+    /// not interactive.
+    Login,
+    /// No capture: the runtime's own environment.
+    Off,
+}
+
+/// `runtime/shell_environment`: the outcome of the runtime's latest capture
+/// of the user's shell environment. It never carries variable names or
+/// values.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ShellEnvironmentReport {
+    /// Whether the processes the runtime starts get a captured environment.
+    /// `false` with no `error` when capture is off.
+    pub captured: bool,
+    /// The shell the capture ran; empty when capture is off.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shell: String,
+    /// How many variables the capture yielded.
+    #[serde(default)]
+    pub variables: u64,
+    /// Whether the `bash` tool sources a snapshot of the shell's functions
+    /// and aliases.
+    #[serde(default)]
+    pub snapshot: bool,
+    /// How long the capture took.
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// Why the capture failed; the runtime keeps its own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One ACP agent a runtime hosts, as configured

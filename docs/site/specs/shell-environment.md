@@ -1,6 +1,7 @@
 # The user's shell environment for runtimes
 
-Status: **draft** (2026-10-28). The user decided on 2026-10-28 that capture
+Status: **implemented** (2026-10-28; runtime protocol 1.12.0; notes in
+[section 14](#14-implementation-notes)). The user decided on 2026-10-28 that capture
 is a configuration setting that is on by default, and that the default
 capture is an interactive shell ([section 13](#13-decisions)). Builds on
 [runtimes](runtimes.md), [runtime capabilities](runtime-capabilities.md)
@@ -128,9 +129,12 @@ MCP server, waits for it, bounded by `timeout_ms`.
    bash shell it also writes the snapshot ([section 7](#7-the-bash-snapshot)).
    The script uses only `printf`, `env`, and `;`, so it runs unchanged in
    sh, bash, zsh, and fish.
-3. Parse the NUL-separated entries between the two nonces. A shell that
-   exits without printing both nonces, exits on a signal, or runs past
-   `timeout_ms` (its process group is killed) is a failed capture.
+3. Parse the NUL-separated entries between the two nonces, reading only
+   until the second one arrives: a process an rc file starts in the
+   background may hold the output open. A shell that exits without
+   printing both nonces, or runs past `timeout_ms`, is a failed capture.
+   When the capture ends, whatever is still running in its session is
+   killed.
 4. Drop the variables that describe that shell rather than the user's
    setup: `PWD`, `OLDPWD`, `SHLVL`, `_`, `PS1`–`PS4`, `PROMPT_COMMAND`,
    `COLUMNS`, `LINES`, `HISTFILE`, `TERM`, and any `COOKIE_*` (cookie's own
@@ -270,13 +274,14 @@ Runtime protocol 1.12.0:
   from a new runtime.
 - `runtime/shell_environment_refresh` (daemon → runtime, notification).
 - `runtime/shell_environment` (runtime → daemon, notification): the
-  outcome of each capture. It carries `ok`, the shell, the mode, the
-  number of variables, whether a snapshot was written, the duration, and
-  on failure the reason. It never carries variable names or values.
+  outcome of each capture. It carries `captured`, the shell, the number
+  of variables, whether a snapshot was written, the duration, and on
+  failure the reason (`error`). It never carries variable names or values.
 
 An older runtime ignores the unknown settings field and keeps its own
-environment. The daemon notices the missing `runtime/shell_environment`
-from a runtime older than 1.12.0 and reports it in diagnostics.
+environment. The daemon knows a runtime's version from its initialize
+reply and reports one older than 1.12.0 in diagnostics while its
+configuration asks for a capture.
 
 A client that offers its own machine as a runtime (the TUI when remote)
 captures like any other runtime. The client already runs in the user's
@@ -288,13 +293,13 @@ A failed or skipped capture shows in `ConfigStatus.diagnostics`, which
 the TUI's `/config`, the web client's settings, and `cookie config
 status` already show:
 
-- `runtime local: shell environment capture timed out after 10000 ms; using the runtime's own environment`
-- `runtime labpc: shell environment capture failed (the shell exited before printing its environment); using the runtime's own environment`
-- `runtime labpc: cookie runtime 1.11.0 does not capture the shell environment; update it`
+- ``runtime `local`: shell environment capture failed (timed out after 10000 ms); using the runtime's own environment``
+- ``runtime `labpc`: shell environment capture failed (the shell exited before printing its environment); using the runtime's own environment``
+- ``runtime `labpc`: runtime protocol 1.11.0 does not capture the shell environment; update cookie on its machine``
 
-A diagnostic clears at the next successful capture. Successful captures
-are logged at info level (shell, mode, variable count, duration). Failures
-are logged at warn level. Values are never logged.
+A diagnostic clears at the next successful capture. Each capture is logged
+on the runtime's standard error (shell, variable count, whether a snapshot
+was written, duration, or the reason it failed). Values are never logged.
 
 Known causes of failure, and what the user does about them:
 
@@ -386,3 +391,26 @@ runtimes.
   started (conda, a virtualenv) carries into the capture and into every
   command. This is expected, not a leak to fix. There is no clean-base
   capture and no `passthrough` list.
+
+## 14. Implementation notes
+
+Implemented on 2026-10-28 in one change rather than the three phases of
+section 12, since the daemon's own `local` runtime already reaches its
+settings over the runtime protocol:
+
+- The capture lives in `cookie_agent_runtime_api::shell_environment`, which
+  the `bash` tool, the MCP crate, the ACP host, and the engine's process
+  connector (plugins and template commands) all depend on. There is one
+  shell environment per process, configured by the runtime the process
+  serves: the daemon's in-process `local` runtime configures it at engine
+  start, before any plugin starts, so plugins and template commands use
+  `local`'s settings.
+- Runtime protocol 1.12.0: `RuntimeSettings.shell_environment`,
+  `runtime/shell_environment_refresh`, and `runtime/shell_environment`
+  (`ShellEnvironmentReport`). The report has no mode field.
+- Completion functions are recognised by their source file, from
+  `declare -F` under `extdebug`; there is no test of that filter, since it
+  needs files under `/usr/share/bash-completion/`.
+- Configuration fixtures in tests set `capture = "off"`, so tests never run
+  the developer's own shell.
+

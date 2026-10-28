@@ -118,6 +118,17 @@ pub trait RuntimeTemplate: Send + Sync {
         RuntimeAcpAgents::default()
     }
 
+    /// What the daemon knows of the connected runtime's shell environment
+    /// (`docs/site/specs/shell-environment.md`); `None` while it is not
+    /// connected or does not run behind the runtime protocol.
+    fn shell_environment(&self) -> Option<RuntimeShellEnvironment> {
+        None
+    }
+
+    /// Asks the connected runtime to capture the user's shell environment
+    /// again, as after the configuration was reloaded.
+    fn refresh_shell_environment(&self) {}
+
     /// The runtime's connection, connecting it when the daemon starts the
     /// runtime, for its ACP agents. Refused at once when the runtime dials
     /// in and is not connected.
@@ -127,6 +138,15 @@ pub trait RuntimeTemplate: Send + Sync {
             self.runtime_id()
         ))
     }
+}
+
+/// What the daemon knows of a connected runtime's shell environment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeShellEnvironment {
+    /// The runtime's protocol version, from its initialize reply.
+    pub protocol_version: Option<cookie_agent_protocol::SemVer>,
+    /// The report of its latest capture, once it sent one.
+    pub report: Option<cookie_agent_runtime_api::protocol::ShellEnvironmentReport>,
 }
 
 /// The ACP agents a runtime hosts.
@@ -1583,6 +1603,13 @@ impl RuntimeRegistry {
     /// Gives every runtime its settings from `config`, as applied now: a
     /// connected runtime that takes them gets the ones that changed.
     pub(crate) fn update_settings(&self, config: &cookie_agent_config::LoadedConfiguration) {
+        for template in self.every_template() {
+            template.update_settings(&super::runtime_settings(config, template.runtime_id()));
+        }
+    }
+
+    /// Every registered runtime, dial-in ones included.
+    fn every_template(&self) -> Vec<Arc<dyn RuntimeTemplate>> {
         let mut templates = self
             .templates
             .lock()
@@ -1597,8 +1624,26 @@ impl RuntimeRegistry {
                 .values()
                 .map(|template| Arc::clone(template) as Arc<dyn RuntimeTemplate>),
         );
-        for template in templates {
-            template.update_settings(&super::runtime_settings(config, template.runtime_id()));
+        templates
+    }
+
+    /// What the daemon knows of the shell environment of every connected
+    /// runtime, by runtime ID.
+    pub(crate) fn shell_environments(&self) -> BTreeMap<String, RuntimeShellEnvironment> {
+        self.every_template()
+            .into_iter()
+            .filter_map(|template| {
+                let shell_environment = template.shell_environment()?;
+                Some((template.runtime_id().to_owned(), shell_environment))
+            })
+            .collect()
+    }
+
+    /// Asks every connected runtime to capture the user's shell
+    /// environment again.
+    pub(crate) fn refresh_shell_environments(&self) {
+        for template in self.every_template() {
+            template.refresh_shell_environment();
         }
     }
 

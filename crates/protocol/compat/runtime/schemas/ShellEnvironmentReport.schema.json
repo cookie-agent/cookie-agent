@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`runtime/shell_environment`: the outcome of the runtime's latest capture\nof the user's shell environment. It never carries variable names or\nvalues.",
+  "properties": {
+    "captured": {
+      "description": "Whether the processes the runtime starts get a captured environment.\n`false` with no `error` when capture is off.",
+      "type": "boolean"
+    },
+    "duration_ms": {
+      "default": 0,
+      "description": "How long the capture took.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "error": {
+      "description": "Why the capture failed; the runtime keeps its own environment.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "shell": {
+      "description": "The shell the capture ran; empty when capture is off.",
+      "type": "string"
+    },
+    "snapshot": {
+      "default": false,
+      "description": "Whether the `bash` tool sources a snapshot of the shell's functions\nand aliases.",
+      "type": "boolean"
+    },
+    "variables": {
+      "default": 0,
+      "description": "How many variables the capture yielded.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "captured"
+  ],
+  "title": "ShellEnvironmentReport",
+  "type": "object"
+}

@@ -310,6 +310,16 @@ impl RuntimeTemplate for DialInTemplate {
             .unwrap_or_default()
     }
 
+    fn shell_environment(&self) -> Option<super::registry::RuntimeShellEnvironment> {
+        self.current().map(|client| client.shell_environment())
+    }
+
+    fn refresh_shell_environment(&self) {
+        if let Some(client) = self.current() {
+            client.refresh_shell_environment();
+        }
+    }
+
     async fn reconnect_runtime_mcp(&self, server: &str) -> Result<(), crate::EngineError> {
         match self.current() {
             Some(client) => client.reconnect_runtime_mcp(server).await,

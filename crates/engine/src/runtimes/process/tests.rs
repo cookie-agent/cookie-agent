@@ -13,6 +13,7 @@ use crate::runtimes::{ProtocolTemplate, RuntimeTemplate};
 
 fn settings() -> RuntimeSettings {
     RuntimeSettings {
+        shell_environment: None,
         tool_output: ToolOutputLimits {
             max_lines: 100,
             max_bytes: 10_000,

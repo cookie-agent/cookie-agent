@@ -43,8 +43,8 @@ pub use runtime::{
     McpServerScope, MemoryConfig, MessagingConfig, ModelPricing, ModelRetryConfig,
     NotificationPreview, NotificationsConfig, PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion,
     PluginConfig, PluginsConfig, PricingConfig, ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES,
-    ServerConfig, SessionTitleConfig, SkillsConfig, SubagentOutputConfig, ToolOutputConfig,
-    valid_daemon_token, valid_daemon_url,
+    ServerConfig, SessionTitleConfig, ShellEnvironmentConfig, ShellEnvironmentOverride,
+    SkillsConfig, SubagentOutputConfig, ToolOutputConfig, valid_daemon_token, valid_daemon_url,
 };
 pub use runtime_templates::{AcpAgentConfig, RuntimeTemplateConfig};
 pub use skills::{

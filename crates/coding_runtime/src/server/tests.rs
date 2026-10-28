@@ -21,6 +21,7 @@ const WAIT: Duration = Duration::from_secs(10);
 
 fn settings() -> RuntimeSettings {
     RuntimeSettings {
+        shell_environment: None,
         tool_output: ToolOutputLimits {
             max_lines: 100,
             max_bytes: 10_000,

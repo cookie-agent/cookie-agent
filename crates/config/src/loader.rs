@@ -79,6 +79,21 @@ impl LoadedConfiguration {
             .map(|(name, agents)| (name.clone(), AgentRegistry::from_validated(agents.clone())))
             .collect()
     }
+
+    /// How runtime `runtime_id` captures the user's shell environment:
+    /// `[shell_environment]` with `[runtimes.<runtime_id>.shell_environment]`'s
+    /// keys in place of its own.
+    #[must_use]
+    pub fn shell_environment(&self, runtime_id: &str) -> crate::ShellEnvironmentConfig {
+        let shell_environment = &self.runtime.shell_environment;
+        self.runtimes
+            .iter()
+            .find(|(id, _)| id.as_str() == runtime_id)
+            .map_or_else(
+                || shell_environment.clone(),
+                |(_, template)| shell_environment.overridden(&template.shell_environment),
+            )
+    }
 }
 
 /// Loads the built-in defaults and the user layer, and discovers user skills.
@@ -120,6 +135,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         memory: crate::MemoryConfig::default(),
         cron: crate::CronConfig::default(),
         notifications: crate::NotificationsConfig::default(),
+        shell_environment: crate::ShellEnvironmentConfig::default(),
         acp: crate::AcpConfig::default(),
         skills: crate::SkillsConfig::default(),
         pricing: Default::default(),
@@ -347,6 +363,7 @@ fn decode_runtime_layer(
         "memory",
         "cron",
         "notifications",
+        "shell_environment",
         "acp",
         "skills",
         "headers",

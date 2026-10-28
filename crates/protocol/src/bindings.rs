@@ -15,7 +15,7 @@ use crate::runtime_protocol::{
     ExecuteParams, ExecuteResult, InitializeParams, InitializeResult, McpChangedParams,
     McpReconnectParams, Outcome, PrepareParams, PrepareResult, PreparedRef,
     RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeSettingsChangedParams, RuntimeTools,
-    ToolProgressParams, method as runtime_method,
+    ShellEnvironmentReport, ToolProgressParams, method as runtime_method,
 };
 use crate::*;
 
@@ -491,6 +491,8 @@ fn runtime_methods() -> Vec<MethodSpec> {
             FromDaemon,
             RuntimeSettingsChangedParams
         ),
+        notification!(runtime_method::SHELL_ENVIRONMENT_REFRESH, FromDaemon, Empty),
+        declaration!(runtime_method::SHELL_ENVIRONMENT, ShellEnvironmentReport),
         declaration!(runtime_method::MCP_CHANGED, McpChangedParams),
         request!(runtime_method::MCP_RECONNECT, FromDaemon, McpReconnectParams => Outcome),
         declaration!(runtime_method::TOOLS_CHANGED, RuntimeTools),

@@ -313,6 +313,9 @@ struct Initialized {
     /// Whether the daemon knows runtime-scoped MCP servers (runtime
     /// protocol 1.5.0); an older one gets every server per workspace.
     shared_mcp: bool,
+    /// Whether the daemon takes `runtime/shell_environment` (runtime
+    /// protocol 1.12.0).
+    reports_shell_environment: bool,
     settings: Mutex<RuntimeSettings>,
     /// The MCP servers and ACP agents the runtime hosts: the daemon's, or
     /// [`ServeOptions`]'s when it sends none.
@@ -523,6 +526,10 @@ fn unknown_handle(what: &str, id: u64) -> RpcError {
         .into()
 }
 
+/// The first runtime protocol whose daemons take `runtime/shell_environment`.
+const SHELL_ENVIRONMENT_REPORTS: cookie_agent_protocol::SemVer =
+    cookie_agent_protocol::SemVer::new(1, 12, 0);
+
 /// The first runtime protocol version whose daemons take a runtime's own
 /// tools, which runtime-scoped MCP servers need.
 const RUNTIME_SCOPED_MCP: cookie_agent_protocol::SemVer =
@@ -565,6 +572,14 @@ impl Server {
             reply(request, result).await;
             if initialized {
                 tokio::spawn(Arc::clone(&self).follow_settings(settings));
+            }
+            if initialized
+                && self
+                    .state
+                    .get()
+                    .is_some_and(|state| state.reports_shell_environment)
+            {
+                tokio::spawn(Arc::clone(&self).report_shell_environment());
             }
             // Reported from now on: the reply had their status until now.
             if initialized && let Some(mcp) = self.runtime_mcp() {
@@ -692,6 +707,9 @@ impl Server {
                 }
                 Err(error) => ignored(error),
             },
+            method::SHELL_ENVIRONMENT_REFRESH => {
+                cookie_agent_runtime_api::shell_environment::refresh();
+            }
             method::PRODUCER_RECOVERY_START if self.options.producer_messaging => {
                 let peer = self.peer.clone();
                 tokio::spawn(async move {
@@ -750,6 +768,9 @@ impl Server {
         // before or gets the change.
         let _opening = self.opening.lock().await;
         let previous = lock(&state.hosted).clone();
+        // Before the servers and agents that changed restart, so they start
+        // in the new environment.
+        cookie_agent_runtime_api::shell_environment::configure(settings.shell_environment.as_ref());
         *lock(&state.settings) = settings;
         if hosted.acp_agents != previous.acp_agents {
             self.acp.replace(hosted.acp_agents.clone()).await?;
@@ -841,6 +862,10 @@ impl Server {
         // A daemon older than runtime protocol 1.5.0 knows no tools outside
         // an instance: every server is hosted per workspace for it.
         let shared_mcp = params.protocol_version >= RUNTIME_SCOPED_MCP;
+        // Before any process starts: they wait for the capture.
+        cookie_agent_runtime_api::shell_environment::configure(
+            params.settings.shell_environment.as_ref(),
+        );
         let hosted = self.hosted(&params.settings, shared_mcp)?;
         self.acp.declare(hosted.acp_agents.clone())?;
         let configured = configured_reports(&hosted.workspace_servers);
@@ -867,6 +892,7 @@ impl Server {
         let initialized = Arc::new(Initialized {
             runtime_id: params.runtime_id,
             shared_mcp,
+            reports_shell_environment: params.protocol_version >= SHELL_ENVIRONMENT_REPORTS,
             settings: Mutex::new(params.settings),
             hosted: Mutex::new(hosted),
             runtime_mcp: Mutex::new(runtime_mcp),
@@ -966,6 +992,26 @@ impl Server {
             watch: Mutex::new(Some(watch)),
             reported: tokio::sync::Mutex::default(),
         })
+    }
+
+    /// Reports each capture of the user's shell environment to the daemon,
+    /// starting with the latest one, until the runtime stops.
+    async fn report_shell_environment(self: Arc<Self>) {
+        let mut reports = cookie_agent_runtime_api::shell_environment::reports();
+        loop {
+            let report = tokio::select! {
+                () = self.stop.cancelled() => return,
+                report = reports.next() => report,
+            };
+            if self
+                .peer
+                .notify(method::SHELL_ENVIRONMENT, &report)
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
     }
 
     /// Reports the runtime-scoped servers' status and the runtime's own
@@ -1816,6 +1862,8 @@ mod acp_tests;
 mod corpus_tests;
 #[cfg(test)]
 mod mcp_tests;
+#[cfg(all(test, unix))]
+mod shell_environment_tests;
 #[cfg(test)]
 mod tests;
 

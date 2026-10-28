@@ -1390,6 +1390,13 @@ impl ServerRuntime {
             let mut process = tokio::process::Command::new(
                 cookie_agent_protocol::paths::resolve_program(command, &self.loaded.config.env),
             );
+            // The server's own `env` applies over the user's shell
+            // environment.
+            let environment = cookie_agent_runtime_api::shell_environment::environment().await;
+            cookie_agent_runtime_api::shell_environment::apply(
+                environment.as_deref(),
+                &mut process,
+            );
             process
                 .args(&self.loaded.config.args)
                 .envs(&self.loaded.config.env);

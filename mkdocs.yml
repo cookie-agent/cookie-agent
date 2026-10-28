@@ -135,6 +135,7 @@ nav:
       - 'Memory [memory]': engine/memory.md
       - 'Cron Jobs [cron]': engine/cron.md
       - 'Push Notifications [notifications]': engine/notifications.md
+      - 'Shell Environment [shell_environment]': engine/shell_environment.md
       - 'ACP Agents [acp]': engine/acp.md
       - 'Request Header [headers]': engine/headers.md
       - tui.toml:

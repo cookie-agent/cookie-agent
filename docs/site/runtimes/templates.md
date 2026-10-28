@@ -45,20 +45,22 @@ that uses `labpc`.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `command` | array of strings | none | The program and its arguments. Without it, the table holds the settings of the runtime that dials in with its ID (see below). |
-| `env` | table of strings | `{}` | Variables added to the daemon's environment for the process. |
+| `env` | table of strings | `{}` | Variables added to the daemon's environment for the process: its [shell environment](../engine/shell_environment.md) when one was captured. |
 | `startup_timeout_ms` | positive integer | `10000` | Bound on starting the process and its answer to `runtime/initialize`, and on each capability opening, which follows its MCP servers' first connection attempts. |
 | `shutdown_grace_ms` | positive integer | `3000` | How long a stopping runtime gets before its process group is killed. |
 | `mcp.servers.<name>` | MCP server table | none | MCP servers the runtime hosts on its machine, one per workspace instance or, with `scope = "runtime"`, one for the runtime; see [MCP servers](tools.md#mcp-servers). Their `include_tools` and `exclude_tools` filter tools on the runtime's machine ([choosing a server's tools](../extend/mcp.md#choosing-a-servers-tools)). |
 | `acp.agents.<agent>` | ACP agent table | none | ACP agents the runtime starts on its machine; see [ACP agents](tools.md#acp-agents). |
+| `shell_environment` | table | none | The [`[shell_environment]`](../engine/shell_environment.md) keys this runtime replaces: how it captures the user's shell environment on its machine. |
 
 - **Runtime IDs** match `[a-z][a-z0-9_]{0,31}` because they become tool name
   prefixes. `global` is reserved. `[runtimes.local]` configures the built-in
-  local runtime and accepts only `mcp` and `acp` tables.
+  local runtime and accepts only `mcp`, `acp`, and `shell_environment` tables.
 - **A table without `command`** is no template: the daemon starts nothing
   for it, and it holds the MCP servers and ACP agents of the runtime that
   [dials in](dial-in.md) with its ID. Like `[runtimes.local]`, it accepts
-  only `mcp` and `acp`; `env` or a timeout without `command` is rejected.
-- **Live changes.** A runtime's `mcp` and `acp` tables reach it at once when
+  only `mcp`, `acp`, and `shell_environment`; `env` or a timeout without
+  `command` is rejected.
+- **Live changes.** A runtime's `mcp`, `acp`, and `shell_environment` tables reach it at once when
   the configuration is applied, whether the daemon started it or it dialed
   in: added servers and agents start, removed ones stop, changed ones
   restart, and the others keep running. `command`, `env`, and the timeouts

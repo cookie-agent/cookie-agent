@@ -345,6 +345,10 @@ fn build_in_process_server(
     }
     let config = LoadedConfiguration {
         runtime: EngineConfig {
+            shell_environment: cookie_agent_config::ShellEnvironmentConfig {
+                capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
+                ..Default::default()
+            },
             default_model: None,
             small_model: None,
             cron: Default::default(),

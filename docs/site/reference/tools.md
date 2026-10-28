@@ -545,6 +545,15 @@ The command's standard input is empty: tools take no input while they run.
 Standard output and standard error are streamed separately during execution
 and retained as separate artifacts for the terminal result.
 
+On Linux and macOS the command runs in the runtime's
+[shell environment](../engine/shell_environment.md), the environment of a new
+terminal of the user's, once one was captured; with a bash shell it is run as
+`source '<snapshot>' 2>/dev/null` followed by the command on its own line, so
+the user's options, aliases, and functions apply. The approval, permission
+rules, and transcript see the command as the model wrote it. Each command is
+a fresh shell: variables it exports, environments it activates, and
+directories it changes into do not carry over to the next.
+
 The command runs in its own session and process group (a job object on
 Windows). When the shell exits, whatever it left in that group is killed, so
 `cmd &` and `nohup cmd &` do not outlive the call; only a process that leaves

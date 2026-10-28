@@ -28,6 +28,7 @@ use std::{
 };
 
 use cookie_agent_protocol::errors;
+use cookie_agent_runtime_api::shell_environment::{self, ShellEnvironment};
 use cookie_agent_runtime_api::{
     DiagnosticTail,
     protocol::{
@@ -168,7 +169,11 @@ impl AcpHost {
     ) -> Option<Result<serde_json::Value, RpcError>> {
         let result = match request.method.as_str() {
             method::AGENT_START => match request.params::<AgentRef>() {
-                Ok(agent) => self.start(&agent.agent).map(|()| json_empty()),
+                Ok(agent) => {
+                    let environment = shell_environment::environment().await;
+                    self.start(&agent.agent, environment.as_deref())
+                        .map(|()| json_empty())
+                }
                 Err(error) => Err(error),
             },
             method::AGENT_STOP => match request.params::<AgentRef>() {
@@ -237,7 +242,13 @@ impl AcpHost {
         }
     }
 
-    fn start(self: &Arc<Self>, agent: &str) -> Result<(), RpcError> {
+    /// Starts `agent`'s process in `environment`, the user's shell
+    /// environment when there is one, under the agent's own `env`.
+    fn start(
+        self: &Arc<Self>,
+        agent: &str,
+        environment: Option<&ShellEnvironment>,
+    ) -> Result<(), RpcError> {
         let settings = lock(&self.agents).get(agent).cloned().ok_or_else(|| {
             agent_error(agent, format!("the runtime hosts no ACP agent `{agent}`"))
         })?;
@@ -258,6 +269,7 @@ impl AcpHost {
         let mut command = tokio::process::Command::new(
             cookie_agent_protocol::paths::resolve_program(program, &settings.env),
         );
+        shell_environment::apply(environment, &mut command);
         command
             .args(arguments)
             .envs(&settings.env)

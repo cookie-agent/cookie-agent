@@ -50,6 +50,7 @@ fn initialize(agents: Vec<AcpAgentSettings>) -> InitializeParams {
         features: Vec::new(),
         runtime_id: "labpc".into(),
         settings: RuntimeSettings {
+            shell_environment: None,
             tool_output: ToolOutputLimits {
                 max_lines: 100,
                 max_bytes: 10_000,

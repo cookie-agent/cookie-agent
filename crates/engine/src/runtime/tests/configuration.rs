@@ -690,3 +690,60 @@ async fn an_acp_agent_for_every_runtime_is_global_and_a_runtimes_own_wins() {
     assert!(engine.runtime_agent_declarations(&global).is_empty());
     assert!(sent("local").is_empty());
 }
+
+/// A failed capture of a runtime's shell environment is a diagnostic, and
+/// so is a runtime too old to capture while its configuration asks for one
+/// (shell environment spec section 10).
+#[test]
+fn shell_environment_failures_and_outdated_runtimes_are_diagnostics() {
+    use cookie_agent_runtime_api::protocol::{ShellCapture, ShellEnvironmentReport};
+
+    use super::super::configuration::shell_environment_diagnostic;
+    use crate::runtimes::RuntimeShellEnvironment;
+
+    let report = |error: Option<&str>| ShellEnvironmentReport {
+        captured: error.is_none(),
+        shell: "/bin/bash".into(),
+        variables: if error.is_none() { 24 } else { 0 },
+        snapshot: error.is_none(),
+        duration_ms: 100,
+        error: error.map(str::to_owned),
+    };
+    let known = |minor, report| RuntimeShellEnvironment {
+        protocol_version: Some(cookie_agent_protocol::SemVer::new(1, minor, 0)),
+        report,
+    };
+    assert_eq!(
+        shell_environment_diagnostic(
+            "labpc",
+            known(12, Some(report(Some("timed out after 10000 ms")))),
+            ShellCapture::Interactive,
+        )
+        .as_deref(),
+        Some(
+            "runtime `labpc`: shell environment capture failed (timed out after 10000 ms); \
+             using the runtime's own environment"
+        )
+    );
+    assert_eq!(
+        shell_environment_diagnostic("labpc", known(12, Some(report(None))), ShellCapture::Login),
+        None
+    );
+    // Not reported yet.
+    assert_eq!(
+        shell_environment_diagnostic("labpc", known(12, None), ShellCapture::Interactive),
+        None
+    );
+    assert_eq!(
+        shell_environment_diagnostic("labpc", known(11, None), ShellCapture::Interactive)
+            .as_deref(),
+        Some(
+            "runtime `labpc`: runtime protocol 1.11.0 does not capture the shell environment; \
+             update cookie on its machine"
+        )
+    );
+    assert_eq!(
+        shell_environment_diagnostic("labpc", known(11, None), ShellCapture::Off),
+        None
+    );
+}

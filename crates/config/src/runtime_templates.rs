@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, time::Duration};
 use cookie_agent_identity::{AgentId, RuntimeId};
 use serde::Deserialize;
 
-use crate::{ConfigError, McpConfig, McpOAuthConfig, McpServerConfig};
+use crate::{ConfigError, McpConfig, McpOAuthConfig, McpServerConfig, ShellEnvironmentOverride};
 
 /// The argv element templates used to substitute with a workspace before
 /// one runtime served every workspace; a command that still has it is
@@ -28,6 +28,7 @@ pub(crate) struct RawRuntimeTemplate {
     shutdown_grace_ms: Option<u64>,
     mcp: Option<McpConfig>,
     acp: Option<RawAcpRuntime>,
+    shell_environment: Option<ShellEnvironmentOverride>,
 }
 
 /// `[runtimes.<id>.acp]` as authored.
@@ -66,7 +67,8 @@ pub struct AcpAgentConfig {
 /// A validated runtime template. `[runtimes.local]`, which configures the
 /// built-in local coding runtime, and a table without `command`, which holds
 /// the settings of the runtime that dials in with its ID, carry only MCP
-/// servers and ACP agents: their `command` and `env` are empty.
+/// servers, ACP agents, and the shell environment: their `command` and `env`
+/// are empty.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeTemplateConfig {
     /// The program and its arguments. One process serves every workspace
@@ -83,6 +85,9 @@ pub struct RuntimeTemplateConfig {
     /// ACP agents the runtime starts on its own machine, by their table
     /// key.
     pub acp_agents: BTreeMap<AgentId, AcpAgentConfig>,
+    /// `[runtimes.<id>.shell_environment]`: the keys that replace
+    /// `[shell_environment]`'s for this runtime.
+    pub shell_environment: ShellEnvironmentOverride,
 }
 
 impl RuntimeTemplateConfig {
@@ -157,21 +162,22 @@ fn validate_template(
         }
     }
     let acp_agents = validate_acp_agents(id, template.acp)?;
+    let shell_environment = template.shell_environment.unwrap_or_default();
     let launch_fields = template.env.is_some()
         || template.startup_timeout_ms.is_some()
         || template.shutdown_grace_ms.is_some();
     if id == RuntimeId::LOCAL && (template.command.is_some() || launch_fields) {
         return Err(invalid(
             id,
-            "the built-in `local` runtime accepts only `mcp` and `acp` tables",
+            "the built-in `local` runtime accepts only `mcp`, `acp`, and `shell_environment` tables",
         ));
     }
     if id != RuntimeId::LOCAL && template.command.is_none() && launch_fields {
         return Err(invalid(
             id,
             "a table without `command` holds the settings of the runtime that dials in as \
-             this ID and accepts only `mcp` and `acp` tables; give it a `command` for the \
-             daemon to start it",
+             this ID and accepts only `mcp`, `acp`, and `shell_environment` tables; give it \
+             a `command` for the daemon to start it",
         ));
     }
     if template.command.is_none() {
@@ -182,6 +188,7 @@ fn validate_template(
             shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
             mcp_servers,
             acp_agents,
+            shell_environment,
         });
     }
     let command = validate_command(id, "", template.command)?;
@@ -215,6 +222,7 @@ fn validate_template(
         shutdown_grace_ms,
         mcp_servers,
         acp_agents,
+        shell_environment,
     })
 }
 

@@ -9,6 +9,8 @@ use cookie_agent_models::{
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use cookie_agent_protocol::runtime_protocol::{ShellCapture, ShellEnvironmentSettings};
+
 use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
 use zeroize::Zeroize;
@@ -488,6 +490,10 @@ pub struct EngineConfig {
     pub cron: CronConfig,
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    /// `[shell_environment]`: how runtimes capture the user's shell
+    /// environment, for every runtime unless its own table overrides it.
+    #[serde(default)]
+    pub shell_environment: ShellEnvironmentConfig,
     #[serde(default)]
     pub acp: AcpConfig,
     /// `[skills]`: the official skills.
@@ -521,6 +527,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) memory: Option<MemoryConfig>,
     pub(crate) cron: Option<CronConfig>,
     pub(crate) notifications: Option<NotificationsConfig>,
+    pub(crate) shell_environment: Option<ShellEnvironmentConfig>,
     pub(crate) acp: Option<AcpConfig>,
     pub(crate) skills: Option<SkillsConfig>,
     #[serde(default)]
@@ -1067,6 +1074,74 @@ impl NotificationsConfig {
     }
 }
 
+/// `[shell_environment]`: how runtimes capture the user's shell environment
+/// for the processes they start (`docs/site/specs/shell-environment.md`).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ShellEnvironmentConfig {
+    #[serde(default = "default_shell_capture")]
+    pub capture: ShellCapture,
+    /// How long a capture may take; 0 or less waits indefinitely.
+    #[serde(default = "default_shell_capture_timeout_ms")]
+    pub timeout_ms: i64,
+    /// The shell to capture with; the runtime's `$SHELL` when empty.
+    #[serde(default)]
+    pub shell: String,
+}
+
+impl Default for ShellEnvironmentConfig {
+    fn default() -> Self {
+        Self {
+            capture: default_shell_capture(),
+            timeout_ms: default_shell_capture_timeout_ms(),
+            shell: String::new(),
+        }
+    }
+}
+
+impl ShellEnvironmentConfig {
+    /// These settings with the keys `runtime` sets replaced.
+    #[must_use]
+    pub fn overridden(&self, runtime: &ShellEnvironmentOverride) -> Self {
+        Self {
+            capture: runtime.capture.unwrap_or(self.capture),
+            timeout_ms: runtime.timeout_ms.unwrap_or(self.timeout_ms),
+            shell: runtime.shell.clone().unwrap_or_else(|| self.shell.clone()),
+        }
+    }
+
+    /// The settings as the runtime protocol carries them.
+    #[must_use]
+    pub fn settings(&self) -> ShellEnvironmentSettings {
+        ShellEnvironmentSettings {
+            capture: self.capture,
+            timeout_ms: self.timeout_ms,
+            shell: self.shell.clone(),
+        }
+    }
+}
+
+const fn default_shell_capture() -> ShellCapture {
+    ShellCapture::Interactive
+}
+
+const fn default_shell_capture_timeout_ms() -> i64 {
+    10_000
+}
+
+/// `[runtimes.<id>.shell_environment]`: the `[shell_environment]` keys one
+/// runtime replaces; an absent key keeps the top-level table's.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellEnvironmentOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<ShellCapture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+}
+
 /// `[notifications] preview`: how much of the session a notification
 /// shows on the lock screen.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -1413,6 +1488,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     }
     if let Some(value) = &layer.tool_output {
         runtime.tool_output = value.clone();
+    }
+    if let Some(value) = &layer.shell_environment {
+        runtime.shell_environment = value.clone();
     }
     if let Some(value) = &layer.subagent_output {
         runtime.subagent_output = value.clone();

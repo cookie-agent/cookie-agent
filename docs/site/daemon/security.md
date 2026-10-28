@@ -215,6 +215,15 @@ AppContainer or restricted token and have no seccomp-like syscall filter. Treat
 `bash` permission as authority to run the complete command with the Cookie Agent
 process's user privileges.
 
+On Linux and macOS, Bash commands, MCP servers, ACP agents, plugins, and
+runtime template commands run in the user's
+[shell environment](../engine/shell_environment.md) by default: the variables
+a new terminal of the user's has, which may include API keys their rc files
+export. An approved command can read them, as it could in the user's terminal.
+The capture keeps them in the runtime's memory only; it never writes, logs, or
+sends them to the daemon. `[shell_environment] capture = "off"` keeps every
+process on the runtime's own environment.
+
 ## Web fetching
 
 `webfetch` requests run with the Cookie Agent process's network access and
