@@ -1426,6 +1426,15 @@ impl App {
                 ProviderRowState::Removed => {
                     "Removed from the current catalog; retained recipe matching permits reconnect/update. Frozen session models remain available through exact manifest rehydration. Esc: close".into()
                 }
+                ProviderRowState::Configured => format!(
+                    "{} R: store a connection for when they are removed{} · Esc: close",
+                    cookie_agent_client_state::providers::configured_in_config_note(provider),
+                    if provider.durable_connection.is_some() {
+                        " · D: disconnect the stored one"
+                    } else {
+                        ""
+                    }
+                ),
                 ProviderRowState::Unsupported
                 | ProviderRowState::Disconnected
                 | ProviderRowState::ErrorRetry => "Enter: details only · Esc: close".into(),

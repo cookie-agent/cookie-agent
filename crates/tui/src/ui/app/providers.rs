@@ -108,6 +108,12 @@ impl App {
                             self.provider_search.reset();
                             self.modal = Modal::ConnectDetails;
                         }
+                        // Credentials from config.toml: a form could not replace them.
+                        ProviderRowState::Configured => {
+                            self.connect_provider = Some(provider);
+                            self.provider_search.reset();
+                            self.modal = Modal::ConnectDetails;
+                        }
                         _ if cookie_agent_client_state::providers::sign_in_method(&provider)
                             .is_some() =>
                         {
@@ -313,7 +319,9 @@ impl App {
                         &self.models,
                         self.provider_operations.get(&provider.id)
                     ),
-                    ProviderRowState::ConnectedReconnect | ProviderRowState::Removed
+                    ProviderRowState::ConnectedReconnect
+                        | ProviderRowState::Removed
+                        | ProviderRowState::Configured
                 ) =>
             {
                 self.begin_provider_form(provider);

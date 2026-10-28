@@ -730,7 +730,7 @@ async fn provider_picker_renders_all_required_row_states() {
         "removed from current catalog",
         "error · Enter: retry · retryable",
         "connect in progress",
-        "g-authored provider (g-authored) — disconnected",
+        "g-authored provider (g-authored) — configured in config.toml · Enter: details",
         "quarantined: invalid_recipe",
     ] {
         assert!(rendered.contains(text), "missing {text}: {rendered}");
@@ -1020,7 +1020,7 @@ async fn authored_incomplete_provider_is_disconnected_and_opens_public_setup() {
 }
 
 #[tokio::test]
-async fn complete_authored_override_is_disconnected_and_can_create_global_connection() {
+async fn complete_authored_override_is_configured_and_can_still_store_a_connection() {
     let mut app = test_app().await;
     let (client, recorded, incoming_guard) = live_recording_client();
     app.client = client;
@@ -1033,11 +1033,22 @@ async fn complete_authored_override_is_disconnected_and_can_create_global_connec
     app.picker_state.select(Some(0));
     app.provider_search.focus_list();
     let picker = rendered_frame(&mut app, 220, 32);
-    assert!(picker.contains(
-            "gateway provider (gateway) — disconnected · config override active · Enter: create global stored connection"
-        ));
+    assert!(
+        picker.contains("gateway provider (gateway) — configured in config.toml · Enter: details")
+    );
     assert!(!picker.contains("https://"));
+    // Enter shows where the credentials are instead of a form that could not
+    // replace them; R still stores a connection.
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::ConnectDetails);
+    let details = rendered_frame(&mut app, 220, 40);
+    assert!(
+        details.contains("Uses the credentials in config.toml"),
+        "{details}"
+    );
+    assert!(details.contains("[providers.gateway]"), "{details}");
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
         .await;
     assert_eq!(app.modal, Modal::ConnectSetup);
     let form = app.provider_form.as_ref().expect("form");

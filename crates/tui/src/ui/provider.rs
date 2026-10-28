@@ -13,8 +13,8 @@ use super::input::CredentialInput;
 
 pub(crate) use cookie_agent_client_state::providers::{
     DURABLE_PROVIDER_COPY, ProviderAction, ProviderOperation, ProviderRowState, action_name,
-    authored_override_effective, catalog_needs_attention, catalog_status_line, env_config_hint,
-    model_counts_summary, row_state, unavailable_model_reason, unusable_models_note,
+    catalog_needs_attention, catalog_status_line, env_config_hint, model_counts_summary, row_state,
+    unavailable_model_reason, unusable_models_note,
 };
 
 pub(crate) struct SetupInput {
@@ -269,12 +269,7 @@ pub(crate) fn row_label(
                 }
             },
         ),
-        ProviderRowState::Disconnected
-            if provider.durable_connection.is_none()
-                && authored_override_effective(provider, models) =>
-        {
-            "disconnected · config override active · Enter: create global stored connection".into()
-        }
+        ProviderRowState::Configured => "configured in config.toml · Enter: details".into(),
         ProviderRowState::Disconnected
             if cookie_agent_client_state::providers::sign_in_method(provider).is_some() =>
         {
@@ -304,6 +299,7 @@ pub(crate) fn row_label(
     let note = matches!(
         state,
         ProviderRowState::Disconnected
+            | ProviderRowState::Configured
             | ProviderRowState::ConnectedReconnect
             | ProviderRowState::Removed
     )

@@ -23,6 +23,9 @@ pub const DURABLE_PROVIDER_COPY: &str =
 pub enum ProviderRowState {
     Unsupported,
     Disconnected,
+    /// Its credentials come from `config.toml`, which a stored connection
+    /// cannot override.
+    Configured,
     ConnectedReconnect,
     Removed,
     ErrorRetry,
@@ -46,7 +49,7 @@ pub enum ProviderOperation {
 
 pub fn row_state(
     provider: &ProviderDescriptor,
-    _models: &[AvailableModelDescriptor],
+    models: &[AvailableModelDescriptor],
     operation: Option<&ProviderOperation>,
 ) -> ProviderRowState {
     if matches!(operation, Some(ProviderOperation::Error { .. })) {
@@ -58,25 +61,46 @@ pub fn row_state(
     if provider.presence == ProviderPresence::Removed {
         return ProviderRowState::Removed;
     }
+    if configured_in_config(provider, models) {
+        return ProviderRowState::Configured;
+    }
     if provider.durable_connection.is_some() {
         return ProviderRowState::ConnectedReconnect;
     }
     ProviderRowState::Disconnected
 }
 
-pub fn authored_override_effective(
+/// Whether the provider works from `config.toml` alone: its effective
+/// credentials are the authored `api_key` or `auth_override`, which take
+/// precedence over a stored connection, and no required setup is missing. An
+/// authored provider that still needs setup is completed with a connection.
+pub fn configured_in_config(
     provider: &ProviderDescriptor,
     models: &[AvailableModelDescriptor],
 ) -> bool {
-    provider.configuration == ProviderConfigurationState::Authored
-        && provider.effective_auth_state == EffectiveAuthState::AuthoredOverride
-        && provider.setup_fields.iter().all(|field| {
-            !field.required
-                || field.default.is_some()
-                || models
-                    .iter()
-                    .any(|model| model.key.provider_id() == provider.id)
-        })
+    matches!(
+        provider.configuration,
+        ProviderConfigurationState::Authored | ProviderConfigurationState::AuthoredAndStored
+    ) && matches!(
+        provider.effective_auth_state,
+        EffectiveAuthState::AuthoredApiKey | EffectiveAuthState::AuthoredOverride
+    ) && (provider.model_counts.available > 0
+        || models
+            .iter()
+            .any(|model| model.key.provider_id() == provider.id)
+        || provider
+            .setup_fields
+            .iter()
+            .all(|field| !field.required || field.default.is_some()))
+}
+
+/// What a provider configured in `config.toml` says in place of a connect
+/// form: where its credentials are, and how to change them.
+pub fn configured_in_config_note(provider: &ProviderDescriptor) -> String {
+    format!(
+        "Uses the credentials in config.toml ([providers.{}]), which take precedence over a stored connection. Change them with /config.",
+        provider.id
+    )
 }
 
 /// The interactive sign-in a provider offers in place of a credentials form
@@ -441,6 +465,92 @@ mod tests {
             "credential_type": "api_key",
         }))
         .expect("credential")
+    }
+
+    fn provider(
+        configuration: &str,
+        auth: &str,
+        available: u32,
+        setup_default: bool,
+    ) -> cookie_agent_protocol::ProviderDescriptor {
+        serde_json::from_value(serde_json::json!({
+            "id": "deepseek",
+            "display_name": "DeepSeek",
+            "presence": "current",
+            "support": {"state": "supported", "reason": null},
+            "setup_fields": [{
+                "id": "region", "display_name": "Region", "help": "region", "required": true,
+                "default": if setup_default { serde_json::json!("us") } else { serde_json::Value::Null },
+                "validation": {"value_type": "string", "min_length": 1, "max_length": 32, "minimum": null, "maximum": null}
+            }],
+            "auth_methods": [],
+            "configuration": configuration,
+            "effective_auth_state": auth,
+            "durable_connection": null,
+            "quarantine": null,
+            "documentation_url": null,
+            "environment": [],
+            "model_counts": {"available": available, "quarantined": 0, "unsupported": 0, "needs_setup": 0, "needs_credentials": 0},
+            "unavailable_models": [],
+        }))
+        .expect("provider")
+    }
+
+    #[test]
+    fn credentials_from_config_make_a_configured_row_once_setup_is_complete() {
+        use super::{ProviderRowState, row_state};
+        let configured_in_config_for_test =
+            |provider: &cookie_agent_protocol::ProviderDescriptor| {
+                super::configured_in_config(provider, &[])
+            };
+        for auth in ["authored_api_key", "authored_override"] {
+            for configuration in ["authored", "authored_and_stored"] {
+                assert!(configured_in_config_for_test(&provider(
+                    configuration,
+                    auth,
+                    3,
+                    false
+                )));
+                assert_eq!(
+                    row_state(&provider(configuration, auth, 3, false), &[], None),
+                    ProviderRowState::Configured
+                );
+                // A setup default is enough before any model is listed.
+                assert!(configured_in_config_for_test(&provider(
+                    configuration,
+                    auth,
+                    0,
+                    true
+                )));
+            }
+            // Setup still missing: a connection completes it.
+            assert!(!configured_in_config_for_test(&provider(
+                "authored", auth, 0, false
+            )));
+            assert_eq!(
+                row_state(&provider("authored", auth, 0, false), &[], None),
+                ProviderRowState::Disconnected
+            );
+        }
+        // Credentials from the store or none: not configured in config.toml.
+        assert!(!configured_in_config_for_test(&provider(
+            "stored",
+            "provider_store",
+            3,
+            true
+        )));
+        assert!(!configured_in_config_for_test(&provider(
+            "authored",
+            "unavailable",
+            0,
+            true
+        )));
+        assert!(!configured_in_config_for_test(&provider(
+            "unconfigured",
+            "no_auth",
+            3,
+            true
+        )));
     }
 
     #[test]

@@ -985,6 +985,7 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
                                 (Some(ProviderOperation::Error { message, .. }), _) => format!("error · {message}"),
                                 (_, ProviderRowState::Unsupported) => "unsupported".into(),
                                 (_, ProviderRowState::ConnectedReconnect) => "connected".into(),
+                                (_, ProviderRowState::Configured) => "configured in config.toml".into(),
                                 (_, ProviderRowState::Removed) => "removed from the current catalog".into(),
                                 _ => "disconnected".into(),
                             };
@@ -1002,7 +1003,7 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
                                 >
                                     <span class="flex w-full items-center gap-2">
                                         <span class="min-w-0 flex-1 truncate text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</span>
-                                        {(state == ProviderRowState::ConnectedReconnect).then(|| view! {
+                                        {matches!(state, ProviderRowState::ConnectedReconnect | ProviderRowState::Configured).then(|| view! {
                                             <Glyph icon=icondata::FaPlugSolid class="text-green-700 dark:text-green-400" />
                                         })}
                                     </span>
@@ -1180,6 +1181,10 @@ fn provider_view(
     let error = RwSignal::new(None::<String>);
     let submitted = RwSignal::new(false);
     let reconnect = provider.durable_connection.is_some();
+    // Credentials from config.toml win over any stored connection: the form
+    // only stores one for when they are removed.
+    let configured = (state == ProviderRowState::Configured)
+        .then(|| cookie_agent_client_state::providers::configured_in_config_note(&provider));
     let provider_id = provider.id.clone();
     // A connect that finished without an error closes the form.
     Effect::new(move |_| {
@@ -1260,9 +1265,11 @@ fn provider_view(
         }
     };
     let disconnect_provider = provider.clone();
+    let stores_only = configured.is_some();
     view! {
         <p class="text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</p>
         <p class=NOTE>{summary}</p>
+        {configured.map(|note| view! { <p class="text-sm" id="provider-configured">{note}</p> })}
         <p class=NOTE>{cookie_agent_client_state::providers::DURABLE_PROVIDER_COPY}</p>
         <Show when={
             let count = methods.len();
@@ -1338,7 +1345,13 @@ fn provider_view(
         <div class="flex flex-wrap gap-2">
             <button type="button" id="provider-connect" class=PRIMARY on:click=move |_| submit()>
                 <Glyph icon=icondata::FaPlugSolid />
-                {if reconnect { "Reconnect" } else { "Connect" }}
+                {if stores_only {
+                    "Store a connection"
+                } else if reconnect {
+                    "Reconnect"
+                } else {
+                    "Connect"
+                }}
             </button>
             <button type="button" class=BUTTON on:click=back>"Cancel"</button>
             <Show when=move || reconnect>

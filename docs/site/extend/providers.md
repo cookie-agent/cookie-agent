@@ -44,6 +44,11 @@ api_key = "${env:OPENAI_API_KEY}"
 
 Authored `api_key` or `auth_override` takes precedence over an eligible saved
 connection, then no-auth access, otherwise the provider is unavailable.
+In `/connect` (TUI and web client), a provider whose effective credentials
+are an authored `api_key` or `auth_override`, with no required setup
+missing, reads **configured in config.toml**. Its details say where the
+credentials are; a stored connection can still be added for when they are
+removed, but it is not used while they are there.
 No-auth access applies to a catalog provider that declares no credential
 variable, and to a local server: an authored provider whose endpoint
 (`base_url`, else the catalog API URL) is on `localhost`, `127.0.0.1`, or
