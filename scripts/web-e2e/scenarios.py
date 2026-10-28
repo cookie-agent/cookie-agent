@@ -1608,8 +1608,8 @@ return figures;
 # The usage sheet's rows by model for `arguments[0]` (session or tree):
 # each model's name and request count.
 USAGE_MODELS = """
-return [...document.querySelectorAll('#sheet [data-usage-models="' + arguments[0] + '"] tbody tr')]
-  .map((row) => [row.dataset.model, row.cells[1].innerText]);
+return [...document.querySelectorAll('#sheet [data-usage-models="' + arguments[0] + '"] tr[data-model]')]
+  .map((row) => [row.dataset.model, row.cells[0].innerText]);
 """
 
 

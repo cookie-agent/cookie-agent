@@ -3459,8 +3459,9 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// A rollup's figures by model, as the TUI's usage panel lists them; on a
-/// narrow screen the table scrolls sideways.
+/// A rollup's figures by model, as the TUI's usage panel lists them: each
+/// model's name on a line of its own, its figures under it, so a long name
+/// does not squeeze them on a narrow sheet.
 fn usage_models(
     usage: &cookie_agent_protocol::UsageRollup,
     scope: &'static str,
@@ -3468,36 +3469,39 @@ fn usage_models(
     if usage.by_model.is_empty() {
         return None;
     }
-    const CELL: &str = "whitespace-nowrap py-1 pl-3 text-right font-mono";
-    let rows = models_by_cost(usage)
+    const CELL: &str = "whitespace-nowrap pb-1 pl-3 text-right font-mono first:pl-0";
+    let models = models_by_cost(usage)
         .into_iter()
         .map(|(model, usage)| {
             let hit = CacheHit::of_model(usage);
             view! {
-                <tr class="border-b border-toasted dark:border-ember" data-model=model.to_string()>
-                    <td class="break-all py-1 font-mono">{model.to_string()}</td>
-                    <td class=CELL>{format_count(usage.request_count)}</td>
-                    <td class=CELL>{format_count(usage.input_tokens)}</td>
-                    <td class=CELL>{format_count(usage.output_tokens)}</td>
-                    <td class=CELL>{format_count(usage.reasoning_tokens)}</td>
-                    <td class=CELL title=hit.detail()>{hit.label()}</td>
-                    <td class=CELL>{format_cost(usage.estimated_cost_usd)}</td>
-                </tr>
+                <tbody class="border-b border-toasted dark:border-ember">
+                    <tr>
+                        <td colspan="6" class="break-all pt-1 font-mono">{model.to_string()}</td>
+                    </tr>
+                    <tr data-model=model.to_string()>
+                        <td class=CELL>{format_count(usage.request_count)}</td>
+                        <td class=CELL>{format_count(usage.input_tokens)}</td>
+                        <td class=CELL>{format_count(usage.output_tokens)}</td>
+                        <td class=CELL>{format_count(usage.reasoning_tokens)}</td>
+                        <td class=CELL title=hit.detail()>{hit.label()}</td>
+                        <td class=CELL>{format_cost(usage.estimated_cost_usd)}</td>
+                    </tr>
+                </tbody>
             }
         })
         .collect_view();
     Some(view! {
         <div class="overflow-x-auto pb-1">
             <table class="w-full text-sm" data-usage-models=scope>
-                <thead class="text-left text-xs text-ink dark:text-sand">
+                <thead class="text-xs text-ink dark:text-sand">
                     <tr class="border-b border-toasted dark:border-ember">
-                        <th class="py-1 font-normal">"model"</th>
                         {["requests", "input", "output", "reasoning", "cache hit", "cost"]
-                            .map(|name| view! { <th class="whitespace-nowrap py-1 pl-3 text-right font-normal">{name}</th> })
+                            .map(|name| view! { <th class="whitespace-nowrap py-1 pl-3 text-right font-normal first:pl-0">{name}</th> })
                             .collect_view()}
                     </tr>
                 </thead>
-                <tbody>{rows}</tbody>
+                {models}
             </table>
         </div>
     })
