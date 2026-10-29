@@ -393,3 +393,41 @@ fn version_ranges_hold_or_not() {
     assert_eq!(version_satisfies("~0.3", "0.3.0"), None);
     assert_eq!(version_satisfies("", "0.3.0"), None);
 }
+
+/// A new skill appears whole, replacing what an interrupted install left,
+/// and a removed one is gone at once: a configuration load never finds a
+/// skill directory without its `SKILL.md`. Hidden leftovers are cleaned.
+#[test]
+fn a_new_skill_appears_whole_and_a_removed_one_leaves_nothing_half_there() {
+    let root = tempfile::tempdir().expect("root");
+    let directory = root.path().join("alpha");
+    std::fs::create_dir_all(directory.join("notes")).unwrap();
+    std::fs::write(directory.join("notes/old.md"), "old").unwrap();
+    std::fs::create_dir_all(root.path().join(".staging-alpha-1")).unwrap();
+    std::fs::create_dir_all(root.path().join(".removing-beta-1")).unwrap();
+    let files = vec![
+        (directory.join("SKILL.md"), skill_md("alpha", "First.")),
+        (directory.join("docs/guide.md"), b"guide".to_vec()),
+    ];
+    let listed = files.iter().map(|(path, _)| path.clone()).collect();
+    assert!(super::install(&directory, files, &listed).expect("installed"));
+    assert!(directory.join("SKILL.md").is_file());
+    assert!(directory.join("docs/guide.md").is_file());
+    assert!(
+        !directory.join("notes").exists(),
+        "the partial copy is replaced"
+    );
+
+    let (removed, written) = super::remove_others_and_record(
+        root.path(),
+        &[],
+        &std::collections::BTreeSet::from(["alpha".to_owned()]),
+    );
+    assert_eq!(removed, ["alpha"]);
+    written.expect("the kept index");
+    let left = std::fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(left, [super::KEPT_INDEX]);
+}

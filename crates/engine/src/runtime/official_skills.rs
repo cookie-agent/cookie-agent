@@ -322,12 +322,20 @@ fn remove_others_and_record(
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            // What an interrupted install or removal left.
+            if [STAGING, REMOVING]
+                .iter()
+                .any(|purpose| name.starts_with(&format!(".{purpose}-")))
+            {
+                let _ = std::fs::remove_dir_all(&path);
+                continue;
+            }
             if name.starts_with('.') || record.iter().any(|skill| skill.name == name) {
                 continue;
             }
-            let path = entry.path();
             let gone = if path.is_dir() {
-                std::fs::remove_dir_all(&path)
+                remove_hidden(&path)
             } else {
                 std::fs::remove_file(&path)
             };
@@ -455,12 +463,56 @@ fn install(
         .map_err(|error| format!("SKILL.md does not load: {error}"))?;
     }
     let changed = !downloads.is_empty();
+    // A skill without its `SKILL.md` fails a configuration load, so a new
+    // one is written in a hidden directory, which loads skip, and renamed
+    // into place whole.
+    if !directory.join("SKILL.md").is_file() {
+        return install_new(directory, downloads).map(|()| changed);
+    }
     for (path, bytes) in downloads {
         write_atomically(&path, &bytes).map_err(|error| error.to_string())?;
     }
     let mut removed_any = false;
     remove_unlisted(directory, listed, &mut removed_any);
     Ok(changed || removed_any)
+}
+
+/// The hidden name a skill directory takes while it is written or removed.
+fn hidden_beside(directory: &Path, purpose: &str) -> Option<PathBuf> {
+    let name = directory.file_name()?.to_string_lossy();
+    Some(directory.with_file_name(format!(".{purpose}-{name}-{}", std::process::id())))
+}
+
+/// Writes a new skill's `downloads` into a hidden directory beside
+/// `directory`, then renames it into place, replacing any partial copy.
+fn install_new(directory: &Path, downloads: Vec<(PathBuf, Vec<u8>)>) -> Result<(), String> {
+    let staging = hidden_beside(directory, STAGING).ok_or("the skill has no directory name")?;
+    let _ = std::fs::remove_dir_all(&staging);
+    let written = (|| {
+        for (path, bytes) in downloads {
+            let relative = path
+                .strip_prefix(directory)
+                .map_err(|_| std::io::Error::other("a file outside the skill"))?;
+            write_atomically(&staging.join(relative), &bytes)?;
+        }
+        if directory.exists() {
+            remove_hidden(directory)?;
+        }
+        std::fs::rename(&staging, directory)
+    })();
+    written.map_err(|error| {
+        let _ = std::fs::remove_dir_all(&staging);
+        error.to_string()
+    })
+}
+
+/// Removes skill directory `directory`: renamed to a hidden name first, so
+/// a configuration load never finds it half removed.
+fn remove_hidden(directory: &Path) -> std::io::Result<()> {
+    let removing = hidden_beside(directory, REMOVING)
+        .ok_or_else(|| std::io::Error::other("the skill has no directory name"))?;
+    std::fs::rename(directory, &removing)?;
+    std::fs::remove_dir_all(&removing)
 }
 
 fn remove_unlisted(directory: &Path, listed: &BTreeSet<PathBuf>, removed: &mut bool) {
@@ -512,6 +564,11 @@ async fn fetch(client: &reqwest::Client, url: &str, limit: usize) -> Result<Vec<
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
+
+/// The hidden prefix of a new skill's directory while it is written.
+const STAGING: &str = "staging";
+/// The hidden prefix of a skill's directory while it is removed.
+const REMOVING: &str = "removing";
 
 /// Writes `bytes` to `path` through a temporary file beside it and a
 /// rename, creating the directories on the way.
