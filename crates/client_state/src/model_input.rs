@@ -50,24 +50,14 @@ pub fn memory_header(text: &str) -> String {
     }
 }
 
-/// The deferred tools row's heading and body: `deferred tools · 3 added,
-/// 1 removed`, and the announcement the model reads.
+/// The deferred tools row's heading and body: `Deferred tools prompt`, and
+/// the announcement the model reads, which opens `[cookie: deferred tools]`.
 pub fn deferred_tools(
     added: &[AnnouncedToolGroup],
     removed: &[AnnouncedToolGroup],
 ) -> (String, String) {
-    let count = |groups: &[AnnouncedToolGroup]| -> usize {
-        groups.iter().map(|group| group.tools.len()).sum()
-    };
-    let mut changes = Vec::new();
-    if !added.is_empty() {
-        changes.push(format!("{} added", count(added)));
-    }
-    if !removed.is_empty() {
-        changes.push(format!("{} removed", count(removed)));
-    }
     (
-        format!("deferred tools · {}", changes.join(", ")),
+        "Deferred tools prompt".to_owned(),
         model_text::deferred_tools_announcement(added, removed),
     )
 }

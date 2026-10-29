@@ -887,7 +887,7 @@ fn deferred_tools_and_inherited_context_show_what_the_model_reads() {
             ),
             (
                 ModelInputKind::DeferredTools,
-                "deferred tools · 2 added",
+                "Deferred tools prompt",
                 announcement.as_str()
             ),
         ]
