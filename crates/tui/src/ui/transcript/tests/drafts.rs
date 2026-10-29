@@ -572,14 +572,8 @@ async fn a_chosen_runtime_attaches_its_own_workspace_capability() {
 }
 
 #[tokio::test]
-async fn descriptor_revisions_are_coherent_and_refresh_revalidates_root_drafts_only() {
+async fn a_refresh_revalidates_root_drafts_only() {
     let mut app = test_app().await;
-    // The selector names the catalog view the descriptors came from.
-    app.catalog_view_revision =
-        Some(cookie_agent_protocol::ViewRevision::new("view-7").expect("view revision"));
-    let label = app.descriptor_revisions_label();
-    assert_eq!(label, "catalog revision view-7");
-
     // A root draft pointing at a now-unrunnable agent resets to the
     // default; a delegated session's pin is untouched.
     app.agents = vec![descriptor("reviewer", true)];

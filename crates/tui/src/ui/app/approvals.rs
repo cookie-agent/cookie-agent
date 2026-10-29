@@ -1086,10 +1086,9 @@ impl App {
                 .take()
                 .expect("stale pending approval exists");
             self.remove_exact_approval(&pending.approval);
-            self.status = format!(
-                "approval {} is no longer pending; showing the next valid approval",
-                pending.approval.approval_id
-            );
+            // Usually this client's own answer, recorded before its reply
+            // came back; else another client's.
+            self.status = "approval answered".to_owned();
         }
         stale
     }

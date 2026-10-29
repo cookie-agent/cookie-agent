@@ -964,14 +964,6 @@ impl App {
         });
     }
 
-    /// The revision label of the catalog view the descriptors came from.
-    pub(in crate::ui) fn descriptor_revisions_label(&self) -> String {
-        match &self.catalog_view_revision {
-            Some(revision) => format!("catalog revision {revision}"),
-            None => "revisions unavailable".into(),
-        }
-    }
-
     pub(super) fn draft_status(&self, action: &str) -> String {
         let Some(draft) = self.new_session_draft.as_ref().or(self.draft.as_ref()) else {
             return "no draft selection".into();

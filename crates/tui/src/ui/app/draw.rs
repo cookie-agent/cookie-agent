@@ -1084,16 +1084,16 @@ impl App {
                 )
             })
             .collect();
-        let context = if self.new_session_draft.is_some() {
+        // The preset a new session takes; the catalog revision the
+        // descriptors came from is the daemon's bookkeeping, not the user's.
+        let title = if self.new_session_draft.is_some() {
             format!(
-                "preset: {} · {}",
-                self.selected_preset_label(),
-                self.descriptor_revisions_label()
+                "Agent ({match_count}/{total}) — preset: {}",
+                self.selected_preset_label()
             )
         } else {
-            self.descriptor_revisions_label()
+            format!("Agent ({match_count}/{total})")
         };
-        let title = format!("Agent ({match_count}/{total}) — {context}");
         let empty_message = if total == 0 {
             Some("No root-runnable agents are available.")
         } else if match_count == 0 {

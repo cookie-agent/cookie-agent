@@ -35,19 +35,15 @@ pub(crate) fn agent_command_prompt_for_test(name: &str, input: &str) -> String {
 }
 
 /// A row of `/options`: the option and its current value's name (`On` or
-/// `Off` for a boolean).
+/// `Off` for a boolean). Its category (`thought_level`) is the agent's
+/// label for cookie, not for the user.
 fn option_label(option: &AcpConfigOption) -> String {
     let current = option
         .values
         .iter()
         .find(|value| value.value == option.current_value)
         .map_or(option.current_value.as_str(), |value| value.name.as_str());
-    match option.category.as_deref() {
-        Some(category) if category != option.name.to_lowercase() => {
-            format!("{}: {current} ({category})", option.name)
-        }
-        _ => format!("{}: {current}", option.name),
-    }
+    format!("{}: {current}", option.name)
 }
 
 impl App {

@@ -449,7 +449,7 @@ async fn options_toggles_a_boolean_option_in_place() {
     run_palette_command(&mut app, "options").await;
     let rendered = rendered_frame(&mut app, 100, 30);
     assert!(
-        rendered.contains("Fast mode: Off (model_config)"),
+        rendered.contains("Fast mode: Off") && !rendered.contains("model_config"),
         "{rendered}"
     );
     app.choose_picker_entry(1).await;

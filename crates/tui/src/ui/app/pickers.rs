@@ -6,6 +6,10 @@ use super::acp::agent_command_label;
 
 /// The exact `Agent • Model[Variant]` draft-selection title form.
 pub(super) fn draft_title(draft: &RunSelection) -> String {
+    // An ACP agent chooses its own model: its synthetic one names nothing.
+    if cookie_agent_client_state::acp::is_acp_model(&draft.model) {
+        return draft.agent.to_string();
+    }
     let variant = draft
         .model
         .variant
