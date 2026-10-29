@@ -280,12 +280,17 @@ pub(crate) fn row_label(
             if cookie_agent_client_state::providers::sign_in_method(provider).is_some() =>
         {
             format!(
-                "{} · Enter: sign in again",
+                "{} · Enter: {}",
                 cookie_agent_client_state::providers::sign_in_status(provider)
-                    .unwrap_or_else(|| "signed in".into())
+                    .unwrap_or_else(|| "signed in".into()),
+                if cookie_agent_client_state::providers::sign_in_expired(provider) {
+                    "sign in again"
+                } else {
+                    "details"
+                }
             )
         }
-        ProviderRowState::ConnectedReconnect => "connected · Enter: reconnect/update".into(),
+        ProviderRowState::ConnectedReconnect => "connected · Enter: details".into(),
         ProviderRowState::Removed => {
             "removed from current catalog · Enter: reconnect/update".into()
         }

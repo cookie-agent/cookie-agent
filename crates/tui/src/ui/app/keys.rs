@@ -1625,6 +1625,10 @@ impl App {
                 self.scroll_goal_detail(up);
                 return;
             }
+            if self.modal == Modal::ConnectDetails {
+                self.scroll_connect_details(up);
+                return;
+            }
             if self.modal == Modal::Permissions {
                 if self.permission_panel.form.is_none() {
                     self.permission_panel

@@ -1899,6 +1899,8 @@ def management(browser):
     set_text(browser, "#provider-search", "openai")
     browser.wait("the provider", lambda: "connected" in browser.text('#page [data-provider="openai"]'))
     browser.click('#page [data-provider="openai"]')
+    browser.wait("its models", lambda: count(browser, '#provider-models [data-model^="openai/"]') > 0)
+    browser.shot("connected-provider")
     browser.click("#provider-disconnect")
     browser.click("#provider-disconnect-confirm")
     close_sheet(browser)

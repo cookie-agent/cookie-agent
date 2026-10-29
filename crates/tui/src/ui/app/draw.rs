@@ -448,12 +448,14 @@ impl App {
                 );
             }
             Modal::ConnectDetails => {
-                // Listed unavailable models need the extra height.
-                let height = if self
-                    .connect_provider
-                    .as_ref()
-                    .is_some_and(|provider| !provider.unavailable_models.is_empty())
-                {
+                // Listed models need the extra height.
+                let height = if self.connect_provider.as_ref().is_some_and(|provider| {
+                    !provider.unavailable_models.is_empty()
+                        || self
+                            .models
+                            .iter()
+                            .any(|model| model.key.provider_id() == provider.id)
+                }) {
                     84
                 } else {
                     62
@@ -1420,12 +1422,18 @@ impl App {
             .map_or("none".into(), |diagnostic| {
                 format!("{}: {}", diagnostic.code, diagnostic.message)
             });
+        let signs_in = cookie_agent_client_state::providers::sign_in_method(provider).is_some();
         let action = if let Some(ProviderOperation::InProgress(operation)) =
             self.provider_operations.get(&provider.id)
         {
             format!("{} in progress… · Esc: close", action_name(*operation))
         } else {
             match state {
+                ProviderRowState::ConnectedReconnect
+                    if signs_in && provider.durable_connection.is_some() =>
+                {
+                    "R: sign in again · D: sign out · Esc: close".into()
+                }
                 ProviderRowState::ConnectedReconnect if provider.durable_connection.is_some() => {
                     "R: reconnect/update · D: disconnect · Esc: close".into()
                 }
@@ -1480,37 +1488,82 @@ impl App {
             content.push('\n');
             content.push_str(&crate::ui::provider::catalog_status_line(snapshot));
         }
-        // Keys stay above the list so a long list never clips them.
         content.push_str(&format!("\n\n{action}"));
-        const LISTED_UNAVAILABLE: usize = 8;
-        if !provider.unavailable_models.is_empty() {
-            content.push_str("\n\nUnavailable models:");
-            for model in provider.unavailable_models.iter().take(LISTED_UNAVAILABLE) {
-                let name = if model.display_name.as_str() == model.id.as_str() {
-                    model.id.to_string()
-                } else {
-                    format!("{} ({})", model.display_name, model.id)
-                };
-                content.push_str(&format!(
-                    "\n  {name} — {}",
-                    crate::ui::provider::unavailable_model_reason(model)
+        let mut body = content
+            .lines()
+            .map(|line| Line::from(line.to_owned()))
+            .collect::<Vec<_>>();
+        // A model reads by its name with its id beside it, dimmed.
+        let model_line = |name: &str, id: &str, detail: Option<String>| {
+            let mut spans = vec![Span::raw(format!("  {name}"))];
+            if name != id {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(id.to_owned(), self.theme.internal()));
+            }
+            if let Some(detail) = detail {
+                spans.push(Span::raw(format!(" — {detail}")));
+            }
+            Line::from(spans)
+        };
+        let models = cookie_agent_client_state::providers::provider_models(provider, &self.models);
+        if !models.is_empty() {
+            body.push(Line::default());
+            body.push(Line::styled(
+                format!("Available models ({}):", models.len()),
+                self.theme.heading(),
+            ));
+            for model in models {
+                body.push(model_line(
+                    &model.display_name,
+                    model.key.model_id().as_str(),
+                    None,
                 ));
             }
-            if let Some(more) = provider
-                .unavailable_models
-                .len()
-                .checked_sub(LISTED_UNAVAILABLE)
-                .filter(|more| *more > 0)
-            {
-                content.push_str(&format!("\n  … and {more} more"));
+        }
+        if !provider.unavailable_models.is_empty() {
+            body.push(Line::default());
+            body.push(Line::styled("Unavailable models:", self.theme.heading()));
+            for model in &provider.unavailable_models {
+                body.push(model_line(
+                    model.display_name.as_str(),
+                    model.id.as_str(),
+                    Some(crate::ui::provider::unavailable_model_reason(model)),
+                ));
             }
         }
+        let block = crate::ui::panel_block()
+            .border_style(self.theme.panel_border())
+            .title(crate::ui::panel_title(Line::from(vec![
+                Span::styled(provider.display_name.to_string(), self.theme.heading()),
+                Span::raw(" "),
+                Span::styled(provider.id.to_string(), self.theme.internal()),
+            ])));
+        let inner = block.inner(area);
+        let lines = body
+            .into_iter()
+            .flat_map(|line| wrapped_line(line, inner.width))
+            .collect::<Vec<_>>();
+        let scroll = &mut self.connect_details_scroll;
+        scroll.page_size = usize::from(inner.height);
+        scroll.max_scroll = lines.len().saturating_sub(scroll.page_size);
+        scroll.scroll = scroll.scroll.min(scroll.max_scroll);
+        let block = if scroll.max_scroll > 0 {
+            block.title_bottom(crate::ui::panel_title(Span::styled(
+                format!(
+                    "{}-{}/{} · ↑↓ PgUp/PgDn: scroll",
+                    scroll.scroll + 1,
+                    (scroll.scroll + scroll.page_size).min(lines.len()),
+                    lines.len()
+                ),
+                self.theme.internal(),
+            )))
+        } else {
+            block
+        };
         frame.render_widget(
-            Paragraph::new(content).wrap(Wrap { trim: false }).block(
-                crate::ui::panel_block()
-                    .border_style(self.theme.panel_border())
-                    .title(crate::ui::panel_title("Provider details")),
-            ),
+            Paragraph::new(lines)
+                .scroll((u16::try_from(scroll.scroll).unwrap_or(u16::MAX), 0))
+                .block(block),
             area,
         );
     }

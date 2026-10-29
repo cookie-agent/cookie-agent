@@ -116,7 +116,7 @@ Esc in a step returns to the command list with the search intact.
 | `/agent` | Choose the agent for the next run |
 | `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models; each row shows, dimmed after its name, the ID an agent document's `models` writes for it (the model's `provider/model` key, the variant's ID, an ACP agent's option value), once when the name is the ID; for an [ACP agent](../extend/acp-agents.md), which chooses its own model, it lists the values of the agent's model option, and the title's bracketed variant (or ctrl+t) cycles its effort option; a new session's draft offers what the agent last started a session with |
 | `/options` | Change the options of the session's ACP agent, such as its model, mode, and effort: pick an option, then a value; listed while the agent offers options |
-| `/connect` | Connect or update a managed provider |
+| `/connect` | Connect or update a managed provider; Enter on a connected one opens its details, titled by its name with its ID dimmed and listing its available models (each name with its model ID dimmed beside it; ↑↓, PgUp/PgDn, Home/End, and the wheel scroll), where R reconnects (signs in again) and D disconnects |
 | `/mcp` | Manage MCP servers; see [MCP servers](../extend/mcp.md) |
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes, or choose a new session's before its first prompt; see [Runtimes panel](#runtimes-panel) |
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |

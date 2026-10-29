@@ -125,6 +125,14 @@ pub fn sign_in_status(provider: &ProviderDescriptor) -> Option<String> {
     })
 }
 
+/// Whether the provider's sign-in expired, so opening it signs in again.
+pub fn sign_in_expired(provider: &ProviderDescriptor) -> bool {
+    provider
+        .sign_in_account
+        .as_ref()
+        .is_some_and(|account| account.sign_in_required)
+}
+
 /// What to do with the page the browser could not load: the sign-in's
 /// paste-back instructions, shared by every client.
 pub const SIGN_IN_PASTE_HINT: &str = "If the browser runs on another machine, the page it returns to will fail to load: copy that page's address and paste it here.";
@@ -193,6 +201,18 @@ fn unavailable_parts(provider: &ProviderDescriptor) -> Vec<String> {
                 _ => format!("{count} {label} ({}, …)", reasons[..2].join(", ")),
             })
         })
+        .collect()
+}
+
+/// The usable models a provider offers, in the snapshot's order: what its
+/// details list once it is connected.
+pub fn provider_models<'a>(
+    provider: &ProviderDescriptor,
+    models: &'a [AvailableModelDescriptor],
+) -> Vec<&'a AvailableModelDescriptor> {
+    models
+        .iter()
+        .filter(|model| model.key.provider_id() == provider.id)
         .collect()
 }
 

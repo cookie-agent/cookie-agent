@@ -14,8 +14,8 @@ use cookie_agent_client_state::{
     plugins::{plugin_detail, state_label as plugin_state_label},
     providers::{
         ProviderOperation, ProviderRowState, action_name, catalog_status_line, credential_values,
-        initial_auth_method, initial_setup_text, model_counts_summary, row_state, setup_values,
-        unusable_models_note,
+        initial_auth_method, initial_setup_text, model_counts_summary, provider_models, row_state,
+        setup_values, unusable_models_note,
     },
     runtimes::{RuntimeChoice, attach_parameters, runtime_choices, status_label},
 };
@@ -1002,7 +1002,11 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
                                     }
                                 >
                                     <span class="flex w-full items-center gap-2">
-                                        <span class="min-w-0 flex-1 truncate text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</span>
+                                        <span class="min-w-0 flex-1 truncate text-sm font-bold">
+                                            {provider.display_name.to_string()}
+                                            " "
+                                            <span class=PROVIDER_ID>{provider.id.to_string()}</span>
+                                        </span>
                                         {matches!(state, ProviderRowState::ConnectedReconnect | ProviderRowState::Configured).then(|| view! {
                                             <Glyph icon=icondata::FaPlugSolid class="text-green-700 dark:text-green-400" />
                                         })}
@@ -1017,6 +1021,54 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
             }
                 .into_any(),
         }}
+    }
+}
+
+/// A provider id beside its name, in small type.
+const PROVIDER_ID: &str = "font-mono text-xs font-normal text-ink dark:text-sand";
+
+/// A provider's name with its id beside it.
+fn provider_heading(provider: &ProviderDescriptor) -> impl IntoView + use<> {
+    view! {
+        <p class="text-sm font-bold">
+            {provider.display_name.to_string()}
+            " "
+            <span class=PROVIDER_ID>{provider.id.to_string()}</span>
+        </p>
+    }
+}
+
+/// The usable models a provider offers, each by name with its id beside it;
+/// nothing while it offers none.
+fn provider_models_list(workspace: Workspace, provider: ProviderDescriptor) -> impl IntoView {
+    move || {
+        let models = workspace.models();
+        let listed = provider_models(&provider, &models);
+        (!listed.is_empty()).then(|| {
+            let rows = listed
+                .iter()
+                .map(|model| {
+                    let id = model.key.model_id().to_string();
+                    let name = (model.display_name != id).then(|| model.display_name.clone());
+                    view! {
+                        <li class="flex min-w-0 items-baseline gap-2 py-0.5" data-model=model.key.to_string()>
+                            {name.map(|name| view! { <span class="min-w-0 truncate text-sm">{name}</span> })}
+                            <span class="min-w-0 truncate font-mono text-xs text-ink dark:text-sand">{id}</span>
+                        </li>
+                    }
+                })
+                .collect_view();
+            view! {
+                <section class="flex flex-col gap-1" id="provider-models">
+                    <h3 class="text-xs font-bold uppercase tracking-wide text-ink dark:text-sand">
+                        {format!("Models ({})", listed.len())}
+                    </h3>
+                    <ul class="max-h-64 overflow-y-auto rounded-md border border-crust px-3 py-1 dark:border-smoke">
+                        {rows}
+                    </ul>
+                </section>
+            }
+        })
     }
 }
 
@@ -1068,8 +1120,9 @@ fn sign_in_view(
         }
     });
     view! {
-        <p class="text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</p>
+        {provider_heading(&provider)}
         <p class=NOTE>{summary}</p>
+        {provider_models_list(workspace, provider.clone())}
         <p class="text-sm" id="provider-sign-in-status">{status}</p>
         {move || match state.get() {
             // Told before the sign-in starts, so the tab that fails to load
@@ -1165,7 +1218,7 @@ fn provider_view(
             .as_ref()
             .map_or_else(|| "unsupported".to_owned(), ToString::to_string);
         return view! {
-            <p class="text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</p>
+            {provider_heading(&provider)}
             <p class="text-sm">{reason}</p>
             <p class=NOTE>{summary}</p>
             <button type="button" class=BUTTON on:click=back>"Back"</button>
@@ -1272,8 +1325,9 @@ fn provider_view(
     let disconnect_provider = provider.clone();
     let stores_only = configured.is_some();
     view! {
-        <p class="text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</p>
+        {provider_heading(&provider)}
         <p class=NOTE>{summary}</p>
+        {provider_models_list(workspace, provider.clone())}
         {configured.map(|note| view! { <p class="text-sm" id="provider-configured">{note}</p> })}
         <p class=NOTE>{cookie_agent_client_state::providers::DURABLE_PROVIDER_COPY}</p>
         <Show when={

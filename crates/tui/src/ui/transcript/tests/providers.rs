@@ -726,7 +726,7 @@ async fn provider_picker_renders_all_required_row_states() {
     for text in [
         "unsupported: unsupported_environment",
         "disconnected",
-        "connected · Enter: reconnect/update",
+        "connected · Enter: details",
         "removed from current catalog",
         "error · Enter: retry · retryable",
         "connect in progress",
@@ -1121,8 +1121,8 @@ async fn reconnect_and_disconnect_emit_only_protocol8_provider_methods() {
     app.provider_search.focus_list();
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
-    assert_eq!(app.modal, Modal::ConnectSetup);
-    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+    assert_eq!(app.modal, Modal::ConnectDetails);
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
         .await;
     assert_eq!(app.modal, Modal::DisconnectConfirm);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -1482,7 +1482,7 @@ async fn provider_rows_explain_why_a_provider_has_no_usable_models() {
     let rendered = rendered_frame(&mut app, 240, 40);
     assert!(
         rendered.contains(
-            "Kimi Code (kimi-code) — connected · no usable models: 2 quarantined (invalid_catalog_model_record) · 1 unsupported (unsupported_model_capabilities) · Enter: reconnect/update"
+            "Kimi Code (kimi-code) — connected · no usable models: 2 quarantined (invalid_catalog_model_record) · 1 unsupported (unsupported_model_capabilities) · Enter: details"
         ),
         "{rendered}"
     );
@@ -1525,10 +1525,80 @@ async fn provider_details_list_unavailable_models_docs_and_env() {
         "Catalog: models.dev (network)",
         "Unavailable models:",
         "  k2 — quarantined: invalid_catalog_model_record",
-        "Kimi K3 Vision (k3-vision) — unsupported: unsupported_model_capabilities",
+        "Kimi K3 Vision  k3-vision — unsupported: unsupported_model_capabilities",
     ] {
         assert!(rendered.contains(text), "missing {text}: {rendered}");
     }
+}
+
+#[tokio::test]
+async fn connected_provider_opens_on_its_models_and_r_reconnects() {
+    let mut app = test_app().await;
+    let provider = provider_descriptor("connected-provider", "supported", "current", true);
+    let model = |id: &str, name: &str| {
+        let mut model = model_descriptor();
+        model.key = format!("connected-provider/{id}")
+            .parse()
+            .expect("model key");
+        model.display_name = name.into();
+        model
+    };
+    app.models = vec![
+        model("big-1", "Big One"),
+        model_descriptor(),
+        model("plain-id", "plain-id"),
+    ];
+    app.providers = vec![provider];
+    app.modal = Modal::ConnectProviders;
+    app.picker_state.select(Some(0));
+    app.provider_search.focus_list();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::ConnectDetails);
+    let rendered = rendered_frame(&mut app, 200, 60);
+    for text in [
+        "connected-provider provider connected-provider",
+        "Available models (2):",
+        "  Big One  big-1",
+        "  plain-id ",
+    ] {
+        assert!(rendered.contains(text), "missing {text:?}: {rendered}");
+    }
+    // Another provider's model stays out; a name equal to its id shows once.
+    assert!(!rendered.contains("  Arbitrary Model  "), "{rendered}");
+    assert!(!rendered.contains("plain-id  plain-id"), "{rendered}");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::ConnectSetup);
+    assert!(app.provider_form.as_ref().expect("form").reconnect);
+}
+
+#[tokio::test]
+async fn provider_details_scroll_through_a_long_model_list() {
+    let mut app = test_app().await;
+    let provider = provider_descriptor("many", "supported", "current", true);
+    app.models = (0..80)
+        .map(|index| {
+            let mut model = model_descriptor();
+            model.key = format!("many/model-{index}").parse().expect("model key");
+            model.display_name = format!("Model {index}");
+            model
+        })
+        .collect();
+    app.open_provider_details(provider);
+    let first = rendered_frame(&mut app, 120, 40);
+    assert!(first.contains("Model 0"), "{first}");
+    assert!(!first.contains("Model 79"), "{first}");
+    assert!(first.contains("PgUp/PgDn: scroll"), "{first}");
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
+        .await;
+    let last = rendered_frame(&mut app, 120, 40);
+    assert!(last.contains("Model 79"), "{last}");
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
+        .await;
+    let top = rendered_frame(&mut app, 120, 40);
+    assert!(top.contains("Model 0"), "{top}");
 }
 
 #[tokio::test]

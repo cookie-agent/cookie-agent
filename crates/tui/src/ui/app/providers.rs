@@ -2,6 +2,25 @@
 
 use super::*;
 
+/// The provider details panel's scroll: a provider can list hundreds of
+/// models.
+#[derive(Debug, Default)]
+pub(super) struct DetailsScroll {
+    pub(super) scroll: usize,
+    pub(super) max_scroll: usize,
+    pub(super) page_size: usize,
+}
+
+impl DetailsScroll {
+    fn scroll_by(&mut self, lines: usize, up: bool) {
+        self.scroll = if up {
+            self.scroll.saturating_sub(lines)
+        } else {
+            self.scroll.saturating_add(lines).min(self.max_scroll)
+        };
+    }
+}
+
 impl App {
     pub(super) fn focus_provider_field(&mut self, hit: ProviderFieldHit, column: u16, row: u16) {
         let Some(form) = self.provider_form.as_mut() else {
@@ -103,16 +122,18 @@ impl App {
                         self.provider_operations.get(&provider.id),
                     );
                     match state {
-                        ProviderRowState::Unsupported => {
-                            self.connect_provider = Some(provider);
-                            self.provider_search.reset();
-                            self.modal = Modal::ConnectDetails;
+                        // Credentials from config.toml: a form could not
+                        // replace them. A connected provider opens on its
+                        // models; R reconnects from there.
+                        ProviderRowState::Unsupported | ProviderRowState::Configured => {
+                            self.open_provider_details(provider);
                         }
-                        // Credentials from config.toml: a form could not replace them.
-                        ProviderRowState::Configured => {
-                            self.connect_provider = Some(provider);
-                            self.provider_search.reset();
-                            self.modal = Modal::ConnectDetails;
+                        ProviderRowState::ConnectedReconnect
+                            if !cookie_agent_client_state::providers::sign_in_expired(
+                                &provider,
+                            ) =>
+                        {
+                            self.open_provider_details(provider);
                         }
                         _ if cookie_agent_client_state::providers::sign_in_method(&provider)
                             .is_some() =>
@@ -153,6 +174,17 @@ impl App {
         }
     }
 
+    pub(in crate::ui) fn open_provider_details(&mut self, provider: ProviderDescriptor) {
+        self.connect_provider = Some(provider);
+        self.provider_search.reset();
+        self.connect_details_scroll = DetailsScroll::default();
+        self.modal = Modal::ConnectDetails;
+    }
+
+    pub(super) fn scroll_connect_details(&mut self, up: bool) {
+        self.connect_details_scroll.scroll_by(1, up);
+    }
+
     /// Starts the provider's sign-in in its details: binds the loopback
     /// listener the redirect returns to, asks the daemon for the URL, and
     /// forwards every redirect the browser sends until one completes it.
@@ -166,6 +198,7 @@ impl App {
         self.provider_search.reset();
         let provider_id = provider.id.clone();
         self.connect_provider = Some(provider);
+        self.connect_details_scroll = DetailsScroll::default();
         self.modal = Modal::ConnectDetails;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
@@ -273,6 +306,7 @@ impl App {
         let reconnect = provider.durable_connection.is_some()
             || row_state(&provider, &self.models, None) == ProviderRowState::ConnectedReconnect;
         let Some(form) = ProviderForm::new(provider, reconnect) else {
+            self.connect_details_scroll = DetailsScroll::default();
             self.modal = Modal::ConnectDetails;
             self.status = "This provider has no store-backed authentication form.".into();
             return;
@@ -324,7 +358,22 @@ impl App {
                         | ProviderRowState::Configured
                 ) =>
             {
-                self.begin_provider_form(provider);
+                if cookie_agent_client_state::providers::sign_in_method(&provider).is_some() {
+                    self.begin_provider_sign_in(provider);
+                } else {
+                    self.begin_provider_form(provider);
+                }
+            }
+            KeyCode::Up => self.scroll_connect_details(true),
+            KeyCode::Down => self.scroll_connect_details(false),
+            KeyCode::PageUp | KeyCode::PageDown => {
+                let page = self.connect_details_scroll.page_size.max(1);
+                self.connect_details_scroll
+                    .scroll_by(page, key.code == KeyCode::PageUp);
+            }
+            KeyCode::Home => self.connect_details_scroll.scroll = 0,
+            KeyCode::End => {
+                self.connect_details_scroll.scroll = self.connect_details_scroll.max_scroll;
             }
             KeyCode::Char('d' | 'D') if provider.durable_connection.is_some() => {
                 self.modal = Modal::DisconnectConfirm;

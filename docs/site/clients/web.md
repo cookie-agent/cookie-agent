@@ -708,8 +708,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   **Reconnect** works for any server.
   - A server that needs authorization offers **Sign in** (see
     [Signing in to MCP servers](#signing-in-to-mcp-servers)).
-- **Providers.** Settings › Providers lists the catalog's providers. Pick one to
-  connect it, or to update or disconnect its stored connection. Credentials
+- **Providers.** Settings › Providers lists the catalog's providers, each
+  name with its provider ID in small type. Pick one to connect it, or to
+  update or disconnect its stored connection; a connected one lists its
+  available models, each name with its model ID beside it. Credentials
   are typed into password fields, read once when you connect, and never
   kept by the page; closing the form clears them.
 - **Configuration.** Settings › Configuration has `config.toml`. Open it
