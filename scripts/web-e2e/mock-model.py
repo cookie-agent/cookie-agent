@@ -204,7 +204,9 @@ def reply(request):
     if "many lines" in text:
         return tool_reply("bash", {"command": "seq 1 100"})
     if "sleepy" in text:
-        return tool_reply("bash", {"command": "sleep 8; printf 'woke up\\n'"})
+        # Long enough to outlast the approval and the clicks on a slow
+        # runner; the scenario stops it.
+        return tool_reply("bash", {"command": "sleep 60; printf 'woke up\\n'"})
     if "picture" in text:
         return tool_reply("read", {"filePath": "dot.png"})
     if "remember" in text:

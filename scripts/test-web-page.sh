@@ -343,7 +343,15 @@ for index in "${!groups[@]}"; do
     wait "${sets[$index]}" || status=$?
     echo "=== ${groups[$index]} (exit status $status)"
     cat "$scratch/set$index.log"
-    ((status == 0)) || failed+=("${groups[$index]}")
+    ((status == 0)) && continue
+    failed+=("${groups[$index]}")
+    # What the group's daemons said, restarts included: a flake on CI is
+    # read from this log alone.
+    while IFS= read -r err; do
+        [[ -s "$err" ]] || continue
+        echo "--- ${err#"$scratch/"} (last 40 lines)"
+        tail -n 40 "$err"
+    done < <(find "$scratch/set$index" -maxdepth 2 -name daemon.err | sort)
 done
 sets=()
 if ((${#failed[@]})); then
