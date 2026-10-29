@@ -71,6 +71,21 @@ fn keywords_match_parameters_and_load_up_to_the_limit() {
 }
 
 #[test]
+fn a_plus_word_must_be_in_the_tools_name() {
+    // "selector" matches every tool's parameters; "+click" keeps the one
+    // whose name has it.
+    let result = search_result(&view(), "+click selector", 10);
+    assert_eq!(result.loaded_tools, ["chrome_click"]);
+    assert!(
+        !result.output.contains("calendar_list"),
+        "{}",
+        result.output
+    );
+    let none = search_result(&view(), "+spreadsheet selector", 10);
+    assert!(none.loaded_tools.is_empty());
+}
+
+#[test]
 fn a_search_says_when_nothing_matches_or_nothing_is_loadable() {
     let none = search_result(&view(), "spreadsheet", 10);
     assert!(none.loaded_tools.is_empty());

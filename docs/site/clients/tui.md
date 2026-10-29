@@ -410,7 +410,7 @@ Everything else the engine adds to the model's input has a collapsed row too,
 whose body is the exact text the model reads: the memory snapshot (`🧠 memory ·
 42 lines`, again whenever the snapshot changes, and a row saying so when memory
 leaves the model's context), each deferred tools announcement (`Deferred tools
-prompt`, opening with `[cookie: deferred tools]`), the parent's conversation a subagent starts from (`context from the
+prompt`), the parent's conversation a subagent starts from (`context from the
 parent · 4 turns`), and the context an ACP agent's first prompt carries
 (`context sent to claude · 120 lines`). Under a tool call's output, its row
 shows what the result sent the model beyond the tool's own output: a [loop

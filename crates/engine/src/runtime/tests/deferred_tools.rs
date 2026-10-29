@@ -244,11 +244,13 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
     let announcement = first
         .iter()
         .filter_map(|message| message["content"].as_str())
-        .find(|content| content.starts_with("[cookie: deferred tools]"))
+        .find(|content| {
+            content.starts_with(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED)
+        })
         .expect("announcement turn");
     assert!(
         announcement.contains(
-            "<group name=\"chrome\" source=\"mcp\">\n<summary untrusted=\"true\">\nBrowser automation.\n</summary>\nwrite\n</group>"
+            "<group name=\"chrome\" source=\"mcp\" summary=\"Browser automation.\" untrusted=\"true\">\nwrite\n</group>"
         ),
         "{announcement}"
     );
@@ -415,7 +417,10 @@ async fn a_checkpoint_folds_a_loaded_tool_into_the_next_round() {
     // announcement go.
     assert!(messages.contains("write-1"), "{messages}");
     assert!(!messages.contains("load-1"), "{messages}");
-    assert!(!messages.contains("[cookie: deferred tools]"), "{messages}");
+    assert!(
+        !messages.contains("The following deferred tool groups"),
+        "{messages}"
+    );
     assert!(
         !messages.contains("\"tools\""),
         "no load message: {messages}"
@@ -447,7 +452,10 @@ async fn a_checkpoint_drops_the_calls_of_a_tool_that_left() {
     let messages = serde_json::to_string(&request["messages"]).expect("messages");
     assert!(!messages.contains("write-1"), "{messages}");
     assert!(!messages.contains("load-1"), "{messages}");
-    assert!(!messages.contains("[cookie: deferred tools]"), "{messages}");
+    assert!(
+        !messages.contains("The following deferred tool groups"),
+        "{messages}"
+    );
     assert!(
         messages.contains("write x"),
         "the run's input stays: {messages}"
@@ -568,7 +576,10 @@ async fn an_always_loaded_mcp_tool_is_sent_up_front() {
         "nothing is deferred, so no loaders: {names:?}"
     );
     let messages = serde_json::to_string(&request["messages"]).expect("messages");
-    assert!(!messages.contains("[cookie: deferred tools]"), "{messages}");
+    assert!(
+        !messages.contains("The following deferred tool groups"),
+        "{messages}"
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -609,10 +620,12 @@ async fn a_deferred_built_in_group_is_announced_unless_always_loaded() {
             .expect("messages")
             .iter()
             .filter_map(|message| message["content"].as_str())
-            .find(|content| content.starts_with("[cookie: deferred tools]"))
+            .find(|content| {
+                content.starts_with(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED)
+            })
             .expect("announcement turn")
             .to_owned();
-        let goal_group = "<group name=\"goal\" source=\"builtin\">\n<summary>\nThe session's goal and the checklist that tracks it.\n</summary>\ngoal_get\ngoal_set\ngoal_update\n</group>";
+        let goal_group = "<group name=\"goal\" source=\"builtin\" summary=\"The session's goal and the checklist that tracks it.\">\ngoal_get\ngoal_set\ngoal_update\n</group>";
         if always_load {
             assert!(names.contains(&"goal_set".to_owned()), "{names:?}");
             assert!(!announcement.contains("name=\"goal\""), "{announcement}");
@@ -782,4 +795,54 @@ async fn a_changed_prompt_block_is_announced_on_a_model_that_defers() {
         assert_eq!(recorded, [true, !defers]);
         fixture.engine.shutdown().await;
     }
+}
+
+/// A deferred tool called before a result loaded it is refused, as the
+/// announcement says, and never runs.
+#[tokio::test]
+async fn a_deferred_tool_called_before_it_is_loaded_is_refused() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    for (role, reply) in [
+        (
+            "user",
+            scripted_tool_body("write-1", "write", serde_json::json!({"value": "x"})),
+        ),
+        ("tool", scripted_text_body("done")),
+    ] {
+        responses
+            .send(MatchedScriptedResponse::last_message_role(role, reply))
+            .expect("scripted reply");
+    }
+    let (fixture, selection, executed, _) = deferral_fixture(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("deferral session");
+    run(
+        &fixture,
+        session.session_id,
+        &selection,
+        "unloaded-1",
+        "write x",
+    )
+    .await;
+    let requests = with_watchdog("captured deferral requests", captured)
+        .await
+        .expect("captured requests");
+    let second = body(&requests[1]);
+    let result = second["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .filter_map(|message| message["content"].as_str())
+        .next_back()
+        .expect("tool result")
+        .to_owned();
+    assert!(
+        result.contains("`write` is not loaded: load it with tool_search"),
+        "{result}"
+    );
+    assert!(!executed.is_set(), "the unloaded tool never ran");
+    fixture.engine.shutdown().await;
 }

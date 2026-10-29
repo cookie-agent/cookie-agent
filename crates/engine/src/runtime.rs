@@ -634,6 +634,8 @@ struct PublishedToolSet {
     tools: HashMap<String, PublishedTool>,
     /// Round tools still declared after leaving the session.
     departed: HashSet<String>,
+    /// Deferred tools the request declares but no result loaded yet.
+    unloaded: HashSet<String>,
     /// Deferral records to append before the request.
     pending: Vec<Event>,
 }

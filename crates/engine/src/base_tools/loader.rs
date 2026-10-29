@@ -33,7 +33,7 @@ const SELECT_PREFIX: &str = "select:";
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ToolSearchArgs {
-    /// "select:<name>,<name>" loads those tools by exact name; any other text is keywords, such as "browser click", and loads the best matches.
+    /// "select:<name>,<name>" loads those tools by exact name; any other text is keywords, such as "browser click", and loads the best matches. "+word" requires the word in a tool's name, as in "+slack send".
     query: String,
     /// At most how many keyword matches to load; 5 when absent, and every match when 0 or less. A select: query loads every name it lists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,7 +61,7 @@ impl LoaderTools {
             result_truncation: Default::default(),
             name: TOOL_SEARCH.into(),
             permission_name: None,
-            description: "Load deferred tools so you can call them. Use \"select:<name>,<name>\" to load tools by the exact names a <tools_added> announcement lists, or keywords to find and load the best matches by name, group, description, and parameters. Loaded tools stay callable.".into(),
+            description: "Load deferred tools so you can call them. Use \"select:<name>,<name>\" to load tools by the exact names an announcement lists, or keywords to find and load the best matches by name, group, description, and parameters; \"+word\" requires the word in a tool's name. Loaded tools stay callable.".into(),
             parameters: schema::<ToolSearchArgs>(),
         }
     }
@@ -288,9 +288,20 @@ fn haystack(entry: &DeferredEntry) -> String {
 
 /// Loads the best keyword matches for `query`, at most `limit` of them.
 pub(crate) fn search_result(view: &DeferralView, query: &str, limit: usize) -> ToolResult {
-    let terms = query
+    let words = query
         .split_whitespace()
         .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    // `+word` must be in the tool's name; every word counts toward the rank.
+    let required = words
+        .iter()
+        .filter_map(|word| word.strip_prefix('+'))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let terms = words
+        .iter()
+        .map(|word| word.trim_start_matches('+'))
+        .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
     if view.deferred.is_empty() {
         return result(
@@ -302,11 +313,15 @@ pub(crate) fn search_result(view: &DeferralView, query: &str, limit: usize) -> T
     let mut matches = view
         .deferred
         .iter()
+        .filter(|entry| {
+            let name = entry.name.to_lowercase();
+            required.iter().all(|word| name.contains(word))
+        })
         .filter_map(|entry| {
             let haystack = haystack(entry);
             let score = terms
                 .iter()
-                .filter(|term| haystack.contains(term.as_str()))
+                .filter(|term| haystack.contains(**term))
                 .count();
             (score > 0).then_some((score, entry))
         })

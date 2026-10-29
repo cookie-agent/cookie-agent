@@ -51,7 +51,7 @@ pub fn memory_header(text: &str) -> String {
 }
 
 /// The deferred tools row's heading and body: `Deferred tools prompt`, and
-/// the announcement the model reads, which opens `[cookie: deferred tools]`.
+/// the announcement the model reads.
 pub fn deferred_tools(
     added: &[AnnouncedToolGroup],
     removed: &[AnnouncedToolGroup],

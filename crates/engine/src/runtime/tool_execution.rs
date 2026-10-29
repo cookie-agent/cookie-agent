@@ -1342,10 +1342,18 @@ impl Engine {
                 definitions: plan.definitions,
                 tools: published,
                 departed: plan.departed,
+                unloaded: HashSet::new(),
                 pending: plan.pending,
             });
         }
         let mut plan = crate::deferred_tools::plan(candidates, &loaders, &fold);
+        let unloaded = plan
+            .view
+            .deferred
+            .iter()
+            .filter(|entry| !fold.loaded.contains(&entry.name))
+            .map(|entry| entry.name.clone())
+            .collect();
         for provider in &plan.deferred_providers {
             // Delivered with the provider's first load; a provider with a
             // loaded tool has had them.
@@ -1383,6 +1391,7 @@ impl Engine {
             definitions: plan.definitions,
             tools: published,
             departed: plan.departed,
+            unloaded,
             pending: plan.pending,
         })
     }

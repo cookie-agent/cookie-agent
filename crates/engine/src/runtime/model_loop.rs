@@ -1375,6 +1375,16 @@ impl Engine {
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: format!("`{tool}` is no longer available in this session"),
                     });
+                } else if published_tools.unloaded.contains(tool.as_str()) {
+                    // As the announcement says: a deferred tool is called
+                    // only once a result loaded it.
+                    prepared_call.prepared = Err(ToolFailure {
+                        partial_output: None,
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: format!(
+                            "`{tool}` is not loaded: load it with tool_search (query \"select:{tool}\") before calling it"
+                        ),
+                    });
                 }
                 if attempt
                     .normalized_tool_calls

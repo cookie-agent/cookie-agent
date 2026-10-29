@@ -1043,7 +1043,7 @@ tool_search(limit?: integer, query: string)
 Description sent to the model:
 
 ```text
-Load deferred tools so you can call them. Use "select:<name>,<name>" to load tools by the exact names a <tools_added> announcement lists, or keywords to find and load the best matches by name, group, description, and parameters. Loaded tools stay callable.
+Load deferred tools so you can call them. Use "select:<name>,<name>" to load tools by the exact names an announcement lists, or keywords to find and load the best matches by name, group, description, and parameters; "+word" requires the word in a tool's name. Loaded tools stay callable.
 ```
 
 Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool, or a tool of a deferred built-in group, is offered. It stays until the session's next compaction.
@@ -1051,7 +1051,7 @@ Only when the request defers a tool: on a model that loads deferred tools, when 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `limit` | `integer` | no | At most how many keyword matches to load; 5 when absent, and every match when 0 or less. A select: query loads every name it lists. |
-| `query` | `string` | yes | "select:<name>,<name>" loads those tools by exact name; any other text is keywords, such as "browser click", and loads the best matches. |
+| `query` | `string` | yes | "select:<name>,<name>" loads those tools by exact name; any other text is keywords, such as "browser click", and loads the best matches. "+word" requires the word in a tool's name, as in "+slack send". |
 
 ??? note "Parameters JSON Schema"
 
@@ -1069,7 +1069,7 @@ Only when the request defers a tool: on a model that loads deferred tools, when 
           ]
         },
         "query": {
-          "description": "\"select:<name>,<name>\" loads those tools by exact name; any other text is keywords, such as \"browser click\", and loads the best matches.",
+          "description": "\"select:<name>,<name>\" loads those tools by exact name; any other text is keywords, such as \"browser click\", and loads the best matches. \"+word\" requires the word in a tool's name, as in \"+slack send\".",
           "type": "string"
         }
       },
