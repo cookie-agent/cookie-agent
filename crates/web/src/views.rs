@@ -3688,7 +3688,10 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
             commands
                 .iter()
                 .filter(|command| {
-                    matches(
+                    cookie_agent_client_state::acp::command_listed(
+                        &command.name,
+                        query.trim_start_matches('/'),
+                    ) && matches(
                         &query,
                         [command.name.as_str(), command.description.as_str()],
                     )
@@ -3713,7 +3716,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
                             <span class="flex w-full min-w-0 flex-col">
                                 <span class="flex flex-wrap items-baseline gap-x-2">
                                     <span class="agent-badge rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
-                                    <span class="font-mono text-sm font-bold">{format!("/{name}")}</span>
+                                    <span class="font-mono text-sm font-bold">{cookie_agent_client_state::acp::command_label(&name)}</span>
                                     <span class=format!("font-mono {NOTE}")>{hint}</span>
                                 </span>
                                 <span class=NOTE>{description}</span>
@@ -3759,7 +3762,7 @@ fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
     view! {
         <p class="flex flex-wrap items-baseline gap-x-2">
             <span class="agent-badge rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
-            <span id="agent-command-name" class="font-mono text-sm font-bold">{format!("/{}", command.name)}</span>
+            <span id="agent-command-name" class="font-mono text-sm font-bold">{cookie_agent_client_state::acp::command_label(&command.name)}</span>
         </p>
         <p class=NOTE>{command.description.clone()}</p>
         <label class="flex flex-col gap-1 text-sm">

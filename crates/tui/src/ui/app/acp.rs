@@ -15,22 +15,18 @@ pub(super) fn agent_command_label(command: &AcpCommand) -> String {
         .input_hint
         .as_deref()
         .map_or(String::new(), |hint| format!(" {hint}"));
+    let label = cookie_agent_client_state::acp::command_label(&command.name);
     if command.description.trim().is_empty() {
-        format!("/{}{hint}", command.name)
+        format!("{label}{hint}")
     } else {
-        format!("/{}{hint} — {}", command.name, command.description)
+        format!("{label}{hint} — {}", command.description)
     }
 }
 
-/// The prompt that runs agent command `name` with `input`, as ACP
-/// specifies: `/<name> <input>`.
+/// The prompt that runs agent command `name` with `input`: `/<name>
+/// <input>`, as ACP specifies, or a skill's `$<skill> <input>`.
 pub(super) fn agent_command_prompt(name: &str, input: &str) -> String {
-    let input = input.trim();
-    if input.is_empty() {
-        format!("/{name}")
-    } else {
-        format!("/{name} {input}")
-    }
+    cookie_agent_client_state::acp::command_prompt(name, input)
 }
 
 #[cfg(test)]
@@ -80,7 +76,9 @@ impl App {
                 acp.commands
                     .iter()
                     .filter(|command| {
-                        crate::ui::slash::match_rank([command.name.as_str()], query).is_some()
+                        cookie_agent_client_state::acp::command_listed(&command.name, query)
+                            && crate::ui::slash::match_rank([command.name.as_str()], query)
+                                .is_some()
                     })
                     .cloned()
                     .collect()

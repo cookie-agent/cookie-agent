@@ -1900,7 +1900,10 @@ impl App {
                         "enter: attach · esc: back",
                     ),
                     TextTarget::AgentCommand { name, hint } => (
-                        format!("/{name} (the agent's command)"),
+                        format!(
+                            "{} (the agent's command)",
+                            cookie_agent_client_state::acp::command_label(name)
+                        ),
                         hint.as_deref().map_or_else(
                             || "Input (optional)".to_owned(),
                             |hint| format!("Input: {hint}"),

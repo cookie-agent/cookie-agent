@@ -59,14 +59,10 @@ impl Workspace {
     }
 
     /// Sends agent command `name` with `input` to the viewed session, as
-    /// ACP specifies: the prompt `/<name> <input>`.
+    /// ACP specifies: the prompt `/<name> <input>`, or a skill's
+    /// `$<skill> <input>`.
     pub fn run_agent_command(self, name: &str, input: &str) {
-        let input = input.trim();
-        let text = if input.is_empty() {
-            format!("/{name}")
-        } else {
-            format!("/{name} {input}")
-        };
+        let text = cookie_agent_client_state::acp::command_prompt(name, input);
         if !self.writable() {
             self.status
                 .set("This session is owned by another cookie process; input is disabled.".into());

@@ -181,6 +181,43 @@ pub fn is_acp_model(selection: &ModelSelection) -> bool {
     selection.model.provider_id().as_str() == ACP_MODEL_PROVIDER
 }
 
+/// Whether agent command `name` is one of the agent's skills, which Codex
+/// lists as commands named `$<skill>` and runs from a `$<skill>` mention.
+pub fn is_skill_command(name: &str) -> bool {
+    name.starts_with('$')
+}
+
+/// Whether agent command `name` is listed for the search `query` (without
+/// its leading `/`) once the query matches it: the agent's skills only for
+/// a query that starts with `$`, as Codex offers them, so a few dozen of
+/// them do not bury the agent's commands.
+pub fn command_listed(name: &str, query: &str) -> bool {
+    !is_skill_command(name) || query.trim_start().starts_with('$')
+}
+
+/// How agent command `name` is written: `/<name>`, or the skill `$<skill>`
+/// as it is.
+pub fn command_label(name: &str) -> String {
+    if is_skill_command(name) {
+        name.to_owned()
+    } else {
+        format!("/{name}")
+    }
+}
+
+/// The prompt that runs agent command `name` with `input`: `/<name>
+/// <input>`, as ACP specifies, or for a skill the mention `$<skill>
+/// <input>`, as the agent takes it.
+pub fn command_prompt(name: &str, input: &str) -> String {
+    let input = input.trim();
+    let label = command_label(name);
+    if input.is_empty() {
+        label
+    } else {
+        format!("{label} {input}")
+    }
+}
+
 /// The option that is the agent's model: the one of category `model`,
 /// else the one with ID `model`.
 pub fn model_option(options: &[AcpConfigOption]) -> Option<&AcpConfigOption> {
@@ -354,6 +391,19 @@ impl DraftAgentOptions {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_agents_skills_are_listed_for_a_dollar_and_run_as_mentions() {
+        assert!(super::command_listed("review", ""));
+        assert!(super::command_listed("review", "rev"));
+        assert!(!super::command_listed("$imagegen", ""));
+        assert!(!super::command_listed("$imagegen", "image"));
+        assert!(super::command_listed("$imagegen", "$ima"));
+        assert_eq!(super::command_prompt("review", " the parser "), "/review the parser");
+        assert_eq!(super::command_prompt("$imagegen", "a cat"), "$imagegen a cat");
+        assert_eq!(super::command_label("$imagegen"), "$imagegen");
+        assert_eq!(super::command_label("status"), "/status");
+    }
+
     use cookie_agent_protocol::{AgentDescriptor, AgentId, AgentMode, AgentRuntime, RuntimeId};
 
     use super::*;

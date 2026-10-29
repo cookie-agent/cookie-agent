@@ -495,7 +495,10 @@ not in it.
   TUI's command palette (`/` on an empty composer, or ctrl+p) lists them
   after cookie's own, marked `(agent)`; a command that takes input asks for
   it. In the web client, typing `/` in the composer lists them above it.
-  Choosing one sends `/<name> <input>` to the agent.
+  Choosing one sends `/<name> <input>` to the agent. The agent's skills,
+  which Codex announces as commands named `$<skill>`, are listed only for
+  a search that starts with `$` (`$review` in the TUI's palette), and
+  choosing one sends the mention `$<skill> <input>`, as Codex takes it.
 - **Model and effort.** The agent's model option (category `model`) and
   its reasoning effort (category `thought_level`), when it offers them,
   read as the session's model and variant: `claude • Opus[High]` in the
