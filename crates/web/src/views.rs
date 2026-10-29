@@ -14,7 +14,7 @@ use cookie_agent_client_state::{
 };
 use cookie_agent_protocol::{
     ApprovalUserDecision, InputDelivery, ModelSelection, PermissionEffect, PermissionRuleSource,
-    ProjectDefaults, SessionId, SessionMeta, SessionRenameChange,
+    SessionId, SessionMeta, SessionRenameChange,
 };
 use leptos::{ev, html, prelude::*};
 use wasm_bindgen::{JsCast as _, closure::Closure};
@@ -407,7 +407,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 }
                 sessions
                     .into_iter()
-                    .map(|session| session_row(workspace, session, None, now, actions, drag))
+                    .map(|session| session_row(workspace, session, now, actions, drag))
                     .collect_view()
                     .into_any()
             }}
@@ -528,7 +528,6 @@ impl RowActions {
 fn session_row(
     workspace: Workspace,
     session: SessionMeta,
-    project: Option<ProjectDefaults>,
     now: RwSignal<jiff::Timestamp>,
     actions: RowActions,
     drag: projects::SessionDrag,
@@ -563,15 +562,14 @@ fn session_row(
     // workspace with its path.
     // Fitted to the line: machines whole, the last ones left out for a
     // `+N` when even the workspaces gone to `…` leave too little room.
-    // Under a project's header, what its defaults name shortens.
     let badges = {
         let session = session.clone();
         move |line: NodeRef<html::Span>| {
             let homes = workspace.homes();
             let listed = workspace.lists_attachments.get();
-            let shown = workspace.runtimes.with(|listing| {
-                session_badges(&session, listing.as_ref(), &homes, listed, project.as_ref())
-            });
+            let shown = workspace
+                .runtimes
+                .with(|listing| session_badges(&session, listing.as_ref(), &homes, listed));
             crate::badges::fit_soon(line);
             crate::badges::badge_line(shown)
         }
