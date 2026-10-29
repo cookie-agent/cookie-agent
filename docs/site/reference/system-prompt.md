@@ -321,7 +321,11 @@ provider="builtin.memory">` section (see
 [Tool-provider sections](#tool-provider-sections)) to every run that is
 offered any memory tool, and none to one that is not. It is composed at run
 admission from the run's frozen policy, so it is identical on every run that
-keeps the same access and stays cached. It has two parts.
+keeps the same access and stays cached. On a model that loads
+[deferred tools](tools.md#deferred-tools), the memory tools are deferred and
+the section arrives with their first load instead, unless
+[`[deferred_tools] always_load`](../engine/deferred_tools.md) names `memory`.
+It has two parts.
 
 **Part A**, for every run offered a memory tool, says what is included and
 when to search. A root run reads:

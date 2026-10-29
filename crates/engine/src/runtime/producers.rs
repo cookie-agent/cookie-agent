@@ -911,6 +911,43 @@ impl Engine {
         .await
     }
 
+    /// Starts a goal the agent set itself, with its first checklist when it
+    /// gives one: `goal_set` (stable prefix spec, section 3).
+    pub async fn goal_set(
+        &self,
+        session: SessionId,
+        params: GoalSetParams,
+    ) -> Result<GoalUpdateResult, EngineError> {
+        self.on_actor(session, move |engine| {
+            // Checked before the goal starts, so a bad checklist starts none.
+            if params
+                .items
+                .iter()
+                .any(|item| item.description.trim().is_empty())
+            {
+                return Err(EngineError::Goal(
+                    "items require nonblank descriptions".into(),
+                ));
+            }
+            let set = engine.set_goal_direct(
+                session,
+                params.objective,
+                None,
+                event_origin("engine:goal"),
+            )?;
+            if params.items.is_empty() {
+                return Ok(GoalUpdateResult { goal: set.goal });
+            }
+            engine.update_goal_direct(
+                session,
+                GoalUpdateParams {
+                    items: params.items,
+                },
+            )
+        })
+        .await
+    }
+
     pub(crate) async fn register_producer(
         &self,
         session: SessionId,

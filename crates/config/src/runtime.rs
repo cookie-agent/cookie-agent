@@ -488,6 +488,10 @@ pub struct EngineConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub cron: CronConfig,
+    /// `[deferred_tools]`: the built-in tool groups sent up front instead of
+    /// deferred.
+    #[serde(default)]
+    pub deferred_tools: DeferredToolsConfig,
     #[serde(default)]
     pub notifications: NotificationsConfig,
     /// `[shell_environment]`: how runtimes capture the user's shell
@@ -526,6 +530,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) producers: Option<ProducersConfig>,
     pub(crate) memory: Option<MemoryConfig>,
     pub(crate) cron: Option<CronConfig>,
+    pub(crate) deferred_tools: Option<DeferredToolsConfig>,
     pub(crate) notifications: Option<NotificationsConfig>,
     pub(crate) shell_environment: Option<ShellEnvironmentConfig>,
     pub(crate) acp: Option<AcpConfig>,
@@ -988,6 +993,43 @@ const fn default_producer_max_body_bytes() -> usize {
 /// The ceiling of `[producers] max_body_bytes`: the 4 MiB frame a plugin
 /// message travels in.
 pub const PRODUCER_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// The built-in tool groups the deferral policy defers on a model that loads
+/// deferred tools (`docs/site/specs/stable-prefix.md` section 3).
+pub const DEFERRED_BUILTIN_GROUPS: &[&str] = &["agents", "cron", "goal", "memory", "runtimes"];
+
+/// `[deferred_tools]`: which deferred tools are sent up front instead.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DeferredToolsConfig {
+    /// Built-in groups of [`DEFERRED_BUILTIN_GROUPS`] sent up front.
+    #[serde(default)]
+    pub always_load: Vec<String>,
+}
+impl DeferredToolsConfig {
+    /// Whether the tools of built-in group `group` are sent up front.
+    #[must_use]
+    pub fn always_loads(&self, group: &str) -> bool {
+        self.always_load.iter().any(|name| name == group)
+    }
+
+    fn invalid_reason(&self) -> Option<&'static str> {
+        if self
+            .always_load
+            .iter()
+            .any(|name| !DEFERRED_BUILTIN_GROUPS.contains(&name.as_str()))
+        {
+            return Some(
+                "deferred_tools.always_load names only agents, cron, goal, memory, and runtimes",
+            );
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if !self.always_load.iter().all(|name| seen.insert(name)) {
+            return Some("deferred_tools.always_load names a group twice");
+        }
+        None
+    }
+}
 
 /// `[cron]`: the daemon's cron jobs (`docs/site/specs/cron.md` section 10).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -1528,6 +1570,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.cron {
         runtime.cron = value.clone();
     }
+    if let Some(value) = &layer.deferred_tools {
+        runtime.deferred_tools = value.clone();
+    }
     if let Some(value) = &layer.notifications {
         runtime.notifications = value.clone();
     }
@@ -1663,6 +1708,9 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.cron.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
+    }
+    if let Some(reason) = runtime.deferred_tools.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.notifications.invalid_reason() {

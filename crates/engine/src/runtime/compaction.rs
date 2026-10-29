@@ -257,21 +257,16 @@ impl Engine {
         // compaction sends its run's: the summary request stays a prefix of
         // the conversation's, for its cache and for the reasoning it
         // replays. Delegation targets come from the registry and the goal
-        // tools follow the goal, as at run admission.
+        // tools are offered as at run admission.
         policy.historical_delegation = false;
-        policy.goal_tools_enabled = matches!(
-            projection.meta.origin,
-            cookie_agent_protocol::SessionOrigin::Root
-        )
-            && crate::goal_projection::GoalProducerProjection::from_events(&events)
-                .goal
-                .is_some_and(|goal| {
-                    matches!(
-                        goal.status,
-                        cookie_agent_protocol::GoalStatus::Active
-                            | cookie_agent_protocol::GoalStatus::Paused
-                    )
-                });
+        policy.goal_tools_enabled = crate::goal_projection::goal_tools_offered(
+            matches!(
+                projection.meta.origin,
+                cookie_agent_protocol::SessionOrigin::Root
+            ),
+            policy.acp_agent().is_some(),
+            &events,
+        );
         let binding = active_compaction_binding(&policy, &events, run)?;
         let internal_policy = self.internal_agent_policy(
             InternalAgentKind::ContextCompaction,

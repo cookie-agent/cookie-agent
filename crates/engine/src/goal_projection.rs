@@ -40,6 +40,20 @@ pub(crate) struct ProducerClaimRecord {
     pub message_ids: Vec<ProducerMessageId>,
 }
 
+/// Whether a run is offered the goal tools: every root run, so its agent can
+/// start a goal itself (stable prefix spec, section 3), except an ACP
+/// agent's, which sees them only while the user's goal is active or paused.
+pub(crate) fn goal_tools_offered<E: Borrow<StoredEvent>>(
+    root: bool,
+    acp: bool,
+    events: &[E],
+) -> bool {
+    root && (!acp
+        || GoalProducerProjection::from_events(events)
+            .goal
+            .is_some_and(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Paused)))
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct GoalProducerProjection {
     pub goal: Option<GoalState>,

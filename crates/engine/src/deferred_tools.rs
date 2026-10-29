@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use cookie_agent_config::{DEFERRED_BUILTIN_GROUPS, DeferredToolsConfig};
 use cookie_agent_protocol::{
     AnnouncedToolGroup, EventPayload, RoundToolDefinition, ToolGroupSource,
 };
@@ -30,12 +31,22 @@ pub(crate) fn is_loader(name: &str) -> bool {
 }
 
 /// The deferral policy: whether a composed tool is deferred on a model that
-/// defers. Today it picks MCP and plugin tools (section 4).
-pub(crate) fn policy_defers(source: &SourcedProvider, tool: &str) -> bool {
-    matches!(
-        source.provider.tool_source(tool),
-        Some(ProvidedToolSource::Mcp { .. } | ProvidedToolSource::Plugin { .. })
-    ) && !source.provider.always_load(tool)
+/// defers. It picks MCP and plugin tools (section 4), and the tools of the
+/// built-in groups in [`DEFERRED_BUILTIN_GROUPS`] (stable prefix spec,
+/// section 3), unless `config` sends their group up front.
+pub(crate) fn policy_defers(
+    source: &SourcedProvider,
+    tool: &str,
+    config: &DeferredToolsConfig,
+) -> bool {
+    match source.provider.tool_source(tool) {
+        Some(ProvidedToolSource::Mcp { .. } | ProvidedToolSource::Plugin { .. }) => {
+            !source.provider.always_load(tool)
+        }
+        None => source.provider.tool_group().is_some_and(|group| {
+            DEFERRED_BUILTIN_GROUPS.contains(&group.name) && !config.always_loads(group.name)
+        }),
+    }
 }
 
 /// The group a tool is announced under (section 7.1).

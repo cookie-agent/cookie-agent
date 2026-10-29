@@ -66,6 +66,19 @@ pub struct GoalUpdateParams {
     pub items: Vec<GoalItem>,
 }
 
+/// `goal_set` starts a goal on the agent's own initiative, as the user's
+/// `/goal` does, when the root session has no active or paused goal. It may
+/// set the first checklist in the same call.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalSetParams {
+    /// What the goal achieves, in a sentence or two.
+    pub objective: String,
+    /// The first checklist; leave it out to set it later with goal_update.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<GoalItem>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalUpdateResult {

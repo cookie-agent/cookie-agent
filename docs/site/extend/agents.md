@@ -828,7 +828,7 @@ Tool providers publish a static permission name and an optional resource label:
 | `send_message` | `message` | Recipient's relationship to the sender: `parent`, `child`, `sibling`, or `*` |
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
 | `skill` | `skill` | Skill name |
-| `goal_get`, `goal_update` | none | None: published only while the session has an active or paused goal, and always allowed |
+| `goal_get`, `goal_set`, `goal_update` | none | None: published to root runs (an ACP agent's only while the session has an active or paused goal), and always allowed |
 | `read_artifact` | none | None: always sent and always allowed, because it reads only the session tree's own retained output |
 | `webfetch` | `webfetch` | Initial URL as given, including its query string |
 | `memory_search` | none | None: published with `memory_read`; each result is checked against the `memory` rules instead (see [Memory permissions](#memory-permissions)) |

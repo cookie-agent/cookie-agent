@@ -673,18 +673,11 @@ impl Engine {
                 event.run_id == Some(run_id) && matches!(event.payload, Event::RunStarted { .. })
             })
             .expect("run start was appended");
-        run_policy.goal_tools_enabled = is_root
-            && crate::goal_projection::GoalProducerProjection::from_events(
-                &admission_events[..admission_end],
-            )
-            .goal
-            .is_some_and(|goal| {
-                matches!(
-                    goal.status,
-                    cookie_agent_protocol::GoalStatus::Active
-                        | cookie_agent_protocol::GoalStatus::Paused
-                )
-            });
+        run_policy.goal_tools_enabled = crate::goal_projection::goal_tools_offered(
+            is_root,
+            run_policy.acp_agent().is_some(),
+            &admission_events[..admission_end],
+        );
         let parent = match session.meta.origin {
             SessionOrigin::Delegated {
                 parent_session_id, ..

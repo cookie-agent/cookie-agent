@@ -1203,7 +1203,7 @@ impl Engine {
         let mut composition = self.compose_session_tools(session, |source, tool| {
             let delegation_tool = tool.permission_name.as_deref() == Some("delegate");
             let goal_tool = source.attachment.is_none()
-                && matches!(tool.name.as_str(), "goal_get" | "goal_update");
+                && matches!(tool.name.as_str(), "goal_get" | "goal_set" | "goal_update");
             let memory_tool = source.provider.provider_id() == crate::memory_tools::PROVIDER_ID;
             let memory_write_tool =
                 memory_tool && tool.permission_name.as_deref() == Some("memory_write");
@@ -1278,9 +1278,10 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<PublishedToolSet, EngineError> {
-        let defers = defers_tools(policy, &self.inner.deferred_tools_record);
+        let defers = self.defers_tools(policy);
         let composition = self.compose_for_policy_with(session, policy, defers)?;
         let notes = self.runtime_tool_notes(session);
+        let config = self.inner.config.load();
         let mut output = Vec::with_capacity(composition.tools.len());
         let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
         let mut candidates = Vec::new();
@@ -1308,7 +1309,11 @@ impl Engine {
                         definition,
                         group: crate::deferred_tools::group_of(&source, &spec.name),
                         provider: provider_key(&source),
-                        deferred: crate::deferred_tools::policy_defers(&source, &spec.name),
+                        deferred: crate::deferred_tools::policy_defers(
+                            &source,
+                            &spec.name,
+                            &config.runtime.deferred_tools,
+                        ),
                     });
                 }
             } else {
@@ -1375,11 +1380,12 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<HashSet<crate::deferred_tools::ProviderKey>, EngineError> {
-        if !defers_tools(policy, &self.inner.deferred_tools_record) {
+        if !self.defers_tools(policy) {
             return Ok(HashSet::new());
         }
         let composition = self.compose_for_policy(session, policy)?;
         let fold = self.inner.store.get(session)?.log.deferral();
+        let config = self.inner.config.load();
         let keys = composition
             .tools
             .iter()
@@ -1391,8 +1397,11 @@ impl Engine {
                 .tools
                 .iter()
                 .filter(|tool| {
-                    !crate::deferred_tools::policy_defers(&tool.source, &tool.spec.name)
-                        || fold.folded.contains(&tool.name)
+                    !crate::deferred_tools::policy_defers(
+                        &tool.source,
+                        &tool.spec.name,
+                        &config.runtime.deferred_tools,
+                    ) || fold.folded.contains(&tool.name)
                 })
                 .map(|tool| tool.name.clone())
                 .collect(),
@@ -1417,6 +1426,21 @@ impl Engine {
             .get(&session)
             .cloned()
             .unwrap_or_default()
+    }
+}
+
+impl Engine {
+    /// Whether a run of `policy` defers tools: its model does, and the
+    /// loader tool exists to load them. Without the base layer's loader a
+    /// request would declare tools nothing can load.
+    fn defers_tools(&self, policy: &FrozenRunPolicy) -> bool {
+        defers_tools(policy, &self.inner.deferred_tools_record)
+            && self
+                .inner
+                .runtimes
+                .base_providers()
+                .iter()
+                .any(|provider| provider.provider_id() == crate::base_tools::LOADER_PROVIDER_ID)
     }
 }
 

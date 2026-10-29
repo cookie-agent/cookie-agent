@@ -52,8 +52,8 @@ fn availability(name: &str) -> Option<&'static str> {
         "skill" => "Only when at least one skill is visible to the session.",
         "tool_search" => {
             "Only when the request defers a tool: on a model that loads deferred tools, \
-             when an MCP or plugin tool is offered. It stays until the session's next \
-             compaction."
+             when an MCP or plugin tool, or a tool of a deferred built-in group, is offered. \
+             It stays until the session's next compaction."
         }
         "delegate_subagent" => {
             "Only when the agent can delegate to at least one subagent at this depth. The \
@@ -65,8 +65,9 @@ fn availability(name: &str) -> Option<&'static str> {
         "get_subagent_result" => {
             "Only when the agent can delegate to at least one subagent at this depth."
         }
-        "goal_get" | "goal_update" => {
-            "Only in a root session whose goal is active or paused when the run starts."
+        "goal_get" | "goal_set" | "goal_update" => {
+            "Only in a root session. An ACP agent's root session has them only while the \
+             user's goal is active or paused when the run starts."
         }
         "memory_search" | "memory_read" => {
             "Only when the session has the `global` runtime attached and the agent or the \
@@ -121,7 +122,8 @@ fn render_table(specs: &[ToolSpec]) -> String {
 }
 
 /// The table of built-in tool groups: the name a group's deferred tools are
-/// announced under, its tools, and its summary.
+/// announced under, its tools, whether the deferral policy defers them, and
+/// its summary.
 fn render_groups() -> String {
     let mut groups = builtin_tool_groups(DELEGATE_TARGET_PLACEHOLDER);
     groups.push((
@@ -135,8 +137,8 @@ fn render_groups() -> String {
     ));
     groups.sort_by_key(|(group, _)| group.name);
     let mut table = String::from(
-        "| Group | Tools | Summary sent to the model |
-|---|---|---|
+        "| Group | Tools | Deferred | Summary sent to the model |
+|---|---|---|---|
 ",
     );
     for (group, tools) in groups {
@@ -145,7 +147,17 @@ fn render_groups() -> String {
             .map(|tool| format!("[`{tool}`](#{tool})"))
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(table, "| `{}` | {tools} | {} |", group.name, group.summary).unwrap();
+        let deferred = if cookie_agent_config::DEFERRED_BUILTIN_GROUPS.contains(&group.name) {
+            "yes"
+        } else {
+            "no"
+        };
+        writeln!(
+            table,
+            "| `{}` | {tools} | {deferred} | {} |",
+            group.name, group.summary
+        )
+        .unwrap();
     }
     table
 }

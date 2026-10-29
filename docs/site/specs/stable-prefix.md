@@ -79,9 +79,13 @@ tool_search(query: string, limit?: integer)
   leave the system prompt with its tools, and arrive with the first load
   (section 7.3 of the deferred-tools spec). The memory turn still shows the
   snapshot, and the announcement shows memory's summary.
-- **Goal tools keep their gate:** they are offered only while the root's
-  goal is active or paused. Deferred, they never enter a round's eager
-  tools, so a goal that ends leaves nothing declared until compaction.
+- **Goal tools are offered to every root run** (decided by the user,
+  2026-10-29): a third tool, `goal_set { objective, items? }`, lets the agent
+  start a goal itself, for example when the user asks for one in their own
+  words. Deferred, the three cost a name in an announcement, and a goal that
+  starts or ends changes no tool list. An ACP agent's root session keeps the
+  old rule: the tools only while the user's goal is active or paused. See the
+  [goal mode addendum](goal-mode.md#addendum-2026-10-29-goals-the-agent-sets).
 - **The opt-out** is a new top-level table:
 
   ```toml
@@ -215,3 +219,11 @@ Each phase is gated, committed, and pushed on its own:
 4. Stable names (section 5).
 5. The frozen system prompt and its announcements, with the clients'
    rows (section 6).
+
+## 8. Implementation notes
+
+- **Phase 1** (2026-10-29) as specified.
+- **Phase 2** (2026-10-29): goal tools are offered to every root run, with a
+  third tool, `goal_set`, as the user decided while phase 1 was under way.
+  A model defers tools only when the base layer's loader is registered, so
+  a request never declares tools that nothing can load.

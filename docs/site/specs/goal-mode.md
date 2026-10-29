@@ -609,3 +609,20 @@ and pushed before these implementation stages:
    contain an `id` is pending verification of the core implementation. This
    spec does not promise a particular compatibility decoder or migration;
    session history remains subject to the versionless best-effort contract.
+
+## Addendum (2026-10-29): goals the agent sets
+
+Decided by the user on 2026-10-29, with the
+[stable prompt prefix](stable-prefix.md) (section 3):
+
+- **The agent can start a goal.** A third tool, `goal_set { objective,
+  items? }`, activates a goal as `/goal` does, when the root has no active
+  or paused goal, and sets its first checklist when it gives one. The user
+  may also ask for a goal in their own words. Lifecycle stays the user's:
+  the agent cannot pause, resume, or cancel.
+- **The goal tools are offered to every root run,** not only while a goal
+  is active or paused (this replaces section 1.3's "after activation"). On a
+  model that loads deferred tools they are deferred, so they cost a name in
+  an announcement. An ACP agent's root session keeps the old rule.
+- A goal the agent started is reminded, continued, and completed like the
+  user's. Its first reminder is a `started` one, as for any goal.

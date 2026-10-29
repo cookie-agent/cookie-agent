@@ -117,6 +117,7 @@ pub fn base_layer_tool_specs(delegate_target: &str) -> Vec<ToolSpec> {
     ));
     specs.push(MessageToolProvider::spec());
     specs.push(GoalTools::get_spec());
+    specs.push(GoalTools::set_spec());
     specs.push(GoalTools::update_spec());
     specs.push(ReadArtifactTool::spec());
     specs.push(StopBackgroundTool::spec());
@@ -147,7 +148,11 @@ pub fn builtin_tool_groups(
         (SkillTool::GROUP, names(vec![SkillTool::spec()])),
         (
             GoalTools::GROUP,
-            names(vec![GoalTools::get_spec(), GoalTools::update_spec()]),
+            names(vec![
+                GoalTools::get_spec(),
+                GoalTools::set_spec(),
+                GoalTools::update_spec(),
+            ]),
         ),
         (
             ReadArtifactTool::GROUP,
@@ -199,6 +204,7 @@ mod tests {
             Some("skill")
         );
         assert_eq!(GoalTools::get_permission_name("goal_get").unwrap(), None);
+        assert_eq!(GoalTools::get_permission_name("goal_set").unwrap(), None);
         assert_eq!(GoalTools::get_permission_name("goal_update").unwrap(), None);
         for name in ["delegate_subagent", "get_subagent_result"] {
             assert_eq!(

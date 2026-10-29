@@ -39,6 +39,7 @@ block under the system prompt in the TUI transcript.
 | [`get_subagent_result`](#get_subagent_result) | `delegate` |
 | [`send_message`](#send_message) | `message` |
 | [`goal_get`](#goal_get) | *none* |
+| [`goal_set`](#goal_set) | *none* |
 | [`goal_update`](#goal_update) | *none* |
 | [`read_artifact`](#read_artifact) | *none* |
 | [`stop_background`](#stop_background) | *none* |
@@ -995,7 +996,9 @@ reads.
 
 On a model that loads deferred tools natively, or one deferral is attempted
 on (see [providers](../extend/providers.md#provider-fields) for which models
-are), MCP and plugin tools are sent deferred: the model sees their names in
+are), MCP and plugin tools, and the built-in groups marked deferred below,
+are sent deferred ([`[deferred_tools]`](../engine/deferred_tools.md) sends a
+group up front): the model sees their names in
 announcements, not their definitions, until it loads them with
 `tool_search`: `select:<name>` loads tools by exact name, and keywords load
 the best matches. A loaded tool stays callable. The
@@ -1013,19 +1016,19 @@ tools instead of in the system prompt.
 
 <!-- generated: tool-groups -->
 
-| Group | Tools | Summary sent to the model |
-|---|---|---|
-| `agents` | [`list_agents`](#list_agents) | The agents this session can delegate to or schedule, and what each is for. |
-| `artifacts` | [`read_artifact`](#read_artifact) | Tool output too large for the conversation, kept aside and read back by range. |
-| `background` | [`stop_background`](#stop_background) | Calls running in the background, and stopping them. |
-| `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash), [`webfetch`](#webfetch) | The workspace: reading, writing, and editing files, running shell commands, and fetching web pages. |
-| `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
-| `delegation` | [`delegate_subagent`](#delegate_subagent), [`get_subagent_result`](#get_subagent_result) | Subagents: hand a focused task to another agent, and collect its result. |
-| `goal` | [`goal_get`](#goal_get), [`goal_update`](#goal_update) | The session's goal and the checklist that tracks it. |
-| `memory` | [`memory_search`](#memory_search), [`memory_read`](#memory_read), [`memory_write`](#memory_write), [`memory_edit`](#memory_edit), [`memory_delete`](#memory_delete) | Durable notes across sessions: what the user prefers, project decisions, and facts about machines. |
-| `messaging` | [`send_message`](#send_message) | Messages between the agents of a session tree. |
-| `runtimes` | [`list_runtimes`](#list_runtimes) | The runtimes this session can work through: the machines and capabilities a subagent can be started on. |
-| `skills` | [`skill`](#skill) | Skills: packaged instructions for a kind of task, loaded by name. |
+| Group | Tools | Deferred | Summary sent to the model |
+|---|---|---|---|
+| `agents` | [`list_agents`](#list_agents) | yes | The agents this session can delegate to or schedule, and what each is for. |
+| `artifacts` | [`read_artifact`](#read_artifact) | no | Tool output too large for the conversation, kept aside and read back by range. |
+| `background` | [`stop_background`](#stop_background) | no | Calls running in the background, and stopping them. |
+| `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash), [`webfetch`](#webfetch) | no | The workspace: reading, writing, and editing files, running shell commands, and fetching web pages. |
+| `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | yes | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
+| `delegation` | [`delegate_subagent`](#delegate_subagent), [`get_subagent_result`](#get_subagent_result) | no | Subagents: hand a focused task to another agent, and collect its result. |
+| `goal` | [`goal_get`](#goal_get), [`goal_set`](#goal_set), [`goal_update`](#goal_update) | yes | The session's goal and the checklist that tracks it. |
+| `memory` | [`memory_search`](#memory_search), [`memory_read`](#memory_read), [`memory_write`](#memory_write), [`memory_edit`](#memory_edit), [`memory_delete`](#memory_delete) | yes | Durable notes across sessions: what the user prefers, project decisions, and facts about machines. |
+| `messaging` | [`send_message`](#send_message) | no | Messages between the agents of a session tree. |
+| `runtimes` | [`list_runtimes`](#list_runtimes) | yes | The runtimes this session can work through: the machines and capabilities a subagent can be started on. |
+| `skills` | [`skill`](#skill) | no | Skills: packaged instructions for a kind of task, loaded by name. |
 
 <!-- /generated -->
 
@@ -1043,7 +1046,7 @@ Description sent to the model:
 Load deferred tools so you can call them. Use "select:<name>,<name>" to load tools by the exact names a <tools_added> announcement lists, or keywords to find and load the best matches by name, group, description, and parameters. Loaded tools stay callable.
 ```
 
-Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool is offered. It stays until the session's next compaction.
+Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool, or a tool of a deferred built-in group, is offered. It stays until the session's next compaction.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1114,10 +1117,10 @@ goal_get()
 Description sent to the model:
 
 ```text
-Read the root session's objective, lifecycle status, revision, and full checklist. The root checklist is authoritative; verify work directly or through subagents before treating an item as finished.
+Read the root session's objective, lifecycle status, revision, and full checklist, or that no goal is set. The root checklist is authoritative; verify work directly or through subagents before treating an item as finished.
 ```
 
-Only in a root session whose goal is active or paused when the run starts.
+Only in a root session. An ACP agent's root session has them only while the user's goal is active or paused when the run starts.
 
 ??? note "Parameters JSON Schema"
 
@@ -1126,6 +1129,75 @@ Only in a root session whose goal is active or paused when the run starts.
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "title": "GoalGetParams",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `goal_set`
+
+<!-- generated: tool goal_set -->
+
+```text
+goal_set(items?: object[], objective: string)
+```
+
+Description sent to the model:
+
+```text
+Start a goal for this session when the user asks you to set one, or a task needs several runs to finish: the objective, and optionally its first checklist. While the goal is active, you are reminded to continue whenever you stop with unfinished items; a nonempty all-finished checklist completes it. Fails if a goal is already active or paused; only the user can pause or cancel a goal.
+```
+
+Only in a root session. An ACP agent's root session has them only while the user's goal is active or paused when the run starts.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `items` | `object[]` | no | The first checklist; leave it out to set it later with goal_update. |
+| `objective` | `string` | yes | What the goal achieves, in a sentence or two. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$defs": {
+        "GoalItem": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "finished": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "description",
+            "finished"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`goal_set` starts a goal on the agent's own initiative, as the user's\n`/goal` does, when the root session has no active or paused goal. It may\nset the first checklist in the same call.",
+      "properties": {
+        "items": {
+          "description": "The first checklist; leave it out to set it later with goal_update.",
+          "items": {
+            "$ref": "#/$defs/GoalItem"
+          },
+          "type": "array"
+        },
+        "objective": {
+          "description": "What the goal achieves, in a sentence or two.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "objective"
+      ],
+      "title": "GoalSetParams",
       "type": "object"
     }
     ```
@@ -1146,7 +1218,7 @@ Description sent to the model:
 Replace the current root goal's full checklist. The current active or paused goal is selected when this update executes, even if the goal changed since this run started. The last accepted replacement wins. This cannot change the objective or issue lifecycle commands; a nonempty all-finished checklist completes the goal. Verify evidence directly or through subagents before marking items finished; the root checklist is authoritative over subagent self-reports.
 ```
 
-Only in a root session whose goal is active or paused when the run starts.
+Only in a root session. An ACP agent's root session has them only while the user's goal is active or paused when the run starts.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

@@ -1,7 +1,7 @@
 use crate::Engine;
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    ApprovalResourceSource, GoalGetParams, GoalUpdateParams, PermissionAction,
+    ApprovalResourceSource, GoalGetParams, GoalSetParams, GoalUpdateParams, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime, PreparedOperationIdentity,
     SessionId,
 };
@@ -23,6 +23,11 @@ enum GoalExecutor {
     Get {
         engine: Engine,
         session: SessionId,
+    },
+    Set {
+        engine: Engine,
+        session: SessionId,
+        params: GoalSetParams,
     },
     Update {
         engine: Engine,
@@ -47,8 +52,23 @@ output: Default::default(),
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "goal_get".into(),
             permission_name: None,
-            description: "Read the root session's objective, lifecycle status, revision, and full checklist. The root checklist is authoritative; verify work directly or through subagents before treating an item as finished.".into(),
+            description: "Read the root session's objective, lifecycle status, revision, and full checklist, or that no goal is set. The root checklist is authoritative; verify work directly or through subagents before treating an item as finished.".into(),
             parameters: schema::<GoalGetParams>(),
+        }
+    }
+
+    pub(crate) fn set_spec() -> ToolSpec {
+        ToolSpec {
+            background: false,
+            background_default: false,
+            collision: Default::default(),
+            output: Default::default(),
+            concurrency: Default::default(),
+            result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
+            name: "goal_set".into(),
+            permission_name: None,
+            description: "Start a goal for this session when the user asks you to set one, or a task needs several runs to finish: the objective, and optionally its first checklist. While the goal is active, you are reminded to continue whenever you stop with unfinished items; a nonempty all-finished checklist completes it. Fails if a goal is already active or paused; only the user can pause or cancel a goal.".into(),
+            parameters: strict_schema::<GoalSetParams>(),
         }
     }
 
@@ -108,15 +128,18 @@ impl ToolProvider for GoalTools {
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        Ok(vec![Self::get_spec(), Self::update_spec()])
+        Ok(vec![
+            Self::get_spec(),
+            Self::set_spec(),
+            Self::update_spec(),
+        ])
     }
 
-    /// Goal tools declare no permission: they are published only to a root
-    /// run whose session has an active or paused goal, which the user set,
-    /// and they act on that goal alone.
+    /// Goal tools declare no permission: they are published only to root
+    /// runs, and act on that session's goal alone.
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "goal_get" | "goal_update" => Ok(None),
+            "goal_get" | "goal_set" | "goal_update" => Ok(None),
             _ => Err(ToolError::execution("goal provider received another tool")),
         }
     }
@@ -129,6 +152,10 @@ impl ToolProvider for GoalTools {
         match name {
             "goal_get" => {
                 let _: GoalGetParams = parse_args(name, arguments.clone())?;
+                Ok((None, Some("goal:current".into())))
+            }
+            "goal_set" => {
+                let _: GoalSetParams = parse_args_strict(name, arguments.clone())?;
                 Ok((None, Some("goal:current".into())))
             }
             "goal_update" => {
@@ -148,6 +175,10 @@ impl ToolProvider for GoalTools {
             "goal_get" => {
                 let _: GoalGetParams = parse_args(name, arguments.clone())?;
                 Ok("current goal".into())
+            }
+            "goal_set" => {
+                let params: GoalSetParams = parse_args_strict(name, arguments.clone())?;
+                Ok(params.objective)
             }
             "goal_update" => {
                 let _: GoalUpdateParams = parse_args_strict(name, arguments.clone())?;
@@ -192,6 +223,37 @@ impl ToolProvider for GoalTools {
                     GoalExecutor::Get {
                         engine: self.engine.clone(),
                         session: ctx.session,
+                    },
+                )
+            }
+            "goal_set" => {
+                let params: GoalSetParams = parse_args_strict(&call.name, call.arguments)?;
+                let label = "goal:current".to_owned();
+                let normalized = serde_json::to_value(&params).map_err(tool_error)?;
+                let binding = serde_json::to_vec(&(ctx.session, &params)).map_err(tool_error)?;
+                let resource = prepared_resource(
+                    PermissionAction::WRITE,
+                    "goal",
+                    b"goal:current",
+                    &binding,
+                    PreparedBindingLifetime::RestartStable,
+                    ApprovalResourceSource::PrimaryOperation,
+                )?;
+                let operation = prepared_operation(
+                    "goal_set",
+                    &params,
+                    vec![(PermissionAction::WRITE, "set")],
+                    vec![resource],
+                    ctx.session.to_string().as_bytes(),
+                )?;
+                (
+                    normalized,
+                    operation,
+                    label,
+                    GoalExecutor::Set {
+                        engine: self.engine.clone(),
+                        session: ctx.session,
+                        params,
                     },
                 )
             }
@@ -241,6 +303,21 @@ impl PreparedExecutor for GoalExecutor {
                         result.goal,
                     )
                 }
+                Self::Set {
+                    engine,
+                    session,
+                    params,
+                } => {
+                    if context.session != session {
+                        return Err(ToolError::operation_changed("session changed"));
+                    }
+                    let result = engine.goal_set(session, params).await.map_err(tool_error)?;
+                    (
+                        "Started goal",
+                        serde_json::to_value(&result).map_err(tool_error)?,
+                        Some(result.goal),
+                    )
+                }
                 Self::Update {
                     engine,
                     session,
@@ -275,6 +352,26 @@ fn goal_presentation(call: &ToolCall) -> cookie_agent_protocol::PreparedPresenta
     match call.name.as_str() {
         "goal_get" if parse_args::<GoalGetParams>(&call.name, call.arguments.clone()).is_ok() => {
             base_presentation("Read goal", hint, "current goal", Vec::new())
+        }
+        "goal_set" => {
+            match parse_args_strict::<GoalSetParams>(&call.name, call.arguments.clone()) {
+                Ok(params) => base_presentation(
+                    "Start goal",
+                    hint,
+                    &params.objective,
+                    params
+                        .items
+                        .into_iter()
+                        .map(|item| {
+                            (
+                                if item.finished { "done" } else { "to do" },
+                                item.description,
+                            )
+                        })
+                        .collect(),
+                ),
+                Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
+            }
         }
         "goal_update" => {
             match parse_args_strict::<GoalUpdateParams>(&call.name, call.arguments.clone()) {

@@ -52,6 +52,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `producers` | [External Producers](producers.md) |
 | `memory` | [Memory](memory.md) |
 | `cron` | [Cron Jobs](cron.md) |
+| `deferred_tools` | [Deferred Tools](deferred_tools.md): built-in tool groups sent up front instead of deferred |
 | `notifications` | [Push Notifications](notifications.md) |
 | `shell_environment` | [Shell Environment](shell_environment.md): the environment runtimes start processes in |
 | `acp` | [ACP Agents](acp.md) |

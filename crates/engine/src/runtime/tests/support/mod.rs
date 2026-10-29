@@ -575,6 +575,7 @@ pub(crate) fn empty_configuration() -> LoadedConfiguration {
             default_model: None,
             small_model: None,
             cron: Default::default(),
+            deferred_tools: Default::default(),
             notifications: Default::default(),
             acp: Default::default(),
             skills: Default::default(),

@@ -2404,7 +2404,7 @@ async fn accepted_pause_control_survives_cancelled_run_and_wakes_without_registr
 }
 
 #[tokio::test]
-async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_changes() {
+async fn goal_tools_are_offered_to_every_root_run_across_lifecycle_changes() {
     let (endpoint, responses, captured) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
@@ -2622,8 +2622,8 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
     let requests = captured.await.expect("goal tool visibility requests");
     assert_eq!(requests.len(), 5);
     assert!(requests[2].contains("was paused by the user"));
-    assert!(request_tool_names(&requests[0]).is_empty());
-    for request in &requests[1..] {
+    // Before the goal, with it, and after it ends: the agent can start one.
+    for request in &requests {
         assert_eq!(request_tool_names(request), ["goal_get", "goal_update"]);
         let parameters = request_tool_parameters(request, "goal_update");
         assert_eq!(parameters["required"], serde_json::json!(["items"]));
@@ -3233,5 +3233,69 @@ async fn producer_projection_follows_appends_and_reverts() {
     let refolded = engine.goal_producer_projection(session_id).expect("fold");
     assert_eq!(goal_of(&refolded), Some(third));
     assert_eq!(*refolded, whole_log());
+    fixture.engine.shutdown().await;
+}
+
+/// `goal_set` starts a goal on the agent's own initiative, with its first
+/// checklist, and only when no goal is active or paused; a bad checklist
+/// starts none.
+#[tokio::test]
+async fn the_agent_starts_a_goal_with_its_first_checklist() {
+    let (fixture, selection) = custom_fixture();
+    let session_id = fixture
+        .engine
+        .create_session(selection)
+        .expect("goal session")
+        .session_id;
+    let item = |description: &str, finished: bool| GoalItem {
+        description: description.into(),
+        finished,
+    };
+    assert!(
+        fixture
+            .engine
+            .goal_set(
+                session_id,
+                cookie_agent_protocol::GoalSetParams {
+                    objective: "Ship it".into(),
+                    items: vec![item(" ", false)],
+                },
+            )
+            .await
+            .expect_err("blank item")
+            .to_string()
+            .contains("nonblank descriptions")
+    );
+    assert_eq!(producer_projection(&fixture.engine, session_id).goal, None);
+    let goal = fixture
+        .engine
+        .goal_set(
+            session_id,
+            cookie_agent_protocol::GoalSetParams {
+                objective: "Ship it".into(),
+                items: vec![item("Build", true), item("Release", false)],
+            },
+        )
+        .await
+        .expect("agent goal")
+        .goal;
+    assert_eq!(goal.objective, "Ship it");
+    assert_eq!(goal.status, GoalStatus::Active);
+    assert_eq!(goal.items, [item("Build", true), item("Release", false)]);
+    assert!(
+        fixture
+            .engine
+            .goal_set(
+                session_id,
+                cookie_agent_protocol::GoalSetParams {
+                    objective: "Another".into(),
+                    items: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("a goal is active")
+            .to_string()
+            .contains("cancel or complete the current goal")
+    );
     fixture.engine.shutdown().await;
 }

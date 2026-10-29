@@ -1061,7 +1061,7 @@ references and a display independent of their output.
 | Goal read | `SessionGoalGetParams/Result`, `get_session_goal` | Engine; TUI/clients call async API |
 | Activation | `SessionGoalSetParams/Result`, `set_session_goal` | User-only root command, rejects active/paused goal |
 | Lifecycle | `SessionGoalLifecycleParams/Result`, `change_session_goal_lifecycle`, `GoalLifecycleAction` | User-only root pause/resume/cancel; reject stale/terminal goal |
-| Model tools | `GoalGetParams/Result`, `GoalUpdateParams/Result` | Root-only `goal_get`/`goal_update`, frozen at run admission |
+| Model tools | `GoalGetParams/Result`, `GoalSetParams`, `GoalUpdateParams/Result` | Root-only `goal_get`/`goal_set`/`goal_update`, frozen at run admission |
 | Runtime inspection | `SessionProducersParams/Result`, `session_producers`, `ProducerRegistration`, `ProducerSourceState` | Session runtime snapshot, not global catalog snapshot or persistence |
 | Producer messaging | `Producer{Register,Send,Discard,Unregister}Params/Result` | `producer/*` requests of plugins and runtimes; SDK mirrors register/send/discard/unregister |
 | Recovery handshake | `RecoveryStartParams`, `RecoveryCompleteParams/Result`, `RecoveryOutcome` | `producer/recovery/start` daemon notification (no deadline/response); completion request |
@@ -1085,11 +1085,12 @@ activated active or paused goal; updates reject if the current goal is absent or
 terminal. Internal `GoalId` and engine-owned `GoalState.revision` remain for durable
 state and reminder identity. User lifecycle RPC controls retain
 `SessionGoalLifecycleParams.goal_id` and `expected_revision` and reject stale
-identities and revisions; no
-model tool can set an objective or issue lifecycle commands. Empty lists preserve
+identities and revisions. `GoalSetParams { objective, items? }` lets the model
+start a goal when none is active or paused, as `session.goal.set` does; no
+model tool can change an objective or issue lifecycle commands. Empty lists preserve
 the active/paused lifecycle and can bootstrap an active goal without completion.
-`goal_get` and `goal_update` declare no permission: they are published only to
-a root run whose session has an active or paused goal, and every call is
+The goal tools declare no permission: they are published to every root run
+(an ACP agent's only while the goal is active or paused), and every call is
 allowed. There is no permission action or goal configuration for them.
 
 To preserve strictly increasing event revisions, an all-finished update appends

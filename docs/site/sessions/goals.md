@@ -1,8 +1,9 @@
 # Goal Mode
 
 Goal mode lets you give a root session a durable objective and a checklist the
-agent maintains while it works. It is activated explicitly: the engine never
-infers a goal from prompt content, and only root sessions can have one.
+agent maintains while it works. You set one with `/goal`, or the agent sets
+one with `goal_set`, for example when you ask it in your own words to set a
+goal. Only root sessions can have one.
 
 The [goal mode design spec](../specs/goal-mode.md) describes the runtime,
 plugin, and persistence contracts behind this workflow.
@@ -28,25 +29,30 @@ the bar is hidden when no goal exists. The producer queue strip is separate and
 appears above the goal bar and composer.
 
 Setting a new objective errors if a goal is already active or paused; cancel or
-complete the current goal first.
+complete the current goal first. The same holds for the agent's `goal_set`.
 
 A goal moves through four lifecycle states: `active`, `paused`, `completed`,
-and `cancelled`. Completed and cancelled are terminal. Only you control the
-lifecycle: the agent can read and revise the checklist through its tools, but
-it cannot activate, pause, resume, or cancel a goal.
+and `cancelled`. Completed and cancelled are terminal. The agent can start a
+goal when none is active or paused, and read and revise its checklist, but
+only you can pause, resume, or cancel one.
 
 ## Checklist and tools
 
-While a goal is active or paused, the root run gains two extra tools, `goal_get` and
+Every root run has three goal tools: `goal_get`, `goal_set`, and
 `goal_update`. They are **root-only**: delegated child sessions never see them,
 and there is no goal inheritance into subagents. They are also not a
-configurable capability; they cannot be granted to anything else. The tools
-appear or disappear at the next run start after a lifecycle change, never
-mid-run.
+configurable capability; they cannot be granted to anything else. On a model
+that loads [deferred tools](../reference/tools.md#deferred-tools) they are
+deferred: the model sees their names and loads them when it needs them. An
+[ACP agent's](../extend/acp-agents.md) root session has them only while your
+goal is active or paused when the run starts.
 
-`goal_get` and `goal_update` declare no permission. Setting the goal is what
-makes them available, and they act on that goal alone, so permission rules do
-not govern them and every call is allowed.
+`goal_set { objective, items? }` starts a goal, with its first checklist when
+it gives one, as `/goal` does. A goal the agent started is continued and
+completed like yours.
+
+The goal tools declare no permission. They act on the session's own goal
+alone, so permission rules do not govern them and every call is allowed.
 
 Each checklist item contains only a description and a finished flag, with no
 item ID. `goal_update { items }` replaces the entire ordered checklist of the

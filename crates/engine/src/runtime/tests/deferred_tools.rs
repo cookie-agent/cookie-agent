@@ -128,6 +128,8 @@ fn always_load_fixture(
         None,
     );
     fixture.engine.register_base_layer().expect("base layer");
+    // The built-in groups go up front, so only the MCP tool is deferred.
+    always_load_groups(&fixture, true);
     let executed = Arc::new(TestFlag::default());
     let present = Arc::new(AtomicBool::new(true));
     fixture.engine.register_tool_provider(
@@ -141,6 +143,20 @@ fn always_load_fixture(
         )),
     );
     (fixture, selection, executed, present)
+}
+
+/// Sends every deferred built-in group up front, or none.
+fn always_load_groups(fixture: &Fixture, all: bool) {
+    let mut config = (**fixture.engine.inner.config.load()).clone();
+    config.runtime.deferred_tools.always_load = if all {
+        cookie_agent_config::DEFERRED_BUILTIN_GROUPS
+            .iter()
+            .map(|group| (*group).to_owned())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    fixture.engine.inner.config.store(Arc::new(config));
 }
 
 async fn run(
@@ -474,6 +490,7 @@ async fn a_refused_deferral_is_retried_up_front_and_remembered() {
         None,
     );
     fixture.engine.register_base_layer().expect("base layer");
+    always_load_groups(&fixture, true);
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Local,
         Arc::new(McpWrite(
@@ -553,4 +570,56 @@ async fn an_always_loaded_mcp_tool_is_sent_up_front() {
     let messages = serde_json::to_string(&request["messages"]).expect("messages");
     assert!(!messages.contains("[cookie: deferred tools]"), "{messages}");
     fixture.engine.shutdown().await;
+}
+
+/// The goal tools, a built-in group the policy defers, are announced under
+/// their group rather than sent; `[deferred_tools] always_load` sends them
+/// up front (stable prefix spec, section 3).
+#[tokio::test]
+async fn a_deferred_built_in_group_is_announced_unless_always_loaded() {
+    for always_load in [false, true] {
+        let (endpoint, responses, captured) = scripted_channel_server(1).await;
+        responses
+            .send(MatchedScriptedResponse::last_message_role(
+                "user",
+                scripted_text_body("done"),
+            ))
+            .expect("scripted reply");
+        let (fixture, selection, _, _) = deferral_fixture(&endpoint);
+        always_load_groups(&fixture, always_load);
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("deferral session");
+        run(
+            &fixture,
+            session.session_id,
+            &selection,
+            "groups-1",
+            "hello",
+        )
+        .await;
+        let requests = with_watchdog("captured group requests", captured)
+            .await
+            .expect("captured requests");
+        let request = body(&requests[0]);
+        let names = tool_names(&request);
+        let announcement = request["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter_map(|message| message["content"].as_str())
+            .find(|content| content.starts_with("[cookie: deferred tools]"))
+            .expect("announcement turn")
+            .to_owned();
+        let goal_group = "<group name=\"goal\" source=\"builtin\">\n<summary>\nThe session's goal and the checklist that tracks it.\n</summary>\ngoal_get\ngoal_set\ngoal_update\n</group>";
+        if always_load {
+            assert!(names.contains(&"goal_set".to_owned()), "{names:?}");
+            assert!(!announcement.contains("name=\"goal\""), "{announcement}");
+        } else {
+            assert!(!names.contains(&"goal_set".to_owned()), "{names:?}");
+            assert!(announcement.contains(goal_group), "{announcement}");
+        }
+        fixture.engine.shutdown().await;
+    }
 }

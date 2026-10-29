@@ -125,6 +125,7 @@ nav:
       - 'Subagent Output [subagent_output]': engine/subagent_output.md
       - 'AGENTS.md Context [agent_md]': engine/agent_md.md
       - 'Loop Warning [loop_warning]': engine/loop_warning.md
+      - 'Deferred Tools [deferred_tools]': engine/deferred_tools.md
       - 'Approval [approval]': engine/approval.md
       - 'Model Retry [model_retry]': engine/model_retry.md
       - 'Context Compaction [context_compaction]': engine/context_compaction.md
