@@ -1328,7 +1328,12 @@ fn runtime_row(
                         Some((workspace, manage.mcp)),
                     )
                 })}
-                {runtime_acp_agent_list(workspace, manage, card.id.clone(), card.agents.clone())}
+                // `global` hosts no ACP agents: its declarations are those
+                // every runtime offers, which the card above the machines
+                // lists.
+                {(card.id.as_str() != RuntimeId::GLOBAL).then(|| {
+                    runtime_acp_agent_list(workspace, manage, card.id.clone(), card.agents.clone())
+                })}
                 {runtime_manage_buttons(manage, card.id.clone())}
                 {message.map(|message| view! { <span class="text-xs break-words text-red-800 dark:text-red-300">{message}</span> })}
             </div>

@@ -5676,6 +5676,8 @@ def runtime_mcp(browser):
     here = machine_runtime + ' [data-acp-agent="everywhere"]'
     browser.wait("the shared agent listed", lambda: count(browser, top) == 1, timeout=40)
     browser.wait("offered by the runtime", lambda: count(browser, here + "[data-acp-shared]") == 1, timeout=40)
+    # `global` hosts none: its card does not list it again.
+    assert count(browser, '#page [data-runtime="global"] [data-acp-agent="everywhere"]') == 0
     settle(browser)
     browser.shot("runtime-acp-shared")
     browser.click(here + " [data-acp-turn-off]")
