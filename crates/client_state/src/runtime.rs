@@ -121,7 +121,12 @@ impl RuntimeState {
     }
 
     fn install(&mut self, snapshot: ModelCatalogView) {
-        let empty = snapshot.models.is_empty();
+        // An ACP agent needs no model of cookie's: one that a session can
+        // start with is enough to go on.
+        let empty = snapshot.models.is_empty()
+            && !snapshot.agents.iter().any(|agent| {
+                crate::acp::is_acp(agent) && agent.enabled && agent.runnable_as_root
+            });
         let (phase, explanation) = if empty {
             (
                 RuntimePhase::Empty,
@@ -277,6 +282,36 @@ mod tests {
         state.install_initial(snapshot(false));
         assert_eq!(state.phase(), RuntimePhase::Empty);
         assert_eq!(state.durable_explanation(), None);
+    }
+
+    #[test]
+    fn an_acp_agent_without_models_is_enough_to_go_on() {
+        let mut only_acp = snapshot(false);
+        only_acp.agents = vec![cookie_agent_protocol::AgentDescriptor {
+            id: cookie_agent_protocol::AgentId::new("codex").expect("agent ID"),
+            preset: None,
+            description: "Codex".to_owned(),
+            mode: cookie_agent_protocol::AgentMode::All,
+            enabled: true,
+            runnable_as_root: true,
+            resolved_fallback: vec![cookie_agent_protocol::acp_model_selection(
+                &cookie_agent_protocol::AgentId::new("codex").expect("agent ID"),
+            )],
+            delegation_targets: Vec::new(),
+            runtime: None,
+            runtimes: vec![
+                serde_json::from_value(serde_json::json!({"runtime_id": "local", "agent": "codex", "available": true}))
+                    .expect("runtime"),
+            ],
+            unset_models: Vec::new(),
+        }];
+        let mut state = RuntimeState::default();
+        state.install_initial(only_acp.clone());
+        assert_eq!(state.phase(), RuntimePhase::Ready);
+        only_acp.agents[0].enabled = false;
+        let mut state = RuntimeState::default();
+        state.install_initial(only_acp);
+        assert_eq!(state.phase(), RuntimePhase::Empty);
     }
 
     #[test]

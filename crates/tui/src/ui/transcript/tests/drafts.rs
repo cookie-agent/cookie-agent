@@ -1187,3 +1187,30 @@ async fn a_new_sessions_draft_is_spent_by_the_session_it_creates() {
     app.set_selected_session(existing);
     assert_eq!(app.input.as_str(), "for the existing one");
 }
+
+#[tokio::test]
+async fn a_message_with_no_session_on_screen_starts_one_with_the_draft() {
+    let mut app = test_app().await;
+    assert!(app.selected.is_none() && app.new_session_draft.is_none());
+    let draft = app.draft.clone().expect("the composer's draft");
+    let (client, recorded, incoming) = live_recording_client();
+    app.client = client;
+    let recorded_for_response = recorded.clone();
+    let response = tokio::spawn(async move {
+        let id = wait_for_recorded_request(&recorded_for_response, "session.create", 1).await;
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32000, "message": "stop after capture"}
+            })))
+            .expect("script create response");
+    });
+    type_input(&mut app, "first message").await;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    response.await.expect("create response");
+    let params = last_request_params(&recorded, "session.create");
+    assert_eq!(params["selection"]["agent"], draft.agent.as_str());
+    assert_eq!(params["selection"]["model"]["model"], draft.model.model.as_str());
+}

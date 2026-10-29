@@ -38,6 +38,10 @@ On the machine that runs the agent:
 - `cookie` must be on that machine: the MCP bridge that offers cookie's tools
   to the agent is `cookie runtime mcp-bridge`. A runtime always has it, since
   it is `cookie runtime`.
+- No model provider is needed: a daemon whose only agents are ACP agents
+  runs them, from the TUI, the web client, and `cookie run -a <agent>`.
+  Without a provider's `small_model`, a session the agent does not name
+  stays untitled, and the setup banner can be dismissed with **Not now**.
 
 ## On the daemon's machine
 

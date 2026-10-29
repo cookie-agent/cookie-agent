@@ -408,6 +408,15 @@ impl App {
             // The new session's draft is what this sends.
             self.drop_new_session_draft();
         }
+        // With no session on screen, a message starts a new one with the
+        // agent and model the composer shows, as `/new` and a first
+        // message would.
+        if self.selected.is_none()
+            && let Some(selection) = self.validated_draft_selection()
+            && !self.create_root_session(selection).await
+        {
+            return;
+        }
         let Some(session_id) = self.selected else {
             self.status = "create or select a session first".into();
             return;
