@@ -194,6 +194,7 @@ never stored.
 | `model_attempt_started`, `attempt_abandoned`, `model_fallback` | state | run | A model attempt's lifecycle |
 | `model_request_prepared`, `model_tools_published`, `model_output_started`, `model_replay_evaluated` | audit | run | Request and streaming bookkeeping |
 | `tool_round_started`, `deferred_tools_announced` | audit | run | [Deferred tools](#deferred-tools): a tool round's eager tools, and what the model was told it can load |
+| `prompt_blocks_recorded`, `prompt_blocks_announced` | audit | run | [Prompt blocks](#prompt-blocks): where a run's prompt carries its blocks, and what changed since |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
 | `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, after a [thinking-binding mismatch](../specs/thinking-replay-recovery.md) |
 | `automatic_runs_held`, `automatic_runs_resumed` | state | runless | A [held session](../specs/held-sessions.md): its automatic runs stopped, and the resume that cleared it |
@@ -847,6 +848,23 @@ pending input and preserves the others.
 made with `session.select_model`; it is runless and its origin names the client.
 Later runs that name no selection of their own use it.
 
+
+### Prompt blocks
+
+[Frozen blocks](system-prompt.md#frozen-blocks-on-models-that-defer-tools):
+
+- `prompt_blocks_recorded` comes before a run's first request, unless the
+  run is an ACP agent's or a plugin replaced its prompt. `blocks` lists `key`
+  (`runtimes`, `tool_instructions`, or `skills`), `start`, and `len`, in
+  bytes of the run's `composed_prompt`; `composed_live` says whether the run
+  composed them rather than copying the previous run's.
+- `prompt_blocks_announced` carries `blocks`, each a `key` and its new
+  `text`, or no `text` when the block no longer applies. Model history renders
+  it in place as a user turn; a checkpoint leaves earlier ones out of the
+  messages it keeps, and the next request announces afresh.
+
+Both are audit events: an engine that does not know them composes every
+prompt afresh.
 ### The queued-input lane
 
 The queued-input lane is session-level, so its events are runless.

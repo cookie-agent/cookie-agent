@@ -156,7 +156,7 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":"1.29.0","engine_version":"0.3.0",
+  "protocol_version":"1.30.0","engine_version":"0.3.0",
   "features":["producer_messaging"],"interception_timeout_ms":2000}}
 ```
 
@@ -169,14 +169,14 @@ version, its features, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":"1.29.0","name":"issues","version":"1.2.0","features":[],
+  "protocol_version":"1.30.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":["run_*","tool_call_*"],
     "subscribe_bus":false,"publish_bus":false,
     "intercept":[{"hook":"tool_before_call","on_error":"block"}]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is a semver string, currently `1.29.0`
+The protocol version is a semver string, currently `1.30.0`
 (`PLUGIN_PROTOCOL_VERSION`, which the SDK re-exports). Each end reads the
 other's `protocol_version` from the raw JSON before anything else, and refuses
 an incompatible one with `unsupported_protocol` naming both versions: the

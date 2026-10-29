@@ -490,7 +490,22 @@ impl Engine {
         } else {
             Vec::new()
         };
-        if !acp {
+        // On a model that defers tools, a run reuses the previous run's
+        // prompt blocks, whose changes are announced instead (stable prefix
+        // spec, section 6.2).
+        let reused_blocks = if !acp && self.defers_tools(&run_policy) {
+            self.reusable_prompt_blocks(params.session_id)?
+        } else {
+            None
+        };
+        let prompt_blocks_live = reused_blocks.is_none();
+        if let Some(blocks) = reused_blocks {
+            for (key, block) in blocks {
+                if super::prompt_blocks::prompt_block_fits(&run_policy, &block) {
+                    super::prompt_blocks::append_prompt_block(&mut run_policy, &key, &block);
+                }
+            }
+        } else if !acp {
             self.compose_runtimes_prompt(&mut run_policy, params.session_id);
             self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
             self.compose_skill_listing(
@@ -500,6 +515,7 @@ impl Engine {
             )?;
         }
         let context_id = crate::plugin::plugin_context_id();
+        let mut prompt_replaced = false;
         let mut injected_messages = Vec::new();
         for hooked in self
             .inner
@@ -543,6 +559,9 @@ impl Engine {
                                 "plugin replacement system prompt exceeds the byte limit".into(),
                             );
                         } else {
+                            // The blocks are no longer where they were.
+                            run_policy.prompt_blocks.clear();
+                            prompt_replaced = true;
                             run_policy.agent.composed_prompt = replacement;
                             run_policy.agent.prompt_fingerprint =
                                 Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
@@ -645,6 +664,8 @@ impl Engine {
             }
             return Err(error);
         }
+        // Recorded before the run's first request.
+        run_policy.prompt_blocks_live = (!acp && !prompt_replaced).then_some(prompt_blocks_live);
         #[cfg(test)]
         if admission.is_some()
             && let Some(hook) = {
@@ -1142,6 +1163,40 @@ impl Engine {
                     Some(run_id),
                     event_origin("engine:deferred-tools"),
                     payload,
+                )
+                .await?;
+            }
+            if let Some(composed_live) = active.policy.prompt_blocks_live
+                && self
+                    .inner
+                    .store
+                    .get(active.session)?
+                    .log
+                    .prompt_blocks_awaiting_record()
+            {
+                self.append(
+                    active.session,
+                    Some(run_id),
+                    event_origin("engine:prompt"),
+                    Event::PromptBlocksRecorded {
+                        blocks: active.policy.prompt_blocks.clone(),
+                        composed_live,
+                    },
+                )
+                .await?;
+            }
+            // The system prompt's blocks stay as the round froze them; what
+            // changed since is told in place (stable prefix spec, section
+            // 6.3). A block that cannot be composed now is not announced.
+            if self.defers_tools(policy)
+                && let Ok(Some(announcement)) =
+                    self.prompt_blocks_announcement(active.session, &active.policy)
+            {
+                self.append(
+                    active.session,
+                    Some(run_id),
+                    event_origin("engine:prompt"),
+                    announcement,
                 )
                 .await?;
             }

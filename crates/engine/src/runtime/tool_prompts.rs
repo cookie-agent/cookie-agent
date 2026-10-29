@@ -1,10 +1,8 @@
-use cookie_agent_protocol::{AgentSnapshot, SessionId, Sha256Digest};
+use cookie_agent_protocol::{AgentSnapshot, SessionId};
 
 use crate::{
-    Engine, EngineError, PromptSection, SessionToolContext,
-    policy::FrozenRunPolicy,
-    runtime::helpers::session_depth,
-    runtime::prompt_blocks::{PROMPT_BLOCK_SEPARATOR, push_prompt_block},
+    Engine, EngineError, PromptSection, SessionToolContext, policy::FrozenRunPolicy,
+    runtime::helpers::session_depth, runtime::prompt_blocks::PROMPT_BLOCK_SEPARATOR,
 };
 
 const MAX_SECTION_BODY_BYTES: usize = 8 * 1024;
@@ -33,18 +31,26 @@ impl OfferedTools {
 }
 
 impl Engine {
+    /// The `tool_instructions` prompt block a run of `policy` composes now.
+    pub(crate) fn live_tool_instructions_block(
+        &self,
+        policy: &FrozenRunPolicy,
+        session: SessionId,
+    ) -> Result<Option<String>, EngineError> {
+        // A provider whose tools are all deferred gives its sections with
+        // its first load instead (deferred tools in cookie, section 7.3).
+        let deferred = self.deferred_prompt_providers(session, policy)?;
+        self.tool_prompt_block(policy, session, None, &|id, attachment| {
+            !deferred.contains(&(id.to_owned(), attachment.map(str::to_owned)))
+        })
+    }
+
     pub(crate) fn compose_tool_prompt_sections(
         &self,
         policy: &mut FrozenRunPolicy,
         session: SessionId,
     ) -> Result<(), EngineError> {
-        // A provider whose tools are all deferred gives its sections with
-        // its first load instead (deferred tools in cookie, section 7.3).
-        let deferred = self.deferred_prompt_providers(session, policy)?;
-        let Some(block) = self.tool_prompt_block(policy, session, None, &|id, attachment| {
-            !deferred.contains(&(id.to_owned(), attachment.map(str::to_owned)))
-        })?
-        else {
+        let Some(block) = self.live_tool_instructions_block(policy, session)? else {
             return Ok(());
         };
         let composed_bytes = policy
@@ -62,17 +68,11 @@ impl Engine {
             )));
         }
 
-        push_prompt_block(&mut policy.agent.composed_prompt, &block);
-        policy.agent.prompt_fingerprint =
-            Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
-        let mut document_fingerprint = policy
-            .agent
-            .document_fingerprint
-            .as_str()
-            .as_bytes()
-            .to_vec();
-        document_fingerprint.extend_from_slice(block.as_bytes());
-        policy.agent.document_fingerprint = Sha256Digest::of_bytes(&document_fingerprint);
+        crate::runtime::prompt_blocks::append_prompt_block(
+            policy,
+            crate::runtime::prompt_blocks::TOOL_INSTRUCTIONS_BLOCK,
+            &block,
+        );
         Ok(())
     }
 

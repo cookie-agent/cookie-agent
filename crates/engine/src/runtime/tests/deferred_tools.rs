@@ -623,3 +623,163 @@ async fn a_deferred_built_in_group_is_announced_unless_always_loaded() {
         fixture.engine.shutdown().await;
     }
 }
+
+/// A provider with no tools whose prompt section the test changes.
+struct Section(Arc<std::sync::Mutex<String>>);
+
+#[async_trait]
+impl ToolProvider for Section {
+    fn provider_id(&self) -> &'static str {
+        "test.section"
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(Vec::new())
+    }
+
+    fn prompt_sections(
+        &self,
+        _ctx: &SessionToolContext,
+    ) -> Result<Vec<cookie_agent_runtime_api::PromptSection>, ToolError> {
+        Ok(vec![cookie_agent_runtime_api::PromptSection {
+            title: "Section".into(),
+            body: self.0.lock().unwrap().clone(),
+        }])
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Err(ToolError::execution("the section provider has no tools"))
+    }
+
+    fn get_permission_resource(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Err(ToolError::execution("the section provider has no tools"))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Err(ToolError::execution("the section provider has no tools"))
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        _call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        Err(ToolError::execution("the section provider has no tools"))
+    }
+}
+
+fn system_text(request: &serde_json::Value) -> String {
+    request["messages"][0]["content"]
+        .as_str()
+        .expect("system prompt")
+        .to_owned()
+}
+
+fn instructions_changed(request: &serde_json::Value) -> Option<String> {
+    request["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .find(|content| content.starts_with("[cookie: instructions changed]"))
+        .map(str::to_owned)
+}
+
+/// On a model that defers tools, the system prompt keeps the run's prompt
+/// blocks and a change is announced in place; on one that does not, the
+/// next run's system prompt carries the change (stable prefix spec,
+/// section 6).
+#[tokio::test]
+async fn a_changed_prompt_block_is_announced_on_a_model_that_defers() {
+    for defers in [true, false] {
+        let (endpoint, responses, captured) = scripted_channel_server(2).await;
+        for input in ["one", "two"] {
+            responses
+                .send(MatchedScriptedResponse::last_message_contains(
+                    input,
+                    scripted_text_body("done"),
+                ))
+                .expect("scripted reply");
+        }
+        let capabilities = if defers {
+            NATIVE_CAPABILITIES.to_owned()
+        } else {
+            NATIVE_CAPABILITIES.replace(
+                "deferred_tools = \"native\"",
+                "deferred_tools = \"unsupported\"",
+            )
+        };
+        let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
+            &endpoint,
+            "---\ndescription: Prompt block test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\n---\nWork.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            64_000,
+            None,
+            "openai-compatible",
+            Some(&capabilities),
+            None,
+        );
+        fixture.engine.register_base_layer().expect("base layer");
+        always_load_groups(&fixture, true);
+        let section = Arc::new(std::sync::Mutex::new("Section one.".to_owned()));
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(Section(Arc::clone(&section))),
+        );
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("prompt block session");
+        run(&fixture, session.session_id, &selection, "blocks-1", "one").await;
+        *section.lock().unwrap() = "Section two.".to_owned();
+        run(&fixture, session.session_id, &selection, "blocks-2", "two").await;
+        let requests = with_watchdog("captured prompt block requests", captured)
+            .await
+            .expect("captured requests")
+            .iter()
+            .map(|request| body(request))
+            .collect::<Vec<_>>();
+        assert!(system_text(&requests[0]).contains("Section one."));
+        assert!(instructions_changed(&requests[0]).is_none());
+        if defers {
+            assert_eq!(system_text(&requests[1]), system_text(&requests[0]));
+            let announcement = instructions_changed(&requests[1]).expect("announced");
+            assert!(
+                announcement.contains("<block name=\"tool_instructions\">\n"),
+                "{announcement}"
+            );
+            assert!(announcement.contains("Section two."), "{announcement}");
+        } else {
+            assert!(system_text(&requests[1]).contains("Section two."));
+            assert!(instructions_changed(&requests[1]).is_none());
+        }
+        let recorded = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::PromptBlocksRecorded { composed_live, .. } => Some(*composed_live),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recorded, [true, !defers]);
+        fixture.engine.shutdown().await;
+    }
+}

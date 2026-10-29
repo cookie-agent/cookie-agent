@@ -1447,7 +1447,7 @@ impl Engine {
     /// Whether a run of `policy` defers tools: its model does, and the
     /// loader tool exists to load them. Without the base layer's loader a
     /// request would declare tools nothing can load.
-    fn defers_tools(&self, policy: &FrozenRunPolicy) -> bool {
+    pub(crate) fn defers_tools(&self, policy: &FrozenRunPolicy) -> bool {
         defers_tools(policy, &self.inner.deferred_tools_record)
             && self
                 .inner

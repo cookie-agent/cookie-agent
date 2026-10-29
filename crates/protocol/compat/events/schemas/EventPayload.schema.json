@@ -585,6 +585,26 @@
       ],
       "type": "object"
     },
+    "AnnouncedPromptBlock": {
+      "description": "A prompt block's new text, or `None` when it no longer applies.",
+      "properties": {
+        "key": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
     "AnnouncedToolGroup": {
       "description": "One group of a `deferred_tools_announced` event: the tools of one source\nthat became loadable, or that left (client protocol 1.44.0).",
       "properties": {
@@ -5013,6 +5033,32 @@
         }
       ]
     },
+    "PromptBlockSpan": {
+      "description": "Where one prompt block sits in a run's `composed_prompt`, in bytes.",
+      "properties": {
+        "key": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "len": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "start",
+        "len"
+      ],
+      "type": "object"
+    },
     "ReplayDecision": {
       "properties": {
         "disposition": {
@@ -7802,6 +7848,53 @@
       },
       "required": [
         "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Where a run's system prompt carries its prompt blocks, the parts\ncomposed from the session's state (client protocol 1.54.0, stable\nprefix spec, section 6). `composed_live` says whether the run\ncomposed them now rather than reusing the previous run's.",
+      "properties": {
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/PromptBlockSpan"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "composed_live": {
+          "type": "boolean"
+        },
+        "type": {
+          "const": "prompt_blocks_recorded",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "blocks",
+        "composed_live"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Prompt blocks that changed since the system prompt carried them\n(client protocol 1.54.0). Rendered in place as a user turn of the\nmodel's history.",
+      "properties": {
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/AnnouncedPromptBlock"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "type": {
+          "const": "prompt_blocks_announced",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "blocks"
       ],
       "type": "object"
     },

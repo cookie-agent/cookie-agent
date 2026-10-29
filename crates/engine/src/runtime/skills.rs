@@ -7,11 +7,11 @@ use std::{
 use cookie_agent_config::{SkillContext, SkillDocument, SkillRegistry};
 use cookie_agent_protocol::{
     AttachmentName, EventPayload, PermissionAction, PermissionEffect, PermissionRule, RunId,
-    SessionId, SessionPermissionOverlay, Sha256Digest, SkillDescriptor, SkillsGetResult,
-    SkillsListResult, ToolCallId,
+    SessionId, SessionPermissionOverlay, SkillDescriptor, SkillsGetResult, SkillsListResult,
+    ToolCallId,
 };
 
-use super::{ActiveRun, Engine, EngineError, prompt_blocks::push_prompt_block};
+use super::{ActiveRun, Engine, EngineError};
 use crate::{ToolCall, TurnAgentContext};
 use crate::{permissions, policy::FrozenRunPolicy};
 pub const RESERVED_STAGED_SKILL_PREFIX: &str = "\0cookie-staged-skill:";
@@ -885,34 +885,37 @@ impl Engine {
             .map_err(|error| EngineError::Config(Box::new(error)))
     }
 
-    pub(crate) fn compose_skill_listing(
+    /// The `skills` prompt block a run of `policy` composes now, sized for
+    /// its model's context.
+    pub(crate) fn live_skills_block(
         &self,
         session: SessionId,
-        policy: &mut FrozenRunPolicy,
+        policy: &FrozenRunPolicy,
         prospective_grants: Option<&SessionPermissionOverlay>,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<String>, EngineError> {
         let context_tokens = policy.selected_suffix[0]
             .descriptor
             .capabilities
             .limits
             .context
             .unwrap_or(8_192);
-        let Some(listing) =
-            self.skill_listing(session, policy, prospective_grants, context_tokens)?
-        else {
+        self.skill_listing(session, policy, prospective_grants, context_tokens)
+    }
+
+    pub(crate) fn compose_skill_listing(
+        &self,
+        session: SessionId,
+        policy: &mut FrozenRunPolicy,
+        prospective_grants: Option<&SessionPermissionOverlay>,
+    ) -> Result<(), EngineError> {
+        let Some(listing) = self.live_skills_block(session, policy, prospective_grants)? else {
             return Ok(());
         };
-        push_prompt_block(&mut policy.agent.composed_prompt, &listing);
-        policy.agent.prompt_fingerprint =
-            Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
-        let mut document_fingerprint = policy
-            .agent
-            .document_fingerprint
-            .as_str()
-            .as_bytes()
-            .to_vec();
-        document_fingerprint.extend_from_slice(listing.as_bytes());
-        policy.agent.document_fingerprint = Sha256Digest::of_bytes(&document_fingerprint);
+        crate::runtime::prompt_blocks::append_prompt_block(
+            policy,
+            crate::runtime::prompt_blocks::SKILLS_BLOCK,
+            &listing,
+        );
         Ok(())
     }
 }

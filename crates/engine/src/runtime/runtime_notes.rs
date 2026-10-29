@@ -14,14 +14,10 @@
 use std::collections::HashMap;
 
 use cookie_agent_protocol::{
-    AgentSnapshot, AttachmentName, MachineName, RuntimeAttachment, SessionId, Sha256Digest,
+    AgentSnapshot, AttachmentName, MachineName, RuntimeAttachment, SessionId,
 };
 
-use crate::{
-    Engine,
-    policy::FrozenRunPolicy,
-    runtime::prompt_blocks::{PROMPT_BLOCK_SEPARATOR, push_prompt_block},
-};
+use crate::{Engine, policy::FrozenRunPolicy};
 
 pub(super) const SEVERAL_ATTACHMENTS: &str = concat!(
     "This session has several attachments. An attachment is a set of tools bound to a ",
@@ -95,30 +91,18 @@ impl Engine {
         let Some(block) = self.runtimes_block(session, None) else {
             return;
         };
-        let fits = policy
-            .agent
-            .composed_prompt
-            .len()
-            .checked_add(block.len() + PROMPT_BLOCK_SEPARATOR.len())
-            .is_some_and(|bytes| bytes <= AgentSnapshot::MAX_PROMPT_BYTES);
-        if !fits {
+        if !crate::runtime::prompt_blocks::prompt_block_fits(policy, &block) {
             eprintln!(
                 "cookie-agent: skipping the runtimes prompt: the composed prompt would exceed {} bytes",
                 AgentSnapshot::MAX_PROMPT_BYTES
             );
             return;
         }
-        push_prompt_block(&mut policy.agent.composed_prompt, &block);
-        policy.agent.prompt_fingerprint =
-            Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
-        let mut document_fingerprint = policy
-            .agent
-            .document_fingerprint
-            .as_str()
-            .as_bytes()
-            .to_vec();
-        document_fingerprint.extend_from_slice(block.as_bytes());
-        policy.agent.document_fingerprint = Sha256Digest::of_bytes(&document_fingerprint);
+        crate::runtime::prompt_blocks::append_prompt_block(
+            policy,
+            crate::runtime::prompt_blocks::RUNTIMES_BLOCK,
+            &block,
+        );
     }
 
     /// The block that tells a run of `session` where its tools work, if

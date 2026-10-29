@@ -463,6 +463,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             let icon = match kind {
                 ModelInputKind::Memory => icondata::FaBrainSolid,
                 ModelInputKind::DeferredTools => icondata::FaToolboxSolid,
+                ModelInputKind::PromptBlocks => icondata::FaPenToSquareSolid,
                 ModelInputKind::InheritedContext => icondata::FaTurnDownSolid,
                 ModelInputKind::AgentContext => icondata::FaScrollSolid,
             };

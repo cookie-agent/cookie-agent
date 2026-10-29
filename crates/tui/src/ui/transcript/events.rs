@@ -749,6 +749,7 @@ pub(super) fn model_input_layout(
     let icon = match kind {
         ModelInputKind::Memory => "🧠",
         ModelInputKind::DeferredTools => "🧰",
+        ModelInputKind::PromptBlocks => "📝",
         ModelInputKind::InheritedContext => "↘",
         ModelInputKind::AgentContext => "📜",
     };

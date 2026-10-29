@@ -1,14 +1,15 @@
 //! What the engine adds to a model's input beyond the conversation, as the
 //! transcript shows it, so nothing reaches the model unseen: the memory
-//! snapshot turn, a deferred tools announcement, the context a subagent
+//! snapshot turn, a deferred tools announcement, a changed instructions
+//! announcement, the context a subagent
 //! inherits from its parent, and the context an ACP agent's first prompt
 //! carries, each a row whose body is the text the model reads; and the
 //! notes a tool row gets for what its result sent beyond the tool's own
 //! output (a loop warning, tool-emitted messages, an elision marker).
 
 use cookie_agent_protocol::{
-    AnnouncedToolGroup, DelegatedContextRole, DelegatedContextTurn, DisplayBlock, Open,
-    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, model_text,
+    AnnouncedPromptBlock, AnnouncedToolGroup, DelegatedContextRole, DelegatedContextTurn,
+    DisplayBlock, Open, ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, model_text,
 };
 
 /// Which added input a [`crate::TranscriptItem::ModelInput`] row is.
@@ -18,6 +19,8 @@ pub enum ModelInputKind {
     Memory,
     /// A deferred tools announcement.
     DeferredTools,
+    /// Instructions that changed since the system prompt carried them.
+    PromptBlocks,
     /// The parent's conversation a subagent starts from.
     InheritedContext,
     /// What an ACP agent's first prompt carries before the input.
@@ -30,6 +33,7 @@ impl ModelInputKind {
         match self {
             Self::Memory => "memory",
             Self::DeferredTools => "deferred-tools",
+            Self::PromptBlocks => "prompt-blocks",
             Self::InheritedContext => "inherited-context",
             Self::AgentContext => "agent-context",
         }
@@ -65,6 +69,22 @@ pub fn deferred_tools(
     (
         format!("deferred tools · {}", changes.join(", ")),
         model_text::deferred_tools_announcement(added, removed),
+    )
+}
+
+/// A changed instructions row's heading and body: the blocks that changed,
+/// then the turn the model reads.
+pub fn prompt_blocks(blocks: &[AnnouncedPromptBlock]) -> (String, String) {
+    let keys = blocks
+        .iter()
+        .map(|block| match block.text {
+            Some(_) => block.key.clone(),
+            None => format!("{} removed", block.key),
+        })
+        .collect::<Vec<_>>();
+    (
+        format!("instructions changed · {}", keys.join(", ")),
+        model_text::prompt_blocks_announcement(blocks),
     )
 }
 

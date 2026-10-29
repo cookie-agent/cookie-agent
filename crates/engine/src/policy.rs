@@ -46,6 +46,13 @@ pub(crate) struct FrozenRunPolicy {
     pub internal_agents: Vec<protocol::FrozenInternalAgentDefinition>,
     pub historical_delegation: bool,
     pub goal_tools_enabled: bool,
+    /// Where the composed prompt carries its prompt blocks (stable prefix
+    /// spec, section 6), recorded as admission composes them.
+    pub prompt_blocks: Vec<protocol::PromptBlockSpan>,
+    /// Whether admission composed the prompt blocks rather than reusing the
+    /// previous run's; `None` when the run records none (an ACP agent's, or
+    /// one whose prompt a plugin replaced).
+    pub prompt_blocks_live: Option<bool>,
     pub selected_suffix: Vec<protocol::FrozenModelBinding>,
     pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
@@ -569,6 +576,8 @@ fn freeze_with_bindings(
         internal_agents: Vec::new(),
         historical_delegation: false,
         goal_tools_enabled: false,
+        prompt_blocks: Vec::new(),
+        prompt_blocks_live: None,
         selected_suffix: bindings,
         runtime,
         registry,
@@ -611,6 +620,8 @@ pub(crate) fn policy_from_snapshot(
         internal_agents: Vec::new(),
         historical_delegation: false,
         goal_tools_enabled: false,
+        prompt_blocks: Vec::new(),
+        prompt_blocks_live: None,
         selected_suffix,
         runtime,
         registry,
@@ -1574,6 +1585,8 @@ pub(crate) fn freeze_acp_agent_policy(
             internal_agents: Vec::new(),
             historical_delegation: false,
             goal_tools_enabled: false,
+            prompt_blocks: Vec::new(),
+            prompt_blocks_live: None,
             selected_suffix: Vec::new(),
             runtime,
             registry,

@@ -369,6 +369,37 @@ The approval reviewer receives part B and the write's content when a
 `memory_write` rule asks, and rejects a write that fails it in auto-approve
 mode.
 
+## Frozen blocks on models that defer tools
+
+Three parts of the prompt come from the session's state rather than the
+agent: the [runtimes block](#runtimes) (`runtimes`), the tool providers'
+`<tool_instructions>` sections (`tool_instructions`), and the skills listing
+(`skills`). Every run records where they sit in its prompt
+(`prompt_blocks_recorded`).
+
+On a model that loads [deferred tools](tools.md#deferred-tools), a run
+copies these blocks from the previous run, unless a compaction lies after
+that run's start, so attaching a runtime, adding a skill or a subagent, or
+moving the session to another project no longer rewrites the prompt and the
+cached conversation after it. What changed is told to the model in place,
+before the next request, as a user turn, and the clients show it word for
+word:
+
+```text
+[cookie: instructions changed]
+<instructions_changed>
+<block name="runtimes">
+Working directory: /srv/api
+Machine: labpc (linux)
+</block>
+</instructions_changed>
+Each block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.
+```
+
+After a compaction, the next run composes the blocks afresh. On a model that
+does not defer tools, every run composes them afresh, as above. A plugin that
+replaces the system prompt turns the reuse off for that run's successor.
+
 ## Cache breakpoints
 
 For capable Anthropic adaptors, cache strategy is structural rather than text

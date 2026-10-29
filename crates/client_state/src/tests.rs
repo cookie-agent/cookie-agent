@@ -895,6 +895,45 @@ fn deferred_tools_and_inherited_context_show_what_the_model_reads() {
 }
 
 #[test]
+fn a_changed_instructions_announcement_is_a_row_with_the_models_text() {
+    use crate::model_input::ModelInputKind;
+
+    let session = SessionId::new_v7();
+    let blocks = vec![
+        cookie_agent_protocol::AnnouncedPromptBlock {
+            key: "runtimes".into(),
+            text: Some("Working directory: /srv/api".into()),
+        },
+        cookie_agent_protocol::AnnouncedPromptBlock {
+            key: "skills".into(),
+            text: None,
+        },
+    ];
+    let events = vec![stored_event(
+        session,
+        Some(RunId::new_v7()),
+        1,
+        EventPayload::PromptBlocksAnnounced {
+            blocks: blocks.clone(),
+        },
+    )];
+    let replayed = reduce_session_events(session, 0, &events);
+    let text = cookie_agent_protocol::model_text::prompt_blocks_announcement(&blocks);
+    assert!(
+        text.starts_with("[cookie: instructions changed]\n<instructions_changed>\n<block name=\"runtimes\">\nWorking directory: /srv/api\n</block>\n<block name=\"skills\" removed=\"true\"/>\n</instructions_changed>\n"),
+        "{text}"
+    );
+    assert_eq!(
+        model_inputs(&replayed),
+        [(
+            ModelInputKind::PromptBlocks,
+            "instructions changed · runtimes, skills removed",
+            text.as_str()
+        )]
+    );
+}
+
+#[test]
 fn an_acp_agents_first_prompt_context_is_a_row() {
     let session = SessionId::new_v7();
     let events = vec![stored_event(

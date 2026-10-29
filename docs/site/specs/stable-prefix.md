@@ -1,7 +1,8 @@
 # A stable prompt prefix
 
-Status: **approved** (2026-10-29), being implemented in the phases of
-[section 7](#7-phases). Builds on [deferred tools in cookie](deferred-tools-cookie.md).
+Status: **implemented** (2026-10-29, in the five phases of
+[section 7](#7-phases); see [section 8](#8-implementation-notes) for where
+the code differs). Builds on [deferred tools in cookie](deferred-tools-cookie.md).
 
 ## 1. Goal and scope
 
@@ -231,3 +232,11 @@ Each phase is gated, committed, and pushed on its own:
 - **Phase 4** (2026-10-29; client protocol 1.53.0, plugin protocol 1.29.0).
   A fallback tool whose name a round pins stays published beside the tool
   that would hide it, so the round's name keeps working.
+- **Phase 5** (2026-10-29; client protocol 1.54.0, plugin protocol 1.30.0).
+  Where it differs from section 6:
+  - The provider sections are one block, `tool_instructions`, rather than
+    one per provider: the system prompt joins them into one block, and a
+    run reuses it whole.
+  - The spans are a separate audit event, `prompt_blocks_recorded`, before
+    the run's first request, rather than a field of `AgentSnapshot`, with
+    `composed_live` saying whether the run composed them or reused them.

@@ -86,7 +86,7 @@ pub(crate) mod cron_api;
 mod cron_fire;
 mod cron_run;
 pub(crate) mod producers;
-mod prompt_blocks;
+pub(crate) mod prompt_blocks;
 pub(crate) mod push_signals;
 mod recovery;
 mod residency;

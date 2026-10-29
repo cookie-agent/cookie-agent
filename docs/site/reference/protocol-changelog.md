@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.54.0
+
+- Two audit events ([stable prompt prefix](../specs/stable-prefix.md)
+  section 6): `prompt_blocks_recorded` (`blocks`, each a `key`, `start`, and
+  `len` in bytes of the run's `composed_prompt`, and `composed_live`) before
+  a run's first request, and `prompt_blocks_announced` (`blocks`, each a `key`
+  and an optional `text`), the instructions that changed since the system
+  prompt carried them, rendered in place as a user turn
+  (`model_text::prompt_blocks_announcement`). Plugin protocol 1.30.0
+  carries them in events the same way.
+
 ## 1.53.0
 
 - A `tool_round_started` tool has an optional `source` (`label`, `tool`): the

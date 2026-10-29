@@ -2102,6 +2102,29 @@ pub struct RoundToolDefinition {
     pub source: Option<RoundToolSource>,
 }
 
+/// Where one prompt block sits in a run's `composed_prompt`, in bytes.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PromptBlockSpan {
+    #[schemars(length(min = 1, max = 64))]
+    pub key: String,
+    pub start: u32,
+    pub len: u32,
+}
+
+/// A prompt block's new text, or `None` when it no longer applies.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AnnouncedPromptBlock {
+    #[schemars(length(min = 1, max = 64))]
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+impl AnnouncedPromptBlock {
+    /// The most bytes one block's text may hold: a system prompt's.
+    pub const MAX_TEXT_BYTES: usize = 128 * 1024;
+}
+
 /// The composition label and own name of a round's runtime tool.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct RoundToolSource {
@@ -2932,6 +2955,22 @@ pub enum EventPayload {
         #[schemars(length(max = 1024))]
         removed: Vec<AnnouncedToolGroup>,
     },
+    /// Where a run's system prompt carries its prompt blocks, the parts
+    /// composed from the session's state (client protocol 1.54.0, stable
+    /// prefix spec, section 6). `composed_live` says whether the run
+    /// composed them now rather than reusing the previous run's.
+    PromptBlocksRecorded {
+        #[schemars(length(max = 16))]
+        blocks: Vec<PromptBlockSpan>,
+        composed_live: bool,
+    },
+    /// Prompt blocks that changed since the system prompt carried them
+    /// (client protocol 1.54.0). Rendered in place as a user turn of the
+    /// model's history.
+    PromptBlocksAnnounced {
+        #[schemars(length(min = 1, max = 16))]
+        blocks: Vec<AnnouncedPromptBlock>,
+    },
     /// A tool round started: the eager tools the session declares until the
     /// next compaction, and the tool groups whose prompt sections the system
     /// prompt carries (client protocol 1.44.0).
@@ -3270,6 +3309,8 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "model_tools_published",
     "deferred_tools_announced",
     "tool_round_started",
+    "prompt_blocks_recorded",
+    "prompt_blocks_announced",
     "model_turn_committed",
     "model_usage_recorded",
     "native_compaction_finished",
@@ -3422,6 +3463,8 @@ impl EventPayload {
             // it builds.
             | Self::DeferredToolsAnnounced { .. }
             | Self::ToolRoundStarted { .. }
+            | Self::PromptBlocksRecorded { .. }
+            | Self::PromptBlocksAnnounced { .. }
             | Self::ModelOutputStarted { .. }
             | Self::ModelReplayEvaluated { .. }
             | Self::TextDelta { .. }
@@ -3711,6 +3754,27 @@ impl EventPayload {
                         .iter()
                         .all(|name| declared.contains(name.as_str()))
                 }) =>
+            {
+                return Err(EventSchemaError::InvalidModelTools);
+            }
+            Self::PromptBlocksRecorded { blocks, .. }
+                if blocks.len() > 16
+                    || blocks
+                        .iter()
+                        .any(|block| block.key.is_empty() || block.key.len() > 64) =>
+            {
+                return Err(EventSchemaError::InvalidModelTools);
+            }
+            Self::PromptBlocksAnnounced { blocks }
+                if blocks.is_empty()
+                    || blocks.len() > 16
+                    || blocks.iter().any(|block| {
+                        block.key.is_empty()
+                            || block.key.len() > 64
+                            || block.text.as_ref().is_some_and(|text| {
+                                text.len() > AnnouncedPromptBlock::MAX_TEXT_BYTES
+                            })
+                    }) =>
             {
                 return Err(EventSchemaError::InvalidModelTools);
             }

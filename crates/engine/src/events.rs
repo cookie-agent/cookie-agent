@@ -162,6 +162,83 @@ struct EventIndex {
     revisions: cookie_agent_protocol::RevisionFold,
     /// Deferred tools since the latest checkpoint.
     deferral: DeferralFold,
+    /// The prompt blocks of the latest run and what the model knows of them.
+    prompt_blocks: PromptBlockFold,
+}
+
+/// What a log records about prompt blocks (stable prefix spec, section 6):
+/// the blocks the latest run's system prompt carries, and the blocks the
+/// model knows, those folded with the announcements since.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PromptBlockFold {
+    /// The latest run's composed prompt, until its blocks are recorded.
+    prompt: Option<String>,
+    /// What the model knew when the latest run started, until its blocks
+    /// are recorded.
+    known_at_start: Option<std::collections::BTreeMap<String, String>>,
+    /// The latest run's blocks, in order; `None` when it recorded none.
+    pub(crate) run_blocks: Option<Vec<(String, String)>>,
+    /// A checkpoint lies after the latest run's start.
+    pub(crate) checkpoint_since_run: bool,
+    /// The blocks the model knows; `None` while the run's blocks are unknown.
+    pub(crate) known: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl PromptBlockFold {
+    fn observe(&mut self, payload: &EventPayload) {
+        match payload {
+            EventPayload::RunStarted { agent, .. } => {
+                *self = Self {
+                    prompt: Some(agent.composed_prompt.clone()),
+                    known_at_start: self.known.take(),
+                    ..Self::default()
+                };
+            }
+            EventPayload::PromptBlocksRecorded {
+                blocks,
+                composed_live,
+            } => {
+                let Some(prompt) = self.prompt.take() else {
+                    return;
+                };
+                let previous = self.known_at_start.take();
+                self.run_blocks =
+                    crate::runtime::prompt_blocks::prompt_block_texts(&prompt, blocks);
+                // A run that reused the previous run's blocks carries the
+                // same text, so what the model knew of them still holds.
+                self.known = match (composed_live, previous) {
+                    (false, Some(previous)) => Some(previous),
+                    _ => self
+                        .run_blocks
+                        .as_ref()
+                        .map(|blocks| blocks.iter().cloned().collect()),
+                };
+            }
+            EventPayload::ContextCheckpointCommitted { .. } => {
+                self.checkpoint_since_run = true;
+                // Announcements before a checkpoint are left out of history.
+                self.known = self
+                    .run_blocks
+                    .as_ref()
+                    .map(|blocks| blocks.iter().cloned().collect());
+            }
+            EventPayload::PromptBlocksAnnounced { blocks } => {
+                if let Some(known) = &mut self.known {
+                    for block in blocks {
+                        match &block.text {
+                            Some(text) => {
+                                known.insert(block.key.clone(), text.clone());
+                            }
+                            None => {
+                                known.remove(&block.key);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// What a log records about deferred tools since its latest checkpoint
@@ -247,6 +324,7 @@ impl EventIndex {
     fn observe(&mut self, event: &StoredEvent) {
         self.revisions.observe(&event.payload);
         self.deferral.observe(&event.payload);
+        self.prompt_blocks.observe(&event.payload);
         match &event.payload {
             EventPayload::RunStarted { selection, .. } => {
                 if let Some(run) = event.run_id {
@@ -1450,6 +1528,27 @@ impl EventLog {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .index
             .last_run_started
+            .clone()
+    }
+
+    /// Whether the latest run has not recorded its prompt blocks yet.
+    pub(crate) fn prompt_blocks_awaiting_record(&self) -> bool {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .prompt_blocks
+            .prompt
+            .is_some()
+    }
+
+    /// The prompt blocks of the latest run and what the model knows of them.
+    pub(crate) fn prompt_blocks(&self) -> PromptBlockFold {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .prompt_blocks
             .clone()
     }
 

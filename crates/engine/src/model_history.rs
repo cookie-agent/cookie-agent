@@ -1030,6 +1030,14 @@ fn assemble_history_with_replay(
                     &crate::deferred_tools::render_announcement(added, removed),
                 )));
             }
+            // As deferred tools are announced (stable prefix spec, section
+            // 6.3); the first request after a checkpoint announces afresh.
+            EventPayload::PromptBlocksAnnounced { .. } if tail.covers(envelope.seq) => {}
+            EventPayload::PromptBlocksAnnounced { blocks } => {
+                logical.push(LogicalTurn::User(user_text(
+                    &cookie_agent_protocol::model_text::prompt_blocks_announcement(blocks),
+                )));
+            }
             // Injected messages carry text parts only.
             EventPayload::MessageInjected { role, content } => match role {
                 cookie_agent_protocol::ExtensionMessageRole::System => {

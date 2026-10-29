@@ -163,6 +163,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - A stable prompt prefix: specs/stable-prefix.md
           - Unread sessions: specs/unread-sessions.md
           - Sign in with ChatGPT: specs/chatgpt-sign-in.md
           - "ACP v2: self-wakes, subagents, background work": specs/acp-v2.md
@@ -195,7 +196,6 @@ nav:
           - ACP agents: specs/acp-agents.md
           - Deferred tool loading in oven-sdk: specs/deferred-tools.md
           - Deferred tools in cookie: specs/deferred-tools-cookie.md
-          - A stable prompt prefix: specs/stable-prefix.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
           - Shell environment for runtimes: specs/shell-environment.md
           - Managing runtimes from clients: specs/runtime-management.md

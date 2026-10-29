@@ -1,14 +1,15 @@
 //! Text the engine adds to a model's input from what the session log
 //! records, rendered here so the clients show the user the same bytes the
 //! model reads: the `AGENTS.md` turn, the memory snapshot turn, the frame
-//! around a compaction summary, a deferred tools announcement, the marker
+//! around a compaction summary, a deferred tools announcement, a changed
+//! instructions announcement, the marker
 //! after an interrupted reply, the marker that stands for an elided tool
 //! output, the line a tool-emitted system message starts with, and a loop
 //! warning's start.
 
 pub mod memory_snapshot;
 
-use crate::{AgentMdEntry, AnnouncedToolGroup, ToolGroupSource};
+use crate::{AgentMdEntry, AnnouncedPromptBlock, AnnouncedToolGroup, ToolGroupSource};
 
 pub use memory_snapshot::snapshot_turn as memory_snapshot_turn;
 
@@ -137,6 +138,29 @@ pub fn tool_output_elision_marker(
         ));
     }
     marker
+}
+
+/// The user turn a changed instructions announcement renders as in the
+/// model's history (stable prefix spec, section 6.3). A block's text is the
+/// system prompt's own, so it is not escaped.
+#[must_use]
+pub fn prompt_blocks_announcement(blocks: &[AnnouncedPromptBlock]) -> String {
+    let mut text = String::from("[cookie: instructions changed]\n<instructions_changed>\n");
+    for block in blocks {
+        let name = escape_attribute(&block.key);
+        match &block.text {
+            Some(body) => {
+                text.push_str(&format!("<block name=\"{name}\">\n"));
+                text.push_str(body.trim_end());
+                text.push_str("\n</block>\n");
+            }
+            None => text.push_str(&format!("<block name=\"{name}\" removed=\"true\"/>\n")),
+        }
+    }
+    text.push_str(
+        "</instructions_changed>\nEach block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.",
+    );
+    text
 }
 
 /// The user turn a deferred tools announcement renders as in the model's
