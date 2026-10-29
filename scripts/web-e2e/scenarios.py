@@ -5701,8 +5701,9 @@ def stored_elsewhere(browser, mode):
 def reduced_transcript(browser):
     """The reduced transcript: Settings › Display chooses it (beside the
     diagnostics, which left This browser), a reply's work folds into one
-    row that says what it does while it runs, the working spinner stays,
-    the row opens the work, and another tab's choice applies here."""
+    row that says what it does while it runs and spins in place of the
+    working row, the row opens the work, and another tab's choice applies
+    here."""
     browser.click("[data-rail=primary] [data-view=settings]")
     browser.click("[data-section=display]")
     browser.wait("the display section", lambda: "Diagnostics in the transcript" in browser.text())
@@ -5729,7 +5730,9 @@ def reduced_transcript(browser):
     )
     label = browser.text(work + " [data-work-label]")
     assert label.startswith("Working…") and "1 tool call" in label, label
-    assert count(browser, "#working") == 1, "the working spinner left with a work row"
+    # The live row spins in place of the trailing working row.
+    assert count(browser, "#transcript [data-work=live] .animate-spin") == 1, "the live row does not spin"
+    assert count(browser, "#working") == 0, "the working row repeats the live work row"
     print("a running reply's work row:", label, "/", browser.text(work + " [data-work-now]"))
     browser.shot("reduced-live")
 

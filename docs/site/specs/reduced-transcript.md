@@ -68,6 +68,20 @@ when the block seals is the one that stays below the row.
 `Notice` children (`model interrupted`) stay in the work and also mark the
 work row (section 5).
 
+**One run, one row** (user decision of 2026-10-29). A run's blocks that
+only background rows came between fold together, from the run's first
+block to its last, into one work row on the first block above the reply of
+the last. The background rows are an ACP agent's background command that
+ended (`Background: npm run dev ended`), a background call's report, a
+diagnostic below the warning level, and a producer message not shown yet;
+they fold into the work and show when it opens. Any other row (a user
+message or steer, a warning, a compaction, an injected model input) ends
+the fold, and blocks of different runs never fold together. In the fold,
+every block's children are work but the last block's reply, the tool
+counts and the time span the whole fold, the later blocks lose their
+headers, and only the last block keeps its footer, while the fold is
+folded. `client_state::transcript_mode::FoldPlan` works the folds out.
+
 ## 3. What never folds
 
 Reduced mode only folds the work children of assistant blocks. These keep
@@ -118,12 +132,14 @@ shows its work as one row in place of the work children:
 - **Click** opens the work as a sealed row does (section 6); open, the
   live work streams in place as in `full` mode.
 
-The spinners stay as they are in both modes (user decision): the web's
-trailing `working…` row with its spinning circle after the transcript's
-last row while a run goes (and `waiting for your answer` while an agent
-question waits), and the TUI's `◐ working` in the bottom bar. A working
-row never hides or replaces them, so nothing appears or vanishes as
-blocks open and seal.
+The TUI's `◐ working` stays in the bottom bar in both modes. On the web
+(user decision of 2026-10-29, replacing the first), a live work row spins
+in place of the trailing `working…` row: while the transcript's last row
+shown is part of a live fold, the work row carries the spinning circle and
+the trailing row hides. The trailing row shows otherwise (before the
+run's first thinking part or tool call, after a steer, while compacting)
+and whenever an agent's question waits, when it reads `waiting for your
+answer`.
 
 ## 5. The worked row
 
@@ -274,7 +290,13 @@ The user decided on 2026-10-29:
    of This browser.
 8. **The spinners stay** (section 4): the web's trailing `working…` row
    and the TUI's bottom-bar `◐ working` show in both modes, and the
-   working row has no spinner of its own.
+   working row has no spinner of its own. Replaced for the web by
+   decision 10.
+9. **One run, one row** (section 2): a run's blocks split only by
+   background rows, such as an ACP agent's background command ending,
+   fold into one work row.
+10. **The web's live work row spins in place of the trailing `working…`
+    row** (section 4), which repeated it.
 
 ## 11. Tests and phases
 
@@ -339,3 +361,8 @@ Phases:
     `cookie.transcript` to `full` unless it is already set), since they
     read every tool row; `reduced_transcript` chooses the reduced mode in
     Settings › Display.
+  - Background rows and a run's later blocks fold by drawing nothing (or
+    only a waiting call, or the last block's reply) while the fold is
+    folded; each client keys a block's layout on where it stands in its
+    fold, so the first block draws again as the fold's time and counts
+    change.

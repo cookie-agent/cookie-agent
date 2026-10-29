@@ -1,6 +1,6 @@
 //! Assistant turn layout: headers, attribution, body, and thinking blocks.
 
-use cookie_agent_client_state::transcript_mode;
+use cookie_agent_client_state::transcript_mode::{self, ItemFold};
 
 use super::*;
 
@@ -12,16 +12,24 @@ pub(super) fn assistant_item_layout(
     context: &mut TranscriptRenderContext<'_>,
 ) -> ChunkedItem {
     let mut layout = ChunkedItem::default();
-    layout.lines.push_lines(assistant_header(
-        attribution.header(context.model_names).as_str(),
-        context.width,
-        context.theme,
-    ));
+    let header = |context: &TranscriptRenderContext<'_>| {
+        assistant_header(
+            attribution.header(context.model_names).as_str(),
+            context.width,
+            context.theme,
+        )
+    };
     let mut previous_is_prose = None;
-    let fold = (context.transcript == TranscriptMode::Reduced)
-        .then(|| transcript_mode::reply_start(children))
-        .flatten();
-    let Some(reply_start) = fold else {
+    // The reduced mode folds each run's work, across the blocks background
+    // rows split it into, into one row on its first block above the reply
+    // of its last; a call waiting on the user stays out of the fold.
+    let Some(ItemFold::Block {
+        lead,
+        reply_start,
+        last,
+    }) = context.folds.get(item_id)
+    else {
+        layout.lines.push_lines(header(context));
         for child in children {
             push_assistant_child(
                 state,
@@ -34,25 +42,26 @@ pub(super) fn assistant_item_layout(
         }
         return finish_assistant_layout(state, item_id, layout, context);
     };
-    // The reduced mode folds the block's work into one row above its reply;
-    // a call waiting on the user stays out of the fold until answered.
-    let (work, reply) = children.split_at(reply_start);
     let open = context
         .expanded
-        .is_some_and(|blocks| blocks.contains(&BlockId::Work(item_id)));
-    let summary = transcript_mode::work_summary(state, item_id, work, context.now);
-    let subtext = summary
-        .live
-        .then(|| transcript_mode::working_subtext(state, work));
-    layout.push_layout(work_row_layout(
-        item_id,
-        &summary,
-        subtext.as_deref(),
-        open,
-        context.width,
-        context.theme,
-    ));
-    previous_is_prose = Some(false);
+        .is_some_and(|blocks| blocks.contains(&BlockId::Work(lead)));
+    if lead == item_id || open {
+        layout.lines.push_lines(header(context));
+    }
+    if lead == item_id
+        && let Some(row) = context.folds.work_row(state, lead, context.now)
+    {
+        layout.push_layout(work_row_layout(
+            lead,
+            &row.summary,
+            row.subtext.as_deref(),
+            open,
+            context.width,
+            context.theme,
+        ));
+        previous_is_prose = Some(false);
+    }
+    let (work, reply) = children.split_at(reply_start.min(children.len()));
     for child in work {
         let shown = open
             || matches!(child, AssistantChild::Tool { call_id } if transcript_mode::needs_user(state, call_id));
@@ -80,7 +89,11 @@ pub(super) fn assistant_item_layout(
             context,
         );
     }
-    finish_assistant_layout(state, item_id, layout, context)
+    // Folded, only the fold's last block closes with its footer.
+    if open || last {
+        return finish_assistant_layout(state, item_id, layout, context);
+    }
+    layout
 }
 
 /// Closes an assistant block's layout with its footer.

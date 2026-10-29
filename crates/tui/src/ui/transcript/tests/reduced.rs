@@ -299,3 +299,111 @@ async fn a_mode_that_cannot_be_saved_still_applies() {
         app.status
     );
 }
+
+/// A run whose agent's background command ends between its two blocks:
+/// the first thinks and runs `call-1`, the second thinks and answers.
+fn run_split_by_background(session: SessionId, run: RunId, finish: bool) -> Vec<StoredEvent> {
+    let call = ToolCallId::new_v7();
+    let second = AttemptId::new_v7();
+    let mut events = worked_events(session, run, call, None);
+    events.extend([
+        at(
+            tool_terminated(
+                session,
+                4,
+                run,
+                call,
+                1,
+                "call-1",
+                ToolTerminationOutcome::Completed,
+            ),
+            105,
+        ),
+        at(
+            event(
+                session,
+                5,
+                run,
+                EventPayload::AcpSessionUpdated {
+                    update: cookie_agent_protocol::AcpSessionUpdate {
+                        background_ended: Some(cookie_agent_protocol::AcpBackgroundEnded {
+                            tool_call_id: ToolCallId::new_v7(),
+                            tool: "Bash".into(),
+                            display: Some("npm run dev".into()),
+                            started_at: time(90),
+                            exit_code: Some(0),
+                            signal: None,
+                        }),
+                        ..cookie_agent_protocol::AcpSessionUpdate::default()
+                    },
+                },
+            ),
+            106,
+        ),
+        at(attempt_started(session, 6, run, second, None), 107),
+        at(
+            turn_committed(
+                session,
+                7,
+                run,
+                second,
+                2,
+                vec![
+                    reasoning_part("**Checking the result**"),
+                    text_part("All done."),
+                ],
+                Vec::new(),
+                None,
+            ),
+            110,
+        ),
+    ]);
+    if finish {
+        let mut finished = finished(session, run);
+        finished.seq = 8;
+        events.push(finished);
+    }
+    events
+}
+
+#[test]
+fn a_runs_work_folds_into_one_row_across_a_background_command_ending() {
+    let (session, run) = (SessionId::new_v7(), run_id());
+    let state = state_of(run_split_by_background(session, run, true));
+    assert_eq!(
+        assistant_items(&state).len(),
+        2,
+        "the background row splits the run"
+    );
+
+    let full = rendered(&state, None, TranscriptMode::Full, 500);
+    assert!(full.contains("Background: npm run dev ended"), "{full}");
+    assert_eq!(full.matches("╭─").count(), 2, "{full}");
+
+    let reduced = rendered(&state, None, TranscriptMode::Reduced, 500);
+    assert!(
+        reduced.contains("▸ Worked for 12s · 1 tool call"),
+        "{reduced}"
+    );
+    assert_eq!(reduced.matches("Worked for").count(), 1, "{reduced}");
+    assert_eq!(reduced.matches("╭─").count(), 1, "{reduced}");
+    assert!(!reduced.contains("Background:"), "{reduced}");
+    assert!(reduced.contains("All done."), "{reduced}");
+
+    let expanded = HashSet::from([BlockId::Work(block_id(&state))]);
+    let opened = rendered(&state, Some(&expanded), TranscriptMode::Reduced, 500);
+    assert!(opened.contains("▾ Worked for 12s"), "{opened}");
+    assert!(opened.contains("Background: npm run dev ended"), "{opened}");
+    assert!(opened.contains("call-1"), "{opened}");
+}
+
+#[test]
+fn a_run_split_by_a_background_command_works_in_one_live_row() {
+    let (session, run) = (SessionId::new_v7(), run_id());
+    let state = state_of(run_split_by_background(session, run, false));
+    let live = rendered(&state, None, TranscriptMode::Reduced, 130);
+    assert_eq!(live.matches("Working…").count(), 1, "{live}");
+    assert!(live.contains("▸ Working… 30s · 1 tool call"), "{live}");
+    assert!(live.contains("Checking the result"), "{live}");
+    assert!(!live.contains("Worked for"), "{live}");
+}

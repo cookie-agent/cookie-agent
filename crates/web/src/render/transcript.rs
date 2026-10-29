@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use cookie_agent_client_state::transcript_mode::{self, TranscriptMode};
+use cookie_agent_client_state::transcript_mode::{self, FoldPlan, ItemFold, TranscriptMode};
 use cookie_agent_client_state::{
     AssistantChild, CompactingSource, EventLevel, ModelDisplayNames, ProducerMessageStatus,
     SessionState, ToolCallState, ToolStatus, TranscriptItem,
@@ -150,6 +150,8 @@ struct Pass<'a, 'v> {
     homes: u64,
     /// The calls waiting for the user's approval.
     waiting: FastSet<ToolCallId>,
+    /// The reduced mode's folds; none in the full mode.
+    folds: FoldPlan,
 }
 
 impl<'a, 'v> Pass<'a, 'v> {
@@ -164,7 +166,62 @@ impl<'a, 'v> Pass<'a, 'v> {
                 .filter(|approval| approval.is_visible_user_escalation())
                 .map(|approval| approval.tool_call_id)
                 .collect(),
+            folds: match view.transcript {
+                TranscriptMode::Reduced => FoldPlan::of(view.state),
+                TranscriptMode::Full => FoldPlan::default(),
+            },
         }
+    }
+
+    /// Whether the work row of the fold led by `lead` is open.
+    fn open(&self, lead: u64) -> bool {
+        self.view.expanded.work(lead)
+    }
+
+    /// The fold the assistant block `item_id` is in: its lead, where its
+    /// reply starts, and whether it is the fold's last block.
+    fn block_fold(&self, item_id: u64) -> Option<(u64, usize, bool)> {
+        match self.folds.get(item_id)? {
+            ItemFold::Block {
+                lead,
+                reply_start,
+                last,
+            } => Some((lead, reply_start, last)),
+            ItemFold::Row { .. } => None,
+        }
+    }
+
+    /// Whether a folded run's work hides all of `item`: a background row
+    /// inside it, or a block before its last with no call waiting.
+    fn hidden(&self, item: &TranscriptItem) -> bool {
+        match (self.folds.get(item.id()), item) {
+            (Some(ItemFold::Row { lead }), _) => !self.open(lead),
+            (
+                Some(ItemFold::Block {
+                    lead, last: false, ..
+                }),
+                TranscriptItem::Assistant { id, children, .. },
+            ) => {
+                lead != *id
+                    && !self.open(lead)
+                    && !children.iter().any(|child| {
+                        matches!(child, AssistantChild::Tool { call_id } if self.waiting.contains(call_id))
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// The HTML of the work row of the fold led by `lead`.
+    fn work_row(&self, lead: u64) -> Option<String> {
+        let view = self.view;
+        let row = self.folds.work_row(view.state, lead, view.now)?;
+        Some(work_row_html(
+            lead,
+            &row.summary,
+            row.subtext.as_deref(),
+            self.open(lead),
+        ))
     }
 
     /// Hashes what a call's row shows besides the call's own revision.
@@ -229,11 +286,17 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     item.id().hash(&mut hasher);
     item.version().hash(&mut hasher);
     std::mem::discriminant(item).hash(&mut hasher);
+    // Where it stands in a fold, whether the fold is open, and on its first
+    // block the work row, which says what the work does while it runs.
+    if let Some(fold) = pass.folds.get(item.id()) {
+        fold.hash(&mut hasher);
+        let (ItemFold::Block { lead, .. } | ItemFold::Row { lead }) = fold;
+        pass.open(lead).hash(&mut hasher);
+        if lead == item.id() {
+            pass.work_row(lead).hash(&mut hasher);
+        }
+    }
     if let TranscriptItem::Assistant { id, children, .. } = item {
-        // The work row, which says what the work is doing while it runs.
-        fold(pass, *id, children)
-            .map(|fold| fold.row)
-            .hash(&mut hasher);
         // The footer's inputs: metrics can land after the reply settles.
         view.state.assistant_metrics.get(id).hash(&mut hasher);
         view.state
@@ -872,6 +935,9 @@ pub fn transcript_rows(
         html.insert(id, RowHtml::Html(Arc::from(pinned)));
     }
     for item in &view.state.transcript {
+        if pass.hidden(item) {
+            continue;
+        }
         let key = item_key_in(&pass, item);
         let row = match cache.rows.remove(&key) {
             Some(row) => {
@@ -891,12 +957,21 @@ pub fn transcript_rows(
                         ..
                     } => {
                         let (reply, keys) = reply_parts(&pass, *id, children, cache, &mut parts);
+                        // A folded run's later blocks go on under its first
+                        // block's header.
+                        let headless = pass
+                            .block_fold(*id)
+                            .is_some_and(|(lead, _, _)| lead != *id && !pass.open(lead));
                         CachedRow {
                             html: RowHtml::Reply {
-                                header: Arc::from(format!(
-                                    "<div class=\"{NOTE} font-mono\">{}</div>",
-                                    escape(&attribution.header(view.names))
-                                )),
+                                header: Arc::from(if headless {
+                                    String::new()
+                                } else {
+                                    format!(
+                                        "<div class=\"{NOTE} font-mono\">{}</div>",
+                                        escape(&attribution.header(view.names))
+                                    )
+                                }),
                                 parts: reply,
                             },
                             parts: keys,
@@ -941,18 +1016,22 @@ fn reply_parts(
     let mut seen: FastSet<u64> =
         HashSet::with_capacity_and_hasher(children.len(), foldhash::fast::FixedState::default());
     let mut keys = Vec::with_capacity(children.len());
-    let fold = fold(pass, item_id, children);
+    let fold = pass.block_fold(item_id);
+    let open = fold.is_some_and(|(lead, _, _)| pass.open(lead));
     let mut parts = Vec::with_capacity(children.len() + 2);
-    if let Some(fold) = &fold {
+    if let Some(row) = fold
+        .filter(|(lead, _, _)| *lead == item_id)
+        .and_then(|(lead, _, _)| pass.work_row(lead))
+    {
         parts.push((
             foldhash::fast::FixedState::default().hash_one(8u8),
-            PartHtml::Html(Arc::from(fold.row.as_str())),
+            PartHtml::Html(Arc::from(row)),
         ));
     }
     let shown = |index: usize, child: &AssistantChild| {
-        fold.as_ref().is_none_or(|fold| {
-            index >= fold.reply_start
-                || fold.open
+        fold.is_none_or(|(_, reply_start, _)| {
+            index >= reply_start
+                || open
                 || matches!(child, AssistantChild::Tool { call_id } if pass.waiting.contains(call_id))
         })
     };
@@ -986,43 +1065,19 @@ fn reply_parts(
                 (id, html)
             }),
     );
-    // Drawn with its row, whose key holds what it shows.
-    if let Some(footer) = reply_footer_html(pass.view.state, item_id) {
+    // Drawn with its row, whose key holds what it shows; folded, only on a
+    // fold's last block.
+    if let Some(footer) = fold
+        .is_none_or(|(_, _, last)| open || last)
+        .then(|| reply_footer_html(pass.view.state, item_id))
+        .flatten()
+    {
         parts.push((
             foldhash::fast::FixedState::default().hash_one(7u8),
             PartHtml::Html(Arc::from(footer)),
         ));
     }
     (parts.into(), keys)
-}
-
-/// An assistant block's fold in the reduced mode: where its reply starts
-/// among its children, whether its work row is open, and the row's HTML.
-struct Fold {
-    reply_start: usize,
-    open: bool,
-    row: String,
-}
-
-/// The fold of the assistant block `item_id` with `children`; `None` in
-/// the full mode and for a block with no work.
-fn fold(pass: &Pass<'_, '_>, item_id: u64, children: &[AssistantChild]) -> Option<Fold> {
-    let view = pass.view;
-    if view.transcript != TranscriptMode::Reduced {
-        return None;
-    }
-    let reply_start = transcript_mode::reply_start(children)?;
-    let work = &children[..reply_start];
-    let summary = transcript_mode::work_summary(view.state, item_id, work, view.now);
-    let subtext = summary
-        .live
-        .then(|| transcript_mode::working_subtext(view.state, work));
-    let open = view.expanded.work(item_id);
-    Some(Fold {
-        reply_start,
-        open,
-        row: work_row_html(item_id, &summary, subtext.as_deref(), open),
-    })
 }
 
 /// The reduced mode's row for a block's work: `Worked for 1m 23s · 7 tool
@@ -1057,8 +1112,18 @@ fn work_row_html(
             )
         })
         .unwrap_or_default();
+    // A live row spins in place of the trailing working row, which the page
+    // hides while the run's latest work is this row's.
+    let spinner = if summary.live {
+        svg(
+            icondata::FaCircleNotchSolid,
+            "animate-spin text-caramel dark:text-maple",
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center rounded-md px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span class=\"flex min-w-0 items-center gap-2\">{}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{failed}</span>{now}</button></div>",
+        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center rounded-md px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{failed}</span>{now}</button></div>",
         if summary.live { "live" } else { "done" },
         svg(chevron, "text-[0.625rem] opacity-70"),
         escape(&summary.label()),
@@ -2196,6 +2261,108 @@ mod tests {
         expanded.fold_work();
         assert!(!expanded.work(1));
         assert!(expanded.thinking(2));
+    }
+
+    #[test]
+    fn a_run_split_by_a_background_command_folds_into_one_work_row() {
+        let (mut state, _) = streaming_reply();
+        let TranscriptItem::Assistant { attribution, .. } = &state.transcript[0] else {
+            unreachable!()
+        };
+        let attribution = attribution.clone();
+        let mut answer = cookie_agent_client_state::markdown::MarkdownDocument::default();
+        answer.append("All done.");
+        state.transcript.extend([
+            TranscriptItem::AgentBackgroundEnded {
+                id: 5,
+                seq: 5,
+                ended_at: jiff::Timestamp::UNIX_EPOCH,
+                ended: serde_json::from_value(serde_json::json!({
+                    "tool_call_id": cookie_agent_protocol::ToolCallId::new_v7(),
+                    "tool": "Bash",
+                    "display": "npm run dev",
+                    "started_at": "2026-10-29T10:00:00Z"
+                }))
+                .expect("background ended"),
+            },
+            TranscriptItem::Assistant {
+                id: 6,
+                version: 0,
+                attribution,
+                committed_turn_seq: None,
+                child_times: Vec::new(),
+                children: vec![
+                    cookie_agent_client_state::AssistantChild::Thinking {
+                        id: 7,
+                        version: 0,
+                        text: "checking".into(),
+                    },
+                    cookie_agent_client_state::AssistantChild::Text {
+                        id: 8,
+                        version: 0,
+                        markdown: answer,
+                    },
+                ],
+            },
+        ]);
+        let run = cookie_agent_protocol::RunId::new_v7();
+        state.assistant_runs = [(1, run), (6, run)].into_iter().collect();
+        let names = ModelDisplayNames::default();
+        let draw = |expanded: &Expanded| {
+            let view = TranscriptView {
+                session_id: cookie_agent_protocol::SessionId::new_v7(),
+                state: &state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+                transcript: TranscriptMode::Reduced,
+                now: jiff::Timestamp::UNIX_EPOCH,
+            };
+            let rows = super::transcript_rows(&view, None, &mut super::RowCache::default());
+            rows.order
+                .iter()
+                .map(|id| match &rows.html[id] {
+                    super::RowHtml::Html(html) => html.to_string(),
+                    super::RowHtml::Reply { header, parts } => {
+                        let mut html = header.to_string();
+                        for (_, part) in parts.iter() {
+                            match part {
+                                super::PartHtml::Html(part) => html.push_str(part),
+                                super::PartHtml::Markdown(blocks) => {
+                                    html.push_str(&blocks.concat())
+                                }
+                            }
+                        }
+                        html
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let folded = draw(&Expanded::default());
+        // The two blocks, the background row hidden between them.
+        assert_eq!(folded.len(), 2, "{folded:?}");
+        let all = folded.concat();
+        assert_eq!(all.matches("data-work=").count(), 1, "{all}");
+        assert!(all.contains("Worked for 0s · 1 tool call"), "{all}");
+        assert!(!all.contains("npm run dev"), "{all}");
+        assert!(
+            !all.contains("the open tail"),
+            "the first block's text is work: {all}"
+        );
+        assert!(folded[1].contains("All done."), "{}", folded[1]);
+        assert!(
+            !folded[1].contains("primary"),
+            "the later block has no header: {}",
+            folded[1]
+        );
+
+        let opened = draw(&Expanded::from_iter([super::work_key(1)]));
+        assert_eq!(opened.len(), 3, "{opened:?}");
+        let all = opened.concat();
+        assert!(all.contains("npm run dev"), "{all}");
+        assert!(all.contains("the open tail"), "{all}");
     }
 
     #[test]

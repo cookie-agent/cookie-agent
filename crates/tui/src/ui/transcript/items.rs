@@ -1,5 +1,7 @@
 //! Per-transcript-item layout, block identity, and interaction probes.
 
+use cookie_agent_client_state::transcript_mode::ItemFold;
+
 use super::*;
 
 pub(super) fn item_layout_key(
@@ -9,10 +11,12 @@ pub(super) fn item_layout_key(
     clock_bucket: u8,
     model_names: &ModelDisplayNames,
     transcript: TranscriptMode,
+    fold: u64,
 ) -> ItemLayoutKey {
     ItemLayoutKey {
         id: item.id(),
         version: item.version(),
+        fold,
         interaction: item_interaction(item, expanded),
         clock: if item_is_live(state, item, transcript) {
             clock_bucket
@@ -23,6 +27,9 @@ pub(super) fn item_layout_key(
     }
 }
 
+// Each argument is an independent input of the cached layout, as for
+// `ensure_cached_transcript_layout_in`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn item_layout_key_matches(
     key: &ItemLayoutKey,
     state: &SessionState,
@@ -31,9 +38,11 @@ pub(super) fn item_layout_key_matches(
     clock_bucket: u8,
     model_names: &ModelDisplayNames,
     transcript: TranscriptMode,
+    fold: u64,
 ) -> bool {
     key.id == item.id()
         && key.version == item.version()
+        && key.fold == fold
         && key.model_names == item_model_names_revision(item, model_names)
         && key.clock
             == if item_is_live(state, item, transcript) {
@@ -42,6 +51,36 @@ pub(super) fn item_layout_key_matches(
                 0
             }
         && item_interaction_matches(&key.interaction, item, expanded)
+}
+
+/// What an item's layout reads of the reduced mode's folds: where it stands
+/// in one, whether the fold is open, and on a fold's first block what its
+/// work row says. Zero outside the folds.
+pub(super) fn item_fold_key(
+    state: &SessionState,
+    folds: &FoldPlan,
+    item: &TranscriptItem,
+    expanded: Option<&HashSet<BlockId>>,
+    now: jiff::Timestamp,
+) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let Some(fold) = folds.get(item.id()) else {
+        return 0;
+    };
+    let (ItemFold::Block { lead, .. } | ItemFold::Row { lead }) = fold;
+    let mut hasher = std::hash::DefaultHasher::new();
+    fold.hash(&mut hasher);
+    expanded
+        .is_some_and(|blocks| blocks.contains(&BlockId::Work(lead)))
+        .hash(&mut hasher);
+    if lead == item.id()
+        && let Some(row) = folds.work_row(state, lead, now)
+    {
+        row.summary.label().hash(&mut hasher);
+        row.summary.failed.hash(&mut hasher);
+        row.subtext.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Only assistant items render model labels (their headers and "now using"
@@ -266,6 +305,14 @@ pub(super) fn transcript_item_layout(
     item: &TranscriptItem,
     context: &mut TranscriptRenderContext<'_>,
 ) -> ItemLayout {
+    // A background row inside a folded run's work shows when it opens.
+    if let Some(ItemFold::Row { lead }) = context.folds.get(item.id())
+        && !context
+            .expanded
+            .is_some_and(|blocks| blocks.contains(&BlockId::Work(lead)))
+    {
+        return ItemLayout::default();
+    }
     match item {
         TranscriptItem::User { markdown, seq, .. } => ItemLayout {
             lines: {

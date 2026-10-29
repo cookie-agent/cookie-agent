@@ -1449,6 +1449,46 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     });
     // Everything a pass reads it borrows where it lies: a frame copies
     // neither the expanded set, the model names, nor the tree.
+    // Whether the run's latest work is a reduced transcript's live work row,
+    // which spins in place of the trailing working row.
+    let work_spins = Memo::new(move |_| {
+        use cookie_agent_client_state::{
+            ProducerMessageStatus, TranscriptItem,
+            transcript_mode::{FoldPlan, ItemFold, TranscriptMode},
+        };
+        store_frame.track();
+        if workspace.transcript.get() != TranscriptMode::Reduced {
+            return false;
+        }
+        let Some(session_id) = workspace.selected.get() else {
+            return false;
+        };
+        let level = workspace.level.get();
+        untrack(|| {
+            workspace.with_store(|store| {
+                let state = store.sessions.get(&session_id)?;
+                // The last row shown: a diagnostic the level hides, or a
+                // message not shown yet, draws nothing.
+                let last = state.transcript.iter().rev().find(|item| match item {
+                    TranscriptItem::Event { level: shown, .. } => *shown >= level,
+                    TranscriptItem::ProducerMessage { status, .. } => !matches!(
+                        status,
+                        ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted
+                    ),
+                    _ => true,
+                })?;
+                let plan = FoldPlan::of(state);
+                let (ItemFold::Block { lead, .. } | ItemFold::Row { lead }) =
+                    plan.get(last.id())?;
+                Some(
+                    plan.work_row(state, lead, jiff::Timestamp::now())?
+                        .summary
+                        .live,
+                )
+            })
+        })
+        .unwrap_or(false)
+    });
     let rows = Memo::new(move |_| {
         let Some(session_id) = workspace
             .selected
@@ -1828,7 +1868,11 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 />
                 // The run going on, after the last row: the content grows
                 // with it, so a view following the end keeps it in sight.
-                <Show when=move || running(workspace) && !workspace.new_session.get()>
+                <Show when=move || {
+                    running(workspace)
+                        && !workspace.new_session.get()
+                        && !(work_spins.get() && workspace.questions().is_empty())
+                }>
                     <div
                         id="working"
                         class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-caramel dark:text-maple"

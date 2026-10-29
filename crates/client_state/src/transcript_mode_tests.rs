@@ -138,3 +138,175 @@ fn the_subtext_reads_the_newest_work_part() {
         "Plan"
     );
 }
+
+fn block(id: u64, children: Vec<AssistantChild>) -> TranscriptItem {
+    TranscriptItem::Assistant {
+        id,
+        version: 0,
+        attribution: crate::FrozenAssistantAttribution {
+            agent: cookie_agent_protocol::AgentId::new("test").expect("agent id"),
+            acp_model: None,
+            resolved_model: serde_json::from_value(serde_json::json!({
+                "provider_id": "test",
+                "model_id": "test",
+                "adapter_id": "openai-compatible",
+                "selection": {"model": "test/test", "variant": null},
+                "selection_fingerprint": "a".repeat(64)
+            }))
+            .expect("resolved model"),
+        },
+        committed_turn_seq: None,
+        child_times: Vec::new(),
+        children,
+    }
+}
+
+fn background_ended(id: u64) -> TranscriptItem {
+    TranscriptItem::AgentBackgroundEnded {
+        id,
+        seq: id,
+        ended_at: jiff::Timestamp::UNIX_EPOCH,
+        ended: serde_json::from_value(serde_json::json!({
+            "tool_call_id": ToolCallId::new_v7(),
+            "tool": "Bash",
+            "started_at": "2026-10-29T10:00:00Z"
+        }))
+        .expect("background ended"),
+    }
+}
+
+fn event(id: u64, level: EventLevel) -> TranscriptItem {
+    TranscriptItem::Event {
+        id,
+        version: 0,
+        level,
+        text: "note".into(),
+        repeat: 1,
+    }
+}
+
+/// A state of `items`, each block in `runs` of the run at its index.
+fn transcript(items: Vec<TranscriptItem>, runs: &[(u64, usize)]) -> SessionState {
+    let ids = [
+        cookie_agent_protocol::RunId::new_v7(),
+        cookie_agent_protocol::RunId::new_v7(),
+    ];
+    SessionState {
+        transcript: items,
+        assistant_runs: runs.iter().map(|(id, run)| (*id, ids[*run])).collect(),
+        ..SessionState::default()
+    }
+}
+
+#[test]
+fn a_runs_blocks_fold_into_one_across_its_background_rows() {
+    let state = transcript(
+        vec![
+            block(
+                1,
+                vec![
+                    thinking("**Plan**"),
+                    committed_tool("bash"),
+                    text("waiting"),
+                ],
+            ),
+            background_ended(2),
+            event(3, EventLevel::Info),
+            block(4, vec![committed_tool("bash"), text("All done.")]),
+            // A row after the run's last block stays out.
+            background_ended(5),
+            TranscriptItem::user("next"),
+        ],
+        &[(1, 0), (4, 0)],
+    );
+    let plan = FoldPlan::of(&state);
+    assert_eq!(
+        plan.get(1),
+        Some(ItemFold::Block {
+            lead: 1,
+            reply_start: 3,
+            last: false
+        })
+    );
+    assert_eq!(plan.get(2), Some(ItemFold::Row { lead: 1 }));
+    assert_eq!(plan.get(3), Some(ItemFold::Row { lead: 1 }));
+    assert_eq!(
+        plan.get(4),
+        Some(ItemFold::Block {
+            lead: 1,
+            reply_start: 1,
+            last: true
+        })
+    );
+    assert_eq!(plan.get(5), None);
+    let row = plan
+        .work_row(&state, 1, jiff::Timestamp::UNIX_EPOCH)
+        .expect("a work row");
+    assert_eq!(row.summary.tool_calls, 2);
+    // The first block's text between calls is work; the last's reply is not.
+    assert_eq!(plan.work_row(&state, 4, jiff::Timestamp::UNIX_EPOCH), None);
+}
+
+#[test]
+fn another_run_a_shown_row_or_a_warning_ends_a_fold() {
+    let blocks = || {
+        (
+            block(1, vec![committed_tool("bash"), text("one")]),
+            block(4, vec![committed_tool("bash"), text("two")]),
+        )
+    };
+    let lone = |plan: &FoldPlan| {
+        plan.get(1)
+            == Some(ItemFold::Block {
+                lead: 1,
+                reply_start: 1,
+                last: true,
+            })
+            && plan.get(4)
+                == Some(ItemFold::Block {
+                    lead: 4,
+                    reply_start: 1,
+                    last: true,
+                })
+    };
+    // Another run.
+    let (first, second) = blocks();
+    let state = transcript(vec![first, background_ended(2), second], &[(1, 0), (4, 1)]);
+    let plan = FoldPlan::of(&state);
+    assert!(lone(&plan));
+    assert_eq!(plan.get(2), None);
+    // A warning between them.
+    let (first, second) = blocks();
+    let state = transcript(
+        vec![first, event(2, EventLevel::Warning), second],
+        &[(1, 0), (4, 0)],
+    );
+    assert!(lone(&FoldPlan::of(&state)));
+    // A user message between them.
+    let (first, second) = blocks();
+    let state = transcript(
+        vec![first, TranscriptItem::user("steer"), second],
+        &[(1, 0), (4, 0)],
+    );
+    assert!(lone(&FoldPlan::of(&state)));
+    // Blocks without a run never join.
+    let (first, second) = blocks();
+    let state = transcript(vec![first, background_ended(2), second], &[]);
+    assert!(lone(&FoldPlan::of(&state)));
+}
+
+#[test]
+fn a_fold_without_thinking_or_tools_is_none() {
+    let state = transcript(
+        vec![
+            block(1, vec![text("one")]),
+            background_ended(2),
+            block(3, vec![text("two")]),
+        ],
+        &[(1, 0), (3, 0)],
+    );
+    let plan = FoldPlan::of(&state);
+    assert_eq!(plan.get(1), None);
+    assert_eq!(plan.get(2), None);
+    assert_eq!(plan.get(3), None);
+}

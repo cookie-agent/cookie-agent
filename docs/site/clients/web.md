@@ -403,8 +403,11 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     does now under it while it works (the newest step or line of its
     thinking, or its newest call's title), then `Worked for 1m 23s · 7 tool
     calls` (`· 1 failed` when calls failed, `Stopped after …` when the run
-    was stopped). Click the row to open the work. A call waiting for your
-    approval stays outside the fold. Settings › Display switches to the
+    was stopped). While it works, the row spins in place of the
+    `working…` line. A run stays one row when something in the background
+    interrupts it, such as a background command of the agent's ending.
+    Click the row to open the work. A call waiting for your approval stays
+    outside the fold. Settings › Display switches to the
     full transcript, which shows every thinking block and tool call; the
     choice stays in the browser and applies to its other tabs at once.
   - **Replies** end with the TUI's footer line, `⚡ 42.1 tps · 12.5K ctx ·

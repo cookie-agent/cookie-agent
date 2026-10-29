@@ -19,7 +19,9 @@ not a `[transcript]` table.
   run was cancelled or interrupted. Click the row to
   open the work as the full mode shows it. A call waiting for your approval
   shows outside the fold until you answer it. A reply with no thinking or tool
-  calls has no row.
+  calls has no row. When something in the background interrupts a run, such
+  as a background command of the agent's ending, the run's work stays one
+  row, and the interruption folds into it.
 - **`full`** shows every thinking block and tool call.
 
 `/transcript reduced`, `/transcript full`, and Ctrl-O change the mode in the

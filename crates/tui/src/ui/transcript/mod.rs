@@ -32,7 +32,7 @@ use std::{
     time::Duration,
 };
 
-use cookie_agent_client_state::transcript_mode::TranscriptMode;
+use cookie_agent_client_state::transcript_mode::{FoldPlan, TranscriptMode};
 #[cfg(test)]
 use cookie_agent_protocol::GoalStatus;
 use cookie_agent_protocol::{
@@ -738,6 +738,9 @@ struct ItemLayoutKey {
     /// Display-name revision for assistant items (0 otherwise), so headers
     /// relabel when a name arrives after the item was first laid out.
     model_names: u64,
+    /// What the item's layout reads of the reduced mode's folds
+    /// (`item_fold_key`).
+    fold: u64,
 }
 
 #[derive(Clone, Default)]
@@ -888,10 +891,10 @@ struct TranscriptRenderContext<'a> {
     theme: &'a Theme,
     highlighter: &'a dyn Highlighter,
     minimum_event_level: crate::state::EventLevel,
-    /// How the transcript shows agent work.
-    transcript: TranscriptMode,
     /// The time live work rows count their elapsed time to.
     now: jiff::Timestamp,
+    /// The reduced mode's folds; none in the full mode.
+    folds: &'a FoldPlan,
     /// Animation bucket (0–3) driving the streaming "thinking…" ellipsis.
     clock_bucket: u8,
     model_names: &'a ModelDisplayNames,
@@ -1013,6 +1016,14 @@ pub(super) struct TranscriptView {
 }
 
 impl TranscriptView {
+    /// The reduced mode's folds of `state`; none in the full mode.
+    pub(super) fn folds(&self, state: &SessionState) -> FoldPlan {
+        match self.transcript {
+            TranscriptMode::Reduced => FoldPlan::of(state),
+            TranscriptMode::Full => FoldPlan::default(),
+        }
+    }
+
     /// The full mode at a fixed time, as tests of the full transcript lay
     /// it out.
     #[cfg(test)]
@@ -1044,6 +1055,8 @@ pub(super) fn ensure_cached_transcript_layout_in(
         transcript,
         now,
     } = view;
+    let folds = view.folds(state);
+    let fold_key = |item: &TranscriptItem| item_fold_key(state, &folds, item, expanded, now);
     let key = LayoutCacheKey {
         session_id,
         session_generation: state.generation,
@@ -1118,6 +1131,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
                             clock_bucket,
                             model_names,
                             transcript,
+                            fold_key(item),
                         )
                 }))
                 .then_some(index)
@@ -1164,13 +1178,21 @@ pub(super) fn ensure_cached_transcript_layout_in(
                     clock_bucket,
                     model_names,
                     transcript,
+                    fold_key(item),
                 )
         });
         if let Some(cached) = reusable {
             cache.items.push(cached);
         } else {
-            let item_key =
-                item_layout_key(state, item, expanded, clock_bucket, model_names, transcript);
+            let item_key = item_layout_key(
+                state,
+                item,
+                expanded,
+                clock_bucket,
+                model_names,
+                transcript,
+                fold_key(item),
+            );
             let mut assistant_child_lines = Vec::new();
             let mut deferred = Vec::new();
             let mut context = TranscriptRenderContext {
@@ -1179,8 +1201,8 @@ pub(super) fn ensure_cached_transcript_layout_in(
                 theme,
                 highlighter,
                 minimum_event_level,
-                transcript,
                 now,
+                folds: &folds,
                 clock_bucket,
                 model_names,
                 assistant_part_cache: &mut cache.assistant_parts,
@@ -2343,6 +2365,7 @@ pub(super) fn transcript_layout_viewed(
     clock_bucket: u8,
 ) -> TranscriptLayout {
     let minimum_event_level = view.minimum_event_level;
+    let folds = view.folds(state);
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut tool_rows = HashMap::new();
@@ -2372,8 +2395,8 @@ pub(super) fn transcript_layout_viewed(
                 theme,
                 highlighter,
                 minimum_event_level,
-                transcript: view.transcript,
                 now: view.now,
+                folds: &folds,
                 clock_bucket,
                 model_names: &model_names,
                 assistant_part_cache: &mut assistant_parts,

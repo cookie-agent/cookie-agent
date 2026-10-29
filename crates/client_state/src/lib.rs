@@ -1282,6 +1282,8 @@ pub struct SessionState {
     /// How each sealed assistant block ended: its run finished, or a row
     /// split the run's output into a new block below it.
     pub assistant_ends: HashMap<u64, AssistantEnd>,
+    /// The run each assistant block belongs to, when it has one.
+    pub assistant_runs: HashMap<u64, RunId>,
 }
 
 /// One source of the latest run's `AGENTS.md` turn.

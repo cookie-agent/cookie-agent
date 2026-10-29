@@ -534,6 +534,7 @@ pub(super) fn reduce_event_from(
                             agent,
                             resolved_model: resolved_model.clone(),
                         },
+                        Some(run_id),
                         timestamp,
                     );
                     state.open_run_assistant = Some(RunAssistantProjection {
@@ -554,6 +555,7 @@ pub(super) fn reduce_event_from(
                         agent,
                         resolved_model,
                     },
+                    None,
                     timestamp,
                 )
             };
@@ -1901,7 +1903,8 @@ pub(super) fn rebind_pending_attempt(
             projection.split_at.unwrap_or(timestamp),
             false,
         );
-        projection.item_id = open_assistant_item(state, new_attribution, timestamp);
+        projection.item_id =
+            open_assistant_item(state, new_attribution, Some(projection.run_id), timestamp);
     }
     projection.committed_prefix = 0;
     projection.clear_split();
@@ -2152,6 +2155,7 @@ pub(super) fn consume_producer_messages_through(
 pub(super) fn open_assistant_item(
     state: &mut SessionState,
     attribution: FrozenAssistantAttribution,
+    run: Option<RunId>,
     timestamp: jiff::Timestamp,
 ) -> u64 {
     state.open_assistant = None;
@@ -2163,11 +2167,15 @@ pub(super) fn open_assistant_item(
         children: Vec::new(),
         child_times: Vec::new(),
     });
-    state
+    let item_id = state
         .transcript
         .last()
         .expect("assistant item was just pushed")
-        .id()
+        .id();
+    if let Some(run) = run {
+        state.assistant_runs.insert(item_id, run);
+    }
+    item_id
 }
 
 pub(super) fn append_attribution(
@@ -3030,6 +3038,7 @@ pub(super) fn split_assistant_if_pending(
             agent,
             resolved_model: projection.current_model.clone(),
         },
+        Some(projection.run_id),
         timestamp,
     );
     projection.item_id = item_id;
