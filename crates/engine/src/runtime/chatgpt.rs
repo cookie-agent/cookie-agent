@@ -87,19 +87,8 @@ impl Engine {
         })
     }
 
-    /// Finishes a sign-in with a pasted address, and drops the daemon's
-    /// listener the browser never reached.
-    pub async fn complete_provider_auth(
-        &self,
-        params: ProviderAuthCompleteParams,
-    ) -> Result<ProviderAuthCompleteResult, EngineError> {
-        self.chatgpt_for(&params.provider_id)?;
-        self.stop_sign_in_listener();
-        self.finish_provider_auth(params).await
-    }
-
     /// Finishes a sign-in, connects the account, and fetches its models.
-    async fn finish_provider_auth(
+    pub async fn complete_provider_auth(
         &self,
         params: ProviderAuthCompleteParams,
     ) -> Result<ProviderAuthCompleteResult, EngineError> {
@@ -410,7 +399,7 @@ impl Engine {
                 continue;
             }
             let outcome = self
-                .finish_provider_auth(ProviderAuthCompleteParams {
+                .complete_provider_auth(ProviderAuthCompleteParams {
                     provider_id: provider_id.clone(),
                     callback_url: format!("http://127.0.0.1:{port}{path}"),
                 })

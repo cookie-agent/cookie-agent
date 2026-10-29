@@ -1029,20 +1029,19 @@ fn sign_in_view(
     open: RwSignal<Option<ProviderDescriptor>>,
     confirm_disconnect: RwSignal<bool>,
 ) -> impl IntoView {
-    use crate::workspace::ProviderSignIn;
+    use crate::workspace::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 
     let summary = model_counts_summary(&provider);
     let status = cookie_agent_client_state::providers::sign_in_status(&provider)
         .unwrap_or_else(|| "not signed in".to_owned());
     let connected = provider.durable_connection.is_some();
     let state = RwSignal::new(ProviderSignIn::Idle);
+    let pastes_back = !page_on_loopback();
     let begin_provider = provider.clone();
     let finish_id = provider.id.clone();
     let cancel_id = provider.id.clone();
     let disconnect_provider = provider.clone();
     // A sign-in the daemon caught itself ends when the account shows up.
-    // The daemon listens even when the page offers paste-back, so this also
-    // ends a sign-in from a browser on the daemon's machine.
     let watched = provider.id.clone();
     let was_connected = provider
         .sign_in_account
@@ -1055,9 +1054,14 @@ fn sign_in_view(
                 .then(|| listed.sign_in_account.clone())
                 .flatten()
         });
-        if matches!(state.get_untracked(), ProviderSignIn::Waiting { .. })
-            && account
-                .is_some_and(|account| !account.sign_in_required && account.email != was_connected)
+        if matches!(
+            state.get_untracked(),
+            ProviderSignIn::Waiting {
+                caught_by_daemon: true,
+                ..
+            }
+        ) && account
+            .is_some_and(|account| !account.sign_in_required && account.email != was_connected)
         {
             state.set(ProviderSignIn::Idle);
             open.set(None);
@@ -1068,7 +1072,11 @@ fn sign_in_view(
         <p class=NOTE>{summary}</p>
         <p class="text-sm" id="provider-sign-in-status">{status}</p>
         {move || match state.get() {
-            ProviderSignIn::Idle => None,
+            // Told before the sign-in starts, so the tab that fails to load
+            // is no surprise.
+            ProviderSignIn::Idle => pastes_back.then(|| view! {
+                <p class=NOTE id="provider-sign-in-steps">{PASTE_BACK_STEPS}</p>
+            }.into_any()),
             ProviderSignIn::Waiting { caught_by_daemon: true, authorization_url } => Some(view! {
                 <p class=NOTE>"Finish signing in in the new tab. "
                     <a class="underline" href=authorization_url target="_blank" rel="noopener">"Open it again"</a>
@@ -1078,7 +1086,7 @@ fn sign_in_view(
                 <p class=NOTE>"Sign in in the new tab. "
                     <a class="underline" href=authorization_url target="_blank" rel="noopener">"Open it again"</a>
                 </p>
-                <p class=NOTE>{cookie_agent_client_state::providers::SIGN_IN_PASTE_HINT}</p>
+                <p class=NOTE id="provider-sign-in-steps">{PASTE_BACK_STEPS}</p>
                 <label class="flex flex-col gap-1 text-sm">
                     <span>"Address the tab could not load"</span>
                     <input type="text" id="provider-sign-in-callback" class=FIELD autocomplete="off" spellcheck="false" />
