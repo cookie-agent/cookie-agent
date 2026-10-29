@@ -187,3 +187,30 @@ async fn an_agent_that_follows_up_within_the_grace_settles_once_after_it() {
     let late = tokio::time::timeout(super::super::super::acp::WAKE_GRACE, signals.recv()).await;
     assert!(late.is_err(), "a second settle: {late:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_a_cancel_left_running_is_background_work_until_it_exits() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "left", "cancel-leaves 1").await;
+    await_event(engine, session, "the command started", |event| {
+        matches!(&event.payload, EventPayload::ToolCallStarted { .. })
+    })
+    .await;
+    engine.cancel_run(run, origin()).await.expect("cancel");
+    let outcome = finished(engine, session, run).await;
+    assert!(matches!(outcome, RunOutcome::Cancelled { .. }), "{outcome:?}");
+    let calls = engine.background_calls(session);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].job, "term-left");
+    assert_eq!(calls[0].display.as_deref(), Some("sleep 1"), "unwrapped");
+    assert!(calls[0].agent_task);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !engine.background_calls(session).is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("its exit ends it");
+}

@@ -776,6 +776,32 @@ fn spaced_words(value: &str) -> String {
     words.replace(['_', '-'], " ")
 }
 
+/// The command call `shown` still runs, when its terminal has not exited:
+/// the terminal's ID, the call's ID and tool name, and the command it
+/// shows as.
+fn running_command(shown: &ShownCall) -> Option<(String, ToolCallId, String, Option<String>)> {
+    let terminal = shown
+        .terminal
+        .as_ref()
+        .filter(|terminal| terminal.exit.is_none())?;
+    let command = shown
+        .fields
+        .raw_input
+        .as_ref()
+        .and_then(|input| input.get("command"))
+        .and_then(Value::as_str)
+        .map(unwrap_shell);
+    Some((
+        terminal.id.clone(),
+        shown.tool_call_id,
+        shown.fields.tool_name().map_or_else(
+            || kind_name(shown.fields.kind.as_deref()).as_str().to_owned(),
+            str::to_owned,
+        ),
+        command.or_else(|| shown.fields.title.clone()),
+    ))
+}
+
 /// A call's arguments as cookie's own tools show theirs: the raw input's
 /// fields as keys and values, without what the header already shows (its
 /// primary argument, a field the title repeats) or what an edit's diff
@@ -2155,28 +2181,7 @@ impl Turn<'_> {
         );
         // A command still running when its call ends runs on in the
         // background, as Claude Code's backgrounded commands do.
-        let backgrounded = shown
-            .terminal
-            .as_ref()
-            .filter(|terminal| terminal.exit.is_none())
-            .map(|terminal| {
-                let command = shown
-                    .fields
-                    .raw_input
-                    .as_ref()
-                    .and_then(|input| input.get("command"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                (
-                    terminal.id.clone(),
-                    shown.tool_call_id,
-                    shown.fields.tool_name().map_or_else(
-                        || kind_name(shown.fields.kind.as_deref()).as_str().to_owned(),
-                        str::to_owned,
-                    ),
-                    command.or_else(|| shown.fields.title.clone()),
-                )
-            });
+        let backgrounded = running_command(shown);
         let terminal = shown.terminal.take();
         if let Some(output) = &shown.fields.raw_output {
             if text.is_empty() {
@@ -2258,8 +2263,12 @@ impl Turn<'_> {
             .collect::<Vec<_>>();
         for (acp_id, tool_call_id) in open {
             let mut partial_output = None;
+            let mut backgrounded = None;
             if let Some(call) = self.calls.get_mut(&acp_id) {
                 call.terminated = true;
+                // A command the turn left running runs on (Codex keeps it
+                // after a cancel, and reports its exit when it ends).
+                backgrounded = running_command(call);
                 // The output a command streamed before the round ended.
                 if let Some(terminal) = call.terminal.take() {
                     let result = PersistedToolResult {
@@ -2298,6 +2307,10 @@ impl Turn<'_> {
                     cancelled,
                 )
                 .await?;
+            if let Some((terminal, tool_call_id, tool, display)) = backgrounded {
+                self.engine
+                    .acp_command_backgrounded(&self.live, terminal, tool_call_id, tool, display);
+            }
         }
         Ok(())
     }

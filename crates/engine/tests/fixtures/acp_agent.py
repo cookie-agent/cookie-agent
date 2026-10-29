@@ -88,6 +88,10 @@ Each prompt's last text block is a command:
   background <s>         runs `sleep <s>` in the background: an execute call whose
                          terminal stays open after the call completes, and exits
                          <s> seconds later, between runs
+  cancel-leaves <s>      runs `sleep <s>` in an execute call with a terminal and
+                         waits for session/cancel, which ends its work but not
+                         the call, as Codex's does: the terminal exits <s>
+                         seconds after the cancel, between runs
   background-wake <s> <w>
                          the same, and <w> seconds after the command exits starts
                          work of its own that says "woke", as Claude Code follows
@@ -578,6 +582,23 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
                 wake_later(session_id, float(wake or "1"), lambda: say(session_id, "woke"))
         threading.Thread(target=later, daemon=True).start()
         say(session_id, "started")
+    elif word == "cancel-leaves":
+        delay = float(rest or "1")
+        tool_call(session_id, {"toolCallId": "call-left", "name": "exec_command", "title": "sleep", "kind": "execute",
+                               "status": "in_progress", "rawInput": {"command": f"/bin/bash -lc 'sleep {rest}'"},
+                               "content": [{"type": "terminal", "terminalId": "term-left"}]})
+        update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-left", "command": f"sleep {rest}"})
+        with state_lock:
+            state_lock.wait_for(lambda: cancelled[session_id], timeout=30)
+        def later():
+            import time
+            time.sleep(delay)
+            update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-left",
+                                "exitStatus": {"exitCode": 0}})
+            tool_call(session_id, {"toolCallId": "call-left", "status": "completed"})
+        threading.Thread(target=later, daemon=True).start()
+        finish(session_id, "cancelled")
+        return
     elif word == "wake-later":
         delay, _, text = rest.partition(" ")
         wake_later(session_id, float(delay), lambda: say(session_id, text or "woke"))

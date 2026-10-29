@@ -584,7 +584,9 @@ not in it.
   send meanwhile goes into it. It shows even after you stopped a run, since
   the agent is already working.
 - **Commands left running.** A command the agent leaves running when its
-  call ends (Claude Code's background commands) shows in the session's
+  call ends (Claude Code's background commands), or when its turn ends or
+  is stopped with the call still open (Codex keeps a command running after
+  a stop), shows in the session's
   background calls, marked "run by the agent", until it exits. Cookie keeps
   the agent's process and the session alive meanwhile, and an idle daemon
   restart waits for it. Only the agent can stop it: ask it to. When the
