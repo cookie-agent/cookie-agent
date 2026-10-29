@@ -1,6 +1,6 @@
 //! Assistant turn layout: headers, attribution, body, and thinking blocks.
 
-use cookie_agent_client_state::transcript_mode::{self, ItemFold};
+use cookie_agent_client_state::transcript_mode::{self, ChildFold, ItemFold, WorkKey};
 
 use super::*;
 
@@ -20,15 +20,12 @@ pub(super) fn assistant_item_layout(
         )
     };
     let mut previous_is_prose = None;
-    // The reduced mode folds each run's work, across the blocks background
-    // rows split it into, into one row on its first block above the reply
-    // of its last; a call waiting on the user stays out of the fold.
-    let Some(ItemFold::Block {
-        lead,
-        reply_start,
-        last,
-    }) = context.folds.get(item_id)
-    else {
+    // The reduced mode folds a run's work, across the blocks background rows
+    // split it into, into one row where it starts; a long text breaks it, and
+    // the reply shows. A call waiting on the user stays out of the fold. A
+    // folded run reads as one block: its first block's header, its last
+    // block's footer.
+    let Some(ItemFold::Block(fold)) = context.folds.get(item_id) else {
         layout.lines.push_lines(header(context));
         for child in children {
             push_assistant_child(
@@ -42,27 +39,48 @@ pub(super) fn assistant_item_layout(
         }
         return finish_assistant_layout(state, item_id, layout, context);
     };
-    let open = context
-        .expanded
-        .is_some_and(|blocks| blocks.contains(&BlockId::Work(lead)));
-    if lead == item_id || open {
+    let fold = fold.clone();
+    if fold.first {
         layout.lines.push_lines(header(context));
     }
-    if lead == item_id
-        && let Some(row) = context.folds.work_row(state, lead, context.now)
-    {
-        layout.push_layout(work_row_layout(
-            lead,
-            &row.summary,
-            row.subtext.as_deref(),
-            open,
-            context.width,
-            context.theme,
-        ));
-        previous_is_prose = Some(false);
-    }
-    let (work, reply) = children.split_at(reply_start.min(children.len()));
-    for child in work {
+    for (index, child) in children.iter().enumerate() {
+        let place = fold
+            .children
+            .get(index)
+            .copied()
+            .unwrap_or(ChildFold::Shown);
+        let ChildFold::Work { key, starts } = place else {
+            push_assistant_child(
+                state,
+                item_id,
+                child,
+                &mut layout,
+                &mut previous_is_prose,
+                context,
+            );
+            continue;
+        };
+        let open = context
+            .expanded
+            .is_some_and(|blocks| blocks.contains(&BlockId::work(key)));
+        if starts && let Some((row, fresh)) = context.work_rows.get(&key) {
+            if previous_is_prose.is_some() {
+                layout.lines.push_lines(assistant_body_line(
+                    Line::default(),
+                    context.width,
+                    context.theme,
+                ));
+            }
+            layout.push_layout(work_row_layout(
+                key,
+                row,
+                *fresh,
+                open,
+                context.width,
+                context.theme,
+            ));
+            previous_is_prose = Some(false);
+        }
         let shown = open
             || matches!(child, AssistantChild::Tool { call_id } if transcript_mode::needs_user(state, call_id));
         if shown {
@@ -79,18 +97,7 @@ pub(super) fn assistant_item_layout(
             context.assistant_child_lines.push(layout.lines.len());
         }
     }
-    for child in reply {
-        push_assistant_child(
-            state,
-            item_id,
-            child,
-            &mut layout,
-            &mut previous_is_prose,
-            context,
-        );
-    }
-    // Folded, only the fold's last block closes with its footer.
-    if open || last {
+    if fold.last {
         return finish_assistant_layout(state, item_id, layout, context);
     }
     layout
@@ -264,13 +271,14 @@ fn push_assistant_child(
 /// while the block is live the line saying what it does now. The whole row
 /// opens and folds the work.
 fn work_row_layout(
-    item_id: u64,
-    summary: &transcript_mode::WorkSummary,
-    subtext: Option<&str>,
+    key: WorkKey,
+    row: &transcript_mode::WorkRow,
+    fresh: WorkLinesFresh,
     open: bool,
     width: u16,
     theme: &Theme,
 ) -> ItemLayout {
+    let summary = &row.summary;
     let chevron = if open { "▾" } else { "▸" };
     let mut spans = vec![Span::styled(
         format!("{chevron} {}", summary.label()),
@@ -286,16 +294,31 @@ fn work_row_layout(
     } else {
         (assistant_body_line(label, width, theme), None)
     };
-    if let Some(subtext) = subtext {
-        // Two columns under the label's text, one line, cut to fit.
-        let gutter = if panel_margin(width) {
-            3
+    // Under the label's text, one line each, cut to fit: what the work
+    // last said, then its last call. A line that just changed draws dim for
+    // one animation step, so it settles in rather than snapping.
+    let room = work_line_room(width);
+    let shown = row.lines.iter().flat_map(|shown| {
+        [
+            shown
+                .text
+                .as_deref()
+                .map(|text| ("  ", text, theme.muted_text(), fresh.text)),
+            shown
+                .tool
+                .as_deref()
+                .map(|tool| ("  ⎿ ", tool, theme.muted(), fresh.tool)),
+        ]
+    });
+    for (prefix, text, style, fresh) in shown.flatten() {
+        let room = room.saturating_sub(UnicodeWidthStr::width(prefix) - 2);
+        let text = crate::ui::app::truncate_with_ellipsis(text, room);
+        let style = if fresh {
+            style.add_modifier(ratatui::style::Modifier::DIM)
         } else {
-            usize::from(width >= 3) * 2
+            style
         };
-        let room = usize::from(width).saturating_sub(gutter + 3);
-        let text = crate::ui::app::truncate_with_ellipsis(subtext, room);
-        let line = Line::from(Span::styled(format!("  {text}"), theme.muted()));
+        let line = Line::from(Span::styled(format!("{prefix}{text}"), style));
         let rows = if panel_margin(width) {
             margin_rows(line, width, theme, None).0
         } else {
@@ -305,7 +328,7 @@ fn work_row_layout(
     }
     ItemLayout {
         regions: vec![BlockRegion {
-            id: BlockId::Work(item_id),
+            id: BlockId::work(key),
             start_line: 0,
             end_line: lines.len(),
             header_lines: Some(lines.len()),
@@ -314,6 +337,25 @@ fn work_row_layout(
         lines,
         user_seq: None,
     }
+}
+
+/// The columns a work row's line has at `width`, after the gutter and the
+/// two columns it hangs under the label's text; a streaming line shows
+/// once it is this long, where the row cuts it anyway.
+pub(super) fn work_line_room(width: u16) -> usize {
+    let gutter = if panel_margin(width) {
+        3
+    } else {
+        usize::from(width >= 3) * 2
+    };
+    usize::from(width).saturating_sub(gutter + 3)
+}
+
+/// Which of a work row's lines just changed.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(super) struct WorkLinesFresh {
+    pub(super) text: bool,
+    pub(super) tool: bool,
 }
 
 /// `deferred` rows moved down by `start`.

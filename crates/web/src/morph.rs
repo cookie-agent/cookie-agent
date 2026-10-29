@@ -2,7 +2,8 @@
 //! differs: an element whose tag stays keeps its node, its attributes and
 //! children brought up to date, and text keeps its node with the new text.
 //! A block that streams keeps its header button under the pointer, so the
-//! hover stays and a click that starts on it ends on it.
+//! hover stays and a click that starts on it ends on it. An element with a
+//! `data-key` keeps its node only while the key stays.
 
 use wasm_bindgen::JsCast;
 
@@ -68,6 +69,12 @@ fn patch_node(old: &web_sys::Node, new: &web_sys::Node) -> bool {
                 return false;
             };
             if old.tag_name() != new.tag_name() || old.namespace_uri() != new.namespace_uri() {
+                return false;
+            }
+            // A keyed element (`data-key`) is the same node only under the
+            // same key: under another it is new, and plays its entry
+            // animation as it arrives.
+            if old.get_attribute("data-key") != new.get_attribute("data-key") {
                 return false;
             }
             patch_attributes(old, new);

@@ -12,9 +12,12 @@ not a `[transcript]` table.
 
 - **`reduced`** folds each reply's thinking, tool calls, and the text written
   between calls into one row above the reply. While the agent works, the row
-  reads `▸ Working… 42s · 3 tool calls` and the line under it names what it
-  is doing now: the newest step or line of its thinking, or the title of its
-  newest tool call. Once that work ends, it reads `▸ Worked for 1m 23s · 7 tool
+  reads `▸ Working… 42s · 3 tool calls`, with two lines under it: the latest
+  line it wrote or thought (a thinking step where it has one), and `⎿` and
+  its latest tool call. A line it is still writing shows once it ends or
+  fills the row, and a new line draws dim for a moment as it settles in.
+  Text over more than one line between calls reads as an answer: it shows
+  in full, and the work around it folds into rows of its own. Once that work ends, it reads `▸ Worked for 1m 23s · 7 tool
   calls`, with `· 1 failed` when calls failed, or `Stopped after …` when the
   run was cancelled or interrupted. Click the row to
   open the work as the full mode shows it. A call waiting for your approval

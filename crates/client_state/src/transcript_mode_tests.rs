@@ -119,23 +119,124 @@ fn a_thinking_step_is_its_newest_heading_or_bold_line_else_its_newest_line() {
     assert_eq!(thinking_step(" \n"), None);
 }
 
+fn lines(state: &SessionState, work: &[AssistantChild], room: usize) -> WorkLines {
+    work_lines(state, work.iter().map(|child| (1, child)), room)
+}
+
+fn shown(text: Option<&str>, tool: Option<&str>) -> WorkLines {
+    WorkLines {
+        text: text.map(str::to_owned),
+        tool: tool.map(str::to_owned),
+    }
+}
+
+/// A state whose block 1 streams the part `part_id` of `kind`.
+fn streaming(part_id: u64, kind: crate::AssistantPartKind) -> SessionState {
+    SessionState {
+        open_assistant: Some(crate::OpenAssistantProjection {
+            item_id: 1,
+            part_id,
+            kind,
+            opened_at: jiff::Timestamp::UNIX_EPOCH,
+        }),
+        ..SessionState::default()
+    }
+}
+
 #[test]
-fn the_subtext_reads_the_newest_work_part() {
+fn a_work_row_says_its_latest_text_and_its_latest_call() {
     let state = SessionState::default();
-    assert_eq!(working_subtext(&state, &[]), "Starting…");
-    assert_eq!(working_subtext(&state, &[thinking("")]), "Thinking…");
+    assert_eq!(lines(&state, &[], 80), shown(Some("Starting…"), None));
     assert_eq!(
-        working_subtext(&state, &[thinking("**Plan**"), committed_tool("bash")]),
-        "bash"
+        lines(&state, &[thinking("")], 80),
+        shown(Some("Thinking…"), None)
+    );
+    // Both the latest text and the latest call, whichever came last.
+    assert_eq!(
+        lines(
+            &state,
+            &[thinking("**Plan**\nfirst"), committed_tool("bash")],
+            80
+        ),
+        shown(Some("Plan"), Some("bash"))
     );
     assert_eq!(
-        working_subtext(&state, &[committed_tool("bash"), text("Now the tests.\n")]),
-        "Now the tests."
+        lines(
+            &state,
+            &[
+                committed_tool("read"),
+                text("Now the tests.\n"),
+                committed_tool("bash")
+            ],
+            80
+        ),
+        shown(Some("Now the tests."), Some("bash"))
     );
-    // A call this state never started says nothing; the part before it does.
+    // A call this state never started says nothing; an older one does.
     assert_eq!(
-        working_subtext(&state, &[thinking("**Plan**"), tool()]),
-        "Plan"
+        lines(&state, &[committed_tool("read"), tool()], 80),
+        shown(None, Some("read"))
+    );
+}
+
+#[test]
+fn a_streaming_line_waits_until_it_ends_or_fills_the_row() {
+    let text_part = |source: &str| AssistantChild::Text {
+        id: 7,
+        version: 0,
+        markdown: MarkdownDocument::new(source.to_owned()),
+    };
+    let state = streaming(7, crate::AssistantPartKind::Text);
+    // The open line is held back; the line before it shows.
+    assert_eq!(
+        lines(&state, &[text_part("Reading the reducer.\nNow the te")], 80)
+            .text
+            .as_deref(),
+        Some("Reading the reducer.")
+    );
+    // Before any line ended, an older part's line shows.
+    assert_eq!(
+        lines(&state, &[thinking("**Plan**"), text_part("Now the te")], 80)
+            .text
+            .as_deref(),
+        Some("Plan")
+    );
+    // Long enough to be cut anyway, the open line shows.
+    assert_eq!(
+        lines(&state, &[text_part("done.\nNow the tests")], 10)
+            .text
+            .as_deref(),
+        Some("Now the tests")
+    );
+    // Once the part stops streaming, its last line shows whole.
+    assert_eq!(
+        lines(
+            &SessionState::default(),
+            &[text_part("done.\nNow the te")],
+            80
+        )
+        .text
+        .as_deref(),
+        Some("Now the te")
+    );
+    // A thinking part waits the same way, for its step too.
+    let thinking_part = |source: &str| AssistantChild::Thinking {
+        id: 8,
+        version: 0,
+        text: source.to_owned(),
+    };
+    let state = streaming(8, crate::AssistantPartKind::Thinking);
+    assert_eq!(
+        lines(&state, &[thinking_part("**Plan**\n**Check")], 80)
+            .text
+            .as_deref(),
+        Some("Plan")
+    );
+    assert_eq!(
+        lines(&state, &[thinking_part("**Check")], 80)
+            .text
+            .as_deref(),
+        Some("Thinking…")
     );
 }
 
@@ -198,6 +299,30 @@ fn transcript(items: Vec<TranscriptItem>, runs: &[(u64, usize)]) -> SessionState
     }
 }
 
+fn key(item: u64, child: u32) -> WorkKey {
+    WorkKey { item, child }
+}
+
+fn work(item: u64, child: u32, starts: bool) -> ChildFold {
+    ChildFold::Work {
+        key: key(item, child),
+        starts,
+    }
+}
+
+fn folded(first: bool, last: bool, children: Vec<ChildFold>) -> Option<ItemFold> {
+    Some(ItemFold::Block(BlockFold {
+        first,
+        last,
+        children,
+    }))
+}
+
+/// Where `item` stands in `plan`.
+fn at(plan: &FoldPlan, item: u64) -> Option<ItemFold> {
+    plan.get(item).cloned()
+}
+
 #[test]
 fn a_runs_blocks_fold_into_one_across_its_background_rows() {
     let state = transcript(
@@ -221,82 +346,135 @@ fn a_runs_blocks_fold_into_one_across_its_background_rows() {
     );
     let plan = FoldPlan::of(&state);
     assert_eq!(
-        plan.get(1),
-        Some(ItemFold::Block {
-            lead: 1,
-            reply_start: 3,
-            last: false
-        })
+        at(&plan, 1),
+        folded(
+            true,
+            false,
+            vec![work(1, 0, true), work(1, 0, false), work(1, 0, false)]
+        )
     );
-    assert_eq!(plan.get(2), Some(ItemFold::Row { lead: 1 }));
-    assert_eq!(plan.get(3), Some(ItemFold::Row { lead: 1 }));
+    assert_eq!(at(&plan, 2), Some(ItemFold::Row { key: key(1, 0) }));
+    assert_eq!(at(&plan, 3), Some(ItemFold::Row { key: key(1, 0) }));
     assert_eq!(
-        plan.get(4),
-        Some(ItemFold::Block {
-            lead: 1,
-            reply_start: 1,
-            last: true
-        })
+        at(&plan, 4),
+        folded(false, true, vec![work(1, 0, false), ChildFold::Shown])
     );
-    assert_eq!(plan.get(5), None);
+    assert_eq!(at(&plan, 5), None);
+    assert_eq!(plan.keys().collect::<Vec<_>>(), [key(1, 0)]);
     let row = plan
-        .work_row(&state, 1, jiff::Timestamp::UNIX_EPOCH)
+        .work_row(&state, key(1, 0), jiff::Timestamp::UNIX_EPOCH, 80)
         .expect("a work row");
     assert_eq!(row.summary.tool_calls, 2);
-    // The first block's text between calls is work; the last's reply is not.
-    assert_eq!(plan.work_row(&state, 4, jiff::Timestamp::UNIX_EPOCH), None);
+    assert_eq!(
+        plan.work_row(&state, key(4, 0), jiff::Timestamp::UNIX_EPOCH, 80),
+        None
+    );
 }
 
 #[test]
-fn another_run_a_shown_row_or_a_warning_ends_a_fold() {
+fn a_long_text_between_calls_breaks_the_work_into_two_folds() {
+    let long = "First paragraph.\n\nSecond paragraph.";
+    assert!(long_text(long));
+    assert!(long_text("Plan:\n- read\n- test"));
+    // A line, however it is padded, is not; a very long one is.
+    assert!(!long_text("\nChecking the reducer next.\n"));
+    assert!(long_text(&"word ".repeat(LONG_TEXT_CHARS / 5 + 1)));
+    let state = transcript(
+        vec![
+            block(1, vec![committed_tool("read"), text(long)]),
+            background_ended(2),
+            block(
+                3,
+                vec![thinking("**Next**"), committed_tool("bash"), text("Done.")],
+            ),
+        ],
+        &[(1, 0), (3, 0)],
+    );
+    let plan = FoldPlan::of(&state);
+    assert_eq!(
+        at(&plan, 1),
+        folded(true, false, vec![work(1, 0, true), ChildFold::Shown])
+    );
+    // The row after the long text is the next fold's.
+    assert_eq!(at(&plan, 2), Some(ItemFold::Row { key: key(3, 0) }));
+    assert_eq!(
+        at(&plan, 3),
+        folded(
+            false,
+            true,
+            vec![work(3, 0, true), work(3, 0, false), ChildFold::Shown]
+        )
+    );
+    let mut keys = plan.keys().collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(keys, [key(1, 0), key(3, 0)]);
+    // Thinking never breaks the work, however long.
+    let state = transcript(
+        vec![block(
+            1,
+            vec![thinking(long), committed_tool("bash"), text("Done.")],
+        )],
+        &[(1, 0)],
+    );
+    assert_eq!(
+        at(&FoldPlan::of(&state), 1),
+        folded(
+            true,
+            true,
+            vec![work(1, 0, true), work(1, 0, false), ChildFold::Shown]
+        )
+    );
+    // A long reply at the end is the reply, as any is.
+    let state = transcript(
+        vec![block(1, vec![committed_tool("bash"), text(long)])],
+        &[(1, 0)],
+    );
+    assert_eq!(
+        at(&FoldPlan::of(&state), 1),
+        folded(true, true, vec![work(1, 0, true), ChildFold::Shown])
+    );
+}
+
+#[test]
+fn another_run_a_shown_row_or_a_warning_ends_a_stretch() {
     let blocks = || {
         (
             block(1, vec![committed_tool("bash"), text("one")]),
             block(4, vec![committed_tool("bash"), text("two")]),
         )
     };
-    let lone = |plan: &FoldPlan| {
-        plan.get(1)
-            == Some(ItemFold::Block {
-                lead: 1,
-                reply_start: 1,
-                last: true,
-            })
-            && plan.get(4)
-                == Some(ItemFold::Block {
-                    lead: 4,
-                    reply_start: 1,
-                    last: true,
-                })
+    let apart = |plan: &FoldPlan| {
+        at(plan, 1) == folded(true, true, vec![work(1, 0, true), ChildFold::Shown])
+            && at(plan, 4) == folded(true, true, vec![work(4, 0, true), ChildFold::Shown])
     };
     // Another run.
     let (first, second) = blocks();
     let state = transcript(vec![first, background_ended(2), second], &[(1, 0), (4, 1)]);
     let plan = FoldPlan::of(&state);
-    assert!(lone(&plan));
-    assert_eq!(plan.get(2), None);
+    assert!(apart(&plan));
+    assert_eq!(at(&plan, 2), None);
     // A warning between them.
     let (first, second) = blocks();
     let state = transcript(
         vec![first, event(2, EventLevel::Warning), second],
         &[(1, 0), (4, 0)],
     );
-    assert!(lone(&FoldPlan::of(&state)));
+    assert!(apart(&FoldPlan::of(&state)));
     // A user message between them.
     let (first, second) = blocks();
     let state = transcript(
         vec![first, TranscriptItem::user("steer"), second],
         &[(1, 0), (4, 0)],
     );
-    assert!(lone(&FoldPlan::of(&state)));
+    assert!(apart(&FoldPlan::of(&state)));
     // Blocks without a run never join.
     let (first, second) = blocks();
     let state = transcript(vec![first, background_ended(2), second], &[]);
-    assert!(lone(&FoldPlan::of(&state)));
+    assert!(apart(&FoldPlan::of(&state)));
 }
 
 #[test]
-fn a_fold_without_thinking_or_tools_is_none() {
+fn a_stretch_without_thinking_or_tools_is_not_folded() {
     let state = transcript(
         vec![
             block(1, vec![text("one")]),
@@ -306,7 +484,7 @@ fn a_fold_without_thinking_or_tools_is_none() {
         &[(1, 0), (3, 0)],
     );
     let plan = FoldPlan::of(&state);
-    assert_eq!(plan.get(1), None);
-    assert_eq!(plan.get(2), None);
-    assert_eq!(plan.get(3), None);
+    assert_eq!(at(&plan, 1), None);
+    assert_eq!(at(&plan, 2), None);
+    assert_eq!(at(&plan, 3), None);
 }

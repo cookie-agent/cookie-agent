@@ -68,6 +68,19 @@ when the block seals is the one that stays below the row.
 `Notice` children (`model interrupted`) stay in the work and also mark the
 work row (section 5).
 
+**A long text breaks the work** (user decision of 2026-10-29). Text
+written between calls that runs over more than one line, or one line of
+700 characters or more (`long_text`), reads as an answer to the user: it
+shows as the reply does, and the work before and after it folds into rows
+of its own. Thinking never breaks the work. A model says what it does next
+in a line; an answer runs longer.
+
+**While a run works** (user decision), the text after its last call is
+work too, since another call may follow: a line of it shows in the work
+row's text line (section 4), and once it runs over more lines it breaks
+out below the row and streams there. When the run's work ends, that text
+is the reply. Media the model sends always shows.
+
 **One run, one row** (user decision of 2026-10-29). A run's blocks that
 only background rows came between fold together, from the run's first
 block to its last, into one work row on the first block above the reply of
@@ -106,27 +119,38 @@ shows its work as one row in place of the work children:
 
 ```
 ▸ Working… 42s · 3 tool calls
-  Reading crates/client_state/src/reduce.rs
+  Reading the reducer to see where blocks split.
+  ⎿ Read crates/client_state/src/reduce.rs
 ```
 
-- **No spinner of its own.** The row has the folded chevron, like a
-  worked row, and the label `Working…`, then the elapsed time (section 7),
-  ticking each second. The spinner stays where each client already shows
-  it (below).
-- **Subtext**, one muted line, truncated with `…` to the width, from the
-  block's newest work child:
-  - a **thinking** part: its newest line that has text. When the thinking
-    has Markdown headings or lines that are bold alone (the reasoning
-    summaries of OpenAI models start each step with `**Inspecting the
-    reducer**`), the newest of those instead, without its markers, so the
-    line changes per step rather than per word;
-  - a **tool call**: its header as the tool row shows it, its title and
-    primary argument (`client_state::tool_header`), such as `bash · cargo
-    test -p cookie_agent_client_state`; a call waiting on approval reads
-    `Waiting for approval: <title>`;
-  - **text** between tool calls: its newest line, like thinking;
-  - nothing yet (the run just started): the line reads `Starting…`, so
-    the row keeps its height when the first part arrives.
+- **No spinner of its own in the TUI.** The row has the folded chevron,
+  like a worked row, and the label `Working…`, then the elapsed time
+  (section 7), ticking each second.
+- **Two lines** under the label (user decision of 2026-10-29), each cut
+  with `…` to the width:
+  - **the latest text**: the newest settled line of the work's newest
+    thinking or text. A thinking part's step, its newest Markdown heading
+    or line bold alone (OpenAI's reasoning summaries start each step with
+    `**Inspecting the reducer**`), wins over its other lines, so the line
+    changes per step rather than per word. `Thinking…` while a thinking
+    part has nothing settled yet, `Starting…` before the work says or does
+    anything;
+  - **the latest tool call**: its header as the tool row shows it
+    (`client_state::tool_header`), `Waiting for approval: …` while it waits
+    on the user; left out before the first call.
+- **A streaming line waits** (user decision): the line a thinking or text
+  part is still writing shows only once it ends, or once it is as long as
+  the row can show (the TUI's columns; on the web, 96 characters), where
+  the row cuts it anyway. Until then the line before it shows.
+- **Transitions.** On the web a line that says something new rises into
+  place out of a soft blur (280 ms; none under `prefers-reduced-motion`);
+  each line is keyed by its text (`data-key`, which the page's DOM patcher
+  honours), so the ticking time redraws the label without replaying the
+  lines'. In the TUI a new line draws dim for one animation step (about
+  400 ms), then settles.
+- **Sizes on the web** (user decision): the label and the text line read
+  at the transcript's small size, the tool call line at the smaller note
+  size in monospace, under a `↳`.
 - **Counts.** After the time, muted: the tool calls so far, `· 7 tool
   calls`, left out while there are none.
 - **Click** opens the work as a sealed row does (section 6); open, the
@@ -297,6 +321,16 @@ The user decided on 2026-10-29:
    fold into one work row.
 10. **The web's live work row spins in place of the trailing `working…`
     row** (section 4), which repeated it.
+11. **A live work row shows the latest text and the latest tool call**
+    (section 4), a streaming line once it ends or fills the row, settling
+    in with a transition.
+12. **The web's work row reads larger**: its label and text line at the
+    small size, its tool call line kept at the note size.
+13. **A long text breaks the work** (section 2): text over more than one
+    line (the user's observation, adopted with leading and trailing breaks
+    ignored), or 700 characters or more on one line.
+14. **A working run's trailing text is work** until it runs long (section
+    2).
 
 ## 11. Tests and phases
 
@@ -366,3 +400,8 @@ Phases:
     folded; each client keys a block's layout on where it stands in its
     fold, so the first block draws again as the fold's time and counts
     change.
+  - A fold is keyed by where its work starts (`WorkKey`: the block and
+    the child), since a long text can start one mid-block; the TUI's
+    `BlockId::Work` and the web's `work:<item>:<child>` block key carry it.
+  - The TUI remembers when each live line first drew in its layout cache
+    and keys the row's layout on whether it is still fresh.

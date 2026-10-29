@@ -159,7 +159,10 @@ fn an_opened_work_row_shows_the_work_as_the_full_mode_does() {
     let mut events = worked_events(session, run, call, Some(ToolTerminationOutcome::Completed));
     events.push(finished(session, run));
     let state = state_of(events);
-    let expanded = HashSet::from([BlockId::Work(block_id(&state))]);
+    let expanded = HashSet::from([BlockId::Work {
+        item: block_id(&state),
+        child: 0,
+    }]);
 
     let opened = rendered(&state, Some(&expanded), TranscriptMode::Reduced, 500);
     assert!(
@@ -182,7 +185,9 @@ fn a_live_block_says_what_it_is_doing_and_ticks() {
         .iter()
         .position(|line| line.contains("▸ Working… 30s · 1 tool call"))
         .unwrap_or_else(|| panic!("working row: {live}"));
-    assert!(lines[row + 1].contains("call-1"), "{live}");
+    // What it last thought, then its last call.
+    assert!(lines[row + 1].contains("Reading the code"), "{live}");
+    assert!(lines[row + 2].contains("⎿ call-1"), "{live}");
     let later = rendered(&state, None, TranscriptMode::Reduced, 175);
     assert!(later.contains("▸ Working… 1m 15s"), "{later}");
 }
@@ -260,7 +265,7 @@ async fn the_command_and_ctrl_o_switch_the_mode_and_save_it() {
     app.expanded_blocks
         .entry(session)
         .or_default()
-        .extend([BlockId::Work(1), BlockId::Thinking(2)]);
+        .extend([BlockId::Work { item: 1, child: 0 }, BlockId::Thinking(2)]);
 
     run_palette_command(&mut app, "transcript reduced").await;
     assert_eq!(app.tui_config.transcript, TranscriptMode::Reduced);
@@ -390,7 +395,10 @@ fn a_runs_work_folds_into_one_row_across_a_background_command_ending() {
     assert!(!reduced.contains("Background:"), "{reduced}");
     assert!(reduced.contains("All done."), "{reduced}");
 
-    let expanded = HashSet::from([BlockId::Work(block_id(&state))]);
+    let expanded = HashSet::from([BlockId::Work {
+        item: block_id(&state),
+        child: 0,
+    }]);
     let opened = rendered(&state, Some(&expanded), TranscriptMode::Reduced, 500);
     assert!(opened.contains("▾ Worked for 12s"), "{opened}");
     assert!(opened.contains("Background: npm run dev ended"), "{opened}");
@@ -404,6 +412,111 @@ fn a_run_split_by_a_background_command_works_in_one_live_row() {
     let live = rendered(&state, None, TranscriptMode::Reduced, 130);
     assert_eq!(live.matches("Working…").count(), 1, "{live}");
     assert!(live.contains("▸ Working… 30s · 1 tool call"), "{live}");
-    assert!(live.contains("Checking the result"), "{live}");
+    // While it works, its one-line text after the call is the row's text
+    // line, not a reply below it.
+    let lines = live.lines().collect::<Vec<_>>();
+    let row = lines
+        .iter()
+        .position(|line| line.contains("Working…"))
+        .expect("the working row");
+    assert!(lines[row + 1].contains("All done."), "{live}");
+    assert!(lines[row + 2].contains("⎿ call-1"), "{live}");
+    assert_eq!(live.matches("All done.").count(), 1, "{live}");
     assert!(!live.contains("Worked for"), "{live}");
+}
+
+#[test]
+fn a_long_text_between_calls_shows_and_splits_the_work() {
+    let (session, run, call) = (SessionId::new_v7(), run_id(), ToolCallId::new_v7());
+    let second = AttemptId::new_v7();
+    let mut events = worked_events(session, run, call, None);
+    events.extend([
+        at(
+            tool_terminated(
+                session,
+                4,
+                run,
+                call,
+                1,
+                "call-1",
+                ToolTerminationOutcome::Completed,
+            ),
+            105,
+        ),
+        at(attempt_started(session, 5, run, second, None), 106),
+        at(
+            turn_committed(
+                session,
+                6,
+                run,
+                second,
+                2,
+                vec![
+                    text_part("Here is what I found.\n\nThe reducer splits blocks."),
+                    reasoning_part("**Checking again**"),
+                    text_part("All done."),
+                ],
+                Vec::new(),
+                None,
+            ),
+            110,
+        ),
+        finished(session, run),
+    ]);
+    let state = state_of(events);
+    let reduced = rendered(&state, None, TranscriptMode::Reduced, 500);
+    assert_eq!(reduced.matches("Worked for").count(), 2, "{reduced}");
+    let found = reduced
+        .find("The reducer splits blocks.")
+        .expect("the long text shows");
+    let rows = reduced
+        .match_indices("Worked for")
+        .map(|(at, _)| at)
+        .collect::<Vec<_>>();
+    assert!(rows[0] < found && found < rows[1], "{reduced}");
+    assert!(reduced.contains("All done."), "{reduced}");
+    assert!(!reduced.contains("call-1"), "{reduced}");
+}
+
+#[test]
+fn a_working_runs_text_over_more_lines_breaks_out_below_its_row() {
+    let (session, run, call) = (SessionId::new_v7(), run_id(), ToolCallId::new_v7());
+    let second = AttemptId::new_v7();
+    let mut events = worked_events(session, run, call, None);
+    events.extend([
+        at(
+            tool_terminated(
+                session,
+                4,
+                run,
+                call,
+                1,
+                "call-1",
+                ToolTerminationOutcome::Completed,
+            ),
+            105,
+        ),
+        at(attempt_started(session, 5, run, second, None), 106),
+        at(
+            turn_committed(
+                session,
+                6,
+                run,
+                second,
+                2,
+                vec![text_part(
+                    "Here is what I found.\n\nThe reducer splits blocks.",
+                )],
+                Vec::new(),
+                None,
+            ),
+            110,
+        ),
+    ]);
+    let state = state_of(events);
+    let live = rendered(&state, None, TranscriptMode::Reduced, 130);
+    // The work before it ended where it started; it shows in full.
+    assert!(live.contains("▸ Worked for"), "{live}");
+    assert!(!live.contains("Working…"), "{live}");
+    assert!(live.contains("The reducer splits blocks."), "{live}");
 }

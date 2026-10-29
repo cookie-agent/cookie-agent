@@ -16,7 +16,7 @@ otherwise the last user text decides.
   the background, whose very slow answer outlasts the delegating turn;
 - containing "sleepy": a `bash` call that sleeps, to move to the background;
 - containing "chatty": a `bash` call that prints a line, then sleeps, so it
-  reports progress while it runs;
+  reports progress while it runs; with "narrate", a line of text first;
 - containing "ticking": a `bash` call that prints a tick every 100 ms for
   about 10 s, so an open call's output changes while it is clicked;
 - containing "many lines": a `bash` call that prints 100 lines;
@@ -76,9 +76,11 @@ def text_reply(parts, pause=0.0):
     yield chunk({}, "stop", USAGE)
 
 
-def tool_reply(name="bash", arguments=None):
+def tool_reply(name="bash", arguments=None, say=None):
     if arguments is None:
         arguments = {"command": "printf 'hello from the tool\\n'"}
+    if say:
+        yield chunk({"content": say})
     call = {
         "index": 0,
         "id": "call-" + str(time.time_ns()),
@@ -202,7 +204,8 @@ def reply(request):
     if "ticking" in text:
         return tool_reply("bash", {"command": "for i in $(seq 1 100); do echo tick $i; sleep 0.1; done"})
     if "chatty" in text:
-        return tool_reply("bash", {"command": "printf 'step one\\n'; sleep 6; printf 'done\\n'"})
+        say = "Printing the first step, then waiting." if "narrate" in text else None
+        return tool_reply("bash", {"command": "printf 'step one\\n'; sleep 6; printf 'done\\n'"}, say)
     if "many lines" in text:
         return tool_reply("bash", {"command": "seq 1 100"})
     if "wordy command" in text:

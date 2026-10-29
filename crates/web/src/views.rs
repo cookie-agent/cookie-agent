@@ -1454,7 +1454,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     let work_spins = Memo::new(move |_| {
         use cookie_agent_client_state::{
             ProducerMessageStatus, TranscriptItem,
-            transcript_mode::{FoldPlan, ItemFold, TranscriptMode},
+            transcript_mode::{FoldPlan, TranscriptMode},
         };
         store_frame.track();
         if workspace.transcript.get() != TranscriptMode::Reduced {
@@ -1477,14 +1477,14 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     ),
                     _ => true,
                 })?;
+                // It is in a folded run whose last fold works.
                 let plan = FoldPlan::of(state);
-                let (ItemFold::Block { lead, .. } | ItemFold::Row { lead }) =
-                    plan.get(last.id())?;
-                Some(
-                    plan.work_row(state, lead, jiff::Timestamp::now())?
-                        .summary
-                        .live,
-                )
+                plan.get(last.id())?;
+                let now = jiff::Timestamp::now();
+                Some(plan.keys().any(|key| {
+                    plan.work_row(state, key, now, 0)
+                        .is_some_and(|row| row.summary.live)
+                }))
             })
         })
         .unwrap_or(false)

@@ -32,7 +32,12 @@ use std::{
     time::Duration,
 };
 
-use cookie_agent_client_state::transcript_mode::{FoldPlan, TranscriptMode};
+use cookie_agent_client_state::transcript_mode::{
+    FoldPlan, TranscriptMode, WorkKey, WorkLines, WorkRow,
+};
+
+/// Each fold's work row and which of its lines just changed, by its lead.
+type WorkRows = HashMap<WorkKey, (WorkRow, WorkLinesFresh)>;
 #[cfg(test)]
 use cookie_agent_protocol::GoalStatus;
 use cookie_agent_protocol::{
@@ -339,8 +344,12 @@ pub(super) enum BlockId {
         content_index: u32,
     },
     Thinking(u64),
-    /// The reduced mode's work row of the assistant block with this ID.
-    Work(u64),
+    /// The reduced mode's work row of the fold that starts at this block's
+    /// child.
+    Work {
+        item: u64,
+        child: u32,
+    },
     Tool(cookie_agent_protocol::ToolCallId),
     ToolOutput {
         call_id: cookie_agent_protocol::ToolCallId,
@@ -586,6 +595,9 @@ pub(super) struct LayoutCache {
     assistant_parts: HashMap<u64, CachedAssistantPartLayout>,
     tool_rows: HashMap<BlockId, CachedToolLayout>,
     system_prompt: Option<CachedSystemPromptLayout>,
+    /// Each live work row's lines, by its fold's lead and line (0 the
+    /// text, 1 the call), with when each was first drawn.
+    work_lines: HashMap<(WorkKey, u8), (String, jiff::Timestamp)>,
     #[cfg(test)]
     pub(super) item_layout_passes: u64,
     #[cfg(test)]
@@ -600,7 +612,50 @@ enum ScrollAnchorPoint {
     BlockEnd(BlockId),
 }
 
+impl BlockId {
+    /// The work row of the fold `key`.
+    pub(super) fn work(key: WorkKey) -> Self {
+        Self::Work {
+            item: key.item,
+            child: key.child,
+        }
+    }
+}
+
+/// How long a work row's new line draws dim: one animation step.
+const FRESH_WORK_LINE: std::time::Duration = std::time::Duration::from_millis(350);
+
 impl LayoutCache {
+    /// Notes the lines the work row of the fold `lead` shows at `now`, and
+    /// which of them first showed less than [`FRESH_WORK_LINE`] ago.
+    fn note_work_lines(
+        &mut self,
+        lead: WorkKey,
+        lines: Option<&WorkLines>,
+        now: jiff::Timestamp,
+    ) -> WorkLinesFresh {
+        let mut note = |slot: u8, line: Option<&String>| {
+            let Some(line) = line else {
+                self.work_lines.remove(&(lead, slot));
+                return false;
+            };
+            let (seen, at) = self
+                .work_lines
+                .entry((lead, slot))
+                .or_insert_with(|| (line.clone(), now));
+            if seen != line {
+                *seen = line.clone();
+                *at = now;
+            }
+            std::time::Duration::try_from(now.duration_since(*at))
+                .is_ok_and(|age| age < FRESH_WORK_LINE)
+        };
+        WorkLinesFresh {
+            text: note(0, lines.and_then(|lines| lines.text.as_ref())),
+            tool: note(1, lines.and_then(|lines| lines.tool.as_ref())),
+        }
+    }
+
     /// The closest stable boundary before the viewport, plus its row offset.
     /// Block ends also anchor text following a tool within one assistant item.
     fn scroll_anchor(&self, offset: usize) -> Option<(ScrollAnchorPoint, usize)> {
@@ -891,10 +946,10 @@ struct TranscriptRenderContext<'a> {
     theme: &'a Theme,
     highlighter: &'a dyn Highlighter,
     minimum_event_level: crate::state::EventLevel,
-    /// The time live work rows count their elapsed time to.
-    now: jiff::Timestamp,
     /// The reduced mode's folds; none in the full mode.
     folds: &'a FoldPlan,
+    /// Each fold's work row and which of its lines just changed, by lead.
+    work_rows: &'a WorkRows,
     /// Animation bucket (0–3) driving the streaming "thinking…" ellipsis.
     clock_bucket: u8,
     model_names: &'a ModelDisplayNames,
@@ -1057,7 +1112,16 @@ pub(super) fn ensure_cached_transcript_layout_in(
         now,
     } = view;
     let folds = view.folds(state);
-    let fold_key = |item: &TranscriptItem| item_fold_key(state, &folds, item, expanded, now);
+    let room = work_line_room(width);
+    let work_rows = folds
+        .keys()
+        .filter_map(|lead| {
+            let row = folds.work_row(state, lead, now, room)?;
+            let fresh = cache.note_work_lines(lead, row.lines.as_ref(), now);
+            Some((lead, (row, fresh)))
+        })
+        .collect::<WorkRows>();
+    let fold_key = |item: &TranscriptItem| item_fold_key(&folds, &work_rows, item, expanded);
     let key = LayoutCacheKey {
         session_id,
         session_generation: state.generation,
@@ -1202,8 +1266,8 @@ pub(super) fn ensure_cached_transcript_layout_in(
                 theme,
                 highlighter,
                 minimum_event_level,
-                now,
                 folds: &folds,
+                work_rows: &work_rows,
                 clock_bucket,
                 model_names,
                 assistant_part_cache: &mut cache.assistant_parts,
@@ -2367,6 +2431,13 @@ pub(super) fn transcript_layout_viewed(
 ) -> TranscriptLayout {
     let minimum_event_level = view.minimum_event_level;
     let folds = view.folds(state);
+    let work_rows = folds
+        .keys()
+        .filter_map(|lead| {
+            let row = folds.work_row(state, lead, view.now, work_line_room(width))?;
+            Some((lead, (row, WorkLinesFresh::default())))
+        })
+        .collect::<WorkRows>();
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut tool_rows = HashMap::new();
@@ -2396,8 +2467,8 @@ pub(super) fn transcript_layout_viewed(
                 theme,
                 highlighter,
                 minimum_event_level,
-                now: view.now,
                 folds: &folds,
+                work_rows: &work_rows,
                 clock_bucket,
                 model_names: &model_names,
                 assistant_part_cache: &mut assistant_parts,

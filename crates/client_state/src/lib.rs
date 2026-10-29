@@ -1328,6 +1328,16 @@ impl SessionState {
             .is_some_and(|open| open.item_id == item_id && open.part_id == part_id)
     }
 
+    /// Whether the text part `part_id` of the block `item_id` is still
+    /// streaming.
+    pub fn is_open_text(&self, item_id: u64, part_id: u64) -> bool {
+        self.open_assistant.is_some_and(|open| {
+            open.item_id == item_id
+                && open.part_id == part_id
+                && open.kind == AssistantPartKind::Text
+        })
+    }
+
     pub fn is_open_thinking(&self, item_id: u64, part_id: u64) -> bool {
         self.open_assistant.is_some_and(|open| {
             open.item_id == item_id

@@ -1187,7 +1187,7 @@ impl App {
         if mode == cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced {
             // Every work row folds again.
             for blocks in self.expanded_blocks.values_mut() {
-                blocks.retain(|id| !matches!(id, crate::ui::transcript::BlockId::Work(_)));
+                blocks.retain(|id| !matches!(id, crate::ui::transcript::BlockId::Work { .. }));
             }
         }
         let saved = self

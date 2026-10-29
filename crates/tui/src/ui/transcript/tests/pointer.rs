@@ -332,7 +332,7 @@ async fn every_clickable_element_hovers_visibly() {
         app.hit_map
             .blocks
             .iter()
-            .any(|hit| matches!(hit.id, BlockId::Work(_))),
+            .any(|hit| matches!(hit.id, BlockId::Work { .. })),
         "a work row on screen"
     );
     seen.extend(reduced);

@@ -5714,7 +5714,7 @@ def reduced_transcript(browser):
     print("Settings › Display holds the transcript mode and the diagnostics")
 
     new_session(browser)
-    send(browser, "be chatty")
+    send(browser, "be chatty and narrate")
     # The call waiting for approval shows outside the fold.
     browser.wait("the approval", lambda: count(browser, "#transcript [data-action=approvals]") == 1)
     browser.click("#transcript [data-action=approvals]")
@@ -5730,6 +5730,20 @@ def reduced_transcript(browser):
     )
     label = browser.text(work + " [data-work-label]")
     assert label.startswith("Working…") and "1 tool call" in label, label
+    # Its call shows on a line of its own, which keeps its node while the
+    # time ticks, so it settles in once rather than every second.
+    tool = work + " [data-work-tool]"
+    assert "printf" in browser.text(tool), browser.text(tool)
+    # What it said before the call is the line above.
+    assert browser.text(work + " [data-work-text]") == "Printing the first step, then waiting."
+    assert browser.script("return document.querySelector(arguments[0]).dataset.key", tool)
+    browser.script("document.querySelector(arguments[0]).__seen = true", tool)
+    before = browser.text(work + " [data-work-label]")
+    browser.wait("the time ticking", lambda: browser.text(work + " [data-work-label]") != before, timeout=10)
+    assert browser.script("return document.querySelector(arguments[0]).__seen === true", tool), "the call's line was drawn anew"
+    assert browser.script(
+        "return getComputedStyle(document.querySelector(arguments[0])).animationName", tool
+    ) == "work-line-in"
     # The live row spins in place of the trailing working row.
     assert count(browser, "#transcript [data-work=live] .animate-spin") == 1, "the live row does not spin"
     assert count(browser, "#working") == 0, "the working row repeats the live work row"

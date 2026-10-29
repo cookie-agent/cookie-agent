@@ -459,3 +459,29 @@ body {
 .dark .hljs-template-variable {
   color: #e08ae0;
 }
+
+/* A live work row's line that says something new settles into place: it
+   rises a little out of a soft blur, while the row's ticking time keeps the
+   lines it already shows (`data-key`, crates/web/src/morph.rs). */
+@keyframes work-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.375rem);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+.work-line {
+  animation: work-line-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-line {
+    animation: none;
+  }
+}

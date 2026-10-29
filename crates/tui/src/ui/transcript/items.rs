@@ -1,6 +1,6 @@
 //! Per-transcript-item layout, block identity, and interaction probes.
 
-use cookie_agent_client_state::transcript_mode::ItemFold;
+use cookie_agent_client_state::transcript_mode::{ChildFold, ItemFold};
 
 use super::*;
 
@@ -57,28 +57,38 @@ pub(super) fn item_layout_key_matches(
 /// in one, whether the fold is open, and on a fold's first block what its
 /// work row says. Zero outside the folds.
 pub(super) fn item_fold_key(
-    state: &SessionState,
     folds: &FoldPlan,
+    work_rows: &WorkRows,
     item: &TranscriptItem,
     expanded: Option<&HashSet<BlockId>>,
-    now: jiff::Timestamp,
 ) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let Some(fold) = folds.get(item.id()) else {
         return 0;
     };
-    let (ItemFold::Block { lead, .. } | ItemFold::Row { lead }) = fold;
     let mut hasher = std::hash::DefaultHasher::new();
     fold.hash(&mut hasher);
-    expanded
-        .is_some_and(|blocks| blocks.contains(&BlockId::Work(lead)))
-        .hash(&mut hasher);
-    if lead == item.id()
-        && let Some(row) = folds.work_row(state, lead, now)
-    {
-        row.summary.label().hash(&mut hasher);
-        row.summary.failed.hash(&mut hasher);
-        row.subtext.hash(&mut hasher);
+    let keys = match fold {
+        ItemFold::Row { key } => vec![(*key, false)],
+        ItemFold::Block(block) => block
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                ChildFold::Work { key, starts } => Some((*key, *starts)),
+                ChildFold::Shown => None,
+            })
+            .collect(),
+    };
+    for (key, starts) in keys {
+        expanded
+            .is_some_and(|blocks| blocks.contains(&BlockId::work(key)))
+            .hash(&mut hasher);
+        if starts && let Some((row, fresh)) = work_rows.get(&key) {
+            row.summary.label().hash(&mut hasher);
+            row.summary.failed.hash(&mut hasher);
+            row.lines.hash(&mut hasher);
+            fresh.hash(&mut hasher);
+        }
     }
     hasher.finish()
 }
@@ -181,27 +191,13 @@ pub(super) fn for_each_item_block_id(
     }
 }
 
-/// [`for_each_item_block_id`], and first an assistant block's work row,
-/// whose open state its layout depends on in the reduced mode.
-fn for_each_interaction_block_id(
-    item: &TranscriptItem,
-    mut visit: impl FnMut(BlockId) -> bool,
-) -> bool {
-    if let TranscriptItem::Assistant { id, .. } = item
-        && !visit(BlockId::Work(*id))
-    {
-        return false;
-    }
-    for_each_item_block_id(item, visit)
-}
-
 pub(super) fn item_interaction_matches(
     expected: &[(BlockId, bool)],
     item: &TranscriptItem,
     expanded: Option<&HashSet<BlockId>>,
 ) -> bool {
     let mut index = 0;
-    let complete = for_each_interaction_block_id(item, |id| {
+    let complete = for_each_item_block_id(item, |id| {
         let matches = expected.get(index).is_some_and(|entry| {
             *entry == (id, expanded.is_some_and(|blocks| blocks.contains(&id)))
         });
@@ -226,7 +222,7 @@ pub(super) fn item_interaction(
     expanded: Option<&HashSet<BlockId>>,
 ) -> Vec<(BlockId, bool)> {
     let mut interaction = Vec::new();
-    for_each_interaction_block_id(item, |id| {
+    for_each_item_block_id(item, |id| {
         interaction.push((id, expanded.is_some_and(|blocks| blocks.contains(&id))));
         true
     });
@@ -306,10 +302,10 @@ pub(super) fn transcript_item_layout(
     context: &mut TranscriptRenderContext<'_>,
 ) -> ItemLayout {
     // A background row inside a folded run's work shows when it opens.
-    if let Some(ItemFold::Row { lead }) = context.folds.get(item.id())
+    if let Some(ItemFold::Row { key }) = context.folds.get(item.id())
         && !context
             .expanded
-            .is_some_and(|blocks| blocks.contains(&BlockId::Work(lead)))
+            .is_some_and(|blocks| blocks.contains(&BlockId::work(*key)))
     {
         return ItemLayout::default();
     }
