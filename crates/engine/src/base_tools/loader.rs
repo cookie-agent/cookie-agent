@@ -1,9 +1,9 @@
-//! `tool_search` and `tool_load`, the loader tools of deferred tools
-//! (`docs/site/specs/deferred-tools-cookie.md` section 5).
+//! `tool_search`, the loader tool of deferred tools
+//! (`docs/site/specs/stable-prefix.md` section 2).
 //!
-//! Base-layer tools that declare no permission: they see and load only the
+//! A base-layer tool that declares no permission: it sees and loads only the
 //! tools the session's latest request already offers. The engine publishes
-//! them only when that request defers a tool.
+//! it only when that request defers a tool.
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
@@ -22,31 +22,25 @@ use super::{
     tool_error,
 };
 use crate::Engine;
-use crate::deferred_tools::{DeferralView, DeferredEntry, TOOL_LOAD, TOOL_SEARCH};
+use crate::deferred_tools::{DeferralView, DeferredEntry, TOOL_SEARCH};
 
-/// Matches `tool_search` lists when the call sets no `limit`.
-const DEFAULT_SEARCH_LIMIT: usize = 10;
+/// How many matches a keyword query loads when the call sets no `limit`.
+const DEFAULT_SEARCH_LIMIT: usize = 5;
+
+/// The prefix of a query that names the tools to load exactly.
+const SELECT_PREFIX: &str = "select:";
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ToolSearchArgs {
-    /// Words describing the tools you need, such as "browser click" or "calendar events".
+    /// "select:<name>,<name>" loads those tools by exact name; any other text is keywords, such as "browser click", and loads the best matches.
     query: String,
-    /// At most how many matches to list; 10 when absent, and every match when 0 or less.
+    /// At most how many keyword matches to load; 5 when absent, and every match when 0 or less. A select: query loads every name it lists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit: Option<i64>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ToolLoadArgs {
-    /// Exact names of the tools to load, as an announcement or tool_search lists them.
-    #[schemars(length(min = 1))]
-    names: Vec<String>,
-}
-
-/// The two loader tools; one provider so they are offered and withheld
-/// together.
+/// The loader tool.
 pub struct LoaderTools {
     engine: Engine,
 }
@@ -67,29 +61,13 @@ impl LoaderTools {
             result_truncation: Default::default(),
             name: TOOL_SEARCH.into(),
             permission_name: None,
-            description: "Search the tools you can load by keyword: their names, groups, descriptions, and parameters. It lists matching tools with their group and a one-line description, and never loads them; load one with tool_load before calling it.".into(),
+            description: "Load deferred tools so you can call them. Use \"select:<name>,<name>\" to load tools by the exact names a <tools_added> announcement lists, or keywords to find and load the best matches by name, group, description, and parameters. Loaded tools stay callable.".into(),
             parameters: schema::<ToolSearchArgs>(),
         }
     }
 
-    #[must_use]
-    pub fn load_spec() -> ToolSpec {
-        ToolSpec {
-            background: false,
-            background_default: false,
-            collision: Default::default(),
-            output: Default::default(),
-            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
-            result_truncation: Default::default(),
-            name: TOOL_LOAD.into(),
-            permission_name: None,
-            description: "Load deferred tools by exact name so you can call them. Tools listed in <tools_added> announcements or by tool_search load this way, several in one call; once loaded they stay callable.".into(),
-            parameters: schema::<ToolLoadArgs>(),
-        }
-    }
-
     fn check(name: &str) -> Result<(), ToolError> {
-        if crate::deferred_tools::is_loader(name) {
+        if name == TOOL_SEARCH {
             Ok(())
         } else {
             Err(ToolError::execution(
@@ -100,13 +78,7 @@ impl LoaderTools {
 
     fn argument(name: &str, arguments: &serde_json::Value) -> Result<String, ToolError> {
         Self::check(name)?;
-        if name == TOOL_SEARCH {
-            Ok(parse_args::<ToolSearchArgs>(TOOL_SEARCH, arguments.clone())?.query)
-        } else {
-            Ok(parse_args::<ToolLoadArgs>(TOOL_LOAD, arguments.clone())?
-                .names
-                .join(", "))
-        }
+        Ok(parse_args::<ToolSearchArgs>(TOOL_SEARCH, arguments.clone())?.query)
     }
 }
 
@@ -117,7 +89,7 @@ impl ToolProvider for LoaderTools {
     }
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        Ok(vec![Self::search_spec(), Self::load_spec()])
+        Ok(vec![Self::search_spec()])
     }
 
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
@@ -143,18 +115,23 @@ impl ToolProvider for LoaderTools {
 
     fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
         match Self::argument(&call.name, &call.arguments) {
-            Ok(argument) if call.name == TOOL_SEARCH => base_presentation(
-                &format!("Search tools: {argument}"),
-                cookie_agent_protocol::ToolHint::GENERIC,
-                &argument,
-                vec![("query", argument.clone())],
-            ),
-            Ok(argument) => base_presentation(
-                &format!("Load {argument}"),
-                cookie_agent_protocol::ToolHint::GENERIC,
-                &argument,
-                vec![("names", argument.clone())],
-            ),
+            Ok(argument) => match selected(&argument) {
+                Some(names) => {
+                    let names = names.join(", ");
+                    base_presentation(
+                        &format!("Load {names}"),
+                        cookie_agent_protocol::ToolHint::GENERIC,
+                        &names,
+                        vec![("query", argument.clone())],
+                    )
+                }
+                None => base_presentation(
+                    &format!("Search tools: {argument}"),
+                    cookie_agent_protocol::ToolHint::GENERIC,
+                    &argument,
+                    vec![("query", argument.clone())],
+                ),
+            },
             Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
         }
     }
@@ -165,48 +142,35 @@ impl ToolProvider for LoaderTools {
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         Self::check(&call.name)?;
-        let (normalized, request) = if call.name == TOOL_SEARCH {
-            let args: ToolSearchArgs = parse_args(TOOL_SEARCH, call.arguments)?;
-            let limit = match args.limit {
-                Some(limit) if limit <= 0 => usize::MAX,
-                Some(limit) => usize::try_from(limit).unwrap_or(usize::MAX),
-                None => DEFAULT_SEARCH_LIMIT,
-            };
-            (
-                serde_json::to_value(&args).map_err(tool_error)?,
-                LoaderRequest::Search {
-                    query: args.query,
-                    limit,
-                },
-            )
-        } else {
-            let args: ToolLoadArgs = parse_args(TOOL_LOAD, call.arguments)?;
-            if args.names.is_empty() {
-                return Err(ToolError::execution("names must list at least one tool"));
+        let args: ToolSearchArgs = parse_args(TOOL_SEARCH, call.arguments)?;
+        let request = match selected(&args.query) {
+            Some(names) if names.is_empty() => {
+                return Err(ToolError::execution("select: must name at least one tool"));
             }
-            (
-                serde_json::to_value(&args).map_err(tool_error)?,
-                LoaderRequest::Load { names: args.names },
-            )
+            Some(names) => LoaderRequest::Select { names },
+            None => LoaderRequest::Search {
+                query: args.query.clone(),
+                limit: match args.limit {
+                    Some(limit) if limit <= 0 => usize::MAX,
+                    Some(limit) => usize::try_from(limit).unwrap_or(usize::MAX),
+                    None => DEFAULT_SEARCH_LIMIT,
+                },
+            },
         };
-        let name: &'static str = if call.name == TOOL_SEARCH {
-            TOOL_SEARCH
-        } else {
-            TOOL_LOAD
-        };
+        let normalized = serde_json::to_value(&args).map_err(tool_error)?;
         // No rule is evaluated; the capability only names the operation.
-        let action = PermissionAction::new(name).map_err(tool_error)?;
+        let action = PermissionAction::new(TOOL_SEARCH).map_err(tool_error)?;
         let binding = serde_json::to_vec(&normalized).map_err(tool_error)?;
         let resource = prepared_resource(
             action.clone(),
             "deferred-tools",
-            name.as_bytes(),
+            TOOL_SEARCH.as_bytes(),
             &binding,
             PreparedBindingLifetime::ProcessLocal,
             ApprovalResourceSource::PrimaryOperation,
         )?;
         let operation = prepared_operation(
-            name,
+            TOOL_SEARCH,
             &normalized,
             vec![(action, "load")],
             vec![resource],
@@ -224,9 +188,22 @@ impl ToolProvider for LoaderTools {
     }
 }
 
+/// The names a `select:` query lists, or `None` for a keyword query.
+fn selected(query: &str) -> Option<Vec<String>> {
+    let names = query.trim_start().strip_prefix(SELECT_PREFIX)?;
+    Some(
+        names
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 enum LoaderRequest {
     Search { query: String, limit: usize },
-    Load { names: Vec<String> },
+    Select { names: Vec<String> },
 }
 
 struct LoaderExecutor {
@@ -243,7 +220,7 @@ impl PreparedExecutor for LoaderExecutor {
         let view = self.engine.deferral_view(context.session);
         let result = match self.request {
             LoaderRequest::Search { query, limit } => search_result(&view, &query, limit),
-            LoaderRequest::Load { names } => load_result(&view, &names),
+            LoaderRequest::Select { names } => load_result(&view, &names, None),
         };
         Ok(cookie_agent_runtime_api::ToolCompletion::single(result))
     }
@@ -309,6 +286,7 @@ fn haystack(entry: &DeferredEntry) -> String {
     text.to_lowercase()
 }
 
+/// Loads the best keyword matches for `query`, at most `limit` of them.
 pub(crate) fn search_result(view: &DeferralView, query: &str, limit: usize) -> ToolResult {
     let terms = query
         .split_whitespace()
@@ -341,63 +319,74 @@ pub(crate) fn search_result(view: &DeferralView, query: &str, limit: usize) -> T
     if matches.is_empty() {
         return result(
             "No matching tools",
-            format!("No loadable tools match \"{query}\". Try other words, or a tool's group."),
+            format!(
+                "No loadable tools match \"{query}\". Try other words, a group's name, or select:<name>."
+            ),
             Vec::new(),
         );
     }
     let total = matches.len();
-    let lines = matches
+    let names = matches
         .into_iter()
         .take(limit)
-        .map(|(_, entry)| {
-            let loaded = if view.loaded.contains(&entry.name) {
-                " (loaded)"
-            } else {
-                ""
-            };
-            format!(
-                "{} [{}]{loaded}: {}",
-                entry.name,
-                entry.group.name,
-                first_sentence(&entry.description)
-            )
-        })
+        .map(|(_, entry)| entry.name.clone())
         .collect::<Vec<_>>();
-    let mut output = lines.join("\n");
-    if lines.len() < total {
-        output.push_str(&format!(
-            "\n{} more match; raise limit to list them.",
-            total - lines.len()
-        ));
-    }
-    output.push_str("\nLoad tools with tool_load before calling them.");
-    result("Tool search", output, Vec::new())
+    let more = (names.len() < total).then(|| {
+        format!(
+            "{} more match; raise limit or select them by name.",
+            total - names.len()
+        )
+    });
+    load_result(view, &names, more)
 }
 
-pub(crate) fn load_result(view: &DeferralView, names: &[String]) -> ToolResult {
+/// Loads `names`, recording the tools that newly load, and says why the
+/// others did not; `more` ends the output.
+pub(crate) fn load_result(
+    view: &DeferralView,
+    names: &[String],
+    more: Option<String>,
+) -> ToolResult {
     let mut loaded = Vec::new();
+    let mut lines = Vec::new();
     let mut notes = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for name in names {
         if !seen.insert(name.as_str()) {
             continue;
         }
-        if view.eager.contains(name) {
-            notes.push(format!("{name}: already callable, no need to load it"));
-        } else if !view.deferred.iter().any(|entry| &entry.name == name) {
-            notes.push(format!("{name}: no loadable tool has this name"));
-        } else if view.loaded.contains(name) {
-            notes.push(format!("{name}: already loaded"));
-        } else {
-            loaded.push(name.clone());
+        let entry = view.deferred.iter().find(|entry| &entry.name == name);
+        match entry {
+            _ if view.eager.contains(name) => {
+                notes.push(format!("{name}: already callable, no need to load it"));
+            }
+            None => notes.push(format!("{name}: no loadable tool has this name")),
+            Some(entry) => {
+                let already = if view.loaded.contains(name) {
+                    " (already loaded)"
+                } else {
+                    loaded.push(name.clone());
+                    ""
+                };
+                lines.push(format!(
+                    "- {} [{}]{already}: {}",
+                    entry.name,
+                    entry.group.name,
+                    first_sentence(&entry.description)
+                ));
+            }
         }
     }
-    let mut output = if loaded.is_empty() {
-        "Loaded no new tools.".to_owned()
-    } else {
-        format!("Loaded tools: {}.", loaded.join(", "))
+    let mut output = match loaded.len() {
+        0 => "Loaded no new tools.".to_owned(),
+        1 => "Loaded 1 tool:".to_owned(),
+        count => format!("Loaded {count} tools:"),
     };
-    for note in notes {
+    for line in lines {
+        output.push('\n');
+        output.push_str(&line);
+    }
+    for note in notes.into_iter().chain(more) {
         output.push('\n');
         output.push_str(&note);
     }

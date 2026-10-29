@@ -1,6 +1,6 @@
 //! Deferred tools end to end (`docs/site/specs/deferred-tools-cookie.md`):
 //! a model that loads deferred tools natively gets an MCP tool deferred,
-//! announced, loaded with `tool_load`, and then called; a checkpoint folds
+//! announced, loaded with `tool_search`, and then called; a checkpoint folds
 //! the loaded tool into the next round.
 
 use std::sync::Arc;
@@ -173,8 +173,8 @@ fn load_then_write(responses: &tokio::sync::mpsc::UnboundedSender<MatchedScripte
             "user",
             scripted_tool_body(
                 "load-1",
-                "tool_load",
-                serde_json::json!({"names": ["write"]}),
+                "tool_search",
+                serde_json::json!({"query": "select:write"}),
             ),
         ),
         (
@@ -220,8 +220,8 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
     // The deferred tool is never declared up front; the loaders are.
     for request in &requests {
         let names = tool_names(request);
-        assert!(names.contains(&"tool_load".to_owned()), "{names:?}");
         assert!(names.contains(&"tool_search".to_owned()), "{names:?}");
+        assert!(!names.contains(&"tool_load".to_owned()), "{names:?}");
         assert!(!names.contains(&"write".to_owned()), "{names:?}");
     }
     let first = requests[0]["messages"].as_array().expect("messages");
@@ -249,7 +249,11 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
         .iter()
         .position(|message| message["role"] == "tool")
         .expect("load result");
-    assert_eq!(second[load_index]["content"], "Loaded tools: write.");
+    let output = second[load_index]["content"].as_str().expect("load output");
+    assert!(
+        output.starts_with("Loaded 1 tool:\n- write [chrome]"),
+        "{output}"
+    );
     let loaded = &second[load_index + 1];
     assert_eq!(loaded["role"], "system");
     assert!(loaded.get("content").is_none());
@@ -517,7 +521,7 @@ async fn a_refused_deferral_is_retried_up_front_and_remembered() {
         .collect::<Vec<_>>();
     assert!(deferred_names(&requests[2]).is_empty());
     assert!(names.contains(&"write"), "{names:?}");
-    assert!(!names.contains(&"tool_load"), "{names:?}");
+    assert!(!names.contains(&"tool_search"), "{names:?}");
     fixture.engine.shutdown().await;
 }
 

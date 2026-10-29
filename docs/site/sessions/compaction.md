@@ -251,7 +251,7 @@ and the messages after it instead of this summary-and-tail layout.
 With [deferred tools](../reference/tools.md#deferred-tools), a checkpoint
 folds the tools loaded before it: from the next request on they are declared
 up front, and the model is told afresh what it can still load. The retained
-messages keep calls to the folded tools, and lose the `tool_load` calls that
+messages keep calls to the folded tools, and lose the loader calls that
 loaded them, the earlier announcements, and calls to tools the session no
 longer offers.
 

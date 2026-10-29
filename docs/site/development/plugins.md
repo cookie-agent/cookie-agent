@@ -308,7 +308,7 @@ tools are not published.
 [deferred tools](../reference/tools.md#deferred-tools), a plugin's tools are
 sent deferred: the model sees their names under the plugin's name, with the
 handshake's `summary` the first time they are announced (cut to 4 KiB and
-marked as the plugin author's text), and loads one with `tool_load` before
+marked as the plugin author's text), and loads one with `tool_search` before
 calling it. `always_load = true` in the plugin's `[plugins.<name>]` table
 sends them up front instead.
 

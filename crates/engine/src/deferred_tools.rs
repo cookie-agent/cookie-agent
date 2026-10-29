@@ -18,14 +18,15 @@ use crate::runtimes::SourcedProvider;
 
 pub(crate) mod record;
 
-/// The loader that lists matching deferred tools.
+/// The loader tool: finds and loads deferred tools.
 pub(crate) const TOOL_SEARCH: &str = "tool_search";
-/// The loader that loads deferred tools by name.
-pub(crate) const TOOL_LOAD: &str = "tool_load";
+/// The retired loader that loaded deferred tools by name; history written
+/// before `tool_search` loaded holds its calls.
+pub(crate) const LEGACY_TOOL_LOAD: &str = "tool_load";
 
-/// Whether `name` is one of the loader tools.
+/// Whether `name` is a loader tool, the retired one included.
 pub(crate) fn is_loader(name: &str) -> bool {
-    matches!(name, TOOL_SEARCH | TOOL_LOAD)
+    matches!(name, TOOL_SEARCH | LEGACY_TOOL_LOAD)
 }
 
 /// The deferral policy: whether a composed tool is deferred on a model that
@@ -240,9 +241,9 @@ pub(crate) fn plan(
     if fold.round.is_some()
         && !deferred.is_empty()
         && !loaders.is_empty()
-        && !eager_names.contains(TOOL_LOAD)
+        && !eager_names.contains(TOOL_SEARCH)
     {
-        // The loader tools join mid-round, once.
+        // The loader tool joins mid-round, once.
         round.extend(loaders.iter().map(round_definition));
         round.sort_by(|left, right| left.name.cmp(&right.name));
         pending.push(EventPayload::ToolRoundStarted {

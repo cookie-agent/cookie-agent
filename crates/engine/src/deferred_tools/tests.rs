@@ -37,7 +37,7 @@ fn mcp(name: &str, server: &str) -> Candidate {
 }
 
 fn loaders() -> Vec<ToolDefinition> {
-    vec![definition(TOOL_LOAD), definition(TOOL_SEARCH)]
+    vec![definition(TOOL_SEARCH)]
 }
 
 fn names(definitions: &[ToolDefinition], deferred: bool) -> Vec<&str> {
@@ -75,10 +75,7 @@ fn a_first_request_starts_a_round_of_its_eager_tools_and_the_loaders() {
         &loaders(),
         &DeferralFold::default(),
     );
-    assert_eq!(
-        names(&plan.definitions, false),
-        ["read", "tool_load", "tool_search"]
-    );
+    assert_eq!(names(&plan.definitions, false), ["read", "tool_search"]);
     assert_eq!(
         names(&plan.definitions, true),
         ["chrome_click", "chrome_type"]
@@ -89,7 +86,7 @@ fn a_first_request_starts_a_round_of_its_eager_tools_and_the_loaders() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["read", "tool_load", "tool_search"]
+        ["read", "tool_search"]
     );
     let (added, removed) = announced(&plan).expect("announced");
     assert!(removed.is_empty());
@@ -128,7 +125,7 @@ fn fold_with_round(tools: &[&str]) -> DeferralFold {
 
 #[test]
 fn within_a_round_arrivals_are_deferred_and_departures_stay_declared() {
-    let fold = fold_with_round(&["edit", "read", "tool_load", "tool_search"]);
+    let fold = fold_with_round(&["edit", "read", "tool_search"]);
     // `edit` left; `bash` is eager by kind but arrived mid-round.
     let plan = plan(
         vec![eager("read"), eager("bash"), mcp("chrome_click", "chrome")],
@@ -138,7 +135,7 @@ fn within_a_round_arrivals_are_deferred_and_departures_stay_declared() {
     assert!(round_of(&plan).is_none(), "the round does not change");
     assert_eq!(
         names(&plan.definitions, false),
-        ["edit", "read", "tool_load", "tool_search"]
+        ["edit", "read", "tool_search"]
     );
     assert_eq!(names(&plan.definitions, true), ["bash", "chrome_click"]);
     assert_eq!(plan.departed, HashSet::from(["edit".to_owned()]));
@@ -158,17 +155,14 @@ fn the_loaders_join_a_round_that_started_without_them_once() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["read", "tool_load", "tool_search"]
+        ["read", "tool_search"]
     );
-    assert_eq!(
-        names(&plan.definitions, false),
-        ["read", "tool_load", "tool_search"]
-    );
+    assert_eq!(names(&plan.definitions, false), ["read", "tool_search"]);
 }
 
 #[test]
 fn an_announcement_carries_only_changes_and_a_summary_once() {
-    let mut fold = fold_with_round(&["read", "tool_load", "tool_search"]);
+    let mut fold = fold_with_round(&["read", "tool_search"]);
     fold.announced.insert(
         "chrome".into(),
         AnnouncedGroupState {
@@ -201,7 +195,7 @@ fn an_announcement_carries_only_changes_and_a_summary_once() {
 
 #[test]
 fn nothing_changed_announces_nothing() {
-    let mut fold = fold_with_round(&["read", "tool_load", "tool_search"]);
+    let mut fold = fold_with_round(&["read", "tool_search"]);
     fold.announced.insert(
         "chrome".into(),
         AnnouncedGroupState {
@@ -309,7 +303,7 @@ fn a_round_after_a_checkpoint_declares_the_tools_it_folded() {
     );
     assert_eq!(
         names(&plan.definitions, false),
-        ["chrome_click", "read", "tool_load", "tool_search"]
+        ["chrome_click", "read", "tool_search"]
     );
     assert_eq!(names(&plan.definitions, true), ["chrome_type"]);
     let (added, _) = announced(&plan).expect("announced");

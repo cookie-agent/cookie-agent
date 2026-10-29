@@ -121,7 +121,6 @@ pub fn base_layer_tool_specs(delegate_target: &str) -> Vec<ToolSpec> {
     specs.push(ReadArtifactTool::spec());
     specs.push(StopBackgroundTool::spec());
     specs.push(LoaderTools::search_spec());
-    specs.push(LoaderTools::load_spec());
     specs
 }
 

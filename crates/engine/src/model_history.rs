@@ -341,7 +341,7 @@ impl<'a> CheckpointTail<'a> {
     fn drops_call(&self, seq: u64, tool: &str) -> bool {
         self.covers(seq)
             && self.round.as_ref().is_some_and(|round| {
-                !round.contains(tool) || tool == crate::deferred_tools::TOOL_LOAD
+                !round.contains(tool) || crate::deferred_tools::is_loader(tool)
             })
     }
 }

@@ -160,7 +160,7 @@ rewrites a pattern.
 
 On a model that loads [deferred tools](../reference/tools.md#deferred-tools),
 an MCP server's tools are sent deferred: the model sees their names, under
-the server's name, and loads one with `tool_load` before calling it. Two keys
+the server's name, and loads one with `tool_search` before calling it. Two keys
 send tools up front instead, wherever a server is configured:
 
 ```toml

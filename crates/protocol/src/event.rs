@@ -720,7 +720,7 @@ pub struct PersistedToolResult {
     #[schemars(length(max = 4))]
     pub additional_messages: Vec<ToolEmittedMessage>,
     /// Deferred tools this result loads: they become callable from it on
-    /// (client protocol 1.44.0). Only `tool_load` sets it.
+    /// (client protocol 1.44.0). Only the loader tool sets it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 1024))]
     pub loaded_tools: Vec<String>,

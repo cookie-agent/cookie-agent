@@ -41,39 +41,41 @@ fn view() -> DeferralView {
 }
 
 #[test]
-fn search_lists_matches_without_loading_them() {
+fn keywords_load_the_best_matches() {
     let result = search_result(&view(), "chrome click", 10);
-    assert!(result.loaded_tools.is_empty(), "searching never loads");
-    let lines = result.output.lines().collect::<Vec<_>>();
-    assert_eq!(lines[0], "chrome_click [chrome]: Click an element.");
+    assert_eq!(result.loaded_tools, ["chrome_click"]);
     assert_eq!(
-        lines[1],
-        "chrome_type [chrome] (loaded): Type text into an element."
+        result.output,
+        "Loaded 1 tool:\n- chrome_click [chrome]: Click an element.\n- chrome_type [chrome] (already loaded): Type text into an element."
     );
-    assert!(!result.output.contains("calendar_list"));
 }
 
 #[test]
-fn search_matches_parameters_and_lists_up_to_its_limit() {
+fn keywords_match_parameters_and_load_up_to_the_limit() {
     let result = search_result(&view(), "selector", 1);
-    assert!(result.output.starts_with("calendar_list [calendar]"));
-    assert!(result.output.contains("2 more match"));
+    assert_eq!(result.loaded_tools, ["calendar_list"]);
+    assert!(
+        result
+            .output
+            .ends_with("2 more match; raise limit or select them by name."),
+        "{}",
+        result.output
+    );
     let every = search_result(&view(), "selector", usize::MAX);
-    assert_eq!(
+    assert_eq!(every.loaded_tools, ["calendar_list", "chrome_click"]);
+    assert!(
         every
             .output
-            .lines()
-            .filter(|line| line.contains(" ["))
-            .count(),
-        3
+            .contains("chrome_type [chrome] (already loaded)")
     );
 }
 
 #[test]
-fn search_says_when_nothing_matches_or_nothing_is_loadable() {
+fn a_search_says_when_nothing_matches_or_nothing_is_loadable() {
+    let none = search_result(&view(), "spreadsheet", 10);
+    assert!(none.loaded_tools.is_empty());
     assert!(
-        search_result(&view(), "spreadsheet", 10)
-            .output
+        none.output
             .contains("No loadable tools match \"spreadsheet\"")
     );
     assert_eq!(
@@ -83,7 +85,7 @@ fn search_says_when_nothing_matches_or_nothing_is_loadable() {
 }
 
 #[test]
-fn load_records_new_tools_and_explains_the_rest() {
+fn a_selection_loads_new_tools_and_explains_the_rest() {
     let result = load_result(
         &view(),
         &[
@@ -94,19 +96,30 @@ fn load_records_new_tools_and_explains_the_rest() {
             "read".into(),
             "missing".into(),
         ],
+        None,
     );
     assert_eq!(result.loaded_tools, ["chrome_click", "calendar_list"]);
     assert_eq!(
         result.output,
-        "Loaded tools: chrome_click, calendar_list.\nchrome_type: already loaded\nread: already callable, no need to load it\nmissing: no loadable tool has this name"
+        "Loaded 2 tools:\n- chrome_click [chrome]: Click an element.\n- calendar_list [calendar]: List calendar events.\n- chrome_type [chrome] (already loaded): Type text into an element.\nread: already callable, no need to load it\nmissing: no loadable tool has this name"
     );
 }
 
 #[test]
-fn a_load_that_loads_nothing_is_plain_text() {
-    let result = load_result(&view(), &["chrome_type".into()]);
+fn a_load_that_loads_nothing_records_nothing() {
+    let result = load_result(&view(), &["chrome_type".into()], None);
     assert!(result.loaded_tools.is_empty());
     assert!(result.output.starts_with("Loaded no new tools."));
+}
+
+#[test]
+fn select_queries_name_tools_and_keywords_do_not() {
+    assert_eq!(
+        super::selected("select:a, b,,c"),
+        Some(vec!["a".to_owned(), "b".to_owned(), "c".to_owned()])
+    );
+    assert_eq!(super::selected("select:"), Some(Vec::new()));
+    assert_eq!(super::selected("browser select"), None);
 }
 
 #[test]
@@ -116,7 +129,11 @@ fn a_first_load_carries_its_deferred_providers_sections_once() {
         ("mcp.chrome".to_owned(), None),
         "<tool_instructions provider=\"mcp.chrome\">\nSnapshot first.\n</tool_instructions>".into(),
     );
-    let result = load_result(&view, &["chrome_click".into(), "calendar_list".into()]);
+    let result = load_result(
+        &view,
+        &["chrome_click".into(), "calendar_list".into()],
+        None,
+    );
     assert_eq!(result.additional_messages.len(), 1);
     let cookie_agent_protocol::ToolEmittedContent::Text(text) =
         &result.additional_messages[0].content[0]
@@ -124,7 +141,7 @@ fn a_first_load_carries_its_deferred_providers_sections_once() {
         panic!("text instructions");
     };
     assert!(text.contains("Snapshot first."));
-    let plain = load_result(&view, &["calendar_list".into()]);
+    let plain = load_result(&view, &["calendar_list".into()], None);
     assert!(
         plain.additional_messages.is_empty(),
         "no sections for a provider that has none"

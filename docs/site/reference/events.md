@@ -697,12 +697,12 @@ A checkpoint starts the round, the announcements, and the loads over. The
 first request after it records a new round, which declares the tools the
 checkpoint folded (`folded_tools`), and announces every tool still
 deferred afresh. In the messages the checkpoint keeps raw, announcements,
-`tool_load` calls, and calls to tools the new round does not declare are
+loader calls (`tool_search`, and `tool_load` in older history), and calls to tools the new round does not declare are
 left out with their results.
 
 Both are audit events: an engine that does not know them defers nothing.
 At most 1,024 tools a record, and 2 MiB for a round's tools. A tool result's
-`loaded_tools` names the deferred tools it loaded (only `tool_load` sets
+`loaded_tools` names the deferred tools it loaded (only the loader sets
 it); its output reaches the model as text where the model cannot load
 natively.
 

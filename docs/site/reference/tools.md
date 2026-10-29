@@ -43,7 +43,6 @@ block under the system prompt in the TUI transcript.
 | [`read_artifact`](#read_artifact) | *none* |
 | [`stop_background`](#stop_background) | *none* |
 | [`tool_search`](#tool_search) | *none* |
-| [`tool_load`](#tool_load) | *none* |
 | [`memory_search`](#memory_search) | *none* |
 | [`memory_read`](#memory_read) | `memory` |
 | [`memory_write`](#memory_write) | `memory_write` |
@@ -997,8 +996,9 @@ reads.
 On a model that loads deferred tools natively, or one deferral is attempted
 on (see [providers](../extend/providers.md#provider-fields) for which models
 are), MCP and plugin tools are sent deferred: the model sees their names in
-announcements, not their definitions, until it loads them. `tool_search`
-finds them and `tool_load` loads them; a loaded tool stays callable. The
+announcements, not their definitions, until it loads them with
+`tool_search`: `select:<name>` loads tools by exact name, and keywords load
+the best matches. A loaded tool stays callable. The
 [deferred tools spec](../specs/deferred-tools-cookie.md) has the details:
 tool rounds, announcements, and compaction.
 
@@ -1008,7 +1008,7 @@ group, with the group's summary the first time a round announces it; an MCP
 server's summary is the `instructions` it sends when it connects, and is
 marked untrusted. A provider whose tools are all deferred sends its prompt
 sections (its `<tool_instructions>`, see the
-[system prompt](system-prompt.md)) with the first `tool_load` of one of its
+[system prompt](system-prompt.md)) with the first load of one of its
 tools instead of in the system prompt.
 
 <!-- generated: tool-groups -->
@@ -1040,15 +1040,15 @@ tool_search(limit?: integer, query: string)
 Description sent to the model:
 
 ```text
-Search the tools you can load by keyword: their names, groups, descriptions, and parameters. It lists matching tools with their group and a one-line description, and never loads them; load one with tool_load before calling it.
+Load deferred tools so you can call them. Use "select:<name>,<name>" to load tools by the exact names a <tools_added> announcement lists, or keywords to find and load the best matches by name, group, description, and parameters. Loaded tools stay callable.
 ```
 
-Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool is offered. Both come together and stay until the session's next compaction.
+Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool is offered. It stays until the session's next compaction.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `limit` | `integer` | no | At most how many matches to list; 10 when absent, and every match when 0 or less. |
-| `query` | `string` | yes | Words describing the tools you need, such as "browser click" or "calendar events". |
+| `limit` | `integer` | no | At most how many keyword matches to load; 5 when absent, and every match when 0 or less. A select: query loads every name it lists. |
+| `query` | `string` | yes | "select:<name>,<name>" loads those tools by exact name; any other text is keywords, such as "browser click", and loads the best matches. |
 
 ??? note "Parameters JSON Schema"
 
@@ -1058,7 +1058,7 @@ Only when the request defers a tool: on a model that loads deferred tools, when 
       "additionalProperties": false,
       "properties": {
         "limit": {
-          "description": "At most how many matches to list; 10 when absent, and every match when 0 or less.",
+          "description": "At most how many keyword matches to load; 5 when absent, and every match when 0 or less. A select: query loads every name it lists.",
           "format": "int64",
           "type": [
             "integer",
@@ -1066,7 +1066,7 @@ Only when the request defers a tool: on a model that loads deferred tools, when 
           ]
         },
         "query": {
-          "description": "Words describing the tools you need, such as \"browser click\" or \"calendar events\".",
+          "description": "\"select:<name>,<name>\" loads those tools by exact name; any other text is keywords, such as \"browser click\", and loads the best matches.",
           "type": "string"
         }
       },
@@ -1074,52 +1074,6 @@ Only when the request defers a tool: on a model that loads deferred tools, when 
         "query"
       ],
       "title": "ToolSearchArgs",
-      "type": "object"
-    }
-    ```
-
-<!-- /generated -->
-
-### `tool_load`
-
-<!-- generated: tool tool_load -->
-
-```text
-tool_load(names: string[])
-```
-
-Description sent to the model:
-
-```text
-Load deferred tools by exact name so you can call them. Tools listed in <tools_added> announcements or by tool_search load this way, several in one call; once loaded they stay callable.
-```
-
-Only when the request defers a tool: on a model that loads deferred tools, when an MCP or plugin tool is offered. Both come together and stay until the session's next compaction.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `names` | `string[]` | yes | Exact names of the tools to load, as an announcement or tool_search lists them. |
-
-??? note "Parameters JSON Schema"
-
-    ```json
-    {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "names": {
-          "description": "Exact names of the tools to load, as an announcement or tool_search lists them.",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array"
-        }
-      },
-      "required": [
-        "names"
-      ],
-      "title": "ToolLoadArgs",
       "type": "object"
     }
     ```
