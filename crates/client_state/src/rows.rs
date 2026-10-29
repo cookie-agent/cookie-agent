@@ -246,6 +246,32 @@ pub fn model_tools_summary(state: &SessionState, tools: &[String]) -> String {
     }
 }
 
+/// The deferred tools prompt: every announcement since the latest
+/// checkpoint, in order, as the model reads them; `None` before any.
+pub fn deferred_tools_prompt(state: &SessionState) -> Option<String> {
+    (!state.deferred_announcements.is_empty()).then(|| state.deferred_announcements.join("\n\n"))
+}
+
+/// Each of `tools`' group slot, by the order its group first appears among
+/// them, so the clients colour a group's tools alike; a tool of no known
+/// group shares the slot of the others like it.
+pub fn tool_group_slots(state: &SessionState, tools: &[&str]) -> Vec<usize> {
+    let mut groups = Vec::<Option<&str>>::new();
+    tools
+        .iter()
+        .map(|tool| {
+            let group = state.deferred_tool_groups.get(*tool).map(String::as_str);
+            groups
+                .iter()
+                .position(|known| *known == group)
+                .unwrap_or_else(|| {
+                    groups.push(group);
+                    groups.len() - 1
+                })
+        })
+        .collect()
+}
+
 /// The latest request's tools split in two: the ones it provided (sent up
 /// front, or deferred and loaded) and the ones it left searchable
 /// (deferred, not loaded), each in the request's order.

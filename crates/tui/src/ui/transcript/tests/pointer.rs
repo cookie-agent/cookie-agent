@@ -82,6 +82,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::UserMessage(_) => "user message",
         PointerTarget::BackgroundButton(_) => "background button",
         PointerTarget::MemoryLink(_) => "memory link",
+        PointerTarget::DeferredPromptLink => "deferred prompt link",
         PointerTarget::TranscriptBlock(_) => "transcript block",
         PointerTarget::TreeExpand(_) => "tree expand",
         PointerTarget::TreeRow(_) => "tree row",
@@ -95,6 +96,7 @@ fn is_transcript(target: PointerTarget) -> bool {
         PointerTarget::TranscriptBlock(_)
             | PointerTarget::BackgroundButton(_)
             | PointerTarget::MemoryLink(_)
+            | PointerTarget::DeferredPromptLink
             | PointerTarget::UserMessage(_)
     )
 }
@@ -354,6 +356,14 @@ async fn every_clickable_element_hovers_visibly() {
     assert_eq!(app.modal, Modal::GoalDetail);
     seen.extend(sweep(&mut app, "goal detail"));
 
+    // The expanded tools row's link opens the deferred tools prompt.
+    let (mut deferred, _) = deferred_tools_app().await;
+    deferred.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+    seen.extend(sweep(&mut deferred, "deferred tools"));
+    deferred.open_deferred_prompt();
+    assert_eq!(deferred.modal, Modal::GoalDetail);
+    seen.extend(sweep(&mut deferred, "deferred tools prompt"));
+
     app.modal = Modal::None;
     app.open_command_palette();
     seen.extend(sweep(&mut app, "palette"));
@@ -555,6 +565,7 @@ async fn every_clickable_element_hovers_visibly() {
         "user message",
         "background button",
         "memory link",
+        "deferred prompt link",
         "transcript block",
         "tree expand",
         "tree row",

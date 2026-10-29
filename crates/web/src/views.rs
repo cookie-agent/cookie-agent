@@ -58,8 +58,8 @@ pub(crate) use media_viewer::MediaViewer;
 pub(crate) use restart::{RestartBanner, RestartDialog};
 
 use depth::{
-    AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, compact_sheet, goal_sheet,
-    message_sheet, permissions_sheet, skills_sheet,
+    AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, compact_sheet,
+    deferred_prompt_sheet, goal_sheet, message_sheet, permissions_sheet, skills_sheet,
 };
 
 use manage::runtimes_sheet;
@@ -1740,6 +1740,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     workspace.open_memory_at(url);
                 }
             }
+            "deferred-prompt" => workspace.panel.set(Some(Panel::DeferredPrompt)),
             "open-media" => {
                 if let Some(url) = target.get_attribute("data-src") {
                     workspace.media_viewer.set(Some(crate::media::Viewing {
@@ -2933,6 +2934,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Permissions) => "Permissions",
         Some(Panel::Message) => "Message",
         Some(Panel::Runtimes) => "Runtimes",
+        Some(Panel::DeferredPrompt) => "Deferred tools prompt",
         Some(Panel::MoveSession) => "Move to project",
         Some(Panel::Project) => {
             if workspace.project_editor.with(|editor| {
@@ -2993,6 +2995,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
                             Some(Panel::Message) => message_sheet(workspace).into_any(),
                             Some(Panel::Runtimes) => runtimes_sheet(workspace).into_any(),
+                            Some(Panel::DeferredPrompt) => deferred_prompt_sheet(workspace).into_any(),
                             Some(Panel::MoveSession) => projects::move_sheet(workspace).into_any(),
                             Some(Panel::Project) => projects::editor_sheet(workspace).into_any(),
                             None => ().into_any(),

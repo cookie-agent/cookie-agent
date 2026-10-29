@@ -110,6 +110,8 @@ pub enum Panel {
     /// One of the ACP agent's commands ([`Workspace::agent_command`]),
     /// with a box for its optional input.
     AgentCommand,
+    /// The deferred tools prompt, from the tools row's link.
+    DeferredPrompt,
 }
 
 /// Why the daemon did not create the new session, with the runtimes it was

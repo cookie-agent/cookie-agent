@@ -641,6 +641,24 @@ impl Theme {
         self.semantic(self.palette().cranberry, Color::LightRed, Modifier::BOLD)
     }
 
+    /// The colour of the tool group in slot `slot` of a tool list, cycling
+    /// through eight hues, so one group's tools read alike.
+    pub fn tool_group(&self, slot: usize) -> Style {
+        let palette = self.palette();
+        let hues = [
+            (palette.slate, Color::LightBlue),
+            (palette.sage, Color::LightGreen),
+            (palette.plum, Color::LightMagenta),
+            (palette.cinnamon, Color::Yellow),
+            (palette.basil, Color::Green),
+            (palette.terracotta, Color::LightRed),
+            (palette.honey, Color::LightYellow),
+            (palette.cocoa, Color::Cyan),
+        ];
+        let (swatch, high_contrast) = hues[slot % hues.len()];
+        self.semantic(swatch, high_contrast, Modifier::empty())
+    }
+
     pub fn internal(&self) -> Style {
         self.semantic(self.palette().ash, Color::Gray, Modifier::DIM)
     }

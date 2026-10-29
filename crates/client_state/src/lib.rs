@@ -1162,6 +1162,11 @@ pub struct SessionState {
     /// The tools of `model_tools` that request sent deferred and not yet
     /// loaded: searchable rather than provided.
     pub model_deferred_tools: std::sync::Arc<[String]>,
+    /// The deferred tools announcements since the latest checkpoint, each
+    /// as the model reads it: the deferred tools prompt.
+    pub deferred_announcements: Vec<String>,
+    /// The group each announced, still-loadable deferred tool belongs to.
+    pub deferred_tool_groups: std::collections::BTreeMap<String, String>,
     pub model_selection: cookie_agent_protocol::SessionModelState,
     /// The session's runtime attachments, folded from its attach and detach
     /// events.

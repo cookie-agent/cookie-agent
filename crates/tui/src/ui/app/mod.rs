@@ -567,6 +567,8 @@ pub(super) enum PointerTarget {
     /// The memory URL a call's title row names: opens it in the Memory
     /// panel.
     MemoryLink(cookie_agent_protocol::ToolCallId),
+    /// The expanded tools row's link: opens the deferred tools prompt.
+    DeferredPromptLink,
     TranscriptBlock(BlockId),
     /// A tree row's expand/collapse marker.
     TreeExpand(SessionId),

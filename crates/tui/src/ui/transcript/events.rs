@@ -243,6 +243,9 @@ pub(super) fn system_prompt_layout(
     collapsible_event_block(block_id, body, width, theme)
 }
 
+/// The link on the expanded tools row that opens the deferred tools prompt.
+pub(crate) const DEFERRED_PROMPT_LINK: &str = "[see full prompt]";
+
 /// The tools sent with the latest model request, pinned under the system prompt.
 pub(super) fn model_tools_layout(
     state: &cookie_agent_client_state::SessionState,
@@ -262,24 +265,45 @@ pub(super) fn model_tools_layout(
         theme.internal(),
     )];
     if is_expanded {
-        // A request that deferred tools lists them apart, under headings.
-        let text = if state.model_deferred_tools.is_empty() {
-            tools.join(", ")
+        // A request that deferred tools lists them apart, under headings;
+        // the searchable ones coloured by group, after a link to the prompt
+        // that announced them.
+        if state.model_deferred_tools.is_empty() {
+            body.extend(bounded_safe_display_text(
+                &tools.join(", "),
+                theme.internal(),
+                MAX_EXPANDED_BODY_LINES,
+                MAX_EXPANDED_BODY_BYTES,
+            ));
         } else {
             let (provided, searchable) =
                 cookie_agent_client_state::rows::model_tool_groups(state, tools);
-            format!(
-                "Provided: {}\nSearchable: {}",
-                provided.join(", "),
-                searchable.join(", ")
-            )
-        };
-        body.extend(bounded_safe_display_text(
-            &text,
-            theme.internal(),
-            MAX_EXPANDED_BODY_LINES,
-            MAX_EXPANDED_BODY_BYTES,
-        ));
+            body.extend(bounded_safe_display_text(
+                &format!("Provided: {}", provided.join(", ")),
+                theme.internal(),
+                MAX_EXPANDED_BODY_LINES,
+                MAX_EXPANDED_BODY_BYTES,
+            ));
+            let mut spans = vec![Span::styled("Searchable", theme.internal())];
+            if cookie_agent_client_state::rows::deferred_tools_prompt(state).is_some() {
+                spans.push(Span::styled(" ", theme.internal()));
+                spans.push(Span::styled(
+                    DEFERRED_PROMPT_LINK,
+                    theme
+                        .internal()
+                        .add_modifier(ratatui::style::Modifier::UNDERLINED),
+                ));
+            }
+            spans.push(Span::styled(": ", theme.internal()));
+            let slots = cookie_agent_client_state::rows::tool_group_slots(state, &searchable);
+            for (index, (tool, slot)) in searchable.iter().zip(slots).enumerate() {
+                if index > 0 {
+                    spans.push(Span::styled(", ", theme.internal()));
+                }
+                spans.push(Span::styled((*tool).to_owned(), theme.tool_group(slot)));
+            }
+            body.push(Line::from(spans));
+        }
     }
     collapsible_event_block(block_id, body, width, theme)
 }
@@ -748,7 +772,6 @@ pub(super) fn model_input_layout(
         .is_some_and(|blocks| blocks.contains(&block_id));
     let icon = match kind {
         ModelInputKind::Memory => "🧠",
-        ModelInputKind::DeferredTools => "🧰",
         ModelInputKind::PromptBlocks => "📝",
         ModelInputKind::InheritedContext => "↘",
         ModelInputKind::AgentContext => "📜",

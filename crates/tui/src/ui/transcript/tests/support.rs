@@ -2960,3 +2960,56 @@ pub(crate) async fn composer_drag_selection(app: &mut App, text_rect: Rect, from
     ))
     .await;
 }
+
+/// A session whose latest request deferred two groups' tools, announced,
+/// with its tools row expanded.
+pub(crate) async fn deferred_tools_app() -> (App, SessionId) {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    assert!(app.store.apply_event(session_created(session, 1)));
+    let started = run_started_with_suffix(session, 2, RunId::new_v7(), vec![resolved_model(None)]);
+    assert!(app.store.apply_event(started.clone()));
+    let group = |name: &str, tools: &[&str]| cookie_agent_protocol::AnnouncedToolGroup {
+        name: name.into(),
+        source: cookie_agent_protocol::ToolGroupSource::Mcp,
+        summary: Some(format!("The {name} server.")),
+        untrusted: true,
+        tools: tools.iter().map(|tool| (*tool).to_owned()).collect(),
+    };
+    let mut announced = started.clone();
+    announced.seq = 3;
+    announced.payload = EventPayload::DeferredToolsAnnounced {
+        added: vec![
+            group("chrome", &["chrome_click", "chrome_type"]),
+            group("calendar", &["calendar_list"]),
+        ],
+        removed: Vec::new(),
+    };
+    assert!(app.store.apply_event(announced));
+    let mut published = started;
+    published.seq = 4;
+    published.payload = EventPayload::ModelToolsPublished {
+        attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+        tool_names: [
+            "bash",
+            "calendar_list",
+            "chrome_click",
+            "chrome_type",
+            "tool_search",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        deferred_tool_names: ["calendar_list", "chrome_click", "chrome_type"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    };
+    assert!(app.store.apply_event(published));
+    app.selected = Some(session);
+    app.expanded_blocks
+        .entry(session)
+        .or_default()
+        .insert(BlockId::ModelTools);
+    (app, session)
+}

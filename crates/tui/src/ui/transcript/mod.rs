@@ -918,7 +918,8 @@ pub(super) struct BlockHit {
     /// The background button of a running call's title row, when shown.
     pub(super) action_rect: Option<Rect>,
     /// The memory URL a call's title row names, which opens the memory in
-    /// the Memory panel.
+    /// the Memory panel, or the expanded tools row's link to the deferred
+    /// tools prompt.
     pub(super) link_rect: Option<Rect>,
 }
 
@@ -2620,6 +2621,25 @@ pub(super) fn block_hit_at<'a>(
                 ))
             })
         }
+        // The expanded tools row's link to the deferred tools prompt.
+        BlockId::ModelTools => (start..end).find_map(|index| {
+            let text = line_at(index)?
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            let at = text.find(events::DEFERRED_PROMPT_LINK)?;
+            let column = UnicodeWidthStr::width(&text[..at]);
+            Some(Rect::new(
+                viewport
+                    .x
+                    .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
+                viewport.y + u16::try_from(index - scroll_offset).unwrap_or(u16::MAX),
+                u16::try_from(UnicodeWidthStr::width(events::DEFERRED_PROMPT_LINK))
+                    .unwrap_or(u16::MAX),
+                1,
+            ))
+        }),
         _ => None,
     };
     (start < end).then(|| BlockHit {

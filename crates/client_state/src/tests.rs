@@ -841,7 +841,7 @@ fn a_memory_snapshot_shows_the_turn_the_model_reads_when_it_changes() {
 }
 
 #[test]
-fn deferred_tools_and_inherited_context_show_what_the_model_reads() {
+fn the_deferred_tools_prompt_and_inherited_context_show_what_the_model_reads() {
     use crate::model_input::ModelInputKind;
     let session = SessionId::new_v7();
     let group = cookie_agent_protocol::AnnouncedToolGroup {
@@ -877,21 +877,60 @@ fn deferred_tools_and_inherited_context_show_what_the_model_reads() {
     let replayed = reduce_session_events(session, 0, &events);
     let announcement =
         cookie_agent_protocol::model_text::deferred_tools_announcement(&[group], &[]);
+    // The announcement is the tools row's deferred tools prompt, not a row.
     assert_eq!(
         model_inputs(&replayed),
-        [
-            (
-                ModelInputKind::InheritedContext,
-                "context from the parent · 1 turn",
-                "── user\nFix the build."
-            ),
-            (
-                ModelInputKind::DeferredTools,
-                "Deferred tools prompt",
-                announcement.as_str()
-            ),
-        ]
+        [(
+            ModelInputKind::InheritedContext,
+            "context from the parent · 1 turn",
+            "── user\nFix the build."
+        )]
     );
+    assert_eq!(
+        crate::rows::deferred_tools_prompt(&replayed).as_deref(),
+        Some(announcement.as_str())
+    );
+    assert_eq!(
+        crate::rows::tool_group_slots(&replayed, &["github_pulls", "other", "github_issues"]),
+        [0, 1, 0]
+    );
+}
+
+#[test]
+fn every_announcement_is_kept_and_a_removal_leaves_the_groups() {
+    let session = SessionId::new_v7();
+    let group = cookie_agent_protocol::AnnouncedToolGroup {
+        name: "github".into(),
+        source: cookie_agent_protocol::ToolGroupSource::Mcp,
+        summary: None,
+        untrusted: false,
+        tools: vec!["github_issues".into()],
+    };
+    let announced = |seq| {
+        stored_event(
+            session,
+            Some(RunId::new_v7()),
+            seq,
+            EventPayload::DeferredToolsAnnounced {
+                added: vec![group.clone()],
+                removed: Vec::new(),
+            },
+        )
+    };
+    let removed = stored_event(
+        session,
+        Some(RunId::new_v7()),
+        2,
+        EventPayload::DeferredToolsAnnounced {
+            added: Vec::new(),
+            removed: vec![group.clone()],
+        },
+    );
+    let both = reduce_session_events(session, 0, &[announced(1), removed]);
+    assert_eq!(both.deferred_announcements.len(), 2);
+    assert!(both.deferred_tool_groups.is_empty(), "the removal folds");
+    let state = reduce_session_events(session, 0, &[announced(1)]);
+    assert_eq!(state.deferred_tool_groups["github_issues"], "github");
 }
 
 #[test]

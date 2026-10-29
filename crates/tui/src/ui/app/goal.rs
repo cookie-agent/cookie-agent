@@ -24,6 +24,8 @@ use crate::ui::transcript::wrapped_line;
 #[derive(Debug, Default)]
 pub(super) struct GoalDetailState {
     session_id: Option<SessionId>,
+    /// The panel shows the session's deferred tools prompt, not its goal.
+    prompt: bool,
     scroll: usize,
     max_scroll: usize,
     page_size: usize,
@@ -335,10 +337,55 @@ impl App {
         };
     }
 
-    pub(super) fn render_goal_detail(&mut self, frame: &mut ratatui::Frame) {
-        let Some(goal) = self.detail_goal().cloned() else {
-            self.close_goal_detail();
+    /// Opens the read-only panel on the selected session's deferred tools
+    /// prompt, from the expanded tools row's link.
+    pub(in crate::ui) fn open_deferred_prompt(&mut self) {
+        let Some(session_id) = self.selected.filter(|session_id| {
+            self.store
+                .sessions
+                .get(session_id)
+                .and_then(cookie_agent_client_state::rows::deferred_tools_prompt)
+                .is_some()
+        }) else {
+            self.status = "no deferred tools prompt in this session".into();
             return;
+        };
+        self.goal_detail = GoalDetailState {
+            session_id: Some(session_id),
+            prompt: true,
+            ..Default::default()
+        };
+        self.modal = Modal::GoalDetail;
+    }
+
+    /// The deferred tools prompt the panel shows, while it shows one.
+    fn detail_prompt(&self) -> Option<String> {
+        let session_id = self.goal_detail.session_id?;
+        (self.goal_detail.prompt
+            && self.modal == Modal::GoalDetail
+            && self.selected == Some(session_id))
+        .then(|| self.store.sessions.get(&session_id))
+        .flatten()
+        .and_then(cookie_agent_client_state::rows::deferred_tools_prompt)
+    }
+
+    pub(super) fn render_goal_detail(&mut self, frame: &mut ratatui::Frame) {
+        let prompt = if self.goal_detail.prompt {
+            let Some(prompt) = self.detail_prompt() else {
+                self.close_goal_detail();
+                return;
+            };
+            Some(prompt)
+        } else {
+            None
+        };
+        let goal = match (&prompt, self.detail_goal().cloned()) {
+            (Some(_), _) => None,
+            (None, Some(goal)) => Some(goal),
+            (None, None) => {
+                self.close_goal_detail();
+                return;
+            }
         };
         let frame_area = frame.area();
         if frame_area.width == 0 || frame_area.height == 0 {
@@ -362,47 +409,65 @@ impl App {
             area.width.saturating_sub(2),
             area.height.saturating_sub(2),
         );
-        let finished = goal.items.iter().filter(|item| item.finished).count();
-        let mut lines = goal
-            .objective
-            .split('\n')
-            .flat_map(|line| {
-                wrapped_line(
-                    Line::styled(
-                        line.trim_end_matches('\r').to_owned(),
-                        self.theme.assistant(),
-                    ),
+        let (mut lines, name) = (
+            Vec::new(),
+            if prompt.is_some() {
+                "Deferred tools prompt"
+            } else {
+                "Goal details"
+            },
+        );
+        if let Some(prompt) = &prompt {
+            for line in prompt.split('\n') {
+                lines.extend(wrapped_line(
+                    Line::styled(line.to_owned(), self.theme.body()),
                     inner.width,
-                )
-            })
-            .collect::<Vec<_>>();
-        lines.extend(wrapped_line(
-            Line::styled(
-                format!(
-                    "status: {} | {finished}/{} finished | read-only",
-                    status_name(goal.status),
-                    goal.items.len()
-                ),
-                self.theme.internal(),
-            ),
-            inner.width,
-        ));
-        lines.push(Line::default());
-        if goal.items.is_empty() {
-            lines.push(Line::styled("Checklist is empty.", self.theme.muted()));
-        } else {
-            for (index, item) in goal.items.iter().enumerate() {
-                let marker = if item.finished { "[x]" } else { "[ ]" };
-                for (line_index, line) in item.description.lines().enumerate() {
-                    let text = if line_index == 0 {
-                        format!("{}. {marker} {line}", index + 1)
-                    } else {
-                        line.to_owned()
-                    };
-                    lines.extend(wrapped_line(
-                        Line::styled(text, self.theme.body()),
+                ));
+            }
+        }
+        if let Some(goal) = goal {
+            let finished = goal.items.iter().filter(|item| item.finished).count();
+            lines = goal
+                .objective
+                .split('\n')
+                .flat_map(|line| {
+                    wrapped_line(
+                        Line::styled(
+                            line.trim_end_matches('\r').to_owned(),
+                            self.theme.assistant(),
+                        ),
                         inner.width,
-                    ));
+                    )
+                })
+                .collect::<Vec<_>>();
+            lines.extend(wrapped_line(
+                Line::styled(
+                    format!(
+                        "status: {} | {finished}/{} finished | read-only",
+                        status_name(goal.status),
+                        goal.items.len()
+                    ),
+                    self.theme.internal(),
+                ),
+                inner.width,
+            ));
+            lines.push(Line::default());
+            if goal.items.is_empty() {
+                lines.push(Line::styled("Checklist is empty.", self.theme.muted()));
+            } else {
+                for (index, item) in goal.items.iter().enumerate() {
+                    let marker = if item.finished { "[x]" } else { "[ ]" };
+                    for (line_index, line) in item.description.lines().enumerate() {
+                        let text = if line_index == 0 {
+                            format!("{}. {marker} {line}", index + 1)
+                        } else {
+                            line.to_owned()
+                        };
+                        lines.extend(wrapped_line(
+                            Line::styled(text, self.theme.body()),
+                            inner.width,
+                        ));
+                    }
                 }
             }
         }
@@ -420,10 +485,10 @@ impl App {
             .saturating_add(self.goal_detail.page_size)
             .min(lines.len());
         let title = if area.width < 42 {
-            format!("Goal {visible_start}-{visible_end}/{}", lines.len())
+            format!("{visible_start}-{visible_end}/{}", lines.len())
         } else {
             format!(
-                "Goal details | {visible_start}-{visible_end}/{} | Up/Down PgUp/PgDn Home/End",
+                "{name} | {visible_start}-{visible_end}/{} | Up/Down PgUp/PgDn Home/End",
                 lines.len()
             )
         };

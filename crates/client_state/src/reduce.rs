@@ -1282,6 +1282,9 @@ pub(super) fn reduce_event_from(
             );
         }
         EventPayload::ContextCheckpointCommitted { commit } => {
+            // The first request after a checkpoint announces afresh.
+            state.deferred_announcements.clear();
+            state.deferred_tool_groups.clear();
             // The compaction row is the run's chronological boundary: the next
             // new segment opens fresh below it, and a block that never
             // committed anything is moved under the row itself instead of
@@ -1719,16 +1722,21 @@ pub(super) fn reduce_event_from(
                 );
             }
         }
+        // Shown from the tools row, not as a transcript row.
         EventPayload::DeferredToolsAnnounced { added, removed } => {
-            let (header, text) = crate::model_input::deferred_tools(&added, &removed);
-            push_model_input(
-                state,
-                timestamp,
-                sequence,
-                crate::model_input::ModelInputKind::DeferredTools,
-                header,
-                text,
+            state.deferred_announcements.push(
+                cookie_agent_protocol::model_text::deferred_tools_announcement(&added, &removed),
             );
+            for group in &removed {
+                for tool in &group.tools {
+                    state.deferred_tool_groups.remove(tool);
+                }
+            }
+            for group in added {
+                for tool in group.tools {
+                    state.deferred_tool_groups.insert(tool, group.name.clone());
+                }
+            }
         }
         EventPayload::PromptBlocksAnnounced { blocks } => {
             let (header, text) = crate::model_input::prompt_blocks(&blocks);

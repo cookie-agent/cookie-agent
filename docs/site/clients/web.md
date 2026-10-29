@@ -385,12 +385,16 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     it [deferred](../reference/tools.md#deferred-tools) some). Click one to
     open it: the prompt in monospace with its line breaks and indentation,
     up to 256 lines or 32 KiB, and the tool names as chips, up to 8 KiB of
-    names, the provided and searchable ones under their own headings.
+    names, the provided and searchable ones under their own headings. The
+    searchable chips take their group's colour (its name on hover), and
+    **[see full prompt]** beside their heading opens the deferred tools
+    prompt: every announcement since the last compaction, as the model
+    reads it.
   - **What the model reads beyond the conversation** has a collapsed row
     wherever it enters, as in the TUI: AGENTS.md (a run's files as one
     turn, with the instructions around them), a loaded skill, the memory
     snapshot (again whenever it changes), a compaction summary (in its
-    frame), a deferred tools announcement, the parent's conversation a
+    frame), the parent's conversation a
     subagent starts from, and an ACP agent's first-prompt context, each
     opening to the exact text the model reads. A reply an interrupt cut
     off quotes the marker later requests follow it with. A tool call's output is followed by what its result

@@ -569,6 +569,11 @@ As decided (oven spec, section 10, decision 3):
   otherwise. The expanded row lists the two groups under their own headings
   in the TUI (`model_tools_layout`) and the web client
   (`data-model-tools`). Loaded tools count as provided.
+- **The deferred tools prompt** (changed 2026-10-29 at the user's request):
+  announcements are not transcript rows. The expanded tools row's
+  searchable heading carries a `[see full prompt]` link that opens every
+  announcement since the latest checkpoint, as the model reads them, in a
+  panel, and each searchable tool takes its group's colour.
 - **Versions:** client protocol 1.44.0 and plugin protocol 1.23.0 cover the
   new events (`DeferredToolsAnnounced`, `ToolRoundStarted`), the new fields
   on `PersistedToolResult`, `ModelToolsPublished`, and the checkpoint, and

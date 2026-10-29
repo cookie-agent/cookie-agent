@@ -322,6 +322,32 @@ pub fn compact_sheet(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// The selected session's deferred tools prompt, as the model reads it.
+pub fn deferred_prompt_sheet(workspace: Workspace) -> impl IntoView {
+    move || {
+        let prompt = workspace.selected.get().and_then(|session_id| {
+            workspace.with_store(|store| {
+                store
+                    .sessions
+                    .get(&session_id)
+                    .and_then(cookie_agent_client_state::rows::deferred_tools_prompt)
+            })
+        });
+        match prompt {
+            Some(prompt) => view! {
+                <pre
+                    class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-parchment p-2 font-mono text-xs dark:bg-char"
+                    data-deferred-prompt
+                >
+                    {prompt}
+                </pre>
+            }
+            .into_any(),
+            None => view! { <p class=NOTE>"Nothing is deferred in this session."</p> }.into_any(),
+        }
+    }
+}
+
 pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
     move || {
         let goal = workspace.goal();

@@ -552,7 +552,6 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             let key = block_key(item).unwrap_or_default();
             let icon = match kind {
                 ModelInputKind::Memory => icondata::FaBrainSolid,
-                ModelInputKind::DeferredTools => icondata::FaToolboxSolid,
                 ModelInputKind::PromptBlocks => icondata::FaPenToSquareSolid,
                 ModelInputKind::InheritedContext => icondata::FaTurnDownSolid,
                 ModelInputKind::AgentContext => icondata::FaScrollSolid,
@@ -1228,14 +1227,31 @@ pub fn pinned_rows(
             &model_tools_summary(state, tools),
             expanded,
             || {
-                let list = |tools: &[&str], group: &str| {
+                // Searchable tools take their group's hue, so one group's
+                // tools read alike; the others the plain chip.
+                let list = |tools: &[&str], group: &str, hues: Option<&[usize]>| {
                     let (shown, omitted) = bounded_tools(tools);
                     let mut html = format!(
                         "<ul class=\"flex flex-wrap gap-1\" data-model-tools{group}>"
                     );
-                    for tool in shown {
+                    for (index, tool) in shown.iter().enumerate() {
+                        let slot = hues.and_then(|hues| hues.get(index)).copied();
+                        let colour = slot.map_or(
+                            "border-toasted dark:border-ember",
+                            |slot| {
+                                crate::badges::hue_class(Some(
+                                    u8::try_from(slot % 8).unwrap_or_default(),
+                                ))
+                            },
+                        );
+                        let title = state
+                            .deferred_tool_groups
+                            .get(*tool)
+                            .filter(|_| slot.is_some())
+                            .map(|group| format!(" title=\"{}\" data-tool-group=\"{}\"", escape(group), escape(group)))
+                            .unwrap_or_default();
                         html.push_str(&format!(
-                            "<li class=\"rounded border border-toasted px-1.5 font-mono text-xs leading-5 dark:border-ember\">{}</li>",
+                            "<li class=\"rounded border {colour} px-1.5 font-mono text-xs leading-5\"{title}>{}</li>",
                             escape(tool)
                         ));
                     }
@@ -1247,13 +1263,23 @@ pub fn pinned_rows(
                 };
                 let (provided, searchable) = model_tool_groups(state, tools);
                 if searchable.is_empty() {
-                    list(&provided, "")
+                    list(&provided, "", None)
                 } else {
-                    // A request that deferred tools lists them apart.
+                    // A request that deferred tools lists them apart, the
+                    // searchable ones after a link to the prompt that
+                    // announced them.
+                    let link = if cookie_agent_client_state::rows::deferred_tools_prompt(state)
+                        .is_some()
+                    {
+                        " <button type=\"button\" data-action=\"deferred-prompt\" class=\"rounded px-1 underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-deferred-prompt-link>[see full prompt]</button>"
+                    } else {
+                        ""
+                    };
+                    let slots = cookie_agent_client_state::rows::tool_group_slots(state, &searchable);
                     format!(
-                        "<p class=\"{NOTE}\">Provided</p>{}<p class=\"{NOTE}\">Searchable</p>{}",
-                        list(&provided, "=\"provided\""),
-                        list(&searchable, "=\"searchable\"")
+                        "<p class=\"{NOTE}\">Provided</p>{}<p class=\"{NOTE}\">Searchable{link}</p>{}",
+                        list(&provided, "=\"provided\"", None),
+                        list(&searchable, "=\"searchable\"", Some(&slots))
                     )
                 }
             },
@@ -2157,6 +2183,32 @@ mod tests {
         assert!(split.contains("tools · 1 provided, 1 searchable (last request)"));
         assert!(split.contains("data-model-tools=\"provided\""), "{split}");
         assert!(split.contains("data-model-tools=\"searchable\""), "{split}");
+        assert!(
+            !split.contains("data-deferred-prompt-link"),
+            "no prompt yet"
+        );
+        // Once announced, the searchable tools take their group's hue, after
+        // a link to the prompt.
+        state.model_tools = Some(std::sync::Arc::from(vec![
+            "read".to_owned(),
+            "bash".to_owned(),
+            "chrome_click".to_owned(),
+        ]));
+        state.model_deferred_tools = vec!["bash".to_owned(), "chrome_click".to_owned()].into();
+        state.deferred_announcements = vec!["The following deferred tool groups …".to_owned()];
+        state.deferred_tool_groups = [("bash", "shell"), ("chrome_click", "chrome")]
+            .into_iter()
+            .map(|(tool, group)| (tool.to_owned(), group.to_owned()))
+            .collect();
+        let (_, linked) = pinned_rows(&state, &expanded, None).unwrap();
+        assert!(
+            linked.contains("data-action=\"deferred-prompt\""),
+            "{linked}"
+        );
+        assert!(linked.contains(">[see full prompt]</button>"), "{linked}");
+        assert!(linked.contains("data-tool-group=\"shell\""), "{linked}");
+        assert!(linked.contains("border-hue-0/40"), "{linked}");
+        assert!(linked.contains("border-hue-1/40"), "{linked}");
     }
 
     /// A session whose one reply has a folded thinking block, a finished

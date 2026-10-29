@@ -1,15 +1,14 @@
 //! What the engine adds to a model's input beyond the conversation, as the
 //! transcript shows it, so nothing reaches the model unseen: the memory
-//! snapshot turn, a deferred tools announcement, a changed instructions
-//! announcement, the context a subagent
+//! snapshot turn, a changed instructions announcement, the context a subagent
 //! inherits from its parent, and the context an ACP agent's first prompt
 //! carries, each a row whose body is the text the model reads; and the
 //! notes a tool row gets for what its result sent beyond the tool's own
 //! output (a loop warning, tool-emitted messages, an elision marker).
 
 use cookie_agent_protocol::{
-    AnnouncedPromptBlock, AnnouncedToolGroup, DelegatedContextRole, DelegatedContextTurn,
-    DisplayBlock, Open, ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, model_text,
+    AnnouncedPromptBlock, DelegatedContextRole, DelegatedContextTurn, DisplayBlock, Open,
+    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, model_text,
 };
 
 /// Which added input a [`crate::TranscriptItem::ModelInput`] row is.
@@ -17,8 +16,6 @@ use cookie_agent_protocol::{
 pub enum ModelInputKind {
     /// The memory snapshot turn, shown when it differs from the last one.
     Memory,
-    /// A deferred tools announcement.
-    DeferredTools,
     /// Instructions that changed since the system prompt carried them.
     PromptBlocks,
     /// The parent's conversation a subagent starts from.
@@ -32,7 +29,6 @@ impl ModelInputKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Memory => "memory",
-            Self::DeferredTools => "deferred-tools",
             Self::PromptBlocks => "prompt-blocks",
             Self::InheritedContext => "inherited-context",
             Self::AgentContext => "agent-context",
@@ -48,18 +44,6 @@ pub fn memory_header(text: &str) -> String {
     } else {
         format!("memory · {}", lines(text))
     }
-}
-
-/// The deferred tools row's heading and body: `Deferred tools prompt`, and
-/// the announcement the model reads.
-pub fn deferred_tools(
-    added: &[AnnouncedToolGroup],
-    removed: &[AnnouncedToolGroup],
-) -> (String, String) {
-    (
-        "Deferred tools prompt".to_owned(),
-        model_text::deferred_tools_announcement(added, removed),
-    )
 }
 
 /// A changed instructions row's heading and body: the blocks that changed,

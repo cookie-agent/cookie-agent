@@ -1367,3 +1367,57 @@ fn the_memory_snapshot_renders_as_an_expandable_row_of_the_models_turn() {
     assert!(open.contains("🧠 ▾ memory · "), "{open}");
     assert!(open.contains("Prefers small diffs."), "{open}");
 }
+
+/// Deferred tools show as searchable, coloured by group, after a link that
+/// opens the deferred tools prompt in a read-only panel.
+#[tokio::test]
+async fn the_tools_rows_link_opens_the_deferred_tools_prompt() {
+    let (mut app, session) = deferred_tools_app().await;
+    app.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+    let expanded = rendered_frame(&mut app, 120, 30);
+    assert!(
+        expanded.contains("Searchable [see full prompt]: chrome_click, chrome_type, calendar_list")
+            || expanded
+                .contains("Searchable [see full prompt]: calendar_list, chrome_click, chrome_type"),
+        "{expanded}"
+    );
+    assert!(
+        !expanded.contains("deferred tools ·") && !expanded.contains("Deferred tools prompt"),
+        "no transcript row of its own: {expanded}"
+    );
+    let state = &app.store.sessions[&session];
+    let (_, searchable) = cookie_agent_client_state::rows::model_tool_groups(
+        state,
+        state.model_tools.as_deref().expect("tools"),
+    );
+    let slots = cookie_agent_client_state::rows::tool_group_slots(state, &searchable);
+    let chrome = searchable
+        .iter()
+        .position(|tool| *tool == "chrome_click")
+        .expect("chrome_click");
+    let calendar = searchable
+        .iter()
+        .position(|tool| *tool == "calendar_list")
+        .expect("calendar_list");
+    assert_ne!(slots[chrome], slots[calendar], "groups differ in colour");
+    assert_ne!(
+        app.theme.tool_group(slots[chrome]),
+        app.theme.tool_group(slots[calendar])
+    );
+
+    let link = app
+        .hit_map
+        .blocks
+        .iter()
+        .find(|hit| hit.id == BlockId::ModelTools)
+        .and_then(|hit| hit.link_rect)
+        .expect("the prompt link");
+    app.handle_click(link.x, link.y).await;
+    assert_eq!(app.modal, Modal::GoalDetail);
+    let panel = rendered_frame(&mut app, 120, 30);
+    assert!(panel.contains("Deferred tools prompt"), "{panel}");
+    assert!(
+        panel.contains("The following deferred tool groups are now available"),
+        "{panel}"
+    );
+}

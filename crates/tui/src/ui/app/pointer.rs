@@ -117,17 +117,17 @@ impl App {
         }
         // A memory URL on a call's title row opens the memory; the rest of
         // the row toggles the call.
-        if let Some(call_id) = hits
+        if let Some(hit) = hits
             .blocks
             .iter()
             .rev()
             .find(|hit| hit.link_rect.is_some_and(&over))
-            .and_then(|hit| match hit.id {
-                BlockId::Tool(call_id) => Some(call_id),
-                _ => None,
-            })
         {
-            return Some(PointerTarget::MemoryLink(call_id));
+            match hit.id {
+                BlockId::Tool(call_id) => return Some(PointerTarget::MemoryLink(call_id)),
+                BlockId::ModelTools => return Some(PointerTarget::DeferredPromptLink),
+                _ => {}
+            }
         }
         // A running call's background button sits on its title row, which
         // otherwise toggles the call.
@@ -580,6 +580,7 @@ impl App {
             }
             PointerTarget::BackgroundButton(call_id) => self.request_background(call_id),
             PointerTarget::MemoryLink(call_id) => self.open_tool_memory(call_id),
+            PointerTarget::DeferredPromptLink => self.open_deferred_prompt(),
             PointerTarget::TranscriptBlock(id) => self.toggle_block(id),
             PointerTarget::TreeExpand(session_id) => self.toggle_tree_session(session_id),
             PointerTarget::TreeRow(session_id) => {
@@ -655,6 +656,18 @@ impl App {
                     .blocks
                     .iter()
                     .find(|hit| hit.id == BlockId::Tool(call_id))
+                    .and_then(|hit| hit.link_rect)
+                    .map(|rect| match hits.conversation {
+                        Some(viewport) => rect.intersection(viewport),
+                        None => rect,
+                    })),
+                text_style,
+            ),
+            PointerTarget::DeferredPromptLink => (
+                one(hits
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == BlockId::ModelTools)
                     .and_then(|hit| hit.link_rect)
                     .map(|rect| match hits.conversation {
                         Some(viewport) => rect.intersection(viewport),
