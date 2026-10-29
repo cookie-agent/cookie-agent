@@ -651,8 +651,7 @@ fn presentation_of(fields: &ToolCallFields) -> PreparedPresentation {
 pub(super) fn unwrap_shell(command: &str) -> String {
     let trimmed = command.trim();
     let mut words = trimmed.splitn(3, ' ');
-    let (Some(program), Some(flag), Some(rest)) = (words.next(), words.next(), words.next())
-    else {
+    let (Some(program), Some(flag), Some(rest)) = (words.next(), words.next(), words.next()) else {
         return command.to_owned();
     };
     let shell = program.rsplit('/').next().unwrap_or(program);
@@ -660,7 +659,9 @@ pub(super) fn unwrap_shell(command: &str) -> String {
         && flag.len() > 1
         && flag.starts_with('-')
         && flag.ends_with('c')
-        && flag[1..].chars().all(|flag| matches!(flag, 'l' | 'i' | 'c'));
+        && flag[1..]
+            .chars()
+            .all(|flag| matches!(flag, 'l' | 'i' | 'c'));
     let rest = rest.trim();
     if !runs_string || rest.len() < 2 {
         return command.to_owned();
@@ -675,7 +676,10 @@ pub(super) fn unwrap_shell(command: &str) -> String {
         }
         return inner.replace("'\\''", "'");
     }
-    if let Some(inner) = rest.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) {
+    if let Some(inner) = rest
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
         let mut unquoted = String::with_capacity(inner.len());
         let mut characters = inner.chars().peekable();
         while let Some(character) = characters.next() {
@@ -716,7 +720,10 @@ fn auto_review_presentation(fields: &ToolCallFields) -> Option<PreparedPresentat
             .and_then(Value::as_str)
             .map(spaced_words)
     };
-    let title = match (field("status").filter(|status| status != "in progress"), field("riskLevel")) {
+    let title = match (
+        field("status").filter(|status| status != "in progress"),
+        field("riskLevel"),
+    ) {
         (Some(status), Some(risk)) => format!("Auto-review: {status}, {risk} risk"),
         (Some(status), None) => format!("Auto-review: {status}"),
         (None, _) => "Auto-review".to_owned(),
@@ -2308,8 +2315,13 @@ impl Turn<'_> {
                 )
                 .await?;
             if let Some((terminal, tool_call_id, tool, display)) = backgrounded {
-                self.engine
-                    .acp_command_backgrounded(&self.live, terminal, tool_call_id, tool, display);
+                self.engine.acp_command_backgrounded(
+                    &self.live,
+                    terminal,
+                    tool_call_id,
+                    tool,
+                    display,
+                );
             }
         }
         Ok(())
@@ -3579,8 +3591,7 @@ impl Engine {
         // What the session had before, which a resumed or forked session
         // may come back without (Codex resumes on its own defaults) and a
         // replacement for a lost one starts without.
-        self.restore_recorded_options(session, run, &mut live)
-            .await;
+        self.restore_recorded_options(session, run, &mut live).await;
         // v2 gives the session's commands with it, not as a first update.
         let commands = response
             .available_commands
@@ -4204,7 +4215,10 @@ mod tests {
 
     #[test]
     fn a_shell_string_shows_as_the_command_it_runs() {
-        assert_eq!(unwrap_shell("/bin/bash -lc 'cat notes.txt'"), "cat notes.txt");
+        assert_eq!(
+            unwrap_shell("/bin/bash -lc 'cat notes.txt'"),
+            "cat notes.txt"
+        );
         assert_eq!(unwrap_shell(r"bash -c 'echo '\''hi'\'''"), "echo 'hi'");
         assert_eq!(
             unwrap_shell(r#"/bin/bash -lc "cat a; printf '\\n' \"x\"""#),
@@ -4239,10 +4253,16 @@ mod tests {
         };
         let running = presentation_of(&fields);
         assert_eq!(running.title.as_str(), "Auto-review");
-        assert_eq!(running.primary_argument.as_ref().map(|text| text.as_str()), Some("cat calc.py"));
+        assert_eq!(
+            running.primary_argument.as_ref().map(|text| text.as_str()),
+            Some("cat calc.py")
+        );
         assert!(running.arguments.is_empty(), "no stale review state");
         fields.raw_output = Some(json!({"review": {"status": "approved", "riskLevel": "low"}}));
-        assert_eq!(presentation_of(&fields).title.as_str(), "Auto-review: approved, low risk");
+        assert_eq!(
+            presentation_of(&fields).title.as_str(),
+            "Auto-review: approved, low risk"
+        );
         fields.raw_input = Some(json!({
             "reviewId": "r2",
             "targetItemId": "exec-2",
@@ -4251,7 +4271,10 @@ mod tests {
         fields.raw_output = Some(json!({"review": {"status": "timedOut"}}));
         let patch = presentation_of(&fields);
         assert_eq!(patch.title.as_str(), "Auto-review: timed out");
-        assert_eq!(patch.primary_argument.as_ref().map(|text| text.as_str()), Some("edit /w/calc.py"));
+        assert_eq!(
+            patch.primary_argument.as_ref().map(|text| text.as_str()),
+            Some("edit /w/calc.py")
+        );
     }
 
     #[test]

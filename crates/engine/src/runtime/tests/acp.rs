@@ -823,11 +823,12 @@ async fn an_agent_that_takes_a_system_prompt_gets_the_context_there_and_again_on
     let parts = sent["content"].as_array().expect("text blocks");
     assert!(parts.iter().all(|part| part["type"] == "text"));
     assert_eq!(parts.last().unwrap()["text"], "You review changes.\n");
-    assert!(
-        parts
-            .iter()
-            .any(|part| part["text"].as_str().unwrap().contains("Working directory: "))
-    );
+    assert!(parts.iter().any(|part| {
+        part["text"]
+            .as_str()
+            .unwrap()
+            .contains("Working directory: ")
+    }));
     // On the record, so the user sees it.
     assert!(events(engine, session).iter().any(|event| matches!(
         &event.payload,
@@ -837,7 +838,10 @@ async fn an_agent_that_takes_a_system_prompt_gets_the_context_there_and_again_on
     stop_process(engine).await;
     let again = turn(engine, session, "again", "echo").await;
     assert_eq!(final_text(&again), "echo");
-    assert_eq!(session_starts(engine, session)[1].how, AcpSessionStart::Resumed);
+    assert_eq!(
+        session_starts(engine, session)[1].how,
+        AcpSessionStart::Resumed
+    );
     assert_eq!(system_prompt("session/resume"), sent, "the same context");
 }
 
@@ -851,7 +855,11 @@ async fn a_title_that_repeats_the_first_prompts_context_names_nothing() {
     turn(engine, session, "first", "title-first").await;
     let title = |engine: &Engine| {
         let projection = engine.inner.store.get(session).unwrap();
-        projection.meta.title.as_ref().map(|title| title.as_str().to_owned())
+        projection
+            .meta
+            .title
+            .as_ref()
+            .map(|title| title.as_str().to_owned())
     };
     assert_eq!(
         title(engine),
@@ -1734,7 +1742,10 @@ async fn a_steer_the_agent_takes_in_later_stands_after_what_it_said_before() {
         matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
     })
     .await;
-    let steered = engine.steer(run, "and banana".into(), origin()).await.unwrap();
+    let steered = engine
+        .steer(run, "and banana".into(), origin())
+        .await
+        .unwrap();
     assert!(steered.accepted);
     let outcome = finished(engine, session, run).await;
     assert_eq!(final_text(&outcome), "steered: and banana");

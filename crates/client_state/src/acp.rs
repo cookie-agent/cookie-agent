@@ -398,8 +398,14 @@ mod tests {
         assert!(!super::command_listed("$imagegen", ""));
         assert!(!super::command_listed("$imagegen", "image"));
         assert!(super::command_listed("$imagegen", "$ima"));
-        assert_eq!(super::command_prompt("review", " the parser "), "/review the parser");
-        assert_eq!(super::command_prompt("$imagegen", "a cat"), "$imagegen a cat");
+        assert_eq!(
+            super::command_prompt("review", " the parser "),
+            "/review the parser"
+        );
+        assert_eq!(
+            super::command_prompt("$imagegen", "a cat"),
+            "$imagegen a cat"
+        );
         assert_eq!(super::command_label("$imagegen"), "$imagegen");
         assert_eq!(super::command_label("status"), "/status");
     }

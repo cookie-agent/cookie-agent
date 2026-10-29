@@ -5708,5 +5708,9 @@ fn an_acp_turn_that_said_nothing_leaves_no_empty_reply() {
             .count()
     };
     assert_eq!(assistants(acp_model), 0, "the agent's compact turn");
-    assert_eq!(assistants(resolved_model()), 1, "a model's empty turn still shows");
+    assert_eq!(
+        assistants(resolved_model()),
+        1,
+        "a model's empty turn still shows"
+    );
 }

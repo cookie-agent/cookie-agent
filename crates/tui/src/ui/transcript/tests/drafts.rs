@@ -1206,5 +1206,8 @@ async fn a_message_with_no_session_on_screen_starts_one_with_the_draft() {
     response.await.expect("create response");
     let params = last_request_params(&recorded, "session.create");
     assert_eq!(params["selection"]["agent"], draft.agent.as_str());
-    assert_eq!(params["selection"]["model"]["model"], draft.model.model.as_str());
+    assert_eq!(
+        params["selection"]["model"]["model"],
+        draft.model.model.as_str()
+    );
 }

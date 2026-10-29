@@ -1386,8 +1386,9 @@ mod tests {
     #[test]
     fn an_acp_agent_runs_on_its_own_model_without_a_provider() {
         let agents = [acp_agent()];
-        let selection = resolve_selection(&agents, &[], &[], None, None, &run_args(&["-a", "codex"]))
-            .expect("selected");
+        let selection =
+            resolve_selection(&agents, &[], &[], None, None, &run_args(&["-a", "codex"]))
+                .expect("selected");
         assert_eq!(selection.agent.as_str(), "codex");
         assert_eq!(selection.model.model.to_string(), "acp/codex");
         let refused = resolve_selection(
@@ -1399,7 +1400,10 @@ mod tests {
             &run_args(&["-a", "codex", "-m", "anthropic/claude"]),
         )
         .expect_err("--model is refused");
-        assert!(refused.to_string().contains("chooses its own model"), "{refused}");
+        assert!(
+            refused.to_string().contains("chooses its own model"),
+            "{refused}"
+        );
     }
 
     #[test]

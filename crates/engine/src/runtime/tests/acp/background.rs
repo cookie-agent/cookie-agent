@@ -200,7 +200,10 @@ async fn a_command_a_cancel_left_running_is_background_work_until_it_exits() {
     .await;
     engine.cancel_run(run, origin()).await.expect("cancel");
     let outcome = finished(engine, session, run).await;
-    assert!(matches!(outcome, RunOutcome::Cancelled { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
     let calls = engine.background_calls(session);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].job, "term-left");

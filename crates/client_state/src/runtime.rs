@@ -124,9 +124,10 @@ impl RuntimeState {
         // An ACP agent needs no model of cookie's: one that a session can
         // start with is enough to go on.
         let empty = snapshot.models.is_empty()
-            && !snapshot.agents.iter().any(|agent| {
-                crate::acp::is_acp(agent) && agent.enabled && agent.runnable_as_root
-            });
+            && !snapshot
+                .agents
+                .iter()
+                .any(|agent| crate::acp::is_acp(agent) && agent.enabled && agent.runnable_as_root);
         let (phase, explanation) = if empty {
             (
                 RuntimePhase::Empty,
@@ -300,8 +301,10 @@ mod tests {
             delegation_targets: Vec::new(),
             runtime: None,
             runtimes: vec![
-                serde_json::from_value(serde_json::json!({"runtime_id": "local", "agent": "codex", "available": true}))
-                    .expect("runtime"),
+                serde_json::from_value(
+                    serde_json::json!({"runtime_id": "local", "agent": "codex", "available": true}),
+                )
+                .expect("runtime"),
             ],
             unset_models: Vec::new(),
         }];
