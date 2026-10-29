@@ -953,7 +953,21 @@ impl Turn<'_> {
         Ok(())
     }
 
-    async fn stream(&mut self, kind: StreamedOutputKind, text: String) -> Result<(), EngineError> {
+    async fn stream(
+        &mut self,
+        kind: StreamedOutputKind,
+        mut text: String,
+    ) -> Result<(), EngineError> {
+        // A thought starts at its first word: Codex opens each summary with
+        // blank lines.
+        let starts_thought = kind == StreamedOutputKind::Reasoning
+            && !matches!(
+                self.step.as_ref().and_then(|step| step.parts.last()),
+                Some(PersistedAssistantPart::Reasoning { .. })
+            );
+        if starts_thought {
+            text = text.trim_start().to_owned();
+        }
         if text.is_empty() {
             return Ok(());
         }
@@ -1185,6 +1199,16 @@ impl Turn<'_> {
         let producers = !pending.steered.producer_messages.is_empty();
         match answer {
             Ok(message_id) => {
+                // What the agent said before it took the message in stands
+                // before it: an agent that takes it at its next step (Codex)
+                // may have said more since the steer went out.
+                if self
+                    .step
+                    .as_ref()
+                    .is_some_and(|step| !step.parts.is_empty())
+                {
+                    self.commit(ModelFinishReason::Stop).await?;
+                }
                 // The work goes on until its `idle` after the steer's echo.
                 self.round.inserted(&message_id);
                 let held = pending.inputs;
@@ -1285,10 +1309,11 @@ impl Turn<'_> {
                     .await
             }
             "agent_message_chunk" | "agent_thought_chunk" => {
-                if let Some(id) = update.get("messageId").and_then(Value::as_str) {
+                let message_id = update.get("messageId").and_then(Value::as_str);
+                if let Some(id) = message_id {
                     self.round.streamed.insert(id.to_owned());
                 }
-                let text = update
+                let mut text = update
                     .get("content")
                     .map(wire::content_text)
                     .unwrap_or_default();
@@ -1297,6 +1322,19 @@ impl Turn<'_> {
                 } else {
                     StreamedOutputKind::Reasoning
                 };
+                // Another message of the agent's in the same step (Codex
+                // sends several between two tool calls) is a paragraph of
+                // its own, not more of the last one.
+                if kind == StreamedOutputKind::Text
+                    && let Some(id) = message_id
+                    && let Some(step) = self.step.as_ref()
+                    && step.message_ids.last().is_some_and(|last| last != id)
+                    && matches!(step.parts.last(), Some(PersistedAssistantPart::Text { text, .. })
+                        if !text.trim().is_empty())
+                    && !text.is_empty()
+                {
+                    text.insert_str(0, "\n\n");
+                }
                 self.stream(kind, text).await?;
                 // The message's ID names it as a fork point later.
                 if kind == StreamedOutputKind::Text

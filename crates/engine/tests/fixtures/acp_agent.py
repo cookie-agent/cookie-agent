@@ -10,6 +10,9 @@ Each prompt's last text block is a command:
 
   say <text>             answers <text>
   think <text>           a thought, then <text>
+  think-blank <text>     a thought that opens with blank lines, as Codex's
+                         summaries do, then <text>
+  two-messages           answers "first" and then "second", two messages
   echo                   answers every text block of the prompt joined by " | ",
                          then the type of every other block, as it does any
                          prompt that is not a command
@@ -50,6 +53,10 @@ Each prompt's last text block is a command:
   steer-wait [<s>]       says "waiting", then waits (up to <s>, else 10 s) for a message
                          steered into its work and answers "steered: <texts>",
                          or "no steer"; session/cancel ends it as cancelled
+  steer-late             says "waiting", waits (up to 10 s) for a steer, says
+                         "before", and only then takes the steer in, as Codex
+                         does at its next step, and answers "steered: <texts>"
+                         (with ACP_FIXTURE_LATE_STEERS)
   decline-wait           says "waiting", then waits (up to 30 s) for a steer it
                          declines (ACP_FIXTURE_DECLINE_STEERS), and answers "no
                          steer" once it has; a steer taken or a cancel ends it as
@@ -131,6 +138,9 @@ Environment:
   ACP_FIXTURE_IMAGE_ONLY "1": takes images but no audio or embedded context in a
                          prompt, and no additional directories (by default it
                          advertises all of them)
+  ACP_FIXTURE_LATE_STEERS
+                         "1": answers a prompt sent while its work runs only
+                         when steer-late takes it in
   ACP_FIXTURE_DECLINE_STEERS
                          "1": refuses a prompt sent while its work runs
 """
@@ -152,6 +162,8 @@ running = {}
 steered = {}
 # Whether the work running in each session declined a steer.
 declined = {}
+# Steers not yet taken in, with ACP_FIXTURE_LATE_STEERS: (request ID, params).
+late = {}
 # What the client advertised in `initialize`.
 client_capabilities = {}
 session_count = [0]
@@ -589,6 +601,25 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         say(session_id, "later")
     elif word == "say":
         say(session_id, rest)
+    elif word == "think-blank":
+        update(session_id, {"sessionUpdate": "agent_thought_chunk", "messageId": next_message_id("thought"),
+                            "content": {"type": "text", "text": "\n\n"}})
+        update(session_id, {"sessionUpdate": "agent_thought_chunk", "messageId": next_message_id("thought"),
+                            "content": {"type": "text", "text": "**Pondering**"}})
+        say(session_id, rest)
+    elif word == "two-messages":
+        say(session_id, "first")
+        say(session_id, "second")
+    elif word == "steer-late":
+        say(session_id, "waiting")
+        with state_lock:
+            state_lock.wait_for(lambda: steered[session_id] or cancelled[session_id], timeout=10)
+            got = list(steered[session_id])
+            taken = late.pop(session_id, [])
+        say(session_id, "before")
+        for steer_request, steer_params in taken:
+            insert(steer_request, session_id, steer_params)
+        say(session_id, "steered: " + " | ".join(got) if got else "no steer")
     elif word == "think":
         update(session_id, {"sessionUpdate": "agent_thought_chunk", "messageId": next_message_id("thought"),
                             "content": {"type": "text", "text": "pondering"}})
@@ -885,6 +916,12 @@ def handle(message):
                 # Answered first: the work it was meant for may end now.
                 with state_lock:
                     declined[session_id] = True
+                    state_lock.notify_all()
+                return
+            if env("ACP_FIXTURE_LATE_STEERS"):
+                with state_lock:
+                    late.setdefault(session_id, []).append((request_id, params))
+                    steered[session_id].extend(texts)
                     state_lock.notify_all()
                 return
             insert(request_id, session_id, params)

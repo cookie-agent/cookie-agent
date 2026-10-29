@@ -1692,6 +1692,84 @@ async fn a_steer_reaches_the_running_work_as_a_prompt_during_it() {
     assert_eq!(received[1], ["look at notes.txt"]);
 }
 
+/// The texts of the session's committed model turns, in order, and where
+/// its steered input stands among them.
+fn turn_texts_and_input(engine: &Engine, session: SessionId, input: &str) -> Vec<String> {
+    events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ModelTurnCommitted { turn, .. } => Some(
+                turn.content
+                    .iter()
+                    .filter_map(|part| match part {
+                        cookie_agent_protocol::PersistedAssistantPart::Text { text, .. } => {
+                            Some(text.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            ),
+            EventPayload::UserInputSubmitted { content }
+                if matches!(
+                    content.parts().first(),
+                    Some(Open::Known(cookie_agent_protocol::UserContentPart::Text { text }))
+                        if text == input
+                ) =>
+            {
+                Some(format!("> {input}"))
+            }
+            _ => None,
+        })
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steer_the_agent_takes_in_later_stands_after_what_it_said_before() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_LATE_STEERS", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "wait", "steer-late").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    let steered = engine.steer(run, "and banana".into(), origin()).await.unwrap();
+    assert!(steered.accepted);
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "steered: and banana");
+    assert_eq!(
+        turn_texts_and_input(engine, session, "and banana"),
+        ["waiting", "before", "> and banana", "steered: and banana"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_message_is_a_paragraph_and_a_thought_starts_at_its_first_word() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "two", "two-messages").await;
+    assert_eq!(final_text(&outcome), "first\n\nsecond");
+    turn(engine, session, "think", "think-blank done").await;
+    let thought = events(engine, session)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.payload {
+            EventPayload::ModelTurnCommitted { turn, .. } => {
+                turn.content.into_iter().find_map(|part| match part {
+                    cookie_agent_protocol::PersistedAssistantPart::Reasoning { text, .. } => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("a thought");
+    assert_eq!(thought, "**Pondering**");
+}
+
 /// A steer the agent declines stays waiting, as a model run's pending
 /// input does: it never reached the transcript, so any client can still
 /// take it back. The agent's work outlasts the test's steps (it ends with
