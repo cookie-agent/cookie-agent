@@ -385,10 +385,15 @@ checkpoints, plugin-injected messages, and committed media parts appear
 collapsed by default. An AGENTS.md row appears at a run whose loaded context
 differs from the previous run's: the first load, a change, or loading again
 after a run without AGENTS.md. A run that reloads identical files adds no row.
-Expanded,
-it shows each file's source and content. A skill row shows the skill's source
-path, arguments, and rendered body. An AGENTS.md file skipped for size appears
-as a warning row.
+A run's loads make one row, as they make one turn for the model: its header
+names the files, and expanded, it shows the turn as the model reads it, the
+instructions around the files and each file's `<contents from=…>` tag
+included. A compaction row opens to the summary in the frame the model reads
+it in. A skill row shows the skill's source path, arguments, and rendered
+body. An AGENTS.md file skipped for size appears as a warning row. A reply an
+interrupt cut off with content left says `model interrupted` and quotes the
+marker later requests follow it with, `[Response interrupted — it was cut off
+before it finished]`.
 
 Everything else the engine adds to the model's input has a collapsed row too,
 whose body is the exact text the model reads: the memory snapshot (`🧠 memory ·

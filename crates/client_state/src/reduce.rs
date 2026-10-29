@@ -435,6 +435,8 @@ pub(super) fn reduce_event_from(
             state.run_agent = Some(agent.agent.clone());
             state.run_snapshot = Some(agent);
             state.agent_md_previous_run = std::mem::take(&mut state.agent_md_latest_run);
+            state.agent_md_sources.clear();
+            state.agent_md_row = None;
         }
         EventPayload::UserInputAdmitted { content } => {
             close_open_assistant(state, timestamp);
@@ -609,23 +611,21 @@ pub(super) fn reduce_event_from(
                 .as_ref()
                 .is_some_and(|error| error.kind == cookie_agent_protocol::ModelErrorKind::Abort);
             if interrupted {
+                // A commit that kept content already noted the interruption
+                // with the marker the model reads after it.
+                let marked = state.interrupt_marked.remove(&attempt_id);
+                let text = crate::model_input::interrupted_note(marked.is_some());
                 // Without a tracked block (the attempt started before this
                 // view's replay window) the interruption still shows, as a row.
-                let noted = attempt.as_ref().and_then(|attempt| {
-                    append_assistant_notice(
-                        state,
-                        attempt.item_id,
-                        "model interrupted".into(),
-                        timestamp,
-                    )
-                });
+                let noted = if marked == Some(true) {
+                    Some(0)
+                } else {
+                    attempt.as_ref().and_then(|attempt| {
+                        append_assistant_notice(state, attempt.item_id, text.clone(), timestamp)
+                    })
+                };
                 if noted.is_none() {
-                    push_event(
-                        state,
-                        EventLevel::Warning,
-                        "model interrupted".into(),
-                        timestamp,
-                    );
+                    push_event(state, EventLevel::Warning, text, timestamp);
                 }
             } else {
                 let message = match &model_error {
@@ -697,6 +697,11 @@ pub(super) fn reduce_event_from(
             // A turn carrying tool calls or media starts new segments: when
             // an event row interleaved mid-turn, the whole turn's canonical
             // rebuild belongs in a fresh block below the row.
+            // An ACP agent keeps its own history: cookie adds no marker.
+            let interrupted_with_content = turn.finish_reason
+                == cookie_agent_protocol::ModelFinishReason::Aborted
+                && !turn.content.is_empty()
+                && !acp_turn;
             if turn.content.iter().any(|part| {
                 matches!(
                     part,
@@ -746,6 +751,19 @@ pub(super) fn reduce_event_from(
                     .map(|attempt| std::mem::take(&mut attempt.split_segments))
                     .unwrap_or_default();
                 prune_split_segments(state, &segments);
+                // A reply an interrupt cut off with content left is followed
+                // by the interrupt marker in later requests: its note quotes
+                // it, inside the committed prefix so the abandon keeps it.
+                if interrupted_with_content {
+                    let noted = append_assistant_notice(
+                        state,
+                        item_id,
+                        crate::model_input::interrupted_note(true),
+                        timestamp,
+                    )
+                    .is_some();
+                    state.interrupt_marked.insert(attempt_id, noted);
+                }
                 // The block now holds committed content, so the attempt's
                 // prune boundary must cover it: an interrupt commits the
                 // partial turn and then abandons the attempt, and the abandon
@@ -765,6 +783,9 @@ pub(super) fn reduce_event_from(
                 }
             } else {
                 index_turn_tool_content(state, model_turn_seq, &turn);
+                if interrupted_with_content {
+                    state.interrupt_marked.insert(attempt_id, false);
+                }
             }
             place_tool_rows(state);
             push_event(
@@ -1596,21 +1617,57 @@ pub(super) fn reduce_event_from(
             // source's context differs from its previous run's. A run that
             // loaded none for a source breaks its chain, so re-enabling
             // shows a row again.
-            let attachment = match project {
+            // The row shows the run's whole AGENTS.md turn as the model
+            // reads it, so a later load of the run updates it.
+            let key = match &project {
                 Some(project) => format!("project:{}", project.id),
                 None => attachment.as_str().to_owned(),
             };
-            let unchanged = state.agent_md_previous_run.get(&attachment) == Some(&entries);
+            let unchanged = state.agent_md_previous_run.get(&key) == Some(&entries);
             state
                 .agent_md_latest_run
-                .insert(attachment, entries.clone());
-            if !unchanged {
-                push_item(state, timestamp, |id| TranscriptItem::AgentMd {
-                    id,
-                    version: 0,
-                    seq: sequence,
-                    entries,
-                });
+                .insert(key.clone(), entries.clone());
+            state.agent_md_sources.retain(|source| source.key != key);
+            state.agent_md_sources.push(crate::AgentMdSourceState {
+                key,
+                attachment: attachment.as_str().to_owned(),
+                project: project.is_some(),
+                entries,
+            });
+            let (all_entries, text) = crate::model_input::agent_md_turn(&state.agent_md_sources);
+            let row = state.agent_md_row.and_then(|row| {
+                state
+                    .transcript
+                    .iter_mut()
+                    .rev()
+                    .find_map(|item| match item {
+                        TranscriptItem::AgentMd {
+                            id,
+                            version,
+                            entries,
+                            text,
+                            ..
+                        } if *id == row => Some((version, entries, text)),
+                        _ => None,
+                    })
+            });
+            match row {
+                Some((version, entries, shown)) => {
+                    *entries = all_entries;
+                    *shown = text;
+                    *version = version.wrapping_add(1);
+                }
+                None if !unchanged => {
+                    push_item(state, timestamp, |id| TranscriptItem::AgentMd {
+                        id,
+                        version: 0,
+                        seq: sequence,
+                        entries: all_entries,
+                        text,
+                    });
+                    state.agent_md_row = Some(state.next_transcript_id);
+                }
+                None => {}
             }
         }
         EventPayload::ModelToolsPublished {

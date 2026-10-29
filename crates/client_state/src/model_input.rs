@@ -90,6 +90,42 @@ pub fn inherited_context(turns: &[DelegatedContextTurn]) -> (String, String) {
     (format!("context from the parent · {count}"), body)
 }
 
+/// Every file of the `AGENTS.md` turn `sources` make, in the turn's order
+/// (a project's first), and the turn as the model reads it.
+pub fn agent_md_turn(
+    sources: &[crate::AgentMdSourceState],
+) -> (Vec<cookie_agent_protocol::AgentMdEntry>, String) {
+    let entries = sources
+        .iter()
+        .filter(|source| source.project)
+        .chain(sources.iter().filter(|source| !source.project))
+        .flat_map(|source| source.entries.iter().cloned())
+        .collect();
+    let sources = sources
+        .iter()
+        .map(|source| model_text::AgentMdSource {
+            attachment: &source.attachment,
+            project: source.project,
+            entries: &source.entries,
+        })
+        .collect::<Vec<_>>();
+    (entries, model_text::agent_md_turn(&sources))
+}
+
+/// The note in a reply an interrupt cut off: the marker the model reads
+/// after it from the next request on, when the reply kept content, else
+/// only that it was interrupted.
+pub fn interrupted_note(marked: bool) -> String {
+    if marked {
+        format!(
+            "model interrupted · later requests follow this reply with: {}",
+            model_text::INTERRUPTED_TURN_MARKER
+        )
+    } else {
+        "model interrupted".to_owned()
+    }
+}
+
 /// The ACP context row's heading: `context sent to claude · 120 lines`.
 pub fn agent_context_header(agent: &str, text: &str) -> String {
     format!("context sent to {agent} · {}", lines(text))

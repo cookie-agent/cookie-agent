@@ -559,9 +559,22 @@ fn committed_partial_turn_survives_the_abort_that_follows_it() {
     assert!(
         children.last().is_some_and(|child| matches!(
             child,
-            AssistantChild::Notice { text } if text == "model interrupted"
+            AssistantChild::Notice { text } if text == &format!(
+                "model interrupted · later requests follow this reply with: {}",
+                cookie_agent_protocol::model_text::INTERRUPTED_TURN_MARKER
+            )
         )),
-        "the interruption notice follows the partial text: {children:?}"
+        "the interruption notice, quoting the marker later requests carry, follows the \
+         partial text: {children:?}"
+    );
+    // One notice: the abort that follows the commit adds none.
+    assert_eq!(
+        children
+            .iter()
+            .filter(|child| matches!(child, AssistantChild::Notice { .. }))
+            .count(),
+        1,
+        "{children:?}"
     );
     assert!(
         !state.transcript.iter().any(|item| matches!(

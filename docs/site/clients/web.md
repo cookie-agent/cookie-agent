@@ -387,11 +387,13 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     up to 256 lines or 32 KiB, and the tool names as chips, up to 8 KiB of
     names, the provided and searchable ones under their own headings.
   - **What the model reads beyond the conversation** has a collapsed row
-    wherever it enters, as in the TUI: AGENTS.md, a loaded skill, the
-    memory snapshot (again whenever it changes), a deferred tools
-    announcement, the parent's conversation a subagent starts from, and
-    an ACP agent's first-prompt context, each opening to the exact text
-    the model reads. A tool call's output is followed by what its result
+    wherever it enters, as in the TUI: AGENTS.md (a run's files as one
+    turn, with the instructions around them), a loaded skill, the memory
+    snapshot (again whenever it changes), a compaction summary (in its
+    frame), a deferred tools announcement, the parent's conversation a
+    subagent starts from, and an ACP agent's first-prompt context, each
+    opening to the exact text the model reads. A reply an interrupt cut
+    off quotes the marker later requests follow it with. A tool call's output is followed by what its result
     sent the model beyond the tool's own output: a loop warning, the
     messages the tool emitted, and the marker that stands for the output
     once it left the model's context.

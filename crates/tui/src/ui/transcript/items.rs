@@ -304,7 +304,9 @@ pub(super) fn transcript_item_layout(
         TranscriptItem::PluginMessage {
             seq, role, input, ..
         } => plugin_message_layout(*seq, *role, input, context),
-        TranscriptItem::AgentMd { seq, entries, .. } => agent_md_layout(*seq, entries, context),
+        TranscriptItem::AgentMd {
+            seq, entries, text, ..
+        } => agent_md_layout(*seq, entries, text, context),
         TranscriptItem::SkillLoaded {
             seq,
             name,

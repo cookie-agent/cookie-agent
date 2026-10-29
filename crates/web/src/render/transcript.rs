@@ -336,9 +336,13 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         TranscriptItem::Compaction { commit, .. } => {
             let key = block_key(item).unwrap_or_default();
             let (kind, body) = match &commit.checkpoint {
-                ContextCheckpoint::InternalSummary { checkpoint, .. } => {
-                    ("internal summary", checkpoint.summary().to_owned())
-                }
+                // The summary as the model reads it, in its frame.
+                ContextCheckpoint::InternalSummary { checkpoint, .. } => (
+                    "internal summary",
+                    cookie_agent_protocol::model_text::framed_compaction_summary(
+                        checkpoint.summary(),
+                    ),
+                ),
                 ContextCheckpoint::NativeWindow { window } => {
                     let scope = window.scope();
                     (
@@ -427,7 +431,9 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 input,
             )
         }
-        TranscriptItem::AgentMd { entries, .. } => {
+        // The files' header, and opened, the AGENTS.md turn as the model
+        // reads it, its framing included.
+        TranscriptItem::AgentMd { entries, text, .. } => {
             let key = block_key(item).unwrap_or_default();
             let lines: usize = entries
                 .iter()
@@ -437,17 +443,6 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 [entry] => entry.source.as_str().to_owned(),
                 _ => format!("{} files", entries.len()),
             };
-            let body = entries
-                .iter()
-                .map(|entry| {
-                    if entries.len() > 1 {
-                        format!("── {}\n{}", entry.source.as_str(), entry.content)
-                    } else {
-                        entry.content.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
             let header = format!("AGENTS.md · {files} ({lines} lines)");
             collapsible(
                 view.expanded.block(&key),
@@ -455,7 +450,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 icondata::FaBookSolid,
                 &header,
                 None,
-                &body,
+                text,
             )
         }
         // Input the engine added to the model's: collapsed to its header,

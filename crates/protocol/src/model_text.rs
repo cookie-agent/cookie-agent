@@ -1,14 +1,97 @@
 //! Text the engine adds to a model's input from what the session log
 //! records, rendered here so the clients show the user the same bytes the
-//! model reads: the memory snapshot turn, a deferred tools announcement,
-//! the marker that stands for an elided tool output, the line a
-//! tool-emitted system message starts with, and a loop warning's start.
+//! model reads: the `AGENTS.md` turn, the memory snapshot turn, the frame
+//! around a compaction summary, a deferred tools announcement, the marker
+//! after an interrupted reply, the marker that stands for an elided tool
+//! output, the line a tool-emitted system message starts with, and a loop
+//! warning's start.
 
 pub mod memory_snapshot;
 
-use crate::{AnnouncedToolGroup, ToolGroupSource};
+use crate::{AgentMdEntry, AnnouncedToolGroup, ToolGroupSource};
 
 pub use memory_snapshot::snapshot_turn as memory_snapshot_turn;
+
+/// What opens the `AGENTS.md` turn, before the files.
+pub const AGENT_MD_PREAMBLE: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
+
+/// What closes the `AGENTS.md` turn, after the files.
+pub const AGENT_MD_FOOTNOTE: &str = "IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.";
+
+/// One source of the `AGENTS.md` turn: the attachment that loaded its
+/// files, whether they are a project's, and the files.
+#[derive(Clone, Copy, Debug)]
+pub struct AgentMdSource<'a> {
+    pub attachment: &'a str,
+    pub project: bool,
+    pub entries: &'a [AgentMdEntry],
+}
+
+/// The `AGENTS.md` turn, the one user turn holding every loaded file, from
+/// the latest load of each source in the latest run, in log order: the
+/// project's file first, then each workspace's (projects spec section 6).
+/// A workspace's file names its attachment when several attachments gave
+/// files; a project's file says where it is from in its source,
+/// `project:<name>/AGENTS.md`. Empty when no source has a file.
+#[must_use]
+pub fn agent_md_turn(loaded: &[AgentMdSource<'_>]) -> String {
+    let several = loaded.iter().filter(|source| !source.project).count() > 1;
+    let files = loaded
+        .iter()
+        .filter(|source| source.project)
+        .chain(loaded.iter().filter(|source| !source.project))
+        .flat_map(|source| {
+            source.entries.iter().map(move |entry| {
+                let from = escape_attribute(entry.source.as_str());
+                let runtime = if several && !source.project {
+                    format!(" runtime=\"{}\"", escape_attribute(source.attachment))
+                } else {
+                    String::new()
+                };
+                format!(
+                    "<contents from=\"{from}\"{runtime}>\n{}\n</contents>",
+                    entry.content
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        return String::new();
+    }
+    let files = files.join("\n\n");
+    format!("{AGENT_MD_PREAMBLE}\n\n{files}\n\n{AGENT_MD_FOOTNOTE}\n</system-reminder>")
+}
+
+fn escape_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// What comes before a compaction summary in the turn the model reads.
+pub const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
+
+/// What comes after a compaction summary in the turn the model reads.
+pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
+
+/// The user turn a compaction summary reaches the model as.
+#[must_use]
+pub fn framed_compaction_summary(summary: &str) -> String {
+    format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
+}
+
+/// The user turn that follows a reply an interrupt cut off, from the next
+/// request on, when the reply kept any content.
+///
+/// The engine adds it when it assembles a request, never to the log: the
+/// log records what the model actually produced, and the marker tells the
+/// model that the fragment it sees is neither its ending nor a user's
+/// message. The wording names no cause: the user, a delegating parent, or
+/// shutdown may have cancelled the run.
+pub const INTERRUPTED_TURN_MARKER: &str =
+    "[Response interrupted — it was cut off before it finished]";
 
 /// Starts the line a tool-emitted system message's user turn opens with.
 pub const TOOL_EMITTED_SYSTEM_USER_MARKER: &str =

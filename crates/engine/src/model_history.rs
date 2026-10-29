@@ -27,24 +27,12 @@ use thiserror::Error;
 
 use crate::{ArtifactRouter, SessionArtifacts, goal_projection::GoalProducerProjection};
 
-pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
-pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
+// The text the engine adds to the model's input lives in the protocol
+// crate, so the clients show the user the same bytes.
 pub(crate) use cookie_agent_protocol::model_text::{
-    TOOL_EMITTED_SYSTEM_USER_MARKER, tool_output_elision_marker,
+    COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, INTERRUPTED_TURN_MARKER,
+    TOOL_EMITTED_SYSTEM_USER_MARKER, framed_compaction_summary, tool_output_elision_marker,
 };
-/// Model-visible annotation that follows a turn an interrupt cut off.
-///
-/// It is injected at history-assembly time only: the durable log records what
-/// the model actually produced, and the marker tells the next request that the
-/// fragment it sees is neither the model's ending nor a user's message. The
-/// wording names no cause: the user, a delegating parent, or shutdown may
-/// have cancelled the run.
-pub(crate) const INTERRUPTED_TURN_MARKER: &str =
-    "[Response interrupted — it was cut off before it finished]";
-
-pub(crate) fn framed_compaction_summary(summary: &str) -> String {
-    format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
-}
 
 pub(crate) fn checkpoint_retained_history<E: Borrow<StoredEvent>>(
     history: &[HistoryTurn],
@@ -1488,55 +1476,25 @@ fn latest_memory_turn(events: &[&StoredEvent]) -> Option<String> {
     }
 }
 
-const AGENT_MD_PREAMBLE: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
-
-const AGENT_MD_FOOTNOTE: &str = "IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.";
-
-/// One user turn holding every loaded file. With several attachments each
-/// file names the attachment it came from.
-/// The `AGENTS.md` turn: the project's file first, then each workspace's
-/// (`docs/site/specs/projects.md` section 6). A workspace's file names its
-/// attachment when several attachments gave files; a project's file says
-/// where it is from in its source, `project:<name>/AGENTS.md`.
+/// The `AGENTS.md` turn of `loaded` (attachment, whether a project's, and
+/// its files), as the protocol crate renders it for the clients too.
 fn agent_md_turn(loaded: &[(&str, bool, &[cookie_agent_protocol::AgentMdEntry])]) -> String {
-    let several = loaded.iter().filter(|(_, project, _)| !project).count() > 1;
-    let files = loaded
+    let sources = loaded
         .iter()
-        .filter(|(_, project, _)| *project)
-        .chain(loaded.iter().filter(|(_, project, _)| !project))
-        .flat_map(|(attachment, project, entries)| {
-            entries.iter().map(move |entry| {
-                let source = escape_xml_attribute(entry.source.as_str());
-                let runtime = if several && !project {
-                    format!(" runtime=\"{}\"", escape_xml_attribute(attachment))
-                } else {
-                    String::new()
-                };
-                format!(
-                    "<contents from=\"{source}\"{runtime}>\n{}\n</contents>",
-                    entry.content
-                )
-            })
-        })
+        .map(
+            |&(attachment, project, entries)| cookie_agent_protocol::model_text::AgentMdSource {
+                attachment,
+                project,
+                entries,
+            },
+        )
         .collect::<Vec<_>>();
-    if files.is_empty() {
-        return String::new();
-    }
-    let files = files.join("\n\n");
-    format!("{AGENT_MD_PREAMBLE}\n\n{files}\n\n{AGENT_MD_FOOTNOTE}\n</system-reminder>")
+    cookie_agent_protocol::model_text::agent_md_turn(&sources)
 }
 
 #[cfg(test)]
 pub(crate) fn agent_md_turn_for_test(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
     agent_md_turn(&[("local", false, entries)])
-}
-
-fn escape_xml_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn attach_result<'a>(

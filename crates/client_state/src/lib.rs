@@ -613,12 +613,15 @@ pub enum TranscriptItem {
         input: String,
     },
     /// AGENTS.md context loaded at a root run start, rendered inline when it
-    /// differs from the previous run's (see `agent_md_previous_run`).
+    /// differs from the previous run's (see `agent_md_previous_run`): every
+    /// file of the run's `AGENTS.md` turn, and the turn as the model reads
+    /// it. A later load of the same run updates the row.
     AgentMd {
         id: u64,
         version: u64,
         seq: u64,
         entries: Vec<cookie_agent_protocol::AgentMdEntry>,
+        text: String,
     },
     /// Input the engine adds to the model's beyond the conversation, such
     /// as the memory snapshot turn: a collapsible row whose body is the
@@ -1230,6 +1233,15 @@ pub struct SessionState {
     /// are unchanged.
     pub agent_md_latest_run: AgentMdByAttachment,
     pub agent_md_previous_run: AgentMdByAttachment,
+    /// The latest run's `AGENTS.md` loads, the latest of each source in
+    /// log order, which the model's `AGENTS.md` turn is made of.
+    pub agent_md_sources: Vec<AgentMdSourceState>,
+    /// The ID of the latest run's `AGENTS.md` row, once it has one.
+    pub agent_md_row: Option<u64>,
+    /// The attempts whose committed turn an interrupt cut off with content
+    /// left, which later requests follow with the interrupt marker; true
+    /// when the note quoting it went into the reply's block.
+    pub interrupt_marked: HashMap<AttemptId, bool>,
     /// The memory turn the latest memory row shows; empty once memory left
     /// the model's context, `None` before any row. A snapshot that renders
     /// the same turn adds no row.
@@ -1238,6 +1250,16 @@ pub struct SessionState {
     /// model reads once its output is elided; calls that emitted none are
     /// left out.
     pub tool_emitted_messages: HashMap<ToolCallId, usize>,
+}
+
+/// One source of the latest run's `AGENTS.md` turn.
+#[derive(Clone, Debug)]
+pub struct AgentMdSourceState {
+    /// The attachment's name, or `project:<id>` for a project's file.
+    pub key: String,
+    pub attachment: String,
+    pub project: bool,
+    pub entries: Vec<cookie_agent_protocol::AgentMdEntry>,
 }
 
 /// AGENTS.md entries keyed by the attachment that loaded them.

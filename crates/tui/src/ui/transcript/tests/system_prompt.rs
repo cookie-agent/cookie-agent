@@ -458,8 +458,9 @@ fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
     let rendered = snapshot_lines(&transcript_layout(&state, Some(&expanded), 100).lines);
 
     assert_eq!(rendered.matches("… truncated (").count(), 4, "{rendered}");
+    // The summary's 100 lines and the 6 lines of its frame.
     assert!(
-        rendered.contains("… truncated (36 more lines)"),
+        rendered.contains("… truncated (42 more lines)"),
         "{rendered}"
     );
     assert!(
@@ -472,8 +473,13 @@ fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
     );
     assert!(rendered.contains("system-line-255"), "{rendered}");
     assert!(!rendered.contains("system-line-256"), "{rendered}");
-    assert!(rendered.contains("\n· line-063"), "{rendered}");
-    assert!(!rendered.contains("\n· line-064"), "{rendered}");
+    // The frame's three opening lines come first.
+    assert!(
+        rendered.contains("\n· This session is being continued"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("\n· line-060"), "{rendered}");
+    assert!(!rendered.contains("\n· line-061"), "{rendered}");
     assert!(!rendered.contains('\u{1b}'), "{rendered}");
     let bounded_control = bounded_safe_display_text(
         &control_input,
@@ -1093,7 +1099,7 @@ fn agent_md_and_skill_loads_render_as_expandable_context_rows() {
 }
 
 #[test]
-fn multi_file_agent_md_names_each_source_when_expanded() {
+fn multi_file_agent_md_shows_the_turn_the_model_reads_when_expanded() {
     let session = SessionId::new_v7();
     let entry = |source: &str, content: &str| cookie_agent_protocol::AgentMdEntry {
         source: SafeDisplayText::new(source).expect("source"),
@@ -1127,9 +1133,21 @@ fn multi_file_agent_md_names_each_source_when_expanded() {
     );
     let expanded = HashSet::from([BlockId::AgentMd(2)]);
     let open = snapshot_lines(&transcript_layout(state, Some(&expanded), 100).lines);
-    assert!(open.contains("── /repo/AGENTS.md"), "{open}");
-    assert!(open.contains("── /repo/app/AGENTS.md"), "{open}");
+    // The turn's framing, and each file under its source.
+    assert!(open.contains("# AGENTS.md"), "{open}");
+    assert!(
+        open.contains("<contents from=\"/repo/AGENTS.md\">"),
+        "{open}"
+    );
+    assert!(
+        open.contains("<contents from=\"/repo/app/AGENTS.md\">"),
+        "{open}"
+    );
     assert!(open.contains("app detail"), "{open}");
+    assert!(
+        open.contains("IMPORTANT: this context may or may not be relevant"),
+        "{open}"
+    );
 }
 
 #[test]
@@ -1231,6 +1249,8 @@ fn agent_md_rows_compare_each_attachment_with_its_own_previous_run() {
     for event in events {
         assert!(store.apply_event(event));
     }
+    // A run's loads make one row, the model's one AGENTS.md turn: the
+    // first run's second load updates its row.
     let layout = transcript_layout(&store.sessions[&session], None, 100);
     assert_eq!(
         layout
@@ -1241,10 +1261,28 @@ fn agent_md_rows_compare_each_attachment_with_its_own_previous_run() {
         vec![
             BlockId::SystemPrompt,
             BlockId::AgentMd(3),
-            BlockId::AgentMd(4),
             BlockId::AgentMd(10),
         ]
     );
+    // The changed run's row holds the whole turn, each file naming its
+    // attachment as there are several.
+    let open = snapshot_lines(
+        &transcript_layout(
+            &store.sessions[&session],
+            Some(&HashSet::from([BlockId::AgentMd(10)])),
+            100,
+        )
+        .lines,
+    );
+    assert!(
+        open.contains("<contents from=\"/web/AGENTS.md\" runtime=\"local_web\">"),
+        "{open}"
+    );
+    assert!(
+        open.contains("<contents from=\"/api/AGENTS.md\" runtime=\"labpc_api\">"),
+        "{open}"
+    );
+    assert!(open.contains("api v2"), "{open}");
 }
 
 #[tokio::test]

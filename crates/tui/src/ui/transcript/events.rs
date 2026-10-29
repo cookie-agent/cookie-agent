@@ -449,9 +449,12 @@ pub(super) fn compaction_layout(
     )];
     if is_expanded {
         match &commit.checkpoint {
+            // The summary as the model reads it, in its frame.
             cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint, .. } => {
                 body.extend(bounded_safe_display_text(
-                    checkpoint.summary(),
+                    &cookie_agent_protocol::model_text::framed_compaction_summary(
+                        checkpoint.summary(),
+                    ),
                     context.theme.internal(),
                     MAX_EXPANDED_BODY_LINES,
                     MAX_EXPANDED_BODY_BYTES,
@@ -649,9 +652,12 @@ pub(super) fn plugin_message_layout(
     collapsible_event_block(block_id, body, context.width, context.theme)
 }
 
+/// The AGENTS.md row: its files in the header, and expanded, the turn as
+/// the model reads it, its framing included.
 pub(super) fn agent_md_layout(
     seq: u64,
     entries: &[cookie_agent_protocol::AgentMdEntry],
+    text: &str,
     context: &TranscriptRenderContext<'_>,
 ) -> ItemLayout {
     let block_id = BlockId::AgentMd(seq);
@@ -672,20 +678,12 @@ pub(super) fn agent_md_layout(
         context.theme.internal(),
     )];
     if is_expanded {
-        for entry in entries {
-            if entries.len() > 1 {
-                body.push(Line::styled(
-                    format!("── {}", entry.source.as_str()),
-                    context.theme.muted(),
-                ));
-            }
-            body.extend(bounded_safe_display_text(
-                &entry.content,
-                context.theme.internal(),
-                MAX_SYSTEM_PROMPT_BODY_LINES,
-                MAX_SYSTEM_PROMPT_BODY_BYTES,
-            ));
-        }
+        body.extend(bounded_safe_display_text(
+            text,
+            context.theme.internal(),
+            MAX_SYSTEM_PROMPT_BODY_LINES,
+            MAX_SYSTEM_PROMPT_BODY_BYTES,
+        ));
     }
     collapsible_event_block(block_id, body, context.width, context.theme)
 }
