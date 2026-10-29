@@ -43,19 +43,20 @@ pub fn assistant_footer(state: &SessionState, item_id: u64) -> Option<String> {
 /// when it ran a second or more, else `thought`.
 pub fn thought_label(duration: Option<Duration>) -> String {
     match duration.filter(|duration| duration.as_secs() >= 1) {
-        Some(duration) => format!("thought for {}", format_thinking_duration(duration)),
+        Some(duration) => format!("thought for {}", format_elapsed(duration)),
         None => "thought".to_owned(),
     }
 }
 
-/// A thinking duration as compact text: seconds under a minute, then
-/// minutes and seconds.
-fn format_thinking_duration(duration: Duration) -> String {
+/// An elapsed time as compact text: `42s` under a minute, `1m 23s` under
+/// an hour, then `1h 4m`.
+#[must_use]
+pub fn format_elapsed(duration: Duration) -> String {
     let seconds = duration.as_secs();
-    if seconds >= 60 {
-        format!("{}m {}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{seconds}s")
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m {}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
     }
 }
 

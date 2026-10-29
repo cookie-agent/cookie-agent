@@ -42,6 +42,7 @@ pub mod session_delete;
 pub mod session_rename;
 pub mod subscriptions;
 pub mod tool_header;
+pub mod transcript_mode;
 pub mod tree;
 pub mod unread;
 pub mod uploads;
@@ -918,6 +919,34 @@ pub struct RunAssistantProjection {
     /// next new segment (a part of another kind, a tool call, or a new
     /// attempt) opens a fresh block after the row.
     pub(crate) split_pending: bool,
+    /// The durable time of the row that made the split pending: when this
+    /// block's work ended, should the split happen.
+    pub(crate) split_at: Option<jiff::Timestamp>,
+}
+
+impl RunAssistantProjection {
+    /// Marks the block split-pending at the durable time `at`, keeping the
+    /// time of the first row when one is already pending.
+    pub(crate) fn mark_split_pending(&mut self, at: jiff::Timestamp) {
+        if !self.split_pending {
+            self.split_at = Some(at);
+        }
+        self.split_pending = true;
+    }
+
+    /// The block keeps taking output: no split is pending.
+    pub(crate) fn clear_split(&mut self) {
+        self.split_pending = false;
+        self.split_at = None;
+    }
+}
+
+/// How an assistant block ended: the durable time it stopped taking
+/// output, and whether its run was cancelled or interrupted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AssistantEnd {
+    pub at: jiff::Timestamp,
+    pub stopped: bool,
 }
 
 /// Generation metrics accumulated across one assistant block's committed
@@ -1250,6 +1279,9 @@ pub struct SessionState {
     /// model reads once its output is elided; calls that emitted none are
     /// left out.
     pub tool_emitted_messages: HashMap<ToolCallId, usize>,
+    /// How each sealed assistant block ended: its run finished, or a row
+    /// split the run's output into a new block below it.
+    pub assistant_ends: HashMap<u64, AssistantEnd>,
 }
 
 /// One source of the latest run's `AGENTS.md` turn.
@@ -1340,13 +1372,37 @@ impl SessionState {
         self.item_times.get(&item_id).copied()
     }
 
+    /// Whether the assistant block `item_id` still takes output: it is its
+    /// run's open block and no row has split it off.
+    pub fn assistant_live(&self, item_id: u64) -> bool {
+        !self.assistant_ends.contains_key(&item_id)
+            && self.open_run_assistant.as_ref().is_some_and(|projection| {
+                projection.item_id == item_id && !projection.split_pending
+            })
+    }
+
+    /// How the assistant block `item_id` ended, once it did.
+    pub fn assistant_end(&self, item_id: u64) -> Option<AssistantEnd> {
+        self.assistant_ends.get(&item_id).copied()
+    }
+
+    /// When the newest child of the assistant block `item_id` entered it.
+    pub(crate) fn assistant_last_child_time(&self, item_id: u64) -> Option<jiff::Timestamp> {
+        self.transcript.iter().rev().find_map(|item| match item {
+            TranscriptItem::Assistant {
+                id, child_times, ..
+            } if *id == item_id => child_times.iter().max().copied(),
+            _ => None,
+        })
+    }
+
     /// Mark the open run block split-pending so the next new segment opens a
     /// fresh block below an interleaved event row. This holds while the run
     /// streams and between its turns alike: output that happens after the
     /// row must never render above it.
-    pub(crate) fn mark_event_split_pending(&mut self) {
+    pub(crate) fn mark_event_split_pending(&mut self, at: jiff::Timestamp) {
         if let Some(projection) = self.open_run_assistant.as_mut() {
-            projection.split_pending = true;
+            projection.mark_split_pending(at);
         }
     }
 
@@ -1355,13 +1411,17 @@ impl SessionState {
     /// so the streaming-only rule above never fires, yet the next attempt
     /// happened after it: its output must open a fresh block below the row
     /// rather than continue the block above.
-    pub(crate) fn mark_attempt_boundary_split(&mut self, run_id: Option<RunId>) {
+    pub(crate) fn mark_attempt_boundary_split(
+        &mut self,
+        run_id: Option<RunId>,
+        at: jiff::Timestamp,
+    ) {
         if let Some(projection) = self
             .open_run_assistant
             .as_mut()
             .filter(|projection| Some(projection.run_id) == run_id)
         {
-            projection.split_pending = true;
+            projection.mark_split_pending(at);
         }
     }
 
@@ -1376,7 +1436,7 @@ impl SessionState {
     /// block does for a mid-stream row — so the caller can move the block
     /// itself below the row and the retry keeps using it, rather than leaving
     /// an empty header stranded on either side of the marker.
-    pub(crate) fn split_run_at_compaction(&mut self) -> Option<usize> {
+    pub(crate) fn split_run_at_compaction(&mut self, at: jiff::Timestamp) -> Option<usize> {
         let item_id = self
             .open_run_assistant
             .as_ref()
@@ -1400,14 +1460,14 @@ impl SessionState {
                 .open_run_assistant
                 .as_mut()
                 .expect("located run projection");
-            projection.split_pending = false;
+            projection.clear_split();
             projection.committed_prefix = 0;
             return Some(index);
         }
         self.open_run_assistant
             .as_mut()
             .expect("located run projection")
-            .split_pending = true;
+            .mark_split_pending(at);
         None
     }
 }

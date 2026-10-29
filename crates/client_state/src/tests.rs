@@ -5502,3 +5502,122 @@ fn an_acp_agents_ended_background_command_shows_as_a_row_with_how_it_ran() {
         "Background: Bash ended"
     );
 }
+
+#[test]
+fn an_assistant_block_ends_at_the_row_that_split_it_or_at_its_runs_end() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let attempt_id = AttemptId::new_v7();
+    let event = |seq, payload| stored_event(session, Some(run), seq, payload);
+    let attempt = |seq, attempt_id| {
+        event(
+            seq,
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model(),
+                prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+            },
+        )
+    };
+    let committed = |seq, attempt_id, model_turn_seq, text: &str| {
+        let EventPayload::ModelTurnCommitted {
+            resolved_model,
+            input_through_seq,
+            mut turn,
+            warnings,
+            ..
+        } = committed_turn(seq - 1)
+        else {
+            unreachable!()
+        };
+        turn.content = vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+            text: text.into(),
+            metadata: None,
+        }];
+        event(
+            seq,
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                model_turn_seq,
+                resolved_model,
+                input_through_seq,
+                turn,
+                warnings,
+            },
+        )
+    };
+    let second = AttemptId::new_v7();
+    let mut events = vec![
+        attempt(1, attempt_id),
+        committed(2, attempt_id, 1, "one"),
+        // A row between the turns: the next turn opens a block below it,
+        // and the block above ended with the row.
+        event(
+            4,
+            EventPayload::MemoryChanged {
+                change: cookie_agent_protocol::MemoryChangeKind::Edited,
+                url: "user://preferences".into(),
+            },
+        ),
+        attempt(6, second),
+        committed(7, second, 2, "two"),
+    ];
+    let blocks = |state: &SessionState| {
+        state
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .map(TranscriptItem::id)
+            .collect::<Vec<_>>()
+    };
+    let state = reduce_session_events(session, 0, &events);
+    let [above, below] = blocks(&state)[..] else {
+        panic!("two blocks: {:?}", state.transcript);
+    };
+    assert_eq!(
+        state.assistant_end(above),
+        Some(AssistantEnd {
+            at: jiff::Timestamp::new(4, 0).unwrap(),
+            stopped: false
+        })
+    );
+    assert!(!state.assistant_live(above));
+    assert_eq!(state.assistant_end(below), None);
+    assert!(state.assistant_live(below));
+    let now = jiff::Timestamp::new(16, 0).unwrap();
+    let summary = crate::transcript_mode::work_summary(&state, above, &[], now);
+    assert_eq!(
+        (summary.live, summary.elapsed),
+        (false, Duration::from_secs(3))
+    );
+    let summary = crate::transcript_mode::work_summary(&state, below, &[], now);
+    assert_eq!(
+        (summary.live, summary.elapsed),
+        (true, Duration::from_secs(10))
+    );
+
+    events.push(event(
+        9,
+        EventPayload::RunFinished {
+            outcome: cookie_agent_protocol::RunOutcome::Cancelled { reason: None }.into(),
+        },
+    ));
+    let state = reduce_session_events(session, 0, &events);
+    assert_eq!(blocks(&state), [above, below]);
+    assert_eq!(
+        state.assistant_end(above).map(|end| end.stopped),
+        Some(false)
+    );
+    assert_eq!(
+        state.assistant_end(below),
+        Some(AssistantEnd {
+            at: jiff::Timestamp::new(9, 0).unwrap(),
+            stopped: true
+        })
+    );
+    let summary = crate::transcript_mode::work_summary(&state, below, &[], now);
+    assert_eq!(summary.label(), "Stopped after 3s");
+}

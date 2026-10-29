@@ -429,6 +429,7 @@ pub(super) fn reduce_event_from(
         }
         EventPayload::RunStarted { agent, .. } => {
             close_open_assistant(state, timestamp);
+            seal_run_assistant(state, timestamp, false);
             state.open_run_assistant = None;
             state.pending_attempt = None;
             state.active_run = run_id;
@@ -525,6 +526,7 @@ pub(super) fn reduce_event_from(
                         .current_model = resolved_model;
                     item_id
                 } else {
+                    seal_run_assistant(state, timestamp, false);
                     let item_id = open_assistant_item(
                         state,
                         FrozenAssistantAttribution {
@@ -540,6 +542,7 @@ pub(super) fn reduce_event_from(
                         committed_prefix: 0,
                         current_model: resolved_model,
                         split_pending: false,
+                        split_at: None,
                     });
                     item_id
                 }
@@ -635,7 +638,7 @@ pub(super) fn reduce_event_from(
                     None => "model attempt abandoned".into(),
                 };
                 push_event(state, EventLevel::Warning, message, timestamp);
-                state.mark_attempt_boundary_split(run_id);
+                state.mark_attempt_boundary_split(run_id, timestamp);
             }
         }
         EventPayload::ModelTurnCommitted {
@@ -880,7 +883,7 @@ pub(super) fn reduce_event_from(
                 ),
                 timestamp,
             );
-            state.mark_attempt_boundary_split(run_id);
+            state.mark_attempt_boundary_split(run_id, timestamp);
         }
         EventPayload::ToolCallStarted { start } => {
             close_open_assistant(state, timestamp);
@@ -1180,6 +1183,9 @@ pub(super) fn reduce_event_from(
                 matches!(source, CompactingSource::Agent { .. })
             }) {}
             let interrupted = outcome.status() == cookie_agent_protocol::SessionStatus::Interrupted;
+            let stopped =
+                interrupted || outcome.status() == cookie_agent_protocol::SessionStatus::Cancelled;
+            seal_run_assistant(state, timestamp, stopped);
             if interrupted {
                 // The run's open block keeps an `interrupted` footer marker.
                 if let Some(projection) = state.open_run_assistant.take() {
@@ -1279,7 +1285,7 @@ pub(super) fn reduce_event_from(
             // committed anything is moved under the row itself instead of
             // being split off as an empty header.
             remove_native_compacting(state);
-            let relocate = state.split_run_at_compaction();
+            let relocate = state.split_run_at_compaction(timestamp);
             push_item(state, timestamp, |id| TranscriptItem::Compaction {
                 id,
                 version: 0,
@@ -1380,7 +1386,7 @@ pub(super) fn reduce_event_from(
             if memory_change_call(state, run_id, sequence, &url).is_some() {
                 return;
             }
-            state.mark_event_split_pending();
+            state.mark_event_split_pending(timestamp);
             push_item(state, timestamp, |id| TranscriptItem::MemoryChange {
                 id,
                 seq: sequence,
@@ -1687,7 +1693,7 @@ pub(super) fn reduce_event_from(
         } => {
             // A skill loaded by a tool mid-turn sits between that call and
             // the output that follows it, like any interleaved event row.
-            state.mark_event_split_pending();
+            state.mark_event_split_pending(timestamp);
             push_item(state, timestamp, |id| TranscriptItem::SkillLoaded {
                 id,
                 version: 0,
@@ -1889,10 +1895,16 @@ pub(super) fn rebind_pending_attempt(
         *version = version.wrapping_add(1);
         move_transcript_item_to_end(state, index);
     } else {
+        seal_assistant(
+            state,
+            projection.item_id,
+            projection.split_at.unwrap_or(timestamp),
+            false,
+        );
         projection.item_id = open_assistant_item(state, new_attribution, timestamp);
     }
     projection.committed_prefix = 0;
-    projection.split_pending = false;
+    projection.clear_split();
     state.attempts.insert(
         attempt_id,
         AttemptProjection {
@@ -2027,7 +2039,7 @@ fn push_split_item(
     timestamp: jiff::Timestamp,
     item: impl FnOnce(u64) -> TranscriptItem,
 ) {
-    let relocate = state.split_run_at_compaction();
+    let relocate = state.split_run_at_compaction(timestamp);
     push_item(state, timestamp, item);
     if let Some(index) = relocate {
         move_transcript_item_to_end(state, index);
@@ -2701,6 +2713,33 @@ pub(super) fn void_pending_inputs(state: &mut SessionState) {
     state.voided_inputs.extend(drained);
 }
 
+/// Records that the assistant block `item_id` stopped taking output at the
+/// durable time `at`. The first end recorded stands; a cancelled or
+/// interrupted run's end marks a block it already ended as stopped too.
+pub(super) fn seal_assistant(
+    state: &mut SessionState,
+    item_id: u64,
+    at: jiff::Timestamp,
+    stopped: bool,
+) {
+    let end = state
+        .assistant_ends
+        .entry(item_id)
+        .or_insert(crate::AssistantEnd { at, stopped });
+    end.stopped |= stopped;
+}
+
+/// Seals the run's open block, if any: at the row that made a split
+/// pending, since nothing after that row joined it, else at `at`.
+pub(super) fn seal_run_assistant(state: &mut SessionState, at: jiff::Timestamp, stopped: bool) {
+    let Some(projection) = state.open_run_assistant.as_ref() else {
+        return;
+    };
+    let item_id = projection.item_id;
+    let at = projection.split_at.unwrap_or(at);
+    seal_assistant(state, item_id, at, stopped);
+}
+
 pub(super) fn close_open_assistant(state: &mut SessionState, sealed_at: jiff::Timestamp) {
     let Some(open) = state.open_assistant.take() else {
         return;
@@ -2857,7 +2896,7 @@ fn push_model_input(
     header: String,
     text: String,
 ) {
-    state.mark_event_split_pending();
+    state.mark_event_split_pending(timestamp);
     push_item(state, timestamp, |id| TranscriptItem::ModelInput {
         id,
         version: 0,
@@ -2883,7 +2922,7 @@ pub(super) fn push_event(
     // decisions, commit notices, lifecycle chatter) never split, so a run's
     // turns otherwise keep sharing a block.
     if level >= EventLevel::Warning {
-        state.mark_event_split_pending();
+        state.mark_event_split_pending(timestamp);
     }
     // A warning or error identical to any earlier one (a retry loop hitting
     // the same provider error, every approval falling back off one dead
@@ -2975,13 +3014,15 @@ pub(super) fn split_assistant_if_pending(
         .open_run_assistant
         .take()
         .expect("split-pending run projection");
-    projection.split_pending = false;
+    let split_at = projection.split_at.unwrap_or(timestamp);
+    projection.clear_split();
     if reuse_empty {
         move_transcript_item_to_end(state, index);
         projection.committed_prefix = 0;
         state.open_run_assistant = Some(projection);
         return Some(attempt.item_id);
     }
+    seal_assistant(state, attempt.item_id, split_at, false);
     let item_id = open_assistant_item(
         state,
         FrozenAssistantAttribution {
@@ -3053,7 +3094,7 @@ pub(super) fn relocate_empty_split_block(
         .open_run_assistant
         .as_mut()
         .expect("located run projection");
-    projection.split_pending = false;
+    projection.clear_split();
     projection.committed_prefix = 0;
     projection.current_model = resolved_model.clone();
 }
