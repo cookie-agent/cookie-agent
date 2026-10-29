@@ -1052,18 +1052,20 @@ fn rename_row<B: IntoView + 'static>(
 /// and a chevron folds a subagent's own.
 #[component]
 fn Subagents(workspace: Workspace) -> impl IntoView {
-    let rows = move || workspace.subagent_rows();
+    let rows = Memo::new(move |_| workspace.subagent_rows());
     view! {
+        // With no rows it takes no room, nor the list's gap: else opening
+        // a row lower down would lift it by that room as the tree moves.
         <div
             role="group"
             aria-label="Subagents"
             data-subagents
             data-tree=move || if workspace.tree_expanded.get() { "expanded" } else { "collapsed" }
-            class="flex flex-col gap-0.5 pb-1"
+            class=move || if rows.with(Vec::is_empty) { "hidden" } else { "flex flex-col gap-0.5 pb-1" }
         >
             {move || {
                 let expanded = workspace.tree_expanded.get();
-                rows()
+                rows.get()
                     .into_iter()
                     .map(|row| {
                         let session_id = row.session_id;

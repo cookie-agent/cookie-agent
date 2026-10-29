@@ -2938,6 +2938,25 @@ def unread_and_select(browser):
     idle(browser, "the cancelled run's end")
 
 
+def rows_stay_put(browser):
+    """Opening a session lower in the list leaves its row where it was:
+    the open row's subagent tree, empty, takes no room above it."""
+    made = []
+    for text in ("stays one", "stays two"):
+        new_session(browser)
+        send(browser, text)
+        idle(browser, text=text)
+        made.append(open_session_id(browser))
+    row = 'aside [data-session-row="%s"]' % made[0]
+    top = lambda: browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().top", row)
+    before = top()
+    click_row(browser, row)
+    browser.wait("the older session", lambda: open_session_id(browser) == made[0])
+    time.sleep(0.5)
+    assert top() == before, "the opened row moved from %s to %s" % (before, top())
+    print("the opened row stayed at", before)
+
+
 def open_session_id(browser):
     return browser.script(
         "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
@@ -5833,6 +5852,7 @@ SCENARIOS = [
     ("draft_first_message", draft_first_message, "chat", []),
     ("session_drafts", session_drafts, "chat", []),
     ("unread_and_select", unread_and_select, "chat", []),
+    ("rows_stay_put", rows_stay_put, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
     ("open_tool_header", open_tool_header, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
