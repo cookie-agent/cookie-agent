@@ -882,6 +882,10 @@ struct Turn<'a> {
     /// Input was taken to steer that the agent did not take: the next round
     /// sends it.
     unsteered: bool,
+    /// A steer went out and the agent has not answered it yet; `Some(true)`
+    /// once its echo (a `user_message` during the work) came, where what
+    /// the agent said so far committed, so the steer stands after it.
+    steer_echo: Option<bool>,
     /// The user inputs the agent declined to take into its running work,
     /// by admission sequence number: they wait for its next turn, and are
     /// not steered again meanwhile.
@@ -1175,6 +1179,7 @@ impl Turn<'_> {
                 .map_err(|error| agent_error_message(&error));
             let _ = reply.send(answer);
         });
+        self.steer_echo = Some(false);
         Ok(Some(PendingSteer {
             answer,
             claim,
@@ -1193,6 +1198,7 @@ impl Turn<'_> {
         answer: Result<String, String>,
     ) -> Result<(), EngineError> {
         let (session, run) = (self.session(), self.run);
+        let echoed = self.steer_echo.take() == Some(true);
         // Producer messages the agent did not take go with the next round;
         // the user's inputs are still waiting, and the next round takes
         // them as any.
@@ -1201,11 +1207,13 @@ impl Turn<'_> {
             Ok(message_id) => {
                 // What the agent said before it took the message in stands
                 // before it: an agent that takes it at its next step (Codex)
-                // may have said more since the steer went out.
-                if self
-                    .step
-                    .as_ref()
-                    .is_some_and(|step| !step.parts.is_empty())
+                // may have said more since the steer went out. Its echo
+                // marked the point; without one, it is now.
+                if !echoed
+                    && self
+                        .step
+                        .as_ref()
+                        .is_some_and(|step| !step.parts.is_empty())
                 {
                     self.commit(ModelFinishReason::Stop).await?;
                 }
@@ -1377,6 +1385,17 @@ impl Turn<'_> {
             // The echo of a prompt the agent took in: the work it starts is
             // still to come. The prompt itself is already recorded.
             "user_message" | "user_message_chunk" => {
+                // A steer's echo: the agent takes it in here.
+                if self.steer_echo == Some(false) {
+                    self.steer_echo = Some(true);
+                    if self
+                        .step
+                        .as_ref()
+                        .is_some_and(|step| !step.parts.is_empty())
+                    {
+                        self.commit(ModelFinishReason::Stop).await?;
+                    }
+                }
                 if let Some(id) = update.get("messageId").and_then(Value::as_str) {
                     self.round.awaiting_echo.remove(id);
                     self.round.echoed.insert(id.to_owned());
@@ -2443,6 +2462,7 @@ impl Engine {
             terminals: HashMap::new(),
             steer_claims: Vec::new(),
             unsteered: false,
+            steer_echo: None,
             declined_steers: HashSet::new(),
             compactions: HashMap::new(),
             bridge_tools,
@@ -2665,6 +2685,13 @@ impl Engine {
                     let answer = answer.unwrap_or_else(|_| {
                         Err("the agent's process ended".to_owned())
                     });
+                    // What the agent sent before its answer comes first:
+                    // what it said before it took the steer in, and the
+                    // steer's echo.
+                    process.flush().await;
+                    while let Ok(event) = events.try_recv() {
+                        turn.take_event(event, cancel_deadline.is_some()).await?;
+                    }
                     turn.end_steer(pending, answer).await?;
                     if answered && turn.round.ended() {
                         break Some(Ok(()));
