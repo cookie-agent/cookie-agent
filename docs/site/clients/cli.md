@@ -669,7 +669,10 @@ valid variant; if none is live, the first available model and its default
 variant are used. Select an agent preset with `--preset`; override the effective
 selection with `-a/--agent`, `-m/--model`, and `--variant`. Use `--variant base`
 to select no named variant. Every override is validated against the current
-coherent runtime before a session starts.
+coherent runtime before a session starts. An [ACP agent](../extend/acp-agents.md)
+chooses its own model and needs no provider: `-a codex` runs it as it is, and
+`--model` or `--variant` with it is refused (name its model in its agent
+document's `models`).
 
 `--resume-session <id>` continues an existing session and defaults to its
 creation preset. Supplying `--preset` selects a different preset for that run

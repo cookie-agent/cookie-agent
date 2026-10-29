@@ -628,6 +628,27 @@ fn resolve_selection(
     }
     .ok_or_else(|| anyhow!("selected agent is not available for this session"))?;
 
+    // An ACP agent runs on its synthetic model, which no catalog lists: the
+    // agent chooses its own model.
+    if let Some(acp_model) = agent
+        .resolved_fallback
+        .first()
+        .filter(|selection| cookie_agent_client_state::acp::is_acp_model(selection))
+    {
+        if args.model.is_some() || args.variant.is_some() {
+            return Err(anyhow!(
+                "agent `{}` is an ACP agent, which chooses its own model: name it in the agent \
+                 document's `models` instead of --model or --variant",
+                agent.id
+            ));
+        }
+        return Ok(RunSelection {
+            agent: agent.id.clone(),
+            model: acp_model.clone(),
+            preset,
+        });
+    }
+
     let base_model = if let Some(model) = &args.model {
         let descriptor = model_descriptor(models, model).ok_or_else(|| {
             match crate::availability::model_unavailable_reason(providers, model) {
@@ -1332,6 +1353,54 @@ fn write_json_line(writer: &mut dyn IoWrite, value: &impl Serialize) -> anyhow::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_args(extra: &[&str]) -> RunArgs {
+        use clap::{Args as _, FromArgMatches as _};
+        let command = RunArgs::augment_args(clap::Command::new("run"));
+        let matches = command
+            .try_get_matches_from(["run"].iter().chain(extra).chain(&["hello"]))
+            .expect("arguments parse");
+        RunArgs::from_arg_matches(&matches).expect("run arguments")
+    }
+
+    fn acp_agent() -> cookie_agent_protocol::AgentDescriptor {
+        let model: ModelKey = "acp/codex".parse().expect("model key");
+        cookie_agent_protocol::AgentDescriptor {
+            id: AgentId::new("codex").expect("agent ID"),
+            preset: None,
+            description: "Codex".to_owned(),
+            mode: cookie_agent_protocol::AgentMode::All,
+            enabled: true,
+            runnable_as_root: true,
+            resolved_fallback: vec![ModelSelection {
+                model,
+                variant: None,
+            }],
+            delegation_targets: Vec::new(),
+            runtime: None,
+            runtimes: Vec::new(),
+            unset_models: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_acp_agent_runs_on_its_own_model_without_a_provider() {
+        let agents = [acp_agent()];
+        let selection = resolve_selection(&agents, &[], &[], None, None, &run_args(&["-a", "codex"]))
+            .expect("selected");
+        assert_eq!(selection.agent.as_str(), "codex");
+        assert_eq!(selection.model.model.to_string(), "acp/codex");
+        let refused = resolve_selection(
+            &agents,
+            &[],
+            &[],
+            None,
+            None,
+            &run_args(&["-a", "codex", "-m", "anthropic/claude"]),
+        )
+        .expect_err("--model is refused");
+        assert!(refused.to_string().contains("chooses its own model"), "{refused}");
+    }
 
     #[test]
     fn session_diagnostics_do_not_admit_other_sessions_or_runs() {
