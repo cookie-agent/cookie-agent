@@ -4466,6 +4466,15 @@ def projects(browser):
     made = open_session_id(browser)
     browser.wait("its row in the section", lambda: section_of(browser, made) == "project:" + project)
     print("a new session from the header's + starts in the project with its runtimes and agent")
+    # Its row leaves out what the header says: the machine is its icon,
+    # named in its tooltip, and the project's workspace leaves.
+    shortened = browser.script(
+        "return [...document.querySelectorAll(arguments[0] + ' [data-session-badges] [data-badge]')]"
+        ".filter((b) => !b.hidden).map((b) => [b.dataset.badge, b.textContent.trim(), b.title])",
+        'aside [data-session-row="%s"]' % made,
+    )
+    assert shortened == [["machine", "", header_badges[0]]], shortened
+    print("its row shows the project's machine as an icon alone")
 
     # Moving: a mouse drags a row from No project onto the header.
     loose = browser.script(

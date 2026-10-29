@@ -8,7 +8,9 @@
 //! (`SessionMeta::delegated_attachments`, client protocol 1.10.0;
 //! `docs/site/specs/runtime-delegation.md` section 5.3). The machine comes
 //! from `runtimes.list`; a runtime of no known machine stands for its own
-//! machine, under its runtime ID.
+//! machine, under its runtime ID. Under a project's header, a machine its
+//! defaults name shows as its icon alone, and the workspaces leave the row
+//! when its defaults name them all: the header already says both.
 
 use cookie_agent_protocol::{
     CapabilityName, ProjectDefaults, ProjectRuntime, RuntimeAttachment, RuntimeId,
@@ -53,10 +55,12 @@ pub fn hue_key(listing: Option<&RuntimesListResult>, runtime_id: &str) -> String
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionBadge {
     /// A machine, with the operating system its runtimes report; a runtime
-    /// of no known machine is one under its runtime ID.
+    /// of no known machine is one under its runtime ID. `in_project` when
+    /// the session's project's defaults name it: its header shows it.
     Machine {
         name: String,
         platform: Option<String>,
+        in_project: bool,
     },
     /// The workspaces on the one machine, as clients show paths (`~/…`),
     /// comma-joined. From a daemon that lists no attachments, the session's
@@ -182,16 +186,18 @@ impl<'a> Placed<'a> {
 }
 
 impl Place {
-    fn badge(&self, listing: Option<&RuntimesListResult>) -> SessionBadge {
+    fn badge(&self, listing: Option<&RuntimesListResult>, in_project: bool) -> SessionBadge {
         match self {
             Self::Machine(name) => SessionBadge::Machine {
                 platform: machine_platform(listing, name),
                 name: name.clone(),
+                in_project,
             },
             Self::Runtime(runtime_id) => SessionBadge::Machine {
                 name: runtime_id.to_string(),
                 platform: listing_of(listing, runtime_id)
                     .and_then(|runtime| runtime.platform.clone()),
+                in_project,
             },
         }
     }
@@ -232,18 +238,21 @@ fn counted_defaults(defaults: Option<&ProjectDefaults>) -> Vec<Placed<'_>> {
 /// The badges of `session`'s row, in order; none for a session that
 /// attaches nothing besides `global`. `listed` says whether the daemon
 /// lists attachments (client protocol 1.7): from an older one the row shows
-/// the session's directory alone.
+/// the session's directory alone. `project` is the defaults of the project
+/// whose header the row is under: what they name, the row shortens.
 #[must_use]
 pub fn session_badges(
     session: &SessionMeta,
     listing: Option<&RuntimesListResult>,
     homes: &RuntimeHomes,
     listed: bool,
+    project: Option<&ProjectDefaults>,
 ) -> Vec<SessionBadge> {
     if session.attachments.is_empty() && !listed {
         return vec![SessionBadge::Workspace(homes.session_directory(session))];
     }
-    placed_badges(&counted(session), listing, homes)
+    let project = counted_defaults(project);
+    placed_badges(&counted(session), &project, listing, homes)
 }
 
 /// The badges of a project header: where its default attachments run, by
@@ -255,14 +264,11 @@ pub fn project_badges(
     listing: Option<&RuntimesListResult>,
     homes: &RuntimeHomes,
 ) -> Vec<SessionBadge> {
-    placed_badges(&counted_defaults(defaults), listing, homes)
+    placed_badges(&counted_defaults(defaults), &[], listing, homes)
 }
 
-fn placed_badges(
-    attachments: &[Placed<'_>],
-    listing: Option<&RuntimesListResult>,
-    homes: &RuntimeHomes,
-) -> Vec<SessionBadge> {
+/// Each place of `attachments` once, in order.
+fn places_of(attachments: &[Placed<'_>], listing: Option<&RuntimesListResult>) -> Vec<Place> {
     let mut places = Vec::<Place>::new();
     for attachment in attachments {
         let place = attachment.place(listing);
@@ -270,26 +276,58 @@ fn placed_badges(
             places.push(place);
         }
     }
+    places
+}
+
+/// The workspaces of `attachments` as clients show them, each once.
+fn workspaces_of(attachments: &[Placed<'_>], homes: &RuntimeHomes) -> Vec<String> {
+    let mut workspaces = Vec::<String>::new();
+    for attachment in attachments {
+        if let Some(workspace) = attachment.workspace {
+            let shown = homes.display(attachment.runtime_id, workspace);
+            if !workspaces.contains(&shown) {
+                workspaces.push(shown);
+            }
+        }
+    }
+    workspaces
+}
+
+/// The badges of `attachments`; the places and workspaces of `project`,
+/// the defaults its header shows, shortened.
+fn placed_badges(
+    attachments: &[Placed<'_>],
+    project: &[Placed<'_>],
+    listing: Option<&RuntimesListResult>,
+    homes: &RuntimeHomes,
+) -> Vec<SessionBadge> {
+    let places = places_of(attachments, listing);
+    let project_places = places_of(project, listing);
+    let badge = |place: &Place| place.badge(listing, project_places.contains(place));
     match places.as_slice() {
         [] => Vec::new(),
-        // One machine: its badge, then its workspaces.
+        // One machine: its badge, then its workspaces, unless the project
+        // names them all on that machine.
         [only] => {
-            let mut workspaces = Vec::<String>::new();
-            for attachment in attachments {
-                if let Some(workspace) = attachment.workspace {
-                    let shown = homes.display(attachment.runtime_id, workspace);
-                    if !workspaces.contains(&shown) {
-                        workspaces.push(shown);
-                    }
-                }
-            }
-            let mut badges = vec![only.badge(listing)];
-            if !workspaces.is_empty() {
+            let workspaces = workspaces_of(attachments, homes);
+            let project_workspaces = workspaces_of(
+                &project
+                    .iter()
+                    .copied()
+                    .filter(|placed| placed.place(listing) == *only)
+                    .collect::<Vec<_>>(),
+                homes,
+            );
+            let mut badges = vec![badge(only)];
+            if !workspaces
+                .iter()
+                .all(|workspace| project_workspaces.contains(workspace))
+            {
                 badges.push(SessionBadge::Workspace(workspaces.join(", ")));
             }
             badges
         }
-        several => several.iter().map(|place| place.badge(listing)).collect(),
+        several => several.iter().map(badge).collect(),
     }
 }
 
@@ -440,6 +478,7 @@ mod tests {
             Some(&listing),
             &RuntimeHomes::from_listing(&listing),
             true,
+            None,
         )
     }
 
@@ -504,7 +543,8 @@ mod tests {
                 &session(&[]),
                 Some(&listing),
                 &RuntimeHomes::default(),
-                false
+                false,
+                None
             ),
             [SessionBadge::Workspace("/home/local/old".into())]
         );
@@ -521,7 +561,8 @@ mod tests {
             [
                 SessionBadge::Machine {
                     name: "lab".into(),
-                    platform: Some("macos".into())
+                    platform: Some("macos".into()),
+                    in_project: false
                 },
                 SessionBadge::Workspace("~/api".into()),
             ]
@@ -545,7 +586,8 @@ mod tests {
             shown[0],
             SessionBadge::Machine {
                 name: "desk".into(),
-                platform: Some("linux".into())
+                platform: Some("linux".into()),
+                in_project: false
             }
         );
         // Two workspaces of a runtime of no known machine: that runtime,
@@ -593,6 +635,58 @@ mod tests {
     }
 
     #[test]
+    fn under_a_project_its_default_places_shorten() {
+        let listing = listing();
+        let homes = RuntimeHomes::from_listing(&listing);
+        let defaults = ProjectDefaults {
+            runtimes: vec![ProjectRuntime {
+                runtime_id: RuntimeId::new("labpc").unwrap(),
+                capability: None,
+                workspace: Some("/home/labpc/api".into()),
+            }],
+            ..ProjectDefaults::default()
+        };
+        let under = |session: &SessionMeta| {
+            session_badges(session, Some(&listing), &homes, true, Some(&defaults))
+        };
+        let lab = |in_project| SessionBadge::Machine {
+            name: "lab".into(),
+            platform: Some("macos".into()),
+            in_project,
+        };
+        // The project's machine and workspace: the machine's icon alone.
+        let same = session(&[
+            ("global", "global", None),
+            ("labpc", "coding", Some("/home/labpc/api")),
+        ]);
+        assert_eq!(under(&same), [lab(true)]);
+        // A workspace the project does not name: every workspace shows.
+        let more = session(&[
+            ("labpc", "coding", Some("/home/labpc/api")),
+            ("labpc", "coding", Some("/home/labpc/web")),
+        ]);
+        assert_eq!(
+            under(&more),
+            [lab(true), SessionBadge::Workspace("~/api, ~/web".into())]
+        );
+        // Several machines: the project's shortens, the other keeps its name.
+        let spread = session(&[
+            ("local", "coding", Some("/home/local/web")),
+            ("labpc", "coding", Some("/home/labpc/api")),
+        ]);
+        let shown = under(&spread);
+        assert!(
+            matches!(shown[0], SessionBadge::Machine { ref name, in_project: false, .. } if name == "desk")
+        );
+        assert_eq!(shown[1], lab(true));
+        // Outside a project nothing shortens.
+        assert_eq!(
+            badges(&same),
+            [lab(false), SessionBadge::Workspace("~/api".into())]
+        );
+    }
+
+    #[test]
     fn several_machines_are_each_machine_in_attachment_order() {
         let spread = session(&[
             ("labpc", "coding", Some("/home/labpc/api")),
@@ -606,7 +700,8 @@ mod tests {
             shown[0],
             SessionBadge::Machine {
                 name: "lab".into(),
-                platform: Some("macos".into())
+                platform: Some("macos".into()),
+                in_project: false
             }
         );
         assert_eq!(shown[1].hue(), Some(badge_hue("desk")));

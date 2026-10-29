@@ -280,6 +280,11 @@ these rules:
   badges as fit, then a final `+N` badge whose tooltip names the rest. This
   holds for session rows and project headers; the bottom bar names no
   machine, only workspaces after their machines' dots.
+- **Rows under a project leave out what its header says** (added
+  2026-10-29). A machine the project's default attachments name shows as
+  its OS icon alone, in its colour, its name in the badge's tooltip. On one
+  machine, the workspaces leave the row when the defaults name every one
+  of them on that machine; when one is not a default, all of them show.
 - Badges give way before the time does. The row's tooltip keeps the full
   list, each attachment with its machine, runtime ID, and full path.
 

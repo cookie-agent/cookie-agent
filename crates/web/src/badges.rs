@@ -61,7 +61,8 @@ pub fn runtime_dot(hue_key: &str, runtime_id: &str) -> impl IntoView + use<> {
 }
 
 /// One badge of a session row: a machine, whole, or the workspaces after
-/// it as plain text, which shrink first, down to `…`.
+/// it as plain text, which shrink first, down to `…`. A machine its
+/// project's header shows is its icon alone, its name in the tooltip.
 pub fn badge_view(badge: SessionBadge) -> AnyView {
     let class = format!("{BADGE} {}", hue_class(badge.hue()));
     let hue = badge.hue().map(|hue| hue.to_string());
@@ -70,12 +71,18 @@ pub fn badge_view(badge: SessionBadge) -> AnyView {
             <span class="min-w-[2ch] shrink truncate font-mono" data-badge="workspace">{path}</span>
         }
         .into_any(),
-        SessionBadge::Machine { name, platform } => {
+        SessionBadge::Machine {
+            name,
+            platform,
+            in_project,
+        } => {
             let icon = platform_icon(platform.as_deref());
+            let title = in_project.then(|| name.clone());
+            let data_name = name.clone();
             view! {
-                <span class=class data-badge="machine" data-hue=hue>
+                <span class=class data-badge="machine" data-hue=hue data-name=data_name data-in-project=in_project.then_some("") title=title.clone() role=in_project.then_some("img") aria-label=title>
                     <Glyph icon=icon class="shrink-0 text-[0.625rem]" />
-                    <span>{name}</span>
+                    {(!in_project).then(|| view! { <span>{name}</span> })}
                 </span>
             }
             .into_any()
@@ -133,7 +140,7 @@ pub fn fit(line: &web_sys::Element) {
     let mut left_out = Vec::new();
     for machine in machines.iter().rev() {
         machine.set_hidden(true);
-        left_out.insert(0, machine.text_content().unwrap_or_default());
+        left_out.insert(0, machine.get_attribute("data-name").unwrap_or_default());
         more.set_text_content(Some(&format!("+{}", left_out.len())));
         more.set_title(&left_out.join(", "));
         if fits() {

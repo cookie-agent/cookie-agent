@@ -318,6 +318,11 @@ fn section_view(
     };
     let sessions = section.sessions.clone();
     let empty = sessions.is_empty();
+    // The rows shorten what the header shows of the project's defaults.
+    let defaults = section
+        .project
+        .as_ref()
+        .and_then(|project| project.defaults.clone());
     view! {
         <section class="flex flex-col gap-1" data-project-section=key.clone() data-open=move || open.get().to_string()>
             {project_header(workspace, section.project.clone(), key.clone(), open, drag, headers, sessions.iter().map(|session| session.session_id).collect())}
@@ -340,7 +345,9 @@ fn section_view(
                                 || cookie_agent_client_state::activity::session_at_work(session)
                         })
                         .cloned()
-                        .map(|session| session_row(workspace, session, now, actions, drag))
+                        .map(|session| {
+                            session_row(workspace, session, defaults.clone(), now, actions, drag)
+                        })
                         .collect_view()
                         .into_any()
                 }
