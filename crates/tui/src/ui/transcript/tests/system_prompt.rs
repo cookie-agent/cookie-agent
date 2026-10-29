@@ -1287,3 +1287,45 @@ async fn model_tools_block_lists_the_latest_tool_names_under_the_system_prompt()
     );
     assert!(expanded.contains("bash, read, webfetch"), "{expanded}");
 }
+
+#[test]
+fn the_memory_snapshot_renders_as_an_expandable_row_of_the_models_turn() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let snapshot = cookie_agent_protocol::MemorySnapshot {
+        agent: Some(cookie_agent_protocol::MemorySnapshotAgent {
+            agent: cookie_agent_protocol::AgentId::new("reviewer").expect("agent"),
+            memory: Some(cookie_agent_protocol::MemorySnapshotMemory {
+                description: "Reviews".into(),
+                keywords: Vec::new(),
+                body: "Prefers small diffs.".into(),
+                status: cookie_agent_protocol::MemoryDocumentStatus::default(),
+            }),
+            omitted: false,
+            listed: None,
+        }),
+        ..cookie_agent_protocol::MemorySnapshot::default()
+    };
+    let turn = cookie_agent_protocol::model_text::memory_snapshot_turn(&snapshot).expect("turn");
+    let events = [
+        session_created(session, 1),
+        run_started_with_suffix(session, 2, run, vec![resolved_model(None)]),
+        event(session, 3, run, EventPayload::MemoryLoaded { snapshot }),
+    ];
+    let mut store = StateStore::default();
+    for event in events {
+        assert!(store.apply_event(event));
+    }
+    let state = &store.sessions[&session];
+    let header = format!(
+        "🧠 ▸ memory · {} lines",
+        cookie_agent_client_state::rows::display_line_count(&turn)
+    );
+    let collapsed = snapshot_lines(&transcript_layout(state, None, 100).lines);
+    assert!(collapsed.contains(&header), "{collapsed}");
+    assert!(!collapsed.contains("Prefers small diffs."), "{collapsed}");
+    let expanded = HashSet::from([BlockId::ModelInput(3)]);
+    let open = snapshot_lines(&transcript_layout(state, Some(&expanded), 100).lines);
+    assert!(open.contains("🧠 ▾ memory · "), "{open}");
+    assert!(open.contains("Prefers small diffs."), "{open}");
+}

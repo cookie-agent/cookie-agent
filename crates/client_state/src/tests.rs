@@ -758,53 +758,251 @@ fn an_omitted_record_is_a_debug_row_and_nothing_else() {
     ));
 }
 
+fn model_inputs(state: &SessionState) -> Vec<(crate::model_input::ModelInputKind, &str, &str)> {
+    state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::ModelInput {
+                kind, header, text, ..
+            } => Some((*kind, header.as_str(), text.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn a_memory_snapshot_is_a_debug_event() {
+fn a_memory_snapshot_shows_the_turn_the_model_reads_when_it_changes() {
+    use crate::model_input::ModelInputKind;
     let session = SessionId::new_v7();
-    let snapshot = cookie_agent_protocol::MemorySnapshot {
+    let snapshot = |body: &str| cookie_agent_protocol::MemorySnapshot {
         agent: Some(cookie_agent_protocol::MemorySnapshotAgent {
             agent: cookie_agent_protocol::AgentId::new("reviewer").unwrap(),
-            memory: None,
+            memory: Some(cookie_agent_protocol::MemorySnapshotMemory {
+                description: "Reviews".into(),
+                keywords: Vec::new(),
+                body: body.into(),
+                status: cookie_agent_protocol::MemoryDocumentStatus::default(),
+            }),
             omitted: false,
             listed: None,
         }),
         ..cookie_agent_protocol::MemorySnapshot::default()
+    };
+    let loaded = |seq, snapshot| {
+        stored_event(
+            session,
+            Some(RunId::new_v7()),
+            seq,
+            EventPayload::MemoryLoaded { snapshot },
+        )
+    };
+    let events = vec![
+        loaded(1, snapshot("Prefers small diffs.")),
+        // The same turn again adds no row.
+        loaded(2, snapshot("Prefers small diffs.")),
+        loaded(3, snapshot("Prefers small diffs and tests.")),
+        loaded(4, cookie_agent_protocol::MemorySnapshot::unavailable()),
+    ];
+    let replayed = reduce_session_events(session, 0, &events);
+    let rows = model_inputs(&replayed);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    for (index, body) in [
+        (0, "Prefers small diffs."),
+        (1, "Prefers small diffs and tests."),
+    ] {
+        let turn =
+            cookie_agent_protocol::model_text::memory_snapshot_turn(&snapshot(body)).unwrap();
+        assert_eq!(rows[index].0, ModelInputKind::Memory);
+        assert_eq!(rows[index].2, turn);
+        assert!(rows[index].1.starts_with("memory · "), "{}", rows[index].1);
+    }
+    assert_eq!(
+        rows[2],
+        (
+            ModelInputKind::Memory,
+            "memory · none in the model's context from here on",
+            ""
+        )
+    );
+}
+
+#[test]
+fn deferred_tools_and_inherited_context_show_what_the_model_reads() {
+    use crate::model_input::ModelInputKind;
+    let session = SessionId::new_v7();
+    let group = cookie_agent_protocol::AnnouncedToolGroup {
+        name: "github".into(),
+        source: cookie_agent_protocol::ToolGroupSource::Mcp,
+        summary: None,
+        untrusted: false,
+        tools: vec!["github_issues".into(), "github_pulls".into()],
     };
     let events = vec![
         stored_event(
             session,
             Some(RunId::new_v7()),
             1,
-            EventPayload::MemoryLoaded { snapshot },
+            EventPayload::DelegatedContextSeeded {
+                invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+                turns: vec![cookie_agent_protocol::DelegatedContextTurn {
+                    role: cookie_agent_protocol::DelegatedContextRole::User,
+                    text: "Fix the build.".into(),
+                }],
+            },
         ),
         stored_event(
             session,
             Some(RunId::new_v7()),
             2,
-            EventPayload::MemoryLoaded {
-                snapshot: cookie_agent_protocol::MemorySnapshot::unavailable(),
+            EventPayload::DeferredToolsAnnounced {
+                added: vec![group.clone()],
+                removed: Vec::new(),
             },
         ),
     ];
     let replayed = reduce_session_events(session, 0, &events);
-    let texts = replayed
-        .transcript
-        .iter()
-        .map(|item| match item {
-            TranscriptItem::Event {
-                level: EventLevel::Debug,
-                text,
-                ..
-            } => text.as_str(),
-            other => panic!("unexpected item {other:?}"),
-        })
-        .collect::<Vec<_>>();
+    let announcement =
+        cookie_agent_protocol::model_text::deferred_tools_announcement(&[group], &[]);
     assert_eq!(
-        texts,
+        model_inputs(&replayed),
         [
-            "memory snapshot loaded for agent reviewer",
-            "memory is not available from here on"
+            (
+                ModelInputKind::InheritedContext,
+                "context from the parent · 1 turn",
+                "── user\nFix the build."
+            ),
+            (
+                ModelInputKind::DeferredTools,
+                "deferred tools · 2 added",
+                announcement.as_str()
+            ),
         ]
+    );
+}
+
+#[test]
+fn an_acp_agents_first_prompt_context_is_a_row() {
+    let session = SessionId::new_v7();
+    let events = vec![stored_event(
+        session,
+        Some(RunId::new_v7()),
+        1,
+        EventPayload::AcpSessionUpdated {
+            update: cookie_agent_protocol::AcpSessionUpdate {
+                prompt_context: Some(vec!["<tool_instructions>".into(), "You review.".into()]),
+                ..cookie_agent_protocol::AcpSessionUpdate::default()
+            },
+        },
+    )];
+    let replayed = reduce_session_events(session, 0, &events);
+    assert_eq!(
+        model_inputs(&replayed),
+        [(
+            crate::model_input::ModelInputKind::AgentContext,
+            "context sent to the agent · 3 lines",
+            "<tool_instructions>\n\nYou review."
+        )]
+    );
+}
+
+#[test]
+fn a_tool_row_shows_what_its_result_sent_the_model_beyond_its_output() {
+    let session = SessionId::new_v7();
+    let call = ToolCallId::new_v7();
+    let owner = AssistantToolCallRef {
+        model_turn_seq: 1,
+        content_index: 0,
+        model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
+        provider_item_id: None,
+    };
+    let warning = format!(
+        "{}: you have made …\n</system-reminder>",
+        cookie_agent_protocol::model_text::LOOP_WARNING_MARKER
+    );
+    let events = vec![
+        stored_event(
+            session,
+            None,
+            1,
+            EventPayload::ToolCallStarted {
+                start: cookie_agent_protocol::ToolCallStart {
+                    background: false,
+                    tool_call_id: call,
+                    owner: owner.clone(),
+                    output: Default::default(),
+                    presentation: base_presentation(
+                        cookie_agent_protocol::PreparedPresentation::new(
+                            cookie_agent_protocol::SafeDisplayText::new("bash").unwrap(),
+                            None,
+                        ),
+                    ),
+                    operation_fingerprint: serde_json::from_value(
+                        serde_json::json!({"digest": "1".repeat(64)}),
+                    )
+                    .unwrap(),
+                },
+            },
+        ),
+        stored_event(
+            session,
+            None,
+            2,
+            EventPayload::ToolCallTerminated {
+                termination: cookie_agent_protocol::ToolCallTermination {
+                    tool_call_id: call,
+                    owner,
+                    outcome: ToolTerminationOutcome::Completed,
+                    result: Some(cookie_agent_protocol::PersistedToolResult {
+                        title: cookie_agent_protocol::SafeDisplayText::new("ls").unwrap(),
+                        output: format!("a.txt{warning}"),
+                        display: cookie_agent_protocol::text_display("a.txt"),
+                        metadata: serde_json::Value::Null,
+                        background: None,
+                        retained_output: None,
+                        attachments: vec![],
+                        additional_messages: vec![cookie_agent_protocol::ToolEmittedMessage {
+                            role: cookie_agent_protocol::ToolEmittedMessageRole::User,
+                            content: vec![cookie_agent_protocol::ToolEmittedContent::Text(
+                                "Mind the cwd.".into(),
+                            )],
+                        }],
+                        loaded_tools: Vec::new(),
+                    }),
+                    error: None,
+                },
+            },
+        ),
+        stored_event(
+            session,
+            None,
+            3,
+            EventPayload::ToolOutputElided {
+                tool_call_id: call,
+                original_bytes: 5,
+                retained: cookie_agent_protocol::ArtifactReference {
+                    uri: format!("artifact://sha256/{}", "a".repeat(64)),
+                },
+            },
+        ),
+    ];
+    let state = reduce_session_events(session, 0, &events);
+    let shown = state.tools[&call].shown_text();
+    assert!(shown.starts_with("a.txt\n"), "{shown}");
+    assert!(
+        shown.contains("Sent to the model with this result:\n<system-reminder>\nRepeated tool calls detected: you have made …"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Sent to the model after this result, as a user message:\nMind the cwd."),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!(
+            "Left the model's context; the model reads instead:\n[tool output elided; 5 bytes retained; read it with read_artifact(artifact=\"{}\")] 1 tool-emitted message(s)",
+            "a".repeat(64)
+        )),
+        "{shown}"
     );
 }
 
@@ -3123,7 +3321,13 @@ fn tool_termination_replaces_the_live_display_with_the_result_display() {
     assert_eq!(state.tools[&call_id].status, ToolStatus::Completed);
     assert!(state.tools[&call_id].live_display.is_empty());
     assert_eq!(state.tools[&call_id].progress, None);
-    assert_eq!(state.tools[&call_id].shown_text(), "stdout:\nonce\n");
+    // The message the result emitted shows under its display, as the
+    // model reads it.
+    assert_eq!(
+        state.tools[&call_id].shown_text(),
+        "stdout:\nonce\n\nSent to the model after this result, as a user message:\n\
+         review this clip\n[file: clip.mp4 (video/mp4)]"
+    );
 }
 
 #[test]

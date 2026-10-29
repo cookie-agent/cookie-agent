@@ -200,6 +200,7 @@ mod manifest;
 pub mod media_sniff;
 mod memory;
 mod model;
+pub mod model_text;
 mod notifications;
 #[cfg(all(feature = "oauth-callback", not(target_arch = "wasm32")))]
 pub mod oauth_callback;

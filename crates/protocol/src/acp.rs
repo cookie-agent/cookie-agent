@@ -419,6 +419,12 @@ pub struct AcpSessionUpdate {
     /// protocol 1.50.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_ended: Option<AcpBackgroundEnded>,
+    /// What the session's first prompt to the agent carried ahead of the
+    /// input, each part a text block as sent: the tool instructions, the
+    /// skill listing, the attachments, the memory snapshot turn, and the
+    /// agent document's body (client protocol 1.52.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_context: Option<Vec<String>>,
 }
 
 impl AcpSessionUpdate {
@@ -438,6 +444,7 @@ impl AcpSessionUpdate {
             && self.compaction.is_none()
             && self.session_message.is_none()
             && self.background_ended.is_none()
+            && self.prompt_context.is_none()
     }
 }
 

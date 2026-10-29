@@ -12,7 +12,7 @@ use std::{
 
 use cookie_agent_protocol::{
     OperationFingerprint, RunId, SafeToolError, Sha256Digest, StoredEvent, ToolCallId,
-    ToolCallTermination, ToolTerminationOutcome,
+    ToolCallTermination, ToolTerminationOutcome, model_text::LOOP_WARNING_MARKER,
 };
 
 use super::Event;
@@ -23,10 +23,6 @@ const MAX_BLOCK_CALLS: usize = 8;
 const MIN_REPETITIONS: usize = 3;
 /// Most recent calls compared, which bounds the hashing done per call.
 const WINDOW_CALLS: usize = 64;
-/// Starts every appended warning. Later checks cut the output here so they
-/// compare the tool's own output, not a warning whose count keeps growing.
-const WARNING_MARKER: &str = "\n\n<system-reminder>\nRepeated tool calls detected";
-
 /// Output digests of a run's recent calls, so each output is hashed once
 /// however many later checks compare it. Holds at most one window of calls.
 #[derive(Debug, Default)]
@@ -149,9 +145,7 @@ pub(super) fn loop_warning(
 }
 
 fn own_output_digest(output: &str) -> Sha256Digest {
-    let own_output = output
-        .rfind(WARNING_MARKER)
-        .map_or(output, |index| &output[..index]);
+    let own_output = cookie_agent_protocol::model_text::without_loop_warning(output);
     Sha256Digest::of_bytes(own_output.as_bytes())
 }
 
@@ -186,7 +180,7 @@ fn warning_text(block: usize, repetitions: usize) -> String {
         format!("the same sequence of {block} tool calls")
     };
     format!(
-        "{WARNING_MARKER}: you have made {calls} {repetitions} times in a row, and every \
+        "{LOOP_WARNING_MARKER}: you have made {calls} {repetitions} times in a row, and every \
          repetition returned identical results. Repeating it again will not produce new \
          information. Work from the results you already have: take a different approach, or \
          finish and report what you found, including anything you could not resolve.\n\

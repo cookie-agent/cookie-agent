@@ -734,6 +734,48 @@ pub(super) fn skill_loaded_layout(
     collapsible_event_block(block_id, body, context.width, context.theme)
 }
 
+/// Input the engine added to the model's beyond the conversation: a
+/// header, and expanded, the text the model reads.
+pub(super) fn model_input_layout(
+    seq: u64,
+    kind: cookie_agent_client_state::model_input::ModelInputKind,
+    header: &str,
+    text: &str,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    use cookie_agent_client_state::model_input::ModelInputKind;
+    let block_id = BlockId::ModelInput(seq);
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let icon = match kind {
+        ModelInputKind::Memory => "🧠",
+        ModelInputKind::DeferredTools => "🧰",
+        ModelInputKind::InheritedContext => "↘",
+        ModelInputKind::AgentContext => "📜",
+    };
+    let chevron = if text.is_empty() {
+        ' '
+    } else if is_expanded {
+        '▾'
+    } else {
+        '▸'
+    };
+    let mut body = vec![Line::styled(
+        format!("{icon} {chevron} {}", safe_display_text(header)),
+        context.theme.internal(),
+    )];
+    if is_expanded {
+        body.extend(bounded_safe_display_text(
+            text,
+            context.theme.internal(),
+            MAX_SYSTEM_PROMPT_BODY_LINES,
+            MAX_SYSTEM_PROMPT_BODY_BYTES,
+        ));
+    }
+    collapsible_event_block(block_id, body, context.width, context.theme)
+}
+
 /// A model's memory change: one line, `🧠 Saved project://web/build`,
 /// whose click opens the Memory panel at the memory (memory spec section
 /// 16.9.10).

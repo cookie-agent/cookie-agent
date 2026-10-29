@@ -1,4 +1,4 @@
-use cookie_agent_protocol::{
+use crate::{
     AgentId, AttachmentName, MachineName, MemoryDocumentStatus, MemorySnapshot,
     MemorySnapshotAgent, MemorySnapshotCategory, MemorySnapshotIndexEntry, MemorySnapshotMachine,
     MemorySnapshotMemory,
@@ -330,8 +330,8 @@ fn a_snapshot_with_no_memory_to_show_renders_nothing() {
             Some(("Memory of the `default` agent", "")),
         )),
         machines: vec![machine("laptop", &[], Vec::new(), 0)],
-        project: Some(cookie_agent_protocol::MemorySnapshotProject {
-            project: cookie_agent_protocol::ProjectName::new("web").unwrap(),
+        project: Some(crate::MemorySnapshotProject {
+            project: crate::ProjectName::new("web").unwrap(),
             overview: None,
             memories: Vec::new(),
             omitted: 0,
@@ -467,8 +467,8 @@ fn agent_content_is_measured_escaped() {
 
 #[test]
 fn a_project_section_follows_the_machines() {
-    let project = cookie_agent_protocol::MemorySnapshotProject {
-        project: cookie_agent_protocol::ProjectName::new("cookie-agent").expect("project name"),
+    let project = crate::MemorySnapshotProject {
+        project: crate::ProjectName::new("cookie-agent").expect("project name"),
         overview: Some(MemorySnapshotMemory {
             description: "Overview of the `cookie-agent` project, loaded in full into its sessions"
                 .into(),
@@ -502,7 +502,7 @@ fn a_project_section_follows_the_machines() {
     assert!(turn.ends_with("search with layer \"project\".\n</system-reminder>"));
 
     // Without an overview or other memories, the structure stays.
-    let bare = cookie_agent_protocol::MemorySnapshotProject {
+    let bare = crate::MemorySnapshotProject {
         overview: None,
         memories: Vec::new(),
         omitted: 0,

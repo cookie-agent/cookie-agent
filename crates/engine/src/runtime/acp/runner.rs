@@ -2431,6 +2431,22 @@ impl Engine {
             } else {
                 Vec::new()
             };
+            // What the agent reads beyond the conversation is on the record,
+            // so the user sees it.
+            if !context.is_empty() {
+                self.append(
+                    active.session,
+                    Some(run_id),
+                    origin(),
+                    Event::AcpSessionUpdated {
+                        update: AcpSessionUpdate {
+                            prompt_context: Some(context.clone()),
+                            ..AcpSessionUpdate::default()
+                        },
+                    },
+                )
+                .await?;
+            }
             let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, &process);
             // The agent's own subagent works only on what its parent gives
             // it: cookie has no prompt to send it.

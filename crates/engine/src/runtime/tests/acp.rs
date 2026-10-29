@@ -1480,6 +1480,17 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments
         ["say two"],
         "later prompts carry the input only"
     );
+    // The session records the context as sent, once, so clients show it.
+    let recorded = events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            cookie_agent_protocol::EventPayload::AcpSessionUpdated { update } => {
+                update.prompt_context
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(recorded, [first[..4].to_vec()]);
 
     // With the write tools offered, the rubric comes too; with no memory
     // tool offered, no memory section.

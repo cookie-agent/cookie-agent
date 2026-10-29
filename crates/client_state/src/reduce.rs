@@ -930,13 +930,33 @@ pub(super) fn reduce_event_from(
                     && result.retained_output.as_ref().is_none_or(|retained| {
                         retained.streams.iter().any(|stream| stream.byte_length > 0)
                     }))
-                .then(|| cookie_agent_protocol::text_display(result.output.clone()))
+                .then(|| {
+                    cookie_agent_protocol::text_display(
+                        cookie_agent_protocol::model_text::without_loop_warning(&result.output)
+                            .to_owned(),
+                    )
+                })
             });
-            let display = match result_display {
+            let mut display = match result_display {
                 Some(display) => display,
                 None if failed => streamed.or(partial_output).unwrap_or_default(),
                 None => Vec::new(),
             };
+            // What the result sent the model beyond the tool's own output
+            // shows under it, word for word.
+            if let Some(result) = &termination.result {
+                display.extend(crate::model_input::loop_warning_note(&result.output));
+                display.extend(crate::model_input::emitted_message_notes(
+                    &result.additional_messages,
+                ));
+                if result.additional_messages.is_empty() {
+                    state.tool_emitted_messages.remove(&tool_call_id);
+                } else {
+                    state
+                        .tool_emitted_messages
+                        .insert(tool_call_id, result.additional_messages.len());
+                }
+            }
             let failure = if !failed {
                 None
             } else if display.is_empty() {
@@ -1249,19 +1269,36 @@ pub(super) fn reduce_event_from(
                 move_transcript_item_to_end(state, index);
             }
         }
+        // The model reads a marker in place of the output from here on: the
+        // call's row says so under its output.
         EventPayload::ToolOutputElided {
             tool_call_id,
             original_bytes,
             retained,
-        } => push_event(
-            state,
-            EventLevel::Debug,
-            format!(
-                "tool output {tool_call_id} elided ({original_bytes} bytes retained at {})",
-                retained.uri
-            ),
-            timestamp,
-        ),
+        } => {
+            let emitted = state
+                .tool_emitted_messages
+                .get(&tool_call_id)
+                .copied()
+                .unwrap_or(0);
+            let note = crate::model_input::elision_note(&retained.uri, original_bytes, emitted);
+            match state.tools.get_mut(&tool_call_id) {
+                Some(tool) => {
+                    tool.display.push(note);
+                    tool.revision = next_tool_revision();
+                    bump_tool_item(state, tool_call_id);
+                }
+                None => push_event(
+                    state,
+                    EventLevel::Debug,
+                    format!(
+                        "tool output {tool_call_id} elided ({original_bytes} bytes retained at {})",
+                        retained.uri
+                    ),
+                    timestamp,
+                ),
+            }
+        }
         EventPayload::DelegationProgressed {
             invocation_id,
             stage:
@@ -1293,17 +1330,25 @@ pub(super) fn reduce_event_from(
                 .to_lowercase(),
             timestamp,
         ),
-        // The snapshot reaches the model as a pinned turn; the debug view
-        // notes when it changes.
-        EventPayload::MemoryLoaded { snapshot } => push_event(
-            state,
-            EventLevel::Debug,
-            match &snapshot.agent {
-                Some(agent) => format!("memory snapshot loaded for agent {}", agent.agent),
-                None => "memory is not available from here on".to_owned(),
-            },
-            timestamp,
-        ),
+        // The snapshot reaches the model as a pinned turn: a row shows the
+        // turn whenever it differs from the one shown last, and says so
+        // when memory leaves the model's context.
+        EventPayload::MemoryLoaded { snapshot } => {
+            let text = cookie_agent_protocol::model_text::memory_snapshot_turn(&snapshot)
+                .unwrap_or_default();
+            let shown = state.memory_turn.as_deref().unwrap_or_default();
+            if text != shown {
+                state.memory_turn = Some(text.clone());
+                push_model_input(
+                    state,
+                    timestamp,
+                    sequence,
+                    crate::model_input::ModelInputKind::Memory,
+                    crate::model_input::memory_header(&text),
+                    text,
+                );
+            }
+        }
         // A model's memory change, as daemons before 2026-10-24 recorded
         // it (memory spec section 16.9.10). The call that made it shows the
         // change on its own row, so a change that follows its call folds
@@ -1361,6 +1406,23 @@ pub(super) fn reduce_event_from(
             }
             if let Some(compaction) = update.compaction {
                 agent_compaction(state, timestamp, sequence, compaction);
+            }
+            if let Some(parts) = update.prompt_context.filter(|parts| !parts.is_empty()) {
+                let text = parts.join("\n\n");
+                let agent = state
+                    .acp
+                    .agent
+                    .as_ref()
+                    .map_or("the agent", |agent| agent.as_str());
+                let header = crate::model_input::agent_context_header(agent, &text);
+                push_model_input(
+                    state,
+                    timestamp,
+                    sequence,
+                    crate::model_input::ModelInputKind::AgentContext,
+                    header,
+                    text,
+                );
             }
             if let Some(notice) = update.notice {
                 push_split_item(state, timestamp, |id| TranscriptItem::AcpNotice {
@@ -1579,12 +1641,34 @@ pub(super) fn reduce_event_from(
                 rendered_body,
             });
         }
-        EventPayload::DelegatedContextSeeded { .. }
-        | EventPayload::UserInputTransformed { .. }
+        EventPayload::DelegatedContextSeeded { turns, .. } => {
+            if !turns.is_empty() {
+                let (header, text) = crate::model_input::inherited_context(&turns);
+                push_model_input(
+                    state,
+                    timestamp,
+                    sequence,
+                    crate::model_input::ModelInputKind::InheritedContext,
+                    header,
+                    text,
+                );
+            }
+        }
+        EventPayload::DeferredToolsAnnounced { added, removed } => {
+            let (header, text) = crate::model_input::deferred_tools(&added, &removed);
+            push_model_input(
+                state,
+                timestamp,
+                sequence,
+                crate::model_input::ModelInputKind::DeferredTools,
+                header,
+                text,
+            );
+        }
+        EventPayload::UserInputTransformed { .. }
         | EventPayload::DelegationReserved { .. }
         | EventPayload::DelegationProgressed { .. }
         | EventPayload::ModelRequestPrepared { .. }
-        | EventPayload::DeferredToolsAnnounced { .. }
         | EventPayload::ToolRoundStarted { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolCallLinked { .. }
@@ -2691,6 +2775,28 @@ pub(super) fn push_item(
     let id = state.next_transcript_id;
     state.item_times.insert(id, timestamp);
     state.transcript.push(item(id));
+}
+
+/// Adds a row for input the engine gives the model beyond the
+/// conversation. Like a skill loaded mid-turn, it sits between what came
+/// before and what the run does next.
+fn push_model_input(
+    state: &mut SessionState,
+    timestamp: jiff::Timestamp,
+    seq: u64,
+    kind: crate::model_input::ModelInputKind,
+    header: String,
+    text: String,
+) {
+    state.mark_event_split_pending();
+    push_item(state, timestamp, |id| TranscriptItem::ModelInput {
+        id,
+        version: 0,
+        seq,
+        kind,
+        header,
+        text,
+    });
 }
 
 pub(super) fn push_event(

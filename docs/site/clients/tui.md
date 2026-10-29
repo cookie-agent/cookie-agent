@@ -388,7 +388,19 @@ after a run without AGENTS.md. A run that reloads identical files adds no row.
 Expanded,
 it shows each file's source and content. A skill row shows the skill's source
 path, arguments, and rendered body. An AGENTS.md file skipped for size appears
-as a warning row. A session's system-prompt
+as a warning row.
+
+Everything else the engine adds to the model's input has a collapsed row too,
+whose body is the exact text the model reads: the memory snapshot (`🧠 memory ·
+42 lines`, again whenever the snapshot changes, and a row saying so when memory
+leaves the model's context), each deferred tools announcement (`deferred tools ·
+3 added`), the parent's conversation a subagent starts from (`context from the
+parent · 4 turns`), and the context an ACP agent's first prompt carries
+(`context sent to claude · 120 lines`). Under a tool call's output, its row
+shows what the result sent the model beyond the tool's own output: a [loop
+warning](../engine/loop_warning.md), each message the tool emitted, and, once
+the output left the model's context, the marker the model reads in its place.
+These bodies are bounded like system prompts. A session's system-prompt
 row remains hidden until its first run starts, then identifies the agent from
 the latest run snapshot. If the next-run draft uses another agent, the row also
 shows `next: <agent>`. Click one of these rows to show or hide its text or

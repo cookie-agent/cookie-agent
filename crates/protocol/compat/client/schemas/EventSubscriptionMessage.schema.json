@@ -5000,6 +5000,16 @@
               ],
               "description": "The agent's plan, a `plan` display block."
             },
+            "prompt_context": {
+              "description": "What the session's first prompt to the agent carried ahead of the\ninput, each part a text block as sent: the tool instructions, the\nskill listing, the attachments, the memory snapshot turn, and the\nagent document's body (client protocol 1.52.0).",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "session_message": {
               "anyOf": [
                 {

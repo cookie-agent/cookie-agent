@@ -29,8 +29,9 @@ use crate::{ArtifactRouter, SessionArtifacts, goal_projection::GoalProducerProje
 
 pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
-pub(crate) const TOOL_EMITTED_SYSTEM_USER_MARKER: &str =
-    "[tool-emitted system message; materialized as user history]";
+pub(crate) use cookie_agent_protocol::model_text::{
+    TOOL_EMITTED_SYSTEM_USER_MARKER, tool_output_elision_marker,
+};
 /// Model-visible annotation that follows a turn an interrupt cut off.
 ///
 /// It is injected at history-assembly time only: the durable log records what
@@ -85,22 +86,6 @@ fn is_framed_summary_turn(turn: &HistoryTurn) -> bool {
                 if text.text.starts_with(COMPACTION_SUMMARY_PREFIX)
                     && text.text.ends_with(COMPACTION_SUMMARY_SUFFIX))
     )
-}
-
-pub(crate) fn tool_output_elision_marker(
-    artifact_id: &str,
-    original_bytes: u64,
-    additional_message_count: usize,
-) -> String {
-    let mut marker = format!(
-        "[tool output elided; {original_bytes} bytes retained; read it with read_artifact(artifact=\"{artifact_id}\")]"
-    );
-    if additional_message_count > 0 {
-        marker.push_str(&format!(
-            " {additional_message_count} tool-emitted message(s) were elided with this result and are not recoverable."
-        ));
-    }
-    marker
 }
 
 fn retained_artifact_id(reference: &ArtifactReference) -> Result<&str, HistoryError> {

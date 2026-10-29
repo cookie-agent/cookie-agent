@@ -22,4 +22,5 @@ starts the count over. The engine then appends a `<system-reminder>` to the
 latest successful result, telling the model how many times it has repeated
 itself and to work from the results it already has. The warning repeats, with
 a rising count, for as long as the loop continues. It never blocks a call or
-stops the run.
+stops the run. The TUI and the web client show the warning under the call's
+output, as the model reads it.

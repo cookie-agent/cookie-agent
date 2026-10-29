@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.51.0",
+    "protocol_version": "1.52.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.51.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.52.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -875,6 +875,11 @@ over the Agent Client Protocol (see the
   background shell, has ended. It is recorded where the end arrives,
   between runs too, before the run the end may wake, and clients show it
   as they show a background call's report.
+- Since 1.52.0, `acp_session_updated` may carry `prompt_context`: the text
+  blocks the session's first prompt to the agent carried ahead of the
+  input (the tool instructions, the skill listing, the attachments, the
+  memory snapshot turn, and the agent document's body), recorded as the
+  prompt is sent. Clients show it as a collapsed row.
 - Since 1.23.0, `acp_session_updated` may carry `context` (`used`, and
   `size` when the agent reports its window): the agent's context use from
   its latest `usage_update`, recorded as it changes. The agent's turns

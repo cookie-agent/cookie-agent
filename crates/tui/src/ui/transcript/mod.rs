@@ -321,6 +321,9 @@ pub(super) enum BlockId {
     PluginMessage(u64),
     AgentMd(u64),
     SkillLoaded(u64),
+    /// Input the engine added to the model's, such as the memory
+    /// snapshot turn, by its event's sequence.
+    ModelInput(u64),
     /// A model's memory change, by its event's sequence: a click opens the
     /// Memory panel at the memory.
     MemoryChange(u64),

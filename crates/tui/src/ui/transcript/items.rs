@@ -127,6 +127,7 @@ pub(super) fn for_each_item_block_id(
         TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
         TranscriptItem::AgentMd { seq, .. } => visit(BlockId::AgentMd(*seq)),
         TranscriptItem::SkillLoaded { seq, .. } => visit(BlockId::SkillLoaded(*seq)),
+        TranscriptItem::ModelInput { seq, .. } => visit(BlockId::ModelInput(*seq)),
         TranscriptItem::MemoryChange { seq, .. } => visit(BlockId::MemoryChange(*seq)),
         TranscriptItem::ProducerMessage { message_id, .. } => {
             visit(BlockId::ProducerMessage(*message_id))
@@ -202,6 +203,7 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
         | TranscriptItem::PluginMessage { .. }
         | TranscriptItem::AgentMd { .. }
         | TranscriptItem::SkillLoaded { .. }
+        | TranscriptItem::ModelInput { .. }
         | TranscriptItem::MemoryChange { .. }
         | TranscriptItem::Goal { .. }
         | TranscriptItem::Plan { .. }
@@ -311,6 +313,13 @@ pub(super) fn transcript_item_layout(
             rendered_body,
             ..
         } => skill_loaded_layout(*seq, name, source_path, args, rendered_body, context),
+        TranscriptItem::ModelInput {
+            seq,
+            kind,
+            header,
+            text,
+            ..
+        } => model_input_layout(*seq, *kind, header, text, context),
         TranscriptItem::MemoryChange {
             seq, change, url, ..
         } => memory_change_layout(*seq, *change, url, context),

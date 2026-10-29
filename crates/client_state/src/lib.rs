@@ -20,6 +20,7 @@ pub mod markdown;
 pub mod mcp;
 pub mod memory;
 pub mod model_draft;
+pub mod model_input;
 mod model_names;
 pub mod onboarding;
 pub mod ownership;
@@ -619,6 +620,17 @@ pub enum TranscriptItem {
         seq: u64,
         entries: Vec<cookie_agent_protocol::AgentMdEntry>,
     },
+    /// Input the engine adds to the model's beyond the conversation, such
+    /// as the memory snapshot turn: a collapsible row whose body is the
+    /// text the model reads (see [`model_input`]).
+    ModelInput {
+        id: u64,
+        version: u64,
+        seq: u64,
+        kind: model_input::ModelInputKind,
+        header: String,
+        text: String,
+    },
     /// A skill body loaded into model context, rendered inline at its event.
     SkillLoaded {
         id: u64,
@@ -810,6 +822,7 @@ impl TranscriptItem {
             | Self::PluginMessage { id, .. }
             | Self::AgentMd { id, .. }
             | Self::SkillLoaded { id, .. }
+            | Self::ModelInput { id, .. }
             | Self::MemoryChange { id, .. }
             | Self::Goal { id, .. }
             | Self::Plan { id, .. }
@@ -831,6 +844,7 @@ impl TranscriptItem {
             | Self::PluginMessage { version, .. }
             | Self::AgentMd { version, .. }
             | Self::SkillLoaded { version, .. }
+            | Self::ModelInput { version, .. }
             | Self::Plan { version, .. } => *version,
             Self::Goal { .. }
             | Self::MemoryChange { .. }
@@ -1216,6 +1230,14 @@ pub struct SessionState {
     /// are unchanged.
     pub agent_md_latest_run: AgentMdByAttachment,
     pub agent_md_previous_run: AgentMdByAttachment,
+    /// The memory turn the latest memory row shows; empty once memory left
+    /// the model's context, `None` before any row. A snapshot that renders
+    /// the same turn adds no row.
+    pub memory_turn: Option<String>,
+    /// How many messages each ended tool call emitted, for the marker the
+    /// model reads once its output is elided; calls that emitted none are
+    /// left out.
+    pub tool_emitted_messages: HashMap<ToolCallId, usize>,
 }
 
 /// AGENTS.md entries keyed by the attachment that loaded them.

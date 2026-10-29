@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.52.0
+
+- `acp_session_updated` has an optional `prompt_context`: the text blocks
+  an ACP session's first prompt carried ahead of the input, as sent, so
+  clients show what the agent reads beyond the conversation. Plugin
+  protocol 1.28.0 carries it in events the same way.
+
 ## 1.51.0
 
 - `SessionMeta` has an optional `unread` (left out when false): a root

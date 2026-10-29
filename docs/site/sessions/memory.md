@@ -129,8 +129,10 @@ saved is not a valid memory, `e` reopens it as you left it; when the memory
 changed since you opened it, nothing is overwritten: `r` reloads the current
 version into the editor, and `o` overwrites it with your edit. The panel
 refreshes when a memory changes through the daemon, by you, another client,
-or the agent. An agent's memory tool call is one row in the transcript,
-such as `Edit memory project://web/build`: expanding it shows the change as
+or the agent. The transcript shows the memory snapshot the model reads as a
+collapsed `memory` row, at the run that loads it and again whenever it
+changes. An agent's memory tool call is one row in the transcript, such as
+`Edit memory project://web/build`: expanding it shows the change as
 a diff, like an edit's, and clicking its URL opens `/memory` at that
 memory; a search's results open theirs the same way. The web client's
 Memory view shows the same ages and sizes, and its rows the same diffs and

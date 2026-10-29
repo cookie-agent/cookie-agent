@@ -458,6 +458,22 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 &body,
             )
         }
+        // Input the engine added to the model's: collapsed to its header,
+        // expanded to the text the model reads.
+        TranscriptItem::ModelInput {
+            kind, header, text, ..
+        } => {
+            use cookie_agent_client_state::model_input::ModelInputKind;
+            let key = block_key(item).unwrap_or_default();
+            let icon = match kind {
+                ModelInputKind::Memory => icondata::FaBrainSolid,
+                ModelInputKind::DeferredTools => icondata::FaToolboxSolid,
+                ModelInputKind::InheritedContext => icondata::FaTurnDownSolid,
+                ModelInputKind::AgentContext => icondata::FaScrollSolid,
+            };
+            let row = collapsible(view.expanded.block(&key), &key, icon, header, None, text);
+            format!("<div data-model-input=\"{}\">{row}</div>", kind.as_str())
+        }
         // A model's memory change: one line that opens the Memory view at
         // the memory (memory spec section 16.9.10).
         TranscriptItem::MemoryChange { change, url, .. } => {
@@ -985,6 +1001,7 @@ fn block_key(item: &TranscriptItem) -> Option<String> {
         TranscriptItem::PluginMessage { seq, .. } => format!("plugin:{seq}"),
         TranscriptItem::AgentMd { seq, .. } => format!("agent-md:{seq}"),
         TranscriptItem::SkillLoaded { seq, .. } => format!("skill:{seq}"),
+        TranscriptItem::ModelInput { seq, .. } => format!("model-input:{seq}"),
         TranscriptItem::ProducerMessage { message_id, .. } => format!("producer:{message_id}"),
         _ => return None,
     })
@@ -1796,6 +1813,37 @@ mod tests {
             item_html(&view(&collapsed), &row(ProducerMessageStatus::Discarded)),
             None
         );
+    }
+
+    #[test]
+    fn model_input_folds_to_its_header_and_opens_to_the_text_the_model_reads() {
+        let state = SessionState::default();
+        let names = ModelDisplayNames::default();
+        let row = TranscriptItem::ModelInput {
+            id: 1,
+            version: 0,
+            seq: 7,
+            kind: cookie_agent_client_state::model_input::ModelInputKind::Memory,
+            header: "memory · 2 lines".into(),
+            text: "<system-reminder>\n# Memory".into(),
+        };
+        let collapsed = Expanded::default();
+        let opened = Expanded::from_iter(["model-input:7".to_owned()]);
+        let view = |expanded| TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Error,
+            expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+        };
+        let folded = item_html(&view(&collapsed), &row).expect("shown at any level");
+        assert!(folded.contains("data-model-input=\"memory\""), "{folded}");
+        assert!(folded.contains("memory · 2 lines"), "{folded}");
+        assert!(!folded.contains("# Memory"), "{folded}");
+        let open = item_html(&view(&opened), &row).expect("shown");
+        assert!(open.contains("&lt;system-reminder&gt;\n# Memory"), "{open}");
     }
 
     #[test]
