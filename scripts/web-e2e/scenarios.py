@@ -4437,6 +4437,11 @@ def projects(browser):
     set_text(browser, "#emoji-search", "cookie")
     browser.wait("the search", lambda: count(browser, '#emoji-picker [data-emoji]') >= 1)
     assert count(browser, '#emoji-picker [data-emoji="🍪"]') == 1
+    # The pointed emoji is named below the grid, not in a native tooltip
+    # on each.
+    assert count(browser, "#emoji-picker [data-emoji][title]") == 0
+    hover_at(browser, '#emoji-picker [data-emoji="🍪"]')
+    browser.wait("the name", lambda: "cookie" in browser.text("[data-emoji-pointed]"))
     # Typed text is checked as the daemon checks it.
     set_text(browser, "#emoji-typed", "ab")
     browser.wait("the refusal", lambda: "Not one emoji" in browser.text("[data-emoji-error]"))

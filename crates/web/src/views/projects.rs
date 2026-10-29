@@ -1107,6 +1107,10 @@ fn agent_choices(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
 fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
     let query = RwSignal::new(String::new());
     let typed = RwSignal::new(String::new());
+    // The emoji the pointer or the keyboard is on, named below the grid:
+    // a native tooltip on each would pop up afresh as the pointer crosses
+    // the grid, which lags.
+    let pointed = RwSignal::new(None::<(&'static str, &'static str)>);
     let search = NodeRef::<html::Input>::new();
     Effect::new(move |_| {
         if let Some(input) = search.get() {
@@ -1161,7 +1165,7 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                     <Glyph icon=icondata::FaXmarkSolid />
                 </button>
             </div>
-            <div class="min-h-0 flex-1 overflow-y-auto" data-emoji-grid>
+            <div class="min-h-0 flex-1 overflow-y-auto" data-emoji-grid on:pointerleave=move |_| pointed.set(None)>
                 {move || {
                     let found = crate::emoji::search(&query.get());
                     if found.is_empty() {
@@ -1177,9 +1181,10 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                                         <button
                                             type="button"
                                             class="inline-flex h-11 w-11 items-center justify-center rounded-md text-2xl hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
-                                            title=name
                                             aria-label=name
                                             data-emoji=emoji
+                                            on:pointerenter=move |_| pointed.set(Some((emoji, name)))
+                                            on:focus=move |_| pointed.set(Some((emoji, name)))
                                             on:click=move |_| choose(Some(emoji.to_owned()))
                                         >
                                             {emoji}
@@ -1192,6 +1197,12 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                         .into_any()
                 }}
             </div>
+            <p class=format!("hidden h-5 shrink-0 items-center gap-1.5 truncate sm:flex {NOTE}") data-emoji-pointed>
+                {move || pointed.get().map(|(emoji, name)| view! {
+                    <span class="text-base">{emoji}</span>
+                    <span class="truncate">{name}</span>
+                })}
+            </p>
             <div class="flex flex-wrap items-start gap-2 border-t border-toasted pt-2 dark:border-ember">
                 <div class="flex min-w-0 flex-1 flex-col gap-1">
                     <input
