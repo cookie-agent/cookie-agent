@@ -662,6 +662,7 @@ impl super::super::Engine {
     /// `session/fork` of `from` at the agent message `message_id`, as the
     /// next turn branches off a session a fork or a revert left behind:
     /// the new session's ID and the agent's answer, or why it could not.
+    #[allow(clippy::too_many_arguments)]
     async fn fork_acp_session(
         &self,
         process: &AgentProcess,
