@@ -795,10 +795,14 @@ above, this section is what the code does.
   message is unaffected.
 - **Daemon listener (D3).** The daemon binds an ephemeral port, waits 10
   minutes, and announces `provider.auth.completed`.
-  - The web client uses it when the page's host is `127.0.0.1`,
-    `localhost`, or `[::1]`. It finishes when the provider's account
-    appears, and does not read the notification.
-  - Pages elsewhere name port 1455 and ask for paste-back.
+  - The web client always uses it, and finishes when the provider's
+    account appears; it does not read the notification.
+  - A page whose host is not `127.0.0.1`, `localhost`, or `[::1]` also
+    offers paste-back, for a browser on another machine. A pasted address
+    stops the daemon's listener, and the sheet closes once the RPC
+    succeeds. (Changed 2026-10-28: such pages named port 1455 and relied
+    on paste-back alone, and the sheet kept showing "not signed in" after
+    a pasted sign-in.)
 - **Clients.**
   - TUI: the sign-in is shown in the provider's details, with the address
     to copy, paste-back, and disconnect.

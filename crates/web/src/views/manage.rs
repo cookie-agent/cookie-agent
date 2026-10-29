@@ -1041,6 +1041,8 @@ fn sign_in_view(
     let cancel_id = provider.id.clone();
     let disconnect_provider = provider.clone();
     // A sign-in the daemon caught itself ends when the account shows up.
+    // The daemon listens even when the page offers paste-back, so this also
+    // ends a sign-in from a browser on the daemon's machine.
     let watched = provider.id.clone();
     let was_connected = provider
         .sign_in_account
@@ -1053,14 +1055,9 @@ fn sign_in_view(
                 .then(|| listed.sign_in_account.clone())
                 .flatten()
         });
-        if matches!(
-            state.get_untracked(),
-            ProviderSignIn::Waiting {
-                caught_by_daemon: true,
-                ..
-            }
-        ) && account
-            .is_some_and(|account| !account.sign_in_required && account.email != was_connected)
+        if matches!(state.get_untracked(), ProviderSignIn::Waiting { .. })
+            && account
+                .is_some_and(|account| !account.sign_in_required && account.email != was_connected)
         {
             state.set(ProviderSignIn::Idle);
             open.set(None);
@@ -1091,7 +1088,7 @@ fn sign_in_view(
                     move |_| {
                         let pasted = field_value("provider-sign-in-callback");
                         if !pasted.trim().is_empty() {
-                            workspace.finish_provider_sign_in(provider_id.clone(), pasted.trim().to_owned(), state);
+                            workspace.finish_provider_sign_in(provider_id.clone(), pasted.trim().to_owned(), state, move || open.set(None));
                         }
                     }
                 }>"Finish sign-in"</button>

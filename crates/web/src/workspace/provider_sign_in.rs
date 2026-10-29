@@ -1,7 +1,8 @@
-//! A provider's browser sign-in from the connect sheet. A page the daemon
-//! serves from loopback shares its machine, so the daemon catches the
-//! redirect itself; any other page asks for the address the sign-in tab
-//! could not load.
+//! A provider's browser sign-in from the connect sheet. The daemon always
+//! listens for the redirect itself, so a browser on the daemon's machine
+//! finishes on its own. A page served from loopback is on that machine; any
+//! other page also offers to paste the address the sign-in tab could not
+//! load, for a browser elsewhere.
 
 use cookie_agent_protocol::{
     ProviderAuthBeginParams, ProviderAuthCancelParams, ProviderAuthCompleteParams,
@@ -12,10 +13,6 @@ use leptos::{prelude::*, task::spawn_local};
 use super::Workspace;
 use crate::{browser, oauth};
 
-/// The port a pasted-back sign-in names. Nothing listens on it; the browser
-/// fails to load it, and the user pastes the address.
-const PASTE_BACK_PORT: u16 = 1455;
-
 /// Where one provider's sign-in stands in the connect sheet.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ProviderSignIn {
@@ -25,7 +22,8 @@ pub enum ProviderSignIn {
     Waiting {
         /// The address the sign-in tab shows, to open it again.
         authorization_url: String,
-        /// The daemon catches the redirect; nothing to paste.
+        /// The browser shares the daemon's machine, so the daemon surely
+        /// catches the redirect; nothing to paste.
         caught_by_daemon: bool,
     },
     Failed(String),
@@ -52,16 +50,10 @@ impl Workspace {
             return;
         };
         let caught_by_daemon = page_on_loopback();
-        let redirect_uri = (!caught_by_daemon).then(|| {
-            format!(
-                "http://127.0.0.1:{PASTE_BACK_PORT}{}",
-                method.redirect_path.as_str()
-            )
-        });
         let params = ProviderAuthBeginParams {
             provider_id: provider.id.clone(),
             method: method.id.clone(),
-            redirect_uri,
+            redirect_uri: None,
         };
         let tab = oauth::open_blank_tab();
         state.set(ProviderSignIn::Idle);
@@ -88,12 +80,14 @@ impl Workspace {
         });
     }
 
-    /// Finishes the sign-in with the address the sign-in tab could not load.
+    /// Finishes the sign-in with the address the sign-in tab could not load,
+    /// then calls `finished`.
     pub fn finish_provider_sign_in(
         self,
         provider_id: ProviderId,
         callback_url: String,
         state: RwSignal<ProviderSignIn>,
+        finished: impl FnOnce() + 'static,
     ) {
         let Some(client) = self.client() else {
             return;
@@ -108,6 +102,7 @@ impl Workspace {
             {
                 Ok(completed) => {
                     state.set(ProviderSignIn::Idle);
+                    finished();
                     self.status
                         .set(completed.account.email.as_ref().map_or_else(
                             || format!("signed in to {provider_id}"),
