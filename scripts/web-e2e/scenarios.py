@@ -5762,6 +5762,44 @@ def reduced_transcript(browser):
     choose_transcript(browser, "full")
 
 
+# The open tool row's header: its height, its title span's, the gap between
+# the tops of its status mark and its title, and whether the title
+# holds the command's last word.
+HEADER_FIT = """
+const row = [...document.querySelectorAll('#transcript [data-tool]')].pop();
+const header = row.querySelector('[data-header]');
+const status = row.querySelector('[data-action=toggle-tool] [title]');
+return {height: header.getBoundingClientRect().height,
+    top: Math.abs(status.getBoundingClientRect().top - header.getBoundingClientRect().top),
+    whole: header.innerText.includes('word40'), text: header.innerText};
+"""
+
+
+def open_tool_header(browser):
+    """An open call's header wraps to show its whole command, its status on
+    the first line; folded, it is one line again."""
+    new_session(browser)
+    send(browser, "run a wordy command")
+    browser.wait("the approval", lambda: count(browser, "#transcript [data-action=approvals]") == 1)
+    browser.click("#transcript [data-action=approvals]")
+    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    browser.click("#sheet [data-decision=approve_once]")
+    close_sheet(browser)
+    idle(browser, "the tool's answer", text="The tool ran.")
+    folded = browser.script(HEADER_FIT)
+    toggle = "[...document.querySelectorAll('#transcript [data-tool]')].pop().querySelector('[data-action=toggle-tool]').click()"
+    browser.script(toggle)
+    browser.wait("the open row", lambda: browser.script(HEADER_FIT)["height"] > 2 * folded["height"])
+    opened = browser.script(HEADER_FIT)
+    assert opened["whole"], "the open header does not show the command's last word: %s" % opened["text"]
+    assert opened["top"] < 12, "the status left the first line: %s" % opened
+    browser.script("[...document.querySelectorAll('#transcript [data-tool]')].pop().scrollIntoView({block: 'start'})")
+    browser.shot("open-tool-header")
+    browser.script(toggle)
+    browser.wait("the folded row", lambda: browser.script(HEADER_FIT)["height"] == folded["height"])
+    print("an open header wraps over %d px from %d px, its status on the first line" % (opened["height"], folded["height"]))
+
+
 SCENARIOS = [
     ("basics", basics, "chat", []),
     ("torn_down", torn_down, "chat", ["basics"]),
@@ -5786,6 +5824,7 @@ SCENARIOS = [
     ("session_drafts", session_drafts, "chat", []),
     ("unread_and_select", unread_and_select, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
+    ("open_tool_header", open_tool_header, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),
     ("cron", cron_jobs, "chat", []),

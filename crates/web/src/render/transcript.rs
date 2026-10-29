@@ -1426,6 +1426,14 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         "text-caramel dark:text-maple",
     );
     let header = tool_header_text(view, tool);
+    // An open call's header wraps to show its whole title and argument, its
+    // chevron, icon, and status on the first line; a folded one is one line,
+    // cut to fit.
+    let (align, fit) = if expanded {
+        ("items-start", "whitespace-normal wrap-anywhere")
+    } else {
+        ("items-center", "truncate")
+    };
     // A memory the call names is a link to the Memory view inside the
     // header, a click target of its own between the two halves that toggle.
     let link = tool
@@ -1433,7 +1441,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         .and_then(|url| header.find(url).map(|at| (at, url)));
     let toggle = match link {
         None => format!(
-            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
+            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
             escape(&id),
             escape(&header),
         ),
@@ -1443,12 +1451,12 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
                 String::new()
             } else {
                 format!(
-                    "<span class=\"min-w-0 shrink truncate\">{}</span>",
+                    "<span class=\"min-w-0 shrink {fit}\">{}</span>",
                     escape(suffix)
                 )
             };
             format!(
-                "<div class=\"flex min-w-0 flex-1 items-center rounded-lg hover:bg-toasted dark:hover:bg-ember\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink items-center gap-2 rounded-l-lg py-1 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink truncate rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-r-lg py-1 pr-2 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
+                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-toasted dark:hover:bg-ember\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg py-1 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg py-1 pr-2 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
                 escape(header[..at].trim_end()),
                 id = escape(&id),
                 url = escape(url),
@@ -1456,7 +1464,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         }
     };
     let mut html = format!(
-        "<div class=\"rounded-lg border border-toasted dark:border-ember\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex items-center\">{toggle}{approval}{background}</div>",
+        "<div class=\"rounded-lg border border-toasted dark:border-ember\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex {align}\">{toggle}{approval}{background}</div>",
         escape(&id),
     );
     if let Some(delegate) = view.delegates.get(&tool.id) {
@@ -1672,6 +1680,32 @@ mod tests {
         let open = draw(&Expanded::from_iter(["thinking:7".to_owned()]));
         assert!(open.contains("aria-expanded=\"true\""), "{open}");
         assert!(open.contains("weighing the options"), "{open}");
+    }
+
+    #[test]
+    fn an_open_header_wraps_to_show_the_whole_title_and_argument() {
+        let command = format!("printf {}", "a-long-argument ".repeat(20));
+        let call = run("Run", &command);
+        let folded = rendered(&call, &Expanded::default());
+        assert!(
+            folded.contains("class=\"min-w-0 shrink truncate\" data-header"),
+            "{folded}"
+        );
+        assert!(!folded.contains("wrap-anywhere"), "{folded}");
+        let open = rendered(&call, &Expanded::from_iter([call.id.to_string()]));
+        assert!(
+            open.contains("class=\"min-w-0 shrink whitespace-normal wrap-anywhere\" data-header"),
+            "{open}"
+        );
+        assert!(open.contains("items-start"), "{open}");
+        // The header holds the whole argument either way; only its fit
+        // differs.
+        assert_eq!(header(&open), header(&folded));
+        assert!(
+            header(&open).ends_with(command.trim_end()),
+            "{}",
+            header(&open)
+        );
     }
 
     #[test]

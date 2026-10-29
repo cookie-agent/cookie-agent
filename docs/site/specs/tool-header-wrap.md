@@ -1,8 +1,9 @@
 # Full tool headers on open rows
 
-Status: **approved draft** (2026-10-29), with the user's decisions of
-2026-10-29 in [section 6](#6-decisions). Client-only: no client, plugin, or
-runtime protocol change.
+Status: **implemented** (2026-10-29), with the user's decisions of
+2026-10-29 in [section 6](#6-decisions) and implementation notes in
+[section 7](#7-implementation-notes-2026-10-29). Client-only: no client,
+plugin, or runtime protocol change.
 
 ## 1. Goal and scope
 
@@ -104,3 +105,23 @@ The user decided on 2026-10-29:
    too big; opening the row shows the whole header.
 2. **The ACP argument stays cut at its first line and 200 characters**; a
    longer value is already in the body's argument block.
+
+## 7. Implementation notes (2026-10-29)
+
+- **The TUI already did this.** Since the calmer tool rows of
+  `c5c6b41ba`, an open row whose folded header had to shorten its title or
+  argument shows the whole of them on rows hanging under where the title
+  starts, every row part of the clickable header
+  (`expanded_title_lines`, tested in `tests/tool_headers.rs`). It is left
+  as it is, with one difference from section 2: its status follows the
+  text instead of sitting at the right end of the first line. No TUI
+  change.
+- **The web** changed as section 4 says: an open row's header and the
+  memory-link variant's halves wrap (`whitespace-normal wrap-anywhere`,
+  Tailwind 4) and align to the top; a folded one keeps `truncate`.
+- **Tests.** A renderer test checks the open and folded classes and that
+  both hold the whole argument; the browser scenario `open_tool_header`
+  runs a call whose command is too long for one line (the mock model's
+  `wordy command`), checks the open header grows past two lines with the
+  whole command and the status on its first line, and folds it back to one
+  line.

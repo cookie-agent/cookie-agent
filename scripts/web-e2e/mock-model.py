@@ -20,6 +20,8 @@ otherwise the last user text decides.
 - containing "ticking": a `bash` call that prints a tick every 100 ms for
   about 10 s, so an open call's output changes while it is clicked;
 - containing "many lines": a `bash` call that prints 100 lines;
+- containing "wordy command": a `bash` call whose command is too long for
+  one line of its header;
 - containing "picture": a `read` call on `dot.png`, whose result is a media
   block;
 - containing "stream only": a long markdown answer streamed fast, its lines
@@ -203,6 +205,9 @@ def reply(request):
         return tool_reply("bash", {"command": "printf 'step one\\n'; sleep 6; printf 'done\\n'"})
     if "many lines" in text:
         return tool_reply("bash", {"command": "seq 1 100"})
+    if "wordy command" in text:
+        words = " ".join("word%d" % n for n in range(1, 41))
+        return tool_reply("bash", {"command": "printf '%%s\\n' %s" % words})
     if "sleepy" in text:
         # Long enough to outlast the approval and the clicks on a slow
         # runner; the scenario stops it.

@@ -422,7 +422,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     the approvals. A running call that can move to the background offers
     **background**.
   - **An open call.** Click a call's line (or press Enter on it) to open
-    it, and again to close it. It shows its arguments under a muted
+    it, and again to close it. Open, its line wraps to show the whole title
+    and argument a closed line cuts short. It shows its arguments under a muted
     **arguments** label, leaving out what the line already says (a block
     or key/value row that only repeats the primary argument or the text
     the title quotes), then its output. Output past 64 lines ends with
