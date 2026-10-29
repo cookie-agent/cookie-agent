@@ -342,7 +342,87 @@ pub(crate) fn recorded_starting_options(events: &EventSnapshot) -> Vec<AcpOption
         .unwrap_or_default()
 }
 
+/// The option values the session last had with agent `agent` over
+/// declaration `runtime_agent`: the latest `acp_session_updated.options`
+/// before the ACP session that just started (the log's latest
+/// `acp_session_started`), as long as no earlier ACP session of another
+/// agent or declaration comes between. Empty when there are none.
+pub(crate) fn recorded_option_values(
+    events: &EventSnapshot,
+    agent: &AgentId,
+    runtime_agent: &AgentId,
+) -> Vec<(String, String)> {
+    let mut started = false;
+    for event in events.iter().rev() {
+        match &event.payload {
+            Event::AcpSessionStarted { record } if !started => {
+                started = true;
+                if &record.agent != agent || &record.runtime_agent != runtime_agent {
+                    return Vec::new();
+                }
+            }
+            Event::AcpSessionStarted { record }
+                if &record.agent != agent || &record.runtime_agent != runtime_agent =>
+            {
+                return Vec::new();
+            }
+            Event::AcpSessionUpdated { update } if started => {
+                if let Some(options) = &update.options {
+                    return options
+                        .iter()
+                        .map(|option| (option.id.clone(), option.current_value.clone()))
+                        .collect();
+                }
+            }
+            _ => {}
+        }
+    }
+    Vec::new()
+}
+
 impl crate::runtime::Engine {
+    /// Puts back the option values the session last had (its model,
+    /// effort, mode, and the rest) on an ACP session it resumed, forked, or
+    /// replaced: an agent may answer those with its own defaults rather than
+    /// the values the session had, and a value chosen in the session must
+    /// not silently change. A value the agent no longer takes is left as
+    /// the agent has it.
+    pub(super) async fn restore_recorded_options(
+        &self,
+        session: cookie_agent_protocol::SessionId,
+        run: Option<cookie_agent_protocol::RunId>,
+        live: &mut super::runner::LiveSession,
+    ) {
+        let Ok(projection) = self.inner.store.get(session) else {
+            return;
+        };
+        let recorded = recorded_option_values(
+            &projection.log.event_snapshot(),
+            &live.agent.id,
+            &live.agent.agent,
+        );
+        for (id, value) in recorded {
+            let current = live
+                .options
+                .iter()
+                .find(|option| option.id == id)
+                .map(|option| option.current_value.clone());
+            if current.is_none_or(|current| current == value)
+                || takes(&live.options, &id, &value) != Some(true)
+            {
+                continue;
+            }
+            if let Err(problem) = self.set_live_option(live, &id, &value).await {
+                self.acp_notice(
+                    session,
+                    run,
+                    format!("The agent's option `{id}` was not set back to `{value}`: {problem}"),
+                )
+                .await;
+            }
+        }
+    }
+
     /// Remembers what `agent` offered as its session started: always for a
     /// new session, whose options are the agent's own starting values;
     /// for a resumed or loaded one only while nothing is known, since its

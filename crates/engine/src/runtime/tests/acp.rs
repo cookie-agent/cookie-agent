@@ -522,6 +522,47 @@ async fn the_agents_own_mode_switch_moves_its_mode_option() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_session_gets_back_the_options_it_had() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say hello").await;
+    for (id, value) in [
+        ("mode", "plan"),
+        ("model", "large"),
+        ("reasoning_effort", "high"),
+        ("fast", "true"),
+    ] {
+        engine
+            .set_session_agent_option(cookie_agent_protocol::SessionAgentOptionSetParams {
+                session_id: session,
+                option_id: id.to_owned(),
+                value: value.to_owned(),
+            })
+            .await
+            .expect("option set");
+    }
+    // The fixture resumes a session it no longer holds on its defaults, as
+    // Codex does after its process restarts.
+    stop_process(engine).await;
+    turn(engine, session, "again", "say back").await;
+    let starts = session_starts(engine, session);
+    assert_eq!(starts[1].how, AcpSessionStart::Resumed);
+    for (id, value) in [
+        ("mode", "plan"),
+        ("model", "large"),
+        ("reasoning_effort", "high"),
+        ("fast", "true"),
+    ] {
+        assert_eq!(
+            recorded_option(engine, session, id).as_deref(),
+            Some(value),
+            "{id}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn without_an_auto_mode_the_agent_keeps_its_default() {
     let acp = acp_fixture(&[("ACP_FIXTURE_NO_AUTO", "1")], &[]).await;
     let engine = acp.engine();

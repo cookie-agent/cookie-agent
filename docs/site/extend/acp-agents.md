@@ -518,7 +518,11 @@ not in it.
   fast mode, is a switch in the web client and toggles from its row in
   `/options`. Choosing a value changes it on the agent at once (on a
   draft, when its session starts), and a mode the agent switches to by
-  itself (Claude Code leaving plan mode) shows at once too.
+  itself (Claude Code leaving plan mode) shows at once too. The session
+  keeps its options, model and effort included: when cookie resumes or
+  forks the agent's session, after its process stopped while idle
+  (`[acp] idle_shutdown_ms`) or the daemon restarted, it sets back every
+  value the agent came back without (Codex resumes on its own defaults).
 - **Context.** The status line shows how much context the agent's
   conversation uses, as the agent reports it (`ctx` in the TUI, with the
   share of the agent's context window; the tokens in the web client).

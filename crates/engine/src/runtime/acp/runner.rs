@@ -3315,6 +3315,11 @@ impl Engine {
             self.apply_session_starting_options(session, run, &mut live)
                 .await;
         }
+        // What the session had before, which a resumed or forked session
+        // may come back without (Codex resumes on its own defaults) and a
+        // replacement for a lost one starts without.
+        self.restore_recorded_options(session, run, &mut live)
+            .await;
         // v2 gives the session's commands with it, not as a first update.
         let commands = response
             .available_commands
