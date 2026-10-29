@@ -30,6 +30,10 @@ pub(crate) enum SlashCommand {
     ShowAgentPanel,
     HideAgentPanel,
     AutoAgentPanel,
+    /// `/transcript reduced`: fold each block's work into one row.
+    TranscriptReduced,
+    /// `/transcript full`: show every thinking block and tool call.
+    TranscriptFull,
     New,
     Preset,
     Agent,
@@ -124,6 +128,20 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         description: "show the agent panel only while delegated agents are live",
         action: PaletteAction::Run(SlashCommand::AutoAgentPanel),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "transcript reduced",
+        aliases: &[],
+        description: "fold each reply's thinking and tool calls into one Worked for row (saved)",
+        action: PaletteAction::Run(SlashCommand::TranscriptReduced),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "transcript full",
+        aliases: &[],
+        description: "show every thinking block and tool call (saved)",
+        action: PaletteAction::Run(SlashCommand::TranscriptFull),
         writes_session: false,
     },
     CommandSpec {

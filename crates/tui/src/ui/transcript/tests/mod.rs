@@ -33,6 +33,7 @@ mod projects;
 mod providers;
 mod questions;
 mod queue;
+mod reduced;
 mod refresh_races;
 mod render_preview;
 mod runtimes;

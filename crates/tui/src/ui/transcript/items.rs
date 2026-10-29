@@ -8,12 +8,13 @@ pub(super) fn item_layout_key(
     expanded: Option<&HashSet<BlockId>>,
     clock_bucket: u8,
     model_names: &ModelDisplayNames,
+    transcript: TranscriptMode,
 ) -> ItemLayoutKey {
     ItemLayoutKey {
         id: item.id(),
         version: item.version(),
         interaction: item_interaction(item, expanded),
-        clock: if item_is_live(state, item) {
+        clock: if item_is_live(state, item, transcript) {
             clock_bucket
         } else {
             0
@@ -29,12 +30,13 @@ pub(super) fn item_layout_key_matches(
     expanded: Option<&HashSet<BlockId>>,
     clock_bucket: u8,
     model_names: &ModelDisplayNames,
+    transcript: TranscriptMode,
 ) -> bool {
     key.id == item.id()
         && key.version == item.version()
         && key.model_names == item_model_names_revision(item, model_names)
         && key.clock
-            == if item_is_live(state, item) {
+            == if item_is_live(state, item, transcript) {
                 clock_bucket
             } else {
                 0
@@ -140,13 +142,27 @@ pub(super) fn for_each_item_block_id(
     }
 }
 
+/// [`for_each_item_block_id`], and first an assistant block's work row,
+/// whose open state its layout depends on in the reduced mode.
+fn for_each_interaction_block_id(
+    item: &TranscriptItem,
+    mut visit: impl FnMut(BlockId) -> bool,
+) -> bool {
+    if let TranscriptItem::Assistant { id, .. } = item
+        && !visit(BlockId::Work(*id))
+    {
+        return false;
+    }
+    for_each_item_block_id(item, visit)
+}
+
 pub(super) fn item_interaction_matches(
     expected: &[(BlockId, bool)],
     item: &TranscriptItem,
     expanded: Option<&HashSet<BlockId>>,
 ) -> bool {
     let mut index = 0;
-    let complete = for_each_item_block_id(item, |id| {
+    let complete = for_each_interaction_block_id(item, |id| {
         let matches = expected.get(index).is_some_and(|entry| {
             *entry == (id, expanded.is_some_and(|blocks| blocks.contains(&id)))
         });
@@ -156,6 +172,7 @@ pub(super) fn item_interaction_matches(
     complete && index == expected.len()
 }
 
+#[cfg(test)]
 pub(super) fn item_block_ids(item: &TranscriptItem) -> Vec<BlockId> {
     let mut ids = Vec::new();
     for_each_item_block_id(item, |id| {
@@ -169,17 +186,28 @@ pub(super) fn item_interaction(
     item: &TranscriptItem,
     expanded: Option<&HashSet<BlockId>>,
 ) -> Vec<(BlockId, bool)> {
-    item_block_ids(item)
-        .into_iter()
-        .map(|id| (id, expanded.is_some_and(|blocks| blocks.contains(&id))))
-        .collect()
+    let mut interaction = Vec::new();
+    for_each_interaction_block_id(item, |id| {
+        interaction.push((id, expanded.is_some_and(|blocks| blocks.contains(&id))));
+        true
+    });
+    interaction
 }
 
 /// Whether one transcript item owns live content — a still-streaming
-/// thinking part or a running tool row — and so re-renders on each
-/// animation clock bucket.
-pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool {
+/// thinking part, a running tool row, or in the reduced mode a work row
+/// whose time ticks — and so re-renders on each animation clock bucket.
+pub(super) fn item_is_live(
+    state: &SessionState,
+    item: &TranscriptItem,
+    transcript: TranscriptMode,
+) -> bool {
     match item {
+        TranscriptItem::Assistant { id, .. }
+            if transcript == TranscriptMode::Reduced && state.assistant_live(*id) =>
+        {
+            true
+        }
         TranscriptItem::Assistant { id, children, .. } => {
             children.iter().any(|child| match child {
                 AssistantChild::Thinking { id: part_id, .. } => {

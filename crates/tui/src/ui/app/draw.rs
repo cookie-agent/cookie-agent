@@ -951,6 +951,14 @@ impl App {
             PaletteAction::Run(SlashCommand::AutoAgentPanel) => {
                 self.agent_panel_mode != AgentPanelMode::Auto
             }
+            PaletteAction::Run(SlashCommand::TranscriptReduced) => {
+                self.tui_config.transcript
+                    != cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced
+            }
+            PaletteAction::Run(SlashCommand::TranscriptFull) => {
+                self.tui_config.transcript
+                    != cookie_agent_client_state::transcript_mode::TranscriptMode::Full
+            }
             // The agent's own command stands in for these when it offers
             // it.
             PaletteAction::Compact => !self.agent_replaces("compact"),

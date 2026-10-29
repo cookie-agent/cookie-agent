@@ -5,11 +5,17 @@
 //! file or any unknown key fails with an actionable path/key error. Error
 //! messages quote the file's location and the offending key or TOML parse
 //! context, never file contents.
+//!
+//! The TUI writes one key itself, `transcript`, when the user changes the
+//! transcript mode ([`save_transcript`]); everything else in the file stays
+//! as the user wrote it.
 
 use std::path::{Path, PathBuf};
 
 use cookie_agent_protocol::paths;
 use serde::Deserialize;
+
+use cookie_agent_client_state::transcript_mode::TranscriptMode;
 
 use crate::state::EventLevel;
 use crate::theme::ThemeKind;
@@ -26,6 +32,9 @@ pub struct TuiConfig {
     /// Optional theme preference; `None` and `Auto` use terminal/environment
     /// detection (`COOKIE_THEME`, OSC 11, `COLORFGBG`).
     pub theme: Option<ThemePreference>,
+    /// How the conversation shows agent work: each block's thinking and
+    /// tool calls folded into one row, or all of them.
+    pub transcript: TranscriptMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,14 +63,26 @@ impl Default for TuiConfig {
         Self {
             minimum_event_level: EventLevel::DEFAULT_MINIMUM,
             theme: None,
+            transcript: TranscriptMode::default(),
         }
     }
 }
 
 #[derive(Debug)]
 pub enum TuiConfigError {
-    Io { path: PathBuf, message: String },
-    Malformed { path: PathBuf, message: String },
+    Io {
+        path: PathBuf,
+        message: String,
+    },
+    Malformed {
+        path: PathBuf,
+        message: String,
+    },
+    /// The file could not be written.
+    Write {
+        path: PathBuf,
+        message: String,
+    },
 }
 impl std::fmt::Display for TuiConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,6 +95,9 @@ impl std::fmt::Display for TuiConfigError {
                 "invalid TUI config {}: {message} (see docs/tui.toml.example)",
                 path.display()
             ),
+            Self::Write { path, message } => {
+                write!(f, "cannot write TUI config {}: {message}", path.display())
+            }
         }
     }
 }
@@ -85,6 +109,23 @@ impl std::error::Error for TuiConfigError {}
 struct TuiConfigFile {
     minimum_event_level: Option<LevelName>,
     theme: Option<ThemeName>,
+    transcript: Option<TranscriptName>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum TranscriptName {
+    Reduced,
+    Full,
+}
+
+impl From<TranscriptName> for TranscriptMode {
+    fn from(name: TranscriptName) -> Self {
+        match name {
+            TranscriptName::Reduced => Self::Reduced,
+            TranscriptName::Full => Self::Full,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -151,6 +192,10 @@ pub fn parse(text: &str, path: &Path) -> Result<TuiConfig, TuiConfigError> {
             .map(EventLevel::from)
             .unwrap_or(defaults.minimum_event_level),
         theme: file.theme.map(ThemePreference::from),
+        transcript: file
+            .transcript
+            .map(TranscriptMode::from)
+            .unwrap_or(defaults.transcript),
     })
 }
 
@@ -175,6 +220,63 @@ pub fn load(override_path: Option<&Path>) -> Result<TuiConfig, TuiConfigError> {
             None => Ok(TuiConfig::default()),
         },
     }
+}
+
+/// Saves `mode` as the `transcript` key of the platform config file; see
+/// [`save_transcript_to`]. Returns the path it wrote.
+pub fn save_transcript(mode: TranscriptMode) -> Result<PathBuf, TuiConfigError> {
+    let path = config_path().ok_or_else(|| TuiConfigError::Write {
+        path: PathBuf::from(CONFIG_FILE_NAME),
+        message: "no user data directory".into(),
+    })?;
+    save_transcript_to(&path, mode)?;
+    Ok(path)
+}
+
+/// Sets the `transcript` key of the file at `path` to `mode`, keeping its
+/// comments, other keys, and their order as written; a missing file is
+/// created holding only that key. The file is read again just before the
+/// write and replaced in one rename, and one that no longer parses is left
+/// as it is.
+pub fn save_transcript_to(path: &Path, mode: TranscriptMode) -> Result<(), TuiConfigError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(TuiConfigError::Io {
+                path: path.to_owned(),
+                message: error.to_string(),
+            });
+        }
+    };
+    parse(&text, path)?;
+    let mut document =
+        text.parse::<toml_edit::DocumentMut>()
+            .map_err(|_| TuiConfigError::Malformed {
+                path: path.to_owned(),
+                message: "malformed TOML".into(),
+            })?;
+    document["transcript"] = toml_edit::value(mode.name());
+    let write_error = |error: std::io::Error| TuiConfigError::Write {
+        path: path.to_owned(),
+        message: error.to_string(),
+    };
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(directory).map_err(write_error)?;
+    let mut file = tempfile::NamedTempFile::new_in(directory).map_err(write_error)?;
+    // The new file keeps the old one's permissions, not a temporary file's.
+    if let Ok(metadata) = std::fs::metadata(path) {
+        file.as_file()
+            .set_permissions(metadata.permissions())
+            .map_err(write_error)?;
+    }
+    std::io::Write::write_all(&mut file, document.to_string().as_bytes()).map_err(write_error)?;
+    file.persist(path)
+        .map_err(|error| write_error(error.error))?;
+    Ok(())
 }
 
 /// TOML errors do not always name the offending key; recover it from the
@@ -205,7 +307,10 @@ fn sanitize_toml_error(text: &str, error: &toml::de::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EventLevel, ThemePreference, TuiConfig, load_from, parse};
+    use super::{
+        EventLevel, ThemePreference, TranscriptMode, TuiConfig, load_from, parse,
+        save_transcript_to,
+    };
     use std::path::Path;
 
     #[test]
@@ -309,5 +414,84 @@ mod tests {
                     .contains(&unreadable.display().to_string())
             );
         }
+    }
+
+    #[test]
+    fn transcript_takes_both_modes_and_nothing_else() {
+        let path = Path::new("tui.toml");
+        for mode in [TranscriptMode::Reduced, TranscriptMode::Full] {
+            let text = format!("transcript = \"{}\"\n", mode.name());
+            assert_eq!(parse(&text, path).expect("mode").transcript, mode);
+        }
+        for text in ["transcript = \"compact\"\n", "transcript = true\n"] {
+            let message = parse(text, path).expect_err("bad mode").to_string();
+            assert!(message.contains("transcript"), "{message}");
+            assert!(!message.contains("compact"), "no raw value echo: {message}");
+        }
+    }
+
+    #[test]
+    fn saving_the_transcript_changes_only_its_key() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("tui.toml");
+        let written =
+            "# my settings\ntheme = \"mono\" # keep\n\n# level\nminimum_event_level = \"info\"\n";
+        std::fs::write(&path, written).expect("write");
+        save_transcript_to(&path, TranscriptMode::Full).expect("save");
+        let saved = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(saved, format!("{written}transcript = \"full\"\n"));
+        assert_eq!(
+            load_from(&path).expect("load").transcript,
+            TranscriptMode::Full
+        );
+        // Saving again replaces the value where it stands.
+        save_transcript_to(&path, TranscriptMode::Reduced).expect("save again");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            format!("{written}transcript = \"reduced\"\n")
+        );
+    }
+
+    #[test]
+    fn saving_the_transcript_creates_a_missing_file_and_its_directory() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("home").join("tui.toml");
+        save_transcript_to(&path, TranscriptMode::Full).expect("save");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "transcript = \"full\"\n"
+        );
+    }
+
+    #[test]
+    fn saving_the_transcript_leaves_a_file_that_does_not_parse() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("tui.toml");
+        for written in ["theme = \"secret-value\"\n", "not = [toml\n", "other = 1\n"] {
+            std::fs::write(&path, written).expect("write");
+            let message = save_transcript_to(&path, TranscriptMode::Full)
+                .expect_err("invalid file")
+                .to_string();
+            assert!(message.contains(&path.display().to_string()), "{message}");
+            assert!(!message.contains("secret-value"), "{message}");
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), written);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_the_transcript_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("tui.toml");
+        std::fs::write(&path, "").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        save_transcript_to(&path, TranscriptMode::Full).expect("save");
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o644);
     }
 }

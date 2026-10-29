@@ -32,6 +32,7 @@ use std::{
     time::Duration,
 };
 
+use cookie_agent_client_state::transcript_mode::TranscriptMode;
 #[cfg(test)]
 use cookie_agent_protocol::GoalStatus;
 use cookie_agent_protocol::{
@@ -338,6 +339,8 @@ pub(super) enum BlockId {
         content_index: u32,
     },
     Thinking(u64),
+    /// The reduced mode's work row of the assistant block with this ID.
+    Work(u64),
     Tool(cookie_agent_protocol::ToolCallId),
     ToolOutput {
         call_id: cookie_agent_protocol::ToolCallId,
@@ -568,6 +571,7 @@ pub(super) struct LayoutCacheKey {
     pub(super) theme: ThemeKey,
     pub(super) highlighter: usize,
     pub(super) minimum_event_level: crate::state::EventLevel,
+    pub(super) transcript: TranscriptMode,
 }
 
 #[derive(Default)]
@@ -884,6 +888,10 @@ struct TranscriptRenderContext<'a> {
     theme: &'a Theme,
     highlighter: &'a dyn Highlighter,
     minimum_event_level: crate::state::EventLevel,
+    /// How the transcript shows agent work.
+    transcript: TranscriptMode,
+    /// The time live work rows count their elapsed time to.
+    now: jiff::Timestamp,
     /// Animation bucket (0–3) driving the streaming "thinking…" ellipsis.
     clock_bucket: u8,
     model_names: &'a ModelDisplayNames,
@@ -965,6 +973,7 @@ impl BlockHit {
 // Layout cache validity depends on each independent render input; grouping them
 // would obscure invalidation semantics without reducing call-site complexity.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn ensure_cached_transcript_layout(
     cache: &mut LayoutCache,
     session_id: SessionId,
@@ -978,6 +987,63 @@ pub(super) fn ensure_cached_transcript_layout(
     clock_bucket: u8,
     model_names: &ModelDisplayNames,
 ) -> bool {
+    ensure_cached_transcript_layout_in(
+        cache,
+        session_id,
+        state,
+        draft_agent,
+        expanded,
+        width,
+        theme,
+        highlighter,
+        TranscriptView::full(minimum_event_level),
+        clock_bucket,
+        model_names,
+    )
+}
+
+/// What the cached transcript layout shows apart from the session: the
+/// diagnostics filter, the transcript mode, and the time live work rows
+/// count to.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TranscriptView {
+    pub(super) minimum_event_level: crate::state::EventLevel,
+    pub(super) transcript: TranscriptMode,
+    pub(super) now: jiff::Timestamp,
+}
+
+impl TranscriptView {
+    /// The full mode at a fixed time, as tests of the full transcript lay
+    /// it out.
+    #[cfg(test)]
+    pub(super) fn full(minimum_event_level: crate::state::EventLevel) -> Self {
+        Self {
+            minimum_event_level,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ensure_cached_transcript_layout_in(
+    cache: &mut LayoutCache,
+    session_id: SessionId,
+    state: &SessionState,
+    draft_agent: Option<&AgentId>,
+    expanded: Option<&HashSet<BlockId>>,
+    width: u16,
+    theme: &Theme,
+    highlighter: &dyn Highlighter,
+    view: TranscriptView,
+    clock_bucket: u8,
+    model_names: &ModelDisplayNames,
+) -> bool {
+    let TranscriptView {
+        minimum_event_level,
+        transcript,
+        now,
+    } = view;
     let key = LayoutCacheKey {
         session_id,
         session_generation: state.generation,
@@ -985,6 +1051,7 @@ pub(super) fn ensure_cached_transcript_layout(
         theme: theme.key(),
         highlighter: highlighter as *const dyn Highlighter as *const () as usize,
         minimum_event_level,
+        transcript,
     };
     let full_rebuild = cache.key != Some(key);
     if full_rebuild {
@@ -1050,6 +1117,7 @@ pub(super) fn ensure_cached_transcript_layout(
                             expanded,
                             clock_bucket,
                             model_names,
+                            transcript,
                         )
                 }))
                 .then_some(index)
@@ -1095,12 +1163,14 @@ pub(super) fn ensure_cached_transcript_layout(
                     expanded,
                     clock_bucket,
                     model_names,
+                    transcript,
                 )
         });
         if let Some(cached) = reusable {
             cache.items.push(cached);
         } else {
-            let item_key = item_layout_key(state, item, expanded, clock_bucket, model_names);
+            let item_key =
+                item_layout_key(state, item, expanded, clock_bucket, model_names, transcript);
             let mut assistant_child_lines = Vec::new();
             let mut deferred = Vec::new();
             let mut context = TranscriptRenderContext {
@@ -1109,6 +1179,8 @@ pub(super) fn ensure_cached_transcript_layout(
                 theme,
                 highlighter,
                 minimum_event_level,
+                transcript,
+                now,
                 clock_bucket,
                 model_names,
                 assistant_part_cache: &mut cache.assistant_parts,
@@ -1993,7 +2065,12 @@ impl App {
                 .get(&session_id)
                 .map(|state| (session_id, state))
         })?;
-        let changed = !ensure_cached_transcript_layout(
+        let view = TranscriptView {
+            minimum_event_level: self.tui_config.minimum_event_level,
+            transcript: self.tui_config.transcript,
+            now: self.transcript_now(),
+        };
+        let changed = !ensure_cached_transcript_layout_in(
             &mut self.layout_cache,
             session_id,
             state,
@@ -2002,7 +2079,7 @@ impl App {
             width,
             &self.theme,
             self.highlighter.as_ref(),
-            self.tui_config.minimum_event_level,
+            view,
             clock_bucket,
             self.runtime.model_names(),
         );
@@ -2242,6 +2319,30 @@ fn transcript_layout_at_clock(
     minimum_event_level: crate::state::EventLevel,
     clock_bucket: u8,
 ) -> TranscriptLayout {
+    transcript_layout_viewed(
+        state,
+        expanded,
+        width,
+        theme,
+        highlighter,
+        TranscriptView::full(minimum_event_level),
+        clock_bucket,
+    )
+}
+
+/// The layout of `state` as `view` shows it, at an explicit animation
+/// bucket.
+#[cfg(test)]
+pub(super) fn transcript_layout_viewed(
+    state: &SessionState,
+    expanded: Option<&HashSet<BlockId>>,
+    width: u16,
+    theme: &Theme,
+    highlighter: &dyn Highlighter,
+    view: TranscriptView,
+    clock_bucket: u8,
+) -> TranscriptLayout {
+    let minimum_event_level = view.minimum_event_level;
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut tool_rows = HashMap::new();
@@ -2271,6 +2372,8 @@ fn transcript_layout_at_clock(
                 theme,
                 highlighter,
                 minimum_event_level,
+                transcript: view.transcript,
+                now: view.now,
                 clock_bucket,
                 model_names: &model_names,
                 assistant_part_cache: &mut assistant_parts,

@@ -323,6 +323,18 @@ async fn every_clickable_element_hovers_visibly() {
 
     let (mut app, session, _) = content_app().await;
     seen.extend(sweep(&mut app, "content"));
+    // The reduced transcript's work rows open and fold their blocks.
+    app.tui_config.transcript = cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced;
+    let reduced = sweep(&mut app, "reduced transcript");
+    assert!(
+        app.hit_map
+            .blocks
+            .iter()
+            .any(|hit| matches!(hit.id, BlockId::Work(_))),
+        "a work row on screen"
+    );
+    seen.extend(reduced);
+    app.tui_config.transcript = cookie_agent_client_state::transcript_mode::TranscriptMode::Full;
 
     let bar = app.hit_map.background_bar.expect("background bar");
     app.handle_click(bar.x, bar.y).await;

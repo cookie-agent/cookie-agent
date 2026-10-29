@@ -138,6 +138,7 @@ Esc in a step returns to the command list with the search intact.
 | `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](../sessions/goals.md) |
 | `/compact` | Prompt for an optional focus, then compact the selected idle session |
 | `/events` | Pick the diagnostic event filter from a list |
+| `/transcript reduced`, `/transcript full` | Fold each reply's thinking and tool calls into one row, or show all of them; saved as `transcript` in `tui.toml`; see [Transcript details](#transcript-details) |
 | `/agent-panel show`, `/agent-panel hide`, `/agent-panel auto` | Pin the agent panel shown or hidden for the current root session, or return it to following delegated agents (the default) |
 | `/quit` (also `q`, `exit`) | Exit the TUI |
 
@@ -373,6 +374,16 @@ Assistant and tool rows keep their normal expand/collapse behavior and do not
 open the message menu.
 
 ## Transcript details
+
+By default the transcript is **reduced**: each reply's thinking, tool calls,
+and the text written between calls fold into one row above the reply,
+`▸ Working… 42s · 3 tool calls` with what the agent is doing now on the line
+under it while it works, then `▸ Worked for 1m 23s · 7 tool calls`. Click
+the row to open the work, and again to fold it. A call waiting for your
+approval stays outside the fold. Ctrl-O, `/transcript full`, and
+`/transcript reduced` switch between the reduced and the full transcript,
+which shows every thinking block and tool call, and save the choice; see
+[Transcript](../tui/transcript.md).
 
 The conversation follows new output while it rests at the bottom. Scrolling up
 (the wheel, Page Up, the scrollbar) stops following at once, and the title says

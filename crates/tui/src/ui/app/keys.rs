@@ -1201,6 +1201,15 @@ impl App {
                 self.cycle_agent(agent_cycle_backward(key).expect("agent cycle key"));
             }
             Modal::None
+                if !self.command_palette_visible()
+                    && key.code == KeyCode::Char('o')
+                    && key.modifiers == KeyModifiers::CONTROL =>
+            {
+                // Ctrl-O switches between the reduced and the full
+                // transcript, and saves the choice.
+                self.set_transcript_mode(self.tui_config.transcript.toggled());
+            }
+            Modal::None
                 if self.current_approval().is_none()
                     && self.current_question().is_none()
                     && !self.command_palette_visible()

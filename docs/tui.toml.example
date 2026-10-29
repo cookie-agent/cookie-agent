@@ -6,6 +6,8 @@
 # workspace layer or environment-selected file path; a
 # missing file uses the defaults shown below, and unknown keys or malformed
 # values are rejected with an actionable path/key error.
+# The TUI rewrites only the `transcript` key itself (/transcript, Ctrl-O),
+# keeping the rest of the file as written.
 
 # Minimum diagnostic event level rendered in the conversation pane.
 # One of: "debug" | "info" | "warning" | "error". Default: "warning".
@@ -20,3 +22,9 @@ minimum_event_level = "warning"
 # then uses the light default. An unset key first allows COOKIE_THEME.
 # NO_COLOR and TERM=dumb always force monochrome regardless of this key.
 # theme = "auto"
+
+# How the conversation shows agent work. One of: "reduced" | "full".
+# Default: "reduced". "reduced" folds each reply's thinking and tool calls
+# into one "Worked for" row above it; "full" shows all of them. /transcript
+# and Ctrl-O change the mode and save it here.
+# transcript = "reduced"

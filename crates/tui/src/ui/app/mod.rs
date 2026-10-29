@@ -882,6 +882,12 @@ pub struct App {
     /// Layout caches of recently viewed sessions, oldest first.
     pub(super) parked_layout_caches: Vec<LayoutCache>,
     pub(super) tui_config: TuiConfig,
+    /// The `tui.toml` a transcript mode change is saved to; none in tests
+    /// unless a test gives one.
+    pub(super) transcript_config_path: Option<std::path::PathBuf>,
+    /// The time live work rows count to in tests; none reads the clock.
+    #[cfg(test)]
+    pub(super) fixed_now: Option<jiff::Timestamp>,
     pub(super) theme: Theme,
     pub(super) highlighter: Box<dyn Highlighter>,
     pub(super) hit_map: UiHitMap,
@@ -1571,6 +1577,13 @@ impl App {
             .subscribe_deliveries()
             .expect("app delivery receiver already attached");
         let (rpc_updates_tx, rpc_updates_rx) = tokio::sync::mpsc::unbounded_channel();
+        // A test app shows the full transcript, which most tests read; a
+        // test of the reduced mode sets it itself.
+        #[cfg(test)]
+        let tui_config = TuiConfig {
+            transcript: cookie_agent_client_state::transcript_mode::TranscriptMode::Full,
+            ..tui_config
+        };
         let mut app = Self {
             client,
             cwd: placement.cwd,
@@ -1659,6 +1672,12 @@ impl App {
             layout_cache: LayoutCache::default(),
             parked_layout_caches: Vec::new(),
             tui_config,
+            #[cfg(not(test))]
+            transcript_config_path: crate::config::config_path(),
+            #[cfg(test)]
+            transcript_config_path: None,
+            #[cfg(test)]
+            fixed_now: None,
             theme,
             highlighter: Box::<SyntectHighlighter>::default(),
             hit_map: UiHitMap::default(),

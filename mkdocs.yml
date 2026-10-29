@@ -143,6 +143,7 @@ nav:
           - tui.toml: tui/configuration.md
           - 'Minimum Event Level [minimum_event_level]': tui/minimum_event_level.md
           - 'Theme [theme]': tui/theme.md
+          - 'Transcript [transcript]': tui/transcript.md
   - Reference:
       - Tools: reference/tools.md
       - System prompt: reference/system-prompt.md

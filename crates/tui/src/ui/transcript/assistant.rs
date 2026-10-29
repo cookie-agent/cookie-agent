@@ -1,5 +1,7 @@
 //! Assistant turn layout: headers, attribution, body, and thinking blocks.
 
+use cookie_agent_client_state::transcript_mode;
+
 use super::*;
 
 pub(super) fn assistant_item_layout(
@@ -16,142 +18,78 @@ pub(super) fn assistant_item_layout(
         context.theme,
     ));
     let mut previous_is_prose = None;
-    for child in children {
-        context.assistant_child_lines.push(layout.lines.len());
-        // Prose and the compact tool/thinking rows are separated by one blank
-        // gutter row whenever the reply switches between them; runs of rows
-        // stay tight. Separators sit between parts, never inside a part's
-        // rows, so each part stays one shared chunk.
-        let is_prose = matches!(child, AssistantChild::Text { .. });
-        if previous_is_prose.is_some_and(|previous| previous != is_prose) {
-            layout.lines.push_lines(assistant_body_line(
-                Line::default(),
-                context.width,
-                context.theme,
-            ));
+    let fold = (context.transcript == TranscriptMode::Reduced)
+        .then(|| transcript_mode::reply_start(children))
+        .flatten();
+    let Some(reply_start) = fold else {
+        for child in children {
+            push_assistant_child(
+                state,
+                item_id,
+                child,
+                &mut layout,
+                &mut previous_is_prose,
+                context,
+            );
         }
-        previous_is_prose = Some(is_prose);
-        match child {
-            AssistantChild::Text { .. } | AssistantChild::Thinking { .. } => {
-                let key = assistant_part_layout_key(state, item_id, child, context);
-                // A part with code left plain renders again once the code
-                // is asked for, or wherever highlighting is not deferred.
-                let defer = context.defer_highlights;
-                let cached = context
-                    .assistant_part_cache
-                    .get(&child.id())
-                    .filter(|cached| {
-                        cached.key == key
-                            && cached
-                                .deferred
-                                .iter()
-                                .all(|(_, deferred)| defer && !deferred.is_requested())
-                    });
-                let start = layout.lines.len();
-                if let Some(cached) = cached {
-                    layout.push_chunks(&cached.lines, &cached.regions);
-                    context
-                        .deferred_highlights
-                        .extend(shifted_deferred(&cached.deferred, start));
-                } else {
-                    let previous = context.assistant_part_cache.remove(&child.id());
-                    let cached = match child {
-                        AssistantChild::Text { markdown, .. } => {
-                            let (lines, blocks, deferred) = text_part_lines(
-                                markdown,
-                                previous.as_ref().map_or(&[], |previous| &previous.blocks),
-                                context.width,
-                                context.theme,
-                                context.highlighter,
-                                defer,
-                            );
-                            CachedAssistantPartLayout {
-                                key,
-                                lines,
-                                regions: Vec::new(),
-                                blocks,
-                                thinking_rows: ThinkingRows::default(),
-                                deferred,
-                            }
-                        }
-                        _ => {
-                            let mut thinking_rows = previous
-                                .map(|previous| previous.thinking_rows)
-                                .unwrap_or_default();
-                            let part_layout = assistant_child_layout(
-                                child,
-                                key,
-                                context.width,
-                                context.theme,
-                                context.highlighter,
-                                &mut thinking_rows,
-                            );
-                            let mut lines = LineChunks::default();
-                            lines.push_lines(part_layout.lines);
-                            CachedAssistantPartLayout {
-                                key,
-                                lines,
-                                regions: part_layout.regions,
-                                blocks: Vec::new(),
-                                thinking_rows,
-                                deferred: Vec::new(),
-                            }
-                        }
-                    };
-                    layout.push_chunks(&cached.lines, &cached.regions);
-                    context
-                        .deferred_highlights
-                        .extend(shifted_deferred(&cached.deferred, start));
-                    context.assistant_part_cache.insert(child.id(), cached);
-                    *context.assistant_part_layout_passes =
-                        context.assistant_part_layout_passes.wrapping_add(1);
-                }
-            }
-            AssistantChild::Tool { call_id } => {
-                let row = cached_tool_row(state, Some(*call_id), *call_id, None, context);
-                layout.push(&row.lines, &row.regions);
-            }
-            AssistantChild::Attribution { resolved_model } => {
-                layout.lines.push_lines(attribution_line(
-                    resolved_model,
-                    context.model_names,
-                    context.width,
-                    context.theme,
-                ));
-            }
-            AssistantChild::Notice { text } => {
-                layout.lines.push_lines(assistant_body_line(
-                    Line::from(Span::styled(text.clone(), context.theme.muted())),
-                    context.width,
-                    context.theme,
-                ));
-            }
-            AssistantChild::CommittedTool {
-                turn_seq,
-                content_index,
-                name,
-            } => {
-                let row = cached_tool_row(
-                    state,
-                    None,
-                    BlockKey::CommittedTool {
-                        turn_seq: *turn_seq,
-                        content_index: *content_index,
-                    },
-                    Some(name.as_str()),
-                    context,
-                );
-                layout.push(&row.lines, &row.regions);
-            }
-            AssistantChild::MediaFile {
-                turn_seq,
-                content_index,
-                file,
-            } => {
-                layout.push_layout(media_file_layout(*turn_seq, *content_index, file, context));
-            }
+        return finish_assistant_layout(state, item_id, layout, context);
+    };
+    // The reduced mode folds the block's work into one row above its reply;
+    // a call waiting on the user stays out of the fold until answered.
+    let (work, reply) = children.split_at(reply_start);
+    let open = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&BlockId::Work(item_id)));
+    let summary = transcript_mode::work_summary(state, item_id, work, context.now);
+    let subtext = summary
+        .live
+        .then(|| transcript_mode::working_subtext(state, work));
+    layout.push_layout(work_row_layout(
+        item_id,
+        &summary,
+        subtext.as_deref(),
+        open,
+        context.width,
+        context.theme,
+    ));
+    previous_is_prose = Some(false);
+    for child in work {
+        let shown = open
+            || matches!(child, AssistantChild::Tool { call_id } if transcript_mode::needs_user(state, call_id));
+        if shown {
+            push_assistant_child(
+                state,
+                item_id,
+                child,
+                &mut layout,
+                &mut previous_is_prose,
+                context,
+            );
+        } else {
+            // Rows spliced in before a folded child land below the row.
+            context.assistant_child_lines.push(layout.lines.len());
         }
     }
+    for child in reply {
+        push_assistant_child(
+            state,
+            item_id,
+            child,
+            &mut layout,
+            &mut previous_is_prose,
+            context,
+        );
+    }
+    finish_assistant_layout(state, item_id, layout, context)
+}
+
+/// Closes an assistant block's layout with its footer.
+fn finish_assistant_layout(
+    state: &SessionState,
+    item_id: u64,
+    mut layout: ChunkedItem,
+    context: &mut TranscriptRenderContext<'_>,
+) -> ChunkedItem {
     // The block footer closes the run: one muted, gutter-aligned row with
     // generation speed and context use, from committed-turn usage and
     // durable event timestamps. Passive — no region, no hover — and absent
@@ -160,6 +98,209 @@ pub(super) fn assistant_item_layout(
         layout.lines.push_lines(footer);
     }
     layout
+}
+
+/// Appends one child of an assistant block, with the blank row that
+/// separates prose from the compact tool and thinking rows.
+fn push_assistant_child(
+    state: &SessionState,
+    item_id: u64,
+    child: &AssistantChild,
+    layout: &mut ChunkedItem,
+    previous_is_prose: &mut Option<bool>,
+    context: &mut TranscriptRenderContext<'_>,
+) {
+    context.assistant_child_lines.push(layout.lines.len());
+    // Prose and the compact tool/thinking rows are separated by one blank
+    // gutter row whenever the reply switches between them; runs of rows
+    // stay tight. Separators sit between parts, never inside a part's
+    // rows, so each part stays one shared chunk.
+    let is_prose = matches!(child, AssistantChild::Text { .. });
+    if previous_is_prose.is_some_and(|previous| previous != is_prose) {
+        layout.lines.push_lines(assistant_body_line(
+            Line::default(),
+            context.width,
+            context.theme,
+        ));
+    }
+    *previous_is_prose = Some(is_prose);
+    match child {
+        AssistantChild::Text { .. } | AssistantChild::Thinking { .. } => {
+            let key = assistant_part_layout_key(state, item_id, child, context);
+            // A part with code left plain renders again once the code
+            // is asked for, or wherever highlighting is not deferred.
+            let defer = context.defer_highlights;
+            let cached = context
+                .assistant_part_cache
+                .get(&child.id())
+                .filter(|cached| {
+                    cached.key == key
+                        && cached
+                            .deferred
+                            .iter()
+                            .all(|(_, deferred)| defer && !deferred.is_requested())
+                });
+            let start = layout.lines.len();
+            if let Some(cached) = cached {
+                layout.push_chunks(&cached.lines, &cached.regions);
+                context
+                    .deferred_highlights
+                    .extend(shifted_deferred(&cached.deferred, start));
+            } else {
+                let previous = context.assistant_part_cache.remove(&child.id());
+                let cached = match child {
+                    AssistantChild::Text { markdown, .. } => {
+                        let (lines, blocks, deferred) = text_part_lines(
+                            markdown,
+                            previous.as_ref().map_or(&[], |previous| &previous.blocks),
+                            context.width,
+                            context.theme,
+                            context.highlighter,
+                            defer,
+                        );
+                        CachedAssistantPartLayout {
+                            key,
+                            lines,
+                            regions: Vec::new(),
+                            blocks,
+                            thinking_rows: ThinkingRows::default(),
+                            deferred,
+                        }
+                    }
+                    _ => {
+                        let mut thinking_rows = previous
+                            .map(|previous| previous.thinking_rows)
+                            .unwrap_or_default();
+                        let part_layout = assistant_child_layout(
+                            child,
+                            key,
+                            context.width,
+                            context.theme,
+                            context.highlighter,
+                            &mut thinking_rows,
+                        );
+                        let mut lines = LineChunks::default();
+                        lines.push_lines(part_layout.lines);
+                        CachedAssistantPartLayout {
+                            key,
+                            lines,
+                            regions: part_layout.regions,
+                            blocks: Vec::new(),
+                            thinking_rows,
+                            deferred: Vec::new(),
+                        }
+                    }
+                };
+                layout.push_chunks(&cached.lines, &cached.regions);
+                context
+                    .deferred_highlights
+                    .extend(shifted_deferred(&cached.deferred, start));
+                context.assistant_part_cache.insert(child.id(), cached);
+                *context.assistant_part_layout_passes =
+                    context.assistant_part_layout_passes.wrapping_add(1);
+            }
+        }
+        AssistantChild::Tool { call_id } => {
+            let row = cached_tool_row(state, Some(*call_id), *call_id, None, context);
+            layout.push(&row.lines, &row.regions);
+        }
+        AssistantChild::Attribution { resolved_model } => {
+            layout.lines.push_lines(attribution_line(
+                resolved_model,
+                context.model_names,
+                context.width,
+                context.theme,
+            ));
+        }
+        AssistantChild::Notice { text } => {
+            layout.lines.push_lines(assistant_body_line(
+                Line::from(Span::styled(text.clone(), context.theme.muted())),
+                context.width,
+                context.theme,
+            ));
+        }
+        AssistantChild::CommittedTool {
+            turn_seq,
+            content_index,
+            name,
+        } => {
+            let row = cached_tool_row(
+                state,
+                None,
+                BlockKey::CommittedTool {
+                    turn_seq: *turn_seq,
+                    content_index: *content_index,
+                },
+                Some(name.as_str()),
+                context,
+            );
+            layout.push(&row.lines, &row.regions);
+        }
+        AssistantChild::MediaFile {
+            turn_seq,
+            content_index,
+            file,
+        } => {
+            layout.push_layout(media_file_layout(*turn_seq, *content_index, file, context));
+        }
+    }
+}
+
+/// The reduced mode's row for an assistant block's work: `▸ Worked for
+/// 1m 23s · 7 tool calls`, with a failed count in the warning colour, and
+/// while the block is live the line saying what it does now. The whole row
+/// opens and folds the work.
+fn work_row_layout(
+    item_id: u64,
+    summary: &transcript_mode::WorkSummary,
+    subtext: Option<&str>,
+    open: bool,
+    width: u16,
+    theme: &Theme,
+) -> ItemLayout {
+    let chevron = if open { "▾" } else { "▸" };
+    let mut spans = vec![Span::styled(
+        format!("{chevron} {}", summary.label()),
+        theme.muted_text(),
+    )];
+    if let Some(failed) = summary.failed_label() {
+        spans.push(Span::styled(format!(" {failed}"), theme.warning()));
+    }
+    let label = Line::from(spans);
+    let (mut lines, header_gutter) = if panel_margin(width) {
+        let (rows, gutter) = margin_rows(label, width, theme, None);
+        (rows, (gutter > 0).then_some(2))
+    } else {
+        (assistant_body_line(label, width, theme), None)
+    };
+    if let Some(subtext) = subtext {
+        // Two columns under the label's text, one line, cut to fit.
+        let gutter = if panel_margin(width) {
+            3
+        } else {
+            usize::from(width >= 3) * 2
+        };
+        let room = usize::from(width).saturating_sub(gutter + 3);
+        let text = crate::ui::app::truncate_with_ellipsis(subtext, room);
+        let line = Line::from(Span::styled(format!("  {text}"), theme.muted()));
+        let rows = if panel_margin(width) {
+            margin_rows(line, width, theme, None).0
+        } else {
+            assistant_body_line(line, width, theme)
+        };
+        lines.extend(rows);
+    }
+    ItemLayout {
+        regions: vec![BlockRegion {
+            id: BlockId::Work(item_id),
+            start_line: 0,
+            end_line: lines.len(),
+            header_lines: Some(lines.len()),
+            header_gutter,
+        }],
+        lines,
+        user_seq: None,
+    }
 }
 
 /// `deferred` rows moved down by `start`.

@@ -1076,6 +1076,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 0.8.23",
+ "toml_edit",
  "tracing",
  "unicode-properties",
  "unicode-segmentation",

@@ -1068,6 +1068,12 @@ impl App {
                 self.agent_panel_mode = AgentPanelMode::Auto;
                 self.status = "agent panel follows delegated agents".into();
             }
+            SlashCommand::TranscriptReduced => self.set_transcript_mode(
+                cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced,
+            ),
+            SlashCommand::TranscriptFull => self.set_transcript_mode(
+                cookie_agent_client_state::transcript_mode::TranscriptMode::Full,
+            ),
             SlashCommand::New => {
                 if self.runtime.is_empty() {
                     self.status = EMPTY_RUNTIME_GUIDANCE.into();
@@ -1168,6 +1174,39 @@ impl App {
             }
             SlashCommand::Cancel => self.cancel_active_run(),
         }
+    }
+
+    /// Shows agent work as `mode` in every transcript and saves it as the
+    /// `transcript` key of `tui.toml`. A failed save keeps the mode until the
+    /// TUI exits, and the status says why it was not saved.
+    pub(in crate::ui) fn set_transcript_mode(
+        &mut self,
+        mode: cookie_agent_client_state::transcript_mode::TranscriptMode,
+    ) {
+        self.tui_config.transcript = mode;
+        if mode == cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced {
+            // Every work row folds again.
+            for blocks in self.expanded_blocks.values_mut() {
+                blocks.retain(|id| !matches!(id, crate::ui::transcript::BlockId::Work(_)));
+            }
+        }
+        let saved = self
+            .transcript_config_path
+            .as_deref()
+            .map_or(Ok(()), |path| crate::config::save_transcript_to(path, mode));
+        self.status = match saved {
+            Ok(()) => format!("transcript: {}", mode.name()),
+            Err(error) => format!("transcript: {} (not saved: {error})", mode.name()),
+        };
+    }
+
+    /// The time live work rows count their elapsed time to.
+    pub(in crate::ui) fn transcript_now(&self) -> jiff::Timestamp {
+        #[cfg(test)]
+        if let Some(now) = self.fixed_now {
+            return now;
+        }
+        jiff::Timestamp::now()
     }
 
     /// View-only threshold change: the TOML is not rewritten and hidden rows
