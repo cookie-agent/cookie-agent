@@ -501,6 +501,10 @@ def subagent(parent, title, task, work):
         cancelled[child] = False
         steered[child] = []
     state(child, "running")
+    # The task trails the child's `running`, as a busy adapter's may: the
+    # session waits for it before its first run starts.
+    import time
+    time.sleep(0.2)
     message = {"sessionUpdate": "session_message", "messageId": next_message_id("task"),
                "senderSessionId": parent, "recipientSessionId": child,
                "content": [{"type": "text", "text": task}]}

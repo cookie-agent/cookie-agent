@@ -27,6 +27,10 @@ use super::terminal::TerminalUpdate;
 /// updates before it listens again.
 const WAKE_START_WAIT: Duration = Duration::from_secs(30);
 
+/// How long a subagent's first work waits for its task: the adapter sends
+/// the subagent's `running` first and its task right after.
+const TASK_WAIT: Duration = Duration::from_secs(2);
+
 /// The body of a wake's producer message: v2 names no cause.
 const WAKE_BODY: &str = "The agent started work on its own.";
 
@@ -60,28 +64,30 @@ fn take_task(live: &LiveSession) -> Option<String> {
         .iter()
         .enumerate()
         .rev()
-        .find_map(|(index, event)| {
-            let SessionEvent::Update(update) = event else {
-                return None;
-            };
-            (update.get("sessionUpdate").and_then(Value::as_str) == Some("session_message")
-                && update.get("recipientSessionId").and_then(Value::as_str)
-                    == Some(live.acp_session_id.as_str()))
-            .then(|| {
-                update
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(super::wire::content_text)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .filter(|text| !text.trim().is_empty())
-            .map(|task| (index, task))
-        })?;
+        .find_map(|(index, event)| task_text(live, event).map(|task| (index, task)))?;
     carried.remove(index);
     Some(task)
+}
+
+/// The task `event` gives `live`'s session: the text of a message to it.
+fn task_text(live: &LiveSession, event: &SessionEvent) -> Option<String> {
+    let SessionEvent::Update(update) = event else {
+        return None;
+    };
+    (update.get("sessionUpdate").and_then(Value::as_str) == Some("session_message")
+        && update.get("recipientSessionId").and_then(Value::as_str)
+            == Some(live.acp_session_id.as_str()))
+    .then(|| {
+        update
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(super::wire::content_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+    .filter(|text| !text.trim().is_empty())
 }
 
 impl Engine {
@@ -136,6 +142,31 @@ impl Engine {
             if starts_work(&batch[0]) {
                 while let Ok(more) = events.try_recv() {
                     batch.push(more);
+                }
+                // A subagent's first work starts before its task arrives;
+                // waiting for it lets the run start with the task.
+                let has_task = |batch: &[SessionEvent]| {
+                    batch
+                        .iter()
+                        .chain(
+                            live.carried
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .iter(),
+                        )
+                        .any(|event| task_text(&live, event).is_some())
+                };
+                if !has_task(&batch) && self.awaits_first_task(live.session) {
+                    let deadline = tokio::time::Instant::now() + TASK_WAIT;
+                    while let Ok(Some(more)) =
+                        tokio::time::timeout_at(deadline, events.recv()).await
+                    {
+                        let task = task_text(&live, &more).is_some();
+                        batch.push(more);
+                        if task {
+                            break;
+                        }
+                    }
                 }
             }
             drop(events);
@@ -209,6 +240,15 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Whether `session` is an ACP agent's subagent that has not run yet,
+    /// whose first work comes with a task.
+    fn awaits_first_task(&self, session: SessionId) -> bool {
+        self.inner.store.get(session).is_ok_and(|projection| {
+            projection.log.last_run_started().is_none()
+                && super::subagents::is_acp_subagent(&projection.log.event_snapshot())
+        })
     }
 
     /// Whether `live` is still its cookie session's ACP session.
