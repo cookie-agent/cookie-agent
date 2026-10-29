@@ -346,12 +346,13 @@ for index in "${!groups[@]}"; do
     ((status == 0)) && continue
     failed+=("${groups[$index]}")
     # What the group's daemons said, restarts included: a flake on CI is
-    # read from this log alone.
-    while IFS= read -r err; do
-        [[ -s "$err" ]] || continue
-        echo "--- ${err#"$scratch/"} (last 40 lines)"
-        tail -n 40 "$err"
-    done < <(find "$scratch/set$index" -maxdepth 2 -name daemon.err | sort)
+    # read from this log alone. Their output says when each one listened,
+    # restarted, and listened again, without the token.
+    while IFS= read -r said; do
+        [[ -s "$said" ]] || continue
+        echo "--- ${said#"$scratch/"} (last 40 lines)"
+        tail -n 40 "$said" | grep -v '^daemon-ready ' | sed 's/#token=[^ ]*/#token=…/'
+    done < <(find "$scratch/set$index" -maxdepth 2 \( -name daemon.err -o -name daemon.out \) | sort)
 done
 sets=()
 if ((${#failed[@]})); then
