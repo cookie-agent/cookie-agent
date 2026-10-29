@@ -1430,6 +1430,25 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         });
     });
     let homes = Memo::new(move |_| workspace.homes());
+    // A reduced transcript's live work row counts its time each second
+    // while the session runs.
+    let now = RwSignal::new(jiff::Timestamp::now());
+    let ticker = set_interval_with_handle(
+        move || {
+            let reduced = workspace.transcript.get_untracked()
+                == cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced;
+            if reduced && workspace.viewed.with_untracked(|viewed| viewed.running) {
+                now.set(jiff::Timestamp::now());
+            }
+        },
+        Duration::from_secs(1),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(ticker) = ticker {
+            ticker.clear();
+        }
+    });
     // Everything a pass reads it borrows where it lies: a frame copies
     // neither the expanded set, the model names, nor the tree.
     let rows = Memo::new(move |_| {
@@ -1442,6 +1461,10 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         };
         store_frame.track();
         let level = workspace.level.get();
+        let transcript = workspace.transcript.get();
+        // Each tick draws again; the time is read as the rows draw.
+        now.track();
+        let now = jiff::Timestamp::now();
         let draft_agent = workspace
             .draft
             .with(|draft| draft.as_ref().map(|draft| draft.agent.clone()));
@@ -1476,6 +1499,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                                         expanded,
                                         delegates: &delegates,
                                         homes,
+                                        transcript,
+                                        now,
                                     };
                                     // The system prompt and the tools, pinned at
                                     // the top.
@@ -3527,6 +3552,39 @@ fn events_sheet(workspace: Workspace) -> impl IntoView {
                 class:dark:bg-ember=chosen
                 aria-pressed=move || chosen().to_string()
                 on:click=move |_| workspace.set_level(level)
+            >
+                {move || choice_line(label.to_owned(), chosen(), "text-sm")}
+            </button>
+        }
+    })
+    .collect_view()
+}
+
+/// The transcript modes to choose from, as Settings › Display offers them.
+fn transcript_sheet(workspace: Workspace) -> impl IntoView {
+    use cookie_agent_client_state::transcript_mode::TranscriptMode;
+    [
+        (
+            TranscriptMode::Reduced,
+            "Reduced: agent work folded into one row per reply",
+        ),
+        (
+            TranscriptMode::Full,
+            "Full: every thinking block and tool call",
+        ),
+    ]
+    .into_iter()
+    .map(|(mode, label)| {
+        let chosen = move || workspace.transcript.get() == mode;
+        view! {
+            <button
+                type="button"
+                class=ROW
+                class:bg-toasted=chosen
+                class:dark:bg-ember=chosen
+                aria-pressed=move || chosen().to_string()
+                data-transcript-mode=mode.name()
+                on:click=move |_| workspace.set_transcript(mode)
             >
                 {move || choice_line(label.to_owned(), chosen(), "text-sm")}
             </button>

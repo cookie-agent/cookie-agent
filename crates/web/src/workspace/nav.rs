@@ -47,7 +47,10 @@ impl Workspace {
             Some(SettingsSection::Plugins) => self.poll_plugins(),
             Some(SettingsSection::Notifications) => self.poll_notifications(),
             Some(
-                SettingsSection::Providers | SettingsSection::Browser | SettingsSection::About,
+                SettingsSection::Providers
+                | SettingsSection::Display
+                | SettingsSection::Browser
+                | SettingsSection::About,
             ) => {}
         }
         self.settings_section.set(section);
@@ -70,7 +73,10 @@ impl Workspace {
                 Some(SettingsSection::Plugins) => self.poll_plugins(),
                 Some(SettingsSection::Notifications) => self.poll_notifications(),
                 Some(
-                    SettingsSection::Providers | SettingsSection::Browser | SettingsSection::About,
+                    SettingsSection::Providers
+                    | SettingsSection::Display
+                    | SettingsSection::Browser
+                    | SettingsSection::About,
                 ) => {}
             },
             View::Memory => self.poll_memory(),

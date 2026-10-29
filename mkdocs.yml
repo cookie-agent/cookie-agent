@@ -164,6 +164,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Reduced transcript display: specs/reduced-transcript.md
           - A stable prompt prefix: specs/stable-prefix.md
           - Unread sessions: specs/unread-sessions.md
           - Sign in with ChatGPT: specs/chatgpt-sign-in.md
@@ -199,7 +200,6 @@ nav:
           - Deferred tools in cookie: specs/deferred-tools-cookie.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
           - Shell environment for runtimes: specs/shell-environment.md
-          - Reduced transcript display: specs/reduced-transcript.md
           - Full tool headers on open rows: specs/tool-header-wrap.md
           - Managing runtimes from clients: specs/runtime-management.md
           - Model configuration: specs/model-configuration.md

@@ -187,6 +187,8 @@ pub struct Workspace {
     pub costs: RwSignal<HashMap<SessionId, f64>>,
     cost_debounce: StoredValue<HashMap<SessionId, u64>>,
     pub level: RwSignal<EventLevel>,
+    /// How the transcript shows agent work, kept in the browser.
+    pub transcript: RwSignal<cookie_agent_client_state::transcript_mode::TranscriptMode>,
     /// What the user opened in each session's transcript: tool calls by
     /// ID, other rows by their block key. It outlives a switch to another
     /// session, not a reload.
@@ -453,6 +455,9 @@ impl Workspace {
             cost_debounce: StoredValue::new(HashMap::new()),
             level: RwSignal::new(level_from_storage(
                 browser::load(EVENT_LEVEL_KEY).as_deref(),
+            )),
+            transcript: RwSignal::new(crate::connect::transcript_from_storage(
+                browser::load(crate::connect::TRANSCRIPT_KEY).as_deref(),
             )),
             expanded: RwSignal::new(HashMap::new()),
             composer: RwSignal::new(String::new()),
@@ -2473,6 +2478,25 @@ impl Workspace {
     pub fn set_level(self, level: EventLevel) {
         browser::store(EVENT_LEVEL_KEY, level.name());
         self.level.set(level);
+    }
+
+    /// Shows agent work as `mode` in the transcript, kept in the browser.
+    pub fn set_transcript(self, mode: cookie_agent_client_state::transcript_mode::TranscriptMode) {
+        browser::store(crate::connect::TRANSCRIPT_KEY, mode.name());
+        self.show_transcript(mode);
+    }
+
+    /// Shows agent work as `mode`, as this tab or another set it. A switch
+    /// to the reduced mode folds every work row again.
+    pub fn show_transcript(self, mode: cookie_agent_client_state::transcript_mode::TranscriptMode) {
+        if mode == cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced {
+            self.expanded.update(|expanded| {
+                for blocks in expanded.values_mut() {
+                    blocks.fold_work();
+                }
+            });
+        }
+        self.transcript.set(mode);
     }
 
     /// Opens the sheet of a ⋮ menu entry.

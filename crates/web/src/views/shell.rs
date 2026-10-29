@@ -18,6 +18,7 @@ use super::{
     machines::machines_page,
     manage::{config_sheet, connect_sheet, mcp_sheet, plugins_sheet},
     memory::memory_sheet,
+    transcript_sheet,
 };
 use crate::{
     app::{Connection, ConnectionStatus, ForgetDaemon, ThemeToggle},
@@ -281,7 +282,8 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                                 SettingsSection::Mcp => mcp_sheet(workspace).into_any(),
                                 SettingsSection::Plugins => plugins_sheet(workspace).into_any(),
                                 SettingsSection::Notifications => super::notifications::notifications_section(workspace, connection).into_any(),
-                                SettingsSection::Browser => browser_section(workspace, connection).into_any(),
+                                SettingsSection::Display => display_section(workspace).into_any(),
+                                SettingsSection::Browser => browser_section(connection).into_any(),
                                 SettingsSection::About => crate::app::about_section(connection).into_any(),
                             }}
                         </div>
@@ -292,15 +294,25 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
     }
 }
 
-/// This browser: installing the page as an app, and what it keeps for the
-/// daemon: the diagnostics the transcript shows, and the token.
-fn browser_section(workspace: Workspace, connection: Connection) -> impl IntoView {
-    let confirming = RwSignal::new(false);
+/// Display: how the transcript shows agent work, and the diagnostics it
+/// shows, each kept in this browser.
+fn display_section(workspace: Workspace) -> impl IntoView {
     view! {
-        {super::install::install_section()}
+        <h2 class="text-sm font-bold">"Transcript"</h2>
+        <p class=NOTE>"How replies show the agent's thinking and tool calls; it stays in this browser."</p>
+        {transcript_sheet(workspace)}
         <h2 class="mt-4 text-sm font-bold">"Diagnostics in the transcript"</h2>
         <p class=NOTE>"The same choice as Diagnostics in the session's ⋮ menu; it stays in this browser."</p>
         {events_sheet(workspace)}
+    }
+}
+
+/// This browser: installing the page as an app, and the daemon's token it
+/// keeps.
+fn browser_section(connection: Connection) -> impl IntoView {
+    let confirming = RwSignal::new(false);
+    view! {
+        {super::install::install_section()}
         <h2 class="mt-4 text-sm font-bold">"This daemon"</h2>
         <p class=NOTE>"The browser keeps the daemon's token to connect again without a link."</p>
         <ForgetDaemon connection=connection confirming=confirming primary=false on_forget=|| {} />

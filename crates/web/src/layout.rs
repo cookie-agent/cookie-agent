@@ -107,8 +107,11 @@ pub enum SettingsSection {
     /// Push notifications: this browser's, and every device the daemon
     /// pushes to.
     Notifications,
-    /// This browser: installing the page as an app, and what it keeps:
-    /// the diagnostics filter and the token.
+    /// How the transcript shows agent work and diagnostics, kept in this
+    /// browser.
+    Display,
+    /// This browser: installing the page as an app, and the token it
+    /// keeps.
     Browser,
     /// The client's and the daemon's versions, the connection, and the
     /// credits.
@@ -117,12 +120,13 @@ pub enum SettingsSection {
 
 impl SettingsSection {
     /// The order the section list shows.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Configuration,
         Self::Providers,
         Self::Mcp,
         Self::Plugins,
         Self::Notifications,
+        Self::Display,
         Self::Browser,
         Self::About,
     ];
@@ -134,6 +138,7 @@ impl SettingsSection {
             Self::Mcp => "MCP servers",
             Self::Plugins => "Plugins",
             Self::Notifications => "Notifications",
+            Self::Display => "Display",
             Self::Browser => "This browser",
             Self::About => "About",
         }
@@ -147,7 +152,8 @@ impl SettingsSection {
             Self::Mcp => "every runtime's MCP servers",
             Self::Plugins => "plugin status and restarts",
             Self::Notifications => "push notifications on this browser and your devices",
-            Self::Browser => "installing the app, diagnostics shown, and forgetting this daemon",
+            Self::Display => "how the transcript shows agent work and diagnostics",
+            Self::Browser => "installing the app and forgetting this daemon",
             Self::About => "versions, the connection, links, and credits",
         }
     }
@@ -160,6 +166,7 @@ impl SettingsSection {
             Self::Mcp => "mcp",
             Self::Plugins => "plugins",
             Self::Notifications => "notifications",
+            Self::Display => "display",
             Self::Browser => "browser",
             Self::About => "about",
         }

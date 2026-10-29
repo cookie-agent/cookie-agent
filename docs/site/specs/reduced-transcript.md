@@ -1,7 +1,8 @@
 # Reduced transcript display
 
-Status: **approved draft** (2026-10-29), with the user's decisions of
-2026-10-29 in [section 10](#10-decisions). Client-only: no client, plugin,
+Status: **implemented** (2026-10-29), with the user's decisions of
+2026-10-29 in [section 10](#10-decisions) and implementation notes in
+[section 12](#12-implementation-notes-2026-10-29). Client-only: no client, plugin,
 or runtime protocol change, no session history change, no `config.toml`
 change.
 
@@ -305,3 +306,36 @@ Phases:
 2. TUI: the setting and its saving, commands, key, rendering, and docs.
 3. Web: the setting, Settings › Display with the diagnostics moved into
    it, rendering, and docs.
+
+## 12. Implementation notes (2026-10-29)
+
+- **Where it lives.** `client_state::transcript_mode` holds the mode, the
+  work and reply split (`reply_start`), the row's label (`work_summary`),
+  and the live subtext (`working_subtext`). The reducer records each
+  block's end (`SessionState::assistant_ends`): a row that makes a split
+  pending notes its time (`RunAssistantProjection::split_at`), and the
+  block ends there when the split happens or its run finishes. The TUI
+  lays the row out in `ui/transcript/assistant.rs` (`BlockId::Work`), the
+  web in `render/transcript.rs` (the `work:<id>` block key).
+- **Deviations.**
+  - The TUI has no keyboard focus on transcript rows, so a work row opens
+    by click only, like every other row (section 6 said Enter too).
+  - Only approvals stay out of the fold. An ACP agent's question names no
+    tool call, so it shows in its own bar and panel as before (section 3).
+  - "Waiting on the user" counts approvals escalated to the user that have
+    not expired, as the approvals panel does; a call the reviewer is still
+    looking at stays folded.
+  - The TUI reads `tui.toml` from `~/.cookie-agent/` only (it has no
+    `--config` option), so that is the file it saves to (section 8).
+  - No code scrolls the transcript to a row inside a reply today, so the
+    rule that such a jump opens the block first (section 6) has nothing to
+    act on yet.
+  - Section 7's durations come from the time the block's first attempt
+    started, not its run's start: a block opens with its first attempt.
+  - The web's live row reads the clock as the rows draw, and a one-second
+    timer draws them again while the viewed session runs in the reduced
+    mode.
+  - The web's browser scenarios start in the full mode (each new page sets
+    `cookie.transcript` to `full` unless it is already set), since they
+    read every tool row; `reduced_transcript` chooses the reduced mode in
+    Settings › Display.

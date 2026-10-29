@@ -397,6 +397,16 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     sent the model beyond the tool's own output: a loop warning, the
     messages the tool emitted, and the marker that stands for the output
     once it left the model's context.
+  - **Agent work** folds by default, as in the TUI: each reply's
+    thinking, tool calls, and the text written between calls are one row
+    above the reply, `Working… 42s · 3 tool calls` with what the agent
+    does now under it while it works (the newest step or line of its
+    thinking, or its newest call's title), then `Worked for 1m 23s · 7 tool
+    calls` (`· 1 failed` when calls failed, `Stopped after …` when the run
+    was stopped). Click the row to open the work. A call waiting for your
+    approval stays outside the fold. Settings › Display switches to the
+    full transcript, which shows every thinking block and tool call; the
+    choice stays in the browser and applies to its other tabs at once.
   - **Replies** end with the TUI's footer line, `⚡ 42.1 tps · 12.5K ctx ·
     $0.0040`: generation speed, the context the reply left, and its
     estimated cost when every request was priced, then `interrupted` when
@@ -761,8 +771,12 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 - **Notifications.** Settings › Notifications turns push notifications on
   in this browser and lists every device the daemon pushes to; see
   [Notifications](#notifications).
-- **This browser.** Settings › This browser picks the diagnostics the
-  transcript shows (as **Diagnostics** does) and forgets the daemon.
+- **Display.** Settings › Display picks how the transcript shows agent
+  work (**Reduced** or **Full**, see [Sessions and chat](#sessions-and-chat))
+  and which diagnostics it shows (as **Diagnostics** does); both stay in
+  this browser.
+- **This browser.** Settings › This browser installs the page as an app
+  and forgets the daemon.
 - **About.** Settings › About shows this page's version and client
   protocol, the daemon's version, client protocol, and address, links to
   cookie's website, documentation, and GitHub repository, and the

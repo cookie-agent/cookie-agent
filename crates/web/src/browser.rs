@@ -78,6 +78,25 @@ pub fn forget(key: &str) {
     }
 }
 
+/// Calls `changed` with the new value whenever another tab of this page
+/// changes `key` in `localStorage`; `None` when it removed it.
+pub fn on_stored_change(key: &'static str, changed: impl Fn(Option<String>) + 'static) {
+    let Some(window) = window() else {
+        return;
+    };
+    let listener = Listener::add(window.into(), "storage", move |event| {
+        let Some(event) = event.dyn_ref::<web_sys::StorageEvent>() else {
+            return;
+        };
+        if event.key().as_deref() == Some(key) {
+            changed(event.new_value());
+        }
+    });
+    if let Some(listener) = listener {
+        listener.keep();
+    }
+}
+
 /// A value from this tab's `sessionStorage`.
 pub fn load_tab(key: &str) -> Option<String> {
     session_storage()?.get_item(key).ok().flatten()

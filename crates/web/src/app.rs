@@ -389,6 +389,10 @@ pub fn App() -> impl IntoView {
     let connection = Connection::new();
     let landing = RwSignal::new(None::<Landing>);
     let workspace = connection.workspace;
+    // Another tab's transcript choice applies here too.
+    browser::on_stored_change(crate::connect::TRANSCRIPT_KEY, move |stored| {
+        workspace.show_transcript(crate::connect::transcript_from_storage(stored.as_deref()));
+    });
     // The tab that started a sign-in takes the callback another tab of the
     // page landed with.
     oauth::listen(move |state, url| {

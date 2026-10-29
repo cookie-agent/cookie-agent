@@ -139,6 +139,15 @@ class Browser:
                 " (e) => { if (e.isTrusted) e.stopImmediatePropagation(); }, true)"
             },
         )
+        # The scenarios read every tool row, which the full transcript
+        # shows; the reduced-transcript scenario chooses its own mode.
+        self.cdp(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": "try { if (localStorage.getItem('cookie.transcript') === null)"
+                " localStorage.setItem('cookie.transcript', 'full'); } catch (e) {}"
+            },
+        )
 
     def errors(self):
         """The uncaught errors and panics the browser logged since the last
@@ -3635,7 +3644,7 @@ SCRIPTED = [
     ("new-session-cards", ["[data-new-session]"]),
 ] + [
     ("settings-%s" % section, ["[data-rail=primary] [data-view=settings]", "[data-section=%s]" % section])
-    for section in ("configuration", "providers", "mcp", "plugins", "notifications", "browser", "about")
+    for section in ("configuration", "providers", "mcp", "plugins", "notifications", "display", "browser", "about")
 ] + [
     ("editor-config", [
         "[data-rail=primary] [data-view=settings]", "[data-section=configuration]",
@@ -5673,6 +5682,86 @@ def runtime_mcp(browser):
     close_sheet(browser)
 
 
+def choose_transcript(browser, mode):
+    """Chooses transcript mode `mode` in Settings › Display, then goes back
+    to the chat."""
+    browser.click("[data-rail=primary] [data-view=settings]")
+    browser.click("[data-section=display]")
+    browser.wait("the transcript modes", lambda: count(browser, "[data-transcript-mode]") == 2)
+    browser.click("[data-transcript-mode=%s]" % mode)
+    browser.wait(
+        "the stored mode",
+        lambda: browser.script("return localStorage.getItem('cookie.transcript')") == mode,
+    )
+    browser.click("[data-rail=primary] [data-view=chat]")
+
+
+def stored_elsewhere(browser, mode):
+    """Another tab of the page choosing transcript mode `mode`."""
+    browser.script(
+        "localStorage.setItem('cookie.transcript', arguments[0]);"
+        "dispatchEvent(new StorageEvent('storage', {key: 'cookie.transcript', newValue: arguments[0]}))",
+        mode,
+    )
+
+
+def reduced_transcript(browser):
+    """The reduced transcript: Settings › Display chooses it (beside the
+    diagnostics, which left This browser), a reply's work folds into one
+    row that says what it does while it runs, the working spinner stays,
+    the row opens the work, and another tab's choice applies here."""
+    browser.click("[data-rail=primary] [data-view=settings]")
+    browser.click("[data-section=display]")
+    browser.wait("the display section", lambda: "Diagnostics in the transcript" in browser.text())
+    browser.click("[data-section=browser]")
+    browser.wait("this browser's section", lambda: "This daemon" in browser.text())
+    assert "Diagnostics in the transcript" not in browser.text(), "This browser still shows the diagnostics"
+    choose_transcript(browser, "reduced")
+    print("Settings › Display holds the transcript mode and the diagnostics")
+
+    new_session(browser)
+    send(browser, "be chatty")
+    # The call waiting for approval shows outside the fold.
+    browser.wait("the approval", lambda: count(browser, "#transcript [data-action=approvals]") == 1)
+    browser.click("#transcript [data-action=approvals]")
+    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    browser.click("#sheet [data-decision=approve_once]")
+    close_sheet(browser)
+    work = "#transcript [data-work]"
+    browser.wait(
+        "the live work row",
+        lambda: count(browser, "#transcript [data-work=live] [data-work-now]") == 1
+        and count(browser, "#transcript [data-tool]") == 0,
+        timeout=20,
+    )
+    label = browser.text(work + " [data-work-label]")
+    assert label.startswith("Working…") and "1 tool call" in label, label
+    assert count(browser, "#working") == 1, "the working spinner left with a work row"
+    print("a running reply's work row:", label, "/", browser.text(work + " [data-work-now]"))
+    browser.shot("reduced-live")
+
+    idle(browser, "the chatty run's end", text="The tool ran.")
+    browser.wait("the worked row", lambda: count(browser, "#transcript [data-work=done]") == 1)
+    label = browser.text(work + " [data-work-label]")
+    assert label.startswith("Worked for") and label.endswith("· 1 tool call"), label
+    assert count(browser, work + " [data-work-now]") == 0, "a finished row says what it does"
+    assert count(browser, "#transcript [data-tool]") == 0, "a folded reply shows its call"
+    browser.click(work + " button")
+    browser.wait("the open work", lambda: count(browser, "#transcript [data-tool]") == 1)
+    assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", work + " button") == "true"
+    browser.shot("reduced-open")
+    print("a finished reply's row:", label, "and it opens the work")
+
+    # Another tab's choice applies here, and a return to the reduced mode
+    # folds the work again.
+    stored_elsewhere(browser, "full")
+    browser.wait("the full transcript", lambda: count(browser, work) == 0 and count(browser, "#transcript [data-tool]") == 1)
+    stored_elsewhere(browser, "reduced")
+    browser.wait("the folded work", lambda: count(browser, work) == 1 and count(browser, "#transcript [data-tool]") == 0)
+    print("another tab's transcript mode applies here")
+    choose_transcript(browser, "full")
+
+
 SCENARIOS = [
     ("basics", basics, "chat", []),
     ("torn_down", torn_down, "chat", ["basics"]),
@@ -5696,6 +5785,7 @@ SCENARIOS = [
     ("draft_first_message", draft_first_message, "chat", []),
     ("session_drafts", session_drafts, "chat", []),
     ("unread_and_select", unread_and_select, "chat", []),
+    ("reduced_transcript", reduced_transcript, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),
     ("cron", cron_jobs, "chat", []),

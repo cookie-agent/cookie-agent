@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 
+use cookie_agent_client_state::transcript_mode::{self, TranscriptMode};
 use cookie_agent_client_state::{
     AssistantChild, CompactingSource, EventLevel, ModelDisplayNames, ProducerMessageStatus,
     SessionState, ToolCallState, ToolStatus, TranscriptItem,
@@ -48,6 +49,10 @@ pub struct TranscriptView<'a> {
     /// Every runtime's home: a tool row shows its runtime's paths as
     /// `~/…`.
     pub homes: &'a cookie_agent_client_state::paths::RuntimeHomes,
+    /// How the transcript shows agent work.
+    pub transcript: TranscriptMode,
+    /// The time live work rows count their elapsed time to.
+    pub now: jiff::Timestamp,
 }
 
 /// A fingerprint of `homes`, which every cached row depends on.
@@ -107,6 +112,24 @@ impl Expanded {
     pub fn block(&self, key: &str) -> bool {
         self.blocks.contains(key)
     }
+
+    /// Whether the reduced mode's work row of the assistant block
+    /// `item_id` is open.
+    pub fn work(&self, item_id: u64) -> bool {
+        self.blocks.contains(&work_key(item_id))
+    }
+
+    /// Folds every work row, as a switch to the reduced mode does.
+    pub fn fold_work(&mut self) {
+        self.blocks.retain(|key| !key.starts_with(WORK_KEY_PREFIX));
+    }
+}
+
+const WORK_KEY_PREFIX: &str = "work:";
+
+/// The block key of the work row of the assistant block `item_id`.
+pub fn work_key(item_id: u64) -> String {
+    format!("{WORK_KEY_PREFIX}{item_id}")
 }
 
 /// The keys opened, each as [`Expanded::toggle`] takes it.
@@ -207,6 +230,10 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     item.version().hash(&mut hasher);
     std::mem::discriminant(item).hash(&mut hasher);
     if let TranscriptItem::Assistant { id, children, .. } = item {
+        // The work row, which says what the work is doing while it runs.
+        fold(pass, *id, children)
+            .map(|fold| fold.row)
+            .hash(&mut hasher);
         // The footer's inputs: metrics can land after the reply settles.
         view.state.assistant_metrics.get(id).hash(&mut hasher);
         view.state
@@ -914,34 +941,51 @@ fn reply_parts(
     let mut seen: FastSet<u64> =
         HashSet::with_capacity_and_hasher(children.len(), foldhash::fast::FixedState::default());
     let mut keys = Vec::with_capacity(children.len());
-    let mut parts: Vec<_> = children
-        .iter()
-        .enumerate()
-        .map(|(index, child)| {
-            let mut id = part_id(child, index);
-            if !seen.insert(id) {
-                id = foldhash::fast::FixedState::default().hash_one((id, index));
-                seen.insert(id);
-            }
-            let key = part_key(pass, item_id, child);
-            let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
-                Some(html) => html.clone(),
-                None => match child {
-                    // Each block is drawn once, and kept with its block.
-                    AssistantChild::Text { markdown, .. } => {
-                        PartHtml::Markdown(markdown.blocks().map(block_html).collect())
-                    }
-                    _ => {
-                        cache.drawn += 1;
-                        PartHtml::Html(Arc::from(child_html(pass.view, item_id, child)))
-                    }
-                },
-            };
-            used.insert(key, html.clone());
-            keys.push(key);
-            (id, html)
+    let fold = fold(pass, item_id, children);
+    let mut parts = Vec::with_capacity(children.len() + 2);
+    if let Some(fold) = &fold {
+        parts.push((
+            foldhash::fast::FixedState::default().hash_one(8u8),
+            PartHtml::Html(Arc::from(fold.row.as_str())),
+        ));
+    }
+    let shown = |index: usize, child: &AssistantChild| {
+        fold.as_ref().is_none_or(|fold| {
+            index >= fold.reply_start
+                || fold.open
+                || matches!(child, AssistantChild::Tool { call_id } if pass.waiting.contains(call_id))
         })
-        .collect();
+    };
+    parts.extend(
+        children
+            .iter()
+            .enumerate()
+            .filter(|(index, child)| shown(*index, child))
+            .map(|(index, child)| {
+                let mut id = part_id(child, index);
+                if !seen.insert(id) {
+                    id = foldhash::fast::FixedState::default().hash_one((id, index));
+                    seen.insert(id);
+                }
+                let key = part_key(pass, item_id, child);
+                let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
+                    Some(html) => html.clone(),
+                    None => match child {
+                        // Each block is drawn once, and kept with its block.
+                        AssistantChild::Text { markdown, .. } => {
+                            PartHtml::Markdown(markdown.blocks().map(block_html).collect())
+                        }
+                        _ => {
+                            cache.drawn += 1;
+                            PartHtml::Html(Arc::from(child_html(pass.view, item_id, child)))
+                        }
+                    },
+                };
+                used.insert(key, html.clone());
+                keys.push(key);
+                (id, html)
+            }),
+    );
     // Drawn with its row, whose key holds what it shows.
     if let Some(footer) = reply_footer_html(pass.view.state, item_id) {
         parts.push((
@@ -950,6 +994,75 @@ fn reply_parts(
         ));
     }
     (parts.into(), keys)
+}
+
+/// An assistant block's fold in the reduced mode: where its reply starts
+/// among its children, whether its work row is open, and the row's HTML.
+struct Fold {
+    reply_start: usize,
+    open: bool,
+    row: String,
+}
+
+/// The fold of the assistant block `item_id` with `children`; `None` in
+/// the full mode and for a block with no work.
+fn fold(pass: &Pass<'_, '_>, item_id: u64, children: &[AssistantChild]) -> Option<Fold> {
+    let view = pass.view;
+    if view.transcript != TranscriptMode::Reduced {
+        return None;
+    }
+    let reply_start = transcript_mode::reply_start(children)?;
+    let work = &children[..reply_start];
+    let summary = transcript_mode::work_summary(view.state, item_id, work, view.now);
+    let subtext = summary
+        .live
+        .then(|| transcript_mode::working_subtext(view.state, work));
+    let open = view.expanded.work(item_id);
+    Some(Fold {
+        reply_start,
+        open,
+        row: work_row_html(item_id, &summary, subtext.as_deref(), open),
+    })
+}
+
+/// The reduced mode's row for a block's work: `Worked for 1m 23s · 7 tool
+/// calls`, a failed count in the warning colour, and while it works what
+/// it does now. A click opens and folds the work.
+fn work_row_html(
+    item_id: u64,
+    summary: &transcript_mode::WorkSummary,
+    subtext: Option<&str>,
+    open: bool,
+) -> String {
+    let key = work_key(item_id);
+    let chevron = if open {
+        icondata::FaChevronDownSolid
+    } else {
+        icondata::FaChevronRightSolid
+    };
+    let failed = summary
+        .failed_label()
+        .map(|failed| {
+            format!(
+                "<span class=\"text-caramel dark:text-maple\" data-work-failed>{}</span>",
+                escape(&failed)
+            )
+        })
+        .unwrap_or_default();
+    let now = subtext
+        .map(|subtext| {
+            format!(
+                "<span class=\"block min-w-0 truncate pl-5 opacity-80\" aria-live=\"polite\" data-work-now>{}</span>",
+                escape(subtext)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center rounded-md px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span class=\"flex min-w-0 items-center gap-2\">{}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{failed}</span>{now}</button></div>",
+        if summary.live { "live" } else { "done" },
+        svg(chevron, "text-[0.625rem] opacity-70"),
+        escape(&summary.label()),
+    )
 }
 
 /// The line that closes a reply, as the TUI's footer reads: its generation
@@ -1438,6 +1551,7 @@ fn delegate_html(delegate: &Delegate, running: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use cookie_agent_client_state::transcript_mode::TranscriptMode;
     use cookie_agent_client_state::{
         EventLevel, ModelDisplayNames, ProducerMessageStatus, SessionState, TranscriptItem,
     };
@@ -1516,6 +1630,8 @@ mod tests {
             expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
         };
         tool_html(&view, tool)
     }
@@ -1544,6 +1660,8 @@ mod tests {
                 expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             child_html(&view, 1, &thinking)
         };
@@ -1720,6 +1838,8 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
         };
         assert!(tool_html(&view(EventLevel::Info), &plain).contains("raw-marker"));
         assert!(!tool_html(&view(EventLevel::Warning), &plain).contains("raw-marker"));
@@ -1741,6 +1861,8 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
         };
         let row = TranscriptItem::internal("<careful>");
         let shown = item_html(&view(EventLevel::Info), &row).expect("shown");
@@ -1794,6 +1916,8 @@ mod tests {
             expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
         };
         let consumed = row(ProducerMessageStatus::Consumed);
         let folded = item_html(&view(&collapsed), &consumed).expect("shown");
@@ -1833,6 +1957,8 @@ mod tests {
             expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
         };
         let folded = item_html(&view(&collapsed), &row).expect("shown at any level");
         assert!(folded.contains("data-model-input=\"memory\""), "{folded}");
@@ -1855,6 +1981,8 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
         };
         let html = item_html(
             &view,
@@ -1987,6 +2115,80 @@ mod tests {
         (state, call_id)
     }
 
+    /// The reply row of `state` as the reduced mode draws it with
+    /// `expanded`, its parts' HTML joined.
+    fn reduced_reply(state: &SessionState, expanded: &Expanded) -> String {
+        let names = ModelDisplayNames::default();
+        let view = TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+            transcript: TranscriptMode::Reduced,
+            now: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let rows = super::transcript_rows(&view, None, &mut super::RowCache::default());
+        reply_parts(&rows)
+            .into_iter()
+            .map(|(_, part)| match part {
+                super::PartHtml::Html(html) => html.to_string(),
+                super::PartHtml::Markdown(blocks) => blocks.concat(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reduced_reply_folds_its_work_into_one_row_that_opens_it() {
+        let (state, _) = streaming_reply();
+        let folded = reduced_reply(&state, &Expanded::default());
+        assert!(folded.contains("data-work=\"done\""), "{folded}");
+        assert!(folded.contains("Worked for 0s · 1 tool call"), "{folded}");
+        assert!(folded.contains("aria-expanded=\"false\""), "{folded}");
+        assert!(folded.contains("the open tail"), "{folded}");
+        assert!(!folded.contains("data-tool"), "{folded}");
+        assert!(!folded.contains("thought"), "{folded}");
+
+        let opened = reduced_reply(&state, &Expanded::from_iter([super::work_key(1)]));
+        assert!(opened.contains("aria-expanded=\"true\""), "{opened}");
+        assert!(opened.contains("data-tool"), "{opened}");
+        assert!(opened.contains("thought"), "{opened}");
+        assert!(opened.contains("the open tail"), "{opened}");
+
+        // Folding every work row leaves other opened blocks open.
+        let mut expanded = Expanded::from_iter([super::work_key(1), "thinking:2".to_owned()]);
+        expanded.fold_work();
+        assert!(!expanded.work(1));
+        assert!(expanded.thinking(2));
+    }
+
+    #[test]
+    fn a_reply_keys_apart_in_each_mode() {
+        let (state, _) = streaming_reply();
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let view = |transcript| TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded: &expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+            transcript,
+            now: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let reduced = view(TranscriptMode::Reduced);
+        let full = TranscriptView {
+            session_id: reduced.session_id,
+            ..view(TranscriptMode::Full)
+        };
+        let item = &state.transcript[0];
+        assert_ne!(item_key(&reduced, item), item_key(&full, item));
+    }
+
     /// The reply row's parts.
     fn reply_parts(rows: &super::Rows) -> Vec<(u64, super::PartHtml)> {
         assert_eq!(rows.order.len(), 1);
@@ -2042,6 +2244,8 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             super::transcript_rows(&view, None, cache)
         };
@@ -2092,6 +2296,8 @@ mod tests {
                 expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             super::transcript_rows(&view, None, cache)
         };
@@ -2133,6 +2339,8 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
         };
         let user = item_html(
             &view,
@@ -2185,6 +2393,8 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             super::transcript_rows(&view, None, cache)
         };
@@ -2247,6 +2457,8 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             (
                 item_key(&view, &state.transcript[0]),
@@ -2298,6 +2510,8 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             super::transcript_rows(&view, None, cache)
         };
@@ -2332,6 +2546,8 @@ mod tests {
                 expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             super::transcript_rows(&view, None, cache)
         };
@@ -2411,6 +2627,8 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
             };
             super::transcript_rows(&view, None, cache)
         };

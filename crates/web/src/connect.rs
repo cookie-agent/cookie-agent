@@ -26,6 +26,20 @@ pub fn sidebar_shown(stored: Option<&str>) -> bool {
 /// shows (`/events`).
 pub const EVENT_LEVEL_KEY: &str = "cookie.event_level";
 
+/// The `localStorage` key of how the transcript shows agent work
+/// (`reduced` or `full`).
+pub const TRANSCRIPT_KEY: &str = "cookie.transcript";
+
+/// The transcript mode a stored value names; a missing or unknown one is
+/// the default.
+pub fn transcript_from_storage(
+    stored: Option<&str>,
+) -> cookie_agent_client_state::transcript_mode::TranscriptMode {
+    stored
+        .and_then(cookie_agent_client_state::transcript_mode::TranscriptMode::parse)
+        .unwrap_or_default()
+}
+
 /// The `sessionStorage` key of this tab's client identity: each tab is its
 /// own client, kept across reloads and reconnects.
 pub const IDENTITY_KEY: &str = "cookie.identity";
