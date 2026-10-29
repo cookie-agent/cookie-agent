@@ -36,7 +36,13 @@ copy is published as `<attachment>_<tool>`, such as `local_web_bash` and
 that it overrides others of its name, or that it is only a fallback, like the
 `global` runtime's `webfetch`, which hides whenever `local` offers one. A
 runtime tool never takes the name of a built-in tool such as
-`delegate_subagent`. See
+`delegate_subagent`.
+
+Names change only at a compaction, so the model's cached conversation
+stays valid. Attach `labpc_api` while the model works with `local_web`'s
+`bash`, and `bash` stays `local_web`'s while `labpc_api`'s arrives as
+`labpc_api_bash`; from the next compaction both are prefixed. A tool that
+leaves stays declared until then, and a call to it is refused. See
 [Example: a repository on another machine](../runtimes/templates.md#example-a-repository-on-another-machine-over-ssh).
 
 Permission rules can target one runtime's tools with `action@runtime`; see

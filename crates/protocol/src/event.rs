@@ -2096,6 +2096,21 @@ pub struct RoundToolDefinition {
     /// Provider options the tool is sent with, such as `strict`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_options: BTreeMap<String, Value>,
+    /// Where a runtime attachment's tool comes from, so it keeps its name
+    /// for the round (client protocol 1.53.0); absent for base tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RoundToolSource>,
+}
+
+/// The composition label and own name of a round's runtime tool.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RoundToolSource {
+    /// The attachment, or the label its provider composes under.
+    #[schemars(length(min = 1, max = 256))]
+    pub label: String,
+    /// The tool's name as its source declares it.
+    #[schemars(length(min = 1, max = 256))]
+    pub tool: String,
 }
 
 /// The largest serialized `tool_round_started` event.

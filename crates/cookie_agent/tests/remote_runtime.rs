@@ -579,13 +579,18 @@ async fn a_killed_runtime_reconnects_and_one_that_cannot_is_dropped() {
     );
     assert_eq!(fixture.remote_status(), Some(RuntimeInstanceStatus::Failed));
 
-    // Without the remote runtime nothing collides: `bash` is `local`'s. The
-    // remote runtime's tools stay declared until the round ends.
+    // Without the remote runtime nothing collides, but names stay put for
+    // the round: `local_web_bash` is still `local`'s, and the remote
+    // runtime's tools stay declared until the round ends.
     fixture.model.enqueue(final_answer("only local"));
     let before = fixture.model.requests().len();
     fixture.run(session, "what can you use?").await;
     let tools = offered_tools(&fixture.model.requests()[before]);
-    assert!(tools.iter().any(|tool| tool == "bash"), "{tools:?}");
+    assert!(
+        tools.iter().any(|tool| tool == "local_web_bash"),
+        "{tools:?}"
+    );
+    assert!(!tools.iter().any(|tool| tool == "bash"), "{tools:?}");
     assert!(
         tools.iter().any(|tool| tool.starts_with("remote_repo_")),
         "{tools:?}"

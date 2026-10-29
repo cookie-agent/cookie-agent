@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.53.0
+
+- A `tool_round_started` tool has an optional `source` (`label`, `tool`): the
+  attachment, or the label its provider composes under, and the tool's own
+  name, for a runtime's tool. A round's tools keep their published names
+  until it ends ([stable prompt prefix](../specs/stable-prefix.md) section
+  5). Plugin protocol 1.29.0 carries it in events the same way.
+
 ## 1.52.0
 
 - `acp_session_updated` has an optional `prompt_context`: the text blocks

@@ -24,6 +24,7 @@ fn eager(name: &str) -> Candidate {
         group: group("coding", ToolGroupSource::Builtin, None),
         provider: ("runtime.protocol".into(), Some("local".into())),
         deferred: false,
+        source: None,
     }
 }
 
@@ -33,6 +34,7 @@ fn mcp(name: &str, server: &str) -> Candidate {
         group: group(server, ToolGroupSource::Mcp, Some("Browser automation.")),
         provider: (format!("mcp.{server}"), None),
         deferred: true,
+        source: None,
     }
 }
 
@@ -115,7 +117,7 @@ fn fold_with_round(tools: &[&str]) -> DeferralFold {
         round: Some(ToolRound {
             tools: tools
                 .iter()
-                .map(|name| round_definition(&definition(name)))
+                .map(|name| round_definition(&definition(name), None))
                 .collect(),
             prompt_groups: Vec::new(),
         }),
@@ -310,8 +312,12 @@ fn a_round_after_a_checkpoint_declares_the_tools_it_folded() {
     assert_eq!(added[0].tools, ["chrome_type"]);
 }
 
-fn eager_candidate(name: &str) -> (ToolDefinition, ProviderKey) {
-    (definition(name), ("builtin.test".into(), None))
+fn eager_candidate(name: &str) -> EagerCandidate {
+    EagerCandidate {
+        definition: definition(name),
+        provider: ("builtin.test".into(), None),
+        source: None,
+    }
 }
 
 #[test]
@@ -342,7 +348,11 @@ fn without_deferral_departures_stay_declared_and_arrivals_join_up_front() {
     changed.description = "A new description.".into();
     let plan = plan_eager(
         vec![
-            (changed, ("builtin.test".into(), None)),
+            EagerCandidate {
+                definition: changed,
+                provider: ("builtin.test".into(), None),
+                source: None,
+            },
             eager_candidate("bash"),
         ],
         &fold,

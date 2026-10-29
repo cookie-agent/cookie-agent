@@ -49,13 +49,20 @@ impl Composition {
     }
 }
 
+/// The published names a tool round pins: by a runtime tool's composition
+/// label and own name (stable prefix spec, section 5).
+pub(crate) type RoundPins = HashMap<(String, String), String>;
+
 /// Composes `candidates` (base layer first, then attachments in attach
 /// order). `reserved` holds the base layer's names, which a runtime tool never
-/// takes even while the base tool is not offered. Two tools of one source with
-/// one name are an error naming it.
+/// takes even while the base tool is not offered. A runtime tool `pins` names
+/// takes that name; any other tool whose name a pin holds takes its
+/// `<label>_<tool>` form. Two tools of one source with one name are an error
+/// naming it.
 pub(crate) fn compose(
     candidates: Vec<(SourcedProvider, ToolSpec)>,
     reserved: &HashSet<String>,
+    pins: &RoundPins,
 ) -> Result<Composition, String> {
     let mut per_source = HashSet::new();
     let mut base_names = reserved.clone();
@@ -127,6 +134,20 @@ pub(crate) fn compose(
         };
         names.push(Some(published));
     }
+    if !pins.is_empty() {
+        let pinned = pins.values().map(String::as_str).collect::<HashSet<_>>();
+        for (((_, spec), label), name) in candidates.iter().zip(&labels).zip(names.iter_mut()) {
+            let Some(label) = label else {
+                continue;
+            };
+            if let Some(pin) = pins.get(&(label.clone(), spec.name.clone())) {
+                // Even a fallback another tool now hides keeps its name.
+                *name = Some(pin.clone());
+            } else if name.as_deref().is_some_and(|name| pinned.contains(name)) {
+                *name = Some(format!("{label}_{}", spec.name));
+            }
+        }
+    }
     let mut diagnostics = overridden
         .into_iter()
         .map(|name| {
@@ -187,7 +208,7 @@ pub(crate) fn compose(
 }
 
 /// The source `source`'s tools compose under; `None` for the base layer.
-fn composition_source(source: &SourcedProvider) -> Option<String> {
+pub(crate) fn composition_source(source: &SourcedProvider) -> Option<String> {
     let attachment = source.attachment.as_ref()?;
     Some(
         source
@@ -208,7 +229,7 @@ mod tests {
         ToolPreparationContext, ToolProvider, ToolSpec,
     };
 
-    use super::{SourcedProvider, compose};
+    use super::{RoundPins, SourcedProvider, compose};
 
     struct Nothing;
 
@@ -342,6 +363,7 @@ mod tests {
                 (source(Some("local")), spec("bash", ToolCollision::Prefix)),
             ],
             &HashSet::new(),
+            &RoundPins::new(),
         )
         .expect("composes");
         assert_eq!(
@@ -387,12 +409,16 @@ mod tests {
     }
 
     fn published(candidates: Vec<(SourcedProvider, ToolSpec)>) -> Vec<String> {
-        compose(candidates, &HashSet::from(["skill".to_owned()]))
-            .expect("composes")
-            .tools
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect()
+        compose(
+            candidates,
+            &HashSet::from(["skill".to_owned()]),
+            &RoundPins::new(),
+        )
+        .expect("composes")
+        .tools
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect()
     }
 
     #[test]
@@ -475,6 +501,7 @@ mod tests {
                 (source(Some("local")), spec(&tool, ToolCollision::Prefix)),
             ],
             &HashSet::new(),
+            &RoundPins::new(),
         )
         .expect("composes");
         assert_eq!(
@@ -508,10 +535,88 @@ mod tests {
                     ),
                 ],
                 &HashSet::new(),
+                &RoundPins::new(),
             )
             .err()
             .as_deref(),
             Some("lookup")
+        );
+    }
+
+    fn pinned(
+        candidates: Vec<(SourcedProvider, ToolSpec)>,
+        pins: &[(&str, &str, &str)],
+    ) -> Vec<String> {
+        let pins = pins
+            .iter()
+            .map(|(label, tool, name)| {
+                (
+                    ((*label).to_owned(), (*tool).to_owned()),
+                    (*name).to_owned(),
+                )
+            })
+            .collect::<RoundPins>();
+        compose(candidates, &HashSet::new(), &pins)
+            .expect("composes")
+            .tools
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect()
+    }
+
+    #[test]
+    fn a_pinned_tool_keeps_its_name_and_a_newcomer_takes_its_prefix() {
+        let both = || {
+            vec![
+                (
+                    source(Some("local_web")),
+                    spec("bash", ToolCollision::Prefix),
+                ),
+                (
+                    source(Some("labpc_api")),
+                    spec("bash", ToolCollision::Prefix),
+                ),
+            ]
+        };
+        assert_eq!(
+            pinned(both(), &[("local_web", "bash", "bash")]),
+            ["bash", "labpc_api_bash"]
+        );
+        // Without pins, as at a new round, both take their prefix.
+        assert_eq!(pinned(both(), &[]), ["local_web_bash", "labpc_api_bash"]);
+    }
+
+    #[test]
+    fn a_pinned_name_stays_reserved_after_its_tool_left() {
+        assert_eq!(
+            pinned(
+                vec![(
+                    source(Some("labpc_api")),
+                    spec("bash", ToolCollision::Prefix)
+                )],
+                &[("local_web", "bash", "bash")],
+            ),
+            ["labpc_api_bash"]
+        );
+    }
+
+    #[test]
+    fn a_pinned_fallback_stays_published_beside_the_tool_that_hides_it() {
+        assert_eq!(
+            pinned(
+                vec![
+                    (
+                        source(Some("global")),
+                        spec("webfetch", ToolCollision::Fallback)
+                    ),
+                    (
+                        source(Some("local")),
+                        spec("webfetch", ToolCollision::Prefix)
+                    ),
+                ],
+                &[("global", "webfetch", "webfetch")],
+            ),
+            ["webfetch", "local_webfetch"]
         );
     }
 }

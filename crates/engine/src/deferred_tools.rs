@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use cookie_agent_config::{DEFERRED_BUILTIN_GROUPS, DeferredToolsConfig};
 use cookie_agent_protocol::{
-    AnnouncedToolGroup, EventPayload, RoundToolDefinition, ToolGroupSource,
+    AnnouncedToolGroup, EventPayload, RoundToolDefinition, RoundToolSource, ToolGroupSource,
 };
 use cookie_agent_runtime_api::ProvidedToolSource;
 use oven_sdk::{JsonSchema, ToolDefinition};
@@ -131,6 +131,15 @@ pub(crate) struct Candidate {
     pub(crate) provider: ProviderKey,
     /// The policy defers it.
     pub(crate) deferred: bool,
+    /// Where a runtime tool comes from, recorded with the round.
+    pub(crate) source: Option<RoundToolSource>,
+}
+
+/// A composed tool on a model that does not defer.
+pub(crate) struct EagerCandidate {
+    pub(crate) definition: ToolDefinition,
+    pub(crate) provider: ProviderKey,
+    pub(crate) source: Option<RoundToolSource>,
 }
 
 /// A deferred tool of a request, as the loader tools read it.
@@ -169,12 +178,16 @@ pub(crate) struct DeferralPlan {
     pub(crate) deferred_providers: BTreeSet<ProviderKey>,
 }
 
-fn round_definition(definition: &ToolDefinition) -> RoundToolDefinition {
+fn round_definition(
+    definition: &ToolDefinition,
+    source: Option<&RoundToolSource>,
+) -> RoundToolDefinition {
     RoundToolDefinition {
         name: definition.name.clone(),
         description: definition.description.clone(),
         parameters: definition.input_schema.as_value().clone(),
         provider_options: definition.provider_options.clone(),
+        source: source.cloned(),
     }
 }
 
@@ -209,10 +222,10 @@ pub(crate) fn plan(
             let mut tools = candidates
                 .iter()
                 .filter(|candidate| !candidate.deferred)
-                .map(|candidate| round_definition(&candidate.definition))
+                .map(|candidate| round_definition(&candidate.definition, candidate.source.as_ref()))
                 .collect::<Vec<_>>();
             if candidates.iter().any(|candidate| candidate.deferred) {
-                tools.extend(loaders.iter().map(round_definition));
+                tools.extend(loaders.iter().map(|loader| round_definition(loader, None)));
             }
             tools.sort_by(|left, right| left.name.cmp(&right.name));
             let mut prompt_groups = candidates
@@ -255,7 +268,7 @@ pub(crate) fn plan(
         && !eager_names.contains(TOOL_SEARCH)
     {
         // The loader tool joins mid-round, once.
-        round.extend(loaders.iter().map(round_definition));
+        round.extend(loaders.iter().map(|loader| round_definition(loader, None)));
         round.sort_by(|left, right| left.name.cmp(&right.name));
         pending.push(EventPayload::ToolRoundStarted {
             tools: round.clone(),
@@ -324,22 +337,19 @@ pub(crate) struct EagerPlan {
 /// definition. A round starts here when the log has none since its
 /// checkpoint, with every composed tool. A loader tool a deferring model's
 /// round declared is left out: nothing is loadable here.
-pub(crate) fn plan_eager(
-    candidates: Vec<(ToolDefinition, ProviderKey)>,
-    fold: &DeferralFold,
-) -> EagerPlan {
+pub(crate) fn plan_eager(candidates: Vec<EagerCandidate>, fold: &DeferralFold) -> EagerPlan {
     let mut pending = Vec::new();
     let round = match &fold.round {
         Some(round) => round.tools.clone(),
         None => {
             let mut tools = candidates
                 .iter()
-                .map(|(definition, _)| round_definition(definition))
+                .map(|candidate| round_definition(&candidate.definition, candidate.source.as_ref()))
                 .collect::<Vec<_>>();
             tools.sort_by(|left, right| left.name.cmp(&right.name));
             let mut prompt_groups = candidates
                 .iter()
-                .map(|(_, provider)| provider_label(provider))
+                .map(|candidate| provider_label(&candidate.provider))
                 .collect::<Vec<_>>();
             prompt_groups.sort();
             prompt_groups.dedup();
@@ -352,7 +362,7 @@ pub(crate) fn plan_eager(
     };
     let present = candidates
         .iter()
-        .map(|(definition, _)| definition.name.clone())
+        .map(|candidate| candidate.definition.name.clone())
         .collect::<HashSet<_>>();
     let mut in_round = HashSet::with_capacity(round.len());
     let mut definitions = Vec::with_capacity(round.len() + candidates.len());
@@ -372,8 +382,8 @@ pub(crate) fn plan_eager(
     definitions.extend(
         candidates
             .into_iter()
-            .filter(|(definition, _)| !in_round.contains(&definition.name))
-            .map(|(definition, _)| definition),
+            .filter(|candidate| !in_round.contains(&candidate.definition.name))
+            .map(|candidate| candidate.definition),
     );
     definitions.sort_by(|left, right| left.name.cmp(&right.name));
     EagerPlan {

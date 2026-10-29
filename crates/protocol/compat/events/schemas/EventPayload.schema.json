@@ -4600,7 +4600,7 @@
           "type": "array"
         },
         "loaded_tools": {
-          "description": "Deferred tools this result loads: they become callable from it on\n(client protocol 1.44.0). Only `tool_load` sets it.",
+          "description": "Deferred tools this result loads: they become callable from it on\n(client protocol 1.44.0). Only the loader tool sets it.",
           "items": {
             "type": "string"
           },
@@ -5384,12 +5384,45 @@
           "additionalProperties": true,
           "description": "Provider options the tool is sent with, such as `strict`.",
           "type": "object"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RoundToolSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where a runtime attachment's tool comes from, so it keeps its name\nfor the round (client protocol 1.53.0); absent for base tools."
         }
       },
       "required": [
         "name",
         "description",
         "parameters"
+      ],
+      "type": "object"
+    },
+    "RoundToolSource": {
+      "description": "The composition label and own name of a round's runtime tool.",
+      "properties": {
+        "label": {
+          "description": "The attachment, or the label its provider composes under.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tool": {
+          "description": "The tool's name as its source declares it.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "tool"
       ],
       "type": "object"
     },

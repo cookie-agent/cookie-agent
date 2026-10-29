@@ -686,6 +686,10 @@ defer):
 - `tool_round_started` lists the eager tools the session declares until its
   next compaction, each as `name`, `description`, `parameters` (its JSON
   Schema), and optional `provider_options`, exactly as a request sends it.
+  A runtime's tool also has `source` (`label`, its attachment or the label
+  its provider composes under, and `tool`, its own name): until the next
+  compaction it keeps its published name, and a tool that arrives with the
+  same name takes its `<label>_<tool>` form instead.
   `prompt_groups` names the tool groups whose prompt sections the system
   prompt carries. A later record before the next checkpoint replaces the
   round, when the loader tools join it. Every session records rounds, on

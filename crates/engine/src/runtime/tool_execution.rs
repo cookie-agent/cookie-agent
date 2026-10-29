@@ -1157,8 +1157,11 @@ impl Engine {
                 }
             }
         }
-        let composition =
-            compose(candidates, crate::base_tools::reserved_tool_names()).map_err(|name| {
+        // A round's runtime tools keep their published names until it ends
+        // (stable prefix spec, section 5).
+        let pins = self.inner.store.get(session)?.log.round_pins();
+        let composition = compose(candidates, crate::base_tools::reserved_tool_names(), &pins)
+            .map_err(|name| {
                 EngineError::ToolFailed(format!(
                     "tool name `{name}` is published twice by one runtime"
                 ))
@@ -1301,6 +1304,12 @@ impl Engine {
                 None => spec.description.clone(),
             };
             let definition = ToolDefinition::new(name.clone(), description, schema);
+            let round_source = crate::runtimes::composition_source(&source).map(|label| {
+                cookie_agent_protocol::RoundToolSource {
+                    label,
+                    tool: spec.name.clone(),
+                }
+            });
             if defers {
                 if source.provider.provider_id() == crate::base_tools::LOADER_PROVIDER_ID {
                     loaders.push(definition);
@@ -1314,10 +1323,15 @@ impl Engine {
                             &spec.name,
                             &config.runtime.deferred_tools,
                         ),
+                        source: round_source,
                     });
                 }
             } else {
-                output.push((definition, provider_key(&source)));
+                output.push(crate::deferred_tools::EagerCandidate {
+                    definition,
+                    provider: provider_key(&source),
+                    source: round_source,
+                });
             }
             published.insert(name, PublishedTool { source, spec });
         }

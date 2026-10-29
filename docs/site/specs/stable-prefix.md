@@ -228,3 +228,6 @@ Each phase is gated, committed, and pushed on its own:
   A model defers tools only when the base layer's loader is registered, so
   a request never declares tools that nothing can load.
 - **Phase 3** (2026-10-29) as specified.
+- **Phase 4** (2026-10-29; client protocol 1.53.0, plugin protocol 1.29.0).
+  A fallback tool whose name a round pins stays published beside the tool
+  that would hide it, so the round's name keeps working.

@@ -1463,6 +1463,32 @@ impl EventLog {
             .clone()
     }
 
+    /// The published names the current tool round pins (stable prefix
+    /// spec, section 5); empty without a round.
+    pub(crate) fn round_pins(&self) -> crate::runtimes::RoundPins {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .deferral
+            .round
+            .as_ref()
+            .map(|round| {
+                round
+                    .tools
+                    .iter()
+                    .filter_map(|tool| {
+                        let source = tool.source.as_ref()?;
+                        Some((
+                            (source.label.clone(), source.tool.clone()),
+                            tool.name.clone(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Whether the latest recorded tool names sent to the model are `names`.
     pub(crate) fn last_model_tools_match(&self, names: &[String], deferred: &[String]) -> bool {
         self.events
