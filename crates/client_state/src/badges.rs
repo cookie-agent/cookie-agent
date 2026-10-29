@@ -9,8 +9,7 @@
 //! `docs/site/specs/runtime-delegation.md` section 5.3). The machine comes
 //! from `runtimes.list`; a runtime of no known machine stands for its own
 //! machine, under its runtime ID. Under a project's header, a machine its
-//! defaults name shows as its icon alone, and the workspaces leave the row
-//! when its defaults name them all: the header already says both.
+//! defaults name shows as its icon alone: the header already names it.
 
 use cookie_agent_protocol::{
     CapabilityName, ProjectDefaults, ProjectRuntime, RuntimeAttachment, RuntimeId,
@@ -279,22 +278,8 @@ fn places_of(attachments: &[Placed<'_>], listing: Option<&RuntimesListResult>) -
     places
 }
 
-/// The workspaces of `attachments` as clients show them, each once.
-fn workspaces_of(attachments: &[Placed<'_>], homes: &RuntimeHomes) -> Vec<String> {
-    let mut workspaces = Vec::<String>::new();
-    for attachment in attachments {
-        if let Some(workspace) = attachment.workspace {
-            let shown = homes.display(attachment.runtime_id, workspace);
-            if !workspaces.contains(&shown) {
-                workspaces.push(shown);
-            }
-        }
-    }
-    workspaces
-}
-
-/// The badges of `attachments`; the places and workspaces of `project`,
-/// the defaults its header shows, shortened.
+/// The badges of `attachments`; the places of `project`, the defaults its
+/// header shows, shortened.
 fn placed_badges(
     attachments: &[Placed<'_>],
     project: &[Placed<'_>],
@@ -306,23 +291,19 @@ fn placed_badges(
     let badge = |place: &Place| place.badge(listing, project_places.contains(place));
     match places.as_slice() {
         [] => Vec::new(),
-        // One machine: its badge, then its workspaces, unless the project
-        // names them all on that machine.
+        // One machine: its badge, then its workspaces.
         [only] => {
-            let workspaces = workspaces_of(attachments, homes);
-            let project_workspaces = workspaces_of(
-                &project
-                    .iter()
-                    .copied()
-                    .filter(|placed| placed.place(listing) == *only)
-                    .collect::<Vec<_>>(),
-                homes,
-            );
+            let mut workspaces = Vec::<String>::new();
+            for attachment in attachments {
+                if let Some(workspace) = attachment.workspace {
+                    let shown = homes.display(attachment.runtime_id, workspace);
+                    if !workspaces.contains(&shown) {
+                        workspaces.push(shown);
+                    }
+                }
+            }
             let mut badges = vec![badge(only)];
-            if !workspaces
-                .iter()
-                .all(|workspace| project_workspaces.contains(workspace))
-            {
+            if !workspaces.is_empty() {
                 badges.push(SessionBadge::Workspace(workspaces.join(", ")));
             }
             badges
@@ -654,20 +635,14 @@ mod tests {
             platform: Some("macos".into()),
             in_project,
         };
-        // The project's machine and workspace: the machine's icon alone.
+        // The project's machine: its icon alone, the workspace still shown.
         let same = session(&[
             ("global", "global", None),
             ("labpc", "coding", Some("/home/labpc/api")),
         ]);
-        assert_eq!(under(&same), [lab(true)]);
-        // A workspace the project does not name: every workspace shows.
-        let more = session(&[
-            ("labpc", "coding", Some("/home/labpc/api")),
-            ("labpc", "coding", Some("/home/labpc/web")),
-        ]);
         assert_eq!(
-            under(&more),
-            [lab(true), SessionBadge::Workspace("~/api, ~/web".into())]
+            under(&same),
+            [lab(true), SessionBadge::Workspace("~/api".into())]
         );
         // Several machines: the project's shortens, the other keeps its name.
         let spread = session(&[
