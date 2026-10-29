@@ -678,17 +678,22 @@ when the request deferred any.
 
 ### Deferred tools
 
-On a model that loads deferred tools
-([deferred tools in cookie](../specs/deferred-tools-cookie.md)), two records
-come before a request, after its run's input:
+Two records come before a request, after its run's input
+([deferred tools in cookie](../specs/deferred-tools-cookie.md), and the
+[stable prompt prefix](../specs/stable-prefix.md) for models that do not
+defer):
 
 - `tool_round_started` lists the eager tools the session declares until its
   next compaction, each as `name`, `description`, `parameters` (its JSON
   Schema), and optional `provider_options`, exactly as a request sends it.
   `prompt_groups` names the tool groups whose prompt sections the system
   prompt carries. A later record before the next checkpoint replaces the
-  round, when the loader tools join it.
-- `deferred_tools_announced` carries `added` and `removed`, lists of groups:
+  round, when the loader tools join it. Every session records rounds, on
+  any model: a round tool that leaves the session stays declared until the
+  next compaction, and a call to it is refused. On a model that does not
+  defer, a tool that joins mid-round is sent up front at once.
+- `deferred_tools_announced`, on a model that loads deferred tools, carries
+  `added` and `removed`, lists of groups:
   `name`, `source` (`mcp`, `plugin`, or `builtin`, an open set), `tools`,
   and an optional `summary`, with `untrusted` when the summary is the
   source's author's text. Model history renders it in place as a user turn.

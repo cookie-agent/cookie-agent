@@ -307,6 +307,82 @@ pub(crate) fn plan(
     }
 }
 
+/// A request's tools on a model that does not defer: every tool up front.
+pub(crate) struct EagerPlan {
+    /// Every tool the request declares, sorted by name.
+    pub(crate) definitions: Vec<ToolDefinition>,
+    /// Round tools that left the session but stay declared until the round
+    /// ends; a call to one is refused.
+    pub(crate) departed: HashSet<String>,
+    /// The round start to append before the request, if one starts.
+    pub(crate) pending: Vec<EventPayload>,
+}
+
+/// Plans a request's tools on a model that does not defer (stable prefix
+/// spec, section 4). The round's tools are declared from its record, those
+/// that left included; a tool that joined is declared from its live
+/// definition. A round starts here when the log has none since its
+/// checkpoint, with every composed tool. A loader tool a deferring model's
+/// round declared is left out: nothing is loadable here.
+pub(crate) fn plan_eager(
+    candidates: Vec<(ToolDefinition, ProviderKey)>,
+    fold: &DeferralFold,
+) -> EagerPlan {
+    let mut pending = Vec::new();
+    let round = match &fold.round {
+        Some(round) => round.tools.clone(),
+        None => {
+            let mut tools = candidates
+                .iter()
+                .map(|(definition, _)| round_definition(definition))
+                .collect::<Vec<_>>();
+            tools.sort_by(|left, right| left.name.cmp(&right.name));
+            let mut prompt_groups = candidates
+                .iter()
+                .map(|(_, provider)| provider_label(provider))
+                .collect::<Vec<_>>();
+            prompt_groups.sort();
+            prompt_groups.dedup();
+            pending.push(EventPayload::ToolRoundStarted {
+                tools: tools.clone(),
+                prompt_groups,
+            });
+            tools
+        }
+    };
+    let present = candidates
+        .iter()
+        .map(|(definition, _)| definition.name.clone())
+        .collect::<HashSet<_>>();
+    let mut in_round = HashSet::with_capacity(round.len());
+    let mut definitions = Vec::with_capacity(round.len() + candidates.len());
+    let mut departed = HashSet::new();
+    for tool in &round {
+        in_round.insert(tool.name.clone());
+        if is_loader(&tool.name) {
+            continue;
+        }
+        if let Some(definition) = declared(tool) {
+            definitions.push(definition);
+        }
+        if !present.contains(&tool.name) {
+            departed.insert(tool.name.clone());
+        }
+    }
+    definitions.extend(
+        candidates
+            .into_iter()
+            .filter(|(definition, _)| !in_round.contains(&definition.name))
+            .map(|(definition, _)| definition),
+    );
+    definitions.sort_by(|left, right| left.name.cmp(&right.name));
+    EagerPlan {
+        definitions,
+        departed,
+        pending,
+    }
+}
+
 /// The announcement of what became loadable and what left since the
 /// announcements `fold` adds up to; `None` when nothing changed (section 7.2).
 fn announcement(entries: &[DeferredEntry], fold: &DeferralFold) -> Option<EventPayload> {

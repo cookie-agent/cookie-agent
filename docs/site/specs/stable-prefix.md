@@ -227,3 +227,4 @@ Each phase is gated, committed, and pushed on its own:
   third tool, `goal_set`, as the user decided while phase 1 was under way.
   A model defers tools only when the base layer's loader is registered, so
   a request never declares tools that nothing can load.
+- **Phase 3** (2026-10-29) as specified.

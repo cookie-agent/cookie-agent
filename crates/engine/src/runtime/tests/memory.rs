@@ -451,7 +451,12 @@ async fn detaching_global_turns_memory_off_and_attaching_it_back_on() {
     assert!(!taken[0].is_empty() && taken[1].is_empty() && !taken[2].is_empty());
     let requests = captured.await.unwrap();
     assert!(!requests[1].contains("# Memory"));
-    assert!(memory_tool_names(&requests[1]).is_empty());
+    // The memory tools stay declared until the round ends (stable prefix
+    // spec, section 4); a call to one is refused meanwhile.
+    assert_eq!(
+        memory_tool_names(&requests[1]),
+        memory_tool_names(&requests[0])
+    );
     assert!(requests[2].contains("# Memory"));
     fixture.engine.shutdown().await;
 }

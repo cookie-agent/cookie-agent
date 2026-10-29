@@ -1317,20 +1317,20 @@ impl Engine {
                     });
                 }
             } else {
-                output.push(definition);
+                output.push((definition, provider_key(&source)));
             }
             published.insert(name, PublishedTool { source, spec });
         }
+        let fold = self.inner.store.get(session)?.log.deferral();
         if !defers {
-            output.sort_by(|left, right| left.name.cmp(&right.name));
+            let plan = crate::deferred_tools::plan_eager(output, &fold);
             return Ok(PublishedToolSet {
-                definitions: output,
+                definitions: plan.definitions,
                 tools: published,
-                departed: HashSet::new(),
-                pending: Vec::new(),
+                departed: plan.departed,
+                pending: plan.pending,
             });
         }
-        let fold = self.inner.store.get(session)?.log.deferral();
         let mut plan = crate::deferred_tools::plan(candidates, &loaders, &fold);
         for provider in &plan.deferred_providers {
             // Delivered with the provider's first load; a provider with a

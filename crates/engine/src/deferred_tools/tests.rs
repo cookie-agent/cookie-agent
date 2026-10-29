@@ -309,3 +309,51 @@ fn a_round_after_a_checkpoint_declares_the_tools_it_folded() {
     let (added, _) = announced(&plan).expect("announced");
     assert_eq!(added[0].tools, ["chrome_type"]);
 }
+
+fn eager_candidate(name: &str) -> (ToolDefinition, ProviderKey) {
+    (definition(name), ("builtin.test".into(), None))
+}
+
+#[test]
+fn without_deferral_a_first_request_starts_a_round_of_every_tool() {
+    let plan = plan_eager(
+        vec![eager_candidate("read"), eager_candidate("bash")],
+        &DeferralFold::default(),
+    );
+    assert_eq!(names(&plan.definitions, false), ["bash", "read"]);
+    let EventPayload::ToolRoundStarted { tools, .. } = &plan.pending[0] else {
+        panic!("a round starts");
+    };
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["bash", "read"]
+    );
+    assert!(plan.departed.is_empty());
+}
+
+#[test]
+fn without_deferral_departures_stay_declared_and_arrivals_join_up_front() {
+    let fold = fold_with_round(&["edit", "read", "tool_search"]);
+    // `read`'s live description changed; the round's stays.
+    let mut changed = definition("read");
+    changed.description = "A new description.".into();
+    let plan = plan_eager(
+        vec![
+            (changed, ("builtin.test".into(), None)),
+            eager_candidate("bash"),
+        ],
+        &fold,
+    );
+    assert!(plan.pending.is_empty(), "the round does not change");
+    assert_eq!(names(&plan.definitions, false), ["bash", "edit", "read"]);
+    assert!(
+        plan.definitions
+            .iter()
+            .all(|definition| definition.description != "A new description.")
+    );
+    // The loader of a deferring model's round is not declared.
+    assert_eq!(plan.departed, HashSet::from(["edit".to_owned()]));
+}
