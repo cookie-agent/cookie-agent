@@ -547,7 +547,12 @@ not in it.
   sends them after the call started (Claude Code does); its status; its
   content as text, images, and links; edits as diffs; the files it touched
   as links; and its raw output when it sends no content. With Claude Code,
-  the call's tool name (`Read`, `Bash`) is the name it was called by.
+  the call's tool name (`Read`, `Bash`) is the name it was called by. A
+  command the agent runs through a shell string (Codex reports
+  `/bin/bash -lc '<command>'`) shows as the command itself. Codex's
+  auto-review of one of its calls (its "Guardian Review") shows as one line
+  with its verdict and what it reviewed (`Auto-review: approved, low risk`
+  · `cat calc.py`), its reasoning as the line's output.
 - **Images** the agent puts in its reply show in the reply, as an image a
   model generates does; cookie keeps them with the session.
 - **Command output.** A command the agent runs shows its output as cookie's

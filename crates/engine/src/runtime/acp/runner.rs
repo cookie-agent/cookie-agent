@@ -609,6 +609,9 @@ fn primary_argument(input: Option<&Value>) -> Option<cookie_agent_protocol::Boun
 /// its title, its kind's hint, what its raw input names, and the raw input
 /// as its arguments.
 fn presentation_of(fields: &ToolCallFields) -> PreparedPresentation {
+    if let Some(presentation) = auto_review_presentation(fields) {
+        return presentation;
+    }
     // A command shows as cookie's own `bash` call does: `Run` and the
     // command on one line, the command as its argument.
     if fields.kind.as_deref() == Some("execute")
@@ -619,11 +622,12 @@ fn presentation_of(fields: &ToolCallFields) -> PreparedPresentation {
             .and_then(Value::as_str)
             .filter(|command| !command.trim().is_empty())
     {
+        let command = unwrap_shell(command);
         let line = command.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut presentation =
             cookie_agent_runtime_api::tool_presentation(&format!("Run `{line}`"), &line)
                 .with_hint(cookie_agent_protocol::ToolHint::SHELL)
-                .with_arguments([DisplayBlock::code(command.to_owned(), Some("sh".into()))]);
+                .with_arguments([DisplayBlock::code(command, Some("sh".into()))]);
         presentation.fit();
         return presentation;
     }
@@ -640,6 +644,136 @@ fn presentation_of(fields: &ToolCallFields) -> PreparedPresentation {
     }
     presentation.fit();
     presentation
+}
+
+/// The command a shell runs for `command` when it is one (`bash -lc
+/// '<command>'`, as Codex reports every command), else `command` itself.
+pub(super) fn unwrap_shell(command: &str) -> String {
+    let trimmed = command.trim();
+    let mut words = trimmed.splitn(3, ' ');
+    let (Some(program), Some(flag), Some(rest)) = (words.next(), words.next(), words.next())
+    else {
+        return command.to_owned();
+    };
+    let shell = program.rsplit('/').next().unwrap_or(program);
+    let runs_string = matches!(shell, "sh" | "bash" | "zsh" | "dash")
+        && flag.len() > 1
+        && flag.starts_with('-')
+        && flag.ends_with('c')
+        && flag[1..].chars().all(|flag| matches!(flag, 'l' | 'i' | 'c'));
+    let rest = rest.trim();
+    if !runs_string || rest.len() < 2 {
+        return command.to_owned();
+    }
+    if let Some(inner) = rest
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        // `'\''` closes the quote, adds a quote, and opens it again.
+        if inner.replace("'\\''", "").contains('\'') {
+            return command.to_owned();
+        }
+        return inner.replace("'\\''", "'");
+    }
+    if let Some(inner) = rest.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) {
+        let mut unquoted = String::with_capacity(inner.len());
+        let mut characters = inner.chars().peekable();
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' if characters
+                    .peek()
+                    .is_some_and(|next| matches!(next, '"' | '\\' | '$' | '`')) =>
+                {
+                    unquoted.extend(characters.next());
+                }
+                // An unescaped quote ends the word early: not one word.
+                '"' => return command.to_owned(),
+                other => unquoted.push(other),
+            }
+        }
+        return unquoted;
+    }
+    command.to_owned()
+}
+
+/// Codex's auto-review of one of its own calls (its "Guardian Review"):
+/// its raw input names the call it reviews (`targetItemId`) and the action,
+/// and its raw output the verdict. It shows as one line, `Auto-review:
+/// approved, low risk`, with the action it reviewed, rather than as a call
+/// whose arguments are the review's state when it began.
+fn auto_review_presentation(fields: &ToolCallFields) -> Option<PreparedPresentation> {
+    let input = fields.raw_input.as_ref()?;
+    input.get("targetItemId")?;
+    input.get("reviewId")?;
+    let review = fields
+        .raw_output
+        .as_ref()
+        .and_then(|output| output.get("review"))
+        .or_else(|| input.get("review"));
+    let field = |name: &str| {
+        review
+            .and_then(|review| review.get(name))
+            .and_then(Value::as_str)
+            .map(spaced_words)
+    };
+    let title = match (field("status").filter(|status| status != "in progress"), field("riskLevel")) {
+        (Some(status), Some(risk)) => format!("Auto-review: {status}, {risk} risk"),
+        (Some(status), None) => format!("Auto-review: {status}"),
+        (None, _) => "Auto-review".to_owned(),
+    };
+    let action = input.get("action");
+    let reviewed = action
+        .and_then(|action| action.get("command"))
+        .and_then(Value::as_str)
+        .map(unwrap_shell)
+        .or_else(|| {
+            let files = action?.get("files")?.as_array()?;
+            let names = files
+                .iter()
+                .filter_map(|file| file.as_str().or_else(|| file.get("path")?.as_str()))
+                .collect::<Vec<_>>();
+            (!names.is_empty()).then(|| format!("edit {}", names.join(", ")))
+        })
+        .or_else(|| {
+            let action = action?;
+            let tool = action.get("tool").and_then(Value::as_str)?;
+            Some(match action.get("server").and_then(Value::as_str) {
+                Some(server) => format!("{server} {tool}"),
+                None => tool.to_owned(),
+            })
+        })
+        .or_else(|| {
+            action?
+                .get("type")
+                .and_then(Value::as_str)
+                .map(spaced_words)
+        });
+    let primary = reviewed
+        .map(|text| {
+            let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            line.chars()
+                .filter(|character| !character.is_control())
+                .take(200)
+                .collect::<String>()
+        })
+        .filter(|text| !text.trim().is_empty())
+        .and_then(|text| cookie_agent_protocol::BoundedDisplayText::new(text).ok());
+    let mut presentation = PreparedPresentation::new(display_text(&title), primary)
+        .with_hint(cookie_agent_protocol::ToolHint::GENERIC);
+    presentation.fit();
+    Some(presentation)
+}
+
+/// `inProgress` as `in progress`: a camel-case value as lowercase words.
+fn spaced_words(value: &str) -> String {
+    let mut words = String::with_capacity(value.len() + 4);
+    for character in value.chars() {
+        if character.is_uppercase() && !words.is_empty() {
+            words.push(' ');
+        }
+        words.extend(character.to_lowercase());
+    }
+    words.replace(['_', '-'], " ")
 }
 
 /// A call's arguments as cookie's own tools show theirs: the raw input's
@@ -4054,6 +4188,58 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_shell_string_shows_as_the_command_it_runs() {
+        assert_eq!(unwrap_shell("/bin/bash -lc 'cat notes.txt'"), "cat notes.txt");
+        assert_eq!(unwrap_shell(r"bash -c 'echo '\''hi'\'''"), "echo 'hi'");
+        assert_eq!(
+            unwrap_shell(r#"/bin/bash -lc "cat a; printf '\\n' \"x\"""#),
+            r#"cat a; printf '\n' "x""#
+        );
+        assert_eq!(unwrap_shell("zsh -c 'ls'"), "ls");
+        // Not one quoted word, or not a shell: as it is.
+        for command in [
+            "bash -lc 'a' && 'b'",
+            "bash -lc \"a\" \"b\"",
+            "bash script.sh",
+            "python3 -c 'print(1)'",
+            "ls -la",
+        ] {
+            assert_eq!(unwrap_shell(command), command);
+        }
+    }
+
+    #[test]
+    fn codexs_auto_review_is_one_line_with_its_verdict_and_action() {
+        let mut fields = ToolCallFields {
+            tool_call_id: "guardian_assessment:r1".into(),
+            title: Some("Guardian Review".into()),
+            kind: Some("think".into()),
+            raw_input: Some(json!({
+                "reviewId": "r1",
+                "targetItemId": "exec-1",
+                "review": {"status": "inProgress", "riskLevel": null},
+                "action": {"type": "command", "command": "/bin/bash -lc 'cat calc.py'"},
+            })),
+            ..ToolCallFields::default()
+        };
+        let running = presentation_of(&fields);
+        assert_eq!(running.title.as_str(), "Auto-review");
+        assert_eq!(running.primary_argument.as_ref().map(|text| text.as_str()), Some("cat calc.py"));
+        assert!(running.arguments.is_empty(), "no stale review state");
+        fields.raw_output = Some(json!({"review": {"status": "approved", "riskLevel": "low"}}));
+        assert_eq!(presentation_of(&fields).title.as_str(), "Auto-review: approved, low risk");
+        fields.raw_input = Some(json!({
+            "reviewId": "r2",
+            "targetItemId": "exec-2",
+            "action": {"type": "applyPatch", "files": ["/w/calc.py"]},
+        }));
+        fields.raw_output = Some(json!({"review": {"status": "timedOut"}}));
+        let patch = presentation_of(&fields);
+        assert_eq!(patch.title.as_str(), "Auto-review: timed out");
+        assert_eq!(patch.primary_argument.as_ref().map(|text| text.as_str()), Some("edit /w/calc.py"));
+    }
 
     #[test]
     fn a_reads_numbered_excerpt_is_code_from_its_first_line() {
