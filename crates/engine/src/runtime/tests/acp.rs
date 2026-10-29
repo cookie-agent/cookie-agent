@@ -799,6 +799,82 @@ async fn an_agent_that_speaks_only_acp_v1_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_takes_a_system_prompt_gets_the_context_there_and_again_on_resume() {
+    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_SYSTEM_PROMPT", "1")],
+        &[("fixture.md", document)],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let first = turn(engine, session, "first", "echo").await;
+    assert_eq!(final_text(&first), "echo", "the prompt is the input alone");
+    let system_prompt = |method: &str| {
+        acp.received()
+            .into_iter()
+            .rev()
+            .find(|message| message["method"] == method)
+            .map(|message| message["params"]["systemPrompt"].clone())
+            .expect("sent")
+    };
+    let sent = system_prompt("session/new");
+    assert_eq!(sent["mode"], "append");
+    let parts = sent["content"].as_array().expect("text blocks");
+    assert!(parts.iter().all(|part| part["type"] == "text"));
+    assert_eq!(parts.last().unwrap()["text"], "You review changes.\n");
+    assert!(
+        parts
+            .iter()
+            .any(|part| part["text"].as_str().unwrap().contains("Working directory: "))
+    );
+    // On the record, so the user sees it.
+    assert!(events(engine, session).iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::AcpSessionUpdated { update }
+            if update.prompt_context.as_ref().is_some_and(|context| context.len() == parts.len())
+    )));
+    stop_process(engine).await;
+    let again = turn(engine, session, "again", "echo").await;
+    assert_eq!(final_text(&again), "echo");
+    assert_eq!(session_starts(engine, session)[1].how, AcpSessionStart::Resumed);
+    assert_eq!(system_prompt("session/resume"), sent, "the same context");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_that_repeats_the_first_prompts_context_names_nothing() {
+    let document =
+        "---\ndescription: Fixture with a body\nmode: all\nacp: {}\n---\nYou review changes.\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "title-first").await;
+    let title = |engine: &Engine| {
+        let projection = engine.inner.store.get(session).unwrap();
+        projection.meta.title.as_ref().map(|title| title.as_str().to_owned())
+    };
+    assert_eq!(
+        title(engine),
+        None,
+        "the agent named the session after cookie's context"
+    );
+    // With the context in a system prompt, the first text is the user's.
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_SYSTEM_PROMPT", "1")],
+        &[("fixture.md", document)],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "title-first").await;
+    let projection = engine.inner.store.get(session).unwrap();
+    assert_eq!(
+        projection.meta.title.as_ref().map(|title| title.as_str()),
+        Some("title-first")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_lost_session_is_replaced_and_the_session_is_told() {
     // Every tool hidden: the first prompt carries no tool instructions.
     let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";

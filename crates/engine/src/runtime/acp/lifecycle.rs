@@ -444,6 +444,7 @@ impl super::super::Engine {
         cwd: &str,
         additional_directories: &[String],
         mcp_servers: &[wire::McpServer],
+        system_prompt: Option<serde_json::Value>,
     ) -> Result<Option<(String, wire::SessionResponse)>, super::super::EngineError> {
         let Some(message_id) = message_id else {
             let notice = if delete {
@@ -464,6 +465,7 @@ impl super::super::Engine {
                 cwd,
                 additional_directories,
                 mcp_servers,
+                system_prompt,
             )
             .await
             .map_err(|reason| {
@@ -515,6 +517,7 @@ impl super::super::Engine {
                     cwd: &live.cwd,
                     additional_directories: &[],
                     mcp_servers: &[],
+                    system_prompt: None,
                     meta: Some(wire::air_fork_point(&missing)),
                 },
             ),
@@ -609,7 +612,7 @@ impl super::super::Engine {
             .acquire(&self.inner, &agent)
             .await
             .map_err(super::super::EngineError::Acp)?;
-        self.acp_session(forked, None, &agent, &resolved.document, &process)
+        self.acp_session(forked, None, &agent, &resolved.document, &process, None)
             .await?;
         // A session on another runtime than the one that runs it now, or
         // of another declaration, starts anew there, which forks nothing.
@@ -667,6 +670,7 @@ impl super::super::Engine {
         cwd: &str,
         additional_directories: &[String],
         mcp_servers: &[wire::McpServer],
+        system_prompt: Option<serde_json::Value>,
     ) -> Result<(String, wire::SessionResponse), String> {
         if !process.init().capabilities.session("fork") {
             return Err("it does not offer `session/fork`".to_owned());
@@ -680,6 +684,7 @@ impl super::super::Engine {
                     cwd,
                     additional_directories,
                     mcp_servers,
+                    system_prompt,
                     meta: Some(wire::air_fork_point(message_id)),
                 },
             ),

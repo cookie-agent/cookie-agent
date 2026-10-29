@@ -365,6 +365,16 @@ lost the one it had (or a fork or revert before its first reply starts
 over), and not when it resumes, loads, or forks one, since the agent
 remembers them there. Later prompts carry only the input.
 
+An agent that takes a system prompt (`sessionCapabilities.systemPrompt`;
+Claude Code and Codex do) gets these as one instead, appended to its own
+instructions when cookie opens its session, and the first prompt carries
+only your message, so an agent that names its session after its first
+message (Codex) names it after yours. Its system prompt is not part of its
+conversation, so cookie sends the same one again whenever it resumes or
+forks the agent's session. The transcript shows what was sent either way.
+An agent's title that only repeats the start of what cookie put ahead of
+your first message names nothing: the session keeps cookie's title.
+
 ## Forking, reverting, and deleting a session
 
 The agent keeps its own conversation, so cookie keeps it in step when you

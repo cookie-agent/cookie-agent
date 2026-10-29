@@ -2361,7 +2361,14 @@ impl Engine {
             .await
             .map_err(EngineError::Acp)?;
         let live = self
-            .acp_session(active.session, Some(run_id), &agent, &document, &process)
+            .acp_session(
+                active.session,
+                Some(run_id),
+                &agent,
+                &document,
+                &process,
+                Some(&active.policy),
+            )
             .await?;
         let home = process.client.home();
         let hide = document
@@ -2426,7 +2433,8 @@ impl Engine {
                     &active.policy,
                     &claim.events,
                     &document,
-                    &turn.live,
+                    turn.live.agent.runtime.as_str(),
+                    &turn.live.cwd,
                 )?
             } else {
                 Vec::new()
@@ -2781,7 +2789,8 @@ impl Engine {
         policy: &crate::policy::FrozenRunPolicy,
         events: &crate::events::EventSnapshot,
         document: &cookie_agent_config::AgentDocument,
-        live: &LiveSession,
+        runtime: &str,
+        cwd: &str,
     ) -> Result<Vec<String>, EngineError> {
         let hide = document
             .frontmatter
@@ -2802,10 +2811,7 @@ impl Engine {
         }
         context.extend(self.runtimes_block(
             session,
-            Some(&super::super::runtime_notes::BuiltinTools {
-                runtime: live.agent.runtime.as_str(),
-                cwd: &live.cwd,
-            }),
+            Some(&super::super::runtime_notes::BuiltinTools { runtime, cwd }),
         ));
         context.extend(
             events
@@ -3042,11 +3048,10 @@ impl Engine {
         agent: &RuntimeAgent,
         document: &cookie_agent_config::AgentDocument,
         process: &Arc<AgentProcess>,
+        policy: Option<&crate::policy::FrozenRunPolicy>,
     ) -> Result<LiveSession, EngineError> {
-        let plan = super::lifecycle::plan(
-            &self.inner.store.get(session)?.log.event_snapshot(),
-            &agent.id,
-        );
+        let events = self.inner.store.get(session)?.log.event_snapshot();
+        let plan = super::lifecycle::plan(&events, &agent.id);
         // The live session serves while the log still makes it the
         // session's: a fork or a revert since detached it.
         if let Some(live) = self.live_session(session)
@@ -3153,6 +3158,18 @@ impl Engine {
             branch = None;
         }
         let caps = &process.init().capabilities;
+        // An agent that takes a system prompt gets what cookie adds to the
+        // conversation there rather than ahead of the first message, where
+        // an agent such as Codex would name the session after it: a fresh
+        // context for a new session, and the one the session recorded for a
+        // session it resumes or forks, which the agent may not keep (Claude
+        // Code does not).
+        let takes_system_prompt = caps.session("systemPrompt");
+        let recorded_system_prompt = if takes_system_prompt {
+            wire::system_prompt(&super::prompt::recorded_prompt_context(&events))
+        } else {
+            None
+        };
         let mut opened = None;
         let mut lost = false;
         let mut forked_from = None;
@@ -3167,6 +3184,7 @@ impl Engine {
                     &cwd,
                     &additional_directories,
                     &mcp_servers,
+                    recorded_system_prompt.clone(),
                 )
                 .await?;
             if let Some((id, response)) = forked {
@@ -3182,6 +3200,7 @@ impl Engine {
                 cwd: &cwd,
                 additional_directories: &additional_directories,
                 mcp_servers: &mcp_servers,
+                system_prompt: recorded_system_prompt.clone(),
                 meta: wire::session_meta(),
             };
             // Every v2 agent resumes; none replays (no `replayFrom`).
@@ -3211,9 +3230,20 @@ impl Engine {
                 }
             }
         }
+        let mut system_context = Vec::new();
         let (acp_session_id, response, how, receiver) = match opened {
             Some(opened) => opened,
             None => {
+                if takes_system_prompt && let Some(policy) = policy {
+                    system_context = self.acp_first_prompt_context(
+                        session,
+                        policy,
+                        &events,
+                        document,
+                        agent.runtime.as_str(),
+                        &cwd,
+                    )?;
+                }
                 let response = tokio::time::timeout(
                     SESSION_TIMEOUT,
                     process.peer.request::<_, wire::SessionResponse>(
@@ -3222,6 +3252,7 @@ impl Engine {
                             cwd: &cwd,
                             additional_directories: &additional_directories,
                             mcp_servers: &mcp_servers,
+                            system_prompt: wire::system_prompt(&system_context),
                             meta: wire::session_meta(),
                         },
                     ),
@@ -3286,6 +3317,22 @@ impl Engine {
             },
         )
         .await?;
+        // What the agent reads beyond the conversation is on the record, so
+        // the user sees it.
+        if !system_context.is_empty() {
+            self.append(
+                session,
+                run,
+                origin(),
+                Event::AcpSessionUpdated {
+                    update: AcpSessionUpdate {
+                        prompt_context: Some(system_context.clone()),
+                        ..AcpSessionUpdate::default()
+                    },
+                },
+            )
+            .await?;
+        }
         // The session a revert left behind is the cookie session's own: gone
         // once this one replaced it.
         if let Some((from, _, true)) = &branch {
@@ -3302,7 +3349,9 @@ impl Engine {
             cwd,
             bridge: bridge.ok().map(|opened| opened.bridge),
             options,
-            first_prompt: matches!(how, AcpSessionStart::New),
+            // The context went with the system prompt, or goes with the
+            // first prompt.
+            first_prompt: matches!(how, AcpSessionStart::New) && system_context.is_empty(),
             events: Arc::new(tokio::sync::Mutex::new(receiver)),
             carried: Arc::default(),
             wanted: Arc::default(),
@@ -3821,6 +3870,9 @@ impl Engine {
         // The agent's title applies, again and again, until the user names
         // the session, even over a title cookie generated.
         let projection = self.inner.store.get(session)?;
+        if super::prompt::title_repeats_context(&projection.log.event_snapshot(), title) {
+            return Ok(());
+        }
         let Ok(title) = cookie_agent_protocol::SessionTitle::new(truncate(title.trim(), 512))
         else {
             return Ok(());
@@ -3883,6 +3935,7 @@ impl Engine {
                 &agent,
                 &resolved.document,
                 &process,
+                None,
             )
             .await?;
         let known = live

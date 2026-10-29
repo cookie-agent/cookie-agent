@@ -33,6 +33,8 @@ Each prompt's last text block is a command:
   error                  ends its work with stop reason `error` and an
                          authentication error
   title <text>           reports session title <text>
+  title-first            reports the first text of its first prompt as the
+                         session title, as Codex names a thread
   terminal               two execute calls with agent terminals: one with its
                          output in chunks, then exit 3, failed; one with the
                          whole output as a snapshot with exit 0, completed
@@ -123,6 +125,8 @@ Environment:
   ACP_FIXTURE_FORK_FAIL  "1": session/fork fails, except cookie's probe (whose
                          fork point is `cookie-fork-probe-...`)
   ACP_FIXTURE_DELETE     "1": offers session/delete
+  ACP_FIXTURE_SYSTEM_PROMPT
+                         "1": offers a system prompt (`systemPrompt`)
   ACP_FIXTURE_NO_COMPACT "1": announces no `compact` command
   ACP_FIXTURE_IMAGE_ONLY "1": takes images but no audio or embedded context in a
                          prompt, and no additional directories (by default it
@@ -443,6 +447,8 @@ def prompt(request_id, params):
     session = sessions.setdefault(session_id, {"mode": "default", "model": "small", "turn": 0})
     session["turn"] = session.get("turn", 0) + 1
     texts = [block.get("text", "") for block in params.get("prompt", []) if block.get("type") == "text"]
+    if texts:
+        session.setdefault("first_text", texts[0])
     kinds = [block.get("type") for block in params.get("prompt", [])]
     command = texts[-1] if texts else ""
     word, _, rest = command.partition(" ")
@@ -735,6 +741,9 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     elif word == "title":
         update(session_id, {"sessionUpdate": "session_info_update", "title": rest})
         say(session_id, "titled")
+    elif word == "title-first":
+        update(session_id, {"sessionUpdate": "session_info_update", "title": session["first_text"]})
+        say(session_id, "titled")
     elif word == "mcp":
         action, _, more = rest.partition(" ")
         if not mcp_open(session):
@@ -820,6 +829,8 @@ def handle(message):
             session_caps["fork"] = {}
         if env("ACP_FIXTURE_DELETE"):
             session_caps["delete"] = {}
+        if env("ACP_FIXTURE_SYSTEM_PROMPT"):
+            session_caps["systemPrompt"] = {}
         respond(request_id, {
             "protocolVersion": 1 if env("ACP_FIXTURE_V1") else 2,
             "info": {"name": "fixture-agent", "title": "Fixture Agent", "version": "1.0.0"},

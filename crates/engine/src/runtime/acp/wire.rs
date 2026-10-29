@@ -112,9 +112,24 @@ pub(crate) struct NewSessionRequest<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
+    /// [`system_prompt`], sent only to an agent that offers
+    /// `sessionCapabilities.systemPrompt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<Value>,
     /// [`session_meta`].
     #[serde(rename = "_meta")]
     pub meta: Value,
+}
+
+/// A `systemPrompt` that appends `parts` to the agent's own instructions,
+/// one text block each; `None` when there are none.
+pub(crate) fn system_prompt(parts: &[String]) -> Option<Value> {
+    (!parts.is_empty()).then(|| {
+        serde_json::json!({
+            "mode": "append",
+            "content": parts.iter().map(|part| text_block(part)).collect::<Vec<_>>(),
+        })
+    })
 }
 
 /// The `_meta` every session cookie opens carries: Claude Code's adapter
@@ -139,6 +154,9 @@ pub(crate) struct ExistingSessionRequest<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
+    /// As in [`NewSessionRequest`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<Value>,
     /// [`session_meta`].
     #[serde(rename = "_meta")]
     pub meta: Value,
@@ -156,6 +174,9 @@ pub(crate) struct ForkSessionRequest<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
+    /// As in [`NewSessionRequest`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<Value>,
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<Value>,
 }

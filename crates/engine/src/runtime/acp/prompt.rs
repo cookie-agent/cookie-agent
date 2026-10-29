@@ -211,3 +211,34 @@ mod tests {
         assert!(image.max_dimension.is_some());
     }
 }
+
+/// The context the session's latest ACP session was given
+/// (`acp_session_updated.prompt_context`), as a system prompt or ahead of
+/// its first prompt; empty when it was given none.
+pub(crate) fn recorded_prompt_context(events: &crate::events::EventSnapshot) -> Vec<String> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            cookie_agent_protocol::EventPayload::AcpSessionUpdated { update } => {
+                update.prompt_context.clone()
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `title` is the start of the context cookie put ahead of the
+/// first prompt: an agent that names its session after its first message
+/// (Codex) names it after cookie's context there, which names nothing.
+pub(crate) fn title_repeats_context(events: &crate::events::EventSnapshot, title: &str) -> bool {
+    let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = words(title);
+    let title = title.trim_end_matches(['…', '.']).trim_end();
+    if title.is_empty() {
+        return false;
+    }
+    recorded_prompt_context(events)
+        .first()
+        .is_some_and(|context| words(context).starts_with(title))
+}
