@@ -13,8 +13,8 @@ use cookie_agent_client_state::{
         sort_servers, toggle_tool,
     },
     memory::{
-        MemoryStamps, MemoryWriteOutcome, NEW_MEMORY, delete_refusal, editor_text,
-        new_memory_refusal, saved_status,
+        MemoryParts, MemoryStamps, MemoryWriteOutcome, NEW_MEMORY, delete_refusal, editor_text,
+        memory_parts, new_memory_parts, new_memory_refusal, saved_status,
     },
     providers::{
         ProviderAction, ProviderOperation, action_name, retry_store_contention_once,
@@ -90,6 +90,12 @@ pub struct MemoryEdit {
     /// Its stamps and size as read, shown read-only; `None` for a new
     /// memory.
     pub stamps: Option<MemoryStamps>,
+    /// Its parts as read, when the editor shows them as fields; `None`
+    /// when it shows the text whole.
+    pub read_parts: Option<MemoryParts>,
+    /// Its parts as last typed, which `text` writes; the fields open with
+    /// them.
+    pub parts: Option<MemoryParts>,
 }
 
 /// Why a memory write was not saved, as the panel offers to go on.
@@ -1134,12 +1140,17 @@ impl Workspace {
                     // The daemon owns the stamp lines and writes its own on
                     // every save: the editor leaves them out.
                     let text = editor_text(&read.text, version);
+                    let parts = self
+                        .listed_parts(&client, &read.url, &read.revision, &text)
+                        .await;
                     self.memory_edit.set(Some(MemoryEdit {
                         stamps: Some(MemoryStamps::of_read(&read, last_read)),
                         url: read.url,
                         text: text.clone(),
                         original: text,
                         revision: Some(read.revision),
+                        read_parts: parts.clone(),
+                        parts,
                     }));
                 }
                 Err(error) if error.is(&errors::MEMORY_NOT_FOUND) => {
@@ -1151,6 +1162,29 @@ impl Workspace {
                 )),
             }
         });
+    }
+
+    /// The parts of `url`, read at `revision` as `text`, from the listing:
+    /// the panel's when it lists that revision, else a fresh one, since a
+    /// save's refresh may not have landed yet.
+    async fn listed_parts(
+        self,
+        client: &cookie_agent_protocol::Client,
+        url: &str,
+        revision: &str,
+        text: &str,
+    ) -> Option<MemoryParts> {
+        let listed = self.memory.with_untracked(|listing| {
+            let listing = listing.as_ref()?.as_ref().ok()?;
+            let memory = listing.memories.iter().find(|memory| memory.url == url)?;
+            (memory.revision == revision).then(|| memory_parts(memory, revision, text))
+        });
+        if let Some(parts) = listed {
+            return parts;
+        }
+        let listing = client.list_memory(MemoryListParams::default()).await.ok()?;
+        let memory = listing.memories.iter().find(|memory| memory.url == url)?;
+        memory_parts(memory, revision, text)
     }
 
     /// Opens a new memory at `url`, unless it cannot be one.
@@ -1166,8 +1200,9 @@ impl Workspace {
         self.memory_edit.set(Some(new_memory(url)));
     }
 
-    /// Saves the editor's `text` at the revision read.
-    pub fn save_memory(self, text: String) {
+    /// Saves the editor's `text`, typed as `parts` when it shows them, at
+    /// the revision read.
+    pub fn save_memory(self, text: String, parts: Option<MemoryParts>) {
         let Some(edit) = self.memory_edit.get_untracked() else {
             return;
         };
@@ -1180,7 +1215,11 @@ impl Workspace {
             });
             return;
         }
-        self.write_memory(MemoryEdit { text, ..edit });
+        self.write_memory(MemoryEdit {
+            text,
+            parts: parts.or(edit.parts),
+            ..edit
+        });
     }
 
     fn write_memory(self, edit: MemoryEdit) {
@@ -1366,11 +1405,14 @@ pub enum MemoryChoice {
 }
 
 fn new_memory(url: String) -> MemoryEdit {
+    let parts = new_memory_parts(&url);
     MemoryEdit {
         url,
         text: NEW_MEMORY.to_owned(),
         original: NEW_MEMORY.to_owned(),
         revision: None,
         stamps: None,
+        read_parts: parts.clone(),
+        parts,
     }
 }

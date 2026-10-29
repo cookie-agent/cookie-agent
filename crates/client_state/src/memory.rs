@@ -1,8 +1,9 @@
 //! The `/memory` panel's rules every client shares: the memories as rows
 //! by layer and group, what a new memory starts from and where, what
-//! `memory.write` answered, how a delete's refusal reads, the parts of an
-//! `agent://` file the daemon owns, and a memory's stamps and size limit,
-//! which the daemon owns too (memory spec sections 16.9.6 and 16.9.7).
+//! `memory.write` answered, how a delete's refusal reads, a memory's parts
+//! as an editor shows them with those of an `agent://` file the daemon
+//! owns, and a memory's stamps and size limit, which the daemon owns too
+//! (memory spec sections 16.9.6 and 16.9.7).
 
 use cookie_agent_protocol::{
     ClientError, MemoryIgnoredEntry, MemoryInfo, MemoryLayer, MemoryListResult, MemoryReadResult,
@@ -164,28 +165,49 @@ pub fn memory_name(memory: &MemoryInfo) -> &str {
 /// The keywords an agent's mode gives its memory, after its ID.
 const MODE_KEYWORDS: [&str; 3] = ["primary", "subagent", "all"];
 
-/// An `agent://` file as an editor shows it: the daemon owns its
+/// A memory as an editor shows it: its description, its keywords, and its
+/// body, each a field of its own. The daemon owns an `agent://` file's
 /// description and its first keywords (the agent's ID, then its mode) and
-/// keeps them whatever a write gives; the other keywords and the body are
-/// the user's.
+/// keeps them whatever a write gives; everything else is the user's.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AgentMemoryParts {
+pub struct MemoryParts {
     pub description: String,
-    /// The daemon's keywords: the agent's ID, then its mode.
+    /// Whether the daemon owns the description: an `agent://` file's.
+    pub owned_description: bool,
+    /// The daemon's keywords: an `agent://` file's ID, then its mode;
+    /// empty for any other memory.
     pub fixed: Vec<String>,
     pub extra: Vec<String>,
     pub body: String,
 }
 
-/// The parts of `memory`, an `agent://` file whose whole text is `text`,
-/// as `memory.list` describes it; `None` for any other memory, an invalid
-/// one, or a text without frontmatter, which an editor shows whole.
-pub fn agent_memory_parts(memory: &MemoryInfo, text: &str) -> Option<AgentMemoryParts> {
-    if memory.layer != MemoryLayer::Agent || memory.invalid.is_some() {
+/// The parts of `memory`, whose whole text as read at `revision` is
+/// `text`, from what `memory.list` says of it. `None`, so an editor shows
+/// the text whole, when the listing is of another revision, the file is
+/// invalid or has no frontmatter, or a keyword holds a comma, which the
+/// keywords field separates them with.
+pub fn memory_parts(memory: &MemoryInfo, revision: &str, text: &str) -> Option<MemoryParts> {
+    if memory.revision != revision || memory.invalid.is_some() {
         return None;
     }
-    let agent = memory.url.strip_prefix("agent://")?;
-    let body = frontmatter_body(text)?;
+    let description = memory.description.clone()?;
+    if memory.keywords.iter().any(|keyword| keyword.contains(',')) {
+        return None;
+    }
+    let body = frontmatter_body(text)?.to_owned();
+    let Some(agent) = memory
+        .url
+        .strip_prefix("agent://")
+        .filter(|_| memory.layer == MemoryLayer::Agent)
+    else {
+        return Some(MemoryParts {
+            description,
+            owned_description: false,
+            fixed: Vec::new(),
+            extra: memory.keywords.clone(),
+            body,
+        });
+    };
     let mut keywords = memory.keywords.iter();
     let mut fixed = Vec::new();
     let mut extra = Vec::new();
@@ -203,11 +225,25 @@ pub fn agent_memory_parts(memory: &MemoryInfo, text: &str) -> Option<AgentMemory
         }
     }
     extra.extend(keywords.cloned());
-    Some(AgentMemoryParts {
-        description: memory.description.clone().unwrap_or_default(),
+    Some(MemoryParts {
+        description,
+        owned_description: true,
         fixed,
         extra,
-        body: body.to_owned(),
+        body,
+    })
+}
+
+/// The parts a new memory at `url` starts from, which are [`NEW_MEMORY`]:
+/// all empty. `None` for an `agent://` file, whose description the daemon
+/// gives, so an editor shows the template whole.
+pub fn new_memory_parts(url: &str) -> Option<MemoryParts> {
+    (!url.starts_with("agent://")).then(|| MemoryParts {
+        description: String::new(),
+        owned_description: false,
+        fixed: Vec::new(),
+        extra: Vec::new(),
+        body: String::new(),
     })
 }
 
@@ -227,7 +263,7 @@ fn frontmatter_body(text: &str) -> Option<&str> {
     None
 }
 
-impl AgentMemoryParts {
+impl MemoryParts {
     /// The extra keywords of a comma-separated field.
     pub fn typed_keywords(typed: &str) -> Vec<String> {
         typed
@@ -238,9 +274,9 @@ impl AgentMemoryParts {
             .collect()
     }
 
-    /// The whole file to write: the frontmatter with the daemon's
-    /// description and keywords (it keeps them anyway), the extra
-    /// keywords, then the body. Scalars are double-quoted JSON strings,
+    /// The whole file to write: the frontmatter with the description and
+    /// the keywords, the daemon's (which it keeps anyway) first, then the
+    /// body. Scalars are double-quoted JSON strings,
     /// which YAML reads as the same text.
     pub fn text(&self) -> String {
         let quote = |value: &str| serde_json::to_string(value).unwrap_or_default();
@@ -508,8 +544,8 @@ mod tests {
     use cookie_agent_protocol::MemoryListResult;
 
     use super::{
-        AgentMemoryParts, MemoryRow, MemoryStamps, agent_memory_parts, daemon_stamps_memory,
-        editor_text, memory_rows, new_memory_refusal, saved_status, without_stamps,
+        MemoryParts, MemoryRow, MemoryStamps, daemon_stamps_memory, editor_text, memory_parts,
+        memory_rows, new_memory_parts, new_memory_refusal, saved_status, without_stamps,
     };
 
     fn listing() -> MemoryListResult {
@@ -555,8 +591,9 @@ mod tests {
     #[test]
     fn an_agent_file_splits_the_daemons_keywords_from_the_users() {
         let text = "---\ndescription: x\nkeywords: [reviewer, subagent, rust]\n---\nPrefers small diffs.\n";
-        let parts = agent_memory_parts(&agent_memory(&["reviewer", "subagent", "rust"]), text)
+        let parts = memory_parts(&agent_memory(&["reviewer", "subagent", "rust"]), "r1", text)
             .expect("an agent file");
+        assert!(parts.owned_description);
         assert_eq!(parts.fixed, ["reviewer", "subagent"]);
         assert_eq!(parts.extra, ["rust"]);
         assert_eq!(parts.body, "Prefers small diffs.\n");
@@ -565,22 +602,54 @@ mod tests {
             "Memory of the `reviewer` agent: reviews diffs"
         );
         // A file whose keywords lost the mode keeps the rest as the user's.
-        let parts = agent_memory_parts(&agent_memory(&["reviewer", "rust", "subagent"]), text)
+        let parts = memory_parts(&agent_memory(&["reviewer", "rust", "subagent"]), "r1", text)
             .expect("an agent file");
         assert_eq!(parts.fixed, ["reviewer"]);
         assert_eq!(parts.extra, ["rust", "subagent"]);
-        assert!(agent_memory_parts(&agent_memory(&["reviewer"]), "no frontmatter").is_none());
-        let mut project = agent_memory(&[]);
+    }
+
+    #[test]
+    fn any_other_memory_is_all_the_users() {
+        let mut project = agent_memory(&["reviewer", "subagent"]);
+        project.url = "project://shop/reviewer".into();
         project.layer = cookie_agent_protocol::MemoryLayer::Project;
-        assert!(agent_memory_parts(&project, text).is_none());
+        let parts = memory_parts(&project, "r1", "---\ndescription: x\n---\nBody.\n")
+            .expect("a project memory");
+        assert!(!parts.owned_description);
+        assert!(parts.fixed.is_empty());
+        assert_eq!(parts.extra, ["reviewer", "subagent"]);
+        assert_eq!(parts.body, "Body.\n");
+    }
+
+    #[test]
+    fn a_memory_the_fields_cannot_hold_is_shown_whole() {
+        let text = "---\ndescription: x\n---\nBody.\n";
+        let memory = agent_memory(&["reviewer"]);
+        assert!(memory_parts(&memory, "r1", "no frontmatter").is_none());
+        // The listing is of another revision than the text read.
+        assert!(memory_parts(&memory, "r2", text).is_none());
+        let mut invalid = memory.clone();
+        invalid.invalid = Some("bad".into());
+        assert!(memory_parts(&invalid, "r1", text).is_none());
+        let mut comma = memory;
+        comma.keywords.push("a, b".into());
+        assert!(memory_parts(&comma, "r1", text).is_none());
+    }
+
+    #[test]
+    fn a_new_memory_starts_from_empty_parts_unless_an_agents() {
+        let parts = new_memory_parts("project://shop/notes").expect("a project memory");
+        assert_eq!(parts.text(), "---\ndescription: \"\"\n---\n");
+        assert!(new_memory_parts("agent://reviewer").is_none());
     }
 
     #[test]
     fn an_agent_file_is_written_with_its_parts_quoted() {
-        let parts = AgentMemoryParts {
+        let parts = MemoryParts {
             description: "Memory of the `reviewer` agent: \"diffs\"".into(),
+            owned_description: true,
             fixed: vec!["reviewer".into(), "subagent".into()],
-            extra: AgentMemoryParts::typed_keywords(" rust , ,a: b"),
+            extra: MemoryParts::typed_keywords(" rust , ,a: b"),
             body: "Body.\n".into(),
         };
         assert_eq!(

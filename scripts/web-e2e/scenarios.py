@@ -1922,12 +1922,17 @@ def management(browser):
     browser.wait("the memories", lambda: count(browser, "#memory-new") == 1)
     set_text(browser, "#memory-new-url", "project://e2e/notes")
     browser.click("#memory-new")
-    browser.wait("the editor", lambda: count(browser, "#memory-text") == 1)
-    set_text(browser, "#memory-text", "---\ndescription: \n---\nfirst\n")
+    # A new memory opens as fields; an empty description is refused, and
+    # editing again keeps what was typed.
+    browser.wait("the editor", lambda: count(browser, "#memory-text") == 1 and count(browser, "input#memory-description") == 1)
+    set_text(browser, "#memory-keywords", "e2e, notes")
+    set_text(browser, "#memory-text", "first\n")
     browser.click("#memory-save")
     browser.wait("the invalid memory", lambda: "not a valid memory" in browser.text("#memory-pending"))
     browser.click("#memory-edit-again")
-    set_text(browser, "#memory-text", "---\ndescription: Browser scenario notes\n---\nfirst\n")
+    browser.wait("the typed fields", lambda: browser.script("const e = document.querySelector('#memory-keywords'); return e ? e.value : ''") == "e2e, notes")
+    assert browser.script("return document.querySelector('#memory-text').value") == "first\n"
+    set_text(browser, "#memory-description", "Browser scenario notes")
     browser.click("#memory-save")
     # Its project's folder starts folded.
     browser.wait("its folder", lambda: count(browser, '#page [data-project="e2e"]') == 1)
@@ -1938,7 +1943,9 @@ def management(browser):
     path = os.path.join(HOME, ".cookie-agent", "memory", "projects", "e2e", "notes.md")
     with open(path, "w") as file:
         file.write("---\ndescription: Browser scenario notes\n---\nchanged on disk\n")
-    set_text(browser, "#memory-text", "---\ndescription: Browser scenario notes\n---\nsecond\n")
+    assert browser.script("return document.querySelector('#memory-description').value") == "Browser scenario notes"
+    assert browser.script("return document.querySelector('#memory-keywords').value") == "e2e, notes"
+    set_text(browser, "#memory-text", "second\n")
     browser.click("#memory-save")
     browser.wait("the conflict", lambda: "changed since it was opened" in browser.text("#memory-pending"))
     browser.shot("memory-conflict")
@@ -2280,7 +2287,8 @@ def memory_changes(browser):
     assert count(browser, row + "[data-memory-over]") == 0
     browser.shot("memory-focused")
 
-    # The editor: the stamps read-only above the text, which has none.
+    # The editor: the stamps read-only above the fields, and no stamp in
+    # them.
     with open(path) as file:
         created = [line for line in file.read().splitlines() if line.startswith("created: ")]
     assert len(created) == 1, created
@@ -2290,9 +2298,11 @@ def memory_changes(browser):
         r"created less than a minute ago · modified less than a minute ago · \d+ bytes of 1 KB",
         browser.text("#memory-stamps").strip(),
     ), browser.text("#memory-stamps")
+    description = browser.script("return document.querySelector('#memory-description').value")
+    assert description == "The browser scenario builds with trunk", description
+    assert browser.script("return document.querySelector('#memory-keywords').value") == "e2e-scenario"
     text = browser.script("return document.querySelector('#memory-text').value")
-    assert "description: The browser scenario builds with trunk" in text, text
-    assert "created:" not in text and "modified:" not in text, text
+    assert text.rstrip("\n") == "The user said the browser scenario builds with trunk.", text
     browser.shot("memory-editor-stamps")
     set_text(browser, "#memory-text", text.replace("with trunk.", "with trunk and tailwind."))
     browser.click("#memory-save")

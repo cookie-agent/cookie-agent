@@ -134,7 +134,9 @@ such as `Edit memory project://web/build`: expanding it shows the change as
 a diff, like an edit's, and clicking its URL opens `/memory` at that
 memory; a search's results open theirs the same way. The web client's
 Memory view shows the same ages and sizes, and its rows the same diffs and
-links.
+links. Its editor shows a memory's description, keywords, and body as
+fields, with an agent's description and first keywords fixed, and the whole
+text only for a file the fields cannot hold, such as an invalid one.
 
 From a terminal, `cookie memory` lists, edits, and deletes memories through
 the daemon, so it works against a remote daemon as well (`--url` and

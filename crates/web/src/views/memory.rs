@@ -2,18 +2,18 @@
 //! was modified, its size against its limit, and a mark when it is over
 //! it, each project a folder that folds (folded until this browser opens
 //! it) and that can be deleted with its memories; the editor, which shows
-//! an `agent://` file's daemon-owned description and keywords as fixed and
-//! a memory's stamps read-only above its text; and the choices a write
+//! a memory's description, keywords, and body as fields, an `agent://`
+//! file's daemon-owned description and keywords fixed, and its stamps
+//! read-only above them; and the choices a write
 //! that was not saved offers. A transcript line opens the view at a
 //! memory, which is marked.
 
 use std::collections::HashMap;
 
 use cookie_agent_client_state::memory::{
-    AgentMemoryParts, MemoryRow, MemoryStamps, OVER_LIMIT, OVER_LIMIT_NOTE, agent_memory_parts,
-    layer_title, memory_name,
+    MemoryParts, MemoryRow, MemoryStamps, OVER_LIMIT, OVER_LIMIT_NOTE, layer_title, memory_name,
 };
-use cookie_agent_protocol::{MemoryInfo, MemoryLayer};
+use cookie_agent_protocol::MemoryLayer;
 use leptos::prelude::*;
 
 use super::{
@@ -437,41 +437,41 @@ fn project_folder(
     }
 }
 
-/// The memory open in the editor: an `agent://` file as its parts, the
-/// daemon's fixed, else the whole file as text.
+/// The memory open in the editor: its description, keywords, and body as
+/// fields, an `agent://` file's description and first keywords fixed since
+/// the daemon owns them; else, for a file the fields cannot hold, the
+/// whole text.
 fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
-    let info = workspace.memory.with_untracked(|listing| {
-        listing
-            .as_ref()
-            .and_then(|listing| listing.as_ref().ok())
-            .and_then(|listing| {
-                listing
-                    .memories
-                    .iter()
-                    .find(|memory| memory.url == edit.url)
-                    .cloned()
-            })
-    });
-    let parts = info
-        .as_ref()
-        .and_then(|info| agent_memory_parts(info, &edit.text));
-    let original = info
-        .as_ref()
-        .and_then(|info: &MemoryInfo| agent_memory_parts(info, &edit.original));
     let url = edit.url.clone();
-    let body = match &parts {
-        Some(parts) => view! {
-            <div class="flex flex-col gap-1" data-agent-memory>
-                <span class="text-xs font-bold text-ink dark:text-sand">"Description"</span>
-                <p
-                    id="memory-description"
-                    class="flex items-start gap-2 rounded-md border border-dashed border-crust px-3 py-2 text-sm dark:border-smoke"
-                    title="The daemon keeps it: the agent's own description"
-                >
-                    <Glyph icon=icondata::FaLockSolid class="mt-1 text-xs opacity-60" />
-                    <span>{parts.description.clone()}</span>
-                </p>
-                <span class="mt-1 text-xs font-bold text-ink dark:text-sand">"Keywords"</span>
+    let body = match &edit.parts {
+        Some(parts) => {
+            let description = if parts.owned_description {
+                view! {
+                    <p
+                        id="memory-description"
+                        class="flex items-start gap-2 rounded-md border border-dashed border-crust px-3 py-2 text-sm dark:border-smoke"
+                        title="The daemon keeps it: the agent's own description"
+                    >
+                        <Glyph icon=icondata::FaLockSolid class="mt-1 text-xs opacity-60" />
+                        <span>{parts.description.clone()}</span>
+                    </p>
+                }
+                .into_any()
+            } else {
+                view! {
+                    <input
+                        type="text"
+                        id="memory-description"
+                        class=FIELD
+                        placeholder="one line: what this memory holds"
+                        maxlength="200"
+                        value=parts.description.clone()
+                        aria-label="Description"
+                    />
+                }
+                .into_any()
+            };
+            let fixed = (!parts.fixed.is_empty()).then(|| view! {
                 <div class="flex flex-wrap items-center gap-1.5">
                     {parts.fixed.iter().map(|keyword| view! {
                         <span class=format!("{STATE} inline-flex items-center gap-1 font-mono") title="The daemon keeps it" data-fixed-keyword>
@@ -480,26 +480,45 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
                         </span>
                     }).collect_view()}
                 </div>
-                <input
-                    type="text"
-                    id="memory-keywords"
-                    class=FIELD
-                    placeholder="more keywords, separated by commas"
-                    value=parts.extra.join(", ")
-                    aria-label="More keywords"
-                />
-                <p class=NOTE>"The daemon owns the description and the first keywords (the agent and its mode); the rest are yours."</p>
-                <span class="mt-1 text-xs font-bold text-ink dark:text-sand">"Memory"</span>
-            </div>
-            <textarea id="memory-text" class=EDITOR spellcheck="false">{parts.body.clone()}</textarea>
+            });
+            let placeholder = if parts.fixed.is_empty() {
+                "keywords, separated by commas"
+            } else {
+                "more keywords, separated by commas"
+            };
+            view! {
+                <div class="flex flex-col gap-1" data-memory-fields>
+                    <span class="text-xs font-bold text-ink dark:text-sand">"Description"</span>
+                    {description}
+                    <span class="mt-1 text-xs font-bold text-ink dark:text-sand">"Keywords"</span>
+                    {fixed}
+                    <input
+                        type="text"
+                        id="memory-keywords"
+                        class=FIELD
+                        placeholder=placeholder
+                        value=parts.extra.join(", ")
+                        aria-label="Keywords"
+                    />
+                    {parts.owned_description.then(|| view! {
+                        <p class=NOTE>"The daemon owns the description and the first keywords (the agent and its mode); the rest are yours."</p>
+                    })}
+                    <span class="mt-1 text-xs font-bold text-ink dark:text-sand">"Memory"</span>
+                </div>
+                <textarea id="memory-text" class=EDITOR spellcheck="false">{parts.body.clone()}</textarea>
+            }
+            .into_any()
         }
-        .into_any(),
         None => view! {
             <textarea id="memory-text" class=EDITOR spellcheck="false">{edit.text.clone()}</textarea>
         }
         .into_any(),
     };
-    let save = StoredValue::new(parts.clone());
+    let save = StoredValue::new((
+        edit.parts.clone(),
+        edit.read_parts.clone(),
+        edit.original.clone(),
+    ));
     // The daemon owns the stamps and rewrites them on every save: they show
     // here, read-only, and not in the text.
     let stamps = edit.stamps.as_ref().map(|stamps| {
@@ -528,26 +547,29 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
                     id="memory-save"
                     class=PRIMARY
                     on:click=move |_| {
-                        let text = match save.get_value() {
-                            Some(parts) => {
-                                let typed = AgentMemoryParts {
-                                    extra: AgentMemoryParts::typed_keywords(&field_value("memory-keywords")),
-                                    body: area_value("memory-text"),
-                                    ..parts
-                                };
-                                // Unchanged parts are the text as read, so
-                                // nothing is written.
-                                if original.as_ref() == Some(&typed) {
-                                    workspace.memory_edit.with_untracked(|edit| {
-                                        edit.as_ref().map(|edit| edit.original.clone()).unwrap_or_default()
-                                    })
-                                } else {
-                                    typed.text()
-                                }
-                            }
-                            None => area_value("memory-text"),
+                        let (parts, read, original) = save.get_value();
+                        let Some(parts) = parts else {
+                            workspace.save_memory(area_value("memory-text"), None);
+                            return;
                         };
-                        workspace.save_memory(text);
+                        let typed = MemoryParts {
+                            description: if parts.owned_description {
+                                parts.description.clone()
+                            } else {
+                                field_value("memory-description")
+                            },
+                            extra: MemoryParts::typed_keywords(&field_value("memory-keywords")),
+                            body: area_value("memory-text"),
+                            ..parts
+                        };
+                        // Unchanged parts are the text as read, so nothing
+                        // is written.
+                        let text = if read.as_ref() == Some(&typed) {
+                            original
+                        } else {
+                            typed.text()
+                        };
+                        workspace.save_memory(text, Some(typed));
                     }
                 >
                     "Save"
