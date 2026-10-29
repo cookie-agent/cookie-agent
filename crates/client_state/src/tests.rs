@@ -5660,3 +5660,53 @@ fn an_assistant_block_ends_at_the_row_that_split_it_or_at_its_runs_end() {
     let summary = crate::transcript_mode::work_summary(&state, below, &[], now);
     assert_eq!(summary.label(), "Stopped after 3s");
 }
+
+#[test]
+fn an_acp_turn_that_said_nothing_leaves_no_empty_reply() {
+    let session = SessionId::new_v7();
+    let acp_model: ResolvedModelRef = serde_json::from_value(serde_json::json!({
+        "provider_id": "acp",
+        "model_id": "codex",
+        "adapter_id": "acp",
+        "selection": {"model": "acp/codex", "variant": null},
+        "selection_fingerprint": "b".repeat(64)
+    }))
+    .expect("resolved model");
+    let turn = |resolved_model: ResolvedModelRef| {
+        let attempt_id = AttemptId::new_v7();
+        let started = EventPayload::ModelAttemptStarted {
+            attempt_id,
+            attempt_ordinal: 1,
+            fallback_index: 0,
+            retry_ordinal: 0,
+            resolved_model: resolved_model.clone(),
+            prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+        };
+        let mut committed = committed_turn(1);
+        if let EventPayload::ModelTurnCommitted {
+            attempt_id: id,
+            resolved_model: model,
+            ..
+        } = &mut committed
+        {
+            *id = attempt_id;
+            *model = resolved_model;
+        }
+        [started, committed]
+    };
+    let assistants = |model: ResolvedModelRef| {
+        let run = RunId::new_v7();
+        let events = turn(model)
+            .into_iter()
+            .enumerate()
+            .map(|(index, payload)| stored_event(session, Some(run), index as u64 + 1, payload))
+            .collect::<Vec<_>>();
+        reduce_session_events(session, 0, &events)
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .count()
+    };
+    assert_eq!(assistants(acp_model), 0, "the agent's compact turn");
+    assert_eq!(assistants(resolved_model()), 1, "a model's empty turn still shows");
+}

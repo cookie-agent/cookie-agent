@@ -792,6 +792,17 @@ pub(super) fn reduce_event_from(
                     state.interrupt_marked.insert(attempt_id, false);
                 }
             }
+            // An ACP agent's turn that said nothing, such as the one its
+            // `compact` command runs, leaves no empty reply behind.
+            if acp_turn
+                && turn.content.is_empty()
+                && let Some(item_id) = state
+                    .attempts
+                    .get(&attempt_id)
+                    .map(|attempt| attempt.item_id)
+            {
+                remove_empty_assistant(state, item_id);
+            }
             place_tool_rows(state);
             push_event(
                 state,
@@ -2054,6 +2065,30 @@ fn push_split_item(
     push_item(state, timestamp, item);
     if let Some(index) = relocate {
         move_transcript_item_to_end(state, index);
+    }
+}
+
+/// Removes assistant block `item_id` while it shows nothing.
+fn remove_empty_assistant(state: &mut SessionState, item_id: u64) {
+    let Some(index) = state.transcript.iter().position(|item| {
+        matches!(item, TranscriptItem::Assistant { id, children, .. }
+            if *id == item_id && children.is_empty())
+    }) else {
+        return;
+    };
+    state.transcript.remove(index);
+    for message in state.producer_messages.values_mut() {
+        if message.transcript_index > index {
+            message.transcript_index -= 1;
+        }
+    }
+    state.assistant_metrics.remove(&item_id);
+    if state
+        .open_run_assistant
+        .as_ref()
+        .is_some_and(|projection| projection.item_id == item_id)
+    {
+        state.open_run_assistant = None;
     }
 }
 
