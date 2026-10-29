@@ -783,6 +783,21 @@ fn spaced_words(value: &str) -> String {
     words.replace(['_', '-'], " ")
 }
 
+/// Whether `title` is Codex's warning that a session resumed on another
+/// model than it was recorded with (``recorded with model `X` but is
+/// resuming with `Y` ``) while the session's model is `X` again: cookie set
+/// it back as the session resumed, so the warning no longer holds.
+fn resumed_on_another_model(title: &str, options: &[AcpConfigOption]) -> bool {
+    let Some(recorded) = title
+        .split_once("recorded with model `")
+        .and_then(|(_, rest)| rest.split_once("` but is resuming with `"))
+        .map(|(recorded, _)| recorded)
+    else {
+        return false;
+    };
+    super::options::model_option(options).is_some_and(|model| model.current_value == recorded)
+}
+
 /// The command call `shown` still runs, when its terminal has not exited:
 /// the terminal's ID, the call's ID and tool name, and the command it
 /// shows as.
@@ -1868,6 +1883,9 @@ impl Turn<'_> {
         title: &str,
         description: Option<&str>,
     ) -> Result<(), EngineError> {
+        if resumed_on_another_model(title, &self.live.options) {
+            return Ok(());
+        }
         self.record_update(AcpSessionUpdate {
             notice: Some(AcpNotice {
                 severity,
@@ -4212,6 +4230,27 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn codexs_resume_warning_is_dropped_once_the_model_is_set_back() {
+        let model = |current: &str| AcpConfigOption {
+            id: "model".into(),
+            name: "Model".into(),
+            kind: Default::default(),
+            description: None,
+            category: Some("model".into()),
+            current_value: current.into(),
+            values: Vec::new(),
+        };
+        let warning = "This session was recorded with model `gpt-6-luna` but is resuming with \
+                       `gpt-6-astra`. Consider switching back to `gpt-6-luna`.";
+        assert!(resumed_on_another_model(warning, &[model("gpt-6-luna")]));
+        assert!(!resumed_on_another_model(warning, &[model("gpt-6-astra")]));
+        assert!(!resumed_on_another_model(
+            "Rate limited",
+            &[model("gpt-6-luna")]
+        ));
+    }
 
     #[test]
     fn a_shell_string_shows_as_the_command_it_runs() {
