@@ -42,6 +42,11 @@ pub struct ShellEnvironment {
 }
 
 /// The snapshot file, in a private directory removed with it.
+///
+/// The process's environment lives in a static, which is never dropped, so
+/// the directory outlives its process. It is named after the process's ID
+/// ([`SNAPSHOT_PREFIX`]`<pid>-`), and each capture removes those of the
+/// user's processes that are gone ([`remove_stale_snapshots`]).
 #[derive(Debug)]
 struct Snapshot {
     path: PathBuf,
@@ -418,6 +423,53 @@ unset -f __cookie_snapshot
     )
 }
 
+/// The start of a snapshot directory's name, before its process's ID.
+const SNAPSHOT_PREFIX: &str = "cookie-shell-";
+
+/// Removes the snapshot directories in `directory` that the user's
+/// processes other than this one left: those whose process is gone. One
+/// that cannot be removed is left for a later capture.
+#[cfg(unix)]
+fn remove_stale_snapshots(directory: &Path) {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    // SAFETY: `getuid` has no preconditions and touches no memory.
+    let user = unsafe { libc::getuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(SNAPSHOT_PREFIX))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        if pid <= 0 || pid == std::process::id() as libc::pid_t || process_exists(pid) {
+            continue;
+        }
+        // Not followed: a link is not a directory a capture made.
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_dir() && metadata.uid() == user)
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Whether process `pid` exists, as `kill(pid, 0)` tells: one of another
+/// user's that refuses the signal exists.
+#[cfg(unix)]
+fn process_exists(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 only checks that `pid` can be signalled.
+    let signalled = unsafe { libc::kill(pid, 0) } == 0;
+    signalled || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 #[cfg(unix)]
 async fn run(
     shell: &str,
@@ -437,8 +489,9 @@ async fn run(
             .collect::<String>()
     );
     let snapshot = if is_bash(shell) {
+        remove_stale_snapshots(&std::env::temp_dir());
         let directory = tempfile::Builder::new()
-            .prefix("cookie-shell-")
+            .prefix(&format!("{SNAPSHOT_PREFIX}{}-", std::process::id()))
             .tempdir()
             .map_err(|error| format!("no directory for the bash snapshot: {error}"))?;
         let path = directory.path().join("snapshot.sh");

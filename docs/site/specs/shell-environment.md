@@ -216,8 +216,14 @@ shopt -s extdebug
   Variables travel in the process environment ([section 6](#6-what-gets-it)).
 
 The snapshot is a mode-0600 file in a private mode-0700 temporary
-directory that the runtime owns and removes when it stops, the same as
-the ACP bridge's socket directory. Each capture replaces it.
+directory, `cookie-shell-<pid>-<random>`, named after the process that
+captured it. Each capture replaces the process's own. The environment is
+held for the life of the process, which never drops it, so the directory
+outlives the process: each capture also removes the directories of the
+user's processes that are gone. *(Fixed 2026-10-30: the directory was
+named `cookie-shell-<random>` and never removed, so every capturing
+process, each test process included, left one; a dev machine gathered
+about 7,000 a day.)*
 
 The `bash` tool then runs:
 

@@ -163,6 +163,36 @@ mod capture {
         assert!(!snapshot.exists());
     }
 
+    #[test]
+    fn a_capture_removes_the_snapshots_of_processes_that_are_gone() {
+        let directory = tempfile::tempdir().expect("scratch directory");
+        let mut exited = std::process::Command::new("true")
+            .spawn()
+            .expect("start a process");
+        let gone = exited.id();
+        exited.wait().expect("the process exits");
+        let mine = std::process::id();
+        let names = [
+            format!("{SNAPSHOT_PREFIX}{gone}-AbCdEf"),
+            format!("{SNAPSHOT_PREFIX}{mine}-AbCdEf"),
+            format!("{SNAPSHOT_PREFIX}1-AbCdEf"),
+            format!("{SNAPSHOT_PREFIX}AbCdEf"),
+            format!("other-{gone}-AbCdEf"),
+        ];
+        for name in &names {
+            std::fs::create_dir(directory.path().join(name)).expect("make a directory");
+        }
+        remove_stale_snapshots(directory.path());
+        let left = names
+            .iter()
+            .filter(|name| directory.path().join(name).exists())
+            .cloned()
+            .collect::<Vec<_>>();
+        // The exited process's goes; this process's, a live one's (init),
+        // and names that are not a process's snapshot stay.
+        assert_eq!(left, names[1..]);
+    }
+
     #[tokio::test]
     async fn a_slow_rc_file_times_out() {
         let home = Home::new("sleep 30");
