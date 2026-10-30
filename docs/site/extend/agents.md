@@ -692,6 +692,44 @@ dropped as often as it takes), and the last five verdicts come along as
 entries. Nothing is summarised, and the boundary is the same after a
 restart. Its cache lifetime is [`[approval] cache_ttl`](../engine/approval.md#the-reviewers-cache).
 
+### Inheriting an agent
+
+A document can start from another agent document and write only what it
+changes, with `inherit:` and the other document's path, relative to its own
+file. To run the official `primary` on another model and keep everything
+else in step with the official agent:
+
+```markdown
+---
+inherit: ../official_agents/primary.md
+models:
+  - { model: "anthropic/claude-opus-5-5", variant: "high" }
+---
+```
+
+- **Frontmatter:** each key the document writes replaces the inherited one;
+  every key it leaves out (description, mode, limits, `agent_md`, and the
+  rest) is the inherited document's, and follows it when the official agents
+  are refreshed.
+- **`permissions`** are replaced per action: a `bash` key replaces the
+  inherited `bash` keys, runtime selectors included, and the other actions
+  stay as inherited. A new action is added.
+- **The body:** an empty body is the inherited prompt; any other body is
+  used as written, with `{{default_prompt}}` standing for the inherited
+  prompt.
+- **What it may name:** an agent document of the configuration,
+  `official_agents/<id>.md`, `agents/<id>.md`, or `agents/<preset>/<id>.md`.
+  The ID may differ, so `agents/fast.md` with
+  `inherit: ../official_agents/primary.md` is a second assistant. A document
+  may inherit one that inherits in turn; a cycle is an error. Official
+  agents never inherit.
+- **A target that does not exist yet**, such as an official agent before the
+  first refresh, leaves the agent out, with a configuration diagnostic, until
+  it does.
+
+Without `inherit`, a document of an official agent's ID replaces the official
+agent whole.
+
 ### Extending an official agent's prompt
 
 Every official agent holds its whole prompt. In a document of yours in

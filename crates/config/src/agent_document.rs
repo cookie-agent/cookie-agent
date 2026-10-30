@@ -75,12 +75,9 @@ impl AgentDocument {
     }
 }
 
-pub(crate) fn parse_agent(
-    id: AgentId,
-    bytes: &[u8],
-    source: AgentDocumentSource,
-    path: &Path,
-) -> Result<AgentDocument, ConfigError> {
+/// `bytes`, an agent document, split into its frontmatter's YAML and its
+/// body, both checked against the document limits.
+pub(crate) fn split_document(bytes: &[u8], path: &Path) -> Result<(String, String), ConfigError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| invalid_document(path, "content is not UTF-8"))?
         .replace("\r\n", "\n")
@@ -96,9 +93,10 @@ pub(crate) fn parse_agent(
         .ok_or_else(|| invalid_document(path, "frontmatter must start with `---`"))?;
     let closing = rest
         .find("\n---\n")
+        .or_else(|| rest.ends_with("\n---").then(|| rest.len() - "\n---".len()))
         .ok_or_else(|| invalid_document(path, "frontmatter must end with `---`"))?;
     let yaml = &rest[..closing];
-    let raw_body = &rest[closing + "\n---\n".len()..];
+    let raw_body = rest.get(closing + "\n---\n".len()..).unwrap_or_default();
     if yaml.len() > MAX_FRONTMATTER_BYTES || raw_body.len() > MAX_BODY_BYTES || forbidden_yaml(yaml)
     {
         return Err(invalid_document(
@@ -106,8 +104,23 @@ pub(crate) fn parse_agent(
             "frontmatter is too large or uses unsupported YAML features",
         ));
     }
-    let yaml_value: serde_yaml::Value =
-        serde_yaml::from_str(yaml).map_err(|error| yaml_error(path, &error))?;
+    Ok((yaml.to_owned(), raw_body.to_owned()))
+}
+
+/// The frontmatter YAML of a document, parsed.
+pub(crate) fn parse_yaml(yaml: &str, path: &Path) -> Result<serde_yaml::Value, ConfigError> {
+    serde_yaml::from_str(yaml).map_err(|error| yaml_error(path, &error))
+}
+
+pub(crate) fn parse_agent(
+    id: AgentId,
+    bytes: &[u8],
+    source: AgentDocumentSource,
+    path: &Path,
+) -> Result<AgentDocument, ConfigError> {
+    let (yaml, raw_body) = split_document(bytes, path)?;
+    let (yaml, raw_body) = (yaml.as_str(), raw_body.as_str());
+    let yaml_value = parse_yaml(yaml, path)?;
     validate_yaml_limits(&yaml_value, 0)
         .map_err(|_| invalid_document(path, "YAML resource limit exceeded"))?;
     reject_schema_field(&yaml_value, yaml, path)?;
@@ -193,7 +206,7 @@ fn reject_schema_field(
     Ok(())
 }
 
-fn invalid_document(path: &Path, message: impl Into<String>) -> ConfigError {
+pub(crate) fn invalid_document(path: &Path, message: impl Into<String>) -> ConfigError {
     ConfigError::AgentDocument {
         path: path.to_owned(),
         message: message.into(),

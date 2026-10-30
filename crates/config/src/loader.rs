@@ -255,9 +255,25 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
                     continue;
                 }
                 let id = AgentId::new(*id).expect("validated agent path");
+                let merged = match crate::agent_inherit::resolve(
+                    tree,
+                    path.as_str(),
+                    bytes,
+                    runtime.agents.official,
+                )? {
+                    crate::agent_inherit::Resolved::AsWritten => None,
+                    crate::agent_inherit::Resolved::Merged(merged) => Some(merged),
+                    crate::agent_inherit::Resolved::Missing(target) => {
+                        official_agent_diagnostics.push(format!(
+                            "agent `{id}` was left out: it inherits `{target}`, which there is \
+                             no document for (yet)"
+                        ));
+                        continue;
+                    }
+                };
                 let mut document = parse_agent(
                     id.clone(),
-                    bytes,
+                    merged.as_deref().unwrap_or(bytes),
                     AgentDocumentSource::User,
                     &tree.display_path(path),
                 )?;

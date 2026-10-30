@@ -1,6 +1,7 @@
 //! Strict runtime configuration and Markdown agent documents.
 
 mod agent_document;
+mod agent_inherit;
 mod agents;
 mod cache;
 mod error;

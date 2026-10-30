@@ -46,6 +46,9 @@ list where the code departs from the text below.
   agent's prompt of the same ID, else for the prompt the binary carries,
   which only compaction has; in a preset's document, for the top-level
   document of the user's it replaces first (decided 2026-10-30).
+- A document may `inherit:` another agent document by path (such as
+  `../official_agents/primary.md`), writing only the keys it changes and
+  following the rest (decided 2026-10-30).
 
 ## Implementation notes
 
