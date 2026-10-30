@@ -44,19 +44,21 @@ permissions:
     "*": ask
 ```
 
-The most specific pattern wins, and a resource no rule matches is denied. A
-tool whose action has no `allow` or `ask` rule is not even offered to the
-model. See [Permissions](../extend/agents.md#permissions).
+The most specific pattern wins, and whatever no rule matches asks: a
+resource your key's patterns leave out, and every action you name no key
+for, plugins' and runtimes' own included. Only a `deny` you write denies, and
+a tool is not even offered when a `"*": deny` covers its action with no
+`allow` or `ask` beside it. See [Permissions](../extend/agents.md#permissions).
 
-Two actions have a default by the agent's mode, which applies only while
+Three actions have a default by the agent's mode, which applies only while
 the document names no key for that action (a key with a runtime selector
 counts):
 
-| Mode | `list_runtimes` | `mcp` |
-|---|---|---|
-| `primary`, `all` | `allow` | `"*": ask` |
-| `subagent` | none | `"*": ask` |
-| `internal` | none | none |
+| Mode | `list_runtimes` | `skill` | `mcp` |
+|---|---|---|---|
+| `primary`, `all` | `allow` | `allow` | `"*": ask` |
+| `subagent` | none (asks) | `allow` | `"*": ask` |
+| `internal` | none | none | none |
 
 So every agent that is not internal is offered the connected MCP servers'
 tools and asks before each call. A declared key replaces its action's
@@ -104,9 +106,10 @@ touching the agent. They merge into **one rule list**:
 3. the session's rules. A session rule with the same action, runtime selector,
    and pattern as a rule above replaces it; any other session rule is added.
 
-That one list decides everything: a tool is offered when some rule for its
-action allows or asks, and a call follows the most specific matching rule,
-with a session rule winning a tie. `/permissions` shows the same list, each
+That one list decides everything: a tool is offered unless a `"*"` deny
+covers its action with no rule that allows or asks, and a call follows the
+most specific matching rule, with a session rule winning a tie, or asks when
+none matches. `/permissions` shows the same list, each
 rule with its source (`session`, `agent`, or `default`).
 
 | Session rule | Document and defaults | A call |
@@ -119,7 +122,7 @@ rule with its source (`session`, `agent`, or `default`).
 | `mcp: deny` | default `mcp: {"*": ask}` | none: the MCP tools are hidden |
 
 So a session can turn off a tool a default gives (memory, cron, MCP,
-`list_runtimes`), and a broad session rule does not override a narrower rule
+`list_runtimes`, skills, attaching), and a broad session rule does not override a narrower rule
 of the document: to change that rule for one session, override that exact
 pattern, which is what editing a row in `/permissions` does. See
 [Session permission overlays](../extend/agents.md#session-permission-overlays).

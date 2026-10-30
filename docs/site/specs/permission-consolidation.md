@@ -3,6 +3,14 @@
 Status: **implemented** (2026-10-23); see
 [Implementation notes](#10-implementation-notes).
 
+**Changed 2026-10-30 (decided by the user):** whatever no rule matches now
+asks instead of being denied, for every action and for resources inside a
+declared key alike, and a tool is hidden only when a `"*"` deny covers its
+action with no `allow` or `ask` rule beside it. `skill` has a default of
+`allow` for every agent that is not internal. Where this spec says an
+unmatched check denies or an action without rules has no tools, read ask
+and offered.
+
 ## 1. Goal and scope
 
 A run's permissions come from three levels: the defaults the daemon

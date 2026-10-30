@@ -110,7 +110,8 @@ pub(crate) struct MergedRule<'a> {
 /// A run's permissions as one rule list
 /// (`docs/site/specs/permission-consolidation.md` section 3): the frozen
 /// policy's rules (the agent document's, and the defaults of each action it
-/// names no key for), then the session overlay's. An overlay rule replaces
+/// names no key for), then the session overlay's. A check no rule matches
+/// asks. An overlay rule replaces
 /// every policy rule with its identity (action, runtime selector, and
 /// pattern, a leading `~` expanded against the scope's home as matching
 /// expands it); every other overlay rule is added. Policy rules carry the
@@ -215,18 +216,35 @@ impl<'a> MergedRules<'a> {
 
     /// Whether a tool checked under `action` on the runtime with ID
     /// `runtime` is offered: some rule for `action` applying to that runtime
-    /// allows or asks.
+    /// allows or asks, or none of them covers every resource (`*`), so what
+    /// they leave asks. Only a `*` deny with no allow or ask beside it hides
+    /// the tool.
     pub(crate) fn offers(&self, action: &PermissionAction, runtime: Option<&str>) -> bool {
-        self.rules.iter().any(|MergedRule { rule, .. }| {
-            rule.action == *action
-                && rule.applies_to(runtime)
-                && matches!(rule.effect, PermissionEffect::Allow | PermissionEffect::Ask)
-        })
+        let applying = || {
+            self.rules.iter().filter(move |merged| {
+                merged.rule.action == *action && merged.rule.applies_to(runtime)
+            })
+        };
+        applying().any(|merged| {
+            matches!(
+                merged.rule.effect,
+                PermissionEffect::Allow | PermissionEffect::Ask
+            )
+        }) || !applying().any(|merged| merged.rule.resource.as_str() == "*")
+    }
+
+    /// What a check that no rule matches decides: ask, for every action,
+    /// a plugin's or a runtime's included.
+    fn unmatched() -> (PermissionEffect, String) {
+        (
+            PermissionEffect::Ask,
+            "no matching rule; ask by default".into(),
+        )
     }
 
     /// The effect of `action` on `resource` in `scope`: the most specific
     /// matching rule's ([`specificity`]), a later rule winning a tie, else
-    /// deny. The list must have been built with `scope.home`.
+    /// ask. The list must have been built with `scope.home`.
     pub(crate) fn decide(
         &self,
         action: &PermissionAction,
@@ -239,12 +257,7 @@ impl<'a> MergedRules<'a> {
             .filter(|(_, merged)| rule_matches(merged.rule, action, resource, scope))
             .max_by_key(|(index, merged)| specificity(merged.rule, *index, scope.home))
             .map_or_else(
-                || {
-                    (
-                        PermissionEffect::Deny,
-                        "no matching rule; deny by default".into(),
-                    )
-                },
+                Self::unmatched,
                 |(_, merged)| {
                     (
                         merged.rule.effect,
@@ -256,7 +269,7 @@ impl<'a> MergedRules<'a> {
 
     /// The effect of `action` checked by name only in `scope`: its `*`
     /// rules', a runtime-selected one over a bare one, then the later one;
-    /// deny without one.
+    /// ask without one.
     pub(crate) fn decide_name_only(
         &self,
         action: &PermissionAction,
@@ -267,22 +280,12 @@ impl<'a> MergedRules<'a> {
             .enumerate()
             .filter(|(_, merged)| name_only_rule(merged.rule, action, scope))
             .max_by_key(|(index, merged)| (merged.rule.runtime.is_some(), *index))
-            .map_or_else(
-                || {
-                    (
-                        PermissionEffect::Deny,
-                        "no bare or `*` rule; deny by default for a permission-name-only check"
-                            .into(),
-                    )
-                },
-                |(_, merged)| {
-                    (
-                        merged.rule.effect,
-                        "bare or `*` permission rule applies to the permission-name-only check"
-                            .into(),
-                    )
-                },
-            )
+            .map_or_else(Self::unmatched, |(_, merged)| {
+                (
+                    merged.rule.effect,
+                    "bare or `*` permission rule applies to the permission-name-only check".into(),
+                )
+            })
     }
 
     /// The rules that `keep` admits, in order, as a decision trace lists
@@ -662,7 +665,8 @@ impl PermissionPipeline {
     /// resource is the tool's name
     /// ([`PermissionAction::is_tool_name`]) is offered when the merged list
     /// of `policy` and `overlay` does not deny that name: a matching `allow`
-    /// or `ask` offers it, a `deny` or no matching rule hides it. A grant
+    /// or `ask` offers it, and so does no matching rule, which asks; a
+    /// matching `deny` hides it. A grant
     /// cannot offer it otherwise, since it never overrides a deny. Any other
     /// tool is offered as [`Self::tool_visible_with_grants`] decides.
     #[must_use]
@@ -849,16 +853,20 @@ pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> C
 /// (`docs/site/specs/runtime-delegation.md` section 4 and
 /// `docs/site/specs/runtimes.md` section 7.1), each applying only to an
 /// action its document names no key for. `primary` and `all` agents may list
-/// runtimes, and they and `subagent` agents call MCP tools after asking;
-/// internal agents get nothing. Memory's defaults depend on whether the run
-/// is delegated, so they are [separate](memory_default_rules).
+/// runtimes; they and `subagent` agents use every skill and call MCP tools
+/// after asking; internal agents get nothing. Memory's defaults depend on
+/// whether the run is delegated, so they are [separate](memory_default_rules).
 pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
     let defaults: &[(PermissionAction, PermissionEffect)] = match mode {
         AgentMode::Primary | AgentMode::All => &[
             (PermissionAction::LIST_RUNTIMES, PermissionEffect::Allow),
+            (PermissionAction::SKILL, PermissionEffect::Allow),
             (PermissionAction::MCP, PermissionEffect::Ask),
         ],
-        AgentMode::Subagent => &[(PermissionAction::MCP, PermissionEffect::Ask)],
+        AgentMode::Subagent => &[
+            (PermissionAction::SKILL, PermissionEffect::Allow),
+            (PermissionAction::MCP, PermissionEffect::Ask),
+        ],
         AgentMode::Internal => &[],
     };
     defaults
@@ -942,7 +950,8 @@ pub(crate) fn attach_default_rules(mode: AgentMode, delegated: bool) -> Vec<Perm
 }
 
 /// Every rule the daemon supplies to a run of an agent of `mode`, root or
-/// `delegated`, each for an action its document names no key for.
+/// `delegated`, each for an action its document names no key for. Whatever
+/// no rule matches asks ([`MergedRules`]).
 pub(crate) fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
     mode_default_rules(mode)
         .into_iter()
@@ -1580,8 +1589,8 @@ fn expanded_from_defaults(
 /// and `overlay` ([`MergedRules`]) gives it: the built-in actions, then the
 /// other actions the session's tools `declared`, then any other action a rule
 /// names, each group in first-seen order. Each action reports its last
-/// unqualified `*` rule as its effect (deny with the source `default`
-/// without one) and lists every other rule as a pattern, each with its
+/// unqualified `*` rule as its effect (ask, what no rule matching gives,
+/// with the source `default` without one) and lists every other rule as a pattern, each with its
 /// source; an action whose policy rules are exactly its [mode
 /// default](mode_default_rules), or its [memory default](memory_default_rules)
 /// for a root or `delegated` run, reports them with the source `default`. A
@@ -1612,7 +1621,7 @@ fn effective_permission_view(
                 merged.rule.runtime.is_none() && merged.rule.resource.as_str() == "*"
             });
             let (effect, source) = wildcard.map_or(
-                (PermissionEffect::Deny, PermissionRuleSource::Default),
+                (PermissionEffect::Ask, PermissionRuleSource::Default),
                 |merged| (merged.rule.effect, merged.source),
             );
             let patterns = of_action

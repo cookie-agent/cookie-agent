@@ -155,10 +155,9 @@ runtime.
 Grants from every skill loaded during the same turn are merged; loading a
 grantless skill does not remove grants from an earlier skill. The complete
 collection disappears on the next committed user input. Grants can only upgrade
-an `ask` decision to allow: they never override a deny, including the unmatched
-default deny, and they do not make a tool visible on their own. The agent still
-needs an explicit `allow` or `ask` rule for each granted action — for example
-`bash: ask` before relying on a skill's Bash grants. A `model` override applies
+an `ask` decision to allow, including the ask of a call no rule matches: they
+never override a deny, and they do not make a tool visible on their own. A
+granted action whose tools a `"*": deny` hides stays hidden. A `model` override applies
 to the next model turn only.
 
 Every first rendered load appends `skill_loaded`, including the rendered body,

@@ -28,7 +28,7 @@ fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
 }
 
 #[test]
-fn effective_permission_view_reports_message_with_default_deny() {
+fn effective_permission_view_reports_message_asking_by_default() {
     let view = super::effective_permission_view(
         &policy(Vec::new()),
         false,
@@ -39,7 +39,8 @@ fn effective_permission_view_reports_message_with_default_deny() {
         .iter()
         .find(|entry| entry.action == PermissionAction::MESSAGE)
         .expect("message action is reported");
-    assert_eq!(message.effect, PermissionEffect::Deny);
+    // No rule names `message`: each message asks.
+    assert_eq!(message.effect, PermissionEffect::Ask);
     assert_eq!(message.source, PermissionRuleSource::Default);
     assert!(message.patterns.is_empty());
 }
@@ -65,49 +66,61 @@ fn permission_names_map_to_actions_and_invalid_names_fail() {
 }
 
 #[test]
-fn message_tool_visibility_requires_an_allow_or_ask_rule() {
-    assert!(!tool_visible(&[], None, &PermissionAction::MESSAGE, None));
-    let only_deny = [rule(
-        "deny-all",
-        PermissionAction::MESSAGE,
-        "*",
-        PermissionEffect::Deny,
-    )];
+fn message_tool_visibility_needs_an_allow_or_ask_beside_a_star_deny() {
+    // No rule at all leaves every message asking, so the tool is offered.
+    assert!(tool_visible(&[], None, &PermissionAction::MESSAGE, None));
+    let deny_all = || {
+        rule(
+            "deny-all",
+            PermissionAction::MESSAGE,
+            "*",
+            PermissionEffect::Deny,
+        )
+    };
     assert!(!tool_visible(
-        &only_deny,
+        &[deny_all()],
         None,
         &PermissionAction::MESSAGE,
         None
     ));
-    let allows = [rule(
-        "allow-child",
-        PermissionAction::MESSAGE,
-        "child",
-        PermissionEffect::Allow,
-    )];
+    let allows = [
+        deny_all(),
+        rule(
+            "allow-child",
+            PermissionAction::MESSAGE,
+            "child",
+            PermissionEffect::Allow,
+        ),
+    ];
     assert!(tool_visible(
         &allows,
         None,
         &PermissionAction::MESSAGE,
         None
     ));
-    let asks = [rule(
-        "ask-sibling",
-        PermissionAction::MESSAGE,
-        "sibling",
-        PermissionEffect::Ask,
-    )];
+    let asks = [
+        deny_all(),
+        rule(
+            "ask-sibling",
+            PermissionAction::MESSAGE,
+            "sibling",
+            PermissionEffect::Ask,
+        ),
+    ];
     assert!(tool_visible(&asks, None, &PermissionAction::MESSAGE, None));
     // Delegate rules never make the message tool visible: the actions are
     // independent by decision.
-    let delegate_only = [rule(
-        "allow-delegate",
-        PermissionAction::DELEGATE,
-        "*",
-        PermissionEffect::Allow,
-    )];
+    let delegate_allowed = [
+        deny_all(),
+        rule(
+            "allow-delegate",
+            PermissionAction::DELEGATE,
+            "*",
+            PermissionEffect::Allow,
+        ),
+    ];
     assert!(!tool_visible(
-        &delegate_only,
+        &delegate_allowed,
         None,
         &PermissionAction::MESSAGE,
         None
@@ -168,14 +181,14 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
         .effect,
         PermissionEffect::Deny
     );
-    // Without any rule the default deny applies to every label.
+    // Without any rule every label asks.
     assert_eq!(
         decide(
             &policy(Vec::new()),
             resource(PermissionAction::MESSAGE, "child", b"child")
         )
         .effect,
-        PermissionEffect::Deny
+        PermissionEffect::Ask
     );
 }
 
@@ -214,8 +227,19 @@ fn the_name_unconditional_is_an_ordinary_action() {
             .as_str(),
         "unconditional"
     );
-    assert!(!PermissionPipeline::tool_visible_with_overlay(
+    assert!(PermissionPipeline::tool_visible_with_overlay(
         &policy(Vec::new()),
+        None,
+        "unconditional",
+        None
+    ));
+    assert!(!PermissionPipeline::tool_visible_with_overlay(
+        &policy(vec![rule(
+            "deny-unconditional",
+            PermissionAction::new("unconditional").unwrap(),
+            "*",
+            PermissionEffect::Deny,
+        )]),
         None,
         "unconditional",
         None
@@ -339,7 +363,8 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
         &[Some("cargo test".into())],
         Some(std::path::Path::new("/workspace")),
     );
-    assert_eq!(ungranted.effect, PermissionEffect::Deny);
+    // No rule matches it and the grants do not cover it, so it asks.
+    assert_eq!(ungranted.effect, PermissionEffect::Ask);
     assert!(PermissionPipeline::tool_visible_with_grants(
         &base_policy,
         None,
@@ -537,7 +562,9 @@ fn loose_permission_uses_only_bare_or_wildcard_effect() {
         )]),
         PermissionAction::DELEGATE,
     );
-    assert_eq!(specific_only.effect, PermissionEffect::Deny);
+    // A specific rule never decides a name-only check, so none matches and
+    // it asks.
+    assert_eq!(specific_only.effect, PermissionEffect::Ask);
     assert!(specific_only.evaluations[0].trace.candidates.is_empty());
 }
 
@@ -650,17 +677,14 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
             resource(PermissionAction::MCP, "slack_search", b"unmatched")
         )
         .effect,
-        PermissionEffect::Deny
+        PermissionEffect::Ask
     );
     assert_eq!(
         PermissionPipeline::action_for_permission_name("mcp").expect("MCP action"),
         PermissionAction::MCP
     );
     assert!(PermissionPipeline::tool_visible(&mcp_policy, "mcp"));
-    assert!(!PermissionPipeline::tool_visible(
-        &policy(Vec::new()),
-        "mcp"
-    ));
+    assert!(PermissionPipeline::tool_visible(&policy(Vec::new()), "mcp"));
     assert!(!PermissionPipeline::tool_visible(
         &policy(vec![rule(
             "deny-all",
@@ -872,7 +896,8 @@ fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
     );
     assert_eq!(allowed.effect, PermissionEffect::Allow);
 
-    let denied = PermissionPipeline::default().decide_operation(
+    // An allow for another agent type does not match, so the spawn asks.
+    let other_type = PermissionPipeline::default().decide_operation(
         &policy(vec![rule(
             "allow-explorer",
             PermissionAction::DELEGATE,
@@ -883,7 +908,7 @@ fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
         &[Some("reviewer".into())],
         Some(std::path::Path::new("/workspace")),
     );
-    assert_eq!(denied.effect, PermissionEffect::Deny);
+    assert_eq!(other_type.effect, PermissionEffect::Ask);
 }
 
 #[test]
@@ -1068,7 +1093,7 @@ fn resource_names_do_not_override_configured_permission_effects() {
             );
             assert_eq!(
                 decision.effect,
-                PermissionEffect::Deny,
+                PermissionEffect::Ask,
                 "unmatched {action:?} {name}"
             );
             assert!(decision.evaluations[0].trace.candidates.is_empty());
@@ -1217,7 +1242,7 @@ fn later_generic_allow_cannot_override_exact_env_deny() {
 }
 
 #[test]
-fn unmatched_dotenv_files_use_normal_default_deny() {
+fn unmatched_dotenv_files_use_normal_default_ask() {
     for action in [PermissionAction::READ, PermissionAction::WRITE] {
         for path in [".env", ".env.local", "nested/.env.local", "/outside/.env"] {
             for rules in [
@@ -1236,11 +1261,11 @@ fn unmatched_dotenv_files_use_normal_default_deny() {
                     &[Some(path.into())],
                     Some(std::path::Path::new("/workspace")),
                 );
-                assert_eq!(decision.effect, PermissionEffect::Deny, "{action:?} {path}");
+                assert_eq!(decision.effect, PermissionEffect::Ask, "{action:?} {path}");
                 assert!(decision.evaluations[0].trace.candidates.is_empty());
                 assert_eq!(
                     decision.evaluations[0].trace.precedence_reason,
-                    "no matching rule; deny by default"
+                    "no matching rule; ask by default"
                 );
             }
         }
@@ -1248,7 +1273,7 @@ fn unmatched_dotenv_files_use_normal_default_deny() {
 }
 
 #[test]
-fn tool_visibility_requires_an_effective_non_deny_rule() {
+fn tool_visibility_needs_a_non_deny_rule_beside_a_star_deny() {
     let hidden = policy(vec![rule(
         "deny-all",
         PermissionAction::READ,
@@ -1339,26 +1364,29 @@ fn tool_visibility_requires_an_effective_non_deny_rule() {
         ));
     }
 
-    assert!(!PermissionPipeline::tool_visible(
+    // No rule names `unknown`, so its calls ask and its tools are offered.
+    assert!(PermissionPipeline::tool_visible(
         &policy(Vec::new()),
         "unknown"
     ));
 }
 
 #[test]
-fn empty_permissions_hide_all_known_actions() {
+fn empty_permissions_offer_every_action_and_ask() {
     let policy = policy(Vec::new());
     for permission_name in [
-        "read",
-        "write",
-        "bash",
-        "delegate",
-        "mcp",
-        "plugin:echo",
-        "skill",
-        "webfetch",
+        "read", "write", "bash", "delegate", "mcp", "echo", "skill", "webfetch",
     ] {
-        assert!(!PermissionPipeline::tool_visible(&policy, permission_name));
+        assert!(
+            PermissionPipeline::tool_visible(&policy, permission_name),
+            "{permission_name}"
+        );
+        let action = PermissionPipeline::action_for_permission_name(permission_name).unwrap();
+        assert_eq!(
+            decide_loose(&policy, action).effect,
+            PermissionEffect::Ask,
+            "{permission_name}"
+        );
     }
 }
 
@@ -1401,8 +1429,19 @@ fn visibility_uses_any_rule_without_resource_precedence() {
             &PermissionAction::WEBFETCH,
             None
         ));
+        // Webfetch rules do not offer another action a `*` deny hides.
+        let read_denied = [
+            rules.clone(),
+            vec![rule(
+                "deny-read",
+                PermissionAction::READ,
+                "*",
+                PermissionEffect::Deny,
+            )],
+        ]
+        .concat();
         assert!(!super::tool_visible(
-            &rules,
+            &read_denied,
             None,
             &PermissionAction::READ,
             None
@@ -1416,13 +1455,13 @@ fn visibility_uses_any_rule_without_resource_precedence() {
     }
     assert_eq!(
         decide_loose(&policy(Vec::new()), PermissionAction::WEBFETCH).effect,
-        PermissionEffect::Deny
+        PermissionEffect::Ask
     );
 }
 
 /// A session `deny` hides a tool only when it replaces every rule that
-/// allows or asks for its action; a deny with another pattern leaves the
-/// document's rules offering it.
+/// allows or asks for its action beside a `*` deny; a deny with another
+/// pattern leaves the document's rules offering it.
 #[test]
 fn session_denies_hide_a_tool_only_by_replacing_its_allowing_rules() {
     let empty_policy = policy(Vec::new());
@@ -1485,12 +1524,20 @@ fn session_denies_hide_a_tool_only_by_replacing_its_allowing_rules() {
         None
     ));
 
-    let named_policy_allow = policy(vec![rule(
-        "policy-named-allow",
-        PermissionAction::READ,
-        "README.md",
-        PermissionEffect::Allow,
-    )]);
+    let named_policy_allow = policy(vec![
+        rule(
+            "policy-named-allow",
+            PermissionAction::READ,
+            "README.md",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "policy-wildcard-deny",
+            PermissionAction::READ,
+            "*",
+            PermissionEffect::Deny,
+        ),
+    ]);
     let identical_named_deny = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-named-deny",
@@ -1576,7 +1623,7 @@ fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
             Some(std::path::Path::new("/workspace")),
         )
         .0,
-        PermissionEffect::Deny
+        PermissionEffect::Ask
     );
 }
 
@@ -1620,9 +1667,10 @@ fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
             with_workspace,
             "{resource} with a workspace"
         );
+        // No rule matches without a workspace, so it asks.
         assert_eq!(
             super::effective_permission(&policy, &action, resource, None).0,
-            PermissionEffect::Deny,
+            PermissionEffect::Ask,
             "{resource} without a workspace"
         );
     }
@@ -1647,7 +1695,7 @@ fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
         &[Some("/workspace/a.txt".into())],
         None,
     );
-    assert_eq!(decision.effect, PermissionEffect::Deny);
+    assert_eq!(decision.effect, PermissionEffect::Ask);
     assert!(decision.evaluations[0].trace.candidates.is_empty());
 }
 
@@ -1923,12 +1971,20 @@ fn only_a_leading_home_expands() {
 
 #[test]
 fn a_runtime_selector_limits_tool_visibility_to_that_runtime() {
-    let policy = policy(vec![qualified(
-        PermissionAction::BASH,
-        "labpc",
-        "*",
-        PermissionEffect::Allow,
-    )]);
+    let policy = policy(vec![
+        rule(
+            "deny-bash",
+            PermissionAction::BASH,
+            "*",
+            PermissionEffect::Deny,
+        ),
+        qualified(
+            PermissionAction::BASH,
+            "labpc",
+            "*",
+            PermissionEffect::Allow,
+        ),
+    ]);
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &policy,
         None,
@@ -2021,18 +2077,28 @@ fn tree_grants_apply_only_to_their_runtime() {
     assert_eq!(base.runtime_id, None);
 }
 
-/// A runtime's own action is an opaque label: denied (so hidden) until a
-/// rule names it, matched by plain wildcards, and scoped by runtime
+/// A runtime's own action is an opaque label: asked for (so offered) until
+/// a rule names it, matched by plain wildcards, and scoped by runtime
 /// selectors like any other action.
 #[test]
-fn a_runtime_action_is_denied_until_a_rule_names_it() {
+fn a_runtime_action_asks_until_a_rule_names_it() {
     let browse = PermissionAction::new("browse").unwrap();
-    assert!(!PermissionPipeline::tool_visible_with_overlay(
+    assert!(PermissionPipeline::tool_visible_with_overlay(
         &policy(Vec::new()),
         None,
         "browse",
         Some("web")
     ));
+    assert_eq!(
+        super::effective_permission(
+            &policy(Vec::new()),
+            &browse,
+            "https://example.com",
+            super::PermissionScope::runtime("web", None),
+        )
+        .0,
+        PermissionEffect::Ask
+    );
 
     let rules = vec![
         rule("browse", browse.clone(), "*", PermissionEffect::Ask),
@@ -2098,7 +2164,7 @@ fn the_permission_view_lists_declared_and_named_actions_after_the_built_ins() {
     expected.extend([browse, click]);
     assert_eq!(actions, expected);
     let browse_entry = &view[PermissionAction::BUILT_IN.len()];
-    assert_eq!(browse_entry.effect, PermissionEffect::Deny);
+    assert_eq!(browse_entry.effect, PermissionEffect::Ask);
     assert_eq!(browse_entry.source, PermissionRuleSource::Default);
     let click_entry = &view[PermissionAction::BUILT_IN.len() + 1];
     assert_eq!(click_entry.effect, PermissionEffect::Ask);
@@ -2186,11 +2252,18 @@ fn mode_defaults_follow_the_agent_mode() {
     for mode in [AgentMode::Primary, AgentMode::All] {
         assert_eq!(
             mode_rules(mode),
-            [triple("list_runtimes", "*", allow), triple("mcp", "*", ask)],
+            [
+                triple("list_runtimes", "*", allow),
+                triple("skill", "*", allow),
+                triple("mcp", "*", ask)
+            ],
             "{mode:?}"
         );
     }
-    assert_eq!(mode_rules(AgentMode::Subagent), [triple("mcp", "*", ask)]);
+    assert_eq!(
+        mode_rules(AgentMode::Subagent),
+        [triple("skill", "*", allow), triple("mcp", "*", ask)]
+    );
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(rules.is_empty());
 }
@@ -2307,6 +2380,7 @@ fn root_runs_default_to_reading_every_memory_and_writing_their_own() {
             "{mode:?}"
         );
         let snapshot = policy(rules);
+        // Writes outside the defaults match no rule, so they ask.
         for (action, resource, effect) in [
             (PermissionAction::MEMORY, "project://other/notes", allow),
             (PermissionAction::MEMORY_WRITE, "user://style", allow),
@@ -2314,17 +2388,17 @@ fn root_runs_default_to_reading_every_memory_and_writing_their_own() {
             (
                 PermissionAction::MEMORY_WRITE,
                 "agent://reviewer",
-                PermissionEffect::Deny,
+                PermissionEffect::Ask,
             ),
             (
                 PermissionAction::MEMORY_WRITE,
                 "project://other/notes",
-                PermissionEffect::Deny,
+                PermissionEffect::Ask,
             ),
             (
                 PermissionAction::MEMORY_WRITE,
                 "machine://desktop/setup",
-                PermissionEffect::Deny,
+                PermissionEffect::Ask,
             ),
         ] {
             assert_eq!(
@@ -2344,13 +2418,19 @@ fn root_runs_default_to_reading_every_memory_and_writing_their_own() {
             triple("memory_write", "agent://worker", allow),
         ]
     );
-    // An internal agent gets none, root or delegated.
+    // An internal agent gets none, root or delegated, so every memory call
+    // asks.
     for delegated in [false, true] {
         let document = agent_document("worker", AgentMode::Internal, &[]);
         let rules = super::agent_permission_rules(&document, delegated, &variables);
         assert!(memory_triples(&rules).is_empty(), "{delegated}");
+        let snapshot = policy(rules);
         for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
-            assert!(!super::tool_visible(&rules, None, &action, Some("global")));
+            assert_eq!(
+                effect_in_scope(&snapshot, &action, "user://style"),
+                PermissionEffect::Ask,
+                "{delegated} {action:?}"
+            );
         }
     }
 }
@@ -2450,7 +2530,7 @@ fn action_rules(
 }
 
 #[test]
-fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool_unless_internal() {
+fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool() {
     for mode in [AgentMode::Primary, AgentMode::All, AgentMode::Subagent] {
         let rules = root_rules(&agent_document("worker", mode, &[]));
         assert_eq!(
@@ -2471,31 +2551,36 @@ fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool_unless_internal() {
             PermissionEffect::Ask
         );
     }
+    // An internal agent gets no MCP default; its MCP calls ask because no
+    // rule matches them.
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(action_rules(&rules, &PermissionAction::MCP).is_empty());
-    assert!(!super::tool_visible(
+    assert!(super::tool_visible(
         &rules,
         None,
         &PermissionAction::MCP,
         Some("global")
     ));
+    assert_eq!(
+        effect_in_scope(&policy(rules), &PermissionAction::MCP, "github_search"),
+        PermissionEffect::Ask
+    );
 }
 
 #[test]
 fn a_declared_mcp_key_replaces_the_mcp_default_entirely() {
-    let chrome = cookie_agent_config::PermissionValue::Resources(
-        [(
-            WildcardPattern::new("my_chrome_*").unwrap(),
-            PermissionEffect::Ask,
-        )]
-        .into_iter()
-        .collect(),
-    );
+    let chrome = resources(&[
+        ("my_chrome_*", PermissionEffect::Ask),
+        ("*", PermissionEffect::Deny),
+    ]);
     let document = agent_document("worker", AgentMode::Primary, &[("mcp", chrome)]);
     let rules = root_rules(&document);
     assert_eq!(
         action_rules(&rules, &PermissionAction::MCP),
-        [(None, "my_chrome_*".to_owned(), PermissionEffect::Ask)]
+        [
+            (None, "my_chrome_*".to_owned(), PermissionEffect::Ask),
+            (None, "*".to_owned(), PermissionEffect::Deny)
+        ]
     );
     let snapshot = policy(rules);
     assert_eq!(
@@ -2509,20 +2594,31 @@ fn a_declared_mcp_key_replaces_the_mcp_default_entirely() {
     );
 
     // A key with only a runtime selector declares the action too: the
-    // unqualified default goes, so other runtimes' MCP tools stay hidden.
+    // unqualified default goes, so a `*` deny hides other runtimes' MCP
+    // tools.
     let document = agent_document(
         "worker",
         AgentMode::Subagent,
-        &[("mcp@labpc", effect_value(PermissionEffect::Allow))],
+        &[
+            ("mcp@labpc", effect_value(PermissionEffect::Allow)),
+            ("mcp@global", effect_value(PermissionEffect::Deny)),
+        ],
     );
     let rules = root_rules(&document);
     assert_eq!(
         action_rules(&rules, &PermissionAction::MCP),
-        [(
-            Some("labpc".to_owned()),
-            "*".to_owned(),
-            PermissionEffect::Allow
-        )]
+        [
+            (
+                Some("labpc".to_owned()),
+                "*".to_owned(),
+                PermissionEffect::Allow
+            ),
+            (
+                Some("global".to_owned()),
+                "*".to_owned(),
+                PermissionEffect::Deny
+            )
+        ]
     );
     assert!(super::tool_visible(
         &rules,
@@ -2776,12 +2872,15 @@ fn mcp_offered(
 
 #[test]
 fn a_narrow_mcp_allow_offers_only_the_tools_it_matches() {
-    let narrow = policy(vec![rule(
-        "chrome",
-        PermissionAction::MCP,
-        "my_chrome_*",
-        PermissionEffect::Allow,
-    )]);
+    let narrow = policy(vec![
+        rule(
+            "chrome",
+            PermissionAction::MCP,
+            "my_chrome_*",
+            PermissionEffect::Allow,
+        ),
+        rule("rest", PermissionAction::MCP, "*", PermissionEffect::Deny),
+    ]);
     assert!(mcp_offered(&narrow, None, None, "my_chrome_click", None));
     assert!(!mcp_offered(&narrow, None, None, "github_search", None));
     // The action is still offered: the per-name check is what narrows it.
@@ -2825,7 +2924,8 @@ fn an_mcp_ask_offers_and_a_deny_pattern_hides_one_tool_of_an_allowed_server() {
         "my_chrome_browser_install",
         None
     ));
-    assert!(!mcp_offered(
+    // Without any rule a tool asks, so it is offered.
+    assert!(mcp_offered(
         &policy(Vec::new()),
         None,
         None,
@@ -2883,12 +2983,15 @@ fn a_session_override_changes_which_mcp_tools_are_offered() {
 
 #[test]
 fn an_mcp_tool_is_offered_by_the_rules_of_its_runtime() {
-    let on_labpc = policy(vec![PermissionRule {
-        runtime: Some(cookie_agent_protocol::RuntimeId::new("labpc").expect("runtime ID")),
-        action: PermissionAction::MCP,
-        resource: WildcardPattern::new("browser_*").expect("wildcard"),
-        effect: PermissionEffect::Allow,
-    }]);
+    let on_labpc = policy(vec![
+        rule("rest", PermissionAction::MCP, "*", PermissionEffect::Deny),
+        PermissionRule {
+            runtime: Some(cookie_agent_protocol::RuntimeId::new("labpc").expect("runtime ID")),
+            action: PermissionAction::MCP,
+            resource: WildcardPattern::new("browser_*").expect("wildcard"),
+            effect: PermissionEffect::Allow,
+        },
+    ]);
     assert!(mcp_offered(
         &on_labpc,
         None,
@@ -2941,8 +3044,14 @@ fn a_grant_never_offers_an_mcp_tool_the_merged_rules_deny() {
         "github_search",
         None
     ));
+    let denied_all = policy(vec![rule(
+        "deny-all",
+        PermissionAction::MCP,
+        "*",
+        PermissionEffect::Deny,
+    )]);
     assert!(!mcp_offered(
-        &policy(Vec::new()),
+        &denied_all,
         None,
         Some(&grants),
         "github_search",

@@ -29,17 +29,32 @@ fn published_names(fixture: &Fixture, session: SessionId, policy: &FrozenRunPoli
         .collect()
 }
 
-/// `policy` without the default rules that publish the `global` runtime's
-/// memory tools, `list_runtimes`, and the cron tools, so they stay out of
-/// tests about other tools.
+/// `policy` with the default rules that publish the `global` runtime's
+/// memory tools, `list_runtimes`, the cron tools, and the attach tools
+/// replaced by `*` denies, so they stay out of tests about other tools.
 fn without_memory(mut policy: FrozenRunPolicy) -> FrozenRunPolicy {
-    policy.agent.permissions.retain(|rule| {
-        rule.action != cookie_agent_protocol::PermissionAction::MEMORY
-            && rule.action != cookie_agent_protocol::PermissionAction::MEMORY_WRITE
-            && rule.action != cookie_agent_protocol::PermissionAction::LIST_RUNTIMES
-            && rule.action != cookie_agent_protocol::PermissionAction::CRON
-            && rule.action != cookie_agent_protocol::PermissionAction::ATTACH
-    });
+    use cookie_agent_protocol::PermissionAction;
+    let hidden = [
+        PermissionAction::MEMORY,
+        PermissionAction::MEMORY_WRITE,
+        PermissionAction::LIST_RUNTIMES,
+        PermissionAction::CRON,
+        PermissionAction::ATTACH,
+    ];
+    policy
+        .agent
+        .permissions
+        .retain(|rule| !hidden.contains(&rule.action));
+    policy
+        .agent
+        .permissions
+        .extend(hidden.into_iter().map(|action| {
+            cookie_agent_protocol::PermissionRule::new(
+                action,
+                cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
+                cookie_agent_protocol::PermissionEffect::Deny,
+            )
+        }));
     policy
 }
 
@@ -1465,8 +1480,14 @@ async fn mcp_tools_are_offered_by_the_merged_rules_for_their_names() {
         }),
     );
 
-    // A narrow allow offers only the tools it matches.
-    let narrow = with_mcp_rules(base.clone(), &[("my_chrome_*", PermissionEffect::Allow)]);
+    // A narrow allow beside a `*` deny offers only the tools it matches.
+    let narrow = with_mcp_rules(
+        base.clone(),
+        &[
+            ("my_chrome_*", PermissionEffect::Allow),
+            ("*", PermissionEffect::Deny),
+        ],
+    );
     assert_eq!(
         mcp_names(&fixture, session, &narrow),
         ["my_chrome_browser_install", "my_chrome_click"]
@@ -1487,6 +1508,7 @@ async fn mcp_tools_are_offered_by_the_merged_rules_for_their_names() {
         &[
             ("my_chrome_*", PermissionEffect::Allow),
             ("my_chrome_browser_install", PermissionEffect::Deny),
+            ("*", PermissionEffect::Deny),
         ],
     );
     assert_eq!(

@@ -368,7 +368,7 @@ async fn gaining_write_access_takes_a_snapshot_and_adds_the_rubric() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        &agent("{ memory: allow, memory_write: { \"project://*\": deny } }"),
+        &agent("{ memory: allow, memory_write: deny }"),
     );
     for input in ["one", "two"] {
         responses
@@ -1298,7 +1298,7 @@ async fn the_snapshot_shows_only_what_the_memory_rules_let_the_run_read() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        &agent("{ memory: { \"project://*\": allow } }"),
+        &agent("{ memory: { \"project://*\": allow, \"*\": deny } }"),
     );
     user_write(&fixture, "user://feedback", "Feedback", "- keep it short\n");
     user_write(

@@ -222,7 +222,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
 
 #[test]
 fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
-    let sparse_agent = "---\ndescription: Sparse tool test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  read: allow\n---\nTest sparse tool visibility.\n";
+    let sparse_agent = "---\ndescription: Sparse tool test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  read: allow\n  write: deny\n  bash: deny\n---\nTest sparse tool visibility.\n";
     let mut fixture = synthetic_default_fixture(Some(sparse_agent));
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Local,

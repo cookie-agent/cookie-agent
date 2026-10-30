@@ -335,9 +335,29 @@ async fn a_subagents_call_of_cookies_tools_shows_once_in_its_own_session() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_subagents_call_its_rules_do_not_offer_runs_in_the_parent_and_shows_there_only() {
-    let acp = acp_fixture(&[], &[]).await;
+    // The document denies cron; the parent's session allows it, the
+    // subagent's does not.
+    let document = "---\ndescription: Fixture without cron\nmode: all\nacp: {}\npermissions:\n  cron: deny\n---\nFixture.\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
+    engine
+        .append(
+            session,
+            None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::SessionPermissionOverlaySet {
+                overlay: cookie_agent_protocol::SessionPermissionOverlay {
+                    rules: vec![cookie_agent_protocol::PermissionRule::new(
+                        cookie_agent_protocol::PermissionAction::CRON,
+                        cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
+                        cookie_agent_protocol::PermissionEffect::Allow,
+                    )],
+                },
+            },
+        )
+        .await
+        .unwrap();
     turn(engine, session, "first", "subagent-mcp cron_list {}").await;
     let child = subagent_of(engine, session).await;
     let outcome = first_run(engine, child).await;

@@ -90,11 +90,12 @@ pub(crate) struct MemoryAccess {
 
 /// Whether a run of `agent` has memory (section 6): its agent is not
 /// internal, `global_attached`, and the merged list of its rules and the
-/// session overlay ([`MergedRules`]) holds an `allow` or `ask` rule for
-/// `memory` that reaches the `global` runtime. A writable run can also both
-/// read and write some memory URL (section 16.9.1): the pattern of one of
-/// those `memory` rules and the pattern of an `allow` or `ask`
-/// `memory_write` rule of the merged list overlap. The frozen rules already
+/// session overlay ([`MergedRules`]) offers `memory` on the `global`
+/// runtime. A writable run can also both read and write some memory URL
+/// (section 16.9.1): the pattern of one of its `allow` or `ask` `memory`
+/// rules and that of an `allow` or `ask` `memory_write` rule overlap, an
+/// action without a `*` rule counting as `*`, since what no rule matches
+/// asks. The frozen rules already
 /// have their variables expanded.
 pub(crate) fn memory_access(
     global_attached: bool,
@@ -103,23 +104,30 @@ pub(crate) fn memory_access(
 ) -> MemoryAccess {
     let merged = MergedRules::new(&agent.permissions, overlay, None);
     let visible = |action: &PermissionAction| merged.offers(action, Some(GLOBAL_RUNTIME_ID));
+    // What no rule matches asks: without a `*` rule, every URL the rules
+    // leave out is reachable.
     let patterns = |action: PermissionAction| {
-        merged
+        let applying = merged
             .rules()
             .iter()
             .map(|merged| merged.rule)
-            .filter(move |rule| {
-                rule.action == action
-                    && rule.applies_to(Some(GLOBAL_RUNTIME_ID))
-                    && matches!(rule.effect, PermissionEffect::Allow | PermissionEffect::Ask)
-            })
+            .filter(|rule| rule.action == action && rule.applies_to(Some(GLOBAL_RUNTIME_ID)))
+            .collect::<Vec<_>>();
+        let unmatched_asks = !applying.iter().any(|rule| rule.resource.as_str() == "*");
+        applying
+            .iter()
+            .filter(|rule| matches!(rule.effect, PermissionEffect::Allow | PermissionEffect::Ask))
             .map(|rule| rule.resource.as_str())
+            .chain(unmatched_asks.then_some("*"))
+            .collect::<Vec<_>>()
     };
     let available =
         global_attached && agent.mode != AgentMode::Internal && visible(&PermissionAction::MEMORY);
     let overlap = || {
-        patterns(PermissionAction::MEMORY).any(|readable| {
-            patterns(PermissionAction::MEMORY_WRITE)
+        let writable = patterns(PermissionAction::MEMORY_WRITE);
+        patterns(PermissionAction::MEMORY).iter().any(|readable| {
+            writable
+                .iter()
                 .any(|writable| patterns_intersect(readable, writable))
         })
     };

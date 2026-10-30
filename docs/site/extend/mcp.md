@@ -437,7 +437,7 @@ agent sees only that server's tools, and the YAML above hides
 session override in `/permissions` changes the list at the next model
 request. An "allow for this session" grant never offers a tool the merged
 rules deny. Calls use the same name as their resource: more-specific patterns
-override broader ones, and unmatched calls are denied. Each delegated agent
+override broader ones, and unmatched calls ask. Each delegated agent
 is evaluated against its own permission map.
 
 `include_tools` and `exclude_tools` drop a server's tools for every agent;

@@ -82,13 +82,13 @@ a hard error. Internal agents use the configured timeout exactly; zero or an
 omitted value uses the 30-second default. The built-in `compaction` agent has a
 3-minute default, and an authored `compaction.md` can set its own exact timeout.
 
-Tool visibility is derived only from `permissions`: with no `permissions`
-field, no tools are visible. An action's tools become visible when the run's
-merged rules (the defaults, the agent document, and the session overlay; see
-[Session permission overlays](#session-permission-overlays)) hold any `allow`
-or `ask` rule for it — any resource pattern counts, even if a competing deny
-wins at execution time — and unmatched
-resources deny by default, so approval requires an explicit `ask` rule. `edit`
+Tool visibility is derived only from `permissions`. Whatever no rule
+matches asks, so with no `permissions` field every tool is offered and each
+call asks. An action's tools are hidden only when the run's merged rules (the
+defaults, the agent document, and the session overlay; see
+[Session permission overlays](#session-permission-overlays)) hold a `"*"`
+deny for it and no `allow` or `ask` rule — any resource pattern counts, even
+if a competing deny wins at execution time. `edit`
 uses the `write` action. Delegation tools additionally require a `delegate` map
 naming at least one eligible target. See
 [Permissions](#tool-availability-and-delegation).
@@ -390,7 +390,7 @@ children of the caller.
 
 The former `steer_subagent` tool is removed. Agents reach children and other
 same-tree peers with `send_message`, which is governed by the dedicated
-`message` permission action (deny by default) and can also wake finished
+`message` permission action (each message asks unless a rule allows it) and can also wake finished
 sessions. See the [tool reference](../reference/tools.md#agent-messaging) and
 the [messaging migration notes](../specs/agent-messaging.md#migration-notes).
 
@@ -489,10 +489,10 @@ document with one of those IDs must use `mode: internal`. Nothing is
 synthesized when no agent can run as a root: a session needs one, and the
 official `primary` is it unless you wrote your own.
 
-An agent document that names no key for `list_runtimes` or `mcp` gets that
-action's rules from its mode (see [Listing runtimes](#listing-runtimes) and
-[MCP default](#mcp-default)), so every agent that is not internal is offered
-MCP tools and asks before each call. Memory has a default too, by whether
+An agent document that names no key for `list_runtimes`, `skill`, or `mcp`
+gets that action's rules from its mode (see [Listing runtimes](#listing-runtimes)
+and [MCP default](#mcp-default)): every agent that is not internal uses every
+skill, and is offered MCP tools and asks before each call. Memory has a default too, by whether
 the run is delegated rather than by mode (see
 [Memory permissions](#memory-permissions)). `cron` defaults the same way:
 a root run may manage cron jobs and a delegated one may not (see
@@ -847,13 +847,13 @@ permissions:
 Effects are `allow`, `ask`, and `deny`. A bare effect is equivalent to mapping
 `"*"` to that effect. For matching patterns, more literal characters win, then
 fewer wildcards, then a rule with a runtime selector over one without, then the
-later declaration on an exact tie. Unmatched resources are denied by default.
-`ask` remains an explicitly writable effect and routes matching calls through
-the existing approval flow; it is never an implicit fallback for an
-unmatched resource. The only rules the daemon writes for an agent are the
-mode defaults of `list_runtimes` and `mcp` and the run defaults of `memory`,
-`memory_write`, and `cron`, each only while the document names no key for
-its action.
+later declaration on an exact tie. Whatever no rule matches asks: a resource
+a key's patterns leave out, and every action the document names no key for,
+a plugin's or a runtime's included. `ask` routes a call through the approval
+flow; only an explicit `deny` denies. The only rules the daemon writes for an
+agent are the mode defaults of `list_runtimes`, `skill`, and `mcp` and the
+run defaults of `memory`, `memory_write`, `cron`, and `attach`, each only
+while the document names no key for its action.
 
 ### Runtime selectors
 
@@ -936,13 +936,14 @@ part of the local storage threat model, not an `allow`/`ask`/`deny` decision.
 
 MCP checks are always scoped. A rule such as `"github_*": allow` covers every
 tool from that generated server prefix, while a more-specific deny can override
-one tool. An unmatched MCP tool is denied and not offered; with no `mcp` key
-at all, the [MCP default](#mcp-default) `"*": ask` matches every MCP tool.
+one tool. An unmatched MCP tool asks; with no `mcp` key at all, the
+[MCP default](#mcp-default) `"*": ask` matches every MCP tool, and `mcp: deny`
+hides them all.
 
 When a tool has no resource label, only the permission's bare effect or `"*"`
 rule applies. Specific patterns are inapplicable rather than matching or
 denying. If neither a bare effect nor `"*"` exists, the normal unmatched result
-is `deny`.
+is `ask`.
 
 `${workspace_dir}` is allowed only in `read` and `write` patterns and expands
 against the workspace of the runtime that prepared the call; relative path
@@ -1145,7 +1146,7 @@ agent, is gone: it is now an ordinary pattern, and `${agent_id}` replaces it.
 **Delegated runs.** A delegated run (a subagent started by
 `delegate_subagent`) whose agent document has no key for `memory`, or none for
 `memory_write`, gets `agent://${agent_id}: allow` for that action: it sees and
-maintains its own agent file and nothing else. The default depends on whether
+maintains its own agent file without asking, and any other memory asks. The default depends on whether
 the run is delegated, not on the agent's mode, so an `all` agent has the root
 default as a root and this one when delegated. A document that declares either action gets
 exactly its own rules for it, delegated or not; there is no hard limit
@@ -1220,7 +1221,8 @@ permissions:
 
 **Defaults.** When the agent document has no `attach` key, a root run of an
 agent that is not internal gets `attach: allow`, and a delegated run or an
-internal agent gets none, so a subagent's machine tools are hidden. See
+internal agent gets none, so a subagent's attaching asks; `attach: deny` hides
+its machine tools. See
 [Attaching from a session](../concepts/runtimes.md#attaching-from-a-session).
 
 ### Cron permissions
@@ -1248,7 +1250,7 @@ manages every job its rules allow, whoever created it.
 | Run | Default |
 |---|---|
 | Root, any agent but an internal one | `cron: allow` |
-| Delegated | none: the tools are hidden |
+| Delegated | none: each call asks |
 | Internal agent | none |
 
 As with memory, the default follows whether the run is delegated, not the
@@ -1431,8 +1433,8 @@ the frozen rules. That list decides which tools are offered, every call (the
 most specific matching rule wins, and at equal specificity the overlay rule,
 which comes later), permission-name-only checks (a `*` rule, one with a
 runtime selector before a bare one), the memory tools and snapshot, and what
-`/permissions` shows. A resource no rule matches is denied, and an action with
-no rule at any level has no visible tools. For example, with the agent's
+`/permissions` shows. A resource no rule matches asks, and an action with no
+rule at any level has its tools offered, each call asking. For example, with the agent's
 `bash: {"*": ask, "git push *": deny}`:
 
 - an overlay `bash: {"*": allow}` replaces the `*` row: commands run without

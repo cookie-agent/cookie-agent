@@ -638,8 +638,8 @@ A call looks like `{"url":"https://docs.quantumcookie.xyz/", "raw":false}`.
 The URL must start with a lowercase
 `http://` or `https://` prefix; any other scheme is rejected with `invalid_url`
 before a request is sent. One permission check uses the initial URL including
-its query string. Without a matching rule the call is denied. Explicit `ask`
-rules still use the normal approval flow.
+its query string. Without a matching rule the call asks, through the normal
+approval flow.
 
 Output starts with four header lines (`final_url`, `status_code`, `content_type`,
 and `truncated`), followed by a blank line and the text body verbatim. Body
@@ -1691,7 +1691,7 @@ Description sent to the model:
 Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, description, and URL segments (user, agent, machine, or project, then the names after it), never its body; results are ranked by keyword hits first. Each result shows a memory's URL and description, whether it is related to this session, whether you may change it, and its age, then its keywords; a result you need approval to read shows only its first two lines. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
+Only when the session has the `global` runtime attached and no `"*": deny` for `memory` hides them (what no rule matches asks). `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1770,7 +1770,7 @@ Description sent to the model:
 Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
+Only when the session has the `global` runtime attached and no `"*": deny` for `memory` hides them (what no rule matches asks). `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1832,7 +1832,7 @@ Description sent to the model:
 Create or replace one memory, following the memory instructions in the system prompt. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.
 ```
 
-Only when `memory_read` is sent too and some memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` `memory_write` rule matches it). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, by default.
+Only when `memory_read` is sent too and some memory URL is both readable and writable (an `allow` or `ask` rule matches it, or no rule does, which asks). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, without asking by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1916,7 +1916,7 @@ Description sent to the model:
 Replace the one occurrence of `oldString` in a memory's body with `newString`, following the memory instructions in the system prompt. `oldString` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers memory_read shows are not part of the body.
 ```
 
-Only when `memory_read` is sent too and some memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` `memory_write` rule matches it). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, by default.
+Only when `memory_read` is sent too and some memory URL is both readable and writable (an `allow` or `ask` rule matches it, or no rule does, which asks). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, without asking by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1970,7 +1970,7 @@ Description sent to the model:
 Delete one memory. Nothing is kept: the deletion is final.
 ```
 
-Only when `memory_read` is sent too and some memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` `memory_write` rule matches it). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, by default.
+Only when `memory_read` is sent too and some memory URL is both readable and writable (an `allow` or `ask` rule matches it, or no rule does, which asks). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, without asking by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2036,7 +2036,7 @@ Description sent to the model:
 List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external agents such as Claude Code), and this session's own attachments on it. Name a runtime capability from here, as `<runtime id>/<capability name>`, in attach_machine to work on it in this session, or in delegate_subagent's `capabilities` to start a subagent there. A runtime that connects later shows up on the next call.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `list_runtimes`, which `primary` and `all` agents have by default.
+Only when the session has the `global` runtime attached and no `"*": deny` for `list_runtimes` hides it. `primary` and `all` agents are allowed it by default; any other agent asks.
 
 ??? note "Parameters JSON Schema"
 
@@ -2134,7 +2134,7 @@ line. After the agents comes the defaults section, once: what the defaults
 are for a root run and for a subagent (as the listed agents need them),
 which ones only some modes get, and what `${session_machine}`,
 `${session_project}`, and `${workspace_dir}` stand for. The result ends
-with `Actions not listed are denied.` ([cron spec](../specs/cron.md)
+with `Whatever no rule matches asks.` ([cron spec](../specs/cron.md)
 section 8.1).
 
 ## Machine tools
@@ -2160,7 +2160,7 @@ Description sent to the model:
 Attach a machine to this session: one runtime capability from list_runtimes, written `<runtime id>/<capability name>` (e.g. `labpc/coding`), at `workspace` when the capability takes one. Its tools join this session at once, and the result says where they run: the machine, its home, the workspace, and the workspace's AGENTS.md. A machine offers each tool once: a second directory on a machine already attached is reached by absolute path, or by detaching the first.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `attach`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it. Each call is checked as `attach@<runtime>`, with the workspace as resource.
+Only when the session has the `global` runtime attached and no `"*": deny` for `attach` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks. Each call is checked as `attach@<runtime>`, with the workspace as resource.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2220,7 +2220,7 @@ Description sent to the model:
 Detach a machine's runtime capability from this session, written `<runtime id>/<capability name>` as attach_machine took it. Its tools leave the session; refused while one of its background calls still runs.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `attach`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it. Each call is checked as `attach@<runtime>`, with the workspace as resource.
+Only when the session has the `global` runtime attached and no `"*": deny` for `attach` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks. Each call is checked as `attach@<runtime>`, with the workspace as resource.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2266,7 +2266,7 @@ Description sent to the model:
 Copy a file or folder to a machine of this session: from another of its machines, or from an artifact of this session, such as a file the user sent, whose label names it (`[file report.zip, 3.2 MB, artifact 5f2c81d0]`). `from` is `{"machine": "labpc", "path": "~/data"}` or `{"artifact": "5f2c81d0"}` (with `stream` for one stream of retained tool output); `to` is `{"machine": "laptop", "path": "~/Downloads/data"}`, the path the copy will have, not a folder to put it in. Machines are named as the machines block and list_runtimes name them; a relative path resolves against that machine's working directory, and `~` against its home. A folder is copied with everything below it. An existing destination is an error unless `overwrite` is true, which replaces a file or merges into a folder. The daemon relays the bytes, so the machines need not reach each other. The source is checked as `read` on its machine and the destination as `write` on its own. The result gives the bytes and files copied and, for a file, its SHA-256.
 ```
 
-Only when the session has the `global` runtime and a machine whose runtime takes transfers (runtime protocol 1.13.0) attached, and the agent or the session overlay has an `allow` or `ask` rule for `write`. The source is checked as `read@<its runtime>` on its path and the destination as `write@<its runtime>` on its own; an artifact source needs no rule. Both machines must be attached to the session.
+Only when the session has the `global` runtime and a machine whose runtime takes transfers (runtime protocol 1.13.0) attached, and no `"*": deny` for `write` hides it. The source is checked as `read@<its runtime>` on its path and the destination as `write@<its runtime>` on its own; an artifact source needs no rule. Both machines must be attached to the session.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2397,7 +2397,7 @@ Description sent to the model:
 Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2613,7 +2613,7 @@ Description sent to the model:
 Change a cron job: any member of cron_create, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2794,7 +2794,7 @@ Description sent to the model:
 Delete a cron job. Sessions its fires started stay.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -2834,7 +2834,7 @@ Description sent to the model:
 Run a cron job now. An in-session job fires into its session as a scheduled fire would. A new-session job runs as your subagent with the job's agent, rules, and runtimes and the prompt as its first input: in the foreground (default) the call waits for its first turn and returns the result; in the background it returns the subagent's handle at once and its turns arrive as <subagent_report>s. A run now counts toward neither max_runs nor the failure count.
 ```
 
-Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

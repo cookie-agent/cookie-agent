@@ -817,13 +817,21 @@ async fn root_runs_get_the_cron_tools_and_list_agents_by_default() {
             && rule.effect == PermissionEffect::Allow
     }));
 
-    // Without a cron rule the cron tools go, cron_list with them; without
+    // With cron denied the cron tools go, cron_list with them; without
     // delegation either, so does list_agents.
+    let deny_cron = || {
+        PermissionRule::new(
+            PermissionAction::CRON,
+            WildcardPattern::new("*").unwrap(),
+            PermissionEffect::Deny,
+        )
+    };
     let mut no_cron = policy.clone();
     no_cron
         .agent
         .permissions
         .retain(|rule| rule.action != PermissionAction::CRON);
+    no_cron.agent.permissions.push(deny_cron());
     assert!(names(&no_cron).is_empty());
 
     // Rules for one kind show only that kind's jobs.
@@ -832,6 +840,7 @@ async fn root_runs_get_the_cron_tools_and_list_agents_by_default() {
         .agent
         .permissions
         .retain(|rule| rule.action != PermissionAction::CRON);
+    sessions_only.agent.permissions.push(deny_cron());
     sessions_only.agent.permissions.push(PermissionRule::new(
         PermissionAction::CRON,
         WildcardPattern::new("session").unwrap(),
@@ -925,10 +934,10 @@ helper (all) — Helper test agent
   usable for: delegate, cron
   permissions as a root run:
     bash: ask
-    defaults: list_runtimes, mcp, memory, memory_write, cron, attach
+    defaults: list_runtimes, skill, mcp, memory, memory_write, cron, attach
   permissions as a subagent:
     bash: ask
-    defaults: list_runtimes, mcp, memory, memory_write
+    defaults: list_runtimes, skill, mcp, memory, memory_write
 primary (primary) — Primary test agent
   models: custom.test/group/model
   usable for: cron
@@ -937,16 +946,17 @@ primary (primary) — Primary test agent
     write: ${workspace_dir}/* allow; * ask
     memory_write: agent://primary allow
     delegate: worker allow; helper allow
-    defaults: list_runtimes, mcp, memory, cron, attach
+    defaults: list_runtimes, skill, mcp, memory, cron, attach
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: mcp, memory, memory_write
+    defaults: skill, mcp, memory, memory_write
 
 Defaults (for actions an agent document names no key for):
   as a root run:
     list_runtimes: allow
+    skill: allow
     mcp: ask
     memory: allow
     memory_write: user://* allow; agent://<agent id> allow; machine://${session_machine}/* allow; project://${session_project}/* allow
@@ -954,13 +964,14 @@ Defaults (for actions an agent document names no key for):
     attach: allow
   as a subagent:
     list_runtimes: allow (only agents of mode all)
+    skill: allow
     mcp: ask
     memory: agent://<agent id> allow
     memory_write: agent://<agent id> allow
   Internal agents get none.
   Variables: ${session_machine} is each machine the session's attachments run on; ${session_project} is the session's project; ${workspace_dir} is the session's workspace.
 
-Actions not listed are denied."
+Whatever no rule matches asks."
     );
     // For delegation only: the subagent-side defaults alone.
     assert_eq!(
@@ -971,22 +982,23 @@ helper (all) — Helper test agent
   usable for: delegate
   permissions:
     bash: ask
-    defaults: list_runtimes, mcp, memory, memory_write
+    defaults: list_runtimes, skill, mcp, memory, memory_write
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: mcp, memory, memory_write
+    defaults: skill, mcp, memory, memory_write
 
 Defaults (for actions an agent document names no key for):
   as a subagent:
     list_runtimes: allow (only agents of mode all)
+    skill: allow
     mcp: ask
     memory: agent://<agent id> allow
     memory_write: agent://<agent id> allow
   Internal agents get none.
 
-Actions not listed are denied."
+Whatever no rule matches asks."
     );
     // For cron: only the agents a new-session job can run.
     let cron = list(Some(crate::agents_tool::Use::Cron));

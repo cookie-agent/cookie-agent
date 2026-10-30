@@ -72,43 +72,41 @@ fn availability(name: &str) -> Option<&'static str> {
              user's goal is active or paused when the run starts."
         }
         "memory_search" | "memory_read" => {
-            "Only when the session has the `global` runtime attached and the agent or the \
-             session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs \
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `memory` hides them (what no rule matches asks). `memory_search` needs \
              no rule of its own: each result is checked against the `memory` rules for its \
              URL instead."
         }
         "memory_write" | "memory_edit" | "memory_delete" => {
-            "Only when `memory_read` is sent too and some memory URL is both readable (an \
-             `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` \
-             `memory_write` rule matches it). A delegated run whose agent document has no \
-             memory keys gets its own agent's memory, `agent://<agent>`, by default."
+            "Only when `memory_read` is sent too and some memory URL is both readable and \
+             writable (an `allow` or `ask` rule matches it, or no rule does, which asks). A \
+             delegated run whose agent document has no memory keys gets its own agent's \
+             memory, `agent://<agent>`, without asking by default."
         }
         "list_runtimes" => {
-            "Only when the session has the `global` runtime attached and the agent or the \
-             session overlay has an `allow` or `ask` rule for `list_runtimes`, which `primary` \
-             and `all` agents have by default."
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `list_runtimes` hides it. `primary` and `all` agents are allowed it by default; \
+             any other agent asks."
         }
         "list_agents" => {
             "Only when the session has the `global` runtime attached and the run is offered \
              `delegate_subagent` or a cron tool. It has no permission of its own."
         }
         "cron_create" | "cron_update" | "cron_delete" | "cron_run" => {
-            "Only when the session has the `global` runtime attached and the agent or the \
-             session overlay has an `allow` or `ask` rule for `cron`, which a root run of any \
-             agent but an internal one has by default; a delegated run has none unless its \
-             agent document grants it."
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `cron` hides them. A root run of any agent but an internal one is allowed them by \
+             default; a delegated run asks."
         }
         "attach_machine" | "detach_machine" => {
-            "Only when the session has the `global` runtime attached and the agent or the \
-             session overlay has an `allow` or `ask` rule for `attach`, which a root run of any \
-             agent but an internal one has by default; a delegated run has none unless its \
-             agent document grants it. Each call is checked as `attach@<runtime>`, with the \
-             workspace as resource."
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `attach` hides them. A root run of any agent but an internal one is allowed them \
+             by default; a delegated run asks. Each call is checked as `attach@<runtime>`, with \
+             the workspace as resource."
         }
         "transfer" => {
             "Only when the session has the `global` runtime and a machine whose runtime takes \
-             transfers (runtime protocol 1.13.0) attached, and the agent or the session overlay \
-             has an `allow` or `ask` rule for `write`. The source is checked as \
+             transfers (runtime protocol 1.13.0) attached, and no `\"*\": deny` for `write` \
+             hides it. The source is checked as \
              `read@<its runtime>` on its path and the destination as `write@<its runtime>` on \
              its own; an artifact source needs no rule. Both machines must be attached to the \
              session."

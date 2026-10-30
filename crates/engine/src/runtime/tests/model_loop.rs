@@ -1037,7 +1037,7 @@ async fn model_tools_are_recorded_once_while_unchanged() {
     }
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Model tools test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n---\nRecord the tools.\n",
+        "---\ndescription: Model tools test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n  write: deny\n---\nRecord the tools.\n",
     );
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Local,

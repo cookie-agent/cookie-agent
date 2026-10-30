@@ -227,7 +227,10 @@ fn home_patterns_are_compared_as_matching_resolves_them() {
     // Path resources must be absolute on the platform the test runs on.
     let root = if cfg!(windows) { "C:" } else { "" };
     let path = |rest: &str| format!("{root}{rest}");
-    let agent = policy(vec![allow(PermissionAction::READ, "~/notes/*")]);
+    let agent = policy(vec![
+        deny(PermissionAction::READ, "*"),
+        allow(PermissionAction::READ, "~/notes/*"),
+    ]);
     let overlay = session(vec![deny(
         PermissionAction::READ,
         &path("/home/ada/notes/*"),
@@ -236,12 +239,13 @@ fn home_patterns_are_compared_as_matching_resolves_them() {
     let bob_home = path("/home/bob");
     let ada = PermissionScope::runtime("labpc", None).with_home(Some(&ada_home));
     // On a runtime whose home is `/home/ada` the two are one identity: the
-    // session's rule replaces the document's, so nothing offers `read`.
+    // session's rule replaces the document's, so nothing offers `read`
+    // beside the `*` deny.
     assert_eq!(
         MergedRules::of(&agent, Some(&overlay), ada.home)
             .rules()
             .len(),
-        1
+        2
     );
     assert_eq!(
         decide(
@@ -266,7 +270,7 @@ fn home_patterns_are_compared_as_matching_resolves_them() {
         MergedRules::of(&agent, Some(&overlay), bob.home)
             .rules()
             .len(),
-        2
+        3
     );
     assert_eq!(
         decide(
@@ -289,7 +293,7 @@ fn home_patterns_are_compared_as_matching_resolves_them() {
     let overlay = session(vec![deny(PermissionAction::READ, "~/notes/*")]);
     assert_eq!(
         MergedRules::of(&agent, Some(&overlay), None).rules().len(),
-        1
+        2
     );
 }
 
@@ -515,6 +519,16 @@ fn a_name_only_check_reads_the_merged_star_rules() {
 #[test]
 fn a_name_only_check_prefers_a_runtime_selected_star_rule() {
     let agent = policy(vec![qualified(PermissionAction::BASH, "labpc", "*", Allow)]);
+    // With no `*` rule for its runtime a name-only check asks.
+    assert_eq!(
+        decide_name_only(
+            &agent,
+            &session(Vec::new()),
+            PermissionAction::BASH,
+            PermissionScope::runtime("local", None)
+        ),
+        Ask
+    );
     let labpc = PermissionScope::runtime("labpc", None);
     let local = PermissionScope::runtime("local", None);
     // A bare session `*` does not replace the document's `bash@labpc`.
@@ -535,7 +549,7 @@ fn a_name_only_check_prefers_a_runtime_selected_star_rule() {
     );
     assert_eq!(
         decide_name_only(&agent, &selected, PermissionAction::BASH, local),
-        Deny
+        Ask
     );
 }
 

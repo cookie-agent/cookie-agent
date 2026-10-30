@@ -312,7 +312,7 @@ session and drive the run loop:
 - **Permissions.** Every prepared tool call is matched against one merged
   rule list per run, the daemon's defaults, the agent document's rules, and
   the session overlay's (see [Permissions](extend/agents.md#permissions)):
-  the most specific matching rule wins, and unmatched checks deny by default.
+  the most specific matching rule wins, and unmatched checks ask.
   Tool visibility reads the same list: a tool is advertised to the model only
   when its action has an `allow` or `ask` rule in it. The
   permission pipeline is stateless; approvals and tree grants live in an

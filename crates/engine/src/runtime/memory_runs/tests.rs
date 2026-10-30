@@ -50,17 +50,22 @@ fn memory_needs_global_a_memory_rule_and_a_non_internal_agent() {
         memory_access(true, &agent(AgentMode::Internal, both.clone()), None),
         NONE
     );
-    // Write rules without a read rule give nothing.
+    // Write rules beside a read deny give nothing.
     let write_only = vec![allow(PermissionAction::MEMORY_WRITE)];
+    let read_denied = [
+        vec![rule(PermissionAction::MEMORY, "*", PermissionEffect::Deny)],
+        write_only.clone(),
+    ]
+    .concat();
     assert_eq!(
-        memory_access(true, &agent(AgentMode::Primary, write_only.clone()), None),
+        memory_access(true, &agent(AgentMode::Primary, read_denied), None),
         NONE
     );
-    // `ask` counts; `deny` does not.
+    // `ask` counts; `deny` does not. Writes no rule names ask too.
     let ask = vec![rule(PermissionAction::MEMORY, "*", PermissionEffect::Ask)];
     assert_eq!(
         memory_access(true, &agent(AgentMode::Primary, ask), None),
-        READ_ONLY
+        BOTH
     );
     let deny = vec![
         rule(PermissionAction::MEMORY, "*", PermissionEffect::Deny),
@@ -70,11 +75,17 @@ fn memory_needs_global_a_memory_rule_and_a_non_internal_agent() {
         memory_access(true, &agent(AgentMode::Primary, deny), None),
         NONE
     );
-    // A rule for another runtime does not reach `global`.
+    // A rule for another runtime does not reach `global`, where a `*` deny
+    // applies.
     let mut elsewhere = allow(PermissionAction::MEMORY);
     elsewhere.runtime = Some(RuntimeId::new("labpc").unwrap());
+    let denied_here = rule(PermissionAction::MEMORY, "*", PermissionEffect::Deny);
     assert_eq!(
-        memory_access(true, &agent(AgentMode::Primary, vec![elsewhere]), None),
+        memory_access(
+            true,
+            &agent(AgentMode::Primary, vec![denied_here, elsewhere]),
+            None
+        ),
         NONE
     );
     // The session overlay can give memory, or the write tools.
@@ -102,10 +113,20 @@ fn memory_needs_global_a_memory_rule_and_a_non_internal_agent() {
 /// (section 16.9.1), decided over the rules' patterns.
 #[test]
 fn the_write_tools_need_memory_both_readable_and_writable() {
+    // Each case closes both actions first: what no rule matches would ask,
+    // and so be both readable and writable.
     let access = |read: &[(&str, PermissionEffect)], write: &[(&str, PermissionEffect)]| {
+        let closed = [
+            rule(PermissionAction::MEMORY, "*", PermissionEffect::Deny),
+            rule(PermissionAction::MEMORY_WRITE, "*", PermissionEffect::Deny),
+        ];
         let rules =
-            read.iter()
-                .map(|(pattern, effect)| rule(PermissionAction::MEMORY, pattern, *effect))
+            closed
+                .into_iter()
+                .chain(
+                    read.iter()
+                        .map(|(pattern, effect)| rule(PermissionAction::MEMORY, pattern, *effect)),
+                )
                 .chain(write.iter().map(|(pattern, effect)| {
                     rule(PermissionAction::MEMORY_WRITE, pattern, *effect)
                 }))
@@ -391,7 +412,8 @@ fn search_results_follow_the_memory_rule_for_their_url() {
     assert_eq!(visibility("project://web/build"), Visibility::Full);
     assert_eq!(visibility("user://profile"), Visibility::Summary);
     assert_eq!(visibility("agent://reviewer"), Visibility::Full);
-    assert_eq!(visibility("agent://default"), Visibility::Hidden);
+    // No rule matches it, so reading it asks.
+    assert_eq!(visibility("agent://default"), Visibility::Summary);
     assert_eq!(visibility("machine://labpc/x"), Visibility::Hidden);
     assert_eq!(visibility("machine://labpc/ok"), Visibility::Full);
 }
@@ -451,6 +473,8 @@ fn memory_follows_the_merged_rules() {
     let agent = agent(
         AgentMode::Primary,
         vec![
+            // Writes stay to `user://`: what no rule matches would ask.
+            rule(PermissionAction::MEMORY_WRITE, "*", PermissionEffect::Deny),
             rule(PermissionAction::MEMORY, "*", PermissionEffect::Allow),
             rule(
                 PermissionAction::MEMORY,

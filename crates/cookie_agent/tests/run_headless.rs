@@ -1167,7 +1167,15 @@ async fn direct_skill_ask_routes_through_headless_auto_rejection() {
 
 #[tokio::test]
 async fn webfetch_admission_visibility_and_fail_closed_permission_pipeline() {
-    let fixture = Fixture::new().await;
+    // The agent denies webfetch, so only a session rule offers it.
+    let fixture = Fixture::with_workspace(vec![], |workspace| {
+        let agent_path = workspace.join(".cookie-agent/agents/primary.md");
+        let agent = fs::read_to_string(&agent_path)
+            .unwrap()
+            .replace("  bash: ask\n", "  bash: ask\n  webfetch: deny\n");
+        fs::write(agent_path, agent).unwrap();
+    })
+    .await;
     fixture
         .server
         .enqueue(MockResponse::Sse(final_response("no web tools")));

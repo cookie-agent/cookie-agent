@@ -494,13 +494,21 @@ async fn stop_background_is_published_only_next_to_a_background_capable_tool() {
     // The agent grants the `job` tool's `bash` permission; no request is sent.
     let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(&endpoint, JOB_AGENT);
-    // `cron_run` can run in the background too; without cron rules it is
-    // not published.
+    // `cron_run` can run in the background too; with cron denied it is not
+    // published.
     let mut policy = frozen_root_policy(&fixture, &selection);
     policy
         .agent
         .permissions
         .retain(|rule| rule.action != cookie_agent_protocol::PermissionAction::CRON);
+    policy
+        .agent
+        .permissions
+        .push(cookie_agent_protocol::PermissionRule::new(
+            cookie_agent_protocol::PermissionAction::CRON,
+            cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ));
     let session = fixture
         .engine
         .create_session(selection)

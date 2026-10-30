@@ -233,6 +233,12 @@ fn caller(delegated: bool) -> MemoryCaller {
             "agent://*",
             cookie_agent_protocol::PermissionEffect::Ask,
         ),
+        // Writes the rules above leave would ask; the rest is read-only.
+        rule(
+            cookie_agent_protocol::PermissionAction::MEMORY_WRITE,
+            "*",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
     ];
     MemoryCaller {
         agent,

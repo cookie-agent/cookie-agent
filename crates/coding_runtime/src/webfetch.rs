@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_initial_url_resource_includes_query_and_defaults_to_deny() {
+    async fn one_initial_url_resource_includes_query_and_defaults_to_ask() {
         use cookie_agent_protocol::{
             AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, PermissionAction,
             PermissionRule, Sha256Digest, WildcardPattern,
@@ -692,14 +692,15 @@ mod tests {
                 Some(std::env::temp_dir().as_path()),
             )
         };
-        assert_eq!(decide(&policy).effect, PermissionEffect::Deny);
+        assert_eq!(decide(&policy).effect, PermissionEffect::Ask);
         policy.permissions.push(PermissionRule {
             runtime: None,
             action: PermissionAction::WEBFETCH,
             resource: WildcardPattern::new(url.split('?').next().unwrap()).unwrap(),
             effect: PermissionEffect::Allow,
         });
-        assert_eq!(decide(&policy).effect, PermissionEffect::Deny);
+        // The allow without the query does not match, so it still asks.
+        assert_eq!(decide(&policy).effect, PermissionEffect::Ask);
         policy.permissions[0].resource = WildcardPattern::new(&url).unwrap();
         for effect in [
             PermissionEffect::Allow,

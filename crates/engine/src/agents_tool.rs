@@ -468,7 +468,7 @@ pub(crate) fn render_agent_list(
     if let Some(line) = variables_line(&output) {
         let _ = writeln!(output, "{line}");
     }
-    output.push_str("\nActions not listed are denied.");
+    output.push_str("\nWhatever no rule matches asks.");
     output
 }
 

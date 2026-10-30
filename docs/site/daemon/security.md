@@ -2,9 +2,11 @@
 
 Cookie Agent combines permission policy with platform-specific filesystem and
 process controls. Permission rules decide whether a prepared tool call may run;
-they are not an operating-system security boundary. Rules deny by default: an
-unmatched action or resource is refused, and a tool whose action has no `allow`
-or `ask` rule is not advertised to the model at all. In particular, a permitted
+they are not an operating-system security boundary. Rules ask by default: an
+unmatched action or resource goes to approval (to you, or to the reviewer in
+the `auto_approve` modes), only an explicit `deny` refuses, and a tool whose
+action a `"*": deny` covers with no `allow` or `ask` beside it is not
+advertised to the model at all. In particular, a permitted
 `bash` command is not parsed into filesystem operations and runs without syscall
 filtering.
 

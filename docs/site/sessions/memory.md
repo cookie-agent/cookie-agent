@@ -342,8 +342,8 @@ variables, the delegated default, and an example agent document.
 A delegated run's snapshot holds only its own agent's file, and its
 prompt says so. For each of `memory` and `memory_write` its agent document
 has no key for, it gets `agent://${agent_id}` allowed: it sees
-and maintains its own agent file, and nothing else (no `user://`, machine, or
-project memory). A document that declares either key gets exactly the rules it
+and maintains its own agent file without asking, and reading or writing any
+other memory (`user://`, machine, or project) asks. A document that declares either key gets exactly the rules it
 declares, `user://` included if it grants it; there is no hard limit behind
 the default. Only the root agent keeps what it learns about you, machines, and
 projects unless you give a subagent that access.
