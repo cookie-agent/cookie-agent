@@ -406,27 +406,31 @@ fn a_runs_work_folds_into_one_row_across_a_background_command_ending() {
 }
 
 #[test]
-fn a_run_split_by_a_background_command_works_in_one_live_row() {
+fn a_run_split_by_a_background_command_works_in_one_row_until_it_writes() {
     let (session, run) = (SessionId::new_v7(), run_id());
     let state = state_of(run_split_by_background(session, run, false));
     let live = rendered(&state, None, TranscriptMode::Reduced, 130);
-    assert_eq!(live.matches("Working…").count(), 1, "{live}");
-    assert!(live.contains("▸ Working… 30s · 1 tool call"), "{live}");
-    // While it works, its one-line text after the call is the row's text
-    // line, not a reply below it.
+    // Both blocks' work is one row, done once the text after the call
+    // came, though the run goes on; the text shows below it.
+    assert_eq!(live.matches("Worked for").count(), 1, "{live}");
+    assert!(live.contains("▸ Worked for 10s · 1 tool call"), "{live}");
+    assert!(!live.contains("Working…"), "{live}");
     let lines = live.lines().collect::<Vec<_>>();
     let row = lines
         .iter()
-        .position(|line| line.contains("Working…"))
-        .expect("the working row");
-    assert!(lines[row + 1].contains("All done."), "{live}");
-    assert!(lines[row + 2].contains("⎿ call-1"), "{live}");
-    assert_eq!(live.matches("All done.").count(), 1, "{live}");
-    assert!(!live.contains("Worked for"), "{live}");
+        .position(|line| line.contains("Worked for"))
+        .expect("the worked row");
+    assert!(
+        lines[row + 1..]
+            .iter()
+            .any(|line| line.contains("All done.")),
+        "{live}"
+    );
+    assert!(!live.contains("⎿ call-1"), "{live}");
 }
 
 #[test]
-fn a_long_text_between_calls_shows_and_splits_the_work() {
+fn a_text_between_calls_shows_and_splits_the_work() {
     let (session, run, call) = (SessionId::new_v7(), run_id(), ToolCallId::new_v7());
     let second = AttemptId::new_v7();
     let mut events = worked_events(session, run, call, None);
@@ -468,7 +472,7 @@ fn a_long_text_between_calls_shows_and_splits_the_work() {
     assert_eq!(reduced.matches("Worked for").count(), 2, "{reduced}");
     let found = reduced
         .find("The reducer splits blocks.")
-        .expect("the long text shows");
+        .expect("the text shows");
     let rows = reduced
         .match_indices("Worked for")
         .map(|(at, _)| at)

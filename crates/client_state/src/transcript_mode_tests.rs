@@ -172,6 +172,15 @@ fn a_work_row_says_its_latest_text_and_its_latest_call() {
         ),
         shown(Some("Now the tests."), Some("bash"))
     );
+    // Filler says nothing.
+    assert_eq!(
+        lines(
+            &state,
+            &[thinking("**Plan**"), committed_tool("bash"), text("…")],
+            80
+        ),
+        shown(Some("Plan"), Some("bash"))
+    );
     // A call this state never started says nothing; an older one does.
     assert_eq!(
         lines(&state, &[committed_tool("read"), tool()], 80),
@@ -329,11 +338,7 @@ fn a_runs_blocks_fold_into_one_across_its_background_rows() {
         vec![
             block(
                 1,
-                vec![
-                    thinking("**Plan**"),
-                    committed_tool("bash"),
-                    text("waiting"),
-                ],
+                vec![thinking("**Plan**"), committed_tool("bash"), text("...")],
             ),
             background_ended(2),
             event(3, EventLevel::Info),
@@ -372,16 +377,20 @@ fn a_runs_blocks_fold_into_one_across_its_background_rows() {
 }
 
 #[test]
-fn a_long_text_between_calls_breaks_the_work_into_two_folds() {
-    let long = "First paragraph.\n\nSecond paragraph.";
-    assert!(long_text(long));
-    assert!(long_text("Plan:\n- read\n- test"));
-    // A line, however it is padded, is not; a very long one is.
-    assert!(!long_text("\nChecking the reducer next.\n"));
-    assert!(long_text(&"word ".repeat(LONG_TEXT_CHARS / 5 + 1)));
+fn only_ellipses_or_blank_text_is_filler() {
+    for source in ["", " \n", "…", "...", " … \n…"] {
+        assert!(filler(source), "{source:?}");
+    }
+    for source in ["Checking the reducer next.", "…done", "Plan:\n- read"] {
+        assert!(!filler(source), "{source:?}");
+    }
+}
+
+#[test]
+fn any_text_between_calls_breaks_the_work_into_two_folds() {
     let state = transcript(
         vec![
-            block(1, vec![committed_tool("read"), text(long)]),
+            block(1, vec![committed_tool("read"), text("Now the tests.")]),
             background_ended(2),
             block(
                 3,
@@ -395,7 +404,7 @@ fn a_long_text_between_calls_breaks_the_work_into_two_folds() {
         at(&plan, 1),
         folded(true, false, vec![work(1, 0, true), ChildFold::Shown])
     );
-    // The row after the long text is the next fold's.
+    // The row after the text is the next fold's.
     assert_eq!(at(&plan, 2), Some(ItemFold::Row { key: key(3, 0) }));
     assert_eq!(
         at(&plan, 3),
@@ -408,11 +417,47 @@ fn a_long_text_between_calls_breaks_the_work_into_two_folds() {
     let mut keys = plan.keys().collect::<Vec<_>>();
     keys.sort();
     assert_eq!(keys, [key(1, 0), key(3, 0)]);
-    // Thinking never breaks the work, however long.
+    // While the run goes on, the text after its last call breaks the work
+    // too, and the fold before it is done.
+    let mut live = transcript(
+        vec![block(
+            1,
+            vec![committed_tool("read"), text("Now the tests.")],
+        )],
+        &[(1, 0)],
+    );
+    let Some(TranscriptItem::Assistant { attribution, .. }) = live.transcript.first() else {
+        unreachable!()
+    };
+    live.open_run_assistant = Some(crate::RunAssistantProjection {
+        run_id: live.assistant_runs[&1],
+        item_id: 1,
+        committed_prefix: 0,
+        current_model: attribution.resolved_model.clone(),
+        split_pending: false,
+        split_at: None,
+    });
+    let plan = FoldPlan::of(&live);
+    assert_eq!(
+        at(&plan, 1),
+        folded(true, true, vec![work(1, 0, true), ChildFold::Shown])
+    );
+    let row = plan
+        .work_row(&live, key(1, 0), jiff::Timestamp::UNIX_EPOCH, 80)
+        .expect("work row");
+    assert!(!row.summary.live);
+    assert_eq!(row.lines, None);
+    // Filler and thinking never break the work.
     let state = transcript(
         vec![block(
             1,
-            vec![thinking(long), committed_tool("bash"), text("Done.")],
+            vec![
+                thinking("First paragraph.\n\nSecond paragraph."),
+                committed_tool("read"),
+                text("…"),
+                committed_tool("bash"),
+                text("Done."),
+            ],
         )],
         &[(1, 0)],
     );
@@ -421,17 +466,14 @@ fn a_long_text_between_calls_breaks_the_work_into_two_folds() {
         folded(
             true,
             true,
-            vec![work(1, 0, true), work(1, 0, false), ChildFold::Shown]
+            vec![
+                work(1, 0, true),
+                work(1, 0, false),
+                work(1, 0, false),
+                work(1, 0, false),
+                ChildFold::Shown
+            ]
         )
-    );
-    // A long reply at the end is the reply, as any is.
-    let state = transcript(
-        vec![block(1, vec![committed_tool("bash"), text(long)])],
-        &[(1, 0)],
-    );
-    assert_eq!(
-        at(&FoldPlan::of(&state), 1),
-        folded(true, true, vec![work(1, 0, true), ChildFold::Shown])
     );
 }
 

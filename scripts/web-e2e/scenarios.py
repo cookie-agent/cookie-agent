@@ -5791,8 +5791,10 @@ def reduced_transcript(browser):
     # time ticks, so it settles in once rather than every second.
     tool = work + " [data-work-tool]"
     assert "printf" in browser.text(tool), browser.text(tool)
-    # What it said before the call is the line above.
-    assert browser.text(work + " [data-work-text]") == "Printing the first step, then waiting."
+    # What it said before the call shows above the row, outside its work.
+    assert count(browser, work + " [data-work-text]") == 0, browser.text(work)
+    assert "Printing the first step, then waiting." in browser.text("#transcript")
+    assert "Printing the first step" not in browser.text(work)
     assert browser.script("return document.querySelector(arguments[0]).dataset.key", tool)
     browser.script("document.querySelector(arguments[0]).__seen = true", tool)
     before = browser.text(work + " [data-work-label]")

@@ -2357,12 +2357,12 @@ mod tests {
     fn a_run_split_by_a_background_command_folds_into_one_work_row() {
         let (mut state, _) = streaming_reply();
         // What the first block writes between its call and the next block's
-        // work is a line: a note that folds with the work.
+        // work is filler, which folds with the work.
         let TranscriptItem::Assistant { children, .. } = &mut state.transcript[0] else {
             unreachable!()
         };
         let mut note = cookie_agent_client_state::markdown::MarkdownDocument::default();
-        note.append("the open tail");
+        note.append("…");
         children[2] = cookie_agent_client_state::AssistantChild::Text {
             id: 3,
             version: 0,
@@ -2450,8 +2450,8 @@ mod tests {
         assert!(all.contains("Worked for 0s · 1 tool call"), "{all}");
         assert!(!all.contains("npm run dev"), "{all}");
         assert!(
-            !all.contains("the open tail"),
-            "the first block's text is work: {all}"
+            !all.contains("…"),
+            "the first block's filler is work: {all}"
         );
         assert!(folded[1].contains("All done."), "{}", folded[1]);
         assert!(
@@ -2464,11 +2464,11 @@ mod tests {
         assert_eq!(opened.len(), 3, "{opened:?}");
         let all = opened.concat();
         assert!(all.contains("npm run dev"), "{all}");
-        assert!(all.contains("the open tail"), "{all}");
+        assert!(all.contains("…"), "{all}");
     }
 
     #[test]
-    fn a_long_text_between_calls_shows_between_two_work_rows() {
+    fn a_text_between_calls_shows_between_two_work_rows() {
         let (mut state, _) = streaming_reply();
         let TranscriptItem::Assistant { children, .. } = &mut state.transcript[0] else {
             unreachable!()
@@ -2493,7 +2493,7 @@ mod tests {
             html.find("data-work=").expect("a row"),
             html.rfind("data-work=").expect("a row"),
         );
-        let answer = html.find("the open tail").expect("the long text shows");
+        let answer = html.find("the open tail").expect("the text shows");
         assert!(first < answer && answer < second, "{html}");
         assert!(html.contains("All done."), "{html}");
     }

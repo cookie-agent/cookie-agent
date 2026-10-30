@@ -400,17 +400,18 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     messages the tool emitted, and the marker that stands for the output
     once it left the model's context.
   - **Agent work** folds by default, as in the TUI: each reply's
-    thinking, tool calls, and the text written between calls are one row
-    above the reply, `Working… 42s · 3 tool calls` while it works, with
-    the latest line it wrote or thought and, smaller, its latest call
+    thinking and tool calls are one row above the reply, `Working… 42s · 3 tool calls` while it works, with
+    the latest line of its thinking and, smaller, its latest call
     under it (a line still being written shows once it ends or fills the
     row, and each new line rises into place), then `Worked for 1m 23s · 7 tool
     calls` (`· 1 failed` when calls failed, `Stopped after …` when the run
     was stopped). While it works, the row spins in place of the
     `working…` line. A run stays one row when something in the background
     interrupts it, such as a background command of the agent's ending.
-    Text over more than one line between calls reads as an answer: it
-    shows in full, and the work around it folds into rows of its own.
+    Any text the agent writes between calls shows in full: the row before
+    it is done and reads `Worked for`, and the work after it folds into a
+    row of its own. Text of only ellipses (`…`), as Kimi models write
+    between calls, folds into the work.
     Click the row to open the work. A call waiting for your approval stays
     outside the fold. Settings › Display switches to the
     full transcript, which shows every thinking block and tool call; the

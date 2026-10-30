@@ -53,33 +53,26 @@ A block's children divide into its **work** and its **reply**:
   its last child of any other kind; with no other kind, the whole block is
   reply;
 - **work**: every child before the reply: `Thinking`, `Tool`,
-  `CommittedTool`, `Attribution`, `Notice`, and any `Text` written between
-  tool calls ("I'll check the reducer next").
+  `CommittedTool`, `Attribution`, `Notice`, and filler `Text` between tool
+  calls (below); any other text breaks the work.
 
 A block with no work renders exactly as in `full` mode: a plain reply
 gets no `Worked for` row. A block with work but no reply (the run ended on
 a tool call, failed, or was cancelled) is the work row alone.
 
-While a block streams, text after its newest tool call shows as reply as
-it arrives; if another thinking part or tool call follows, that text was
-not the reply after all and moves into the work. The reply that remains
-when the block seals is the one that stays below the row.
-
 `Notice` children (`model interrupted`) stay in the work and also mark the
 work row (section 5).
 
-**A long text breaks the work** (user decision of 2026-10-29). Text
-written between calls that runs over more than one line, or one line of
-700 characters or more (`long_text`), reads as an answer to the user: it
-shows as the reply does, and the work before and after it folds into rows
-of its own. Thinking never breaks the work. A model says what it does next
-in a line; an answer runs longer.
-
-**While a run works** (user decision), the text after its last call is
-work too, since another call may follow: a line of it shows in the work
-row's text line (section 4), and once it runs over more lines it breaks
-out below the row and streams there. When the run's work ends, that text
-is the reply. Media the model sends always shows.
+**Any text breaks the work** (user decision of 2026-10-30, replacing the
+long-text rule of 2026-10-29). Text the model writes between calls shows
+as the reply does, and the work before it folds into a row of its own,
+sealed as `Worked for` though the run goes on; the work after it starts
+a new row. This holds while a run works too: text after the last call
+breaks out below the row as it streams, and when the run's work ends,
+the text after its last call is the reply. Thinking never breaks the
+work. **Filler** does not either (`transcript_mode::filler`): blank text,
+or text of only `…` and `.`, which Kimi models write between calls; it
+folds into the work. Media the model sends always shows.
 
 **One run, one row** (user decision of 2026-10-29). A run's blocks that
 only background rows came between fold together, from the run's first
@@ -129,7 +122,7 @@ shows its work as one row in place of the work children:
 - **Two lines** under the label (user decision of 2026-10-29), each cut
   with `…` to the width:
   - **the latest text**: the newest settled line of the work's newest
-    thinking or text. A thinking part's step, its newest Markdown heading
+    thinking (filler text says nothing). A thinking part's step, its newest Markdown heading
     or line bold alone (OpenAI's reasoning summaries start each step with
     `**Inspecting the reducer**`), wins over its other lines, so the line
     changes per step rather than per word. `Thinking…` while a thinking
@@ -301,7 +294,7 @@ The user decided on 2026-10-29:
 
 1. **`reduced` is the default** in both clients.
 2. **Text between tool calls folds into the work** (section 2), so a
-   reduced block reads as one row and the reply.
+   reduced block reads as one row and the reply. Replaced by decision 15.
 3. **The TUI saves the mode to `tui.toml`**: `/transcript` and Ctrl+O
    write the `transcript` key (section 8).
 4. **Ctrl+O toggles the mode** in the TUI (Claude Code's key for its
@@ -328,17 +321,25 @@ The user decided on 2026-10-29:
     small size, its tool call line kept at the note size.
 13. **A long text breaks the work** (section 2): text over more than one
     line (the user's observation, adopted with leading and trailing breaks
-    ignored), or 700 characters or more on one line.
+    ignored), or 700 characters or more on one line. Replaced by decision
+    15.
 14. **A working run's trailing text is work** until it runs long (section
-    2).
+    2). Replaced by decision 15.
+
+The user decided on 2026-10-30:
+
+15. **Any text between calls breaks the work** (section 2), closing the
+    row before it as `Worked for`, but filler: blank text or only
+    ellipses, as Kimi models write between calls.
 
 ## 11. Tests and phases
 
 Tests (no tests pin the default mode):
 
 - client state: the work and reply split for blocks with no work, no
-  reply, text between calls, trailing media, and notices; trailing text
-  moving into the work when a tool call follows; the working subtext for
+  reply, text between calls, trailing media, and notices; text between
+  calls breaking the work, live and sealed, and filler folding into it;
+  the working subtext for
   thinking with and without bold step lines, for a tool header, and for a
   call waiting on approval; `opened_at` and `sealed_at` from durable
   timestamps, equal live and on replay; the row labels for worked,
@@ -406,7 +407,7 @@ Phases:
     fold, so the first block draws again as the fold's time and counts
     change.
   - A fold is keyed by where its work starts (`WorkKey`: the block and
-    the child), since a long text can start one mid-block; the TUI's
+    the child), since a text can start one mid-block; the TUI's
     `BlockId::Work` and the web's `work:<item>:<child>` block key carry it.
   - The TUI remembers when each live line first drew in its layout cache
     and keys the row's layout on whether it is still fresh.

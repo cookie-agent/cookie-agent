@@ -228,6 +228,7 @@ pub fn work_lines<'a>(
         AssistantChild::Thinking { id, text, .. } => {
             settled_line(text, state.is_open_thinking(item_id, *id), room, true)
         }
+        AssistantChild::Text { markdown, .. } if filler(markdown.as_str()) => None,
         AssistantChild::Text { id, markdown, .. } => settled_line(
             markdown.as_str(),
             state.is_open_text(item_id, *id),
@@ -333,8 +334,8 @@ pub struct BlockFold {
 /// Where an assistant block's child stands in a folded run.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ChildFold {
-    /// Shown as in the full mode: the run's reply, or a long text that
-    /// breaks its work.
+    /// Shown as in the full mode: the run's reply, or a text that breaks
+    /// its work.
     Shown,
     /// Part of the work of the fold `key`; `starts` on the fold's first
     /// child, above which its work row draws.
@@ -349,18 +350,13 @@ pub struct WorkRow {
     pub lines: Option<WorkLines>,
 }
 
-/// How many characters of one line of text written between calls break a
-/// run's work: a model says what it does next in a line, and writes more
-/// when it answers the user.
-pub const LONG_TEXT_CHARS: usize = 700;
-
-/// Whether `text`, written between calls, reads as an answer that breaks a
-/// run's work: it runs over more than one line, or one line of
-/// [`LONG_TEXT_CHARS`] characters or more.
+/// Whether `text`, written between calls, says nothing, so it folds into the
+/// work where any other text breaks it: blank, or only ellipses (`…`,
+/// `...`), which Kimi models write between calls.
 #[must_use]
-pub fn long_text(text: &str) -> bool {
-    let text = text.trim();
-    text.contains('\n') || text.chars().count() >= LONG_TEXT_CHARS
+pub fn filler(text: &str) -> bool {
+    text.chars()
+        .all(|char| char.is_whitespace() || matches!(char, '…' | '.'))
 }
 
 /// The reduced mode's folds of a transcript. A run's blocks that only
@@ -369,10 +365,10 @@ pub fn long_text(text: &str) -> bool {
 /// producer message not shown yet) are one stretch of work, those rows
 /// included; any other row ends it, and blocks of different runs never
 /// join. Once the run's work ends, the stretch's last block's trailing text
-/// is its reply; while it works, that text is work too. Before the reply, a
-/// long text ([`long_text`]) shows as the reply does and splits the work
-/// around it into folds of their own. A fold with no thinking or tool call
-/// shows as in the full mode, and media always shows.
+/// is its reply. Before it, any text but [`filler`] shows as
+/// the reply does and splits the work around it into folds of their own,
+/// the one before it done. A fold with no thinking or tool call shows as in
+/// the full mode, and media always shows.
 #[derive(Clone, Debug, Default)]
 pub struct FoldPlan {
     items: HashMap<u64, ItemFold>,
@@ -390,7 +386,7 @@ struct Fold {
 
 #[derive(Clone, Copy, Debug)]
 enum FoldEnd {
-    /// A long text broke the work: it ends where that child entered.
+    /// A text broke the work: it ends where that child entered.
     Text { item: u64, child: usize },
     /// The work ends with the run's block `item`.
     Run { item: u64 },
@@ -466,8 +462,8 @@ impl FoldPlan {
         let (last, last_children) = *stretch.blocks.last().expect("a stretch has a block");
         // The reply: once the run's work ends, the last block's trailing
         // text, all of it when the block holds no work. While it works, text
-        // after its last call may be a note before the next, so it is work
-        // until it runs long.
+        // after its last call breaks the work as any text between calls
+        // does.
         let reply = if state.assistant_live(last) {
             units.len()
         } else {
@@ -479,7 +475,7 @@ impl FoldPlan {
         let mut folded = false;
         for at in 0..=reply {
             let breaks = at == reply
-                || matches!(units[at], Unit::Child(_, _, AssistantChild::Text { markdown, .. }) if long_text(markdown.as_str()));
+                || matches!(units[at], Unit::Child(_, _, AssistantChild::Text { markdown, .. }) if !filler(markdown.as_str()));
             if !breaks {
                 continue;
             }
