@@ -2847,29 +2847,6 @@ pub(crate) fn snapshot_lines(lines: &[Line<'static>]) -> String {
         .join("\n")
 }
 
-pub(crate) fn stable_approval_snapshot(approval: &ApprovalState, mut snapshot: String) -> String {
-    snapshot = snapshot.replace(&approval.approval_id.to_string(), "<approval-id>");
-    snapshot = snapshot.replace(
-        approval.operation_fingerprint.digest().as_str(),
-        "<operation-fingerprint>",
-    );
-    snapshot = snapshot.replace(
-        approval.normalized_arguments_digest.as_str(),
-        "<normalized-arguments-digest>",
-    );
-    snapshot = snapshot.replace(
-        approval.execution_context_digest.as_str(),
-        "<execution-context-digest>",
-    );
-    for (index, resource) in approval.resources.iter().enumerate() {
-        snapshot = snapshot.replace(
-            resource.binding_digest.digest().as_str(),
-            &format!("<resource-{}-binding-digest>", index + 1),
-        );
-    }
-    snapshot
-}
-
 pub(crate) fn bash_approval_state() -> ApprovalState {
     approval(SessionId::new_v7())
 }

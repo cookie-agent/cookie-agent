@@ -1076,7 +1076,6 @@ dependencies = [
  "crossterm",
  "foldhash",
  "futures-util",
- "insta",
  "jiff",
  "pulldown-cmark",
  "ratatui",

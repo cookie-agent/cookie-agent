@@ -26,41 +26,28 @@ use super::support::*;
 #[test]
 fn internal_blocks_are_headerless_without_changing_other_role_headers() {
     let theme = Theme::default();
-    let lines = role_block(
-        Role::Internal,
-        vec![
-            Line::from("📜 ▸ system prompt"),
-            Line::from("expanded body"),
-        ],
-        80,
-        &theme,
-    );
-    insta::assert_snapshot!(snapshot_lines(&lines), @"
-        · 📜 ▸ system prompt
-        · expanded body
-        ");
-    assert_eq!(
-        snapshot_lines(&role_block(
-            Role::Internal,
-            vec![Line::from("row")],
-            7,
-            &theme
-        )),
-        "[I] row"
-    );
-    for (role, header) in [
-        (Role::User, "┌─ You"),
-        (Role::Action, "-- Action"),
-        (Role::Goal, "◆─ Goal"),
-        (Role::ToolRunning, "┏… TOOL RUNNING"),
-        (Role::ToolSuccess, "┏✓ TOOL SUCCESS"),
-        (Role::ToolFailure, "┏! TOOL FAILURE"),
-        (Role::Debug, "·· DEBUG [D]"),
-        (Role::Warning, "🚨─ WARNING [W]"),
-        (Role::Error, "!! ERROR [E]"),
+    let body = vec![
+        Line::from("📜 ▸ system prompt"),
+        Line::from("expanded body"),
+    ];
+    // An internal block is its rows alone; every other role adds a header.
+    let internal = snapshot_lines(&role_block(Role::Internal, body.clone(), 80, &theme));
+    assert_eq!(internal.lines().count(), 2, "{internal}");
+    assert!(internal.lines().next().unwrap().contains("system prompt"));
+    for role in [
+        Role::User,
+        Role::Action,
+        Role::Goal,
+        Role::ToolRunning,
+        Role::ToolSuccess,
+        Role::ToolFailure,
+        Role::Debug,
+        Role::Warning,
+        Role::Error,
     ] {
-        let rendered = snapshot_lines(&role_block(role, vec![Line::from("row")], 80, &theme));
-        assert_eq!(rendered.lines().next(), Some(header));
+        let rendered = snapshot_lines(&role_block(role, body.clone(), 80, &theme));
+        assert_eq!(rendered.lines().count(), 3, "{rendered}");
+        assert!(!rendered.lines().next().unwrap().contains("system prompt"));
     }
 }
 

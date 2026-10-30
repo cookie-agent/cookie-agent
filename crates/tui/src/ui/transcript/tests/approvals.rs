@@ -160,12 +160,29 @@ fn escalated_only_visibility_and_optimistic_response_identity() {
 }
 
 #[test]
-fn bash_prepared_approval_identity_snapshot_is_complete() {
+fn bash_prepared_approval_shows_every_identity_it_binds() {
     let approval = bash_approval_state();
-    insta::assert_snapshot!(stable_approval_snapshot(
-        &approval,
-        approval_content(&approval)
-    ));
+    let content = approval_content(&approval);
+    // Everything the consent binds to shows whole: the command, the
+    // approval, its digests, and each resource with its binding.
+    let mut shown = vec![
+        approval.approval_id.to_string(),
+        approval.operation_fingerprint.digest().as_str().to_owned(),
+        approval.normalized_arguments_digest.as_str().to_owned(),
+        approval.execution_context_digest.as_str().to_owned(),
+        "git status".to_owned(),
+        "command:git-status".to_owned(),
+        "model requested approval".to_owned(),
+    ];
+    shown.extend(
+        approval
+            .resources
+            .iter()
+            .map(|resource| resource.binding_digest.digest().as_str().to_owned()),
+    );
+    for value in shown {
+        assert!(content.contains(&value), "missing {value}: {content}");
+    }
 }
 
 #[tokio::test]

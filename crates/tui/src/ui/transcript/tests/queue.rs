@@ -1585,12 +1585,16 @@ async fn goal_bar_and_waiting_queue_coexist_without_blank_rows_when_hidden() {
             assert!(frame.contains("Cancel"), "{frame}");
         }
         if width == 80 {
+            // The goal and its actions share one row.
             let goal_row = app.hit_map.goal_actions[0].0.y;
-            let bar = rendered_row(&mut app, width, height, goal_row)
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            insta::assert_snapshot!(bar, @"🎯 : Ship transcript rendering without regressions [Resume] [Cancel]");
+            let bar = rendered_row(&mut app, width, height, goal_row);
+            for part in [
+                "Ship transcript rendering without regressions",
+                "Resume",
+                "Cancel",
+            ] {
+                assert!(bar.contains(part), "{bar}");
+            }
         }
     }
     app.store.sessions.get_mut(&session).unwrap().goal = None;
@@ -1651,18 +1655,26 @@ async fn queue_strip_renders_mixed_sources() {
     for entry in &entries {
         assert!(frame.contains(&entry.preview), "{frame}");
     }
-    insta::assert_snapshot!(
-        entries.iter().map(|entry| entry.preview.as_str()).collect::<Vec<_>>().join("\n"),
-        @"
-        User follow-up
-        plugin:build · default · queue
-        goal control · steer
-        "
+    // Each entry names what it is from: the user's text, or a producer's
+    // source and how it is delivered.
+    let previews = entries
+        .iter()
+        .map(|entry| entry.preview.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(previews.len(), 3, "{previews:?}");
+    assert!(previews[0].contains("User follow-up"), "{previews:?}");
+    assert!(
+        previews[1].contains("plugin:build") && previews[1].contains("queue"),
+        "{previews:?}"
+    );
+    assert!(
+        previews[2].contains("goal control") && previews[2].contains("steer"),
+        "{previews:?}"
     );
 }
 
 #[tokio::test]
-async fn queue_strip_renders_the_pending_lane() {
+async fn queue_strip_lists_the_pending_messages_in_order() {
     let (mut app, session, run) = app_with_active_run().await;
     assert!(
         app.store
@@ -1676,8 +1688,13 @@ async fn queue_strip_renders_the_pending_lane() {
         app.store
             .apply_event(admitted(session, 3, run, "third pending message"))
     );
-    // Admission timestamps are the durable event timestamps: always
-    // fresh here, so the coarse "<1m" age keeps the snapshot stable.
     let rendered = rendered_frame(&mut app, 60, 24);
-    insta::assert_snapshot!(rendered);
+    assert_eq!(app.hit_map.queue_entries.len(), 3, "{rendered}");
+    let at = |text: &str| {
+        rendered
+            .find(text)
+            .unwrap_or_else(|| panic!("{text}: {rendered}"))
+    };
+    assert!(at("first pending message") < at("second pending message"));
+    assert!(at("second pending message") < at("third pending message"));
 }

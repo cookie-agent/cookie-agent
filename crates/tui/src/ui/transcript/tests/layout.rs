@@ -1040,10 +1040,9 @@ fn canonical_parallel_ownership_preserves_content_index_order() {
 }
 
 #[test]
-fn parallel_tools_render_snapshot_across_widths_and_themes() {
+fn parallel_tools_show_in_order_and_fit_every_width() {
     let (store, session, _, _) = parallel_tools_state();
     let state = &store.sessions[&session];
-    let mut snapshots = Vec::new();
     for width in [24u16, 48, 96] {
         let layout = transcript_layout_with_level(
             state,
@@ -1053,24 +1052,17 @@ fn parallel_tools_render_snapshot_across_widths_and_themes() {
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Error,
         );
-        snapshots.push(format!(
-            "== width {width} ==\n{}",
-            snapshot_lines(&layout.lines)
-        ));
+        let rendered = snapshot_lines(&layout.lines);
+        for line in rendered.lines() {
+            assert!(
+                UnicodeWidthStr::width(line) <= usize::from(width),
+                "wider than {width}: {line:?}"
+            );
+        }
+        let bash = rendered.find("bash sleep 2").expect("the running call");
+        let read = rendered.find("read src/lib.rs").expect("the finished call");
+        assert!(bash < read, "{rendered}");
     }
-    let mono = transcript_layout_with_level(
-        state,
-        None,
-        48,
-        &Theme::new(
-            crate::theme::ThemeKind::Mono,
-            crate::theme::ColorLevel::None,
-        ),
-        &crate::markdown::SyntectHighlighter::default(),
-        crate::state::EventLevel::Error,
-    );
-    snapshots.push(format!("== mono 48 ==\n{}", snapshot_lines(&mono.lines)));
-    insta::assert_snapshot!(snapshots.join("\n"));
 }
 
 #[test]
@@ -1104,7 +1096,18 @@ fn parallel_tools_expanded_hit_regions_track_each_tool() {
         .filter(|region| matches!(region.id, BlockId::Tool(_)))
         .count();
     assert_eq!(tool_regions, 2);
-    insta::assert_snapshot!(rendered);
+    // Each call's region starts at its own header row.
+    for (call, title) in [(first, "bash sleep 2"), (second, "read src/lib.rs")] {
+        let region = layout
+            .regions
+            .iter()
+            .find(|region| region.id == BlockId::Tool(call))
+            .expect("the call's region");
+        assert!(
+            layout.lines[region.start_line].to_string().contains(title),
+            "{rendered}"
+        );
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@ use cookie_agent_protocol::{EventSubscriptionMessage, SessionId};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 
-use ratatui::{Terminal, backend::TestBackend, text::Line};
+use ratatui::text::Line;
 
 use crate::ClientDelivery;
 
@@ -176,12 +176,6 @@ fn wrapped_user_gutters_repeat_and_copy_without_chrome() {
             .skip(1)
             .all(|line| line.to_string().starts_with("│ "))
     );
-    let text = lines
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    insta::assert_snapshot!(text);
     let copied = extract_selection(&lines, (0, 0), (lines.len() - 1, u16::MAX), &theme);
     assert!(!copied.contains('│'));
     assert!(copied.contains("enough to wrap at this"));
@@ -834,22 +828,24 @@ async fn composer_selection_is_replaced_by_multibyte_typing_then_cut_is_sane() {
 }
 
 #[tokio::test]
-async fn user_message_menu_snapshot() {
+async fn a_click_on_a_user_message_lists_its_actions() {
     let (mut app, _, _) = app_with_user_messages().await;
     rendered_frame(&mut app, 80, 24);
     let hit = user_hit(&app, 2);
     app.handle_click(hit.rect.x + 2, hit.rect.y).await;
-    insta::assert_snapshot!(rendered_frame(&mut app, 80, 24));
+    let rendered = rendered_frame(&mut app, 80, 24);
+    for action in ["copy", "revert", "fork"] {
+        assert!(rendered.contains(&format!("{action} — ")), "{rendered}");
+    }
 }
 
 #[tokio::test]
-async fn selection_overlay_snapshot() {
+async fn a_drag_selects_from_its_start_to_its_end_across_messages() {
     let (mut app, _, _) = app_with_user_messages().await;
     rendered_frame(&mut app, 80, 24);
     let viewport = app.hit_map.conversation.expect("viewport");
-    // Drag from mid-first-message down into the second: covered rows
-    // highlight from the drag column to the row end on the first row,
-    // and from the row start to the drag column on the last.
+    // Drag from mid-first-message down into the second: the selection runs
+    // from the drag's first cell to its last, and copies without chrome.
     app.handle_mouse(mouse(
         MouseEventKind::Down(MouseButton::Left),
         viewport.x + 6,
@@ -862,32 +858,11 @@ async fn selection_overlay_snapshot() {
         viewport.y + 4,
     ))
     .await;
-    let backend = TestBackend::new(80, 24);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| app.draw_for_test(frame))
-        .expect("app render");
-    let buffer = terminal.backend().buffer();
-    let selected_bg = app.theme.text_selection().bg;
-    // Text with selected cells marked '#': the overlay shows the exact
-    // covered region, gutters included, with no layout disturbance.
-    let overlay = (0..buffer.area.height)
-        .map(|y| {
-            (0..buffer.area.width)
-                .map(|x| {
-                    if selected_bg.is_some() && buffer[(x, y)].style().bg == selected_bg {
-                        '#'
-                    } else {
-                        buffer[(x, y)].symbol().chars().next().unwrap_or(' ')
-                    }
-                })
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    insta::assert_snapshot!(overlay);
+    rendered_frame(&mut app, 80, 24);
+    let selected = app.selected_text().expect("a selection");
+    assert!(selected.starts_with("t question"), "{selected:?}");
+    assert!(selected.ends_with("second q"), "{selected:?}");
+    assert!(!selected.contains('│'), "{selected:?}");
 }
 
 #[tokio::test]

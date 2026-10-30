@@ -939,9 +939,22 @@ async fn model_picker_lists_unavailable_models_with_reasons_but_never_selects_th
     assert!(app.hit_map.picker_rows.is_empty());
     assert_eq!(app.picker_state.selected(), None);
 
-    insta::assert_snapshot!(format!(
-        "== all ==\n{}\n== filtered: vision ==\n{}",
-        rows.join("\n"),
-        filtered.join("\n")
-    ));
+    // Each unavailable model is listed with why; the search filters them
+    // too.
+    let all = rows.join("\n");
+    for (model, reason) in [
+        ("kimi-code/k2 ", "quarantined"),
+        ("kimi-code/k2-thinking", "quarantined"),
+        ("kimi-code/k3-vision", "unsupported"),
+    ] {
+        let line = rows
+            .iter()
+            .find(|row| row.contains(model))
+            .unwrap_or_else(|| panic!("{model} missing: {all}"));
+        assert!(line.contains(reason), "{line}");
+    }
+    let filtered = filtered.join("\n");
+    assert!(filtered.contains("kimi-code/k3-vision"), "{filtered}");
+    assert!(!filtered.contains("kimi-code/k2"), "{filtered}");
+    assert!(!filtered.contains("alpha/first-model"), "{filtered}");
 }
