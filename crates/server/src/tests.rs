@@ -538,7 +538,10 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         hello["result"]["protocol_version"],
         CLIENT_PROTOCOL_VERSION.to_string()
     );
-    assert_eq!(hello["result"]["engine_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        hello["result"]["engine_version"],
+        cookie_agent_engine::release::version()
+    );
     // The daemon stamps this connection's events with an origin derived
     // from the handshake identity.
     assert_eq!(

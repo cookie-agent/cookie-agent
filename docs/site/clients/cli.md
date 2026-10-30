@@ -28,11 +28,14 @@ attaching clients to it.
 | [`cookie cron`](#cookie-cron) | List, create, edit, run, and delete the daemon's cron jobs |
 | [`cookie skills`](#cookie-skills) | List the daemon's skills, refresh the official ones, and check skills |
 | [`cookie agents`](#cookie-agents) | List the daemon's agents, refresh the official ones, and check agent documents |
+| [`cookie update`](#cookie-update) | Replace this binary with the newest stable or nightly release |
 | [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
 | [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
 
 `cookie --help`, and `--help` after any subcommand, prints clap's usage;
-`cookie --version` prints the version.
+`cookie --version` prints the version, the channel (`stable`, `nightly`, or
+`source`), and for a release the commit it was built from, as in
+`cookie 0.4.0-alpha.1793047587 (nightly, 67b3d8132)`.
 
 ### Global options
 
@@ -646,6 +649,38 @@ in `<DIR>` must list every document there, with a version, a
 `requires_cookie` range, and its SHA-256. Each problem is printed with its
 file, and any problem fails the command. The official agents repository runs
 it on every push.
+
+### `cookie update`
+
+```text
+cookie update [--check] [--channel stable|nightly] [--version <TAG>] [--force]
+```
+
+Replaces the running `cookie` binary with the newest release on the channel
+it was installed from: a stable release updates to the newest stable, a
+nightly to the newest nightly. `cookie upgrade` is the same command.
+
+| Option | Meaning |
+|---|---|
+| `--check` | Print whether an update is available, and change nothing |
+| `--channel stable\|nightly` | Follow this channel instead, switching to it |
+| `--version <TAG>` | Install exactly this release, such as `v0.3.0`, older ones included |
+| `--force` | Reinstall the newest release even when it is the installed one |
+
+It downloads the release archive for this platform from GitHub next to the
+binary, checks its SHA-256, and runs the new binary's `--version` before it
+moves it over the old one, so a failed update leaves the installed binary as
+it was. A binary in a directory you cannot write to needs the same rights
+to update as to install (for example `sudo cookie update`). A build from
+source refuses to update without `--channel` or `--version`. Set
+`COOKIE_AGENT_GITHUB_TOKEN` to a GitHub token if GitHub's rate limit for
+anonymous requests refuses the lookup.
+
+The daemon is never restarted. When the local daemon runs another version,
+`cookie update` says so; run [`cookie daemon restart`](#cookie-daemon-restart)
+when nothing you care about is running. Runtimes on other machines run their
+own binary: run `cookie update` there too. See
+[Updating](../install.md#updating).
 
 ### `cookie sessions upgrade`
 

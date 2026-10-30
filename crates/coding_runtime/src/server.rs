@@ -117,11 +117,31 @@ pub fn default_transfer_journal() -> Option<PathBuf> {
         .map(|root| root.join("transfers"))
 }
 
+/// This executable's path, resolved on the first call. [`pin_executable`]
+/// makes that call at the process's start: once the binary is replaced on
+/// disk (`cookie update`, `cargo install`), Linux reports the running one
+/// as `<path> (deleted)`, a path nothing can start.
+static EXECUTABLE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Resolves this executable's path now, while it still names the file this
+/// process started from, for every bridge command started later.
+pub fn pin_executable() {
+    executable();
+}
+
+fn executable() -> Option<&'static str> {
+    EXECUTABLE
+        .get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+        .as_deref()
+}
+
 /// `cookie runtime mcp-bridge` of this executable.
 fn default_bridge_command() -> Vec<String> {
-    let program = std::env::current_exe()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "cookie".to_owned());
+    let program = executable().unwrap_or("cookie").to_owned();
     vec![program, "runtime".to_owned(), "mcp-bridge".to_owned()]
 }
 

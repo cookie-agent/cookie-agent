@@ -49,13 +49,35 @@ Once a day, when `main` changed since the last nightly and passes every check,
 CI publishes it as a timestamped `v*-alpha.<timestamp>` prerelease with
 archives for all seven targets. Nightly prereleases are retained for about two
 weeks, with at least the newest three always kept. They are intended for
-testing; run `cookie --version` to see the source commit hash embedded in the
-binary.
+testing; `cookie --version` names the nightly and the commit it was built
+from.
 
 Open the [prerelease list](https://github.com/cookie-agent/cookie-agent/releases?q=prerelease%3Atrue)
 and select a nightly to download an archive or use its generated installer
 command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
 (`curl ... | sh`) installers pinned to that prerelease.
+
+## Updating
+
+```sh
+cookie update
+```
+
+updates `cookie` to the newest release on the channel it came from: a stable
+release to the newest stable, a nightly to the newest nightly. `cookie update
+--check` only reports; `cookie update --channel nightly` (or `stable`)
+switches channels, and `cookie update --version <tag>` installs one release.
+It replaces the binary it runs from, wherever it was installed, after
+checking the download's SHA-256 and that the new binary runs. A build from
+`cargo install` or a checkout updates the way it was built, or with an
+explicit `--channel`.
+
+A running daemon keeps the version it started with until it restarts: run
+`cookie daemon restart` when convenient (it waits for running turns and
+background calls). Each machine's runtimes run that machine's own `cookie`,
+so update it on each. Releases from before `cookie update` existed (stable
+`v0.3.0` and older, and the nightlies before it) update once with
+the installer above. See [`cookie update`](clients/cli.md#cookie-update).
 
 ## Connect a model
 

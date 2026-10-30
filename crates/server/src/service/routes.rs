@@ -53,7 +53,7 @@ impl ServerProtocol for Server {
     }
 
     fn engine_version(&self) -> String {
-        env!("CARGO_PKG_VERSION").to_owned()
+        cookie_agent_engine::release::version().to_owned()
     }
 
     async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {

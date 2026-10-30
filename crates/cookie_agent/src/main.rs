@@ -81,7 +81,7 @@ fn run_catalog_transport() -> anyhow::Result<RunCatalogTransport> {
 static SECRET_VALUES_WIPED: TestAtomicUsize = TestAtomicUsize::new(0);
 
 #[derive(Debug, Parser)]
-#[command(name = "cookie", version = env!("COOKIE_VERSION"))]
+#[command(name = "cookie", version = cookie_agent_engine::release::long_version())]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -367,6 +367,10 @@ enum Command {
         )]
         token: Option<String>,
     },
+    /// Replace this binary with the newest release on its channel, stable
+    /// or nightly.
+    #[command(visible_alias = "upgrade")]
+    Update(update_command::UpdateArgs),
     /// Manage the session history this machine stores.
     Sessions {
         #[command(subcommand)]
@@ -676,6 +680,11 @@ fn main() {
         restarted: env::var_os(daemon_restart::RESTARTED_ENV).is_some(),
         relaunch_now: false,
     };
+    // Likewise the path ACP agents' MCP bridges start from, before an
+    // update can replace the binary under it.
+    cookie_agent_coding_runtime::server::pin_executable();
+    #[cfg(windows)]
+    update_command::remove_replaced_binaries();
     // SAFETY: as for the token below, no other thread exists yet.
     unsafe { env::remove_var(daemon_restart::RESTARTED_ENV) };
     // Clap has read the token into `cli`. Drop the variable so no process
@@ -907,6 +916,7 @@ async fn main_result(cli: Cli, launch: &mut Launch) -> anyhow::Result<()> {
             run_mcp(&target.url, &target.token, command).await
         }
         Some(Command::Runtime { command }) => run_runtime(command).await,
+        Some(Command::Update(args)) => update_command::run_update(args).await,
         Some(Command::Sessions { command }) => {
             run_sessions(command, workspace.as_deref().expect("sessions workspace"))
         }
@@ -1038,7 +1048,8 @@ fn local_workspace(
                 | Command::Memory { .. }
                 | Command::Project { .. }
                 | Command::Cron { .. }
-                | Command::Runtime { .. },
+                | Command::Runtime { .. }
+                | Command::Update(_),
         )
     ) {
         Ok(None)
@@ -1550,9 +1561,12 @@ async fn run_daemon_tui(
             (Some(own_runtime), None)
         }
     };
-    let notices = local_daemon::version_notice(&hello.engine_version, env!("CARGO_PKG_VERSION"))
-        .into_iter()
-        .collect();
+    let notices = local_daemon::version_notice(
+        &hello.engine_version,
+        cookie_agent_engine::release::version(),
+    )
+    .into_iter()
+    .collect();
     let address = local_daemon::daemon_address(url);
     let (url, token) = (url.to_owned(), token.to_owned());
     let reconnector: cookie_agent_tui::Reconnector = std::sync::Arc::new(move || {
@@ -2665,6 +2679,7 @@ mod memory_command;
 mod onboard_command;
 mod project_command;
 mod skills_command;
+mod update_command;
 
 #[cfg(test)]
 mod cli_reference;

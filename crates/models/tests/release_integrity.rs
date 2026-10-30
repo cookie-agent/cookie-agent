@@ -506,11 +506,13 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
     }
 
     // The secret scan reads the binary the release ships, in the job that
-    // builds it, which the publishing jobs need.
+    // builds it, which the publishing jobs need. Every release binary knows
+    // its tag: `cookie update` follows the channel it names.
     let release = fs::read_to_string(workspace().join(".github/workflows/release.yml")).unwrap();
     for required in [
         "tar -xJf target/distrib/cookie_agent-x86_64-unknown-linux-gnu.tar.xz",
         "release_binary_contains_no_secret_material -- --ignored --exact",
+        "COOKIE_RELEASE_TAG: ${{ needs.plan.outputs.tag }}",
     ] {
         assert!(
             release.contains(required),

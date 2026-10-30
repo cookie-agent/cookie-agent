@@ -29,6 +29,7 @@ mod plugin;
 mod policy;
 mod preview;
 mod projects;
+pub mod release;
 pub(crate) mod runtime;
 mod runtime_snapshot;
 mod runtimes;

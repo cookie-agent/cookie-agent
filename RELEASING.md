@@ -109,7 +109,10 @@ reapply and review these edits:
   nightlies restore and then rebuild.
 - Set `retention-days: 2` on every dist scratch `upload-artifact` step: the dist
   cache, plan manifest, local artifacts, global artifacts, and final manifest.
-- Set `COOKIE_GIT_HASH: ${{ github.sha }}` in `build-local-artifacts`.
+- Set `COOKIE_GIT_HASH: ${{ github.sha }}` and
+  `COOKIE_RELEASE_TAG: ${{ needs.plan.outputs.tag }}` in
+  `build-local-artifacts`: the tag tells `cookie --version` and
+  `cookie update` which channel a binary is on.
 - Run `cargo metadata --locked --format-version=1` before `dist build`, and
   before it, outside `release` events, export `CARGO_PROFILE_DIST_LTO=thin`
   and `CARGO_PROFILE_DIST_CODEGEN_UNITS=16` (the nightly profile above).

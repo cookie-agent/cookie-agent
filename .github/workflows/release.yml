@@ -145,6 +145,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
       COOKIE_GIT_HASH: ${{ github.sha }}
+      # Which release the binary is, for `cookie --version` and `cookie update`.
+      COOKIE_RELEASE_TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - name: enable windows longpaths
         run: |
