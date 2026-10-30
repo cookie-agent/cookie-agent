@@ -92,15 +92,6 @@ pub fn rename_params(
     }
 }
 
-/// What a client says once a rename went through.
-pub fn renamed_status(change: &SessionRenameChange) -> String {
-    match change {
-        SessionRenameChange::Set { title } => format!("Renamed the session to “{title}”."),
-        SessionRenameChange::Clear => "Cleared the session's title.".to_owned(),
-        SessionRenameChange::Reset => "The session uses its automatic title again.".to_owned(),
-    }
-}
-
 /// Sends `params`, answering with the session as the rename left it.
 pub async fn rename_session(
     client: &Client,

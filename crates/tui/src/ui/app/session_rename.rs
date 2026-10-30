@@ -98,30 +98,19 @@ impl App {
     }
 
     fn send_session_rename(&mut self, session_id: SessionId, change: SessionRenameChange) {
-        self.status = "Renaming the session…".into();
-        let params = session_rename::rename_params(
-            session_id,
-            change.clone(),
-            &uuid::Uuid::now_v7().to_string(),
-        );
+        let params =
+            session_rename::rename_params(session_id, change, &uuid::Uuid::now_v7().to_string());
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = session_rename::rename_session(&client, params).await;
-            let _ = updates.send(RpcUpdate::SessionRenamed {
-                change,
-                result: Box::new(result),
-            });
+            let _ = updates.send(RpcUpdate::SessionRenamed(Box::new(result)));
         });
     }
 
-    /// Shows how a rename ended, and the title it left in the session list
-    /// at once; `sessions.changed` tells every other client.
-    pub(super) fn finish_session_rename(
-        &mut self,
-        change: SessionRenameChange,
-        result: Result<SessionMeta, ClientError>,
-    ) {
+    /// Shows the title a rename left in the session list at once, or why
+    /// it failed; `sessions.changed` tells every other client.
+    pub(super) fn finish_session_rename(&mut self, result: Result<SessionMeta, ClientError>) {
         match result {
             Ok(session) => {
                 let session = self.merge_session_meta(session);
@@ -133,7 +122,6 @@ impl App {
                     *existing = session;
                     self.note_sessions_changed();
                 }
-                self.status = session_rename::renamed_status(&change);
             }
             Err(error) => self.handle_rpc_update(RpcUpdate::failure(&error)),
         }

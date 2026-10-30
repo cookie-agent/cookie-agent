@@ -75,12 +75,7 @@ async fn next_update(app: &mut App) {
 
 /// Waits for the rename the app sent to come back.
 async fn renamed(app: &mut App) {
-    loop {
-        next_update(app).await;
-        if !app.status.starts_with("Renaming") {
-            break;
-        }
-    }
+    next_update(app).await;
 }
 
 fn title_of(app: &App, session_id: SessionId) -> Option<String> {
@@ -106,7 +101,6 @@ async fn rename_with_a_title_sets_it_and_auto_resets_it() {
         json!({"type": "set", "title": "Fix The Parser"})
     );
     assert_eq!(title_of(&app, viewed).as_deref(), Some("Fix The Parser"));
-    assert_eq!(app.status, "Renamed the session to “Fix The Parser”.");
 
     app.open_command_palette();
     type_text(&mut app, "rename --auto").await;
@@ -205,7 +199,7 @@ async fn ctrl_r_in_the_picker_renames_the_highlighted_session() {
     let sent = renames(&recorded);
     assert_eq!(sent[0]["session_id"], other.to_string());
     assert_eq!(sent[0]["change"], json!({"type": "reset"}));
-    assert_eq!(app.status, "The session uses its automatic title again.");
+    assert_eq!(title_of(&app, other).as_deref(), Some("generated title"));
 }
 
 #[tokio::test]

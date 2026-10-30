@@ -65,7 +65,7 @@ impl App {
                 .resume_held_session(cookie_agent_protocol::SessionHeldResumeParams { session_id })
                 .await
             {
-                Ok(result) if result.resumed => RpcUpdate::Notice("resumed".into()),
+                Ok(result) if result.resumed => return,
                 Ok(_) => RpcUpdate::Notice("the session was not held".into()),
                 Err(error) => RpcUpdate::failure(&error),
             };

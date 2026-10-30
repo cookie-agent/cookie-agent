@@ -42,6 +42,7 @@ mod selection;
 mod session_delete;
 mod session_rename;
 mod sessions_tree;
+mod status;
 mod streaming;
 mod subscriptions;
 mod support;

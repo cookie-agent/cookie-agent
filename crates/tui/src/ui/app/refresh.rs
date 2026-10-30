@@ -403,6 +403,11 @@ impl App {
                 self.status = status;
             }
             RpcUpdate::Notice(status) => self.status = status,
+            RpcUpdate::ReconnectFailed(error) => {
+                if self.reconnecting {
+                    self.reconnect_error = Some(error);
+                }
+            }
             RpcUpdate::Reconnected { .. } => {
                 // The event loop adopts the client, which needs async work.
             }
@@ -555,8 +560,8 @@ impl App {
                 session_id,
                 subagents,
             } => self.note_session_delete_subagents(session_id, subagents),
-            RpcUpdate::SessionRenamed { change, result } => {
-                self.finish_session_rename(change, *result);
+            RpcUpdate::SessionRenamed(result) => {
+                self.finish_session_rename(*result);
             }
             RpcUpdate::SessionDeleted { title, outcome } => {
                 self.finish_session_delete(title, outcome);
@@ -1528,6 +1533,7 @@ impl App {
             approval,
             approval_seconds_left,
             queue_age,
+            status_fade: self.status_fade(),
         }
     }
 

@@ -87,7 +87,6 @@ impl Workspace {
         };
         // User messages always follow `session_created` (sequence 1).
         let through_seq = menu.seq.saturating_sub(1).max(1);
-        self.status.set("reverting to before the message…".into());
         spawn_local(async move {
             match client
                 .revert_session(SessionRevertParams {
@@ -269,7 +268,7 @@ impl Workspace {
                 .cancel_compaction(SessionCompactCancelParams { session_id })
                 .await
             {
-                Ok(result) if result.cancelled => "compaction cancellation requested".into(),
+                Ok(result) if result.cancelled => return,
                 Ok(_) => "no compaction to cancel".into(),
                 Err(error) => crate::errors::describe(&error),
             };

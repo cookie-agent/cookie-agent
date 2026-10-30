@@ -227,7 +227,6 @@ impl App {
         let Some(session_id) = self.tree_root.or(self.selected) else {
             return;
         };
-        self.status = format!("Moving the session to {label}…");
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         let project = project.map(|project| project.id);

@@ -707,16 +707,6 @@ fn paint_band(frame: &mut ratatui::Frame, area: Rect, row: u16, band: Option<Col
     }
 }
 
-/// The decision as the status line names it.
-fn decision_name(decision: ApprovalUserDecision) -> &'static str {
-    match decision {
-        ApprovalUserDecision::ApproveOnce => "approve once",
-        ApprovalUserDecision::ApproveTree => "approve all",
-        ApprovalUserDecision::Reject => "reject",
-        ApprovalUserDecision::Cancel => "cancel",
-    }
-}
-
 impl App {
     /// Keys while an approval is the topmost panel. The panel owns the
     /// keyboard: arrows and Tab move focus between the decisions, Enter
@@ -919,17 +909,10 @@ impl App {
         let feedback = feedback.filter(|_| decision == ApprovalUserDecision::Reject);
         self.next_approval_request_id = self.next_approval_request_id.wrapping_add(1);
         let request_id = self.next_approval_request_id;
-        let noted = if feedback.is_some() {
-            " with a note"
-        } else {
-            ""
-        };
         self.pending_approval = Some(PendingApprovalSubmission {
             request_id,
             approval: approval.clone(),
-            decision,
         });
-        self.status = format!("Approval submitted ({}{noted})…", decision_name(decision));
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -973,10 +956,6 @@ impl App {
         match result {
             Ok(()) => {
                 self.remove_exact_approval(&pending.approval);
-                self.status = format!(
-                    "approval response accepted ({})",
-                    decision_name(pending.decision)
-                );
             }
             Err(error) => {
                 let approval = pending.approval;
@@ -1139,9 +1118,7 @@ impl App {
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let update = match client.cancel_run(RunCancelParams { run_id }).await {
-                Ok(result) if result.cancelled => {
-                    RpcUpdate::Notice("run cancellation requested".into())
-                }
+                Ok(result) if result.cancelled => return,
                 Ok(_) => RpcUpdate::Notice("run was already complete".into()),
                 Err(error) => RpcUpdate::failure(&error),
             };
@@ -1157,9 +1134,7 @@ impl App {
                 .cancel_compaction(cookie_agent_protocol::SessionCompactCancelParams { session_id })
                 .await
             {
-                Ok(result) if result.cancelled => {
-                    RpcUpdate::Notice("compaction cancellation requested".into())
-                }
+                Ok(result) if result.cancelled => return,
                 Ok(_) => RpcUpdate::Notice("no compaction to cancel".into()),
                 Err(error) => RpcUpdate::failure(&error),
             };

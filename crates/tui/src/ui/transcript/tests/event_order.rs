@@ -490,12 +490,20 @@ async fn scrolled_view_stays_put_below_spliced_rows_when_the_layout_grows() {
         turn.content = vec![text_part(&long)];
     }
     let mut app = replayed_app(root, child, &events).await;
+    // The rows' text, without the scrollbar: its thumb shrinks as the
+    // transcript grows.
     let visible = |app: &mut App| {
         frame_rows(app, WIDTH, 40)
             .into_iter()
             .skip_while(|row| !row.starts_with("╭ Conversation"))
             .skip(1)
             .take_while(|row| !row.starts_with('╰'))
+            .map(|row| {
+                let chars = row.chars().collect::<Vec<_>>();
+                chars[..chars.len().saturating_sub(2)]
+                    .iter()
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
     };
     visible(&mut app);

@@ -2667,7 +2667,7 @@ fn context_title(tokens: u64, window: Option<u64>) -> String {
 }
 
 /// How long a new status message shows.
-const STATUS_LIVE: Duration = Duration::from_secs(8);
+const STATUS_LIVE: Duration = Duration::from_secs(5);
 
 /// The bottom bar: the session's agent, model, permission mode, and cost.
 /// A wide window shows it under the composer and adds the approvals and the
@@ -2859,52 +2859,50 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// Keeps [`Workspace::status_live`]: set by a new status message, and
-/// cleared [`STATUS_LIVE`] later, unless the message is of work in progress
-/// ("reconnecting to the daemon…"), which stays until the next replaces it.
+/// Keeps [`Workspace::status_live`]: set by every status message, and
+/// cleared [`STATUS_LIVE`] later, when [`StatusTip`] fades it out. A message
+/// set again, such as the same error twice, shows again for as long.
 /// The page calls it once: the views remount with every reconnection, a
 /// message they would have to show among it.
 pub(crate) fn follow_status(workspace: Workspace) {
     let generation = StoredValue::new(0_u64);
-    Effect::new(move |previous: Option<String>| {
-        let status = workspace.status.get();
-        if status.is_empty() {
+    Effect::new(move |previous: Option<()>| {
+        let shown = workspace.status.with(|status| !status.is_empty());
+        if !shown {
             workspace.status_live.set(false);
-        } else if previous.is_some_and(|previous| previous != status) {
+        } else if previous.is_some() {
             generation.update_value(|generation| *generation += 1);
             let current = generation.get_value();
             workspace.status_live.set(true);
-            if !status.ends_with('…') {
-                set_timeout(
-                    move || {
-                        if generation.get_value() == current {
-                            workspace.status_live.set(false);
-                        }
-                    },
-                    STATUS_LIVE,
-                );
-            }
+            set_timeout(
+                move || {
+                    if generation.get_value() == current {
+                        workspace.status_live.set(false);
+                    }
+                },
+                STATUS_LIVE,
+            );
         }
-        status
     });
 }
 
-/// A new status message, such as "reconnected to the daemon", as a tooltip
-/// over the composer while [`Workspace::status_live`] says: they come
-/// rarely, so they take no room of the bottom bar's. It never takes a click
-/// from what it covers.
+/// A new status message, such as an error, as a tooltip over the composer
+/// while [`Workspace::status_live`] says, fading out when it no longer does:
+/// they come rarely, so they take no room of the bottom bar's. It never
+/// takes a click from what it covers.
 #[component]
 fn StatusTip(workspace: Workspace) -> impl IntoView {
+    let live = move || workspace.status_live.get();
     view! {
-        <Show when=move || workspace.status_live.get()>
-            <span
-                id="status"
-                role="status"
-                class="pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-md border border-toasted bg-parchment px-2 py-1 text-xs break-words text-ink shadow-md dark:border-ember dark:bg-char dark:text-sand"
-            >
-                {move || workspace.status.get()}
-            </span>
-        </Show>
+        <span
+            id="status"
+            role="status"
+            aria-hidden=move || (!live()).then_some("true")
+            class="status-tip pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-md border border-toasted bg-parchment px-2 py-1 text-xs break-words text-ink shadow-md dark:border-ember dark:bg-char dark:text-sand"
+            class:status-tip-gone=move || !live()
+        >
+            {move || workspace.status.get()}
+        </span>
     }
 }
 

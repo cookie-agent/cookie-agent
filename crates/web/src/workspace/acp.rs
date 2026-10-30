@@ -175,7 +175,6 @@ impl Workspace {
             };
             self.draft_agent_options
                 .update(|draft| draft.choose(&agent, &option_id, &value));
-            self.status.set(format!("draft agent option {label}"));
             return;
         }
         self.set_agent_option(option_id, value, label);
@@ -188,7 +187,6 @@ impl Workspace {
         else {
             return;
         };
-        self.status.set(format!("setting {label}…"));
         spawn_local(async move {
             match client
                 .set_session_agent_option(session_id, option_id, value)
@@ -200,7 +198,6 @@ impl Workspace {
                             state.acp.options = result.options;
                         }
                     });
-                    self.status.set(format!("agent option {label}"));
                 }
                 Err(error) => self.status.set(format!(
                     "setting {label} failed: {}",

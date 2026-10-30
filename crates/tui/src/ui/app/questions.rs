@@ -623,7 +623,6 @@ impl App {
             QuestionButton::Cancel | QuestionButton::CopyLink => (ElicitationAction::Cancel, None),
         };
         self.question_panel.sending = true;
-        self.status = format!("answering {}…", question.heading());
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         let params = ElicitationRespondParams {
@@ -660,7 +659,7 @@ impl App {
             self.question_panel.sending = false;
         }
         match result {
-            Ok(()) => self.status = "answer sent".into(),
+            Ok(()) => {}
             Err((code, message)) => {
                 if code.as_deref() == Some("elicitation_not_pending") {
                     if let Some(state) = self.store.sessions.get_mut(&session_id) {

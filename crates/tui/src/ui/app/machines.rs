@@ -88,7 +88,6 @@ impl App {
     }
 
     fn dispatch_machine_request(&mut self, request: MachineRequest) {
-        self.status = "changing machines...".into();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

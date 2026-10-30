@@ -46,7 +46,6 @@ impl App {
         };
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
-        self.status = "moving the call to the background…".into();
         self.spawn_rpc(async move {
             let update = match client
                 .background_tool(cookie_agent_protocol::RunToolBackgroundParams { run_id, call_id })
@@ -254,13 +253,10 @@ impl App {
         }
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
-        self.status = format!("stopping {}…", call.job);
         self.spawn_rpc(async move {
-            let update = match client.stop_background(session_id, call.job.clone()).await {
-                Ok(_) => RpcUpdate::Notice(format!("stopped {}", call.job)),
-                Err(error) => RpcUpdate::failure(&error),
-            };
-            let _ = updates.send(update);
+            if let Err(error) = client.stop_background(session_id, call.job).await {
+                let _ = updates.send(RpcUpdate::failure(&error));
+            }
         });
     }
 }

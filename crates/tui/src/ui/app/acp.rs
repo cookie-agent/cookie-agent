@@ -341,7 +341,6 @@ impl App {
         let Some(session_id) = self.viewed_session() else {
             return;
         };
-        self.status = format!("Setting {label}…");
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

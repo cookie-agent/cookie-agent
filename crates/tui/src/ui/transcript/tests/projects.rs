@@ -112,9 +112,10 @@ async fn next_update(app: &mut App) {
 
 /// Handles updates until the status stops saying `pending`.
 async fn settled(app: &mut App, pending: &str) {
+    app.status.clear();
     loop {
         next_update(app).await;
-        if !app.status.starts_with(pending) {
+        if !app.status.is_empty() && !app.status.starts_with(pending) {
             break;
         }
     }

@@ -205,8 +205,8 @@ impl App {
             return false;
         };
         self.reconnecting = true;
+        self.reconnect_error = None;
         self.reset_subscriptions();
-        self.status = "daemon disconnected — reconnecting…".into();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let mut delay = RECONNECT_FIRST_DELAY;
@@ -221,9 +221,7 @@ impl App {
                         return;
                     }
                     Err(error) => {
-                        let _ = updates.send(RpcUpdate::Notice(format!(
-                            "daemon disconnected — reconnecting ({error})"
-                        )));
+                        let _ = updates.send(RpcUpdate::ReconnectFailed(error.to_string()));
                         delay = next_reconnect_delay(delay);
                     }
                 }
@@ -240,10 +238,10 @@ impl App {
         self.deliveries = client.subscribe_deliveries();
         self.client = client;
         self.reconnecting = false;
+        self.reconnect_error = None;
         self.reset_presence();
         self.reset_restart_after_reconnect();
         self.reset_subscriptions();
-        self.status = "reconnected to the daemon".into();
         self.poll_onboarding();
         self.request_runtime_resync();
         // The daemon may be a new process, which owns none of the sessions

@@ -95,6 +95,12 @@ removes the newest one. A message may be attachments alone. A message taken
 back from the pending strip, or handed back after it failed to send, returns
 its attachments with its text.
 
+The status line is the right end of the composer's bottom border, so it takes
+no row of its own. A message there, such as an error or why a key did nothing,
+shows for five seconds and dims out; what you can already see happen (a
+cancel, a rename, an answered approval) says nothing there. While the daemon
+is unreachable, "daemon disconnected — reconnecting" stays until it is back.
+
 ## Command palette
 
 Press `/` in an empty composer, or Ctrl-P at any time, to open the command

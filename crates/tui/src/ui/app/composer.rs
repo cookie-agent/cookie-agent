@@ -960,7 +960,6 @@ impl App {
             self.status = "session is not loaded".into();
             return;
         };
-        self.status = "reverting to before the message…".into();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -992,7 +991,6 @@ impl App {
     /// the message in the copied prefix), then switch to the new session.
     pub(super) fn dispatch_session_fork(&mut self, menu: UserMenuState) {
         let session_id = menu.session_id;
-        self.status = "forking the session from the message…".into();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1263,7 +1261,6 @@ impl App {
                 return;
             }
         };
-        self.status = "compacting context…".into();
         self.status = match self
             .client
             .compact_session(SessionCompactParams { session_id, focus })

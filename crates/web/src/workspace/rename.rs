@@ -87,7 +87,6 @@ impl Workspace {
             return;
         };
         self.rename_error.set(None);
-        self.status.set("renaming the session…".into());
         let params = session_rename::rename_params(
             session_id,
             change.clone(),
@@ -107,14 +106,6 @@ impl Workspace {
                         // A subagent's title is in the tree.
                         self.refresh_tree();
                     }
-                    self.status.set(match change {
-                        SessionRenameChange::Set { title } => {
-                            format!("renamed the session to “{title}”")
-                        }
-                        SessionRenameChange::Clear | SessionRenameChange::Reset => {
-                            "the session uses its automatic title again".to_owned()
-                        }
-                    });
                 }
                 Err(error) => {
                     let message = crate::errors::describe(&error);

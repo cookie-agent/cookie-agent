@@ -68,7 +68,6 @@ impl App {
         } else {
             None
         };
-        self.status = "updating goal...".into();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

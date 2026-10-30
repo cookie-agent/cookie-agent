@@ -14,7 +14,7 @@ use ratatui::{Terminal, backend::TestBackend};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use super::super::{App, Modal, RpcUpdate};
+use super::super::{App, Modal};
 use crate::{Client, config::TuiConfig, state::SessionState, theme::Theme};
 
 struct ScriptedStream {
@@ -161,23 +161,24 @@ async fn the_panel_stops_the_selected_call_as_the_user() {
     );
     app.handle_background_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_background_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-    let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
-        .await
-        .expect("stop answer")
-        .expect("update");
-    // A stop that worked is no error: it is not reported when the TUI exits.
-    let RpcUpdate::Notice(status) = &update else {
-        panic!("a notice, not an error");
-    };
-    assert_eq!(status, "stopped job_2");
-    app.handle_rpc_update(update);
-    assert_eq!(app.status, "stopped job_2");
-    assert!(app.session_errors.format().is_none());
-    let requests = recorded.lock().unwrap().clone();
-    let stop = requests
-        .iter()
-        .find(|request| request["method"] == "session.background.stop")
-        .expect("stop request");
+    // A stop that worked says nothing in the status: the bar shows the
+    // call gone.
+    let stop = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let stop = recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|request| request["method"] == "session.background.stop")
+                .cloned();
+            if let Some(stop) = stop {
+                return stop;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("stop request");
     assert_eq!(stop["params"]["job"], "job_2");
     assert_eq!(stop["params"]["session_id"], session.to_string());
     app.handle_background_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

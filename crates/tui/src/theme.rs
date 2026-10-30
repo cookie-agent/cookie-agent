@@ -568,6 +568,30 @@ impl Theme {
         self.semantic(self.palette().latte, Color::White, Modifier::DIM)
     }
 
+    /// [`Self::muted`] faded `step` of `steps` of the way into the panel
+    /// surface, for a status message dimming out. Without true colour there
+    /// is no step between, so any fading step is dim.
+    pub fn muted_fading(&self, step: u8, steps: u8) -> Style {
+        let style = self.muted();
+        if step == 0 {
+            return style;
+        }
+        let surface = self.background_color(self.palette().cream, None);
+        match (style.fg, surface) {
+            (Some(Color::Rgb(r, g, b)), Some(Color::Rgb(sr, sg, sb))) => {
+                let step = u16::from(step.min(steps));
+                let steps = u16::from(steps.max(1));
+                let blend = |from: u8, to: u8| {
+                    let (from, to) = (u16::from(from), u16::from(to));
+                    let mixed = (from * (steps - step) + to * step) / steps;
+                    u8::try_from(mixed).unwrap_or(u8::MAX)
+                };
+                style.fg(Color::Rgb(blend(r, sr), blend(g, sg), blend(b, sb)))
+            }
+            _ => style.add_modifier(Modifier::DIM),
+        }
+    }
+
     /// The body text colour one step quieter, for rows that summarise hidden
     /// content: collapsed tool calls and thinking.
     pub fn muted_text(&self) -> Style {

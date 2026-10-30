@@ -72,11 +72,6 @@ pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
 
-/// The status while the page reconnects and something needed the
-/// connection, and once it has.
-const RECONNECTING: &str = "reconnecting to the daemon…";
-const RECONNECTED: &str = "reconnected to the daemon";
-
 /// A sheet the chat view shows: on the right of a wide window, from the
 /// bottom of a phone's. The daemon-wide panels are views
 /// ([`crate::layout::View`]) instead.
@@ -555,21 +550,11 @@ impl Workspace {
     }
 
     /// The connection, `None` while the page reconnects: what needs it
-    /// then does nothing and says the page is reconnecting, and a redial
+    /// then does nothing (the reconnecting banner says why), and a redial
     /// reads again what is open ([`Workspace::reread_open`]), rather
     /// than a read failing on the closed connection and its error staying.
     fn client(self) -> Option<Client> {
-        let client = self.client.get_value();
-        if client.is_none() && self.connection.get_value() > 0 {
-            self.say_reconnecting();
-        }
-        client
-    }
-
-    fn say_reconnecting(self) {
-        if self.status.with_untracked(|status| status != RECONNECTING) {
-            self.status.set(RECONNECTING.into());
-        }
+        self.client.get_value()
     }
 
     /// Reads the projections; tracks `revision` when called reactively.
@@ -681,9 +666,6 @@ impl Workspace {
         self.report_presence();
         if reconnected {
             self.reread_open();
-            if self.status.with_untracked(|status| status == RECONNECTING) {
-                self.status.set(RECONNECTED.into());
-            }
         }
         if reconnected {
             // The daemon may be a new process, which owns none of the
@@ -707,7 +689,6 @@ impl Workspace {
                 self.refresh_approvals(session_id);
                 self.load_permission_mode(session_id);
                 self.refresh_cost(session_id);
-                self.status.set(RECONNECTED.into());
             }
         });
     }
@@ -1748,9 +1729,6 @@ impl Workspace {
                 .await;
             match result {
                 Ok(SessionSubmitInputResult::Handled { reason }) => self.status.set(reason),
-                Ok(SessionSubmitInputResult::Queued { .. }) => {
-                    self.status.set("queued behind the running run".into());
-                }
                 Ok(_) => {}
                 Err(error) => {
                     // The text goes back to the session's draft, as in the
@@ -2137,8 +2115,10 @@ impl Workspace {
                 .resume_held_session(cookie_agent_protocol::SessionHeldResumeParams { session_id })
                 .await
             {
-                Ok(result) if result.resumed => self.status.set("resumed".into()),
-                Ok(_) => self.status.set("the session was not held".into()),
+                Ok(result) if !result.resumed => {
+                    self.status.set("the session was not held".into());
+                }
+                Ok(_) => {}
                 Err(error) => self.status.set(crate::errors::describe(&error)),
             }
         });
@@ -2155,7 +2135,7 @@ impl Workspace {
         };
         spawn_local(async move {
             match client.cancel_run(RunCancelParams { run_id }).await {
-                Ok(_) => self.status.set("cancelling…".into()),
+                Ok(_) => {}
                 Err(error) => self.status.set(crate::errors::describe(&error)),
             }
         });
@@ -2253,10 +2233,7 @@ impl Workspace {
         };
         spawn_local(async move {
             match client.respond_elicitation(params).await {
-                Ok(_) => {
-                    self.status.set("question answered".into());
-                    failed(None);
-                }
+                Ok(_) => failed(None),
                 Err(error) if error.error_code() == Some("elicitation_not_pending") => {
                     self.status.set("the question no longer waits".into());
                     failed(None);
@@ -2289,7 +2266,7 @@ impl Workspace {
                 })
                 .await;
             match result {
-                Ok(_) => self.status.set("approval answered".into()),
+                Ok(_) => {}
                 Err(error) => self.status.set(format!(
                     "approval not answered: {}",
                     crate::errors::describe(&error)

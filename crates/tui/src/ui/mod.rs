@@ -74,10 +74,10 @@ const MAX_INPUT_HEIGHT: u16 = 7;
 pub(crate) struct UiLayout {
     pub(crate) agent: Rect,
     pub(crate) conversation: Rect,
-    /// The steer-queue strip between the conversation pane and the status
-    /// line; zero height while the selected session's queue is empty.
+    /// The steer-queue strip between the conversation pane and the bars
+    /// above the composer; zero height while the selected session's queue
+    /// is empty.
     pub(crate) queue: Rect,
-    pub(crate) status: Rect,
     /// The background bar directly above the goal bar; zero height when the
     /// session has no background calls or the terminal has no space for it.
     pub(crate) background: Rect,
@@ -97,8 +97,8 @@ pub(crate) struct UiLayout {
 /// so the conversation starts immediately below it. The composer takes one text
 /// row by default and grows with its content up to five; every added composer
 /// row is reclaimed from the conversation pane. The goal bar takes exactly one
-/// row when it is visible and space remains above the composer, with the
-/// ephemeral status line yielding first on short terminals. The queue strip
+/// row when it is visible and space remains above the composer. The status
+/// message takes no row: it shows in the composer's bottom border. The queue strip
 /// reclaims conversation rows the same way and leaves the conversation at least
 /// one row whenever content space remains after fixed bars.
 pub(crate) fn terminal_layout_with_tree_rows(
@@ -130,10 +130,7 @@ pub(crate) fn terminal_layout_with_tree_rows(
     let background_height =
         u16::from(background_visible && available_height.saturating_sub(goal_height) > 0);
     let bars_height = goal_height + background_height;
-    let status_height = u16::from(available_height.saturating_sub(bars_height) >= 3);
-    let content_height = available_height
-        .saturating_sub(bars_height)
-        .saturating_sub(status_height);
+    let content_height = available_height.saturating_sub(bars_height);
     let agent_height = if content_height > 1 {
         agent_height.min(content_height - 1)
     } else {
@@ -157,15 +154,9 @@ pub(crate) fn terminal_layout_with_tree_rows(
         area.width,
         queue_height,
     );
-    let status = Rect::new(
-        area.x,
-        queue.y.saturating_add(queue_height),
-        area.width,
-        status_height,
-    );
     let background = Rect::new(
         area.x,
-        status.y.saturating_add(status_height),
+        queue.y.saturating_add(queue_height),
         area.width,
         background_height,
     );
@@ -193,7 +184,6 @@ pub(crate) fn terminal_layout_with_tree_rows(
         agent,
         conversation,
         queue,
-        status,
         background,
         goal,
         input,
@@ -216,7 +206,7 @@ mod tests {
                 assert_eq!(layout.goal.height, 0, "{width}x{height}");
                 assert_eq!(layout.goal.y, layout.input.y, "{width}x{height}");
                 assert_eq!(
-                    layout.status.y + layout.status.height,
+                    layout.queue.y + layout.queue.height,
                     layout.input.y,
                     "{width}x{height}"
                 );
@@ -247,7 +237,6 @@ mod tests {
                     shown.agent,
                     shown.conversation,
                     shown.queue,
-                    shown.status,
                     shown.goal,
                     shown.input,
                     shown.bar,
@@ -270,21 +259,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn visible_goal_is_reserved_before_ephemeral_status() {
-        let area = Rect::new(0, 0, 20, 7);
-        let hidden = terminal_layout_with_tree_rows(area, 0, 0, false, false, 1);
-        let shown = terminal_layout_with_tree_rows(area, 0, 0, true, false, 1);
-
-        assert_eq!(hidden.status.height, 1);
-        assert_eq!(hidden.goal.height, 0);
-        assert_eq!(shown.status.height, 0);
-        assert_eq!(shown.goal.height, 1);
-        assert_eq!(shown.goal.y + shown.goal.height, shown.input.y);
-        assert_eq!(shown.input, hidden.input);
-        assert_eq!(shown.bar, hidden.bar);
     }
 
     #[test]

@@ -85,7 +85,7 @@ fn terminal_layout_has_exact_rects_for_wide_square_tall_and_tiny_terminals() {
         assert_eq!(layout.bar.height, 1.min(height));
         assert_eq!(layout.bar.y + layout.bar.height, height);
         assert_eq!(layout.input.y + layout.input.height, layout.bar.y);
-        assert!(layout.status.y + layout.status.height <= layout.input.y);
+        assert!(layout.queue.y + layout.queue.height <= layout.input.y);
     }
 }
 
@@ -957,11 +957,10 @@ async fn agent_panel_text_rows_are_clamped_1_to_4_with_borders_outside() {
     }
     let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 0, false, false, 1);
     // The single-row composer is three rows tall, so the eight-row
-    // terminal leaves four rows above the bar: one for the status line,
-    // one guaranteed conversation row, and the rest for the agent panel
-    // (borders only at this extreme). The four-row viewport cap never
-    // lifts the panel above the remaining content space.
-    assert_eq!(tiny.agent.height, 2);
+    // terminal leaves four rows above the bar: one guaranteed conversation
+    // row, and the rest for the agent panel. The four-row viewport cap
+    // never lifts the panel above the remaining content space.
+    assert_eq!(tiny.agent.height, 3);
     assert_eq!(tiny.conversation.height, 1);
 }
 

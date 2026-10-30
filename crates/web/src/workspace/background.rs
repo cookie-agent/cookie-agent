@@ -35,7 +35,6 @@ impl Workspace {
             self.status.set("the call is no longer running".into());
             return;
         };
-        self.status.set("moving the call to the background…".into());
         spawn_local(async move {
             let status = match client
                 .background_tool(RunToolBackgroundParams { run_id, call_id })
@@ -59,11 +58,9 @@ impl Workspace {
         else {
             return;
         };
-        self.status.set(format!("stopping {job}…"));
         spawn_local(async move {
-            match client.stop_background(session_id, job.clone()).await {
-                Ok(_) => self.status.set(format!("stopped {job}")),
-                Err(error) => self.status.set(crate::errors::describe(&error)),
+            if let Err(error) = client.stop_background(session_id, job).await {
+                self.status.set(crate::errors::describe(&error));
             }
         });
     }

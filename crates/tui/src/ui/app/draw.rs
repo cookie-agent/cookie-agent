@@ -205,29 +205,13 @@ impl App {
                     hits
                 })
         };
-        self.render_attachment_chips(frame, layout.input);
+        let chips = self.render_attachment_chips(frame, layout.input);
+        self.render_status(frame, layout.input, chips);
         self.hit_map.input = Some(InputHit {
             rect: layout.input,
             text_rect: rendered_input.text_rect,
             scrollbar: rendered_input.scrollbar,
         });
-        let mut base_status = if self.pending_approval.is_some() {
-            "Approval submitting…".to_owned()
-        } else {
-            self.status.clone()
-        };
-        if let Some(explanation) = self.runtime.durable_explanation()
-            && !base_status.contains(explanation)
-        {
-            base_status = format!("{explanation} · {base_status}");
-        }
-        // The scroll-follow state lives in the Conversation title, not here.
-        let status = truncate_with_ellipsis(&base_status, usize::from(layout.status.width));
-        // Status and bottom bar share the one cream surface with the input.
-        frame.render_widget(
-            Paragraph::new(Span::styled(status, self.theme.muted())).style(self.theme.panel()),
-            layout.status,
-        );
         let bottom_bar = self.bottom_bar_line(layout.bar.width);
         let span_rect = |target_span| {
             let mut column = layout.bar.x;

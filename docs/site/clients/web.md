@@ -510,9 +510,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   not take goes back to that session's draft, even when another is open.
   Drafts stay in the page and end with it.
 
-  A status message, such as "reconnected to the daemon", shows for a few
-  seconds as a tip over the composer's top left corner, on every width;
-  one of work in progress, ending in "…", stays until the next replaces it.
+  A status message, such as an error, shows for five seconds as a tip over
+  the composer's top left corner, on every width, then dims out. What you
+  can already see happen (a cancel, a rename, a reconnect) says nothing
+  there; a lost connection has its own banner at the top.
 
   The strip above the composer lists pending and queued messages; tap one
   to take it back into your composer, another client's too (a daemon

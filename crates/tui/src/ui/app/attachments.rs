@@ -353,9 +353,11 @@ impl App {
 
     /// The draft's attachments as chips on the composer's bottom border,
     /// `📎 name · type · size` each, as many as fit and a count of the rest.
-    pub(super) fn render_attachment_chips(&self, frame: &mut ratatui::Frame, area: Rect) {
+    /// Draws the attachment chips into the composer's bottom border, and
+    /// returns how many columns they take.
+    pub(super) fn render_attachment_chips(&self, frame: &mut ratatui::Frame, area: Rect) -> u16 {
         if self.attachments.is_empty() || area.height < 2 || area.width < 8 {
-            return;
+            return 0;
         }
         let room = usize::from(area.width - 4);
         let style = self.theme.user();
@@ -382,8 +384,11 @@ impl App {
             used += width;
             spans.push(Span::styled(chip, style));
         }
+        let line = Line::from(spans);
+        let taken = u16::try_from(line.width()).unwrap_or(u16::MAX);
         let row = Rect::new(area.x + 2, area.bottom() - 1, area.width - 4, 1);
-        frame.render_widget(Paragraph::new(Line::from(spans)), row);
+        frame.render_widget(Paragraph::new(line), row);
+        taken
     }
 }
 

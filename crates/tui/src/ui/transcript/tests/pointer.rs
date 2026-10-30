@@ -673,8 +673,9 @@ async fn a_tool_header_hover_stops_before_its_background_button() {
         .find(|hit| hit.id == BlockId::Tool(call_id))
         .expect("call hit");
     let button = hit.action_rect.expect("background button");
+    app.status.clear();
     app.handle_click(button.x, button.y).await;
-    assert_eq!(app.status, "moving the call to the background…");
+    assert!(app.status.is_empty(), "{}", app.status);
     app.handle_click(button.x - 1, button.y).await;
     assert!(!app.expanded_blocks[&session].contains(&BlockId::Tool(call_id)));
 
@@ -915,7 +916,6 @@ async fn background_bar_rows_and_stops_hover() {
     app.handle_click(row.x, row.y).await;
     app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE))
         .await;
-    assert_eq!(app.status, "stopping job_2…");
     app.handle_click(0, 0).await;
     assert_eq!(app.modal, Modal::None);
 }

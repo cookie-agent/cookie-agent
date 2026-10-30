@@ -27,6 +27,7 @@ pub(in crate::ui) mod restart;
 mod session_delete;
 mod session_rename;
 mod sessions;
+mod status;
 #[cfg(test)]
 pub(in crate::ui) use session_delete::{SessionDeletePrompt, SessionPickerAction};
 mod subscriptions;
@@ -440,6 +441,8 @@ pub(in crate::ui) struct WallClockView {
     /// Whole seconds the approval on top has left, so its countdown ticks.
     approval_seconds_left: Option<i64>,
     queue_age: Option<String>,
+    /// How far the status message has faded, so each step draws.
+    status_fade: u8,
 }
 
 /// Only user rows recall the newest user input; producer rows are read-only.
@@ -773,6 +776,8 @@ pub struct App {
     pub(super) reconnector: Option<Reconnector>,
     /// The connection dropped and a reconnect is under way.
     pub(super) reconnecting: bool,
+    /// Why the last redial failed, while reconnecting.
+    pub(super) reconnect_error: Option<String>,
     /// What the daemon was told the TUI shows, for push notifications.
     pub(in crate::ui) presence: presence::Presence,
     /// Which draft change a debounced publish of the draft as the session's
@@ -968,7 +973,11 @@ pub struct App {
     /// A pasted path waiting for the user to attach it or paste it as text.
     pub(super) attach_offer: Option<attachments::AttachOffer>,
     pub(super) modal: Modal,
+    /// The newest status message; the composer's bottom border shows it for
+    /// [`STATUS_LIVE`], then it is cleared ([`App::expire_status`]).
     pub(super) status: String,
+    /// The status message on show and when it first showed.
+    status_shown: Option<(String, Instant)>,
     session_errors: SessionErrorSummary,
     pub(super) should_quit: bool,
     /// Active mouse text selection (conversation or composer); cleared by
@@ -1075,6 +1084,8 @@ pub(in crate::ui) enum RpcUpdate {
     },
     /// An outcome that is not a failure: shown in the status line only.
     Notice(String),
+    /// A redial of the dropped daemon connection failed; the next follows.
+    ReconnectFailed(String),
     /// `config.get` answered, for the restart banner; `None` when it failed.
     ConfigStatusFetched(Option<cookie_agent_protocol::ConfigStatus>),
     /// `daemon.restart` answered.
@@ -1159,11 +1170,8 @@ pub(in crate::ui) enum RpcUpdate {
         title: String,
         outcome: cookie_agent_client_state::session_delete::SessionDeleteOutcome,
     },
-    /// A `session.rename` ended: the change sent, and the session it left.
-    SessionRenamed {
-        change: cookie_agent_protocol::SessionRenameChange,
-        result: Box<Result<SessionMeta, ClientError>>,
-    },
+    /// A `session.rename` ended: the session it left.
+    SessionRenamed(Box<Result<SessionMeta, ClientError>>),
     Tree {
         session_id: SessionId,
         generation: u64,
@@ -1403,7 +1411,6 @@ pub(super) struct ApprovalShown {
 pub(super) struct PendingApprovalSubmission {
     pub(super) request_id: u64,
     pub(super) approval: ApprovalState,
-    pub(super) decision: ApprovalUserDecision,
 }
 
 #[derive(Debug)]
@@ -1601,6 +1608,7 @@ impl App {
             runtime_homes_refresh: ListingRefresh::default(),
             reconnector: None,
             reconnecting: false,
+            reconnect_error: None,
             presence: Default::default(),
             draft_publish: Default::default(),
             store: StateStore::default(),
@@ -1725,7 +1733,8 @@ impl App {
             attachments: Vec::new(),
             attach_offer: None,
             modal: Modal::None,
-            status: "Connected. Press / or Ctrl-P for commands.".into(),
+            status: String::new(),
+            status_shown: None,
             session_errors: SessionErrorSummary::default(),
             should_quit: false,
             selection: None,
@@ -2280,6 +2289,7 @@ async fn event_loop(
         if render.should_draw(Instant::now()) {
             // Whatever changed the view, the composer shows its draft.
             app.follow_composer_slot();
+            app.follow_status();
             drawn_wall_clock_view = app.wall_clock_view();
             if let Err(error) = terminal
                 .draw(|frame| app.draw(frame))
@@ -2388,7 +2398,10 @@ async fn event_loop(
             _ = replay_watchdog.tick() => {
                 // An idle TUI stays idle: redraw only when recovery changed
                 // state or wall-clock time alone changed the drawn view.
-                if app.recover_timed_out_replays()
+                let recovered = app.recover_timed_out_replays();
+                let expired = app.expire_status();
+                if recovered
+                    || expired
                     || app.wall_clock_view() != drawn_wall_clock_view
                 {
                     render.mark_stream();

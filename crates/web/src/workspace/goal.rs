@@ -9,7 +9,7 @@ use cookie_agent_protocol::{
 use leptos::{prelude::*, task::spawn_local};
 
 use super::{Panel, Workspace};
-use crate::goal::{GoalCommand, needs_selection, status_name};
+use crate::goal::{GoalCommand, needs_selection};
 
 impl Workspace {
     /// Whether the viewed session is the root of its tree, where goals
@@ -89,7 +89,6 @@ impl Workspace {
         } else {
             None
         };
-        self.status.set("updating goal…".into());
         spawn_local(async move {
             let result = match command {
                 GoalCommand::Objective(objective) => client
@@ -106,11 +105,10 @@ impl Workspace {
                 }
                 GoalCommand::Show => return,
             };
-            if self.selected.get_untracked() == Some(session_id) {
-                self.status.set(match result {
-                    Ok(goal) => format!("goal {}", status_name(goal.status)),
-                    Err(error) => format!("goal command failed: {error}"),
-                });
+            if let Err(error) = result
+                && self.selected.get_untracked() == Some(session_id)
+            {
+                self.status.set(format!("goal command failed: {error}"));
             }
         });
     }

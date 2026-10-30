@@ -1428,23 +1428,22 @@ async fn strip_entries_highlight_on_hover() {
 }
 
 #[test]
-fn queue_strip_reclaims_conversation_rows_and_keeps_status_pinned() {
+fn queue_strip_reclaims_conversation_rows_and_keeps_the_composer_pinned() {
     let area = Rect::new(0, 0, 80, 24);
     let plain = terminal_layout_with_tree_rows(area, 3, 0, false, false, 1);
     let queued = terminal_layout_with_tree_rows(area, 3, 5, false, false, 1);
     assert_eq!(queued.queue.height, 5);
     assert_eq!(plain.conversation.height - queued.conversation.height, 5);
-    // Status line, composer, bar, and the agent panel never move.
-    assert_eq!(queued.status, plain.status);
+    // Composer, bar, and the agent panel never move.
     assert_eq!(queued.input, plain.input);
     assert_eq!(queued.bar, plain.bar);
     assert_eq!(queued.agent, plain.agent);
-    // The strip sits flush between conversation and status.
+    // The strip sits flush between conversation and composer.
     assert_eq!(
         queued.queue.y,
         queued.conversation.y + queued.conversation.height
     );
-    assert_eq!(queued.queue.y + queued.queue.height, queued.status.y);
+    assert_eq!(queued.queue.y + queued.queue.height, queued.input.y);
     // On a cramped terminal the strip shrinks away rather than taking
     // the conversation's last row.
     let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 5, false, false, 1);
@@ -1632,7 +1631,7 @@ async fn goal_bar_and_waiting_queue_coexist_without_blank_rows_when_hidden() {
         1,
     );
     assert_eq!(layout.goal.height, 0);
-    assert_eq!(layout.status.bottom(), layout.input.y);
+    assert_eq!(layout.queue.bottom(), layout.input.y);
 }
 
 #[tokio::test]

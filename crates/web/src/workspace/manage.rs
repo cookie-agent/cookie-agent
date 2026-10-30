@@ -304,7 +304,6 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
-        self.status.set("changing machines…".into());
         spawn_local(async move {
             let done = request.done();
             let result = match request {
