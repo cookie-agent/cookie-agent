@@ -209,7 +209,7 @@ pub(crate) fn scheduled_line(when: RestartWhen, result: &DaemonRestartResult) ->
             format!("The daemon is restarting now, interrupting {waiting}.")
         }
         (_, false) => format!(
-            "The daemon restarts once {waiting} finish{}. New turns are refused until then.",
+            "The daemon restarts once {waiting} finish{}. Turns started meanwhile are waited for too.",
             if result.active_runs + result.background_calls == 1 {
                 "es"
             } else {
@@ -316,11 +316,11 @@ mod tests {
         );
         assert_eq!(
             scheduled_line(RestartWhen::Idle, &result(1)),
-            "The daemon restarts once 1 running turn finishes. New turns are refused until then."
+            "The daemon restarts once 1 running turn finishes. Turns started meanwhile are waited for too."
         );
         assert_eq!(
             scheduled_line(RestartWhen::Idle, &result(3)),
-            "The daemon restarts once 3 running turns finish. New turns are refused until then."
+            "The daemon restarts once 3 running turns finish. Turns started meanwhile are waited for too."
         );
         assert_eq!(
             scheduled_line(RestartWhen::Now, &result(2)),
@@ -333,8 +333,8 @@ mod tests {
         };
         assert_eq!(
             scheduled_line(RestartWhen::Idle, &background),
-            "The daemon restarts once 1 running turn, 2 background calls finish. New turns are \
-             refused until then."
+            "The daemon restarts once 1 running turn, 2 background calls finish. Turns started \
+             meanwhile are waited for too."
         );
         assert_eq!(
             scheduled_line(
@@ -345,8 +345,8 @@ mod tests {
                     background_calls: 1,
                 }
             ),
-            "The daemon restarts once 1 background call finishes. New turns are refused until \
-             then."
+            "The daemon restarts once 1 background call finishes. Turns started meanwhile are \
+             waited for too."
         );
     }
 

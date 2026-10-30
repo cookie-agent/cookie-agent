@@ -609,7 +609,10 @@ impl Engine {
             state.preempted = false;
         }
         let engine = self.clone();
+        // A waiting restart is not due before the wake's run has started.
+        let restart_hold = self.hold_restart();
         tokio::spawn(async move {
+            let _restart_hold = restart_hold;
             #[cfg(test)]
             engine.wait_for_producer_wake_hook().await;
             let params = RunStartParams {

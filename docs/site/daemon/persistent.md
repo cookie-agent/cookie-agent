@@ -119,11 +119,15 @@ restart the daemon in place:
 Each asks first: **when idle**, the default, waits until no turn is running
 in any session and every [background call](../reference/tools.md#background-calls) has
 reported its result; **now** interrupts the running turns, which end as after
-any stop, and ends the background calls without a report. While a restart waits, new turns are refused with "the daemon is
-restarting", queued input and producers' messages wait for the restarted
-daemon (queued input starts when a client opens its session again), and a cron fire due meanwhile is recorded as skipped
-(`daemon restarting`). Clients show *Restarting when idle…* until the
-connection closes, then reconnect as after any dropped connection.
+any stop, and ends the background calls without a report. While a restart
+waits, everything keeps working: you can send messages, queued input and
+producers' messages start their turns, and cron jobs fire, and the restart
+waits for those turns too. Once nothing runs, the restart is due; a turn
+asked for in the moment before the daemon goes down is refused with "the
+daemon is restarting", and a cron fire due then is left for the restarted
+daemon, which runs it within `[cron] missed_grace`. Clients show
+*Restarting when idle…* until the connection closes, then reconnect as after
+any dropped connection.
 
 The daemon then shuts down as on a stop signal: it ends the runs, stops its
 plugins, MCP servers, and the runtimes it started, flushes its sessions and

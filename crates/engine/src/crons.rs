@@ -107,6 +107,54 @@ impl StoredSchedule {
         }
     }
 
+    /// The last fire after `after` and up to `until`, looking at no more
+    /// than `limit` fires.
+    pub(crate) fn latest_between(
+        &self,
+        after: Timestamp,
+        until: Timestamp,
+        zone: &TimeZone,
+        limit: u64,
+    ) -> Option<Timestamp> {
+        match self {
+            Self::Cron(expression) => schedule::CronExpr::parse(expression)
+                .ok()?
+                .latest_between(after, until, zone, limit),
+            Self::At(at) => (*at > after && *at <= until).then_some(*at),
+        }
+    }
+
+    /// The last fire from `first`, a missed fire, up to `until` that is
+    /// no more than `grace` before `until`: the one a daemon starting at
+    /// `until` catches up.
+    pub(crate) fn caught_up(
+        &self,
+        first: Timestamp,
+        until: Timestamp,
+        grace: std::time::Duration,
+        zone: &TimeZone,
+        limit: u64,
+    ) -> Option<Timestamp> {
+        let grace = jiff::SignedDuration::try_from(grace).ok()?;
+        if grace.is_zero() || first > until {
+            return None;
+        }
+        let cutoff = until.checked_sub(grace).unwrap_or(Timestamp::MIN);
+        if first >= cutoff {
+            return Some(
+                self.latest_between(first, until, zone, limit)
+                    .unwrap_or(first),
+            );
+        }
+        // The fires before the window are missed for good: look only inside
+        // it.
+        let before_window = cutoff
+            .checked_sub(jiff::SignedDuration::from_secs(1))
+            .ok()?;
+        self.latest_between(before_window, until, zone, limit)
+            .filter(|latest| *latest >= cutoff)
+    }
+
     pub(crate) const fn is_one_shot(&self) -> bool {
         matches!(self, Self::At(_))
     }
@@ -251,6 +299,8 @@ pub(crate) enum StoredSkip {
     DaemonWasDown,
     Interrupted,
     FiringDisabled,
+    /// No longer recorded: a fire due while a restart is due is left for
+    /// the restarted daemon to catch up. Older histories may hold it.
     DaemonRestarting,
     /// The target session was held (`docs/site/specs/held-sessions.md`).
     SessionHeld,

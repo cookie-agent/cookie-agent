@@ -10,7 +10,7 @@ fn root(config: &str) -> tempfile::TempDir {
 
 fn cron_table(enabled: bool, failures: u32, history: usize) -> String {
     format!(
-        "[cron]\nenabled = {enabled}\nmax_consecutive_failures = {failures}\nhistory = {history}\n"
+        "[cron]\nenabled = {enabled}\nmax_consecutive_failures = {failures}\nhistory = {history}\nmissed_grace = \"30m\"\n"
     )
 }
 
@@ -28,6 +28,7 @@ fn the_cron_table_is_read() {
             enabled: false,
             max_consecutive_failures: 5,
             history: 40,
+            missed_grace: std::time::Duration::from_secs(30 * 60),
         }
     );
 }
@@ -51,6 +52,14 @@ fn failure_limits_and_history_have_bounds() {
     assert!(loads(&cron_table(true, 3, 1)));
     assert!(loads(&cron_table(true, 3, CronConfig::MAX_HISTORY)));
     assert!(!loads(&cron_table(true, 3, CronConfig::MAX_HISTORY + 1)));
+}
+
+#[test]
+fn a_zero_grace_catches_nothing_up_and_a_bare_number_fails() {
+    let authored = root("[cron]\nmissed_grace = \"0s\"\n");
+    let loaded = load_from_user_root(Some(authored.path())).expect("authored");
+    assert_eq!(loaded.runtime.cron.missed_grace, std::time::Duration::ZERO);
+    assert!(!loads("[cron]\nmissed_grace = 600\n"));
 }
 
 #[test]

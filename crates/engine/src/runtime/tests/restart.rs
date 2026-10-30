@@ -1,6 +1,7 @@
 //! Restarting the daemon (`docs/site/specs/engine-configuration.md`
-//! section 11): an `idle` restart waits for the active runs and the running
-//! background calls and refuses new runs meanwhile, `now` is due at once and the shutdown that follows
+//! section 11): an `idle` restart waits for the active runs, the runs
+//! started while it waits, and the running background calls, and refuses new
+//! runs once it is due; `now` is due at once and the shutdown that follows
 //! interrupts the runs, and an engine without a hook refuses.
 
 use std::{
@@ -37,6 +38,16 @@ async fn start(
     session: SessionId,
     key: &str,
 ) -> Result<RunId, EngineError> {
+    start_with(engine, selection, session, key, "wait for the model").await
+}
+
+async fn start_with(
+    engine: &Engine,
+    selection: &RunSelection,
+    session: SessionId,
+    key: &str,
+    content: &str,
+) -> Result<RunId, EngineError> {
     engine
         .start_run(
             RunStartParams {
@@ -44,7 +55,7 @@ async fn start(
                 session_id: session,
                 client_run_id: ClientRunId::new(key).unwrap(),
                 selection: selection.clone(),
-                content: "wait for the model".into(),
+                content: content.into(),
             },
             origin(),
         )
@@ -88,14 +99,14 @@ async fn an_engine_without_a_restart_hook_refuses_to_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_idle_restart_waits_for_the_active_run_and_refuses_new_ones() {
-    let (endpoint, responses, _captured) = scripted_channel_server(1).await;
+async fn an_idle_restart_waits_for_the_runs_started_meanwhile_and_refuses_new_ones_once_due() {
+    let (endpoint, responses, _captured) = scripted_channel_server(3).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let engine = &fixture.engine;
     let called = record_restart(engine);
     let busy = engine.create_session(selection.clone()).unwrap().session_id;
     let idle = engine.create_session(selection.clone()).unwrap().session_id;
-    // The run waits for a model answer the test has not sent yet.
+    // The runs wait for model answers the test has not sent yet.
     start(engine, &selection, busy, "busy").await.expect("run");
 
     let scheduled = engine
@@ -116,16 +127,27 @@ async fn an_idle_restart_waits_for_the_active_run_and_refuses_new_ones() {
     let again = engine.schedule_restart(RestartWhen::Idle).expect("again");
     assert!(!again.scheduled, "a second call changes the scheduled one");
 
-    let refused = start(engine, &selection, idle, "refused")
+    // A new run starts while the restart waits, and the restart waits for
+    // it too.
+    start_with(engine, &selection, idle, "meanwhile", "started meanwhile")
         .await
-        .expect_err("a new run waits for the restart");
-    assert!(matches!(refused, EngineError::Restarting), "{refused}");
-    // Input for the running session queues as usual.
+        .expect("a new run starts while the restart waits");
+    wait_for_status(
+        engine,
+        RestartStatus {
+            when: RestartWhen::Idle,
+            active_runs: 2,
+            background_calls: 0,
+            due: false,
+        },
+    )
+    .await;
+    // Input for the running session queues, and starts when its run ends.
     let queued = engine
         .submit_input(
             SessionSubmitInputParams {
                 session_id: busy,
-                content: "after the restart".into(),
+                content: "queued meanwhile".into(),
                 delivery: InputDelivery::Queue,
                 selection: None,
                 client_run_id: ClientRunId::new("queued").unwrap(),
@@ -139,15 +161,42 @@ async fn an_idle_restart_waits_for_the_active_run_and_refuses_new_ones() {
         matches!(queued, SessionSubmitInputResult::Queued { .. }),
         "{queued:?}"
     );
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert!(!called.load(Ordering::SeqCst), "the run is still active");
 
     responses
-        .send(MatchedScriptedResponse::last_message_role(
-            "user",
+        .send(MatchedScriptedResponse::last_message_contains(
+            "wait for the model",
             scripted_text_body("done"),
         ))
         .unwrap();
+    let busy_runs = |engine: &Engine| {
+        engine
+            .inner
+            .store
+            .get(busy)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+            .count()
+    };
+    with_watchdog("the queued input to start", async {
+        while busy_runs(engine) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!called.load(Ordering::SeqCst), "two runs are still active");
+
+    for content in ["started meanwhile", "queued meanwhile"] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                content,
+                scripted_text_body("done"),
+            ))
+            .unwrap();
+    }
     wait_for_restart(&called).await;
     wait_for_status(
         engine,
@@ -159,27 +208,13 @@ async fn an_idle_restart_waits_for_the_active_run_and_refuses_new_ones() {
         },
     )
     .await;
-    // The queued input waits for the restarted daemon instead of starting
-    // or being handed back.
+    // Once the restart is due, a new run waits for the restarted daemon.
+    let refused = start(engine, &selection, idle, "refused")
+        .await
+        .expect_err("the restart is due");
+    assert!(matches!(refused, EngineError::Restarting), "{refused}");
     wait_for_session_not_running(engine, busy).await;
-    let events = engine.inner.store.get(busy).unwrap().log.events().to_vec();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event.payload, EventPayload::UserInputQueued { .. }))
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event.payload, EventPayload::UserInputQueueVoided {}))
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
-            .count(),
-        1
-    );
+    assert_eq!(busy_runs(engine), 2);
     fixture.engine.shutdown().await;
 }
 

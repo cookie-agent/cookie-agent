@@ -161,7 +161,7 @@ Asks a running daemon to restart (`daemon.restart`): it relaunches its own
 executable with the same arguments and environment, which applies the
 configuration `cookie config status` lists as needing a restart and runs a
 binary upgraded on disk. Without `--now` the daemon waits until no turn is
-running in any session and refuses new turns meanwhile; the command prints
+running in any session, turns started meanwhile included; the command prints
 what it waits for and how many turns are left. It then waits for the daemon
 to come back, up to a minute, and says whether its version changed.
 Ctrl-C stops waiting; the restart stays scheduled. See

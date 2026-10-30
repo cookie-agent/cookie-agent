@@ -1058,6 +1058,14 @@ pub struct CronConfig {
     /// Fires each job's history keeps, oldest dropped first.
     #[serde(default = "default_cron_history")]
     pub history: usize,
+    /// How late a fire missed while the daemon was down still runs: at
+    /// start, a job's latest missed fire within this of the start fires
+    /// once. Zero catches nothing up.
+    #[serde(
+        default = "default_cron_missed_grace",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub missed_grace: Duration,
 }
 impl Default for CronConfig {
     fn default() -> Self {
@@ -1065,6 +1073,7 @@ impl Default for CronConfig {
             enabled: default_cron_enabled(),
             max_consecutive_failures: default_cron_max_consecutive_failures(),
             history: default_cron_history(),
+            missed_grace: default_cron_missed_grace(),
         }
     }
 }
@@ -1332,6 +1341,9 @@ const fn default_acp_idle_shutdown_ms() -> u64 {
 }
 const fn default_cron_enabled() -> bool {
     true
+}
+const fn default_cron_missed_grace() -> Duration {
+    Duration::from_secs(10 * 60)
 }
 const fn default_cron_max_consecutive_failures() -> u32 {
     3

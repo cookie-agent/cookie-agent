@@ -278,6 +278,29 @@ impl CronExpr {
         }
         count
     }
+
+    /// The last match after `after` up to and including `until`, looking at
+    /// no more than `limit` matches.
+    pub(crate) fn latest_between(
+        &self,
+        after: Timestamp,
+        until: Timestamp,
+        zone: &TimeZone,
+        limit: u64,
+    ) -> Option<Timestamp> {
+        let mut latest = None;
+        let mut cursor = after;
+        for _ in 0..limit {
+            match self.next_after(cursor, zone) {
+                Some(next) if next <= until => {
+                    latest = Some(next);
+                    cursor = next;
+                }
+                _ => break,
+            }
+        }
+        latest
+    }
 }
 
 /// Parses a one-shot delay: a whole number with `s`, `m`, `h`, or `d`, from

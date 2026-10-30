@@ -97,13 +97,13 @@ pub fn restart_now_label(running: usize) -> String {
 #[must_use]
 pub fn restart_explanation(running: usize) -> String {
     let wait = if running == 0 {
-        "When idle waits for any background calls to finish and refuses new turns \
-         meanwhile; now ends them."
+        "When idle waits for any background calls, and any turns sent meanwhile, to \
+         finish; now ends them."
             .to_owned()
     } else {
         format!(
-            "When idle waits for {} and any background calls to finish and refuses new \
-             turns meanwhile; now interrupts them.",
+            "When idle waits for {} and any background calls, and any turns sent \
+             meanwhile, to finish; now interrupts them.",
             turns(running)
         )
     };

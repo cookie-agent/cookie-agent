@@ -242,9 +242,9 @@ impl Engine {
         admission: Option<(InvocationId, u64)>,
         producer_start: bool,
     ) -> Result<RunStartResult, EngineError> {
-        // A scheduled restart refuses new runs, and waits for this one
-        // while it starts.
-        let _starting = self.begin_run_start(admission.is_none())?;
+        // A restart that is due refuses new runs; one still waiting counts
+        // this start.
+        let _starting = self.begin_run_start()?;
         // Before anything is read from the session: waiting for a runtime
         // change in progress suspends the start.
         self.reconcile_provider_store_off_worker().await?;
@@ -847,7 +847,11 @@ impl Engine {
         }
         let engine = self.clone();
         let session_id = params.session_id;
+        // Held until the task has started the session's queued input, so a
+        // waiting restart does not fall between this run and the next.
+        let restart_hold = self.hold_restart();
         let task = tokio::spawn(async move {
+            let _restart_hold = restart_hold;
             let _slot = super::mailbox::RunTaskSlot {
                 engine: engine.clone(),
                 run_id,

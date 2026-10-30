@@ -137,7 +137,7 @@ subagent with that in mind ([Permissions](#permissions)).
 
 ## Firing
 
-### Skips and no catch-up
+### Skips and missed fires
 
 A fire is **skipped**, and recorded with the reason, when:
 
@@ -150,9 +150,13 @@ A fire is **skipped**, and recorded with the reason, when:
   (`interrupted`);
 - the target session is [held](held.md) (`session held`).
 
-There is **no catch-up**. A fire missed while the daemon was down is not
-run: when the daemon starts, each job whose time passed gets one history
-entry, `skipped: daemon was down`, with the number of fires missed, and
+A fire missed while the daemon was down runs late only within a **grace
+period**, `[cron] missed_grace` (10 minutes unless set; see
+[Cron jobs](../engine/cron.md)), so a restart or an upgrade does not lose
+the fire it fell on. When the daemon starts, a job's latest missed fire
+within the grace fires once, right away; the fires before it, or all of
+them when the latest is older than the grace, get one history entry,
+`skipped: daemon was down`, with the number of fires missed, and the job
 moves to its next future time. Each fire happens exactly once, even across
 a restart or two daemons sharing a data directory.
 

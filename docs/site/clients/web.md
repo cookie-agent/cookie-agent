@@ -760,8 +760,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   across the top says so, such as *Restart needed to apply: plugins,
   runtimes*, with **Restart daemon**. That button, the one in the connection
   panel, and the one in Settings › Configuration ask first: **Restart when idle** (the default) waits until
-  no turn runs and every background call has reported, refusing new turns
-  meanwhile, and **Restart now (interrupts 2 running turns)** stops the
+  no turn runs and every background call has reported, waiting for turns
+  sent meanwhile too, and **Restart now (interrupts 2 running turns)** stops the
   running turns and the background calls, counting the sessions the page
   sees running. Cancel or Escape closes the question; on
   a phone it is a sheet at the bottom. Once the daemon accepts, the banner

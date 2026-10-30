@@ -51,7 +51,8 @@ ones.
   deleted or disabled. A job that reaches `max_runs` is deleted if an agent
   created it and kept, disabled as finished, if you did.
 - **No catch-up:** a fire missed while the daemon was down is recorded as
-  skipped and not run.
+  skipped and not run. *Revised 2026-10-29:* the latest missed fire within
+  `[cron] missed_grace` runs; see section 16.
 - **Failures:** a job is disabled after `[cron] max_consecutive_failures`
   failures in a row (default 3), which a job can override. Skips do not
   count and do not reset the count.
@@ -571,7 +572,17 @@ Decisions taken where the spec left room, and deviations:
   under the memory lock makes each fire happen once. A daemon whose session
   store (working directory) lacks a target session fails that fire.
 - **Missed fires** are counted up to a million per entry; the entry's
-  `fired_at` is the daemon's start. A fire made late while the daemon runs
+  `fired_at` is the daemon's start.
+- **Grace for missed fires (2026-10-29).** The user asked that a fire
+  missed during a daemon restart still run. `[cron] missed_grace` (a
+  duration, `"10m"` by default, `"0s"` for none) is how late a missed fire
+  may run: at start, a job's latest missed fire no older than the grace
+  stays its `next_fire`, so the scheduler fires it at once like any due
+  fire (its entry's `scheduled_at` is the missed time, `fired_at` the
+  actual one), and the fires before it get the one `skipped (daemon was
+  down)` entry, counting only them. Only the latest fire is caught up,
+  never a backlog. A restart that is due leaves the fires due from then on
+  unclaimed, so they are caught up the same way. A fire made late while the daemon runs
   (a suspended host) fires once and moves to the next match after now, with
   no record of the matches in between.
 - **The kill switch** records each due fire as `skipped` with the reason

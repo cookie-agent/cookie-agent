@@ -252,31 +252,70 @@ async fn a_fire_into_a_held_session_is_skipped() {
     fixture.engine.shutdown().await;
 }
 
-/// While a scheduled restart waits, a due fire is recorded as skipped for
-/// it and `crons.run` is refused.
+/// While a scheduled restart waits, a due fire is delivered as usual; once
+/// the restart is due, a due fire is left unclaimed for the restarted daemon
+/// and `crons.run` is refused.
 #[tokio::test]
-async fn fires_are_skipped_while_the_daemon_waits_to_restart() {
-    let (endpoint, _responses, _captured) = scripted_channel_server(1).await;
+async fn fires_run_while_a_restart_waits_and_wait_for_the_daemon_once_it_is_due() {
+    let (endpoint, responses, _captured) = scripted_channel_server(1).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let engine = &fixture.engine;
     let session = engine.create_session(selection).unwrap().session_id;
     let job = engine
-        .create_cron(params("Poll.", daily(), CronTarget::Session(session)))
+        .create_cron({
+            let mut create = params("Poll.", daily(), CronTarget::Session(session));
+            create.max_runs = Some(CronMaxRuns::Unlimited);
+            create
+        })
         .await
         .expect("created");
-    engine.set_restart_hook(Box::new(|| {}));
+    // Something the restart waits for keeps it from being due.
+    let held = engine.hold_restart();
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook = std::sync::Arc::clone(&called);
+    engine.set_restart_hook(Box::new(move || {
+        hook.store(true, std::sync::atomic::Ordering::SeqCst);
+    }));
     engine
         .schedule_restart(cookie_agent_protocol::RestartWhen::Idle)
         .expect("scheduled");
     fire_now(engine, &job.id).await;
-    let skipped = await_job(engine, &job.id, "the skip", |job| job.history.len() == 1).await;
-    assert_eq!(
-        last_outcome(&skipped),
-        StoredOutcome::Skipped {
-            reason: StoredSkip::DaemonRestarting
+    let delivered = await_job(engine, &job.id, "the fire", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.outcome == StoredOutcome::Delivered)
+    })
+    .await;
+    assert_eq!(delivered.history.len(), 1);
+    assert_eq!(fire_messages(engine, session, &job.id), 1);
+    // The fire's run started, and the restart waits for it.
+    await_projection(engine, session, "the fire's run", |projection| {
+        projection.status == SessionStatus::Running
+    })
+    .await;
+    drop(held);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    with_watchdog("the restart to be due", async {
+        while !called.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    })
+    .await;
+    fire_now(engine, &job.id).await;
+    let unclaimed = engine.cron_store().job(&job.id).expect("the job");
+    assert_eq!(unclaimed.history.len(), 1, "{:?}", unclaimed.history);
+    assert!(
+        unclaimed
+            .next_fire
+            .is_some_and(|next| next <= Timestamp::now())
     );
-    assert_eq!(fire_messages(engine, session, &job.id), 0);
     let refused = engine.run_cron(job.id.clone()).await.expect_err("refused");
     assert!(
         matches!(refused, crate::EngineError::Restarting),
@@ -364,9 +403,9 @@ async fn a_fire_recorded_before_a_restart_is_delivered_exactly_once() {
 }
 
 #[tokio::test]
-async fn fires_missed_while_the_daemon_was_down_are_recorded_and_not_run() {
+async fn without_a_grace_fires_missed_while_the_daemon_was_down_are_recorded_and_not_run() {
     let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
-    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let engine = &fixture.engine;
     let root = engine.create_session(selection).unwrap().session_id;
     let session = create_buffered_delegated_child(engine, root);
@@ -430,6 +469,7 @@ async fn fires_missed_while_the_daemon_was_down_are_recorded_and_not_run() {
         .unwrap();
     fixture.engine.shutdown().await;
 
+    fixture.config.runtime.cron.missed_grace = Duration::ZERO;
     let reopened = reopen_engine(&fixture);
     let hourly = await_job(&reopened, &hourly_id, "the missed fires", |job| {
         !job.history.is_empty()
@@ -454,6 +494,153 @@ async fn fires_missed_while_the_daemon_was_down_are_recorded_and_not_run() {
     let mine = await_job(&reopened, &mine_id, "your one-shot", |job| !job.enabled).await;
     assert_eq!(mine.disabled_reason, Some(StoredDisabled::Finished));
     assert!(reopened.cron_store().job(&agents_id).is_none());
+    reopened.shutdown().await;
+}
+
+/// At start, a job's latest fire missed within `[cron] missed_grace` fires
+/// once; the fires before it are recorded as missed, and a fire missed
+/// longer ago than the grace is not run.
+#[tokio::test]
+async fn the_latest_fire_missed_within_the_grace_fires_at_start() {
+    let (endpoint, responses, _captured) = scripted_channel_server(1).await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    // A session with a run is saved, so the reopened engine finds it. The
+    // fires' runs wait for answers that never come.
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("saved").unwrap(),
+                selection,
+                content: "Save the session.".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    wait_for_session_not_running(engine, session).await;
+    let every_minute = engine
+        .create_cron({
+            let mut create = params(
+                "Every minute.",
+                CronSchedule::Cron("* * * * *".into()),
+                CronTarget::Session(session),
+            );
+            create.max_runs = Some(CronMaxRuns::Unlimited);
+            create
+        })
+        .await
+        .unwrap();
+    let recent = engine
+        .create_cron(params(
+            "Recent.",
+            CronSchedule::In("1h".into()),
+            CronTarget::Session(session),
+        ))
+        .await
+        .unwrap();
+    let old = engine
+        .create_cron(params(
+            "Old.",
+            CronSchedule::In("1h".into()),
+            CronTarget::Session(session),
+        ))
+        .await
+        .unwrap();
+    let minute = Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .with()
+        .second(0)
+        .subsec_nanosecond(0)
+        .build()
+        .unwrap()
+        .timestamp();
+    let first_missed = minute - jiff::SignedDuration::from_mins(30);
+    let recent_at = minute - jiff::SignedDuration::from_mins(2);
+    let old_at = minute - jiff::SignedDuration::from_hours(2);
+    let (every_minute_id, recent_id, old_id) =
+        (every_minute.id.clone(), recent.id.clone(), old.id.clone());
+    let ids = (recent_id.clone(), old_id.clone());
+    engine
+        .crons_now(move |_, jobs| {
+            for job in jobs.iter_mut() {
+                let at = if job.id == ids.0 {
+                    recent_at
+                } else if job.id == ids.1 {
+                    old_at
+                } else {
+                    first_missed
+                };
+                job.next_fire = Some(at);
+                if job.schedule.is_one_shot() {
+                    job.schedule = StoredSchedule::At(at);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    fixture.engine.shutdown().await;
+
+    fixture.config.runtime.cron.missed_grace = Duration::from_secs(5 * 60);
+    let reopened = reopen_engine(&fixture);
+    let every_minute = await_job(&reopened, &every_minute_id, "the caught-up fire", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.outcome == StoredOutcome::Delivered)
+    })
+    .await;
+    let [missed, caught_up, ..] = &every_minute.history[..] else {
+        panic!("a missed entry and a fire: {:?}", every_minute.history);
+    };
+    assert_eq!(
+        missed.outcome,
+        StoredOutcome::Skipped {
+            reason: StoredSkip::DaemonWasDown
+        }
+    );
+    assert_eq!(missed.scheduled_at, Some(first_missed));
+    // The latest minute before the start fires; every one before it was
+    // missed.
+    let caught_up_at = caught_up.scheduled_at.expect("scheduled");
+    assert!(caught_up_at >= minute, "{caught_up_at}");
+    let minutes = caught_up_at.duration_since(first_missed).as_secs() / 60;
+    assert_eq!(missed.missed, Some(u64::try_from(minutes).unwrap()));
+    assert!(every_minute.enabled);
+
+    let recent = await_job(&reopened, &recent_id, "the recent one-shot", |job| {
+        !job.enabled
+    })
+    .await;
+    let [fire] = &recent.history[..] else {
+        panic!("only the caught-up fire: {:?}", recent.history);
+    };
+    assert_eq!(fire.outcome, StoredOutcome::Delivered);
+    assert_eq!(fire.scheduled_at, Some(recent_at));
+    assert_eq!(recent.disabled_reason, Some(StoredDisabled::Finished));
+
+    let old = await_job(&reopened, &old_id, "the old one-shot", |job| !job.enabled).await;
+    let [fire] = &old.history[..] else {
+        panic!("only the missed entry: {:?}", old.history);
+    };
+    assert_eq!(
+        fire.outcome,
+        StoredOutcome::Skipped {
+            reason: StoredSkip::DaemonWasDown
+        }
+    );
+    assert_eq!(fire.missed, Some(1));
+    assert_eq!(fire_messages(&reopened, session, &every_minute_id), 1);
+    assert_eq!(fire_messages(&reopened, session, &recent_id), 1);
+    assert_eq!(fire_messages(&reopened, session, &old_id), 0);
     reopened.shutdown().await;
 }
 

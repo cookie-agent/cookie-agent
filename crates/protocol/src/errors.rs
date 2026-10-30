@@ -302,7 +302,7 @@ error_codes! {
         fields: [],
         message: "The daemon is restarting.",
         hint: Some("Send it again once the daemon is back; queued input waits for the restart."),
-        description: "A run asked for while a `daemon.restart` waits for the active runs to end.",
+        description: "A run asked for once a `daemon.restart` is due and the daemon is going down.",
     }
     RESTART_UNSUPPORTED {
         code: "restart_unsupported",

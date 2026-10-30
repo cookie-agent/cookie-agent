@@ -185,8 +185,8 @@ button. The button, `/restart`, and `R` or *Restart daemon* in `/config`
 open the same confirmation:
 
 - **Restart when idle** (Enter or `i`, the default) waits until no turn is
-  running in any session and every background call has reported; new turns
-  are refused meanwhile.
+  running in any session and every background call has reported; you can
+  keep sending meanwhile, and the restart waits for those turns too.
 - **Restart now** (`n`) interrupts the running turns and ends the background
   calls; the confirmation says how many turns there are.
 - **Cancel** (Esc) keeps the daemon running and returns to the panel it

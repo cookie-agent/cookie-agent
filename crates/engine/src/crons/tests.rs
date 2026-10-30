@@ -184,6 +184,86 @@ fn a_local_time_the_clock_repeats_fires_once() {
 }
 
 #[test]
+fn the_caught_up_fire_is_the_latest_missed_one_within_the_grace() {
+    let hourly = StoredSchedule::Cron("0 * * * *".into());
+    let zone = TimeZone::UTC;
+    let minutes = |count: u64| std::time::Duration::from_secs(count * 60);
+    let caught_up = |schedule: &StoredSchedule, first: &str, until: &str, grace| {
+        schedule
+            .caught_up(at(first), at(until), grace, &zone, 1000)
+            .map(|fire| fire.to_string())
+    };
+    // The latest of several missed fires, and one exactly at the window's
+    // start.
+    assert_eq!(
+        caught_up(
+            &hourly,
+            "2026-10-22T00:00:00Z",
+            "2026-10-22T05:10:00Z",
+            minutes(15)
+        ),
+        Some("2026-10-22T05:00:00Z".to_owned())
+    );
+    assert_eq!(
+        caught_up(
+            &hourly,
+            "2026-10-22T00:00:00Z",
+            "2026-10-22T05:10:00Z",
+            minutes(10)
+        ),
+        Some("2026-10-22T05:00:00Z".to_owned())
+    );
+    // Outside the window, or with no grace, nothing is caught up.
+    assert_eq!(
+        caught_up(
+            &hourly,
+            "2026-10-22T00:00:00Z",
+            "2026-10-22T05:10:00Z",
+            minutes(9)
+        ),
+        None
+    );
+    assert_eq!(
+        caught_up(
+            &hourly,
+            "2026-10-22T05:00:00Z",
+            "2026-10-22T05:10:00Z",
+            std::time::Duration::ZERO
+        ),
+        None
+    );
+    // A single missed fire, and a one-shot.
+    assert_eq!(
+        caught_up(
+            &hourly,
+            "2026-10-22T05:00:00Z",
+            "2026-10-22T05:10:00Z",
+            minutes(15)
+        ),
+        Some("2026-10-22T05:00:00Z".to_owned())
+    );
+    let once = StoredSchedule::At(at("2026-10-22T05:05:00Z"));
+    assert_eq!(
+        caught_up(
+            &once,
+            "2026-10-22T05:05:00Z",
+            "2026-10-22T05:10:00Z",
+            minutes(15)
+        ),
+        Some("2026-10-22T05:05:00Z".to_owned())
+    );
+    assert_eq!(
+        caught_up(
+            &once,
+            "2026-10-22T05:05:00Z",
+            "2026-10-22T05:10:00Z",
+            minutes(1)
+        ),
+        None
+    );
+}
+
+#[test]
 fn missed_fires_are_counted_between_two_times() {
     let expr = CronExpr::parse("0 * * * *").expect("hourly");
     let zone = TimeZone::UTC;

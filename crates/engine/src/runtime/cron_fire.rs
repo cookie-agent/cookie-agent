@@ -290,7 +290,9 @@ impl Engine {
                     break;
                 };
                 let engine = Engine { inner };
-                if engine.admission_tasks_closing() {
+                // Once a restart is due, fires are left for the restarted
+                // daemon; a due fire would otherwise wake this loop at once.
+                if engine.admission_tasks_closing() || engine.restart_due() {
                     break;
                 }
                 engine.cron_tick(Timestamp::now()).await;
@@ -317,9 +319,11 @@ impl Engine {
     /// What the daemon finds at start (section 4.1): a fire written but
     /// neither delivered nor started is `skipped (interrupted)`, or
     /// delivered when its session shows it was; a job whose next fire passed
-    /// while the daemon was down gets one `skipped (daemon was down)` entry
-    /// and moves to its next future fire. Then every session a job waits on
-    /// says so.
+    /// while the daemon was down catches up its latest missed fire within
+    /// `[cron] missed_grace`, which stays its next fire, and gets one
+    /// `skipped (daemon was down)` entry for the rest, moving to its next
+    /// future fire when nothing is caught up. Then every session a job waits
+    /// on says so.
     pub(crate) async fn reconcile_crons_at_start(&self) {
         let started_at = self.inner.cron_scheduler.started_at;
         let mut found = Vec::new();
@@ -343,6 +347,7 @@ impl Engine {
             .cron
             .max_consecutive_failures;
         let history = self.inner.config.load().runtime.cron.history;
+        let grace = self.inner.config.load().runtime.cron.missed_grace;
         let result = self
             .crons_blocking(move |_, jobs| {
                 for (id, key, delivery) in &found {
@@ -376,14 +381,31 @@ impl Engine {
                                 &zone,
                                 MISSED_COUNT_LIMIT,
                             );
-                            let mut fire = StoredFire::skipped(
-                                Some(next),
+                            let caught_up = job.schedule.caught_up(
+                                next,
                                 started_at,
-                                StoredSkip::DaemonWasDown,
+                                grace,
+                                &zone,
+                                MISSED_COUNT_LIMIT,
                             );
-                            fire.missed = Some(missed);
-                            job.record(fire, history);
-                            job.last_fire = Some(started_at);
+                            let skipped = missed - u64::from(caught_up.is_some());
+                            if skipped > 0 {
+                                let mut fire = StoredFire::skipped(
+                                    Some(next),
+                                    started_at,
+                                    StoredSkip::DaemonWasDown,
+                                );
+                                fire.missed = Some(skipped);
+                                job.record(fire, history);
+                                job.last_fire = Some(started_at);
+                            }
+                            if let Some(caught_up) = caught_up {
+                                // The scheduler fires it as soon as it
+                                // looks, like any due fire.
+                                job.next_fire = Some(caught_up);
+                                index += 1;
+                                continue;
+                            }
                             job.next_fire = job.schedule.next_after(started_at, &zone);
                             let before = jobs.len();
                             finish_if_done(jobs, index);
@@ -517,12 +539,16 @@ impl Engine {
         let Some(job) = self.inner.crons.job(&id) else {
             return;
         };
-        let skip = if !self.inner.config.load().runtime.cron.enabled {
-            Some(StoredSkip::FiringDisabled)
-        } else if self.restart_pending() {
-            Some(StoredSkip::DaemonRestarting)
-        } else {
+        // A restart that is due would refuse the fire's run: leave it
+        // unclaimed for the restarted daemon, which catches it up within
+        // `[cron] missed_grace`.
+        if self.restart_due() {
+            return;
+        }
+        let skip = if self.inner.config.load().runtime.cron.enabled {
             self.skip_reason(&job)
+        } else {
+            Some(StoredSkip::FiringDisabled)
         };
         let history = self.inner.config.load().runtime.cron.history;
         let claimed = self

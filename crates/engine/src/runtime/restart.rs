@@ -8,10 +8,10 @@
 //!
 //! An `idle` restart waits for the active runs and the running background
 //! calls, which the shutdown would otherwise end without a report.
-//! While it waits, new top-level runs are refused with
-//! [`EngineError::Restarting`]: client starts, queued input, producer wakes,
-//! and cron fires (recorded as skipped). A run's delegated children still
-//! start, since they are part of a turn the restart waits for.
+//! While it waits, runs keep starting as usual (client starts, queued input,
+//! producer wakes, cron fires), and the restart waits for them too. Only once
+//! it is due are new runs refused with [`EngineError::Restarting`]; a cron
+//! fire due then stays unclaimed for the restarted daemon to catch up.
 
 use std::{
     sync::{
@@ -63,9 +63,17 @@ pub(crate) struct RestartState {
     /// Set once a restart is scheduled; never cleared, since the daemon goes
     /// down.
     pending: AtomicBool,
+    /// Set once the restart is due: run starts are refused. A start counts
+    /// itself and the restart decides it is due under this lock, so a start
+    /// is either counted before the decision or refused after it.
+    due: Mutex<bool>,
     when: Mutex<Option<RestartWhen>>,
     /// Run starts in progress, which a waiting restart counts as active.
     starting: AtomicUsize,
+    /// Work that may start a run without being one, such as a run's task
+    /// between its end and starting its session's queued input; a waiting
+    /// restart is not due while any is held, but does not report them.
+    held: AtomicUsize,
     status: watch::Sender<Option<RestartStatus>>,
     wake: Notify,
 }
@@ -76,6 +84,16 @@ pub(super) struct RunStart<'a>(&'a AtomicUsize);
 impl Drop for RunStart<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Keeps a waiting restart from being due until dropped; see
+/// [`Engine::hold_restart`].
+pub(super) struct RestartHold(Engine);
+
+impl Drop for RestartHold {
+    fn drop(&mut self) {
+        self.0.inner.restart.held.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -96,6 +114,16 @@ impl Engine {
     #[must_use]
     pub fn restart_pending(&self) -> bool {
         self.inner.restart.pending.load(Ordering::SeqCst)
+    }
+
+    /// Whether a scheduled restart is due: new runs are refused.
+    pub(crate) fn restart_due(&self) -> bool {
+        *self
+            .inner
+            .restart
+            .due
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The scheduled restart, `None` until one is; it changes as the active
@@ -147,19 +175,27 @@ impl Engine {
         })
     }
 
-    /// Counts a run start, or refuses a top-level one while a restart is
-    /// scheduled. `top_level` is `false` for a delegated child, which is
-    /// part of a turn already running.
-    pub(super) fn begin_run_start(&self, top_level: bool) -> Result<RunStart<'_>, EngineError> {
+    /// Counts a run start, or refuses it once a scheduled restart is due.
+    pub(super) fn begin_run_start(&self) -> Result<RunStart<'_>, EngineError> {
         let restart = &self.inner.restart;
-        // Counted before the check: a restart scheduled after it sees this
-        // start among the active runs.
-        restart.starting.fetch_add(1, Ordering::SeqCst);
-        let start = RunStart(&restart.starting);
-        if top_level && restart.pending.load(Ordering::SeqCst) {
+        let due = restart
+            .due
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *due {
             return Err(EngineError::Restarting);
         }
-        Ok(start)
+        restart.starting.fetch_add(1, Ordering::SeqCst);
+        Ok(RunStart(&restart.starting))
+    }
+
+    /// Keeps a waiting restart from being due while work that may start a
+    /// run is under way, so the restart does not fall in the gap between a
+    /// run and the one it leads to. A run started after the restart is due
+    /// is refused all the same.
+    pub(super) fn hold_restart(&self) -> RestartHold {
+        self.inner.restart.held.fetch_add(1, Ordering::SeqCst);
+        RestartHold(self.clone())
     }
 
     fn restart_active_runs(&self) -> u32 {
@@ -191,9 +227,19 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .unwrap_or(RestartWhen::Idle);
-            let active_runs = self.restart_active_runs();
-            let background_calls = self.restart_background_calls();
-            let due = when == RestartWhen::Now || (active_runs == 0 && background_calls == 0);
+            let (active_runs, background_calls, due) = {
+                let mut gate = restart
+                    .due
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let active_runs = self.restart_active_runs();
+                let background_calls = self.restart_background_calls();
+                *gate = when == RestartWhen::Now
+                    || (active_runs == 0
+                        && background_calls == 0
+                        && restart.held.load(Ordering::SeqCst) == 0);
+                (active_runs, background_calls, *gate)
+            };
             let status = RestartStatus {
                 when,
                 active_runs,
