@@ -44,7 +44,8 @@ list where the code departs from the text below.
 - No official agent uses `{{default_prompt}}`; each holds its whole prompt.
   In a document of the user's, `{{default_prompt}}` stands for the official
   agent's prompt of the same ID, else for the prompt the binary carries,
-  which only compaction has (decided 2026-10-30).
+  which only compaction has; in a preset's document, for the top-level
+  document of the user's it replaces first (decided 2026-10-30).
 
 ## Implementation notes
 

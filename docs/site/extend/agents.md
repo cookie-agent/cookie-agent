@@ -710,7 +710,10 @@ Answer in French.
 
 The daemon puts the official prompt in its place as it loads the
 configuration, and again whenever a refresh changes the official agent, so
-your agent follows it. Without an official agent of that ID,
+your agent follows it. In a preset folder, `{{default_prompt}}` stands for
+the prompt of the agent the document replaces there: your own document of
+that ID in `agents/`, with its `{{default_prompt}}` already expanded, else
+the official one. Without an agent of that ID to take it from,
 `{{default_prompt}}` stands for the prompt this build carries for it, which
 only `compaction` has; for any other agent it stands for nothing, and the
 configuration diagnostics say so (a body of only `{{default_prompt}}` then

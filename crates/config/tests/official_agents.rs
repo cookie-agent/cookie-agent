@@ -307,3 +307,57 @@ fn an_official_agent_never_uses_default_prompt() {
         loaded.official_agent_diagnostics
     );
 }
+
+#[test]
+fn a_presets_default_prompt_is_the_prompt_of_the_agent_it_replaces() {
+    let directory = root("");
+    let document = |body: &str| {
+        format!(
+            "---\ndescription: An agent\nmode: primary\nmodels: [\"custom.test/model\"]\n---\n{body}\n"
+        )
+    };
+    official(&directory, "primary", &document("Be the assistant."));
+    official(&directory, "coder", &document("Write code."));
+    user(
+        &directory,
+        "primary",
+        &document("{{default_prompt}}\nAnswer in French."),
+    );
+    let preset = directory.path().join("agents/review");
+    fs::create_dir_all(&preset).unwrap();
+    // The preset replaces the user's own `primary`, itself extending the
+    // official one; and `coder`, which only the official agents have.
+    fs::write(
+        preset.join("primary.md"),
+        document("{{default_prompt}}\nReview only."),
+    )
+    .unwrap();
+    fs::write(
+        preset.join("coder.md"),
+        document("{{default_prompt}}\nReview only."),
+    )
+    .unwrap();
+    let loaded = load_from_user_root(Some(directory.path())).expect("loads");
+    assert_eq!(
+        body(&loaded, "primary"),
+        "Be the assistant.\nAnswer in French.\n"
+    );
+    let review = &loaded.agent_presets["review"];
+    assert_eq!(
+        review[&id("primary")].body,
+        "Be the assistant.\nAnswer in French.\nReview only.\n"
+    );
+    assert_eq!(review[&id("coder")].body, "Write code.\nReview only.\n");
+    assert!(loaded.official_agent_diagnostics.is_empty());
+
+    // A refreshed official prompt reaches the preset's agent too.
+    let before = review[&id("primary")].prompt_fingerprint.clone();
+    official(&directory, "primary", &document("Be a better assistant."));
+    let loaded = load_from_user_root(Some(directory.path())).expect("loads");
+    let after = &loaded.agent_presets["review"][&id("primary")];
+    assert_eq!(
+        after.body,
+        "Be a better assistant.\nAnswer in French.\nReview only.\n"
+    );
+    assert_ne!(after.prompt_fingerprint, before);
+}

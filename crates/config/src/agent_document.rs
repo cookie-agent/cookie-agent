@@ -34,8 +34,9 @@ const AWAITING_OFFICIAL_PROMPT: &str =
     "This agent extends an official agent whose prompt the daemon has not fetched yet.\n";
 
 impl AgentDocument {
-    /// Puts `official`'s prompt in place of the body's `{{default_prompt}}`.
-    /// The fingerprints follow the official document too, so a refreshed
+    /// Puts `official`'s prompt in place of the body's `{{default_prompt}}`:
+    /// the official agent's, or for a preset's document the top-level one it
+    /// replaces. The fingerprints follow that document too, so a refreshed
     /// official prompt reads as a changed agent.
     pub(crate) fn inherit_prompt(&mut self, official: &AgentDocument) {
         let body = crate::prompt_template::replace_default_prompt(

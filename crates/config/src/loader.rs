@@ -237,29 +237,42 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
                 }
             }
         }
-        // Before the user's documents replace them.
+        // A document's `{{default_prompt}}` is the prompt of the agent it
+        // replaces: for one in `agents/`, the official agent's; for one in a
+        // preset, the agent `agents/` ends up with, the user's own (already
+        // expanded) over the official one. So the top level loads first.
         let officials = agents.clone();
-        for (path, bytes) in tree.documents() {
-            let ConfigDocument::Agent { preset, id } = path.document() else {
-                continue;
-            };
-            let id = AgentId::new(id).expect("validated agent path");
-            let mut document = parse_agent(
-                id.clone(),
-                bytes,
-                AgentDocumentSource::User,
-                &tree.display_path(path),
-            )?;
-            if let Some(diagnostic) = resolve_default_prompt(&mut document, &officials) {
-                official_agent_diagnostics.push(diagnostic);
+        let documents = tree
+            .documents()
+            .filter_map(|(path, bytes)| match path.document() {
+                ConfigDocument::Agent { preset, id } => Some((path, bytes, preset, id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for top_level in [true, false] {
+            for (path, bytes, preset, id) in &documents {
+                if preset.is_none() != top_level {
+                    continue;
+                }
+                let id = AgentId::new(*id).expect("validated agent path");
+                let mut document = parse_agent(
+                    id.clone(),
+                    bytes,
+                    AgentDocumentSource::User,
+                    &tree.display_path(path),
+                )?;
+                let replaced = if top_level { &officials } else { &agents };
+                if let Some(diagnostic) = resolve_default_prompt(&mut document, replaced) {
+                    official_agent_diagnostics.push(diagnostic);
+                }
+                match preset {
+                    None => agents.insert(id, document),
+                    Some(preset) => preset_agents
+                        .entry((*preset).to_owned())
+                        .or_default()
+                        .insert(id, document),
+                };
             }
-            match preset {
-                None => agents.insert(id, document),
-                Some(preset) => preset_agents
-                    .entry(preset.to_owned())
-                    .or_default()
-                    .insert(id, document),
-            };
         }
         for preset in tree.empty_presets() {
             preset_agents.entry(preset.to_owned()).or_default();
@@ -540,19 +553,19 @@ fn user_root() -> Option<PathBuf> {
     paths::user_data_root().ok()
 }
 
-/// Puts the official prompt of `document`'s agent in place of its
-/// `{{default_prompt}}`. Without an official agent of that ID, `compaction`
-/// keeps the placeholder for the prompt this build carries, and any other
-/// agent drops it, which the returned diagnostic says.
+/// Puts the prompt of the agent `document` replaces, its ID's entry of
+/// `replaced`, in place of its `{{default_prompt}}`. Without one,
+/// `compaction` keeps the placeholder for the prompt this build carries, and
+/// any other agent drops it, which the returned diagnostic says.
 fn resolve_default_prompt(
     document: &mut crate::AgentDocument,
-    officials: &BTreeMap<AgentId, crate::AgentDocument>,
+    replaced: &BTreeMap<AgentId, crate::AgentDocument>,
 ) -> Option<String> {
     if !crate::prompt_template::uses_default_prompt(&document.body) {
         return None;
     }
-    if let Some(official) = officials.get(&document.id) {
-        document.inherit_prompt(official);
+    if let Some(base) = replaced.get(&document.id) {
+        document.inherit_prompt(base);
         return None;
     }
     if document.id.as_str() == crate::BUILT_IN_COMPACTION_AGENT_ID {
