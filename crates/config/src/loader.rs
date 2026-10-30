@@ -219,6 +219,14 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
                     |root| crate::official_agents_root(root).join(format!("{id}.md")),
                 );
                 match parse_agent(id.clone(), bytes, AgentDocumentSource::BuiltIn, &path) {
+                    // An official agent carries its whole prompt: what a
+                    // user's `{{default_prompt}}` stands for.
+                    Ok(document) if crate::prompt_template::uses_default_prompt(&document.body) => {
+                        official_agent_diagnostics.push(format!(
+                            "official agent `{id}` was left out: an official agent's prompt \
+                             never uses `{{{{default_prompt}}}}`"
+                        ));
+                    }
                     Ok(mut document) => {
                         document.official = true;
                         document.official_version = tree.official_version(id).map(str::to_owned);
@@ -229,17 +237,22 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
                 }
             }
         }
+        // Before the user's documents replace them.
+        let officials = agents.clone();
         for (path, bytes) in tree.documents() {
             let ConfigDocument::Agent { preset, id } = path.document() else {
                 continue;
             };
             let id = AgentId::new(id).expect("validated agent path");
-            let document = parse_agent(
+            let mut document = parse_agent(
                 id.clone(),
                 bytes,
                 AgentDocumentSource::User,
                 &tree.display_path(path),
             )?;
+            if let Some(diagnostic) = resolve_default_prompt(&mut document, &officials) {
+                official_agent_diagnostics.push(diagnostic);
+            }
             match preset {
                 None => agents.insert(id, document),
                 Some(preset) => preset_agents
@@ -525,4 +538,30 @@ fn key_line(text: &str, key: &str) -> Option<usize> {
 
 fn user_root() -> Option<PathBuf> {
     paths::user_data_root().ok()
+}
+
+/// Puts the official prompt of `document`'s agent in place of its
+/// `{{default_prompt}}`. Without an official agent of that ID, `compaction`
+/// keeps the placeholder for the prompt this build carries, and any other
+/// agent drops it, which the returned diagnostic says.
+fn resolve_default_prompt(
+    document: &mut crate::AgentDocument,
+    officials: &BTreeMap<AgentId, crate::AgentDocument>,
+) -> Option<String> {
+    if !crate::prompt_template::uses_default_prompt(&document.body) {
+        return None;
+    }
+    if let Some(official) = officials.get(&document.id) {
+        document.inherit_prompt(official);
+        return None;
+    }
+    if document.id.as_str() == crate::BUILT_IN_COMPACTION_AGENT_ID {
+        return None;
+    }
+    document.drop_default_prompt();
+    Some(format!(
+        "agent `{}` uses `{{{{default_prompt}}}}`, but there is no official agent `{}` yet: \
+         its prompt goes without it",
+        document.id, document.id
+    ))
 }

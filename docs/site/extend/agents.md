@@ -689,21 +689,46 @@ dropped as often as it takes), and the last five verdicts come along as
 entries. Nothing is summarised, and the boundary is the same after a
 restart. Its cache lifetime is [`[approval] cache_ttl`](../engine/approval.md#the-reviewers-cache).
 
+### Extending an official agent's prompt
+
+Every official agent holds its whole prompt. In a document of yours in
+`agents/` (or a preset folder), `{{default_prompt}}` stands for the prompt
+of the official agent with the same ID, so you can keep it and add your own
+lines instead of copying it:
+
+```markdown
+---
+description: The assistant, answering in French
+mode: primary
+models:
+  - ${default_model}
+---
+{{default_prompt}}
+
+Answer in French.
+```
+
+The daemon puts the official prompt in its place as it loads the
+configuration, and again whenever a refresh changes the official agent, so
+your agent follows it. Without an official agent of that ID,
+`{{default_prompt}}` stands for the prompt this build carries for it, which
+only `compaction` has; for any other agent it stands for nothing, and the
+configuration diagnostics say so (a body of only `{{default_prompt}}` then
+says it awaits the official prompt). An official agent never uses
+`{{default_prompt}}` itself: the daemon leaves out one that does.
+
 ### Internal agent prompt placeholders
 
-The official `approval.md` and `title.md` hold their whole prompts, with no
-placeholder: to change one, copy it into `agents/` and edit it. The body of
-`compaction.md` is a template, and the official one is exactly
-`{{default_prompt}}`, which expands to the compaction prompt the daemon
-carries:
+The official `approval.md`, `title.md`, and `compaction.md` hold their whole
+prompts. The bodies of yours are templates:
 
 | Agent | Body | Where it is sent | Placeholders |
 |---|---|---|---|
-| `approval` | The approval reviewer prompt: how its conversation is labelled and which entries carry the user's authority, when to choose `allow`, `ask`, or `deny`, which kinds of calls need the user, and the rules of judging a call against the whole task. | System prompt | none |
-| `compaction` | `{{default_prompt}}`: the structured checkpoint prompt. When the span being compacted starts with an earlier summary, it is the variant that merges it into one updated checkpoint. | Final user message after the history being summarized | `{{default_prompt}}`, `{{focus}}` |
-| `title` | The session title prompt: what makes a good title, its length, language, and casing. | System prompt | none |
+| `approval` | The approval reviewer prompt: how its conversation is labelled and which entries carry the user's authority, when to choose `allow`, `ask`, or `deny`, which kinds of calls need the user, and the rules of judging a call against the whole task. | System prompt | `{{default_prompt}}` |
+| `compaction` | The structured checkpoint prompt, which also says how to merge an earlier checkpoint the span starts with. | Final user message after the history being summarized | `{{default_prompt}}`, `{{focus}}` |
+| `title` | The session title prompt: what makes a good title, its length, language, and casing. | System prompt | `{{default_prompt}}` |
 
-A placeholder in `approval.md` or `title.md` is an error. The output format
+`{{focus}}` in `approval.md` or `title.md` is an error. The output format
 each agent must follow is not part of its body. It stays in the request the
 engine builds, so a custom body cannot break parsing: approval still asks
 for `{"decision":"allow"|"deny"|"ask","reason":"…"}` in each request block
@@ -718,7 +743,9 @@ Keep every test name the session mentions.
 ```
 
 A `compaction.md` body without `{{default_prompt}}` replaces the prompt
-entirely.
+entirely. With no official `compaction` agent, `{{default_prompt}}` is the
+compaction prompt this build carries: the structured checkpoint prompt, in
+its variant that merges an earlier summary when the span starts with one.
 
 #### Compaction focus
 
@@ -734,10 +761,8 @@ Automatic compactions and `/compact` with an empty prompt have no focus.
   whole expanded body as `User-requested focus: …`. With no focus, nothing is
   appended.
 
-`{{default_prompt}}` itself does not contain `{{focus}}`, and expansion is a
-single pass: text inserted by a placeholder is never scanned for more
-placeholders. So the built-in body, and any body that uses only
-`{{default_prompt}}`, gets the focus appended at the end.
+The prompts `{{default_prompt}}` stands for do not contain `{{focus}}`, so a
+body that uses only `{{default_prompt}}` gets the focus appended at the end.
 
 For example, with this body:
 
@@ -770,10 +795,10 @@ Give extra detail to: {{focus}}
 Spaces inside the braces are allowed (`{{ default_prompt }}`). A placeholder
 the agent does not accept, such as `{{defaults}}` anywhere or `{{focus}}` in
 `approval.md`, is a hard configuration error. Any other `{{`, such as
-`{{a b}}`, is literal text. Placeholders are expanded only in the three internal
-agent documents. In every other agent document, `{{default_prompt}}` and
-`{{focus}}` are neither expanded nor rejected; the model receives them as
-literal text.
+`{{a b}}`, is literal text. `{{default_prompt}}` is expanded in every agent
+document of yours; `{{focus}}` only in `compaction.md`. In other agent
+documents any other placeholder is neither expanded nor rejected; the model
+receives it as literal text.
 
 A session keeps the internal agent prompts frozen when each of its runs
 started. A manual `/compact` on a session whose last run started under an

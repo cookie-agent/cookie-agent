@@ -176,3 +176,134 @@ fn utility_model_is_a_model_value_agents_reach_as_a_variable() {
         );
     }
 }
+
+fn body(loaded: &cookie_agent_config::LoadedConfiguration, agent: &str) -> String {
+    loaded.agents[&id(agent)].body.clone()
+}
+
+#[test]
+fn a_users_default_prompt_is_the_official_agents_prompt() {
+    let directory = root("");
+    official(
+        &directory,
+        "primary",
+        "---\ndescription: Official\nmode: primary\nmodels: [\"custom.test/model\"]\n---\nBe the assistant.\n",
+    );
+    user(
+        &directory,
+        "primary",
+        "---\ndescription: Mine\nmode: primary\nmodels: [\"custom.test/model\"]\n---\n{{default_prompt}}\n\nAnswer in French.\n",
+    );
+    let loaded = load_from_user_root(Some(directory.path())).expect("loads");
+    assert_eq!(
+        body(&loaded, "primary"),
+        "Be the assistant.\n\nAnswer in French.\n"
+    );
+    assert!(
+        !loaded.agents[&id("primary")].official,
+        "the user's document stays the user's"
+    );
+    assert!(loaded.official_agent_diagnostics.is_empty());
+    let before = loaded.agents[&id("primary")].clone();
+
+    // A refreshed official prompt changes the user's agent with it.
+    official(
+        &directory,
+        "primary",
+        "---\ndescription: Official\nmode: primary\nmodels: [\"custom.test/model\"]\n---\nBe a better assistant.\n",
+    );
+    let loaded = load_from_user_root(Some(directory.path())).expect("loads");
+    let after = &loaded.agents[&id("primary")];
+    assert_eq!(after.body, "Be a better assistant.\n\nAnswer in French.\n");
+    assert_ne!(after.prompt_fingerprint, before.prompt_fingerprint);
+    assert_ne!(after.document_fingerprint, before.document_fingerprint);
+}
+
+#[test]
+fn an_internal_agent_of_the_users_extends_the_official_one_and_keeps_its_placeholders() {
+    let directory = root("");
+    official(
+        &directory,
+        "compaction",
+        "---\ndescription: Checkpoints\nmode: internal\nmodels: [\"${parent_model}\"]\n---\nSummarize the work. Focus: {{focus}}\n",
+    );
+    official(
+        &directory,
+        "title",
+        "---\ndescription: Titles\nmode: internal\nmodels: [\"${parent_model}\"]\n---\nName sessions.\n",
+    );
+    for agent in ["compaction", "title"] {
+        user(
+            &directory,
+            agent,
+            "---\ndescription: Mine\nmode: internal\nmodels: [\"${parent_model}\"]\n---\n{{ default_prompt }}\nKeep it short.\n",
+        );
+    }
+    let loaded = load_from_user_root(Some(directory.path())).expect("loads");
+    assert_eq!(
+        body(&loaded, "compaction"),
+        "Summarize the work. Focus: {{focus}}\nKeep it short.\n"
+    );
+    assert_eq!(body(&loaded, "title"), "Name sessions.\nKeep it short.\n");
+}
+
+#[test]
+fn without_an_official_agent_compaction_keeps_the_built_in_prompt_and_others_drop_it() {
+    let directory = root("");
+    user(
+        &directory,
+        "compaction",
+        "---\ndescription: Mine\nmode: internal\nmodels: [\"${parent_model}\"]\n---\n{{default_prompt}}\nKeep it short.\n",
+    );
+    user(
+        &directory,
+        "title",
+        "---\ndescription: Mine\nmode: internal\nmodels: [\"${parent_model}\"]\n---\n{{default_prompt}}\n",
+    );
+    user(
+        &directory,
+        "coder",
+        "---\ndescription: Mine\nmode: primary\nmodels: [\"custom.test/model\"]\n---\n{{default_prompt}}\nUse tabs.\n",
+    );
+    let loaded = load_from_user_root(Some(directory.path())).expect("loads");
+    // The engine fills in the prompt this build carries.
+    assert_eq!(
+        body(&loaded, "compaction"),
+        "{{default_prompt}}\nKeep it short.\n"
+    );
+    assert_eq!(body(&loaded, "coder"), "Use tabs.\n");
+    assert!(
+        !body(&loaded, "title").contains("{{") && !body(&loaded, "title").trim().is_empty(),
+        "{}",
+        body(&loaded, "title")
+    );
+    let mut said = loaded.official_agent_diagnostics.clone();
+    said.sort();
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(
+        said[0].starts_with("agent `coder` uses `{{default_prompt}}`"),
+        "{said:?}"
+    );
+    assert!(
+        said[1].starts_with("agent `title` uses `{{default_prompt}}`"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn an_official_agent_never_uses_default_prompt() {
+    let directory = root("");
+    official(
+        &directory,
+        "compaction",
+        "---\ndescription: Checkpoints\nmode: internal\nmodels: [\"${parent_model}\"]\n---\n{{default_prompt}}\n",
+    );
+    let loaded = load_from_user_root(Some(directory.path())).expect("never a load error");
+    assert!(!loaded.agents.contains_key(&id("compaction")));
+    assert_eq!(loaded.official_agent_diagnostics.len(), 1);
+    assert!(
+        loaded.official_agent_diagnostics[0].contains("never uses `{{default_prompt}}`"),
+        "{:?}",
+        loaded.official_agent_diagnostics
+    );
+}

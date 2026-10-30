@@ -60,9 +60,9 @@ fn compaction_document_rejects_unknown_placeholders() {
 }
 
 #[test]
-fn approval_and_title_take_no_placeholder() {
-    // Their prompts are the official documents' bodies: nothing compiled in
-    // is substituted, so `{{default_prompt}}` would send itself literally.
+fn approval_and_title_take_default_prompt_but_not_focus() {
+    // `{{default_prompt}}` is the official agent's prompt; with no official
+    // agent, as here, it stands for nothing (nothing is compiled in).
     let temp = TempDir::new().unwrap();
     for agent in ["approval", "title"] {
         let file = format!("{agent}.md");
@@ -79,27 +79,30 @@ fn approval_and_title_take_no_placeholder() {
             "Review calls.\nPrefer ask for network access.\n"
         );
 
-        for placeholder in ["default_prompt", "focus"] {
-            let root = root_with_agent(
-                &temp,
-                &format!("{agent}-{placeholder}"),
-                &file,
-                &format!("{{{{{placeholder}}}}}\nMore."),
-            );
-            assert!(
-                matches!(
-                    load(&root),
-                    Err(ConfigError::UnknownPromptPlaceholder { agent: id, placeholder: found })
-                        if id.as_str() == agent && found == placeholder
-                ),
-                "{agent} {placeholder}"
-            );
-        }
+        let root = root_with_agent(
+            &temp,
+            &format!("{agent}-default_prompt"),
+            &file,
+            "{{default_prompt}}\nMore.",
+        );
+        let loaded = load(&root).unwrap();
+        assert_eq!(loaded.agents[&AgentId::new(agent).unwrap()].body, "More.\n");
+        assert_eq!(loaded.official_agent_diagnostics.len(), 1, "{agent}");
+
+        let root = root_with_agent(&temp, &format!("{agent}-focus"), &file, "{{focus}}\nMore.");
+        assert!(
+            matches!(
+                load(&root),
+                Err(ConfigError::UnknownPromptPlaceholder { agent: id, placeholder: found })
+                    if id.as_str() == agent && found == "focus"
+            ),
+            "{agent}"
+        );
     }
 }
 
 #[test]
-fn non_internal_agents_keep_placeholder_text_literal() {
+fn non_internal_agents_keep_other_placeholder_text_literal() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("subagent");
     fs::create_dir_all(root.join("agents")).unwrap();
@@ -114,8 +117,7 @@ fn non_internal_agents_keep_placeholder_text_literal() {
         .agents
         .get(&AgentId::new("reviewer").unwrap())
         .unwrap();
-    assert_eq!(
-        document.body,
-        "Review {{anything}} and {{default_prompt}}.\n"
-    );
+    // `{{default_prompt}}` stands for the official `reviewer`'s prompt, and
+    // there is none.
+    assert_eq!(document.body, "Review {{anything}} and .\n");
 }

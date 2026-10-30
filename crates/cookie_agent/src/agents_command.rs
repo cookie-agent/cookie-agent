@@ -135,10 +135,6 @@ pub(crate) fn run_check(dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// The body every `compaction.md` the daemon offers must keep: the one this
-/// build falls back to without one, so the two never drift apart.
-const COMPACTION_BODY: &str = "{{default_prompt}}\n";
-
 /// The problems of the agent documents in `dir`, each naming its file.
 pub(crate) fn check(dir: &Path) -> anyhow::Result<Vec<String>> {
     let mut documents = std::fs::read_dir(dir)
@@ -181,24 +177,14 @@ pub(crate) fn check(dir: &Path) -> anyhow::Result<Vec<String>> {
         tree.put_official_agent(id.clone(), bytes);
         match cookie_agent_config::load_from_tree(&tree) {
             Err(error) => problems.push(format!("{}: {error}", path.display())),
-            Ok(loaded) => {
-                problems.extend(
-                    loaded
-                        .official_agent_diagnostics
-                        .iter()
-                        .map(|diagnostic| format!("{}: {diagnostic}", path.display())),
-                );
-                if id.as_str() == cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
-                    && let Some(document) = loaded.agents.get(&id)
-                    && document.body != COMPACTION_BODY
-                {
-                    problems.push(format!(
-                        "{}: the body must be exactly `{}`, the prompt this build falls back to",
-                        path.display(),
-                        COMPACTION_BODY.trim_end()
-                    ));
-                }
-            }
+            // An official agent carries its whole prompt: the loader leaves
+            // out one that uses `{{default_prompt}}`, and says so.
+            Ok(loaded) => problems.extend(
+                loaded
+                    .official_agent_diagnostics
+                    .iter()
+                    .map(|diagnostic| format!("{}: {diagnostic}", path.display())),
+            ),
         }
         ids.push(id);
     }
@@ -266,4 +252,36 @@ fn index_problems(dir: &Path, index: &Path, ids: &[cookie_agent_protocol::AgentI
         }
     }
     problems
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn check_refuses_an_official_agent_that_uses_default_prompt() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let write = |name: &str, body: &str| {
+            std::fs::write(
+                directory.path().join(name),
+                format!(
+                    "---\ndescription: Checkpoints\nmode: internal\nmodels: [\"${{parent_model}}\"]\n---\n{body}\n"
+                ),
+            )
+            .expect("document");
+        };
+        write("compaction.md", "{{default_prompt}}");
+        let problems = super::check(directory.path()).expect("checked");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("never uses `{{default_prompt}}`"),
+            "{problems:?}"
+        );
+        write(
+            "compaction.md",
+            "Summarize the conversation. Focus: {{focus}}",
+        );
+        assert_eq!(
+            super::check(directory.path()).expect("checked"),
+            Vec::<String>::new()
+        );
+    }
 }

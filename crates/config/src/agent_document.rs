@@ -28,6 +28,52 @@ pub struct AgentDocument {
     pub prompt_fingerprint: Sha256Digest,
 }
 
+/// What a document of the user's whose body is only `{{default_prompt}}`
+/// says while the official agent it extends has not been fetched.
+const AWAITING_OFFICIAL_PROMPT: &str =
+    "This agent extends an official agent whose prompt the daemon has not fetched yet.\n";
+
+impl AgentDocument {
+    /// Puts `official`'s prompt in place of the body's `{{default_prompt}}`.
+    /// The fingerprints follow the official document too, so a refreshed
+    /// official prompt reads as a changed agent.
+    pub(crate) fn inherit_prompt(&mut self, official: &AgentDocument) {
+        let body = crate::prompt_template::replace_default_prompt(
+            &self.body,
+            official.body.trim_end_matches('\n'),
+        );
+        self.document_fingerprint = hash(
+            "cookie-agent/agent-document/inherited/v1",
+            &(
+                self.document_fingerprint.as_str(),
+                official.document_fingerprint.as_str(),
+            ),
+        );
+        self.set_body(body);
+    }
+
+    /// Drops the body's `{{default_prompt}}`, which nothing stands for; a
+    /// body left blank says the prompt it awaits.
+    pub(crate) fn drop_default_prompt(&mut self) {
+        let mut body = crate::prompt_template::replace_default_prompt(&self.body, "")
+            .trim_start()
+            .to_owned();
+        if body.is_empty() {
+            AWAITING_OFFICIAL_PROMPT.clone_into(&mut body);
+        }
+        self.document_fingerprint = hash(
+            "cookie-agent/agent-document/without-default-prompt/v1",
+            &self.document_fingerprint.as_str(),
+        );
+        self.set_body(body);
+    }
+
+    fn set_body(&mut self, body: String) {
+        self.body = format!("{}\n", body.trim_end_matches('\n'));
+        self.prompt_fingerprint = hash("cookie-agent/system-prompt/v1", &self.body);
+    }
+}
+
 pub(crate) fn parse_agent(
     id: AgentId,
     bytes: &[u8],

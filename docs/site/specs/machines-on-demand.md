@@ -41,6 +41,10 @@ list where the code departs from the text below.
   media the model cannot take (section 6.4).
 - Official agents' refreshes apply as they arrive, frontmatter and
   permissions included, as official skills' do (section 2.1).
+- No official agent uses `{{default_prompt}}`; each holds its whole prompt.
+  In a document of the user's, `{{default_prompt}}` stands for the official
+  agent's prompt of the same ID, else for the prompt the binary carries,
+  which only compaction has (decided 2026-10-30).
 
 ## Implementation notes
 

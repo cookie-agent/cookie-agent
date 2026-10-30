@@ -1,16 +1,22 @@
-//! `{{name}}` placeholders in internal agent prompts.
+//! `{{name}}` placeholders in agent prompts.
 //!
 //! A placeholder is `{{`, an ASCII identifier with optional surrounding
-//! spaces, and `}}`. Any other `{{` is literal text. Each internal agent
-//! accepts its own set of identifiers; an unknown one is rejected when the
-//! document loads, so a typo never reaches the model. Bodies of non-internal
-//! agents are never expanded.
+//! spaces, and `}}`. Any other `{{` is literal text.
+//!
+//! `{{default_prompt}}` in a document of the user's stands for the official
+//! agent's prompt of the same ID, which the loader puts in its place, else
+//! for the prompt this build carries for it (only `compaction` has one),
+//! which the engine puts in. Official documents never use it.
+//!
+//! Each internal agent accepts its own set of identifiers; an unknown one is
+//! rejected when the document loads, so a typo never reaches the model. Other
+//! placeholders in the bodies of non-internal agents are literal text.
 
 use crate::agents::{
     BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_TITLE_AGENT_ID,
 };
 
-/// Replaced by the engine's default prompt for the internal agent.
+/// Replaced by the official agent's prompt, else the engine's own.
 pub const DEFAULT_PROMPT_PLACEHOLDER: &str = "default_prompt";
 /// Replaced by the user's or plugins' compaction focus, or by nothing.
 /// Only the `compaction` agent accepts it.
@@ -21,8 +27,8 @@ pub const FOCUS_PLACEHOLDER: &str = "focus";
 pub(crate) fn internal_prompt_placeholders(agent: &str) -> Option<&'static [&'static str]> {
     match agent {
         BUILT_IN_COMPACTION_AGENT_ID => Some(&[DEFAULT_PROMPT_PLACEHOLDER, FOCUS_PLACEHOLDER]),
-        // Their prompts are the official documents' bodies: nothing is
-        // compiled in to substitute.
+        // Their prompts are the official documents' bodies, which the
+        // loader substitutes: nothing is compiled in.
         BUILT_IN_APPROVAL_AGENT_ID | BUILT_IN_TITLE_AGENT_ID => Some(&[]),
         _ => None,
     }
@@ -76,6 +82,31 @@ pub(crate) fn unknown_placeholder(template: &str, allowed: &[&str]) -> Option<St
         }
     });
     unknown
+}
+
+/// Whether `template` places `{{default_prompt}}`.
+pub(crate) fn uses_default_prompt(template: &str) -> bool {
+    let mut found = false;
+    scan(template, |segment| {
+        found |= matches!(segment, Segment::Placeholder(DEFAULT_PROMPT_PLACEHOLDER));
+    });
+    found
+}
+
+/// `template` with each `{{default_prompt}}` replaced by `prompt`; every
+/// other placeholder stays, for the engine to expand.
+pub(crate) fn replace_default_prompt(template: &str, prompt: &str) -> String {
+    let mut replaced = String::with_capacity(template.len() + prompt.len());
+    scan(template, |segment| match segment {
+        Segment::Text(text) => replaced.push_str(text),
+        Segment::Placeholder(DEFAULT_PROMPT_PLACEHOLDER) => replaced.push_str(prompt),
+        Segment::Placeholder(name) => {
+            replaced.push_str("{{");
+            replaced.push_str(name);
+            replaced.push_str("}}");
+        }
+    });
+    replaced
 }
 
 /// Expands an internal agent prompt template. A focus the template does not

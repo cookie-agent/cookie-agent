@@ -640,8 +640,8 @@ cookie agents check <DIR>
 
 Checks agent documents before they are published, with no daemon: each
 `<DIR>/<id>.md` (`README.md` aside) must load with this build's strict
-parser as an official agent; a `compaction.md` must keep the body
-`{{default_prompt}}`, the prompt this build falls back to. An `index.json`
+parser as an official agent, which holds its whole prompt and never uses
+`{{default_prompt}}`. An `index.json`
 in `<DIR>` must list every document there, with a version, a
 `requires_cookie` range, and its SHA-256. Each problem is printed with its
 file, and any problem fails the command. The official agents repository runs
