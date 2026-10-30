@@ -355,6 +355,19 @@ async fn several_machines_publish_one_tool_routed_by_machine() {
     // One tool for both machines (machines on demand, section 5): no
     // prefixes, a `machine` argument naming the default, the first.
     assert_eq!(published_names(&fixture, session, &policy), ["write"]);
+    // `attach_machine` lists it with the `machine` that runs it on labpc.
+    assert_eq!(
+        fixture
+            .engine
+            .attachment_tools(session, &policy, &attached.name)
+            .expect("attachment tools"),
+        [crate::runtime::machine_attach::AttachedTool {
+            name: "write".into(),
+            machine: Some("labpc".into()),
+            deferred: None,
+            summary: "Write a test value".into(),
+        }]
+    );
     let daemon = fixture.engine.runtime_machine("local").expect("machine");
     let published = fixture
         .engine

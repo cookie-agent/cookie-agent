@@ -586,6 +586,65 @@ async fn an_always_loaded_mcp_tool_is_sent_up_front() {
 /// The goal tools, a built-in group the policy defers, are announced under
 /// their group rather than sent; `[deferred_tools] always_load` sends them
 /// up front (stable prefix spec, section 3).
+/// `attach_machine` lists an attached machine's MCP tool by its group while
+/// the tool is deferred, and as callable once its server always loads it.
+#[tokio::test]
+async fn an_attached_machines_deferred_tool_is_listed_by_its_group() {
+    for always_load in [false, true] {
+        let (fixture, selection, _, present) = deferral_fixture("http://127.0.0.1:9/v1");
+        // Only the attached machine offers `write`.
+        present.store(false, Ordering::SeqCst);
+        fixture
+            .engine
+            .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+                "labpc",
+                Arc::new(move |_| {
+                    vec![Arc::new(McpWrite(
+                        TestWriteProvider {
+                            executed: Arc::new(TestFlag::default()),
+                        },
+                        Arc::new(AtomicBool::new(true)),
+                        always_load,
+                    )) as Arc<dyn ToolProvider>]
+                }),
+            ))
+            .expect("register labpc");
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("deferral session")
+            .session_id;
+        let workspace = fixture._directory.path().join("labpc");
+        create_private_test_dir(&workspace);
+        let attached = fixture
+            .engine
+            .attach_runtime(
+                session,
+                "labpc",
+                None,
+                Some(workspace),
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("attach labpc");
+        let policy = frozen_root_policy(&fixture, &selection);
+        let write = fixture
+            .engine
+            .attachment_tools(session, &policy, &attached.name)
+            .expect("attachment tools")
+            .into_iter()
+            .find(|tool| tool.name == "write")
+            .expect("labpc's write");
+        assert_eq!(write.machine.as_deref(), Some("labpc"));
+        assert_eq!(
+            write.deferred.as_deref(),
+            (!always_load).then_some("chrome"),
+            "always_load {always_load}"
+        );
+        fixture.engine.shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn a_deferred_built_in_group_is_announced_unless_always_loaded() {
     for always_load in [false, true] {

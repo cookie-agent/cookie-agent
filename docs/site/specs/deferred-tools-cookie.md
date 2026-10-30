@@ -129,6 +129,11 @@ Open Responses), as it rejects native compaction there.
 **The binding** carries the value, so the engine can tell `native` from
 `attempted`.
 
+**ACP agents never defer.** An ACP agent's run has no model of cookie's, and
+its harness gets every cookie tool in full over MCP, with no loader tools.
+Deferring them is the harness's own feature, if it has one, as Claude Code's
+tool search does for MCP tools.
+
 ## 4. What is deferred
 
 **Deferral is generic** (decision 11). `published_tool_definitions`

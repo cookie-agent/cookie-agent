@@ -1136,6 +1136,10 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     for hidden in ["read", "write", "edit", "bash", "webfetch"] {
         assert!(!tools.contains(&hidden), "{hidden} in {tools:?}");
     }
+    // Nothing is deferred: the deferrable built-in groups come in full, and
+    // there is no loader tool (deferred tools in cookie, section 9).
+    assert!(tools.contains(&"memory_read"), "{tools:?}");
+    assert!(!tools.contains(&"tool_search"), "{tools:?}");
 
     let document = "---\ndescription: Fixture that sees all\nmode: all\nacp:\n  hide_tools: [\"web*\"]\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n  bash: deny\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;

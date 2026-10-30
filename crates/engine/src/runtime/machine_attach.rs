@@ -7,11 +7,13 @@
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use cookie_agent_protocol::{AgentMdEntry, MachineName, RuntimeAttachment, RuntimeId, SessionId};
+use cookie_agent_protocol::{
+    AgentMdEntry, AttachmentName, MachineName, RuntimeAttachment, RuntimeId, SessionId,
+};
 use cookie_agent_runtime_api::SessionToolContext;
 
 use super::{Engine, EngineError, attachments::attached_event};
-use crate::runtimes::RuntimeInstance;
+use crate::{policy::FrozenRunPolicy, runtimes::RuntimeInstance};
 
 /// What `attach_machine` tells the model at once, since the runtimes block
 /// is frozen for the run.
@@ -22,6 +24,24 @@ pub(crate) struct AttachedMachine {
     pub(crate) home: Option<String>,
     /// The workspace's `AGENTS.md` files, as a run would load them.
     pub(crate) agent_md: Vec<AgentMdEntry>,
+    /// The tools the attachment brings, sorted by name; `None` when the
+    /// attaching run is gone or they cannot be listed.
+    pub(crate) tools: Option<Vec<AttachedTool>>,
+}
+
+/// One tool an attachment brings to a session, as its run publishes it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AttachedTool {
+    /// The name the model calls it by.
+    pub(crate) name: String,
+    /// The `machine` a call names to run it on the attachment's machine,
+    /// when the tool is routed (machines on demand, section 5).
+    pub(crate) machine: Option<String>,
+    /// The group it is announced under while deferred: the model finds it
+    /// with `tool_search` before calling it; `None` once it is declared.
+    pub(crate) deferred: Option<String>,
+    /// The first line of its description.
+    pub(crate) summary: String,
 }
 
 impl Engine {
@@ -35,8 +55,9 @@ impl Engine {
         runtime_id: &str,
         capability: &str,
         workspace: Option<PathBuf>,
-        preset: Option<&str>,
+        policy: Option<&FrozenRunPolicy>,
     ) -> Result<AttachedMachine, EngineError> {
+        let preset = policy.and_then(|policy| policy.preset.as_deref());
         self.ensure_session_owned(session)?;
         self.refuse_second_acp_runtime(session, runtime_id)?;
         let instance = self
@@ -94,8 +115,93 @@ impl Engine {
                 }),
             home: listing.and_then(|listing| listing.home),
             agent_md,
+            // The attachment stands even when its tools cannot be listed.
+            tools: policy.and_then(|policy| {
+                self.attachment_tools(session, policy, &attachment.name)
+                    .ok()
+            }),
             attachment,
         })
+    }
+
+    /// The tools `attachment` brings to `session` as a run of `policy`
+    /// publishes them now: by their published names, with the `machine` that
+    /// routes a call there and the group of those still deferred, the tools
+    /// the agent hides from its ACP agent left out.
+    pub(crate) fn attachment_tools(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+        attachment: &AttachmentName,
+    ) -> Result<Vec<AttachedTool>, EngineError> {
+        let composition = self.compose_for_policy(session, policy)?;
+        let (entries, _) = self.route_tools(session, composition.tools)?;
+        let hide = self
+            .current_runtime()
+            .agents
+            .get(&policy.agent.agent)
+            .and_then(|agent| agent.document.frontmatter.acp.clone())
+            .map(|acp| acp.hidden_tools())
+            .unwrap_or_default();
+        let defers = self.defers_tools(policy);
+        let fold = self.inner.store.get(session)?.log.deferral();
+        let config = self.inner.config.load();
+        let mut tools = entries
+            .into_iter()
+            .filter(|(tool, _)| {
+                !hide
+                    .iter()
+                    .any(|pattern| cookie_agent_config::simple_wildcard_match(pattern, &tool.name))
+            })
+            .filter_map(|(tool, routes)| {
+                // A routed tool runs here through its member of this machine.
+                let (machine, source, spec) = match routes {
+                    Some(routes) => {
+                        let (machine, member) =
+                            routes.machines.into_iter().find(|(_, member)| {
+                                member.source.attachment.as_ref() == Some(attachment)
+                            })?;
+                        (Some(machine), member.source, member.spec)
+                    }
+                    None if tool.source.attachment.as_ref() == Some(attachment) => {
+                        (None, tool.source, tool.spec)
+                    }
+                    None => return None,
+                };
+                // A tool outside the round is deferred until a result loads
+                // it: the policy defers it, or it arrived mid-round
+                // (deferred tools, section 8.2).
+                let deferred = defers
+                    && !fold.loaded.contains(&tool.name)
+                    && match &fold.round {
+                        Some(round) => !round.tools.iter().any(|eager| eager.name == tool.name),
+                        None => {
+                            !fold.folded.contains(&tool.name)
+                                && crate::deferred_tools::policy_defers(
+                                    &source,
+                                    &spec.name,
+                                    &config.runtime.deferred_tools,
+                                )
+                        }
+                    };
+                let deferred =
+                    deferred.then(|| crate::deferred_tools::group_of(&source, &spec.name).name);
+                Some(AttachedTool {
+                    name: tool.name,
+                    machine,
+                    deferred,
+                    summary: spec
+                        .description
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned(),
+                })
+            })
+            .collect::<Vec<_>>();
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(tools)
     }
 
     /// Detaches the attachment of `capability` of `runtime_id` from
@@ -160,15 +266,18 @@ impl Engine {
             .unwrap_or(false)
     }
 
-    /// The preset of run `run`, while it runs.
-    pub(crate) fn run_preset(&self, run: cookie_agent_protocol::RunId) -> Option<String> {
+    /// The policy of run `run`, while it runs.
+    pub(crate) fn run_policy(
+        &self,
+        run: cookie_agent_protocol::RunId,
+    ) -> Option<Arc<FrozenRunPolicy>> {
         self.inner
             .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&run)
-            .and_then(|active| active.policy.preset.clone())
+            .map(|active| Arc::clone(&active.policy))
     }
 
     /// `session`'s attachment of `target`'s runtime capability, if any.

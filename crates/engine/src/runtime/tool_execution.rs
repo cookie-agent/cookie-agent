@@ -1302,33 +1302,25 @@ impl Engine {
         Ok(composition)
     }
 
-    pub(super) fn published_tool_definitions(
+    /// `tools` as they are published: a runtime attachment's tools are
+    /// routed by `machine` once the session can work on several machines
+    /// (machines on demand, section 5), a tool all of whose machines are
+    /// one included, so the schema stays put as machines come and go.
+    /// Returns each published tool with its routes, and the routed names.
+    pub(super) fn route_tools(
         &self,
         session: SessionId,
-        policy: &FrozenRunPolicy,
-    ) -> Result<PublishedToolSet, EngineError> {
-        let defers = self.defers_tools(policy);
-        let composition = self.compose_for_policy_with(session, policy, defers)?;
-        let notes = self.runtime_tool_notes(session);
-        let config = self.inner.config.load();
-        let mut output = Vec::with_capacity(composition.tools.len());
-        let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
-        let mut candidates = Vec::new();
-        let mut loaders = Vec::new();
-        // A runtime attachment's tools are routed by `machine` once the
-        // session can work on several machines (machines on demand, section
-        // 5); a tool all of whose machines are one is routed too, so the
-        // schema stays put as machines come and go.
+        tools: Vec<ComposedTool>,
+    ) -> Result<(Vec<RoutedEntry>, Vec<String>), EngineError> {
         let machines = self.routing_machines(session)?;
-        let (routed, composed): (Vec<_>, Vec<_>) =
-            composition.tools.into_iter().partition(|tool| {
-                machines.as_ref().is_some_and(|machines| {
-                    tool.source
-                        .attachment
-                        .as_ref()
-                        .is_some_and(|attachment| machines.contains_key(attachment))
-                })
-            });
+        let (routed, composed): (Vec<_>, Vec<_>) = tools.into_iter().partition(|tool| {
+            machines.as_ref().is_some_and(|machines| {
+                tool.source
+                    .attachment
+                    .as_ref()
+                    .is_some_and(|attachment| machines.contains_key(attachment))
+            })
+        });
         let taken = composed
             .iter()
             .map(|tool| tool.name.clone())
@@ -1411,6 +1403,23 @@ impl Engine {
                 }),
             ));
         }
+        Ok((entries, routed_names))
+    }
+
+    pub(super) fn published_tool_definitions(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+    ) -> Result<PublishedToolSet, EngineError> {
+        let defers = self.defers_tools(policy);
+        let composition = self.compose_for_policy_with(session, policy, defers)?;
+        let notes = self.runtime_tool_notes(session);
+        let config = self.inner.config.load();
+        let mut output = Vec::with_capacity(composition.tools.len());
+        let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
+        let mut candidates = Vec::new();
+        let mut loaders = Vec::new();
+        let (entries, routed_names) = self.route_tools(session, composition.tools)?;
         for (ComposedTool { name, source, spec }, routes) in entries {
             spec.output.validate().map_err(EngineError::ToolFailed)?;
             let mut parameters = spec.parameters.clone();
@@ -1608,17 +1617,23 @@ impl Engine {
     }
 }
 
+/// A published tool and, when it is routed by `machine`, its routes.
+type RoutedEntry = (ComposedTool, Option<ToolRoutes>);
+
 /// Whether a run of `policy` defers tools. Deferral follows the run's
 /// model: one verified or attempted that has not rejected deferral
-/// (deferred tools in cookie, section 9).
+/// (deferred tools in cookie, section 9). An ACP agent's run never defers:
+/// its harness gets every tool in full over MCP and defers them itself, if
+/// it does.
 fn defers_tools(
     policy: &FrozenRunPolicy,
     record: &crate::deferred_tools::record::DeferredToolsRecord,
 ) -> bool {
-    policy.selected_suffix.first().is_some_and(|binding| {
-        cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor).defers()
-            && !record.rejects(binding)
-    })
+    policy.acp_agent().is_none()
+        && policy.selected_suffix.first().is_some_and(|binding| {
+            cookie_agent_models::DeferredToolsSupport::of_descriptor(&binding.descriptor).defers()
+                && !record.rejects(binding)
+        })
 }
 
 /// A source's provider as prompt sections key it.

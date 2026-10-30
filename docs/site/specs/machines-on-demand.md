@@ -369,10 +369,14 @@ detach_machine(capability: string)
   capability takes one, passed to the runtime as given.
 - **The result** is what the model needs at once, since the runtimes block
   is frozen for the run: the attachment's name, its machine and platform,
-  the runtime's home, the canonical workspace, and the workspace's
-  `AGENTS.md` (the same lookup `runtime/context` does, bounded by
-  `[agent_md] max_bytes`). Later runs get `AGENTS.md` from the context turn
-  as usual.
+  the runtime's home, the canonical workspace, the tools the attachment
+  brings, and the workspace's `AGENTS.md` (the same lookup
+  `runtime/context` does, bounded by `[agent_md] max_bytes`). Later runs
+  get `AGENTS.md` from the context turn as usual. The tools are listed as
+  the run publishes them: each one the model can call now by its published
+  name, with the `machine` that routes a call there and the first line of
+  its description; the deferred ones only by count and group, since the
+  model still finds them with `tool_search`.
 - **Errors** are self-repairing: an unknown or offline runtime lists the
   connected ones; a workspace the runtime refuses carries its reason.
 - **`detach_machine`** takes the same `<runtime_id>/<capability_id>`,
@@ -389,8 +393,9 @@ calling session only. The attachment is recorded with the usual
 and replay is unchanged.
 
 - **Tools that join** follow tool rounds: on a deferring model they are
-  deferred and announced, and `attach_machine`'s result loads them,
-  as `tool_search` would; elsewhere they are sent up front. With routed
+  deferred and announced, and `attach_machine`'s result names their groups
+  without loading them, so the model finds them with `tool_search`;
+  elsewhere they are sent up front. With routed
   tools (section 5) only the first attachment that offers them changes the
   tool list at all; every later one changes only the `machine` values the
   call accepts.

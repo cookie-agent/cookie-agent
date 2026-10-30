@@ -331,14 +331,14 @@ impl PreparedExecutor for MachinesExecutor {
     ) -> Result<ToolCompletion, ToolError> {
         let (title, output) = match *self {
             Self::Attach { engine, target } => {
-                let preset = engine.run_preset(context.run);
+                let policy = engine.run_policy(context.run);
                 let attached = engine
                     .attach_from_run(
                         context.session,
                         target.runtime_id.as_str(),
                         target.capability.as_str(),
                         target.workspace.clone().map(std::path::PathBuf::from),
-                        preset.as_deref(),
+                        policy.as_deref(),
                     )
                     .await
                     .map_err(|error| ToolError::execution(error.to_string()))?;
@@ -386,8 +386,9 @@ impl PreparedExecutor for MachinesExecutor {
     }
 }
 
-/// What `attach_machine` returns: where the new tools run, then the
-/// workspace's `AGENTS.md`, which later runs get in their context turn.
+/// What `attach_machine` returns: where the new tools run, which they are,
+/// then the workspace's `AGENTS.md`, which later runs get in their context
+/// turn.
 fn attached_text(attached: &crate::runtime::machine_attach::AttachedMachine) -> String {
     let attachment = &attached.attachment;
     let mut text = format!(
@@ -406,7 +407,37 @@ fn attached_text(attached: &crate::runtime::machine_attach::AttachedMachine) -> 
     if let Some(workspace) = &attachment.workspace {
         text.push_str(&format!("\nWorking directory: {workspace}"));
     }
-    text.push_str("\nIts tools are available now.");
+    match attached.tools.as_deref() {
+        None => text.push_str("\nIts tools are available now."),
+        Some([]) => text.push_str("\nIt brings no tools this session can call."),
+        Some(tools) => {
+            let (deferred, declared): (Vec<_>, Vec<_>) =
+                tools.iter().partition(|tool| tool.deferred.is_some());
+            if !declared.is_empty() {
+                text.push_str("\nTools you can call there now:");
+                for tool in declared {
+                    text.push_str(&tool_line(tool));
+                }
+            }
+            if !deferred.is_empty() {
+                let groups = deferred
+                    .iter()
+                    .filter_map(|tool| tool.deferred.as_deref())
+                    .map(|group| format!("`{group}`"))
+                    .collect::<std::collections::BTreeSet<_>>();
+                let plural = |count: usize, word: &str| match count {
+                    1 => format!("1 {word}"),
+                    count => format!("{count} {word}s"),
+                };
+                text.push_str(&format!(
+                    "\nDeferred until tool_search finds them: {}, in {} {}.",
+                    plural(deferred.len(), "tool"),
+                    if groups.len() == 1 { "group" } else { "groups" },
+                    groups.into_iter().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+    }
     for entry in &attached.agent_md {
         text.push_str(&format!(
             "\n\n<contents from=\"{}\">\n{}\n</contents>",
@@ -414,4 +445,89 @@ fn attached_text(attached: &crate::runtime::machine_attach::AttachedMachine) -> 
         ));
     }
     text
+}
+
+/// One line of `attach_machine`'s tool list.
+fn tool_line(tool: &crate::runtime::machine_attach::AttachedTool) -> String {
+    let mut line = format!("\n- `{}`", tool.name);
+    if let Some(machine) = &tool.machine {
+        line.push_str(&format!(" with `machine: \"{machine}\"`"));
+    }
+    if !tool.summary.is_empty() {
+        line.push_str(&format!(": {}", tool.summary));
+    }
+    line
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_protocol::{
+        AttachmentName, CapabilityName, MachineName, RuntimeAttachment, RuntimeId, RuntimeKind,
+    };
+
+    use super::attached_text;
+    use crate::runtime::machine_attach::{AttachedMachine, AttachedTool};
+
+    fn attached(tools: Option<Vec<AttachedTool>>) -> AttachedMachine {
+        AttachedMachine {
+            attachment: RuntimeAttachment {
+                name: AttachmentName::new("labpc").unwrap(),
+                runtime_id: RuntimeId::new("labpc").unwrap(),
+                capability: CapabilityName::coding(),
+                kind: RuntimeKind::new("coding").unwrap(),
+                workspace: Some("/srv/api".into()),
+            },
+            machine: Some(MachineName::new("labpc").unwrap()),
+            platform: Some("linux".into()),
+            home: None,
+            agent_md: Vec::new(),
+            tools,
+        }
+    }
+
+    fn tool(name: &str, machine: Option<&str>, deferred: Option<&str>) -> AttachedTool {
+        AttachedTool {
+            name: name.into(),
+            machine: machine.map(Into::into),
+            deferred: deferred.map(Into::into),
+            summary: format!("{name} things."),
+        }
+    }
+
+    #[test]
+    fn the_result_lists_callable_tools_and_counts_deferred_ones_by_group() {
+        let text = attached_text(&attached(Some(vec![
+            tool("bash", Some("labpc"), None),
+            tool("gh_issue", None, Some("github")),
+            tool("gh_pr", None, Some("github")),
+            tool("read", Some("labpc"), None),
+            tool("snapshot", None, Some("chrome")),
+        ])));
+        assert_eq!(
+            text,
+            "Attached `labpc/coding` as attachment `labpc`.\n\
+             Machine: labpc (linux)\n\
+             Working directory: /srv/api\n\
+             Tools you can call there now:\n\
+             - `bash` with `machine: \"labpc\"`: bash things.\n\
+             - `read` with `machine: \"labpc\"`: read things.\n\
+             Deferred until tool_search finds them: 3 tools, in groups `chrome`, `github`."
+        );
+    }
+
+    #[test]
+    fn the_result_says_when_every_tool_is_deferred_or_none_is_offered() {
+        let text = attached_text(&attached(Some(vec![tool(
+            "snapshot",
+            None,
+            Some("chrome"),
+        )])));
+        assert!(text.ends_with(
+            "/srv/api\nDeferred until tool_search finds them: 1 tool, in group `chrome`."
+        ));
+        assert!(
+            attached_text(&attached(Some(Vec::new())))
+                .ends_with("\nIt brings no tools this session can call.")
+        );
+    }
 }
