@@ -742,7 +742,7 @@ impl Engine {
                 turn_context.clone(),
             )
             .await;
-        self.execute_tool(active, run, prepared, turn_context)
+        self.execute_tool(active, run, prepared, turn_context, false)
             .await
             .map_err(|failure| EngineError::ToolFailed(failure.message))
     }

@@ -1172,6 +1172,24 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_bridged_call_of_a_streaming_tool_returns_its_output() {
+    // `bash` streams its output: a bridged call captures it as a model's
+    // call does, rather than as nested dispatch, which takes single output
+    // only.
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp:\n  hide_tools: []\npermissions:\n  bash: allow\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let call = format!(
+        "mcp call bash {}",
+        serde_json::json!({"command": "echo bridged-out", "description": "echo"})
+    );
+    let answer = final_text(&turn(engine, session, "bash", &call).await);
+    assert!(answer.contains("bridged-out"), "{answer}");
+    assert!(answer.ends_with("error: False"), "{answer}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_bridge_tells_the_agent_once_when_its_tool_list_changes() {
     let document = "---\ndescription: Fixture that reads\nmode: all\nacp:\n  hide_tools: [\"web*\"]\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;

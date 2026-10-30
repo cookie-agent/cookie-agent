@@ -457,7 +457,10 @@ Where the spec left a detail open, or where the code differs:
   A bridged call runs inside the agent's turn as a cookie tool call of the
   run (the runner commits the turn so far with the call in it), through
   preparation, the rules, approvals, and execution; outside a turn it is
-  refused. The agent usually reports the same call as its own tool call
+  refused. Its output is declared and captured as a model's call's is
+  *(fixed 2026-10-30: it ran as nested skill dispatch, which takes single
+  output only, so a streaming tool such as `bash` failed with "direct skill
+  dispatch requires terminal single output")*. The agent usually reports the same call as its own tool call
   too. On Windows the pipe has a random name and refuses remote clients but
   keeps the default security descriptor, not one limited to the user.
 - **ACP client.** Hand-written JSON-RPC types over the protocol crate's peer

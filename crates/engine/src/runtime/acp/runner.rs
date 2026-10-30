@@ -2478,6 +2478,22 @@ impl Turn<'_> {
         });
         let content_index = (step.parts.len() - 1) as u32;
         let model_turn_seq = self.commit(ModelFinishReason::ToolCalls).await?;
+        // Declared as a model's call's is, so its output streams to the
+        // clients and is captured.
+        let output = prepared
+            .interception
+            .as_ref()
+            .map(|interception| interception.spec.output.clone())
+            .unwrap_or_default();
+        self.engine
+            .inner
+            .output
+            .hubs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(tool_call_id)
+            .or_insert_with(|| crate::events::OutputHub::new(tool_call_id, 64 * 1024))
+            .declare(&output);
         let operation_fingerprint = prepared.prepared.as_ref().map_or_else(
             |_| {
                 super::super::tool_execution::fallback_operation_fingerprint(
@@ -2499,7 +2515,7 @@ impl Turn<'_> {
                 Event::ToolCallStarted {
                     start: ToolCallStart {
                         tool_call_id,
-                        output: ToolOutputDeclaration::default(),
+                        output,
                         owner: AssistantToolCallRef {
                             model_turn_seq,
                             content_index,
@@ -2508,7 +2524,7 @@ impl Turn<'_> {
                         },
                         presentation: prepared.presentation.clone(),
                         operation_fingerprint,
-                        background: false,
+                        background: prepared.background.is_some(),
                     },
                 },
             )
@@ -2518,7 +2534,7 @@ impl Turn<'_> {
         let run = self.run;
         self.bridged.push(tokio::spawn(async move {
             let result = engine
-                .execute_tool(Arc::clone(&active), run, prepared, turn_context)
+                .execute_tool(Arc::clone(&active), run, prepared, turn_context, true)
                 .await;
             let answer = match &result {
                 Ok(result) => {

@@ -653,17 +653,22 @@ impl Engine {
         }
     }
 
+    /// Decides, approves, and runs `prepared`. With `retain_output` the
+    /// call's output is captured as a model's call's is (a call of its own,
+    /// such as an ACP agent's over the bridge); without, the caller owns
+    /// its single output (direct skill dispatch, nested in another call).
     pub(super) async fn execute_tool(
         &self,
         active: Arc<ActiveRun>,
         run: RunId,
         prepared: PreparedToolCall,
         turn_context: Arc<crate::TurnAgentContext>,
+        retain_output: bool,
     ) -> Result<ToolResult, ToolFailure> {
         let permission = self.decide_tool_permission(&active, &prepared)?;
         self.resolve_tool_permission(&active, run, &prepared, &permission)
             .await?;
-        self.execute_approved_tool(active, run, prepared, turn_context, false)
+        self.execute_approved_tool(active, run, prepared, turn_context, retain_output)
             .await
     }
 
