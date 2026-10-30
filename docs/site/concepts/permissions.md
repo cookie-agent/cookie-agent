@@ -50,18 +50,24 @@ for, plugins' and runtimes' own included. Only a `deny` you write denies, and
 a tool is not even offered when a `"*": deny` covers its action with no
 `allow` or `ask` beside it. See [Permissions](../extend/agents.md#permissions).
 
-Three actions have a default by the agent's mode, which applies only while
+Most actions have a default by the agent's mode, which applies only while
 the document names no key for that action (a key with a runtime selector
-counts):
+counts). Every agent that is not internal gets:
 
-| Mode | `list_runtimes` | `skill` | `mcp` |
-|---|---|---|---|
-| `primary`, `all` | `allow` | `allow` | `"*": ask` |
-| `subagent` | none (asks) | `allow` | `"*": ask` |
-| `internal` | none | none | none |
+| Action | Default |
+|---|---|
+| `read` | `allow` |
+| `write` (and `edit`) | `"${workspace_dir}/*": allow`, `"*": ask`: edits in the workspace, asking for any other path |
+| `webfetch` | `allow` |
+| `skill` | `allow` |
+| `mcp` | `"*": ask` |
+| `delegate` | `deny`: an agent delegates only to the subagents its document names |
+| `list_runtimes` | `allow` for `primary` and `all` agents; a subagent asks |
+| `message` | a delegated run: `allow`; a root run: as its `delegate` rules, `allow` when one allows, `ask` when one asks, else `deny` |
 
-So every agent that is not internal is offered the connected MCP servers'
-tools and asks before each call. A declared key replaces its action's
+`bash` has no default: each command asks. Internal agents, which call no
+tools, are denied every action. So every agent that is not internal is
+offered the connected MCP servers' tools and asks before each call. A declared key replaces its action's
 default entirely: `mcp: {"my_chrome_*": ask}` offers only that server's
 tools, and `mcp: deny` hides them all. `/permissions` shows a default with
 the source `default`. See [MCP default](../extend/agents.md#mcp-default).

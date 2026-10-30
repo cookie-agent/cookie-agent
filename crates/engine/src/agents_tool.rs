@@ -213,7 +213,12 @@ fn defaults_section(root: bool, subagent: bool) -> Vec<String> {
         let mut entries = Vec::<(String, String, Vec<AgentMode>)>::new();
         for mode in modes {
             let rules = crate::permissions::run_default_rules(mode, delegated);
-            for (key, text) in key_lines(&rules) {
+            for (key, mut text) in key_lines(&rules) {
+                // A root run's `message` follows its `delegate` rules.
+                if !delegated && key == PermissionAction::MESSAGE.as_str() {
+                    "as `delegate`: allow when a delegate rule allows, ask when one asks, else deny"
+                        .clone_into(&mut text);
+                }
                 match entries
                     .iter_mut()
                     .find(|(existing, existing_text, _)| *existing == key && *existing_text == text)
@@ -237,10 +242,11 @@ fn defaults_section(root: bool, subagent: bool) -> Vec<String> {
             }
         }
     }
-    if crate::permissions::run_default_rules(AgentMode::Internal, false).is_empty()
-        && crate::permissions::run_default_rules(AgentMode::Internal, true).is_empty()
+    if crate::permissions::run_default_rules(AgentMode::Internal, false)
+        .iter()
+        .all(|rule| rule.effect == cookie_agent_protocol::PermissionEffect::Deny)
     {
-        lines.push("  Internal agents get none.".to_owned());
+        lines.push("  Internal agents are denied every action.".to_owned());
     }
     lines
 }

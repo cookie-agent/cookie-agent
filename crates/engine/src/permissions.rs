@@ -190,7 +190,7 @@ impl<'a> MergedRules<'a> {
     /// exactly that action's defaults for a root or `delegated` run of
     /// `policy`'s agent labelled `default`.
     pub(crate) fn label_defaults(mut self, policy: &AgentSnapshot, delegated: bool) -> Self {
-        let defaults = run_default_rules(policy.mode, delegated);
+        let defaults = run_default_rules_with_delegate(policy.mode, delegated, &policy.permissions);
         let mut from_defaults = HashMap::<&PermissionAction, bool>::new();
         for merged in &mut self.rules {
             if merged.source != PermissionRuleSource::AgentDocument {
@@ -852,33 +852,90 @@ pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> C
 /// The rules the daemon supplies for an agent of `mode`
 /// (`docs/site/specs/runtime-delegation.md` section 4 and
 /// `docs/site/specs/runtimes.md` section 7.1), each applying only to an
-/// action its document names no key for. `primary` and `all` agents may list
-/// runtimes; they and `subagent` agents use every skill and call MCP tools
-/// after asking; internal agents get nothing. Memory's defaults depend on
-/// whether the run is delegated, so they are [separate](memory_default_rules).
+/// action its document names no key for. Every agent but an internal one
+/// reads every file, edits files in its workspace and asks for any other
+/// path, fetches the web, uses every skill, calls MCP tools after asking, and
+/// delegates to nobody; `primary` and `all` agents also list runtimes.
+/// Internal agents, which call no tools, are denied every action. Memory's defaults
+/// depend on whether the run is delegated, so they are
+/// [separate](memory_default_rules), and `message` follows `delegate`
+/// ([`message_default_rules`]).
 pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
-    let defaults: &[(PermissionAction, PermissionEffect)] = match mode {
-        AgentMode::Primary | AgentMode::All => &[
-            (PermissionAction::LIST_RUNTIMES, PermissionEffect::Allow),
-            (PermissionAction::SKILL, PermissionEffect::Allow),
-            (PermissionAction::MCP, PermissionEffect::Ask),
-        ],
-        AgentMode::Subagent => &[
-            (PermissionAction::SKILL, PermissionEffect::Allow),
-            (PermissionAction::MCP, PermissionEffect::Ask),
-        ],
-        AgentMode::Internal => &[],
+    let working: &[(PermissionAction, &str, PermissionEffect)] = &[
+        (PermissionAction::READ, "*", PermissionEffect::Allow),
+        (
+            PermissionAction::WRITE,
+            "${workspace_dir}/*",
+            PermissionEffect::Allow,
+        ),
+        (PermissionAction::WRITE, "*", PermissionEffect::Ask),
+        (PermissionAction::WEBFETCH, "*", PermissionEffect::Allow),
+        (PermissionAction::SKILL, "*", PermissionEffect::Allow),
+        (PermissionAction::MCP, "*", PermissionEffect::Ask),
+        (PermissionAction::DELEGATE, "*", PermissionEffect::Deny),
+    ];
+    let listing: &[(PermissionAction, &str, PermissionEffect)] = match mode {
+        AgentMode::Primary | AgentMode::All => &[(
+            PermissionAction::LIST_RUNTIMES,
+            "*",
+            PermissionEffect::Allow,
+        )],
+        AgentMode::Subagent | AgentMode::Internal => &[],
     };
-    defaults
+    if mode == AgentMode::Internal {
+        return PermissionAction::BUILT_IN
+            .into_iter()
+            .map(|action| {
+                PermissionRule::new(
+                    action,
+                    WildcardPattern::new("*").expect("static default pattern"),
+                    PermissionEffect::Deny,
+                )
+            })
+            .collect();
+    }
+    working
         .iter()
-        .map(|(action, effect)| {
+        .chain(listing)
+        .map(|(action, pattern, effect)| {
             PermissionRule::new(
                 action.clone(),
-                WildcardPattern::new("*").expect("static default pattern"),
+                WildcardPattern::new(*pattern).expect("static default pattern"),
                 *effect,
             )
         })
         .collect()
+}
+
+/// The `message` rule a run of an agent of `mode` gets when its document
+/// names no `message` key: a delegated run messages anyone in its tree; a
+/// root run follows its `delegate` rules (`delegate`, the run's own or the
+/// default), allowed when one of them allows, asking when one asks, and
+/// denied when it may delegate to nobody, as it then has no subagent to
+/// message. Internal agents get nothing.
+pub(crate) fn message_default_rules<'r>(
+    mode: AgentMode,
+    delegated: bool,
+    delegate: impl IntoIterator<Item = &'r PermissionRule>,
+) -> Vec<PermissionRule> {
+    if mode == AgentMode::Internal {
+        return Vec::new();
+    }
+    let effect = if delegated {
+        PermissionEffect::Allow
+    } else {
+        delegate
+            .into_iter()
+            .filter(|rule| rule.action == PermissionAction::DELEGATE)
+            .map(|rule| rule.effect)
+            .min_by_key(|effect| effect_rank(*effect))
+            .unwrap_or(PermissionEffect::Deny)
+    };
+    vec![PermissionRule::new(
+        PermissionAction::MESSAGE,
+        WildcardPattern::new("*").expect("static default pattern"),
+        effect,
+    )]
 }
 
 /// The rules a run of an agent of `mode` gets for each memory action its
@@ -953,6 +1010,25 @@ pub(crate) fn attach_default_rules(mode: AgentMode, delegated: bool) -> Vec<Perm
 /// `delegated`, each for an action its document names no key for. Whatever
 /// no rule matches asks ([`MergedRules`]).
 pub(crate) fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    let mut rules = run_defaults_but_message(mode, delegated);
+    let message = message_default_rules(mode, delegated, &rules);
+    rules.extend(message);
+    rules
+}
+
+/// [`run_default_rules`] for a run whose `delegate` rules are `delegate`:
+/// the `message` default follows them.
+pub(crate) fn run_default_rules_with_delegate<'r>(
+    mode: AgentMode,
+    delegated: bool,
+    delegate: impl IntoIterator<Item = &'r PermissionRule>,
+) -> Vec<PermissionRule> {
+    let mut rules = run_defaults_but_message(mode, delegated);
+    rules.extend(message_default_rules(mode, delegated, delegate));
+    rules
+}
+
+fn run_defaults_but_message(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
     mode_default_rules(mode)
         .into_iter()
         .chain(memory_default_rules(mode, delegated))
@@ -1027,18 +1103,9 @@ pub(crate) fn agent_permission_rules(
     delegated: bool,
     variables: &MemoryVariables,
 ) -> Vec<PermissionRule> {
-    let permissions = &document.frontmatter.permissions;
-    let mut rules = permissions
-        .iter()
-        .flat_map(|(key, value)| value.rules(key))
-        .collect::<Vec<_>>();
-    rules.extend(
-        run_default_rules(document.frontmatter.mode, delegated)
-            .into_iter()
-            .filter(|rule| !permissions.keys().any(|key| key.action == rule.action)),
-    );
-    rules
+    agent_rules_with_sources(document, delegated)
         .into_iter()
+        .map(|(rule, _)| rule)
         .flat_map(|rule| expand_memory_variables(rule, &document.id, variables))
         .collect()
 }
@@ -1051,17 +1118,27 @@ pub(crate) fn agent_rules_with_sources(
     delegated: bool,
 ) -> Vec<(PermissionRule, bool)> {
     let permissions = &document.frontmatter.permissions;
-    permissions
+    let declared = |action: &PermissionAction| permissions.keys().any(|key| key.action == *action);
+    let mut rules = permissions
         .iter()
         .flat_map(|(key, value)| value.rules(key))
         .map(|rule| (rule, false))
         .chain(
-            run_default_rules(document.frontmatter.mode, delegated)
+            run_defaults_but_message(document.frontmatter.mode, delegated)
                 .into_iter()
-                .filter(|rule| !permissions.keys().any(|key| key.action == rule.action))
+                .filter(|rule| !declared(&rule.action))
                 .map(|rule| (rule, true)),
         )
-        .collect()
+        .collect::<Vec<_>>();
+    if !declared(&PermissionAction::MESSAGE) {
+        let message = message_default_rules(
+            document.frontmatter.mode,
+            delegated,
+            rules.iter().map(|(rule, _)| rule),
+        );
+        rules.extend(message.into_iter().map(|rule| (rule, true)));
+    }
+    rules
 }
 
 /// Whether `pattern` matches `resource` for a tool whose runtime has

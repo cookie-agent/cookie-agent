@@ -934,10 +934,10 @@ helper (all) — Helper test agent
   usable for: delegate, cron
   permissions as a root run:
     bash: ask
-    defaults: list_runtimes, skill, mcp, memory, memory_write, cron, attach
+    defaults: read, write, webfetch, skill, mcp, delegate, list_runtimes, memory, memory_write, cron, attach, message
   permissions as a subagent:
     bash: ask
-    defaults: list_runtimes, skill, mcp, memory, memory_write
+    defaults: read, write, webfetch, skill, mcp, delegate, list_runtimes, memory, memory_write, message
 primary (primary) — Primary test agent
   models: custom.test/group/model
   usable for: cron
@@ -946,29 +946,39 @@ primary (primary) — Primary test agent
     write: ${workspace_dir}/* allow; * ask
     memory_write: agent://primary allow
     delegate: worker allow; helper allow
-    defaults: list_runtimes, skill, mcp, memory, cron, attach
+    defaults: webfetch, skill, mcp, list_runtimes, memory, cron, attach, message
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: skill, mcp, memory, memory_write
+    defaults: read, write, webfetch, skill, mcp, delegate, memory, memory_write, message
 
 Defaults (for actions an agent document names no key for):
   as a root run:
-    list_runtimes: allow
+    read: allow
+    write: ${workspace_dir}/* allow; * ask
+    webfetch: allow
     skill: allow
     mcp: ask
+    delegate: deny
+    list_runtimes: allow
     memory: allow
     memory_write: user://* allow; agent://<agent id> allow; machine://${session_machine}/* allow; project://${session_project}/* allow
     cron: allow
     attach: allow
+    message: as `delegate`: allow when a delegate rule allows, ask when one asks, else deny
   as a subagent:
-    list_runtimes: allow (only agents of mode all)
+    read: allow
+    write: ${workspace_dir}/* allow; * ask
+    webfetch: allow
     skill: allow
     mcp: ask
+    delegate: deny
+    list_runtimes: allow (only agents of mode all)
     memory: agent://<agent id> allow
     memory_write: agent://<agent id> allow
-  Internal agents get none.
+    message: allow
+  Internal agents are denied every action.
   Variables: ${session_machine} is each machine the session's attachments run on; ${session_project} is the session's project; ${workspace_dir} is the session's workspace.
 
 Whatever no rule matches asks."
@@ -982,21 +992,27 @@ helper (all) — Helper test agent
   usable for: delegate
   permissions:
     bash: ask
-    defaults: list_runtimes, skill, mcp, memory, memory_write
+    defaults: read, write, webfetch, skill, mcp, delegate, list_runtimes, memory, memory_write, message
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: skill, mcp, memory, memory_write
+    defaults: read, write, webfetch, skill, mcp, delegate, memory, memory_write, message
 
 Defaults (for actions an agent document names no key for):
   as a subagent:
-    list_runtimes: allow (only agents of mode all)
+    read: allow
+    write: ${workspace_dir}/* allow; * ask
+    webfetch: allow
     skill: allow
     mcp: ask
+    delegate: deny
+    list_runtimes: allow (only agents of mode all)
     memory: agent://<agent id> allow
     memory_write: agent://<agent id> allow
-  Internal agents get none.
+    message: allow
+  Internal agents are denied every action.
+  Variables: ${workspace_dir} is the session's workspace.
 
 Whatever no rule matches asks."
     );

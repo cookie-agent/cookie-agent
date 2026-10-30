@@ -2249,23 +2249,96 @@ fn mode_defaults_follow_the_agent_mode() {
         });
         rule_triples(&rules)
     };
+    let deny = PermissionEffect::Deny;
+    let working = [
+        triple("read", "*", allow),
+        triple("write", "${workspace_dir}/*", allow),
+        triple("write", "*", ask),
+        triple("webfetch", "*", allow),
+        triple("skill", "*", allow),
+        triple("mcp", "*", ask),
+        triple("delegate", "*", deny),
+    ];
     for mode in [AgentMode::Primary, AgentMode::All] {
-        assert_eq!(
-            mode_rules(mode),
-            [
-                triple("list_runtimes", "*", allow),
-                triple("skill", "*", allow),
-                triple("mcp", "*", ask)
-            ],
-            "{mode:?}"
-        );
+        let mut expected = working.to_vec();
+        expected.push(triple("list_runtimes", "*", allow));
+        // A root run that may delegate to nobody messages nobody.
+        expected.push(triple("message", "*", deny));
+        assert_eq!(mode_rules(mode), expected, "{mode:?}");
     }
-    assert_eq!(
-        mode_rules(AgentMode::Subagent),
-        [triple("skill", "*", allow), triple("mcp", "*", ask)]
-    );
+    let mut subagent = working.to_vec();
+    subagent.push(triple("message", "*", deny));
+    assert_eq!(mode_rules(AgentMode::Subagent), subagent);
+    // Internal agents call no tools: every action is denied.
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
-    assert!(rules.is_empty());
+    assert_eq!(rules.len(), PermissionAction::BUILT_IN.len());
+    assert!(rules.iter().all(|rule| rule.effect == deny));
+}
+
+#[test]
+fn message_follows_delegate_for_a_root_run_and_is_allowed_when_delegated() {
+    let message = |rules: Vec<PermissionRule>| {
+        rule_triples(
+            &rules
+                .into_iter()
+                .filter(|rule| rule.action == PermissionAction::MESSAGE)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let star = |effect| [("message".to_owned(), "*".to_owned(), effect)];
+    let resources = |entries: &[(&str, PermissionEffect)]| {
+        cookie_agent_config::PermissionValue::Resources(
+            entries
+                .iter()
+                .map(|(pattern, effect)| (WildcardPattern::new(*pattern).unwrap(), *effect))
+                .collect(),
+        )
+    };
+    let with_delegate = |delegate: cookie_agent_config::PermissionValue| {
+        agent_document("worker", AgentMode::All, &[("delegate", delegate)])
+    };
+    let (allow, ask, deny) = (
+        PermissionEffect::Allow,
+        PermissionEffect::Ask,
+        PermissionEffect::Deny,
+    );
+    assert_eq!(
+        message(root_rules(&with_delegate(resources(&[
+            ("explore", allow),
+            ("*", deny)
+        ])))),
+        star(allow)
+    );
+    assert_eq!(
+        message(root_rules(&with_delegate(effect_value(ask)))),
+        star(ask)
+    );
+    assert_eq!(
+        message(root_rules(&with_delegate(effect_value(deny)))),
+        star(deny)
+    );
+    // Delegated, it messages its tree whatever it may delegate to.
+    assert_eq!(
+        message(super::agent_permission_rules(
+            &with_delegate(effect_value(deny)),
+            true,
+            &super::MemoryVariables::default(),
+        )),
+        star(allow)
+    );
+    // A declared `message` key replaces the default.
+    let declared = agent_document(
+        "worker",
+        AgentMode::All,
+        &[
+            ("delegate", effect_value(deny)),
+            ("message", resources(&[("child", ask)])),
+        ],
+    );
+    assert_eq!(
+        message(root_rules(&declared)),
+        [("message".to_owned(), "child".to_owned(), ask)]
+    );
 }
 
 #[test]
@@ -2293,8 +2366,8 @@ fn root_runs_attach_machines_by_default_and_delegated_runs_do_not() {
             "worker",
             AgentMode::Internal,
             &[]
-        )))
-        .is_empty()
+        ))) == [("attach".to_owned(), "*".to_owned(), PermissionEffect::Deny)],
+        "an internal agent is denied attaching"
     );
 }
 
@@ -2318,7 +2391,10 @@ fn root_runs_manage_cron_jobs_by_default_and_delegated_runs_do_not() {
         assert!(cron(delegated(&document)).is_empty(), "{mode:?}");
     }
     let internal = agent_document("worker", AgentMode::Internal, &[]);
-    assert!(cron(root_rules(&internal)).is_empty());
+    assert_eq!(
+        cron(root_rules(&internal)),
+        [("cron".to_owned(), "*".to_owned(), PermissionEffect::Deny)]
+    );
     // A `cron` key replaces the default, root or delegated.
     let granted = agent_document(
         "worker",
@@ -2418,17 +2494,15 @@ fn root_runs_default_to_reading_every_memory_and_writing_their_own() {
             triple("memory_write", "agent://worker", allow),
         ]
     );
-    // An internal agent gets none, root or delegated, so every memory call
-    // asks.
+    // An internal agent is denied memory, root or delegated.
     for delegated in [false, true] {
         let document = agent_document("worker", AgentMode::Internal, &[]);
         let rules = super::agent_permission_rules(&document, delegated, &variables);
-        assert!(memory_triples(&rules).is_empty(), "{delegated}");
         let snapshot = policy(rules);
         for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
             assert_eq!(
                 effect_in_scope(&snapshot, &action, "user://style"),
-                PermissionEffect::Ask,
+                PermissionEffect::Deny,
                 "{delegated} {action:?}"
             );
         }
@@ -2551,11 +2625,9 @@ fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool() {
             PermissionEffect::Ask
         );
     }
-    // An internal agent gets no MCP default; its MCP calls ask because no
-    // rule matches them.
+    // An internal agent is denied MCP tools, as every other action.
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
-    assert!(action_rules(&rules, &PermissionAction::MCP).is_empty());
-    assert!(super::tool_visible(
+    assert!(!super::tool_visible(
         &rules,
         None,
         &PermissionAction::MCP,
@@ -2563,7 +2635,7 @@ fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool() {
     ));
     assert_eq!(
         effect_in_scope(&policy(rules), &PermissionAction::MCP, "github_search"),
-        PermissionEffect::Ask
+        PermissionEffect::Deny
     );
 }
 

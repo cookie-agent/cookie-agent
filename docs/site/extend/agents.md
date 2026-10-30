@@ -390,7 +390,7 @@ children of the caller.
 
 The former `steer_subagent` tool is removed. Agents reach children and other
 same-tree peers with `send_message`, which is governed by the dedicated
-`message` permission action (each message asks unless a rule allows it) and can also wake finished
+`message` permission action (by default a delegated run messages its tree and a root run follows its `delegate` rules) and can also wake finished
 sessions. See the [tool reference](../reference/tools.md#agent-messaging) and
 the [messaging migration notes](../specs/agent-messaging.md#migration-notes).
 
@@ -489,10 +489,13 @@ document with one of those IDs must use `mode: internal`. Nothing is
 synthesized when no agent can run as a root: a session needs one, and the
 official `primary` is it unless you wrote your own.
 
-An agent document that names no key for `list_runtimes`, `skill`, or `mcp`
-gets that action's rules from its mode (see [Listing runtimes](#listing-runtimes)
-and [MCP default](#mcp-default)): every agent that is not internal uses every
-skill, and is offered MCP tools and asks before each call. Memory has a default too, by whether
+An agent document that names no key for an action gets that action's
+defaults (see [Listing runtimes](#listing-runtimes),
+[MCP default](#mcp-default), and the
+[defaults table](../concepts/permissions.md)): every agent that is not
+internal reads every file, edits files in its workspace and asks for any other
+path, fetches the web, uses every skill, is offered MCP tools and asks before
+each call, and delegates to no subagent unless its document names one. Memory has a default too, by whether
 the run is delegated rather than by mode (see
 [Memory permissions](#memory-permissions)). `cron` defaults the same way:
 a root run may manage cron jobs and a delegated one may not (see
@@ -851,9 +854,12 @@ later declaration on an exact tie. Whatever no rule matches asks: a resource
 a key's patterns leave out, and every action the document names no key for,
 a plugin's or a runtime's included. `ask` routes a call through the approval
 flow; only an explicit `deny` denies. The only rules the daemon writes for an
-agent are the mode defaults of `list_runtimes`, `skill`, and `mcp` and the
-run defaults of `memory`, `memory_write`, `cron`, and `attach`, each only
-while the document names no key for its action.
+agent are the mode defaults of `read`, `write`, `webfetch`, `skill`, `mcp`,
+`delegate`, and `list_runtimes` (see
+[Permissions](../concepts/permissions.md#permissions) for the table) and the
+run defaults of `memory`, `memory_write`, `cron`, `attach`, and `message`,
+each only while the document names no key for its action. Internal agents
+are denied every action.
 
 ### Runtime selectors
 
