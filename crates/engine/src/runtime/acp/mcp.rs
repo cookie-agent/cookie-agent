@@ -13,7 +13,15 @@
 //! A call through the bridge runs as a call of the agent's turn: the ACP
 //! runner records it as a cookie tool call of the turn, next to the call
 //! the agent reports for it.
+//!
+//! The server advertises `tools.listChanged`. The daemon keeps what each
+//! open connection last fetched from `tools/list` and, at its check points
+//! (after each bridged call, before its result; at the start of each turn;
+//! when a client attaches or detaches a runtime), compares the session's
+//! list with it. A connection whose list differs is told
+//! `notifications/tools/list_changed`, once until it fetches again.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use cookie_agent_protocol::SessionId;
@@ -61,6 +69,45 @@ pub(crate) struct BridgeBinding {
     pub agent: RuntimeAgent,
 }
 
+/// One MCP bridge: the session it serves and its open connections, by the
+/// number the runtime gives each.
+#[derive(Debug)]
+pub(crate) struct Bridge {
+    pub binding: BridgeBinding,
+    connections: std::collections::HashMap<u64, BridgeConnection>,
+}
+
+/// An open connection to a bridge.
+struct BridgeConnection {
+    /// The runtime connection the bridge's messages travel over.
+    client: RuntimeClient,
+    /// The fingerprint of the list the connection last fetched from
+    /// `tools/list`; `None` before its first fetch.
+    fetched: Option<u64>,
+    /// Told the list changed since it last fetched it.
+    notified: bool,
+}
+
+impl std::fmt::Debug for BridgeConnection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BridgeConnection")
+            .field("fetched", &self.fetched)
+            .field("notified", &self.notified)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The fingerprint of a tool list: its names, descriptions, and input
+/// schemas, in order.
+fn fingerprint(tools: &[Value]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(tools)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Binds bridge `bridge` of runtime `runtime` to `session`.
 pub(crate) fn bind(
     inner: &Arc<Inner>,
@@ -77,32 +124,56 @@ pub(crate) fn bind(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(
             (runtime.to_owned(), bridge.to_owned()),
-            BridgeBinding {
-                session,
-                agent: agent.clone(),
+            Bridge {
+                binding: BridgeBinding {
+                    session,
+                    agent: agent.clone(),
+                },
+                connections: Default::default(),
             },
         );
 }
 
-/// A bridge connection ended; nothing is kept per connection.
+/// A bridge connection ended: forgets it.
 pub(crate) fn connection_closed(
-    _inner: &Arc<Inner>,
-    _client: &RuntimeClient,
-    _params: &AgentMcpClosedParams,
+    inner: &Arc<Inner>,
+    client: &RuntimeClient,
+    params: &AgentMcpClosedParams,
 ) {
+    if let Some(bridge) = super::lock(&inner.acp.processes.bridges)
+        .get_mut(&(client.runtime_id().to_owned(), params.bridge.clone()))
+    {
+        bridge.connections.remove(&params.connection);
+    }
+}
+
+/// Records that `connection` of bridge `key` fetched `tools`.
+fn fetched(inner: &Inner, key: &(String, String), connection: u64, tools: &[Value]) {
+    if let Some(open) = super::lock(&inner.acp.processes.bridges)
+        .get_mut(key)
+        .and_then(|bridge| bridge.connections.get_mut(&connection))
+    {
+        open.fetched = Some(fingerprint(tools));
+        open.notified = false;
+    }
 }
 
 /// Answers one MCP message a bridge connection sent.
 pub(crate) fn message(engine: Engine, client: RuntimeClient, params: AgentMcpParams) {
-    let binding = engine
-        .inner
-        .acp
-        .processes
-        .bridges
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(&(client.runtime_id().to_owned(), params.bridge.clone()))
-        .cloned();
+    let key = (client.runtime_id().to_owned(), params.bridge.clone());
+    let binding = super::lock(&engine.inner.acp.processes.bridges)
+        .get_mut(&key)
+        .map(|bridge| {
+            bridge
+                .connections
+                .entry(params.connection)
+                .or_insert_with(|| BridgeConnection {
+                    client: client.clone(),
+                    fetched: None,
+                    notified: false,
+                });
+            bridge.binding.clone()
+        });
     let Some(id) = params.message.get("id").cloned() else {
         // Notifications (`notifications/initialized`, cancellations) need
         // no answer.
@@ -122,7 +193,11 @@ pub(crate) fn message(engine: Engine, client: RuntimeClient, params: AgentMcpPar
         let request = params.message.get("params").cloned().unwrap_or(Value::Null);
         let answer = match binding {
             None => Err((-32002, "this bridge serves no session".to_owned())),
-            Some(binding) => engine.mcp_answer(&binding, &method_name, &request).await,
+            Some(binding) => {
+                engine
+                    .mcp_answer(&binding, (&key, params.connection), &method_name, &request)
+                    .await
+            }
         };
         let message = match answer {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
@@ -154,6 +229,7 @@ impl Engine {
     async fn mcp_answer(
         &self,
         binding: &BridgeBinding,
+        (key, connection): (&(String, String), u64),
         method: &str,
         params: &Value,
     ) -> Result<Value, (i64, String)> {
@@ -169,16 +245,25 @@ impl Engine {
                     .unwrap_or(&MCP_VERSIONS[0]);
                 Ok(json!({
                     "protocolVersion": version,
-                    "capabilities": {"tools": {}},
+                    "capabilities": {"tools": {"listChanged": true}},
                     "serverInfo": {"name": BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION")},
                 }))
             }
             "ping" => Ok(json!({})),
-            "tools/list" => self
-                .bridge_tools(binding)
-                .map(|tools| json!({"tools": tools}))
-                .map_err(|error| (-32603, error.to_string())),
-            "tools/call" => Ok(self.bridge_call(binding, params).await),
+            "tools/list" => {
+                let tools = self
+                    .bridge_tools(binding)
+                    .map_err(|error| (-32603, error.to_string()))?;
+                fetched(&self.inner, key, connection, &tools);
+                Ok(json!({"tools": tools}))
+            }
+            "tools/call" => {
+                let result = self.bridge_call(binding, params).await;
+                // Before the result, so the agent can fetch the new list
+                // before its next step.
+                self.announce_tool_changes(binding.session).await;
+                Ok(result)
+            }
             other => Err((
                 -32601,
                 format!("cookie's MCP server has no method `{other}`"),
@@ -284,6 +369,61 @@ impl Engine {
                 })
             })
             .collect())
+    }
+
+    /// Tells each connection to a bridge of `session` that the tool list
+    /// changed when the list it last fetched differs from the session's
+    /// now, once until it fetches again. A subagent's calls go over its
+    /// parent's bridge, so the parent's session is the one to name.
+    pub(crate) async fn announce_tool_changes(&self, session: SessionId) {
+        let candidates = super::lock(&self.inner.acp.processes.bridges)
+            .iter()
+            .filter(|(_, bridge)| {
+                bridge.binding.session == session
+                    && bridge
+                        .connections
+                        .values()
+                        .any(|open| open.fetched.is_some() && !open.notified)
+            })
+            .map(|(key, bridge)| (key.clone(), bridge.binding.clone()))
+            .collect::<Vec<_>>();
+        for (key, binding) in candidates {
+            let Ok(tools) = self.bridge_tools(&binding) else {
+                continue;
+            };
+            let now = fingerprint(&tools);
+            let due = super::lock(&self.inner.acp.processes.bridges)
+                .get_mut(&key)
+                .map(|bridge| {
+                    bridge
+                        .connections
+                        .iter_mut()
+                        .filter(|(_, open)| {
+                            !open.notified && open.fetched.is_some_and(|last| last != now)
+                        })
+                        .map(|(connection, open)| {
+                            open.notified = true;
+                            (*connection, open.client.clone())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for (connection, client) in due {
+                let _ = client
+                    .agent_notify(
+                        method::AGENT_MCP,
+                        &AgentMcpParams {
+                            bridge: key.1.clone(),
+                            connection,
+                            message: json!({
+                                "jsonrpc": "2.0",
+                                "method": "notifications/tools/list_changed",
+                            }),
+                        },
+                    )
+                    .await;
+            }
+        }
     }
 
     /// The session a call of `tool` over `bridge_session`'s bridge belongs

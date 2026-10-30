@@ -479,6 +479,13 @@ tools cookie would offer a model in that session: memory, cron,
 tools, and runtime tools, each listed only when the rules offer it, and
 each call decided by the rules as a model's would be.
 
+The list can change during a session: a machine attached or detached, an
+MCP server connecting, a rule changed. The bridge then sends the agent
+`notifications/tools/list_changed`, after a call of cookie's tools and at
+the start of a turn. Claude Code fetches the new list and can call the new
+tools in the same turn. Codex ignores the notification and sees a change
+only in a new session.
+
 `acp.hide_tools` lists cookie's tools the agent does not get, with `*` and
 `?`. By default it hides the coding runtime's `read`, `write`, `edit`,
 `bash`, and `webfetch`, since the agent has its own; `[]` offers them too.

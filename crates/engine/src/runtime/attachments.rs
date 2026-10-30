@@ -518,17 +518,20 @@ impl Engine {
         if self.session_acp_offers(session)?.is_none() {
             self.refuse_overlap(session, &instance)?;
         }
-        self.on_actor(session, move |engine| {
-            let projection = engine.inner.store.get(session)?;
-            if projection.status == SessionStatus::Running {
-                return Err(EngineError::SessionRunning(session));
-            }
-            let mut attachments = engine.attachments_of(&projection);
-            let attachment = push_instance(&mut attachments, &instance)?;
-            engine.append_direct(session, None, origin, attached_event(&attachment))?;
-            Ok(attachment)
-        })
-        .await
+        let attachment = self
+            .on_actor(session, move |engine| {
+                let projection = engine.inner.store.get(session)?;
+                if projection.status == SessionStatus::Running {
+                    return Err(EngineError::SessionRunning(session));
+                }
+                let mut attachments = engine.attachments_of(&projection);
+                let attachment = push_instance(&mut attachments, &instance)?;
+                engine.append_direct(session, None, origin, attached_event(&attachment))?;
+                Ok(attachment)
+            })
+            .await?;
+        self.announce_tool_changes(session).await;
+        Ok(attachment)
     }
 
     /// Removes the attachment `name` from `session`. Rejected while the
@@ -557,7 +560,9 @@ impl Engine {
             engine.append_direct(session, None, origin, Event::RuntimeDetached { name })?;
             Ok(())
         })
-        .await
+        .await?;
+        self.announce_tool_changes(session).await;
+        Ok(())
     }
 
     /// Registers a runtime template so sessions can attach it. The engine

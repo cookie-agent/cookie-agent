@@ -73,6 +73,10 @@ Each prompt's last text block is a command:
                          after a second); `elicit-wait <kind>` then waits for
                          session/cancel
   mcp list               lists cookie's tools through the bridge
+  mcp notices            pings the bridge (request 4), then names the
+                         notifications it sent since the last `mcp notices`,
+                         each with the request whose reply it preceded, and
+                         whether `initialize` advertised `tools.listChanged`
   mcp call <tool> <json> calls one of cookie's tools through the bridge
   subagent <title> <task>
                          announces a subagent session (subagent_update), gives it
@@ -335,6 +339,9 @@ def mcp(session, method, params, request_id):
         message = json.loads(line)
         if message.get("id") == request_id:
             return message
+        if "id" not in message and "method" in message:
+            # Tagged with the request whose reply it came before.
+            session.setdefault("notices", []).append(f"{message['method']}@{request_id}")
 
 
 def mcp_open(session):
@@ -342,7 +349,8 @@ def mcp_open(session):
         session["bridge"] = bridge(session)
         if session["bridge"] is None:
             return False
-        mcp(session, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fixture", "version": "1"}}, 1)
+        reply = mcp(session, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fixture", "version": "1"}}, 1)
+        session["list_changed"] = bool(reply["result"]["capabilities"].get("tools", {}).get("listChanged"))
         reader, writer = session["bridge"]
         writer.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n").encode())
         writer.flush()
@@ -835,6 +843,10 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             say(session_id, "no bridge")
         elif action == "eager":
             say(session_id, f"eager: {session.get('eager_tools')}")
+        elif action == "notices":
+            mcp(session, "ping", {}, 4)
+            notices = session.pop("notices", [])
+            say(session_id, f"notices: {','.join(notices)} listChanged: {session['list_changed']}")
         elif action == "list":
             reply = mcp(session, "tools/list", {}, 2)
             names = sorted(tool["name"] for tool in reply["result"]["tools"])

@@ -2682,6 +2682,9 @@ impl Engine {
                 .or(bridge_tools.clone()),
             None => bridge_tools.clone(),
         };
+        // The list may have changed since the agent last fetched it, by
+        // rules, plugins, or an attached runtime's MCP servers.
+        self.announce_tool_changes(active.session).await;
         let mut turn = Turn {
             engine: self,
             run: run_id,

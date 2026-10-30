@@ -744,7 +744,7 @@ fn acp_state_of(engine: &Engine, session: SessionId) -> (bool, usize) {
         .lock()
         .unwrap()
         .values()
-        .filter(|binding| binding.session == session)
+        .filter(|bridge| bridge.binding.session == session)
         .count();
     (live, bridges)
 }
@@ -1169,6 +1169,88 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     )
     .await;
     assert!(final_text(&outcome).ends_with("error: True"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bridge_tells_the_agent_once_when_its_tool_list_changes() {
+    let document = "---\ndescription: Fixture that reads\nmode: all\nacp:\n  hide_tools: [\"web*\"]\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let tools = |listed: String| {
+        listed["tools: ".len()..]
+            .split(',')
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let deny = |action: cookie_agent_protocol::PermissionAction| async move {
+        engine
+            .set_session_permission(
+                session,
+                &action,
+                None,
+                cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
+                cookie_agent_protocol::PermissionEffect::Deny,
+                origin(),
+            )
+            .await
+            .unwrap();
+    };
+    let listed = tools(final_text(&turn(engine, session, "list", "mcp list").await));
+    assert!(listed.iter().any(|tool| tool == "cron_list"), "{listed:?}");
+    assert!(listed.iter().any(|tool| tool == "bash"), "{listed:?}");
+    // An unchanged list is not announced.
+    assert_eq!(
+        final_text(&turn(engine, session, "same", "mcp notices").await),
+        "notices:  listChanged: True"
+    );
+
+    // A list changed during a bridged call is announced before the call's
+    // result (request 3), and not again as the next turn starts. The call,
+    // a write outside the workspace, waits on its approval while the
+    // document comes to hide `cron_list`.
+    let outside = acp.workspace().parent().unwrap().join("outside.txt");
+    let call = format!(
+        "mcp call write {}",
+        serde_json::json!({"filePath": outside.to_string_lossy(), "content": "x"})
+    );
+    let run = start(engine, session, "call", &call).await;
+    let approval = wait_for_escalated_approval(engine, session).await;
+    let hiding = document.replace("[\"web*\"]", "[\"web*\", \"cron_list\"]");
+    let agents = acp.workspace().parent().unwrap().join("user/agents");
+    write_private_test_file(&agents.join("fixture.md"), hiding);
+    engine.reload_configuration().await.unwrap();
+    approve_once(engine, &approval, "approve-write").await;
+    let answer = final_text(&finished(engine, session, run).await);
+    assert!(answer.ends_with("error: False"), "{answer}");
+    wait_for_session_not_running(engine, session).await;
+    assert_eq!(
+        final_text(&turn(engine, session, "after-call", "mcp notices").await),
+        "notices: notifications/tools/list_changed@3 listChanged: True"
+    );
+    let relisted = tools(final_text(
+        &turn(engine, session, "relist", "mcp list").await,
+    ));
+    assert!(
+        !relisted.iter().any(|tool| tool == "cron_list"),
+        "{relisted:?}"
+    );
+
+    // One made between turns is announced as the next turn starts, before
+    // the agent's first request (4), once until it fetches the list again.
+    deny(cookie_agent_protocol::PermissionAction::BASH).await;
+    assert_eq!(
+        final_text(&turn(engine, session, "changed", "mcp notices").await),
+        "notices: notifications/tools/list_changed@4 listChanged: True"
+    );
+    assert_eq!(
+        final_text(&turn(engine, session, "once", "mcp notices").await),
+        "notices:  listChanged: True"
+    );
+    let relisted = tools(final_text(
+        &turn(engine, session, "relist-2", "mcp list").await,
+    ));
+    assert!(!relisted.iter().any(|tool| tool == "bash"), "{relisted:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

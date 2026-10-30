@@ -271,8 +271,9 @@ pub(crate) struct Processes {
     /// The ACP session each cookie session talks in, while its process
     /// lives.
     pub(crate) sessions: Mutex<HashMap<SessionId, super::runner::LiveSession>>,
-    /// Which cookie session each MCP bridge serves, by runtime and bridge.
-    pub(crate) bridges: Mutex<HashMap<(String, String), super::mcp::BridgeBinding>>,
+    /// Which cookie session each MCP bridge serves, and its open
+    /// connections, by runtime and bridge.
+    pub(crate) bridges: Mutex<HashMap<(String, String), super::mcp::Bridge>>,
     /// What wakes the runner of a session's turn when the session takes
     /// input to steer, while that turn can steer its agent.
     steering: Mutex<HashMap<SessionId, Arc<tokio::sync::Notify>>>,
