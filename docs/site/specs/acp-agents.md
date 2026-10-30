@@ -1475,7 +1475,9 @@ adapter cookie launches (`npx @agentclientprotocol/claude-agent-acp`
 | Claude Code 2.1.312 (the adapter's bundled SDK binary) and 2.1.311 (`CLAUDE_CODE_EXECUTABLE`) | yes, within milliseconds | in the same turn (found through its `ToolSearch`, then called) |
 | Codex 0.165.0 (codex-acp's bundled `@openai/codex`) and 0.166.0 (`CODEX_PATH`) | no, never during the session | only in a new session, whose MCP server starts fresh |
 
-What cookie does for agents that ignore the notification is open.
+Cookie does nothing more for agents that ignore the notification: a
+Codex session sees a changed list in its next ACP session (user decision,
+2026-10-30).
 
 **Implementation notes:**
 
