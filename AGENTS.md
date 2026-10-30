@@ -43,6 +43,21 @@ hover-quiet (`PointerTarget::is_hoverable`). The sweep in
 `crates/tui/src/ui/transcript/tests/pointer.rs` checks every target hovers
 visibly, so reach the new target from one of its surfaces.
 
+## Appearance
+
+Do not add tests that pin colours, styles, classes, or how things look;
+test behaviour. The same goes for the exact wording of labels and other
+display strings: a test that pins `Worked for 1m 23s · 7 tool calls`
+catches only deliberate changes. Test what the text is made from instead:
+the counts and states behind it, the arithmetic that formats it (such as a
+duration's boundaries), which line or row shows when, and that a cached
+row draws again when what it shows changes. For the look itself, the agent
+making an appearance change in either client looks at it before
+committing: the TUI through the ignored `render_preview` test and
+`scripts/tui_preview_png.py`, the web page in headless Chrome
+(`scripts/web-screenshots.sh`, or a page driven like the ones in
+`scripts/web-e2e/`), in light and dark.
+
 ## Gate Tiers
 
 The gates below come in two tiers. Before each commit, run the local tier
