@@ -291,8 +291,14 @@ Implemented 2026-10-30 in one pass, on the plan of section 12.
   release-list code to share; the lookup is new in `update_command.rs`.
 - The build identity lives in the engine (`build.rs`, `release.rs`), which
   both the binary and the daemon's server depend on, instead of the
-  published `cookie_agent_identity` crate. `crates/cookie_agent/build.rs` is
-  gone: `cookie --version` takes `release::long_version()`.
+  published `cookie_agent_identity` crate. `cookie --version` takes
+  `release::long_version()`; `crates/cookie_agent/build.rs` no longer makes
+  the version.
+- The new subcommand overflowed the 1 MB main-thread stack of Windows debug
+  builds: clap's derived `augment_subcommands` builds every subcommand in
+  one frame (418 KB in a Linux debug build). `crates/cookie_agent/build.rs`
+  now links the Windows binary with `/STACK:8388608`, the 8 MB Linux and
+  macOS give the main thread.
 - No `self-replace` dependency: the Windows rename-aside is a few lines.
 - `lzma-rs` instead of `lzma-rust2`: the latter's `xz` feature pulls a second
   `sha2`/`digest` stack.
