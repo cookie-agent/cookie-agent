@@ -201,6 +201,7 @@ nav:
           - Deferred tools in cookie: specs/deferred-tools-cookie.md
           - Default models and onboarding: specs/default-models-and-onboarding.md
           - Shell environment for runtimes: specs/shell-environment.md
+          - Machines on demand: specs/machines-on-demand.md
           - Managing runtimes from clients: specs/runtime-management.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md
