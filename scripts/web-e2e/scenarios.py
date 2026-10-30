@@ -314,6 +314,13 @@ def count(browser, selector):
 WORKSPACE = os.path.join(HOME, "workspace")
 
 
+# How long a restarted daemon may take to answer again. A debug daemon
+# spends seconds of CPU before it listens, which every group's daemons and
+# browsers share on CI, and the page redials at most every 10 s: on CI's
+# runners the page came back after just under or over a minute.
+RESTART_TIMEOUT = 120
+
+
 def card(key):
     return '#new-session [data-card="%s"]' % key
 
@@ -1328,8 +1335,20 @@ def session_depth(browser):
     browser.click("#sheet [data-decision=approve_once]")
     browser.click("#sheet h2 ~ button")
     browser.wait("the background control", lambda: count(browser, "#transcript [data-action=background]") > 0)
-    browser.click("#transcript [data-action=background]")
-    browser.wait("the background bar", lambda: "in background" in browser.text("#background-bar"))
+    # The control shows once the call is approved, a moment before the call
+    # starts and can move; until then the daemon refuses, and the user, like
+    # this scenario, asks again.
+    asked = [0.0]
+
+    def in_background():
+        if "in background" in browser.text("#background-bar"):
+            return True
+        if time.time() - asked[0] >= 1:
+            asked[0] = time.time()
+            browser.click("#transcript [data-action=background]")
+        return False
+
+    browser.wait("the background bar", in_background)
     browser.shot("background")
     # Once its run ends, the session waits on the call: its row has a clock,
     # and its tooltip says what it waits on.
@@ -3044,12 +3063,19 @@ def session_badges(browser):
     subprocess.run([COOKIE, "machine", "assign", "alt", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
     open_cards(browser)
-    for name, is_open in browser.script(
-        "return [...document.querySelectorAll('#new-session [data-group]')].map((g) => [g.dataset.group, g.dataset.open])"
-    ):
-        if is_open != "true":
-            browser.click('#new-session [data-group-toggle="%s"]' % name)
-    browser.wait("alt's card", lambda: count(browser, card("alt/coding")) == 1)
+
+    # The assignment reaches the page in its own time and moves alt's card
+    # into the studio's group, which starts folded and so shows no cards:
+    # wait for it there, unfolding groups as they appear.
+    def alt_on_the_studio():
+        for name, is_open in browser.script(
+            "return [...document.querySelectorAll('#new-session [data-group]')].map((g) => [g.dataset.group, g.dataset.open])"
+        ):
+            if is_open != "true":
+                browser.click('#new-session [data-group-toggle="%s"]' % name)
+        return count(browser, '#new-session [data-group="e2e-studio"] [data-card="alt/coding"]') == 1
+
+    browser.wait("alt's card on the studio", alt_on_the_studio)
     if "local/coding" not in selected_cards(browser):
         browser.click(card("local/coding") + " [data-card-toggle]")
     set_text(browser, field("local/coding"), WORKSPACE)
@@ -4203,7 +4229,7 @@ def restart_daemon(browser):
     # Configuration opened while the page reconnects reads on the closed
     # connection; the reconnect reads it again.
     open_section(browser, "settings", "configuration")
-    browser.wait("the reconnected page", lambda: count(browser, "#reconnecting") == 0 and browser.text("#connected") != "", timeout=60)
+    browser.wait("the reconnected page", lambda: count(browser, "#reconnecting") == 0 and browser.text("#connected") != "", timeout=RESTART_TIMEOUT)
     browser.wait("the banner gone", lambda: count(browser, "#restart-banner") == 0)
     browser.wait(
         "the plain restart button",
@@ -5280,7 +5306,7 @@ def acp_restart(browser):
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
-    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=RESTART_TIMEOUT)
     send(browser, "say afterwards")
     browser.wait("the message after the restart", lambda: "say afterwards" in browser.text("#transcript"), timeout=30)
     browser.wait("the agent's reply after the restart", lambda: "afterwards" in browser.text("#transcript").replace("say afterwards", ""), timeout=60)
@@ -5303,7 +5329,7 @@ def session_restart(browser):
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
-    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=RESTART_TIMEOUT)
     send(browser, "after the restart")
     browser.wait("the message after the restart", lambda: "after the restart" in browser.text("#transcript"), timeout=30)
     browser.wait("the reply after the restart", lambda: answers(browser) > before, timeout=60)
