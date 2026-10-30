@@ -5,6 +5,33 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.56.0
+
+- Official agents and model tiers
+  ([machines on demand](../specs/machines-on-demand.md) section 2):
+  - `agents.update` refreshes the official agents now, as `skills.update`
+    does the skills: `enabled`, `agents` (each `id` and `version`),
+    `updated`, `removed`, and an optional `error`.
+  - An `AgentDescriptor` has `official` (default `false`) and an optional
+    `official_version`; `unset_models` may name `utility_model`.
+  - `ModelCatalogView` has an optional `default_agent`, `[agents] default`:
+    the agent a client preselects for a new session (an older daemon sends
+    none, and its default is `primary`).
+  - Onboarding: `OnboardingStatus` and `OnboardingRunParams` have an
+    optional `utility_model`; `missing` may hold `default_agent`, and no
+    longer holds `small_model`, which is optional. There is no starter kit:
+    `onboarding.preview` refuses with `onboarding_kit_unavailable`, and
+    `onboarding.run` ignores `install_kit` and `source` and writes no files,
+    fetching the official agents first when the default agent is missing.
+- Files the model only names
+  ([machines on demand](../specs/machines-on-demand.md) section 6.4):
+  `artifact.upload.begin` takes an optional `kind`, `media` (the default)
+  or `file`. A `file` upload is any file, up to the same 25 MiB, stored as
+  `application/octet-stream`; it reaches the model as its label, `[file
+  report.zip, 3.2 MB, artifact 5f2c81d0]`, which names it for `transfer`.
+  Admission no longer refuses a file part the run's model does not take
+  inline: the model sees its label, with the reason it is not shown.
+
 ## 1.55.0
 
 - `runtimes.connect` and `runtimes.disconnect` (`runtime_id`, answering the

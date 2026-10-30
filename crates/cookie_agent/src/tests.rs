@@ -3441,9 +3441,7 @@ capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, out
 
 /// A daemon with the provider `custom.test` and its two models, served in
 /// process, and a kit archive in the temporary directory.
-async fn onboard_daemon(
-    temporary: &std::path::Path,
-) -> (Client, std::path::PathBuf, std::path::PathBuf) {
+async fn onboard_daemon(temporary: &std::path::Path) -> (Client, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
     let workspace = temporary.join("workspace");
     let cache_anchor = temporary.join("cache-anchor");
@@ -3474,55 +3472,38 @@ async fn onboard_daemon(
     ));
     let client = Client::connect_stream(client_stream);
     client.handshake().await.unwrap();
-    let agent =
-        b"---\ndescription: Primary\nmode: primary\nmodels: [\"${default_model}\"]\n---\nWork.\n";
-    let kit = temporary.join("cookie-agent-defaults.tar.gz");
+    // The default agent is the user's own here, so the run fetches no
+    // official agents.
+    let root = workspace.join(".cookie-agent");
+    std::fs::create_dir_all(root.join("agents")).unwrap();
     std::fs::write(
-        &kit,
-        cookie_agent_engine::testing::pack_kit(&[("agents/primary.md", agent)]),
+        root.join("agents/primary.md"),
+        b"---\ndescription: Primary\nmode: primary\nmodels: [\"${default_model}\"]\n---\nWork.\n",
     )
     .unwrap();
+    runtime
+        .engine
+        .reload_configuration()
+        .await
+        .expect("reload with the agent");
     // Keep the runtime's engine alive with the server task.
     std::mem::forget(runtime);
-    (client, workspace.join(".cookie-agent"), kit)
+    (client, root)
 }
 
-/// `cookie onboard` asks for the models, preselects their variants, shows
-/// the kit, and installs it through the daemon.
+/// `cookie onboard` asks for the models, preselects their variants, skips
+/// the optional ones on Enter, and sets them through the daemon.
 #[tokio::test]
-async fn cookie_onboard_sets_the_models_and_installs_the_kit() {
+async fn cookie_onboard_sets_the_models() {
     use onboard_command::{OnboardArgs, run_onboard_with};
     let temporary = tempfile::tempdir().unwrap();
     private_directory(temporary.path());
-    let (client, root, kit) = onboard_daemon(temporary.path()).await;
+    let (client, root) = onboard_daemon(temporary.path()).await;
 
-    // --diff shows the kit and writes nothing.
-    let mut io = ScriptedConnectIo::default();
-    run_onboard_with(
-        &client,
-        OnboardArgs {
-            from: Some(kit.clone()),
-            diff: true,
-            ..OnboardArgs::default()
-        },
-        &mut io,
-    )
-    .await
-    .expect("diff");
-    assert!(
-        io.output
-            .iter()
-            .any(|line| line.contains("agents/primary.md: new")),
-        "{:?}",
-        io.output
-    );
-    assert!(!root.join("agents").exists());
-
-    // --yes without the models refuses rather than guess.
+    // --yes without the default model refuses rather than guess.
     let refused = run_onboard_with(
         &client,
         OnboardArgs {
-            from: Some(kit.clone()),
             yes: true,
             ..OnboardArgs::default()
         },
@@ -3536,37 +3517,24 @@ async fn cookie_onboard_sets_the_models_and_installs_the_kit() {
     );
 
     // Interactively: keep the provider, pick A Model (its default variant
-    // preselected), search for Z Model, then install the kit.
+    // preselected), skip the small model, then search for Z Model as the
+    // utility model.
     let mut io = ScriptedConnectIo {
         public: VecDeque::from(
-            ["n", "1", "", "/z-model", "1", "y"]
+            ["n", "1", "", "", "/z-model", "1"]
                 .map(str::to_owned)
                 .to_vec(),
         ),
         ..ScriptedConnectIo::default()
     };
-    run_onboard_with(
-        &client,
-        OnboardArgs {
-            from: Some(kit.clone()),
-            ..OnboardArgs::default()
-        },
-        &mut io,
-    )
-    .await
-    .expect("onboard");
+    run_onboard_with(&client, OnboardArgs::default(), &mut io)
+        .await
+        .expect("onboard");
     assert!(
         io.output
             .iter()
             .any(|line| line.contains("1. high (Enter)")),
         "the default model preselects its default variant: {:?}",
-        io.output
-    );
-    assert!(
-        io.output
-            .iter()
-            .any(|line| line == "Wrote agents/primary.md"),
-        "{:?}",
         io.output
     );
     let config = std::fs::read_to_string(root.join("config.toml")).unwrap();
@@ -3575,17 +3543,16 @@ async fn cookie_onboard_sets_the_models_and_installs_the_kit() {
         "{config}"
     );
     assert!(
-        config.contains("small_model = \"custom.test/z-model\""),
+        config.contains("utility_model = \"custom.test/z-model\""),
         "{config}"
     );
-    assert!(root.join("agents/primary.md").exists());
+    assert!(!config.contains("small_model"), "{config}");
 
     // Flags answer the questions; the small model's variant is given.
     let mut io = ScriptedConnectIo::default();
     run_onboard_with(
         &client,
         OnboardArgs {
-            from: Some(kit),
             yes: true,
             small_model: Some("custom.test/a-model:low".into()),
             ..OnboardArgs::default()
@@ -3677,7 +3644,7 @@ async fn cookie_skills_check_finds_what_a_skill_gets_wrong() {
 async fn cookie_skills_list_shows_where_each_skill_comes_from() {
     let temporary = tempfile::tempdir().unwrap();
     private_directory(temporary.path());
-    let (client, _, _) = onboard_daemon(temporary.path()).await;
+    let (client, _) = onboard_daemon(temporary.path()).await;
     let lines = skills_command::skills_with(&client, skills_command::SkillsCommand::List)
         .await
         .expect("list");

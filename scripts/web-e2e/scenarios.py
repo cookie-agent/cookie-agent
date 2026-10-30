@@ -2695,42 +2695,42 @@ def runtime_cards(browser):
             browser.click('#new-session [data-group-toggle="%s"]' % name)
     browser.wait("every group open", lambda: count(browser, '#new-session [data-group][data-open="false"]') == 0)
 
-    # Two runtimes at their own workspaces, one of them at two: the note
-    # says tools get prefixes, and the session attaches all three.
-    second = os.path.join(HOME, "second")
+    # Two coding runtimes on one machine offer the same tools, which one
+    # machine offers once (machines on demand, section 4): the second's card
+    # shows the refusal, nothing is created, and the message comes back. A
+    # card takes one workspace.
     elsewhere = os.path.join(HOME, "elsewhere")
     if "local/coding" not in selected_cards(browser):
         browser.click(card("local/coding") + " [data-card-toggle]")
     set_text(browser, field("local/coding"), WORKSPACE)
-    browser.click(card("local/coding") + " [data-add-workspace]")
-    browser.wait("a second field", lambda: count(browser, field("local/coding", 1)) == 1)
-    # An empty field holds the message back and says why.
-    browser.wait("the blocker", lambda: "enter a workspace" in browser.text("#start-blocker"))
-    browser.type("#composer", "too early")
-    browser.type("#composer", ENTER)
-    browser.wait("the held message", lambda: "enter a workspace" in browser.text("#draft-error"))
-    assert browser.script("return document.querySelector('#composer').value") == "too early"
-    clear_composer(browser)
-    set_text(browser, field("local/coding", 1), "~/second")
-    browser.wait("the cleared notice", lambda: count(browser, "#draft-error") == 0)
+    assert count(browser, card("local/coding") + " [data-add-workspace]") == 0, "a card offers a second workspace"
     # `alt` has one card, `alt` until it ran and `alt/coding` after.
     alt = "alt" if count(browser, card("alt")) else "alt/coding"
     browser.click(card(alt) + " [data-card-toggle]")
     browser.wait("the alt field", lambda: count(browser, field(alt)) == 1)
     set_text(browser, field(alt), elsewhere)
-    browser.wait("the prefix note", lambda: "local_workspace_bash" in browser.text("#prefix-note"))
-    assert "3 workspaces" in browser.text("#prefix-note"), browser.text("#prefix-note")
     places = browser.text("#draft-places [data-draft-places]")
-    assert places.startswith("~/workspace, ~/second, alt:") and places.endswith("elsewhere"), places
+    assert places.startswith("~/workspace, alt:") and places.endswith("elsewhere"), places
     browser.shot("cards-two-runtimes")
+    sessions_before = count(browser, "aside [data-session-row]")
+    send(browser, "hello from the workspace")
+    # Started for the session, `alt` now has its capability's card.
+    alt_card = lambda: card("alt/coding") if count(browser, card("alt/coding")) else card("alt")
+    browser.wait("the overlap refusal", lambda: browser.text(alt_card() + " [data-card-error]") != "", timeout=40)
+    refusal = browser.text(alt_card() + " [data-card-error]")
+    assert "offers each tool once" in refusal, refusal
+    browser.wait("the message back", lambda: browser.script("return document.querySelector('#composer').value") == "hello from the workspace")
+    assert count(browser, "#new-session") == 1 and count(browser, "aside [data-session-row]") == sessions_before
+    print("a second coding runtime on one machine is refused on its card:", refusal)
+    browser.click(alt_card() + " [data-card-toggle]")
+    browser.wait("the cleared notice", lambda: count(browser, "#draft-error") == 0)
     # A refusal shows on its card, nothing is created, and the message comes
     # back.
-    sessions_before = count(browser, "aside [data-session-row]")
     browser.click(card("box") + " [data-card-toggle]")
     set_text(browser, field("box"), WORKSPACE)
-    send(browser, "hello from three workspaces")
+    browser.type("#composer", ENTER)
     browser.wait("the refusal", lambda: browser.text(card("box") + " [data-card-error]") != "", timeout=40)
-    browser.wait("the message back", lambda: browser.script("return document.querySelector('#composer').value") == "hello from three workspaces")
+    browser.wait("the message back", lambda: browser.script("return document.querySelector('#composer').value") == "hello from the workspace")
     assert "box" in browser.text("#draft-error"), browser.text("#draft-error")
     browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", card("box"))
     browser.shot("cards-refusal")
@@ -2741,17 +2741,16 @@ def runtime_cards(browser):
     browser.wait("the cleared notice", lambda: count(browser, "#draft-error") == 0)
     browser.type("#composer", ENTER)
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
-    assert "hello from three workspaces" in browser.text("#transcript")
+    assert "hello from the workspace" in browser.text("#transcript")
     row = OPEN_SESSION_ROW
-    # Both runtimes are on this daemon's machine: it, then the workspaces.
+    # The runtime is on this daemon's machine: it, then the workspace.
     browser.wait("the row's badges", lambda: badge_kinds(browser, row) == ["machine", "workspace"])
     shown_badges = badges(browser, row)
     assert shown_badges[0][1] == daemon_group, shown_badges
-    assert shown_badges[1][1] == "~/workspace, ~/second, ~/elsewhere", shown_badges
-    assert "~/workspace" in browser.script(TOOLTIP, row) and "~/elsewhere" in browser.script(TOOLTIP, row)
+    assert shown_badges[1][1] == "~/workspace", shown_badges
     MADE["one machine"] = open_session_id(browser)
     browser.shot("cards-session-places")
-    print("two runtimes at three workspaces on one machine:", shown_badges)
+    print("a runtime at its workspace on one machine:", shown_badges)
 
     # Nothing is remembered: the next new session starts with `global`
     # alone again, whatever the open session has.
@@ -3023,9 +3022,9 @@ return badge ? getComputedStyle(badge).color : null;
 def session_badges(browser):
     """Session rows say where they run as machine badges: none without a
     workspace, one machine and its workspaces, and one badge per machine
-    once a runtime moves to another machine; a machine keeps its colour in
-    every row, and its runtimes take it in the bottom bar and the runtime
-    cards; and the badges truncate before the time does."""
+    for a session on two; a machine keeps its colour in every row, and its
+    runtimes take it in the bottom bar and the runtime cards; and the
+    badges truncate before the time does."""
     rows = {name: 'aside [data-session-row="%s"]' % session for name, session in MADE.items()}
     assert badge_kinds(browser, rows["none"]) == []
     assert badge_kinds(browser, rows["one"]) == ["machine", "workspace"]
@@ -3040,12 +3039,30 @@ def session_badges(browser):
     # The same machine, the same colour, in any row.
     desk_colour = browser.script(BADGE_COLOUR, rows["one"], machine[1])
     assert desk_colour and desk_colour == browser.script(BADGE_COLOUR, rows["one machine"], machine[1]), desk_colour
-    # A runtime pinned to another machine: the session spans two.
+    # A runtime pinned to another machine is no longer on this one: a
+    # session may attach it beside `local`, and spans two machines.
     subprocess.run([COOKIE, "machine", "assign", "alt", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
+    open_cards(browser)
+    for name, is_open in browser.script(
+        "return [...document.querySelectorAll('#new-session [data-group]')].map((g) => [g.dataset.group, g.dataset.open])"
+    ):
+        if is_open != "true":
+            browser.click('#new-session [data-group-toggle="%s"]' % name)
+    browser.wait("alt's card", lambda: count(browser, card("alt/coding")) == 1)
+    if "local/coding" not in selected_cards(browser):
+        browser.click(card("local/coding") + " [data-card-toggle]")
+    set_text(browser, field("local/coding"), WORKSPACE)
+    browser.click(card("alt/coding") + " [data-card-toggle]")
+    browser.wait("the alt field", lambda: count(browser, field("alt/coding")) == 1)
+    set_text(browser, field("alt/coding"), os.path.join(HOME, "elsewhere"))
+    send(browser, "hello from two machines")
+    browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
+    MADE["two machines"] = open_session_id(browser)
+    rows["two machines"] = 'aside [data-session-row="%s"]' % MADE["two machines"]
     browser.wait(
         "a badge per machine",
-        lambda: badges(browser, rows["one machine"]) == [["machine", machine[1]], ["machine", "e2e-studio"]],
+        lambda: badges(browser, rows["two machines"]) == [["machine", machine[1]], ["machine", "e2e-studio"]],
     )
     # Too narrow for both machines: the first stays whole, and +1 stands for
     # the other, which its tooltip names.
@@ -3053,13 +3070,13 @@ def session_badges(browser):
     browser.script("document.querySelector('#sidebar').style.width = '150px'")
     browser.wait("the +N badge", lambda: browser.script(
         "const m = document.querySelector(arguments[0] + ' [data-badge=more]');"
-        "return !!m && !m.hidden ? [m.textContent, m.title] : null", rows["one machine"]) is not None)
+        "return !!m && !m.hidden ? [m.textContent, m.title] : null", rows["two machines"]) is not None)
     more, more_title = browser.script(
         "const m = document.querySelector(arguments[0] + ' [data-badge=more]'); return [m.textContent, m.title]",
-        rows["one machine"],
+        rows["two machines"],
     )
     assert re.fullmatch(r"\+[12]", more) and "e2e-studio" in more_title, (more, more_title)
-    assert browser.script(MACHINES_WHOLE, rows["one machine"]), "a machine badge is cut"
+    assert browser.script(MACHINES_WHOLE, rows["two machines"]), "a machine badge is cut"
     browser.shot("badges-more")
     browser.script("document.querySelector('#sidebar').style.width = ''")
     print("a line too narrow for its machines shows only whole ones, then", more, "for", more_title)
@@ -3067,11 +3084,11 @@ def session_badges(browser):
     browser.wait("alt on the studio", lambda: badges(browser, rows["one"]) == [["machine", "e2e-studio"], ["workspace", "~/elsewhere"]])
     alt_colour = browser.script(BADGE_COLOUR, rows["one"], "e2e-studio")
     assert alt_colour, alt_colour
-    tooltip = browser.script(TOOLTIP, rows["one machine"])
+    tooltip = browser.script(TOOLTIP, rows["two machines"])
     assert "e2e-studio · alt" in tooltip and "~/elsewhere" in tooltip, tooltip
     assert "%s · local · ~/workspace" % machine[1] in tooltip, tooltip
     # Machine badges carry the machine's OS icon.
-    assert count(browser, rows["one machine"] + " [data-badge=machine] svg") == 2
+    assert count(browser, rows["two machines"] + " [data-badge=machine] svg") == 2
     browser.shot("badges")
     # The bottom bar and the runtime cards mark alt in its colour.
     click_row(browser, rows["one"] + " [data-session]")
@@ -3092,11 +3109,12 @@ def session_badges(browser):
     ) == alt_colour
     browser.shot("badges-cards")
     close_sheet(browser)
-    click_row(browser, rows["one machine"] + " [data-session]")
+    click_row(browser, rows["two machines"] + " [data-session]")
     browser.wait("the session", lambda: count(browser, OPEN_SESSION_ROW) == 1)
     subprocess.run([COOKIE, "machine", "unassign", "alt"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
-    browser.wait("alt back on this machine", lambda: badge_kinds(browser, rows["one machine"]) == ["machine", "workspace"])
+    # Back on this machine, the session's two runtimes share its badge.
+    browser.wait("alt back on this machine", lambda: badge_kinds(browser, rows["two machines"]) == ["machine", "workspace"])
     # A narrowing sidebar: the workspaces give way first, down to "…";
     # a machine's name is never cut, and the time stays whole.
     hover(browser, "#transcript")
@@ -3104,7 +3122,7 @@ def session_badges(browser):
     for width in range(288, 119, -12):
         browser.script("document.querySelector('#sidebar').style.width = arguments[0] + 'px'", width)
         time.sleep(0.25)
-        whole, path_cut, time_whole = browser.script(LINE_STATE, rows["one machine"])
+        whole, path_cut, time_whole = browser.script(LINE_STATE, rows["two machines"])
         assert whole and time_whole, (width, whole, time_whole)
         if path_cut and cut_at is None:
             cut_at = width
@@ -5119,10 +5137,10 @@ def foreign_origin(browser):
 
 def onboarding(browser):
     """A daemon that is not set up offers the first-run sheet on connecting:
-    four steps, the connected providers, and the model lists; "Not now"
-    closes it for good in this browser, and Settings reopens it. A daemon
-    that is set up offers nothing. The kit step is left alone: it would
-    download the release's kit."""
+    four steps (a provider and the default, small, and utility models; there
+    is no starter kit), the connected providers, and the model lists; "Not
+    now" closes it for good in this browser, and Settings reopens it. A
+    daemon that is set up offers nothing."""
     browser.resize(1280, 900)
     view(browser, "settings")
     browser.wait("the set-up daemon's onboarding answer", lambda: count(browser, "#settings-onboard") == 1)
@@ -5133,7 +5151,7 @@ def onboarding(browser):
     steps = browser.script(
         "return [...document.querySelectorAll('#onboarding [data-step]')].map(s => s.dataset.step)"
     )
-    assert steps == ["provider", "default-model", "small-model", "kit"], steps
+    assert steps == ["provider", "default-model", "small-model", "utility-model"], steps
     assert browser.script(
         "return document.querySelector('#onboarding [data-step=provider]').getAttribute('aria-current')"
     ) == "step", "the sheet opens on the provider step"

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.55.0",
+    "protocol_version": "1.56.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.55.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.56.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -224,9 +224,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
 | `daemon.restart` | Optional `when`: `idle` (default) or `now` (since 1.19.0) | `scheduled` (whether this call scheduled the restart rather than changed one already scheduled), `active_runs`, and `background_calls` (since 1.35.0, omitted when zero); a daemon that cannot relaunch itself answers `restart_unsupported` (see [Restarting the daemon](#restarting-the-daemon)) |
-| `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, `small_model`), `providers_connected`, and the configured `default_model` and `small_model` as `{ model, variant? }`. Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
-| `onboarding.preview` | Optional `source`: `{"type": "release"}` (the default: the daemon's version's release, else that version's newest prerelease with a kit, else the latest) or `{"type": "archive", "data": "<base64>"}` (since 1.22.0) | The starter kit's `kit_version`, `cookie_version`, where it came from (`origin`), and per file its `path` and `action` (`write`, `skip` as identical, `write_new` beside a changed file) with a `diff` for changed files. Writes nothing; a failed download or a kit that does not match its manifest or does not load is `onboarding_kit_unavailable` |
-| `onboarding.run` | `install_kit`, optional `source`, optional `default_model` and `small_model` (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0) | The kit files `written`, `skipped`, and `written_new` (the kit's version beside them as `<path>.new`), the configuration `settings` set, and the new `status`. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
+| `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, and since 1.56.0 `default_agent`; an older daemon may send `small_model`), `providers_connected`, and the configured `default_model`, `small_model`, and `utility_model` (since 1.56.0) as `{ model, variant? }`. Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
+| `onboarding.preview` | Optional `source` (since 1.22.0) | Since 1.56.0 always `onboarding_kit_unavailable`: there is no starter kit, the daemon keeps the [official agents](../extend/agents.md#official-agents) itself. An older daemon previews its starter kit |
+| `onboarding.run` | `install_kit`, optional `source`, optional `default_model`, `small_model`, and `utility_model` (since 1.56.0) (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0) | The configuration `settings` set and the new `status`; `written`, `skipped`, and `written_new` are empty since 1.56.0, which ignores `install_kit` and `source`. When the default agent is missing it fetches the official agents first. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)), optional `agent_options` (since 1.26.0; see [ACP agents](#acp-agents)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
 | `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0) | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
@@ -289,6 +289,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `skills.list` | Session ID; optional since 1.22.0, without it the daemon's own user and official skills | Discovered skills with source (`user`, `project`, or `official` since 1.22.0), precedence, visibility, permission effect, and an official skill's `version` |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
 | `skills.update` | Empty object (since 1.22.0) | Refreshes the official skills now: `enabled` (`false` with `[skills] official = false`), the `skills` kept (`name`, `version`), the ones `updated` and `removed`, and the `error` when the refresh failed and the cached ones stayed |
+| `agents.update` | Empty object (since 1.56.0) | Refreshes the [official agents](../extend/agents.md#official-agents) now and reloads the configuration when they changed: `enabled` (`false` with `[agents] official = false`), the `agents` kept (`id`, `version`), the ones `updated` and `removed`, and the `error` when the refresh failed and the cached ones stayed |
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
 | `session.compact.cancel` | Session ID | Whether a running manual compaction was cancelled |
 | `session.held.resume` | Session ID | `resumed`: whether the session was [held](#held-sessions); its pending producer messages then run (since 1.34.0) |
@@ -300,7 +301,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.select_model` | Session ID, selection | Whether the session's selection changed |
 | `session.submit_input` | Session ID, [`content`](#user-content), `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
 | `session.recall_input` | Session ID, seq of a pending or queued input, any client's since 1.31.0 | `recalled` content, `gone`, or (before 1.31.0, for another client's input) `not_owner` |
-| `artifact.upload.begin` | Session ID, `byte_length`, optional `filename` | `upload_id`, `chunk_bytes` (see [Media](#media)) |
+| `artifact.upload.begin` | Session ID, `byte_length`, optional `filename` and `kind` | `upload_id`, `chunk_bytes` (see [Media](#media)) |
 | `artifact.upload.chunk` | `upload_id`, `offset`, base64 `data` of at most `chunk_bytes` bytes | Empty object |
 | `artifact.upload.finish` | `upload_id`, `sha256` of every byte sent | The stored `artifact` (`ArtifactRef`), and `image` `{ width, height }` for an image |
 | `artifact.upload.cancel` | `upload_id` | Empty object |
@@ -351,8 +352,10 @@ store and naming the result in a `file` part. A client that attaches before
 its first prompt creates the session first; the upload publishes a session
 that was still only in memory.
 
-1. **`artifact.upload.begin`** `{ session_id, byte_length, filename? }`
-   returns `{ upload_id, chunk_bytes }`. `chunk_bytes` is 1 MiB. A
+1. **`artifact.upload.begin`** `{ session_id, byte_length, filename?, kind? }`
+   returns `{ upload_id, chunk_bytes }`. `kind` is `media` (the default) or,
+   since 1.56.0, `file`: any file, such as an archive, a data file, or text
+   over 1 MiB, which the model sees only as its label (see below). `chunk_bytes` is 1 MiB. A
    `byte_length` above the largest attachment cap (25 MiB) is refused with
    `media_too_large` whose `kind` is `file`. The upload belongs to this
    connection: another connection cannot see it, it is dropped when the
@@ -373,7 +376,8 @@ that was still only in memory.
    digest. Since 1.26.0 content that is no media file but UTF-8 without NUL
    bytes is a text file, `text/plain` of kind `text`, up to 1 MiB: an ACP
    agent may take it, a model never does. It returns `{ artifact: ArtifactRef, image? }`; put `artifact` in a
-   `file` part as it is. An upload whose digest or content is refused
+   `file` part as it is. A `file` upload skips the content checks and is
+   stored as `application/octet-stream`. An upload whose digest or content is refused
    (`digest_mismatch`, `media_type_unsupported`, `media_too_large`) is
    dropped; one finished before all of its bytes arrived
    (`upload_size_mismatch`) stays in progress.
@@ -388,21 +392,29 @@ removes it after its lease, and a fork takes it into the fork's tree. A
 daemon restart forgets leases; an upload no event referenced then stays in
 the store.
 
+**File labels.** Each `file` part reaches the model with its label just
+before it, `[file report.zip, 3.2 MB, artifact 5f2c81d0]`: its name, size,
+and the first 8 hex digits of its digest, which `transfer` takes to copy it
+to a machine. A `file` upload is its label alone. A file the model does not
+take carries the reason in its label instead of its content, `[file
+screenshot.png, 471 KB, artifact 5f2c81d0; not shown: acme/text-model does
+not accept images]`.
+
 **Admission.** `run.start`, `run.steer`, and `session.submit_input` check
 every `file` part against the model the input reaches: the run's selected
 model (for a steer, the running run's; for a queued input, the model of the
 selection it will start with). The part must name an artifact of the tree's
-store whose content is what the reference says (`artifact_not_found`, or
-`media_type_unsupported` when the content is not that type), of a kind the
-model accepts (`media_unsupported` with `kind` and `model`), of a media type
-it lists (`media_type_unsupported`), within its byte and image limits
+store whose content is what the reference says (`artifact_not_found`). One
+of a kind and media type the model accepts, within its byte limit, must also
+be that media (`media_type_unsupported`) within the model's image limits
 (`media_too_large`, with the image's `width` and `height` and the model's
-limits), and the parts of one kind must not outnumber `max_count`
-(`media_limit_exceeded`). These are the model's
-[`input_media`](#the-catalog-view); a client that checks them first never
-meets these errors. A refused input records nothing. A model the input does
-not reach this way, such as a fallback or a model the session moves to later,
-sees a placeholder for each file it does not accept
+limits), and the parts of one kind the model takes must not outnumber
+`max_count` (`media_limit_exceeded`). These are the model's
+[`input_media`](#the-catalog-view). Since 1.56.0 any other file is admitted:
+the model sees its label with the reason it is not shown. A refused input
+records nothing. A model the input does not reach this way, such as a
+fallback or a model the session moves to later, sees the same for each file
+it does not accept, and a placeholder for one a tool returned
 ([Media reads](tools.md#media-reads) describes the wording). A run of an
 [ACP agent](#acp-agents) checks none of this: the agent gets each file it
 takes (its `AgentRuntime.input_media`) and a note naming the others.
@@ -1033,8 +1045,14 @@ revokes the sign-in. Every failure is `provider_sign_in_rejected`, whose
   or the internal revisions and counters the view's `revision` stands for.
   `models` lists only selectable models; an agent's `resolved_fallback` names
   model selections. Since 1.22.0 an agent also has `unset_models`, the
-  configuration fields (`default_model`, `small_model`) its `models` entries
-  name that are not set, omitted when empty; those entries are skipped.
+  configuration fields (`default_model`, `small_model`, `utility_model`) its
+  `models` entries name that are not set, omitted when empty; those entries
+  are skipped. Since 1.56.0 an agent has `official`, `true` for an
+  [official agent](../extend/agents.md#official-agents) (omitted when
+  `false`), and its `official_version`.
+- **`default_agent`** (since 1.56.0, optional) is `[agents] default`: the
+  agent a client preselects for a new session when nothing else chooses
+  one. Without it the default is `primary`.
 - **`input_media`** on every model says what it accepts in user input, one
   entry per kind (an open label: `image`, `pdf`, `audio`, or `video`; and
   `text`, which only an ACP agent's `AgentRuntime.input_media` lists):

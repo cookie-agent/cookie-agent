@@ -19,14 +19,13 @@ No configuration file is needed. With no daemon running on this machine,
 `standalone`, and the runtime and directory the session will work in follow
 it. Sessions you create here work in this directory.
 
-## Set up: a provider, two models, and the starter kit
+## Set up: a provider and a default model
 
-Cookie is set up once it has a connected model provider and two models:
-`default_model`, which agents run on, and `small_model`, which runs the quick
-internal jobs (approval reviews and session titles) and the `explore`
-subagent. Until then the TUI shows a notice offering **Set up** (or **Not
-now**, which it remembers for this machine), and `/onboard` opens the same
-panel at any time. It walks four steps:
+Cookie is set up once it has a connected model provider, a `default_model`
+for its agents to run on, and its default agent. Until then the TUI shows a
+notice offering **Set up** (or **Not now**, which it remembers for this
+machine), and `/onboard` opens the same panel at any time. It walks four
+steps:
 
 1. **Provider.** Pick a [managed provider](extend/providers.md#managed-providers)
    and its sign-in: an API key, typed hidden, or a browser login. The
@@ -34,22 +33,23 @@ panel at any time. It walks four steps:
    may be connected.
 2. **Default model.** A searchable list of the connected providers' models,
    with their context size; choosing one offers its variants, the model's
-   own default preselected.
-3. **Small model.** The same list, nothing suggested; its variant picker
-   preselects the model's first listed variant, the cheapest. It may be the
-   same model as the default.
-4. **Starter kit** (optional). A commented `config.toml`, three agents
-   (`primary`, which runs sessions, and its subagents `explore` and
-   `worker`), downloaded from the release of your cookie version. Each file is marked **new**, **same as
-   yours** (skipped), or **differs**: an existing file is never overwritten;
-   the kit's version is written beside it as `<name>.new`.
+   own default preselected. The root agents run on it.
+3. **Small model** (optional). The model of the subagents that carry out
+   work, such as `worker` and `explore`; without it they use the default
+   model.
+4. **Utility model** (optional). A fast, cheap model for approval reviews
+   and session titles; its variant picker preselects the model's first
+   listed variant, the cheapest. Without it they use the session's model.
 
-The daemon also keeps cookie's [official skills](extend/skills.md#official-skills)
-up to date by itself, such as `customize-cookie-agent` for changing cookie and
-`add-cookie-runtime` for adding another machine; they need no step.
+There is no starter kit to install. The daemon keeps cookie's
+[official agents](extend/agents.md#official-agents) (`primary`, the assistant
+new sessions start with, `coder`, `explore`, `worker`, and the internal ones)
+and [official skills](extend/skills.md#official-skills) up to date by itself,
+and **Finish** fetches the agents first when it has none yet. A document of
+your own in `~/.cookie-agent/agents/` replaces the official one of its name.
 
-**Finish** writes the settings and the kit together, and stays disabled, with
-the reason, until a provider and both models are chosen.
+**Finish** writes the settings, and stays disabled, with the reason, until a
+provider and a default model are chosen.
 
 The same steps run from a terminal against a running daemon, here or on
 another machine (`--url` and `--token`, as for `cookie config`):
@@ -57,24 +57,23 @@ another machine (`--url` and `--token`, as for `cookie config`):
 ```sh
 cookie daemon &                 # once; or the persistent daemon service
 cookie onboard                  # numbered questions; `/` searches the lists
-cookie onboard --diff           # what the kit would change, changing nothing
 cookie onboard --yes --default-model anthropic/claude-opus-4-1:high \
-               --small-model deepseek/deepseek-chat
+               --utility-model deepseek/deepseek-chat
 ```
 
 The web page offers the same as a first-run sheet, and Settings → **Set up
 Cookie** reopens it. Whether the daemon is set up comes from its
-configuration alone: setting `default_model` and `small_model` in
-`config.toml` by hand counts the same, and disconnecting the last provider
-makes it ask again. See [`cookie onboard`](clients/cli.md#cookie-onboard),
+configuration alone: setting `default_model` in `config.toml` by hand counts
+the same, and disconnecting the last provider makes it ask again. See
+[`cookie onboard`](clients/cli.md#cookie-onboard),
 [default models](engine/configuration.md#default-models), and
 [agents](extend/agents.md#models).
 
 To use a model the catalog does not list, configure a
 [custom model](extend/providers.md#custom-model-example) in `config.toml`.
 `/model` chooses the model and its variant for the next run, and `/agent` the
-agent: `primary` once the kit is installed, else the built-in `default` agent,
-which runs on `default_model`.
+agent: the default agent, `primary` unless `[agents] default` names another,
+runs on `default_model`.
 
 ## Ask for something
 
@@ -88,9 +87,8 @@ Esc twice, or `/cancel`, stops the run.
 
 ## Approve tools
 
-The built-in `default` agent reads freely but asks before it writes a file,
-runs a command, or delegates, and never reads files such as `.env` or SSH
-keys. A session starts in the `auto-approve` permission mode: the approval
+The official `primary` agent reads and edits freely, runs read-only commands
+such as `ls` and `git status`, and asks before any other command. A session starts in the `auto-approve` permission mode: the approval
 reviewer answers these asks against your task and passes to you, with its
 reason, the ones it will not decide.
 Click the mode in the bottom bar to cycle it; in `ask` every ask comes to

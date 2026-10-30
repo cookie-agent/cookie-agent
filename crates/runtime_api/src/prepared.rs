@@ -174,6 +174,20 @@ pub struct PreparedTool {
     /// Runtime IDs the call's permission is checked under, each as
     /// `action@runtime`, in place of its origin's; empty for its origin's.
     permission_runtimes: Vec<String>,
+    /// Where each resource's permission is checked, in resource order, in
+    /// place of `permission_runtimes`; empty when they apply.
+    resource_scopes: Vec<ResourceScope>,
+}
+
+/// Where one resource of a call is checked: as `action@runtime`, with a
+/// relative path resolving against `workspace` and a rule's `~` against
+/// `home`. A call that acts on several runtimes, one resource on each, such
+/// as `transfer`'s source and destination, uses it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ResourceScope {
+    pub runtime: String,
+    pub workspace: Option<std::path::PathBuf>,
+    pub home: Option<String>,
 }
 
 impl PreparedTool {
@@ -207,6 +221,7 @@ impl PreparedTool {
             declaration: None,
             presentation: None,
             permission_runtimes: Vec::new(),
+            resource_scopes: Vec::new(),
         })
     }
 
@@ -233,6 +248,7 @@ impl PreparedTool {
             declaration: None,
             presentation: None,
             permission_runtimes: Vec::new(),
+            resource_scopes: Vec::new(),
         })
     }
 
@@ -302,6 +318,34 @@ impl PreparedTool {
     #[must_use]
     pub fn permission_runtimes(&self) -> &[String] {
         &self.permission_runtimes
+    }
+
+    /// Checks each of the call's resources in its own scope, `scopes` in
+    /// resource order: each is checked as `action@runtime` of its scope's
+    /// runtime only. One scope is needed per resource.
+    ///
+    /// # Errors
+    ///
+    /// When `scopes` does not hold one scope per resource.
+    pub fn with_resource_scopes(mut self, scopes: Vec<ResourceScope>) -> Result<Self, ToolError> {
+        if self
+            .operation
+            .as_ref()
+            .is_some_and(|operation| operation.resources().len() != scopes.len())
+        {
+            return Err(ToolError::execution(
+                "a prepared call needs one resource scope per resource",
+            ));
+        }
+        self.resource_scopes = scopes;
+        Ok(self)
+    }
+
+    /// Where each resource is checked, in resource order; empty when
+    /// [`Self::permission_runtimes`] or the origin decide.
+    #[must_use]
+    pub fn resource_scopes(&self) -> &[ResourceScope] {
+        &self.resource_scopes
     }
 
     /// How clients show the call, as the provider prepared it. A

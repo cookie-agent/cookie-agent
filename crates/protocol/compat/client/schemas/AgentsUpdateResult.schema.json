@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "OfficialAgent": {
+      "description": "One official agent the daemon keeps.",
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What `agents.update` did: the official agents kept afterwards, what\nchanged, and why the refresh failed, if it did (the cached agents stay).",
+  "properties": {
+    "agents": {
+      "items": {
+        "$ref": "#/$defs/OfficialAgent"
+      },
+      "maxItems": 1024,
+      "type": "array"
+    },
+    "enabled": {
+      "description": "`false` when `[agents] official` is off: nothing was refreshed.",
+      "type": "boolean"
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "removed": {
+      "description": "Agents removed by this refresh.",
+      "items": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "updated": {
+      "description": "Agents added or changed by this refresh.",
+      "items": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "enabled",
+    "agents"
+  ],
+  "title": "AgentsUpdateResult",
+  "type": "object"
+}

@@ -297,7 +297,13 @@ fn the_default_agent_brings_its_preset_and_its_own_model() {
     let fallback = Some(model("custom.local/a"));
     let mut info = project("aaa", "web", None);
     assert_eq!(
-        project_agent(&info, &agents, live, fallback.clone()),
+        project_agent(
+            &info,
+            &agents,
+            &crate::default_agent_id(None),
+            live,
+            fallback.clone()
+        ),
         ProjectAgent::Unset
     );
     info.defaults = Some(ProjectDefaults {
@@ -306,7 +312,13 @@ fn the_default_agent_brings_its_preset_and_its_own_model() {
         ..ProjectDefaults::default()
     });
     assert_eq!(
-        project_agent(&info, &agents, live, fallback.clone()),
+        project_agent(
+            &info,
+            &agents,
+            &crate::default_agent_id(None),
+            live,
+            fallback.clone()
+        ),
         ProjectAgent::Selected(RunSelection {
             agent: AgentId::new("builder").unwrap(),
             model: model("custom.local/b"),
@@ -315,8 +327,13 @@ fn the_default_agent_brings_its_preset_and_its_own_model() {
     );
     // An agent that cannot run as root keeps the usual selection.
     info.defaults.as_mut().unwrap().agent = Some(AgentId::new("reviewer").unwrap());
-    let ProjectAgent::Unavailable(message) = project_agent(&info, &agents, live, fallback.clone())
-    else {
+    let ProjectAgent::Unavailable(message) = project_agent(
+        &info,
+        &agents,
+        &crate::default_agent_id(None),
+        live,
+        fallback.clone(),
+    ) else {
         panic!("reviewer cannot run as root");
     };
     assert_eq!(
@@ -325,7 +342,13 @@ fn the_default_agent_brings_its_preset_and_its_own_model() {
     );
     // A preset alone picks its primary, else its first agent.
     info.defaults.as_mut().unwrap().agent = None;
-    let ProjectAgent::Selected(selection) = project_agent(&info, &agents, live, fallback) else {
+    let ProjectAgent::Selected(selection) = project_agent(
+        &info,
+        &agents,
+        &crate::default_agent_id(None),
+        live,
+        fallback,
+    ) else {
         panic!("the preset has a root agent");
     };
     assert_eq!(selection.agent.as_str(), "builder");
@@ -350,7 +373,13 @@ fn an_acp_default_agent_runs_its_synthetic_model() {
         ..ProjectDefaults::default()
     });
     assert_eq!(
-        project_agent(&info, &agents, live, Some(model("custom.local/a"))),
+        project_agent(
+            &info,
+            &agents,
+            &crate::default_agent_id(None),
+            live,
+            Some(model("custom.local/a"))
+        ),
         ProjectAgent::Selected(RunSelection {
             agent: AgentId::new("claude").unwrap(),
             model: model("acp/claude"),

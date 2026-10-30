@@ -1091,6 +1091,18 @@ impl Workspace {
     }
 
     /// The root agents of the preset in use, as `/agent` offers them.
+    /// The daemon's `[agents] default`: the agent a new session starts with
+    /// when nothing else chooses one.
+    pub fn default_agent(self) -> cookie_agent_protocol::AgentId {
+        self.with_runtime(|runtime| {
+            cookie_agent_client_state::default_agent_id(
+                runtime
+                    .snapshot()
+                    .and_then(|snapshot| snapshot.default_agent.as_ref()),
+            )
+        })
+    }
+
     pub fn selectable_agents(self) -> Vec<AgentDescriptor> {
         let preset = self.preset.get();
         self.with_runtime(|runtime| {
@@ -1141,13 +1153,15 @@ impl Workspace {
         })
     }
 
-    /// The draft a fresh session starts from: the `primary` agent (else the
-    /// first), its first live model (else the first model), as the TUI picks.
+    /// The draft a fresh session starts from: the daemon's default agent
+    /// (else the first), its first live model (else the first model), as
+    /// the TUI picks.
     fn default_draft(self) -> Option<RunSelection> {
         let agents = self.selectable_agents();
+        let default = self.default_agent();
         let agent = agents
             .iter()
-            .find(|agent| agent.id.as_str() == "primary")
+            .find(|agent| agent.id == default)
             .or_else(|| agents.first())?;
         let models = self.models();
         let live = |selection: &ModelSelection| {

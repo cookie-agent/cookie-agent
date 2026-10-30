@@ -18,8 +18,9 @@ panel can detach `local` before the first message. Such a session:
 - has memory, MCP servers, plugins, and the other `global` tools, but no
   `read`, `write`, `edit`, or `bash`;
 - gets `list_runtimes`, which lists the daemon's machines and runtimes;
-- gets a paragraph in its delegation instructions saying that it has no
-  workspace and that work needing files or commands goes to a subagent;
+- is told in its system prompt that no machine is attached, and that work
+  needing files or commands goes to a subagent
+  ([runtimes](../reference/system-prompt.md#runtimes));
 - must name where each subagent works: `delegate_subagent`'s
   `capabilities` is required.
 

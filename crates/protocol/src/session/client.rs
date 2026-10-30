@@ -693,6 +693,12 @@ impl Client {
             .await
     }
 
+    /// Refreshes the daemon's official agents now.
+    pub async fn update_agents(&self) -> Result<crate::AgentsUpdateResult, ClientError> {
+        self.call(crate::AGENTS_UPDATE_METHOD, &crate::AgentsUpdateParams {})
+            .await
+    }
+
     pub async fn compact_session(
         &self,
         params: SessionCompactParams,

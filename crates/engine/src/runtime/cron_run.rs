@@ -121,7 +121,10 @@ impl Engine {
             cwd: template.cwd.as_ref().map(std::path::PathBuf::from),
         };
         let attachments = self
-            .resolve_session_runtimes(&runtimes)
+            .resolve_session_runtimes(
+                &runtimes,
+                self.selects_acp_agent(&template.agent, template.preset.as_deref()),
+            )
             .await
             .map_err(refused)?;
         let fired_at = Timestamp::now();

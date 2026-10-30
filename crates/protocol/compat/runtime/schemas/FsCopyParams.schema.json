@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/copy`: both routes of one runtime.",
+  "properties": {
+    "from": {
+      "description": "A route prepared for reading.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "overwrite": {
+      "default": false,
+      "type": "boolean"
+    },
+    "to": {
+      "description": "A route prepared for writing.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "from",
+    "to"
+  ],
+  "title": "FsCopyParams",
+  "type": "object"
+}

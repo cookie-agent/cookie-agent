@@ -46,6 +46,10 @@ pub struct LoadedConfiguration {
     pub revision: cookie_agent_identity::ConfigRevision,
     /// User skills, contributed by the global runtime.
     pub skills: crate::SkillRegistry,
+    /// Why official agents were left out of `agents`: an entry of
+    /// `official_agents/` that does not read, parse, or validate. Reported
+    /// as configuration diagnostics; never a load error.
+    pub official_agent_diagnostics: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -120,6 +124,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
     let mut runtime = EngineConfig {
         default_model: None,
         small_model: None,
+        utility_model: None,
         server: ServerConfig::default(),
         tool_output: ToolOutputConfig::default(),
         subagent_output: SubagentOutputConfig::default(),
@@ -139,11 +144,14 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         shell_environment: crate::ShellEnvironmentConfig::default(),
         acp: crate::AcpConfig::default(),
         skills: crate::SkillsConfig::default(),
+        agents: crate::AgentsConfig::default(),
+        transfer: crate::TransferConfig::default(),
         pricing: Default::default(),
         headers: BTreeMap::new(),
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
+    let mut official_agent_diagnostics = Vec::new();
     let mut preset_agents = BTreeMap::<String, BTreeMap<AgentId, AgentDocument>>::new();
     let mut mcp_servers = BTreeMap::new();
     let mut user_mcp_servers = BTreeMap::new();
@@ -203,6 +211,24 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
                 runtime.providers.insert(id, provider);
             }
         }
+        if runtime.agents.official {
+            official_agent_diagnostics.extend(tree.official_agent_errors().iter().cloned());
+            for (id, bytes) in tree.official_agents() {
+                let path = tree.root().map_or_else(
+                    || PathBuf::from(crate::OFFICIAL_AGENTS_DIRECTORY).join(format!("{id}.md")),
+                    |root| crate::official_agents_root(root).join(format!("{id}.md")),
+                );
+                match parse_agent(id.clone(), bytes, AgentDocumentSource::BuiltIn, &path) {
+                    Ok(mut document) => {
+                        document.official = true;
+                        document.official_version = tree.official_version(id).map(str::to_owned);
+                        agents.insert(id.clone(), document);
+                    }
+                    Err(error) => official_agent_diagnostics
+                        .push(format!("official agent `{id}` was left out: {error}")),
+                }
+            }
+        }
         for (path, bytes) in tree.documents() {
             let ConfigDocument::Agent { preset, id } = path.document() else {
                 continue;
@@ -229,6 +255,22 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
     runtime.acp.agents = crate::runtime_templates::validate_shared_acp_agents(std::mem::take(
         &mut runtime.acp.authored_agents,
     ))?;
+    // An official agent the user did not replace must validate on its own;
+    // one that does not is left out rather than failing the load.
+    loop {
+        let invalid = agents.values().find_map(|document| {
+            document
+                .official
+                .then(|| AgentRegistry::validate_one(document, &agents).err())
+                .flatten()
+                .map(|error| (document.id.clone(), error))
+        });
+        let Some((id, error)) = invalid else {
+            break;
+        };
+        agents.remove(&id);
+        official_agent_diagnostics.push(format!("official agent `{id}` was left out: {error}"));
+    }
     AgentRegistry::validate_ref(&agents)?;
     let agent_presets = preset_agents
         .into_iter()
@@ -296,6 +338,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         },
         revision: tree.revision(),
         skills: crate::SkillRegistry::default(),
+        official_agent_diagnostics,
     })
 }
 
@@ -349,6 +392,7 @@ fn decode_runtime_layer(
     const ALLOWED: &[&str] = &[
         "default_model",
         "small_model",
+        "utility_model",
         "server",
         "tool_output",
         "subagent_output",
@@ -368,6 +412,8 @@ fn decode_runtime_layer(
         "shell_environment",
         "acp",
         "skills",
+        "agents",
+        "transfer",
         "headers",
         "mcp",
         "plugins",

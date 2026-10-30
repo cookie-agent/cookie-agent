@@ -55,6 +55,25 @@ impl Default for BackgroundTaskState {
 }
 
 impl BackgroundTaskState {
+    /// The background calls of `session` still running whose tool is one of
+    /// `tools`, as `job (tool)`.
+    pub(crate) fn running_calls_of(
+        &self,
+        session: SessionId,
+        tools: &std::collections::BTreeSet<String>,
+    ) -> Vec<String> {
+        let mut calls = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|job| job.session == session && tools.contains(&job.tool))
+            .map(|job| format!("{} ({})", job.job, job.tool))
+            .collect::<Vec<_>>();
+        calls.sort();
+        calls
+    }
+
     /// The background calls not yet done: running, or ended with their
     /// result still to commit.
     pub(crate) fn pending_count(&self) -> usize {

@@ -256,6 +256,18 @@ fn new_machine(
     }
 }
 
+/// How a runtime no machine claimed is placed on `machine`, new for it.
+fn new_assignment(machine: &Machine, reported: Option<&RuntimeMachine>) -> Assignment {
+    Assignment {
+        machine: machine.name.clone(),
+        by: if reported.is_some() {
+            MachineAssignment::MachineId
+        } else {
+            MachineAssignment::Pinned
+        },
+    }
+}
+
 /// A machine name for a host name: its first label, lowercased, with every
 /// run of characters outside `[a-z0-9_-]` replaced by one `-`, edges
 /// trimmed, `host-` in front when it does not start with a letter, and at
@@ -391,6 +403,13 @@ pub(crate) struct MachineRegistry {
     mutation: Mutex<()>,
     /// Bumped whenever the machines or the records change.
     changes: tokio::sync::watch::Sender<u64>,
+    /// Machines assigned to connected runtimes that could not be saved yet
+    /// (`docs/site/specs/machines-on-demand.md` section 4.1): kept in
+    /// memory, so every connected runtime has a machine, and written with
+    /// the next change that saves.
+    unsaved: Mutex<Vec<Machine>>,
+    /// Why the last save failed, until one succeeds.
+    save_error: Mutex<Option<String>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -413,6 +432,19 @@ impl MachineRegistry {
             online: Mutex::default(),
             mutation: Mutex::new(()),
             changes: tokio::sync::watch::channel(0).0,
+            unsaved: Mutex::default(),
+            save_error: Mutex::default(),
+        })
+    }
+
+    /// Why machines the daemon assigned could not be saved to
+    /// `machines.json`, as a configuration diagnostic.
+    pub(crate) fn save_diagnostic(&self) -> Option<String> {
+        lock(&self.save_error).as_ref().map(|error| {
+            format!(
+                "machines.json could not be saved ({error}); the machines assigned since are kept \
+                 in memory and saved with the next change"
+            )
         })
     }
 
@@ -473,23 +505,36 @@ impl MachineRegistry {
         if let Some(found) = self.lookup(runtime, reported) {
             return Ok(found);
         }
-        self.mutate(|registry, _| {
+        let saved = self.mutate(|registry, _| {
             let machines = &mut registry.machines;
             if let Some(found) = assignment(machines, runtime, reported) {
                 return Ok((found, FolderMoves::default()));
             }
             let machine = new_machine(machines, runtime, reported);
-            let found = Assignment {
-                machine: machine.name.clone(),
-                by: if reported.is_some() {
-                    MachineAssignment::MachineId
-                } else {
-                    MachineAssignment::Pinned
-                },
-            };
+            let found = new_assignment(&machine, reported);
             machines.push(machine);
             Ok((found, FolderMoves::default()))
-        })
+        });
+        match saved {
+            Ok(found) => Ok(found),
+            // Placement never fails for a connected runtime: the machine is
+            // kept in memory and saved with the next change that saves.
+            Err(error) => {
+                *lock(&self.save_error) = Some(error.to_string());
+                let mut state = lock(&self.state);
+                if let Some(found) = assignment(&state.machines, runtime, reported) {
+                    return Ok(found);
+                }
+                let machine = new_machine(&state.machines, runtime, reported);
+                let found = new_assignment(&machine, reported);
+                state.machines.push(machine.clone());
+                state.sort();
+                drop(state);
+                lock(&self.unsaved).push(machine);
+                self.changes.send_modify(|revision| *revision += 1);
+                Ok(found)
+            }
+        }
     }
 
     /// Records what each connected runtime of `runtimes` reports, stamped
@@ -718,7 +763,23 @@ impl MachineRegistry {
         // Another daemon sharing the data root may have changed it.
         let current = read(&self.path)?;
         let mut registry = current.clone();
-        let (value, moves) = change(&mut registry, &memory_lock)?;
+        // Machines assigned while the file could not be written go in now.
+        let unsaved = std::mem::take(&mut *lock(&self.unsaved));
+        for machine in &unsaved {
+            if !registry.machines.iter().any(|known| {
+                known.name == machine.name || known.ids.iter().any(|id| machine.ids.contains(id))
+            }) {
+                registry.machines.push(machine.clone());
+            }
+        }
+        let restore = |unsaved: Vec<Machine>| lock(&self.unsaved).extend(unsaved);
+        let (value, moves) = match change(&mut registry, &memory_lock) {
+            Ok(changed) => changed,
+            Err(error) => {
+                restore(unsaved);
+                return Err(error);
+            }
+        };
         registry.sort();
         if registry != current {
             let file = RegistryFile {
@@ -731,9 +792,11 @@ impl MachineRegistry {
                 .and_then(|()| write(&self.path, &file));
             if let Err(error) = written {
                 moves.undo();
+                restore(unsaved);
                 return Err(error);
             }
         }
+        *lock(&self.save_error) = None;
         drop(memory_lock);
         let mut cached = lock(&self.state);
         if *cached != registry {

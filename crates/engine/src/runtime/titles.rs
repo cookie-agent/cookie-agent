@@ -17,16 +17,6 @@ use crate::{
     runtime_snapshot::PublishedRuntime,
 };
 
-/// The built-in session title prompt, sent as the system prompt in place of
-/// `{{default_prompt}}`. The output contract stays in the request itself.
-pub(crate) const DEFAULT_TITLE_PROMPT: &str = r#"You name coding-agent sessions. Given the opening user messages of a session, write a title that lets the user recognize this session in a list later.
-
-- Describe the task or topic, not the conversation: "Fix flaky parser test", not "User asks about a test".
-- Prefer 3 to 7 words. Lead with the key action or subject, and keep specific names such as files, tools, or error codes when they identify the task.
-- Write in the language the user wrote in.
-- Use sentence case and no trailing punctuation.
-- If the messages hold no clear task, such as a bare greeting, describe what is there plainly."#;
-
 impl Engine {
     pub(crate) fn historical_run_runtime(
         &self,
@@ -107,7 +97,10 @@ impl Engine {
                 internal_policy,
                 InternalAgentHistoryInput {
                     history: internal_text_history(
-                        expand_internal_prompt(internal_policy, DEFAULT_TITLE_PROMPT),
+                        // The official `title` document's body is the
+                        // whole prompt; the output contract stays in the
+                        // request itself.
+                        expand_internal_prompt(internal_policy, ""),
                         prompt.clone(),
                     ),
                     summary_source: prompt,

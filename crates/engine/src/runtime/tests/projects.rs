@@ -478,9 +478,10 @@ async fn moving_a_running_session_takes_effect_at_its_next_root_admission() {
     assert!(requests[1].contains("This session belongs to the web project."));
     assert!(requests[1].contains("A web shop in Rust."));
     // The system prompt names the project too (memory spec section 16.9.2).
-    assert!(requests[1].contains("Project: web"));
-    assert!(requests[2].contains("Project: shop"));
-    assert!(!requests[4].contains("Project: "));
+    // A session with `global` names it on its machines block.
+    assert!(requests[1].contains("<machines project=\\\"web\\\">"));
+    assert!(requests[2].contains("<machines project=\\\"shop\\\">"));
+    assert!(!requests[4].contains("<machines project="));
     assert!(requests[1].contains("- project://web/release: How releases are cut"));
     assert!(requests[2].contains("## Project shop"));
     assert!(!requests[4].contains("## Project"));

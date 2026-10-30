@@ -180,9 +180,11 @@ async fn an_acp_draft_attaches_what_its_agent_takes() {
             .check("a.png", "image", "image/png", 10, None)
             .is_err()
     );
-    // An agent that never started there takes nothing yet.
+    // An agent that never started there takes nothing inline yet: a file
+    // still goes up, as a file.
     app.agents[1].runtimes[0].input_media.clear();
-    assert!(!app.attachments_offered());
+    assert!(app.attachments_offered());
+    assert_eq!(app.accepted_media().expect("the agent").kinds(), "");
 }
 
 /// The text of each picker row, with its rectangle.

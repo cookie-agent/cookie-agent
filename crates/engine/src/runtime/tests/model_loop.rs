@@ -476,7 +476,7 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
     .await;
     let (mut fixture, selection) = custom_fixture_with_capabilities(
         &endpoint,
-        "---\ndescription: Responses internal output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest internal output.\n",
+        "---\ndescription: Responses internal output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n  attach: deny\n---\nTest internal output.\n",
         Some((
             "approval.md",
             "---\ndescription: Responses approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests.\n",
@@ -604,7 +604,7 @@ async fn responses_message_transport_fields_allow_generated_titles() {
         scripted_server_with_delayed_response(vec![body.clone(), body], usize::MAX).await;
     let (fixture, selection) = custom_fixture_with_capabilities(
         &endpoint,
-        "---\ndescription: Responses title output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest title output.\n",
+        "---\ndescription: Responses title output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { attach: deny }\n---\nTest title output.\n",
         None,
         None,
         true,
@@ -639,9 +639,9 @@ async fn responses_message_transport_fields_allow_generated_titles() {
         .await
         .unwrap();
     assert_eq!(requests.len(), 2);
-    // The built-in body expands `{{default_prompt}}` into the title agent's
-    // system prompt; the request keeps the output contract.
-    assert!(requests[1].contains("You name coding-agent sessions."));
+    // The title agent's body, as the official `title.md` carries it, is
+    // the system prompt; the request keeps the output contract.
+    assert!(requests[1].contains("You name agent sessions."));
     assert!(!requests[1].contains("{{default_prompt}}"));
     assert!(requests[1].contains("Return only a short plain-text session title"));
     fixture.engine.shutdown().await;

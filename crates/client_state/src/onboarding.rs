@@ -1,21 +1,23 @@
 //! The onboarding rules every client shares
-//! (`docs/site/specs/default-models-and-onboarding.md` section 9): the four
-//! steps, which are done, the model lists the pickers show, the variant each
-//! picker preselects, why Finish is disabled, and the summary of a run.
+//! (`docs/site/specs/default-models-and-onboarding.md` section 9, and
+//! `docs/site/specs/machines-on-demand.md` section 2.2): the four steps,
+//! which are done, the model lists the pickers show, the variant each picker
+//! preselects, why Finish is disabled, and the summary of a run.
 
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, ModelKey, OnboardingFileAction, OnboardingKitFile,
-    OnboardingModelInput, OnboardingModelTable, OnboardingRequirement, OnboardingRunResult,
-    OnboardingStatus, ProviderId, VariantId,
+    AvailableModelDescriptor, ModelKey, OnboardingModelInput, OnboardingModelTable,
+    OnboardingRequirement, OnboardingRunResult, OnboardingStatus, ProviderId, VariantId,
 };
 
-/// The steps of onboarding, in order.
+/// The steps of onboarding, in order. The small and utility models are
+/// optional: agents that name them fall back to the next model of their
+/// list.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum OnboardingStep {
     Provider,
     DefaultModel,
     SmallModel,
-    Kit,
+    UtilityModel,
 }
 
 impl OnboardingStep {
@@ -23,7 +25,7 @@ impl OnboardingStep {
         Self::Provider,
         Self::DefaultModel,
         Self::SmallModel,
-        Self::Kit,
+        Self::UtilityModel,
     ];
 
     #[must_use]
@@ -32,21 +34,27 @@ impl OnboardingStep {
             Self::Provider => "Provider",
             Self::DefaultModel => "Default model",
             Self::SmallModel => "Small model",
-            Self::Kit => "Starter kit",
+            Self::UtilityModel => "Utility model",
         }
     }
 
-    /// Whether the step is done for `status`; the kit step is optional and
-    /// never required.
+    /// Whether the step is done for `status`: a required step when the
+    /// daemon no longer misses it, an optional one once its model is set.
     #[must_use]
     pub fn done(self, status: &OnboardingStatus) -> bool {
         let missing = |requirement| status.missing.contains(&requirement);
         match self {
             Self::Provider => !missing(OnboardingRequirement::Provider),
             Self::DefaultModel => !missing(OnboardingRequirement::DefaultModel),
-            Self::SmallModel => !missing(OnboardingRequirement::SmallModel),
-            Self::Kit => false,
+            Self::SmallModel => status.small_model.is_some(),
+            Self::UtilityModel => status.utility_model.is_some(),
         }
+    }
+
+    /// Whether the daemon needs the step done to be set up.
+    #[must_use]
+    pub const fn required(self) -> bool {
+        matches!(self, Self::Provider | Self::DefaultModel)
     }
 
     #[must_use]
@@ -67,13 +75,13 @@ impl OnboardingStep {
     }
 }
 
-/// The step to open on: the first required step not done, else the kit.
+/// The step to open on: the first step not done, else the last.
 #[must_use]
 pub fn first_step(status: &OnboardingStatus) -> OnboardingStep {
     OnboardingStep::ALL
         .into_iter()
-        .find(|step| *step != OnboardingStep::Kit && !step.done(status))
-        .unwrap_or(OnboardingStep::Kit)
+        .find(|step| !step.done(status))
+        .unwrap_or(OnboardingStep::UtilityModel)
 }
 
 /// What a requirement asks for, as a phrase.
@@ -83,6 +91,7 @@ pub fn requirement_label(requirement: OnboardingRequirement) -> &'static str {
         OnboardingRequirement::Provider => "connect a provider",
         OnboardingRequirement::DefaultModel => "choose a default model",
         OnboardingRequirement::SmallModel => "choose a small model",
+        OnboardingRequirement::DefaultAgent => "fetch the official agents",
         OnboardingRequirement::Unknown => "finish what the daemon still needs",
     }
 }
@@ -90,21 +99,20 @@ pub fn requirement_label(requirement: OnboardingRequirement) -> &'static str {
 /// Why Finish is disabled, given what the daemon still misses once the
 /// client's own choices are applied: `None` when it can run.
 ///
-/// `chosen_default` and `chosen_small` say whether the client has chosen a
-/// model the run will set, which answers that requirement.
+/// `chosen_default` says whether the client has chosen a default model the
+/// run will set. The run fetches the official agents itself, so a missing
+/// default agent never holds Finish back.
 #[must_use]
-pub fn finish_refusal(
-    status: &OnboardingStatus,
-    chosen_default: bool,
-    chosen_small: bool,
-) -> Option<String> {
+pub fn finish_refusal(status: &OnboardingStatus, chosen_default: bool) -> Option<String> {
     let remaining = status
         .missing
         .iter()
         .copied()
         .filter(|requirement| match requirement {
             OnboardingRequirement::DefaultModel => !chosen_default,
-            OnboardingRequirement::SmallModel => !chosen_small,
+            // Not required since client protocol 1.56.0; an older daemon
+            // that misses it is told by the run.
+            OnboardingRequirement::SmallModel | OnboardingRequirement::DefaultAgent => false,
             _ => true,
         })
         .map(requirement_label)
@@ -187,11 +195,18 @@ pub fn default_model_variant(model: &AvailableModelDescriptor) -> Option<Variant
         .or_else(|| variants(model).into_iter().next())
 }
 
-/// The variant the small-model picker preselects: the first the model
+/// The variant the small-model picker preselects: the model's own default,
+/// as for the default model; subagents that carry out work run on it.
+#[must_use]
+pub fn small_model_variant(model: &AvailableModelDescriptor) -> Option<VariantId> {
+    default_model_variant(model)
+}
+
+/// The variant the utility-model picker preselects: the first the model
 /// lists. Models list variants in increasing effort, so it is the cheapest;
 /// no variant name is assumed.
 #[must_use]
-pub fn small_model_variant(model: &AvailableModelDescriptor) -> Option<VariantId> {
+pub fn utility_model_variant(model: &AvailableModelDescriptor) -> Option<VariantId> {
     variants(model).into_iter().next()
 }
 
@@ -250,16 +265,6 @@ pub fn skill_origin(skill: &cookie_agent_protocol::SkillDescriptor) -> String {
     }
 }
 
-/// A downloaded kit archive as `onboarding.preview` and `onboarding.run`
-/// take it.
-#[must_use]
-pub fn archive_source(bytes: &[u8]) -> cookie_agent_protocol::OnboardingKitSource {
-    use base64::Engine as _;
-    cookie_agent_protocol::OnboardingKitSource::Archive {
-        data: base64::engine::general_purpose::STANDARD.encode(bytes),
-    }
-}
-
 /// A model value as a short label: `provider/model` or
 /// `provider/model (variant)`.
 #[must_use]
@@ -275,17 +280,6 @@ pub fn model_label(model: &cookie_agent_protocol::OnboardingModel) -> String {
     }
 }
 
-/// How a kit file's action reads in the kit step.
-#[must_use]
-pub fn kit_file_status(file: &OnboardingKitFile) -> &'static str {
-    match file.action {
-        OnboardingFileAction::Write => "new",
-        OnboardingFileAction::Skip => "same as yours (skipped)",
-        OnboardingFileAction::WriteNew => "differs → written as .new",
-        OnboardingFileAction::Unknown => "changed by a newer daemon",
-    }
-}
-
 /// The lines of a run's summary.
 #[must_use]
 pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
@@ -294,6 +288,7 @@ pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
         let value = match setting.as_str() {
             "default_model" => result.status.default_model.as_ref(),
             "small_model" => result.status.small_model.as_ref(),
+            "utility_model" => result.status.utility_model.as_ref(),
             _ => None,
         };
         lines.push(match value {
@@ -301,19 +296,6 @@ pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
             None => format!("Set {setting}"),
         });
     }
-    lines.extend(result.written.iter().map(|path| format!("Wrote {path}")));
-    lines.extend(
-        result
-            .written_new
-            .iter()
-            .map(|path| format!("Kept your {path}; the kit's version is {path}.new")),
-    );
-    lines.extend(
-        result
-            .skipped
-            .iter()
-            .map(|path| format!("Skipped {path} (same as yours)")),
-    );
     if lines.is_empty() {
         lines.push("Nothing to change.".into());
     }
@@ -328,7 +310,7 @@ mod tests {
 
     use super::{
         OnboardingStep, finish_refusal, first_step, model_groups, model_input, parse_model_flag,
-        small_model_variant,
+        small_model_variant, utility_model_variant,
     };
 
     fn status(missing: &[OnboardingRequirement]) -> OnboardingStatus {
@@ -338,6 +320,7 @@ mod tests {
             providers_connected: Vec::new(),
             default_model: None,
             small_model: None,
+            utility_model: None,
         }
     }
 
@@ -364,55 +347,72 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_opens_on_the_first_required_step_left() {
+    fn the_panel_opens_on_the_first_step_left() {
         use OnboardingRequirement::*;
         assert_eq!(
             first_step(&status(&[Provider, DefaultModel])),
             OnboardingStep::Provider
         );
-        assert_eq!(
-            first_step(&status(&[SmallModel])),
-            OnboardingStep::SmallModel
-        );
-        assert_eq!(first_step(&status(&[])), OnboardingStep::Kit);
+        // The optional models are left while unset.
+        assert_eq!(first_step(&status(&[])), OnboardingStep::SmallModel);
+        let chosen = |model: &str| {
+            Some(cookie_agent_protocol::OnboardingModel {
+                model: model.parse().unwrap(),
+                variant: None,
+            })
+        };
+        let all_set = OnboardingStatus {
+            small_model: chosen("a/small"),
+            utility_model: chosen("a/utility"),
+            ..status(&[])
+        };
+        assert_eq!(first_step(&all_set), OnboardingStep::UtilityModel);
         assert_eq!(
             OnboardingStep::Provider.next(),
             Some(OnboardingStep::DefaultModel)
         );
-        assert_eq!(OnboardingStep::Kit.next(), None);
+        assert_eq!(OnboardingStep::UtilityModel.next(), None);
         assert_eq!(OnboardingStep::Provider.previous(), None);
+        assert!(OnboardingStep::DefaultModel.required());
+        assert!(!OnboardingStep::SmallModel.required());
+        assert!(!OnboardingStep::UtilityModel.required());
     }
 
     #[test]
     fn finish_says_what_is_left_after_the_client_s_choices() {
         use OnboardingRequirement::*;
-        let missing = status(&[Provider, DefaultModel, SmallModel]);
         assert_eq!(
-            finish_refusal(&missing, true, true).as_deref(),
+            finish_refusal(&status(&[Provider, DefaultModel]), true).as_deref(),
             Some("Connect a provider first.")
         );
         assert_eq!(
-            finish_refusal(&status(&[DefaultModel, SmallModel]), true, false).as_deref(),
-            Some("Choose a small model first.")
+            finish_refusal(&status(&[DefaultModel]), false).as_deref(),
+            Some("Choose a default model first.")
         );
+        // The run fetches the official agents; an older daemon's small
+        // model is never required here.
         assert_eq!(
-            finish_refusal(&status(&[DefaultModel, SmallModel]), true, true),
+            finish_refusal(&status(&[DefaultModel, DefaultAgent, SmallModel]), true),
             None
         );
     }
 
     #[test]
-    fn the_small_model_preselects_the_first_listed_variant() {
+    fn the_utility_model_preselects_the_first_listed_variant() {
         let listed = model("a/m", &["low", "medium", "high"], Some("medium"));
         assert_eq!(
-            small_model_variant(&listed).map(|variant| variant.to_string()),
+            utility_model_variant(&listed).map(|variant| variant.to_string()),
             Some("low".into())
+        );
+        assert_eq!(
+            small_model_variant(&listed).map(|variant| variant.to_string()),
+            Some("medium".into())
         );
         assert_eq!(
             super::default_model_variant(&listed).map(|variant| variant.to_string()),
             Some("medium".into())
         );
-        assert_eq!(small_model_variant(&model("a/plain", &[], None)), None);
+        assert_eq!(utility_model_variant(&model("a/plain", &[], None)), None);
     }
 
     #[test]

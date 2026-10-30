@@ -1567,33 +1567,51 @@ fn user_text(input: &str) -> UserMessage {
 }
 
 /// A stored user input for a live request. Text parts stay as they are, and
-/// file parts become files from the tree's store the way tool-emitted user
-/// messages do, with the same note standing in for a missing artifact. A part
-/// of a kind this build does not know never reaches a model.
+/// each file part becomes its label (`[file report.zip, 3.2 MB, artifact
+/// 5f2c81d0]`), which names it for `transfer`, then the file from the
+/// tree's store the way tool-emitted user messages do, with the same note
+/// standing in for a missing artifact. A `file` upload is its label alone.
+/// A part of a kind this build does not know never reaches a model.
 fn user_content(
     content: &UserContent,
     store: SessionArtifacts<'_>,
 ) -> Result<UserMessage, HistoryError> {
-    let parts = content
-        .parts()
-        .iter()
-        .filter_map(|part| match part {
+    let mut parts = Vec::new();
+    for part in content.parts() {
+        match part {
             Open::Known(UserContentPart::Text { text }) => {
-                Some(Ok(InputPart::Text(TextPart::new(text))))
+                parts.push(InputPart::Text(TextPart::new(text)));
             }
             Open::Known(UserContentPart::File { artifact }) => {
-                Some(user_file_attachment(artifact).and_then(|attachment| {
-                    attachment_file(&attachment, store).map(|file| match file {
-                        Ok(file) => InputPart::File(file),
-                        Err(note) => InputPart::Text(TextPart::new(note)),
-                    })
-                }))
+                parts.push(InputPart::Text(TextPart::new(file_label(artifact))));
+                if artifact.media_type == cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE {
+                    continue;
+                }
+                let attachment = user_file_attachment(artifact)?;
+                parts.push(match attachment_file(&attachment, store)? {
+                    Ok(file) => InputPart::File(file),
+                    Err(note) => InputPart::Text(TextPart::new(note)),
+                });
             }
-            Open::Unknown { .. } => None,
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            Open::Unknown { .. } => {}
+        }
+    }
     Ok(UserMessage::new(parts))
 }
+
+/// How the model sees a user's file, named for `transfer`: its name, size,
+/// and the first hex digits of its digest.
+pub(crate) fn file_label(artifact: &ArtifactRef) -> String {
+    let digest = &artifact.sha256[..artifact.sha256.len().min(FILE_LABEL_DIGEST_CHARS)];
+    let size = cookie_agent_protocol::human_bytes(artifact.byte_length);
+    match &artifact.filename {
+        Some(name) => format!("[file {name}, {size}, artifact {digest}]"),
+        None => format!("[file, {size}, artifact {digest}]"),
+    }
+}
+
+/// Hex digits of the digest a file label shows.
+pub(crate) const FILE_LABEL_DIGEST_CHARS: usize = 8;
 
 /// A user file part as the attachment the artifact store reads.
 fn user_file_attachment(artifact: &ArtifactRef) -> Result<ToolAttachment, HistoryError> {

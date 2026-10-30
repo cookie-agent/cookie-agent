@@ -116,6 +116,15 @@ mod unix {
             }
         }
 
+        /// The location the route led to at preparation, with every link
+        /// expanded.
+        pub fn resolved_path(&self) -> &Path {
+            match self {
+                Self::Existing(target) => &target.resolved,
+                Self::Absent(target) => &target.resolved,
+            }
+        }
+
         /// Identifies the resolved location for approval bindings.
         pub fn binding_bytes(&self) -> Vec<u8> {
             match self {
@@ -649,6 +658,15 @@ mod windows {
             match self {
                 Self::Existing(target) => &target.display_path,
                 Self::Absent(target) => &target.display_path,
+            }
+        }
+
+        /// The location the route led to at preparation, with every link
+        /// expanded.
+        pub fn resolved_path(&self) -> &Path {
+            match self {
+                Self::Existing(target) => &target.execution_path,
+                Self::Absent(target) => &target.execution_path,
             }
         }
 

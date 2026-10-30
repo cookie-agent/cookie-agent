@@ -2112,6 +2112,8 @@ fn agent_document(
 ) -> cookie_agent_config::AgentDocument {
     let digest = cookie_agent_models::Sha256Digest::new("0".repeat(64)).expect("digest");
     cookie_agent_config::AgentDocument {
+        official: false,
+        official_version: None,
         id: AgentId::new(id).expect("agent ID"),
         frontmatter: cookie_agent_config::AgentFrontmatter {
             description: "Test agent".into(),
@@ -2169,14 +2171,15 @@ fn mode_defaults_follow_the_agent_mode() {
         |action: &str, resource: &str, effect| (action.to_owned(), resource.to_owned(), effect);
     let allow = PermissionEffect::Allow;
     let ask = PermissionEffect::Ask;
-    // Memory's and cron's defaults depend on delegation too; they have
-    // their own tests.
+    // Memory's, cron's, and attach's defaults depend on delegation too;
+    // they have their own tests.
     let mode_rules = |mode| {
         let mut rules = root_rules(&agent_document("worker", mode, &[]));
         rules.retain(|rule| {
             rule.action != PermissionAction::MEMORY
                 && rule.action != PermissionAction::MEMORY_WRITE
                 && rule.action != PermissionAction::CRON
+                && rule.action != PermissionAction::ATTACH
         });
         rule_triples(&rules)
     };
@@ -2190,6 +2193,36 @@ fn mode_defaults_follow_the_agent_mode() {
     assert_eq!(mode_rules(AgentMode::Subagent), [triple("mcp", "*", ask)]);
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(rules.is_empty());
+}
+
+#[test]
+fn root_runs_attach_machines_by_default_and_delegated_runs_do_not() {
+    let attach = |rules: Vec<PermissionRule>| {
+        rule_triples(
+            &rules
+                .into_iter()
+                .filter(|rule| rule.action == PermissionAction::ATTACH)
+                .collect::<Vec<_>>(),
+        )
+    };
+    for mode in [AgentMode::Primary, AgentMode::All] {
+        assert_eq!(
+            attach(root_rules(&agent_document("worker", mode, &[]))),
+            [("attach".to_owned(), "*".to_owned(), PermissionEffect::Allow)]
+        );
+    }
+    assert!(
+        attach(crate::permissions::run_default_rules(AgentMode::All, true)).is_empty(),
+        "a delegated run attaches only when its document grants `attach`"
+    );
+    assert!(
+        attach(root_rules(&agent_document(
+            "worker",
+            AgentMode::Internal,
+            &[]
+        )))
+        .is_empty()
+    );
 }
 
 #[test]

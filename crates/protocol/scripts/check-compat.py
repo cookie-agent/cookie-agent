@@ -306,12 +306,22 @@ def normalized_type(node):
 
 
 def enum_values(node):
-    """The values of an enum schema: `enum`, or a `oneOf` of `const`s."""
+    """The values of an enum schema: `enum`, or a `oneOf` of `const`s and
+    `enum`s (an open enum's documented values beside its fallback)."""
     if "enum" in node:
         return {json.dumps(value, sort_keys=True) for value in node["enum"]}
     variants = node.get("oneOf")
-    if variants and all(isinstance(variant, dict) and "const" in variant for variant in variants):
-        return {json.dumps(variant["const"], sort_keys=True) for variant in variants}
+    if variants and all(
+        isinstance(variant, dict) and ("const" in variant or "enum" in variant)
+        for variant in variants
+    ):
+        values = set()
+        for variant in variants:
+            if "const" in variant:
+                values.add(json.dumps(variant["const"], sort_keys=True))
+            else:
+                values.update(json.dumps(value, sort_keys=True) for value in variant["enum"])
+        return values
     return None
 
 

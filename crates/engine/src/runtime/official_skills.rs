@@ -100,7 +100,7 @@ impl OfficialSkillsState {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(super) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -200,7 +200,9 @@ fn versions(skills: impl IntoIterator<Item = IndexSkill>) -> BTreeMap<String, St
 }
 
 /// Runs the disk work `work` off the async workers.
-async fn local<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+pub(super) async fn local<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
     super::blocking_io::run(work)
         .await
         .map_err(|error| error.to_string())
@@ -213,13 +215,7 @@ async fn refresh(url: &str, root: &Path) -> OfficialSkillsReport {
         let root = root.to_owned();
         local(move || read_kept(&root)).await.unwrap_or_default()
     };
-    let client = match reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .user_agent(concat!("cookie-agent/", env!("CARGO_PKG_VERSION")))
-        .build()
-    {
+    let client = match source_client() {
         Ok(client) => client,
         Err(error) => {
             report.error = Some(error.to_string());
@@ -532,7 +528,21 @@ fn remove_unlisted(directory: &Path, listed: &BTreeSet<PathBuf>, removed: &mut b
     }
 }
 
-async fn fetch(client: &reqwest::Client, url: &str, limit: usize) -> Result<Vec<u8>, String> {
+/// The HTTP client official sources are fetched with.
+pub(super) fn source_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .user_agent(concat!("cookie-agent/", env!("CARGO_PKG_VERSION")))
+        .build()
+}
+
+pub(super) async fn fetch(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
     let mut response = client
         .get(url)
         .send()
@@ -561,7 +571,7 @@ async fn fetch(client: &reqwest::Client, url: &str, limit: usize) -> Result<Vec<
     Ok(bytes)
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub(super) fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -572,7 +582,7 @@ const REMOVING: &str = "removing";
 
 /// Writes `bytes` to `path` through a temporary file beside it and a
 /// rename, creating the directories on the way.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(super) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent directory"))?;
@@ -712,4 +722,4 @@ pub fn version_satisfies(range: &str, version: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

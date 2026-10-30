@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/close`, and the result of `fs/write_open`.",
+  "properties": {
+    "handle": {
+      "description": "A route or an open handle.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "handle"
+  ],
+  "title": "FsHandle",
+  "type": "object"
+}

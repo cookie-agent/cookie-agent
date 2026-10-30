@@ -558,29 +558,6 @@ impl Selection {
         }
         (self.global, requests)
     }
-
-    /// The note that tools get prefixes, when two or more workspaces are
-    /// selected: each workspace attachment then publishes its tools as
-    /// `<attachment>_<tool>`, the attachment named after its runtime and
-    /// the workspace's last component.
-    pub fn prefix_note(&self, cards: &[Card]) -> Option<String> {
-        let (_, requests) = self.requests(cards);
-        let workspaces = requests
-            .iter()
-            .filter_map(|request| {
-                Some((request.runtime_id.as_str(), request.workspace.as_deref()?))
-            })
-            .collect::<Vec<_>>();
-        if workspaces.len() < 2 {
-            return None;
-        }
-        let (runtime_id, workspace) = workspaces[0];
-        Some(format!(
-            "With {} workspaces, their tools get prefixes: bash becomes {}_bash.",
-            workspaces.len(),
-            attachment_name(runtime_id, workspace)
-        ))
-    }
 }
 
 /// The card field a refusal of a new session's runtimes names, among the
@@ -603,37 +580,6 @@ pub fn failing_request(message: &str, requests: &[KeyedRequest]) -> Option<(Stri
         })
         .or_else(|| named.first())
         .map(|(key, index, _)| (key.clone(), *index))
-}
-
-/// The attachment name a coding runtime gives a workspace, as
-/// `cookie_agent_runtime_api::coding_attachment_name` makes it:
-/// `<runtime>_<last component>`, lowercased, every other character `_`,
-/// runs of `_` collapsed, at most 32 bytes, no trailing `_`.
-pub fn attachment_name(runtime_id: &str, workspace: &str) -> String {
-    let trimmed = workspace.trim().trim_end_matches(['/', '\\']);
-    let basename = trimmed
-        .rsplit(['/', '\\'])
-        .next()
-        .filter(|name| !name.is_empty() && *name != "~")
-        .unwrap_or_default();
-    let mut name = String::new();
-    for character in format!("{runtime_id}_{basename}").chars() {
-        let character = character.to_ascii_lowercase();
-        let character = if character.is_ascii_lowercase() || character.is_ascii_digit() {
-            character
-        } else {
-            '_'
-        };
-        if character == '_' && name.ends_with('_') {
-            continue;
-        }
-        if name.len() == 32 {
-            break;
-        }
-        name.push(character);
-    }
-    name.truncate(name.trim_end_matches('_').len());
-    name
 }
 
 /// The workspaces a field for `runtime_id` suggests, shown under the
@@ -960,32 +906,6 @@ mod tests {
         assert_eq!(
             stale.blocker(&offline).as_deref(),
             Some("local/coding is offline")
-        );
-    }
-
-    #[test]
-    fn two_workspaces_note_the_tool_prefixes() {
-        let cards = cards(&sample());
-        let mut selection = Selection::default();
-        selection.set_workspace(card(&cards, "local/coding"), 0, "~/My Web App/".into());
-        assert_eq!(selection.prefix_note(&cards), None);
-        selection.toggle(card(&cards, "gpu/coding"));
-        selection.set_workspace(card(&cards, "gpu/coding"), 0, "/srv/api".into());
-        assert_eq!(
-            selection.prefix_note(&cards).as_deref(),
-            Some(
-                "With 2 workspaces, their tools get prefixes: bash becomes local_my_web_app_bash."
-            )
-        );
-        assert_eq!(attachment_name("local", "/"), "local");
-        assert_eq!(attachment_name("local", "~"), "local");
-        assert_eq!(
-            attachment_name("labpc", r"C:\Users\Ada\Repo-1"),
-            "labpc_repo_1"
-        );
-        assert_eq!(
-            attachment_name("local", &format!("/x/{}", "a".repeat(40))).len(),
-            32
         );
     }
 

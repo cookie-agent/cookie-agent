@@ -102,6 +102,8 @@ fn install_draft_catalog(app: &mut App) {
     app.agents = [None, Some("review".to_owned())]
         .into_iter()
         .map(|preset| AgentDescriptor {
+            official: false,
+            official_version: None,
             id: selection.agent.clone(),
             preset,
             description: "Primary test agent".into(),

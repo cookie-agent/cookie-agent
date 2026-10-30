@@ -282,9 +282,15 @@ impl Engine {
 
     /// The attachments a new session gets for `runtimes`, starting the
     /// instances that are not running.
+    ///
+    /// `acp`: the session runs an ACP agent, whose bridge offers cookie's
+    /// tools under their attachments' names and which takes the other
+    /// workspaces of its machine as additional directories, so the
+    /// one-attachment-per-tool-and-machine rule does not apply.
     pub(crate) async fn resolve_session_runtimes(
         &self,
         runtimes: &SessionRuntimes,
+        acp: bool,
     ) -> Result<Vec<RuntimeAttachment>, EngineError> {
         let mut attachments = Vec::new();
         if runtimes.global {
@@ -307,6 +313,10 @@ impl Engine {
                 }
             },
             Some(requests) => {
+                // The session does not exist yet; tool lists do not depend
+                // on which session asks.
+                let context =
+                    cookie_agent_runtime_api::SessionToolContext::new(SessionId::new_v7());
                 for request in requests {
                     let instance = self
                         .ensure_runtime(
@@ -315,6 +325,9 @@ impl Engine {
                             request.workspace.as_deref(),
                         )
                         .await?;
+                    if !acp {
+                        self.refuse_overlap_with(&attachments, &instance, &context)?;
+                    }
                     push_instance(&mut attachments, &instance)?;
                 }
             }
@@ -493,29 +506,7 @@ impl Engine {
         if self.inner.store.get(session)?.status == SessionStatus::Running {
             return Err(EngineError::SessionRunning(session));
         }
-        // A session runs its ACP agent on the one attached runtime that
-        // offers it, so a second such runtime is refused.
-        if let Some(offers) = self.session_acp_offers(session)? {
-            let attached = self.session_runtime_ids(session)?;
-            let offering = offers
-                .runtimes()
-                .into_iter()
-                .filter(|offering| attached.contains(offering))
-                .collect::<Vec<_>>();
-            if offers
-                .runtimes()
-                .iter()
-                .any(|offering| offering.as_str() == runtime_id)
-                && let Some(other) = offering.iter().find(|other| other.as_str() != runtime_id)
-            {
-                return Err(EngineError::Runtime(format!(
-                    "runtime `{runtime_id}` offers ACP agent `{}`, which this session runs on \
-                     runtime `{other}`; a session runs it on one runtime, so detach `{other}` \
-                     first",
-                    offers.id
-                )));
-            }
-        }
+        self.refuse_second_acp_runtime(session, runtime_id)?;
         let instance = self
             .ensure_runtime(runtime_id, capability, workspace.as_deref())
             .await?;
@@ -523,6 +514,9 @@ impl Engine {
             self.retry_global_mcp();
         } else if let Some(connection) = instance.connection() {
             connection.retry_failed_mcp();
+        }
+        if self.session_acp_offers(session)?.is_none() {
+            self.refuse_overlap(session, &instance)?;
         }
         self.on_actor(session, move |engine| {
             let projection = engine.inner.store.get(session)?;

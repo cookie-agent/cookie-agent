@@ -30,6 +30,14 @@ use cookie_agent_runtime_api::media::mime_type_matches;
 /// [image omitted: provider/model does not accept images in tool results (screenshot.png, 471 KB)]
 /// ```
 ///
+/// A user's file has its label just before it (`[file screenshot.png, 471
+/// KB, artifact 5f2c81d0]`); the reason joins the label instead, so the
+/// model can still pass the file on with `transfer`:
+///
+/// ```text
+/// [file screenshot.png, 471 KB, artifact 5f2c81d0; not shown: provider/model does not accept images]
+/// ```
+///
 /// It is a pure function of the history and the model, so a replay of the
 /// same history to the same model sends the same request and keeps the
 /// cached prompt prefix. It runs before [`elide_excess_media`], which then
@@ -61,6 +69,9 @@ pub(crate) fn fit_media(
             )
         })
         .collect::<Vec<_>>();
+    // The reason of each user input placeholder, which joins the file's
+    // label when one comes just before it.
+    let mut reasons = std::collections::HashMap::new();
     visit_media_parts(history, |_, kind, slot| {
         let (file, accepted, in_tool_result) = match &slot {
             MediaSlot::Input(oven_sdk::InputPart::File(file))
@@ -68,11 +79,13 @@ pub(crate) fn fit_media(
             MediaSlot::Tool(oven_sdk::ContentValue::File(file)) => (file, &tool_result, true),
             _ => return,
         };
-        let Some(placeholder) = misfit(file, kind, model, accepted, in_tool_result) else {
+        let Some((placeholder, reason)) = misfit(file, kind, model, accepted, in_tool_result)
+        else {
             return;
         };
         match slot {
             MediaSlot::Input(part) => {
+                reasons.insert(placeholder.clone(), reason);
                 *part = oven_sdk::InputPart::Text(oven_sdk::TextPart::new(placeholder));
             }
             MediaSlot::Assistant(part) => {
@@ -81,16 +94,47 @@ pub(crate) fn fit_media(
             MediaSlot::Tool(value) => *value = oven_sdk::ContentValue::Text(placeholder),
         }
     });
+    if reasons.is_empty() {
+        return;
+    }
+    for turn in history {
+        let oven_sdk::HistoryTurn::User(message) = turn else {
+            continue;
+        };
+        let mut parts = Vec::with_capacity(message.content.len());
+        for part in std::mem::take(&mut message.content) {
+            if let oven_sdk::InputPart::Text(text) = &part
+                && let Some(reason) = reasons.get(&text.text)
+                && let Some(oven_sdk::InputPart::Text(label)) = parts.last_mut()
+                && is_file_label(&label.text)
+            {
+                let joined = format!(
+                    "{}; not shown: {reason}]",
+                    &label.text[..label.text.len() - 1]
+                );
+                *label = oven_sdk::TextPart::new(joined);
+                continue;
+            }
+            parts.push(part);
+        }
+        message.content = parts;
+    }
 }
 
-/// The placeholder of a file `model` does not take, or `None` when it fits.
+/// Whether `text` is a user file's label, as the history writes it.
+fn is_file_label(text: &str) -> bool {
+    text.starts_with("[file") && text.ends_with(']') && text.contains(", artifact ")
+}
+
+/// The placeholder of a file `model` does not take, and the reason it
+/// names; `None` when it fits.
 fn misfit(
     file: &oven_sdk::FilePart,
     kind: CapabilityMediaKind,
     model: &ModelKey,
     accepted: &[(&str, &[String], u64)],
     in_tool_result: bool,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let label = media_label(kind);
     let size = match &file.source {
         oven_sdk::FileSource::Bytes(bytes) => Some(bytes.len() as u64),
@@ -123,7 +167,7 @@ fn misfit(
         (None, Some(size)) => format!(" ({})", human_bytes(size)),
         (None, None) => String::new(),
     };
-    Some(format!("[{label} omitted: {reason}{about}]"))
+    Some((format!("[{label} omitted: {reason}{about}]"), reason))
 }
 
 const fn kind_label(kind: CapabilityMediaKind) -> &'static str {

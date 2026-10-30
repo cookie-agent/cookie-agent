@@ -52,7 +52,6 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::CronSession(_) => "cron session",
         PointerTarget::OnboardingNotice(_) => "onboarding notice",
         PointerTarget::OnboardingTab(_) => "onboarding tab",
-        PointerTarget::OnboardingRow(_) => "onboarding row",
         PointerTarget::OnboardingAction(_) => "onboarding action",
         PointerTarget::ConfirmButton(_) => "confirm button",
         PointerTarget::RestartChoice(_) => "restart choice",
@@ -473,15 +472,13 @@ async fn every_clickable_element_hovers_visibly() {
     app.onboarding.status = Some(crate::ui::app::onboarding::sample_status(&[
         cookie_agent_protocol::OnboardingRequirement::Provider,
         cookie_agent_protocol::OnboardingRequirement::DefaultModel,
-        cookie_agent_protocol::OnboardingRequirement::SmallModel,
     ]));
     seen.extend(sweep(&mut app, "onboarding notice"));
     app.activate_onboarding_action(crate::ui::app::onboarding::OnboardingAction::SetUp);
     assert_eq!(app.modal, Modal::Onboarding);
     seen.extend(sweep(&mut app, "onboarding panel"));
-    app.onboarding.step = Some(cookie_agent_client_state::onboarding::OnboardingStep::Kit);
-    app.onboarding.preview = Some(Ok(crate::ui::app::onboarding::sample_preview()));
-    seen.extend(sweep(&mut app, "onboarding kit step"));
+    app.onboarding.step = Some(cookie_agent_client_state::onboarding::OnboardingStep::UtilityModel);
+    seen.extend(sweep(&mut app, "onboarding utility model step"));
     app.onboarding = Default::default();
     app.modal = Modal::None;
 
@@ -535,7 +532,6 @@ async fn every_clickable_element_hovers_visibly() {
         "cron session",
         "onboarding notice",
         "onboarding tab",
-        "onboarding row",
         "onboarding action",
         "confirm button",
         "restart choice",

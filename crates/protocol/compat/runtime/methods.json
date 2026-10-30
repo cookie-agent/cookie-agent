@@ -98,6 +98,70 @@
       "result": null
     },
     {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/close",
+      "params": "FsHandle",
+      "params_role": "information",
+      "result": "Empty"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/copy",
+      "params": "FsCopyParams",
+      "params_role": "information",
+      "result": "FsWritten"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/prepare",
+      "params": "FsPrepareParams",
+      "params_role": "information",
+      "result": "FsPrepareResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/read_chunk",
+      "params": "FsReadChunkParams",
+      "params_role": "information",
+      "result": "FsReadChunkResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/read_open",
+      "params": "FsReadOpenParams",
+      "params_role": "information",
+      "result": "FsReadOpenResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/write_chunk",
+      "params": "FsWriteChunkParams",
+      "params_role": "information",
+      "result": "Empty"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/write_commit",
+      "params": "FsWriteCommitParams",
+      "params_role": "information",
+      "result": "FsWritten"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "fs/write_open",
+      "params": "FsWriteOpenParams",
+      "params_role": "information",
+      "result": "FsHandle"
+    },
+    {
       "direction": "to_daemon",
       "kind": "notification",
       "method": "mcp/changed",

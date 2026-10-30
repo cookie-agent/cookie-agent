@@ -90,22 +90,3 @@ pub fn identify(
     )
     .map(|(prepared, _)| prepared)
 }
-
-/// A `.tar.gz` starter kit of `files` (path, bytes) with a `manifest.json`
-/// listing them, packed as the release workflow packs one, for tests of
-/// onboarding outside the engine.
-#[must_use]
-pub fn pack_kit(files: &[(&str, &[u8])]) -> Vec<u8> {
-    use sha2::Digest as _;
-    let manifest = serde_json::to_vec(&serde_json::json!({
-        "kit_version": 1,
-        "files": files
-            .iter()
-            .map(|(path, bytes)| ((*path).to_owned(), format!("{:x}", sha2::Sha256::digest(bytes))))
-            .collect::<std::collections::BTreeMap<_, _>>(),
-    }))
-    .expect("a manifest serializes");
-    let mut entries = files.to_vec();
-    entries.push(("manifest.json", &manifest));
-    crate::runtime::onboarding::kit::pack(&entries)
-}

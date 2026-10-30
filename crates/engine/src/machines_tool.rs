@@ -1,0 +1,417 @@
+//! `attach_machine` and `detach_machine`, tools of the `global` runtime
+//! (`docs/site/specs/machines-on-demand.md` section 3): a run attaches a
+//! machine's runtime capability to its own session, or detaches one, under
+//! the `attach` action checked on the target runtime (`attach@<runtime>`)
+//! with the workspace as resource. `transfer` (section 6) copies files
+//! between the machines attached.
+//!
+//! Like the runtimes tool, the provider is built with the `global` runtime,
+//! before the engine exists, and holds the engine through a handle bound
+//! once the engine is made.
+
+use std::sync::{Arc, OnceLock, Weak};
+
+use async_trait::async_trait;
+use cookie_agent_protocol::{
+    ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
+    PreparedBindingLifetime,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolConcurrency,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
+    ToolResultTruncationPolicy, ToolSpec,
+    authoring::{parse_args, prepared_operation, prepared_resource, safe_title, schema},
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::{Engine, runtime::Inner};
+
+mod transfer;
+
+/// The provider's ID.
+pub(crate) const PROVIDER_ID: &str = "builtin.machines";
+
+pub(crate) const ATTACH_MACHINE: &str = "attach_machine";
+pub(crate) const DETACH_MACHINE: &str = "detach_machine";
+pub(crate) use transfer::TRANSFER;
+
+const ATTACH_DESCRIPTION: &str = "Attach a machine to this session: one runtime capability from list_runtimes, written `<runtime id>/<capability name>` (e.g. `labpc/coding`), at `workspace` when the capability takes one. Its tools join this session at once, and the result says where they run: the machine, its home, the workspace, and the workspace's AGENTS.md. A machine offers each tool once: a second directory on a machine already attached is reached by absolute path, or by detaching the first.";
+const DETACH_DESCRIPTION: &str = "Detach a machine's runtime capability from this session, written `<runtime id>/<capability name>` as attach_machine took it. Its tools leave the session; refused while one of its background calls still runs.";
+
+/// `attach_machine`'s arguments.
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AttachArgs {
+    /// `<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`
+    capability: String,
+    /// Directory on that runtime's machine; required when the capability
+    /// takes a workspace
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<String>,
+}
+
+/// `detach_machine`'s arguments.
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DetachArgs {
+    /// `<runtime_id>/<capability_id>`, as attach_machine took it
+    capability: String,
+}
+
+/// The machines tools, holding the engine once it is bound.
+#[derive(Default)]
+pub(crate) struct MachinesTool {
+    engine: OnceLock<Weak<Inner>>,
+}
+
+impl MachinesTool {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Gives the provider its engine. Later calls are ignored.
+    pub(crate) fn bind(&self, engine: &Engine) {
+        let _ = self.engine.set(Arc::downgrade(&engine.inner));
+    }
+
+    fn engine(&self) -> Result<Engine, ToolError> {
+        self.engine
+            .get()
+            .and_then(Weak::upgrade)
+            .map(|inner| Engine { inner })
+            .ok_or_else(|| ToolError::execution("the engine is gone"))
+    }
+
+    /// The group this provider's tools are announced under when deferred.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
+        name: "machines",
+        summary: "The user's machines: attach one to this session to work on it, detach it, or copy files between machines.",
+    };
+
+    pub(crate) fn specs() -> Vec<ToolSpec> {
+        let spec = |name: &str, description: &str, parameters| ToolSpec {
+            background: false,
+            background_default: false,
+            collision: Default::default(),
+            output: Default::default(),
+            // Attachments change one at a time.
+            concurrency: ToolConcurrency::Exclusive,
+            result_truncation: ToolResultTruncationPolicy::OptOut,
+            name: name.into(),
+            permission_name: Some(PermissionAction::ATTACH.as_str().to_owned()),
+            description: description.into(),
+            parameters,
+        };
+        vec![
+            spec(ATTACH_MACHINE, ATTACH_DESCRIPTION, schema::<AttachArgs>()),
+            spec(DETACH_MACHINE, DETACH_DESCRIPTION, schema::<DetachArgs>()),
+            transfer::spec(),
+        ]
+    }
+}
+
+/// The machines tools as the `global` runtime publishes them, for the tool
+/// reference.
+#[must_use]
+pub fn machines_tool_specs() -> Vec<ToolSpec> {
+    MachinesTool::specs()
+}
+
+fn wrong_tool(tool: &str) -> ToolError {
+    ToolError::execution(format!(
+        "the machines provider received another tool, `{tool}`"
+    ))
+}
+
+/// The capability and workspace a call names, checked.
+fn target(
+    capability: &str,
+    workspace: Option<String>,
+) -> Result<crate::DelegatedCapability, ToolError> {
+    crate::runtime::runtime_delegation::parse_capability(capability, workspace)
+        .map_err(ToolError::execution)
+}
+
+#[async_trait]
+impl ToolProvider for MachinesTool {
+    fn provider_id(&self) -> &'static str {
+        PROVIDER_ID
+    }
+
+    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(Self::GROUP)
+    }
+
+    fn tools_for_session(&self, context: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        let mut specs = Self::specs();
+        // `transfer` needs a machine to copy to.
+        if !self
+            .engine()
+            .is_ok_and(|engine| engine.session_takes_transfers(context.session))
+        {
+            specs.retain(|spec| spec.name != TRANSFER);
+        }
+        Ok(specs)
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        match tool_name {
+            ATTACH_MACHINE | DETACH_MACHINE => Ok(Some("attach")),
+            TRANSFER => Ok(Some("write")),
+            other => Err(wrong_tool(other)),
+        }
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        let resource = match name {
+            ATTACH_MACHINE => {
+                let args: AttachArgs = parse_args(ATTACH_MACHINE, arguments.clone())?;
+                args.workspace.unwrap_or_default()
+            }
+            DETACH_MACHINE => {
+                let _: DetachArgs = parse_args(DETACH_MACHINE, arguments.clone())?;
+                String::new()
+            }
+            TRANSFER => {
+                return Ok((
+                    Some("write"),
+                    Some(transfer::permission_resource(arguments)?),
+                ));
+            }
+            other => return Err(wrong_tool(other)),
+        };
+        Ok((Some("attach"), Some(resource)))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        match name {
+            ATTACH_MACHINE => {
+                let args: AttachArgs = parse_args(ATTACH_MACHINE, arguments.clone())?;
+                Ok(match args.workspace {
+                    Some(workspace) => format!("{} at {workspace}", args.capability),
+                    None => args.capability,
+                })
+            }
+            DETACH_MACHINE => {
+                let args: DetachArgs = parse_args(DETACH_MACHINE, arguments.clone())?;
+                Ok(args.capability)
+            }
+            TRANSFER => transfer::display_argument(arguments),
+            other => Err(wrong_tool(other)),
+        }
+    }
+
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        let (title, argument) = match call.name.as_str() {
+            ATTACH_MACHINE => (
+                "Attach machine",
+                self.get_display_argument(ATTACH_MACHINE, &call.arguments)
+                    .unwrap_or_default(),
+            ),
+            DETACH_MACHINE => (
+                "Detach machine",
+                self.get_display_argument(DETACH_MACHINE, &call.arguments)
+                    .unwrap_or_default(),
+            ),
+            TRANSFER => return transfer::presentation(call),
+            other => return cookie_agent_runtime_api::tool_title_only(other),
+        };
+        crate::base_tools::base_presentation(
+            title,
+            cookie_agent_protocol::ToolHint::GENERIC,
+            &argument,
+            Vec::new(),
+        )
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let engine = self.engine()?;
+        if call.name == TRANSFER {
+            return transfer::prepare(engine, ctx, call).await;
+        }
+        let (executor, normalized, label, runtime, operation_name, args_value): (
+            MachinesExecutor,
+            serde_json::Value,
+            String,
+            String,
+            &str,
+            serde_json::Value,
+        ) = match call.name.as_str() {
+            ATTACH_MACHINE => {
+                let args: AttachArgs = parse_args(ATTACH_MACHINE, call.arguments)?;
+                let target = target(&args.capability, args.workspace.clone())?;
+                let normalized = serde_json::to_value(&args)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                (
+                    MachinesExecutor::Attach {
+                        engine,
+                        target: target.clone(),
+                    },
+                    normalized.clone(),
+                    args.workspace.clone().unwrap_or_default(),
+                    target.runtime_id.to_string(),
+                    "attach",
+                    normalized,
+                )
+            }
+            DETACH_MACHINE => {
+                let args: DetachArgs = parse_args(DETACH_MACHINE, call.arguments)?;
+                let target = target(&args.capability, None)?;
+                let normalized = serde_json::to_value(&args)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let workspace = engine
+                    .attachment_of_capability(ctx.session, &target)
+                    .and_then(|attachment| attachment.workspace)
+                    .unwrap_or_default();
+                (
+                    MachinesExecutor::Detach {
+                        engine,
+                        target: target.clone(),
+                    },
+                    normalized.clone(),
+                    workspace,
+                    target.runtime_id.to_string(),
+                    "detach",
+                    normalized,
+                )
+            }
+            other => return Err(wrong_tool(other)),
+        };
+        let resource = prepared_resource(
+            PermissionAction::ATTACH,
+            "workspace",
+            label.as_bytes(),
+            label.as_bytes(),
+            PreparedBindingLifetime::RestartStable,
+            ApprovalResourceSource::PrimaryOperation,
+        )?;
+        let operation = prepared_operation(
+            &call.name,
+            &args_value,
+            vec![(PermissionAction::ATTACH, operation_name)],
+            vec![resource],
+            &ctx.context_bytes(),
+        )?;
+        PreparedTool::new(operation, normalized, None, Box::new(executor))?
+            .with_policy_labels(vec![label])
+            // Checked as `attach@<runtime>`.
+            .map(|prepared| prepared.with_permission_runtimes(vec![runtime]))
+    }
+}
+
+enum MachinesExecutor {
+    Attach {
+        engine: Engine,
+        target: crate::DelegatedCapability,
+    },
+    Detach {
+        engine: Engine,
+        target: crate::DelegatedCapability,
+    },
+}
+
+#[async_trait]
+impl PreparedExecutor for MachinesExecutor {
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolCompletion, ToolError> {
+        let (title, output) = match *self {
+            Self::Attach { engine, target } => {
+                let preset = engine.run_preset(context.run);
+                let attached = engine
+                    .attach_from_run(
+                        context.session,
+                        target.runtime_id.as_str(),
+                        target.capability.as_str(),
+                        target.workspace.clone().map(std::path::PathBuf::from),
+                        preset.as_deref(),
+                    )
+                    .await
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                (
+                    format!("Attached {}/{}", target.runtime_id, target.capability),
+                    attached_text(&attached),
+                )
+            }
+            Self::Detach { engine, target } => {
+                let detached = engine
+                    .detach_from_run(
+                        context.session,
+                        target.runtime_id.as_str(),
+                        target.capability.as_str(),
+                    )
+                    .await
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                (
+                    format!("Detached {}/{}", target.runtime_id, target.capability),
+                    format!(
+                        "Detached `{}/{}` (attachment `{}`{}): its tools have left this session.",
+                        detached.runtime_id,
+                        detached.capability,
+                        detached.name,
+                        detached
+                            .workspace
+                            .as_deref()
+                            .map(|workspace| format!(" at {workspace}"))
+                            .unwrap_or_default()
+                    ),
+                )
+            }
+        };
+        Ok(ToolCompletion::single(ToolResult {
+            title: safe_title(&title),
+            display: crate::base_tools::markdown_display(&output),
+            output,
+            background: None,
+            retained_output: None,
+            metadata: serde_json::json!({}),
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
+        }))
+    }
+}
+
+/// What `attach_machine` returns: where the new tools run, then the
+/// workspace's `AGENTS.md`, which later runs get in their context turn.
+fn attached_text(attached: &crate::runtime::machine_attach::AttachedMachine) -> String {
+    let attachment = &attached.attachment;
+    let mut text = format!(
+        "Attached `{}/{}` as attachment `{}`.",
+        attachment.runtime_id, attachment.capability, attachment.name
+    );
+    if let Some(machine) = &attached.machine {
+        text.push_str(&format!("\nMachine: {machine}"));
+        if let Some(platform) = &attached.platform {
+            text.push_str(&format!(" ({platform})"));
+        }
+    }
+    if let Some(home) = &attached.home {
+        text.push_str(&format!("\nHome: {home}"));
+    }
+    if let Some(workspace) = &attachment.workspace {
+        text.push_str(&format!("\nWorking directory: {workspace}"));
+    }
+    text.push_str("\nIts tools are available now.");
+    for entry in &attached.agent_md {
+        text.push_str(&format!(
+            "\n\n<contents from=\"{}\">\n{}\n</contents>",
+            entry.source, entry.content
+        ));
+    }
+    text
+}

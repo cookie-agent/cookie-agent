@@ -271,7 +271,7 @@ impl Workspace {
             model: model.key.clone(),
             variant: model.default_variant.clone(),
         });
-        match project_agent(&info, &agents, live, fallback) {
+        match project_agent(&info, &agents, &self.default_agent(), live, fallback) {
             ProjectAgent::Unset => {}
             ProjectAgent::Selected(selection) => {
                 self.preset.set(selection.preset.clone());

@@ -22,6 +22,7 @@ mod acp_host;
 pub mod bash;
 use cookie_agent_runtime_api::display;
 pub mod edit;
+mod files;
 pub mod fs_cap;
 mod path_args;
 pub mod read;
@@ -278,8 +279,12 @@ impl BuiltinTools {
 pub fn runtime_options(workspace: impl Into<PathBuf>) -> RuntimeOptions {
     let mut options = RuntimeOptions::new(workspace);
     options.global_tools = vec![Arc::new(webfetch::WebfetchTool::global_fallback())];
-    options.local =
-        cookie_agent_runtime_api::LocalRuntime::Protocol(server::in_process_connector());
+    options.local = cookie_agent_runtime_api::LocalRuntime::Protocol(
+        server::in_process_connector_with_options(server::ServeOptions {
+            transfer_journal: server::default_transfer_journal(),
+            ..server::ServeOptions::default()
+        }),
+    );
     options
 }
 

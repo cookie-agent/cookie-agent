@@ -178,6 +178,7 @@ fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
 
 fn runtime() -> ModelCatalogView {
     ModelCatalogView {
+        default_agent: None,
         revision: ViewRevision::new("view-1").unwrap(),
         catalog: CatalogStatus {
             source: CatalogSource::Network,

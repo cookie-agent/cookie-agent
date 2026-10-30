@@ -110,6 +110,8 @@ fn test_agent_document(id: &AgentId) -> AgentDocument {
     let body = "You are the primary test agent.
 ";
     AgentDocument {
+        official: false,
+        official_version: None,
         id: id.clone(),
         frontmatter: AgentFrontmatter {
             description: "Test primary agent".into(),
@@ -344,7 +346,11 @@ fn build_in_process_server(
         );
     }
     let config = LoadedConfiguration {
+        official_agent_diagnostics: Vec::new(),
         runtime: EngineConfig {
+            agents: cookie_agent_config::AgentsConfig::default(),
+            transfer: cookie_agent_config::TransferConfig::default(),
+            utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
                 ..Default::default()

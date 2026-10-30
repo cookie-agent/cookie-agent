@@ -81,6 +81,15 @@ impl AcceptedMedia {
     }
 }
 
+/// What the status line says of `name` attached as a file because the
+/// model does not take it inline (`reason`): the model sees its label and
+/// can copy it to a machine, not read it.
+pub fn attached_as_file(name: &str, reason: &str) -> String {
+    format!(
+        "attached {name} as a file ({reason}): the model sees its name and can copy it to a machine"
+    )
+}
+
 /// Why a file of `bytes` is refused for being over `max_bytes`.
 pub fn too_large(name: &str, kind: &str, bytes: u64, max_bytes: u64) -> String {
     format!(
@@ -163,8 +172,8 @@ impl UploadFailure {
 }
 
 /// Uploads `bytes` into `session_id`'s store in chunks sent one after
-/// another, as `filename` when given, returning the reference a `file` part
-/// names. A refusal says why in terms of `name`; a failed chunk cancels the
+/// another, as `filename` when given and as an upload of `kind`, returning
+/// the reference a `file` part names. A refusal says why in terms of `name`; a failed chunk cancels the
 /// upload.
 pub async fn upload(
     client: &Client,
@@ -172,12 +181,14 @@ pub async fn upload(
     name: &str,
     filename: Option<String>,
     bytes: &[u8],
+    kind: cookie_agent_protocol::UploadKind,
 ) -> Result<ArtifactRef, UploadFailure> {
     let begun = client
         .begin_upload(cookie_agent_protocol::ArtifactUploadBeginParams {
             session_id,
             byte_length: bytes.len() as u64,
             filename,
+            kind,
         })
         .await
         .map_err(|error| UploadFailure::of(name, &error))?;

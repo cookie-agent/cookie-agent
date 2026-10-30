@@ -394,6 +394,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::SkillsUpdateParams,
     ) -> Result<crate::SkillsUpdateResult, ServerFault>;
+    /// Refreshes the official agents now.
+    async fn update_agents(
+        &self,
+        params: crate::AgentsUpdateParams,
+    ) -> Result<crate::AgentsUpdateResult, ServerFault>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -1246,6 +1251,7 @@ async fn dispatch<S: ServerProtocol>(
         "skills.list" => value(server.list_skills(decode(params)?).await?),
         "skills.get" => value(server.get_skill(decode(params)?).await?),
         crate::SKILLS_UPDATE_METHOD => value(server.update_skills(decode_default(params)?).await?),
+        crate::AGENTS_UPDATE_METHOD => value(server.update_agents(decode_default(params)?).await?),
         "session.compact" => value(server.compact_session(decode(params)?, context).await?),
         "session.revert" => value(server.revert_session(decode(params)?, context).await?),
         crate::SESSION_DELETE_METHOD => {

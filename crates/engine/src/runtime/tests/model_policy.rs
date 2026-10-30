@@ -1081,7 +1081,7 @@ fn explicit_internal_output_cap_is_still_clamped_to_the_model_output_limit() {
 #[tokio::test]
 async fn configuration_status_notes_what_the_reviewer_ttl_does() {
     let primary = "---\ndescription: Owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nOwner.\n";
-    let approval = "---\ndescription: Reviewer\nmode: internal\nenabled: true\nmodels: [{ model: \"custom.test/group/model\" }]\npermissions: {}\n---\n{{default_prompt}}\n";
+    let approval = "---\ndescription: Reviewer\nmode: internal\nenabled: true\nmodels: [{ model: \"custom.test/group/model\" }]\npermissions: {}\n---\nReview tool calls.\n";
     for (adaptor, ttl, expected) in [
         (
             "anthropic-compatible",

@@ -17,7 +17,7 @@ attaching clients to it.
 | [`cookie daemon restart`](#cookie-daemon-restart) | Restart a running daemon, once idle or at once |
 | [`cookie attach`](#cookie-attach) | The terminal UI on a running daemon, here or elsewhere |
 | [`cookie web`](#cookie-web) | Print the daemon's web page address with its token |
-| [`cookie onboard`](#cookie-onboard) | Set up a daemon: a provider, the default and small models, the starter kit |
+| [`cookie onboard`](#cookie-onboard) | Set up a daemon: a provider and the default, small, and utility models |
 | [`cookie connect`](#cookie-connect), [`cookie disconnect`](#cookie-disconnect) | Store or remove a managed provider connection |
 | [`cookie runtime serve`](#cookie-runtime-serve) | Serve this machine's `coding` runtime over stdio or by dialing in |
 | [`cookie runtime mcp-bridge`](#cookie-runtime-mcp-bridge) | Connect an ACP agent's MCP client to cookie's tools (run by a runtime) |
@@ -27,6 +27,7 @@ attaching clients to it.
 | [`cookie project`](#cookie-project) | List, create, rename, delete, and edit the daemon's projects |
 | [`cookie cron`](#cookie-cron) | List, create, edit, run, and delete the daemon's cron jobs |
 | [`cookie skills`](#cookie-skills) | List the daemon's skills, refresh the official ones, and check skills |
+| [`cookie agents`](#cookie-agents) | List the daemon's agents, refresh the official ones, and check agent documents |
 | [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
 | [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
 
@@ -203,8 +204,8 @@ macOS, `start` on Windows, `xdg-open` elsewhere). See [Web](web.md).
 ### `cookie onboard`
 
 ```text
-cookie onboard [--from <FILE>] [--diff] [--yes]
-               [--default-model <KEY[:VARIANT]>] [--small-model <KEY[:VARIANT]>]
+cookie onboard [--yes] [--default-model <KEY[:VARIANT]>]
+               [--small-model <KEY[:VARIANT]>] [--utility-model <KEY[:VARIANT]>]
                [--url <URL>] [--token <TOKEN>]
 ```
 
@@ -217,25 +218,22 @@ The steps, as numbered questions:
 2. **Default model** (`default_model`): a numbered list of the connected
    providers' available models, grouped by provider; `/text` searches it.
    Its variant question preselects the model's default variant.
-3. **Small model** (`small_model`): the same list with nothing suggested; its
-   variant question preselects the model's first listed variant, the
-   cheapest. It may be the same model.
-4. **Starter kit**: shows what installing it would do to each file (new,
-   same as yours and skipped, or differs and written beside yours as
-   `<name>.new`) and asks whether to install it.
+3. **Small model** (`small_model`, optional): the model of subagents that
+   carry out work; Enter skips it. Its variant question preselects the
+   model's default variant.
+4. **Utility model** (`utility_model`, optional): the model of approvals and
+   session titles; Enter skips it. Its variant question preselects the
+   model's first listed variant, the cheapest.
 
-The kit comes from the daemon's own release (`v<version>`), else its
-newest nightly of the same version that carries one (`v<version>-alpha.<n>`,
-from GitHub's release list), else the latest stable release; `--from` takes a downloaded `cookie-agent-defaults.tar.gz` instead.
-Its manifest's hashes are checked before anything is written. `--diff`
-prints what installing the kit would change, with a diff of each changed
-file, and changes nothing. `--default-model` and `--small-model` answer
-those questions (`provider/model`, or `provider/model:variant`); `--yes`
-answers the rest with their defaults (keep what is set, install the kit) and
-refuses rather than guess a model or connect a provider. Without `--yes` or
-`--diff` it needs an interactive terminal. Running it again on a set-up
-daemon shows the current provider and models and offers the kit again. See
-[Getting started](../quickstart.md).
+There is no starter kit: the daemon fetches its
+[official agents](../extend/agents.md#official-agents) as it finishes, when
+its default agent is missing. `--default-model`, `--small-model`, and
+`--utility-model` answer those questions (`provider/model`, or
+`provider/model:variant`); `--yes` answers the rest with their defaults
+(keep what is set, skip the optional models) and refuses rather than guess a
+default model or connect a provider. Without `--yes` it needs an
+interactive terminal. Running it again on a set-up daemon shows the current
+provider and models. See [Getting started](../quickstart.md).
 
 ### `cookie connect`
 
@@ -607,6 +605,47 @@ checkout with `--docs`. An `index.json` in `<DIR>` must list every skill
 there, with a version, a `requires_cookie` range, and each file's SHA-256.
 Each problem is printed with its file, and any problem fails the command.
 The official skills repository runs it on every push.
+
+### `cookie agents`
+
+```text
+cookie agents <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Lists the daemon's agents and refreshes its official agents, the ones it
+keeps up to date in `official_agents/` of its data root; see
+[Official agents](../extend/agents.md#official-agents).
+
+#### `cookie agents list`
+
+`cookie agents list` prints every agent of the daemon: its name (with its
+preset, `<preset>/<id>`), its mode, and where it comes from (`user` for a
+document in `agents/`, `official` with its version, `acp` for an agent a
+runtime offers), marked `(default)` for the
+[default agent](../extend/agents.md#the-default-agent) and `(disabled)` when
+it is.
+
+#### `cookie agents update`
+
+`cookie agents update` refreshes the official agents now, as the daemon does
+at start and daily, and prints what changed and the agents it keeps. A
+refresh that fails keeps the agents it had and fails with the reason; with
+`[agents] official = false` it does nothing.
+
+#### `cookie agents check`
+
+```text
+cookie agents check <DIR>
+```
+
+Checks agent documents before they are published, with no daemon: each
+`<DIR>/<id>.md` (`README.md` aside) must load with this build's strict
+parser as an official agent; a `compaction.md` must keep the body
+`{{default_prompt}}`, the prompt this build falls back to. An `index.json`
+in `<DIR>` must list every document there, with a version, a
+`requires_cookie` range, and its SHA-256. Each problem is printed with its
+file, and any problem fails the command. The official agents repository runs
+it on every push.
 
 ### `cookie sessions upgrade`
 

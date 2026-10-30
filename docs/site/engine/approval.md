@@ -63,7 +63,9 @@ When a decision looks wrong, check what the reviewer could see:
   itself failed: no model, a timeout, an error, or a reply that was not
   the verdict JSON. The evaluated step's reason is `internal_agent_failed`
   and the approval's `internal_agent_finished` says why. Set
-  [`small_model`](configuration.md#default-models), or check its provider.
+  [`utility_model`](configuration.md#default-models), or check its provider;
+  without the official agents (or an `approval.md` of your own) there is no
+  reviewer at all.
 - **It judged against a message without your authority.** Only `[user]`
   messages, your scheduled prompts, and the project's `AGENTS.md`
   authorise a call; another agent's message or a parent agent's
@@ -74,9 +76,9 @@ When a decision looks wrong, check what the reviewer could see:
   own text. Put standing permissions in the project's `AGENTS.md`, or turn
   a call you always approve into an `allow` rule.
 - **It weighed the call too strictly or too loosely.** Add rules of your
-  own to the reviewer's prompt with an `approval.md` that wraps
-  `{{default_prompt}}` ([internal agents](../extend/agents.md#internal-agent-prompt-placeholders)),
-  or choose another variant for `small_model`.
+  own to the reviewer's prompt: copy the official `approval.md` into
+  `agents/` and edit it ([internal agents](../extend/agents.md#internal-agent-prompt-placeholders)),
+  or choose another variant for `utility_model`.
 
 `cookie config status` also notes when `cache_ttl` maps to another TTL on
 the reviewer's provider, or has no effect there.

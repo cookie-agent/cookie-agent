@@ -2,12 +2,13 @@
 
 Agents are Markdown documents with YAML frontmatter. The filename is the agent
 ID. An agent defines the system prompt, permission-controlled tool access, its
-model fallback chain, and its runtime limits. The harness supplies four agents:
-three internal agents plus the synthesized `default` coding agent when no
-authored root agent is runnable.
+model fallback chain, and its runtime limits. The daemon keeps the
+[official agents](#official-agents) up to date in
+`~/.cookie-agent/official_agents/`, and supplies no agent of its own beyond
+a fallback for compaction.
 
-Author agents under `~/.cookie-agent/agents/`. That user directory is the only
-place agent documents are read from: a `<cwd>/.cookie-agent/agents/` directory
+Author agents under `~/.cookie-agent/agents/`. That user directory and the
+official agents' folder are the only places agent documents are read from: a `<cwd>/.cookie-agent/agents/` directory
 is never opened for agent documents or presets, and leftover files there are
 ignored without a warning. (`AGENTS.md` files there are still read as
 [context](#agentsmd-context).)
@@ -118,6 +119,7 @@ entry's `model` with nothing overridden; the two forms mix freely:
 models:
   - ${default_model}                               # model and variant from config.toml
   - { model: "${small_model}", variant: "max" }    # the variant overridden
+  - ${utility_model}                               # the cheap model of approvals and titles
   - deepseek/deepseek-flash                        # a plain model key
 ```
 
@@ -125,13 +127,14 @@ YAML reads `- ${default_model}` as a string without quotes; only an entry
 starting with `{` or `[` needs them. Any other entry shape, such as a number
 or a mapping with unknown keys, is an error.
 
-`model` is a model key or one of three variables, which carry a model and its
+`model` is a model key or one of four variables, which carry a model and its
 variant together:
 
 | Variable | Names | Allowed in |
 |---|---|---|
 | `${default_model}` | [`default_model`](../engine/configuration.md#default-models) in `config.toml` | any agent |
-| `${small_model}` | [`small_model`](../engine/configuration.md#default-models) in `config.toml` | any agent |
+| `${small_model}` | [`small_model`](../engine/configuration.md#default-models) in `config.toml`: subagents that carry out work | any agent |
+| `${utility_model}` | [`utility_model`](../engine/configuration.md#default-models) in `config.toml`: approvals and titles | any agent |
 | `${parent_model}` | the model the owner run is using | internal agents only |
 
 The `variant` field is optional. For a model key, omitted selects the model's
@@ -238,7 +241,8 @@ You review changes for this project before they are committed.
   status`, the TUI's `/config`, the web's configuration page) says
   `models` takes precedence. A draft's or session's own choices still
   apply after `models`, and a draft shows what `models` picks.
-- `${default_model}`, `${small_model}`, and `${parent_model}` name cookie's
+- `${default_model}`, `${small_model}`, `${utility_model}`, and
+  `${parent_model}` name cookie's
   models, which an ACP agent does not run on: such an entry is skipped
   with a configuration diagnostic (``agent `claude` skips a `models` entry:
   `${default_model}` names one of cookie's models, ...``), and the document
@@ -416,51 +420,80 @@ On attach, the TUI replays the selected session and the tree's live children
 Agents panel, so resuming a tree with many long finished children stays fast.
 A finished child that is woken again is picked up on the next tree refresh.
 
-## The starter kit
+## Official agents
 
-`cookie onboard`, the TUI's `/onboard`, and the web page's setup sheet can
-install the starter kit, a release asset (`cookie-agent-defaults.tar.gz`)
-holding three agents to start from or replace:
+The daemon keeps cookie's own agents up to date, as it does the
+[official skills](skills.md#official-skills): it fetches them from
+`https://cookie-agent.github.io/agents/` (the `cookie-agent/agents`
+repository) at start and every 24 hours, checks each document against the
+index's SHA-256 and against this build's parser, and keeps them in
+`~/.cookie-agent/official_agents/`, which only the daemon writes. A refresh
+that changes them reloads the configuration, so new runs see the change at
+once; a run in progress keeps the agent it started with.
 
 | Agent | Mode | `models` | What it does |
 |---|---|---|---|
-| `primary` | `primary` | `${default_model}` | Runs sessions: reads, writes, fetches, uses skills and memory, and delegates to `explore` and `worker` |
-| `explore` | `subagent` | `${default_model}` | Reads and searches, never writes, and reports what it found |
-| `worker` | `subagent` | `${default_model}` | Carries out one delegated task with `primary`'s tools |
+| `primary` | `primary` | `${default_model}` | The user's assistant across their devices, and the default agent: answers, works on machines through subagents, and delegates to `explore`, `worker`, and `coder` |
+| `coder` | `all` | `${default_model}` | The coding agent: reads, writes, runs commands, and delegates to `explore` and `worker`; name it in a repository project's defaults |
+| `explore` | `subagent` | `${small_model}`, then `${default_model}` | Reads and searches, never writes, and reports what it found |
+| `worker` | `subagent` | `${small_model}`, then `${default_model}` | Carries out one delegated task, implementation included |
+| `approval` | `internal` | `${utility_model}`, then `${parent_model}` | The [approval reviewer](#the-approval-reviewer) |
+| `title` | `internal` | `${utility_model}`, then `${parent_model}` | Session titles |
+| `compaction` | `internal` | `${parent_model}` | Checkpoint summaries |
 
 Their `permissions` name every action explicitly, defaults included, each
 line with a comment saying whether it is a default and what it does, so a
 document shows its whole policy. `bash` asks, except a list of read-only
 commands (`ls *`, `cat *`, `rg *`, `git status*`, `git diff*`, …); such a
 pattern also matches a longer command that starts the same way, so narrow it
-if that matters to you. An installed kit file is yours to change: installing
-the kit again never overwrites it, writing the kit's version beside it as
-`<name>.new`. Skills are not in the kit: the daemon keeps the
-[official skills](skills.md#official-skills) up to date itself.
+if that matters to you.
+
+- **Your own document wins.** A document in `agents/` with an official
+  agent's ID replaces it whole, frontmatter and body; no refresh touches
+  it. Copy an official agent there to change it, or to keep its permissions
+  as they are: refreshes apply as they arrive, permissions included.
+- **A document this build cannot use** is left out with a configuration
+  diagnostic, and the copy kept before it stays; it never fails the load.
+- **`[agents] official = false`** stops the refreshes and leaves the
+  official agents unused.
+- **`cookie agents list`** shows each agent with where it comes from
+  (`user`, `official <version>`), `cookie agents update` refreshes now, and
+  `cookie agents check <dir>` checks documents before they are published.
+
+### The default agent
+
+```toml
+[agents]
+default = "primary"
+```
+
+`default` names the agent a new root session starts with when neither its
+client nor its [project](../concepts/projects.md) chooses one, and the agent
+a later turn falls back to when its own agent is gone. Unset, it is
+`primary`. A default that names no agent able to start a session (none of
+that ID, disabled, or not `primary` or `all`) is a configuration diagnostic,
+not a load error, since the official agents arrive after the configuration
+loads; new sessions then start on the first agent that can run as a root,
+and creating one fails when there is none. Clients read the default from
+the agent listing.
+
+There is no starter kit: onboarding sets the models, and fetches the
+official agents when the default agent is missing.
 
 ## Layering and replacement
 
-User agent documents and the built-in documents form one registry by agent ID.
-The IDs `approval`, `compaction`, and `title` are reserved for internal agents;
-an authored document with one of those IDs must use `mode: internal` and
-replaces the built-in document completely. The ID `default` is reserved for
-the engine-supplied fallback agent and cannot be authored at all.
+User agent documents and the official ones form one registry by agent ID;
+a user document replaces the official one of its ID whole. The IDs
+`approval`, `compaction`, and `title` are reserved for internal agents: a
+document with one of those IDs must use `mode: internal`. Nothing is
+synthesized when no agent can run as a root: a session needs one, and the
+official `primary` is it unless you wrote your own.
 
-If no authored agent is runnable as a root, the engine synthesizes the built-in
-`default` coding agent on `${default_model}`, then the first available model
-selection. Its prompt
-and explicit permission map are fixed by the engine: read is allowed with
-additional asks and secret-file denies, while write, bash, and delegate ask by
-default. `webfetch`, every runtime's own actions, and every other
-undeclared action stay hidden. User
-agents do not inherit this list and must declare their own tool permissions.
-Two actions are the exception: an agent document, the built-in `default`
-included, that names no key for `list_runtimes` or `mcp` gets that action's
-rules from its mode (see [Listing runtimes](#listing-runtimes) and
+An agent document that names no key for `list_runtimes` or `mcp` gets that
+action's rules from its mode (see [Listing runtimes](#listing-runtimes) and
 [MCP default](#mcp-default)), so every agent that is not internal is offered
 MCP tools and asks before each call. Memory has a default too, by whether
-the run is delegated rather than by mode, so the built-in `default` agent
-reads every memory and writes the memory related to its session (see
+the run is delegated rather than by mode (see
 [Memory permissions](#memory-permissions)). `cron` defaults the same way:
 a root run may manage cron jobs and a delegated one may not (see
 [Cron permissions](#cron-permissions)).
@@ -537,7 +570,8 @@ the live configuration, falling back to the default agent when it is gone.
 
 ## Internal agents
 
-The harness runs three internal agents. They are tool-less model calls with a
+The harness runs three internal agents, from the [official agents](#official-agents)
+unless you wrote your own. They are tool-less model calls with a
 strict text-only output contract, and they emit their own event family
 (`internal_agent_started`, `internal_agent_finished`, ...). Compaction and
 title are stateless; the approval reviewer keeps one conversation per
@@ -545,17 +579,17 @@ session.
 
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
-| `approval` | The approval reviewer of the `auto_approve` modes, with one cached conversation per session ([The approval reviewer](#the-approval-reviewer)) | `${small_model}`, then `${parent_model}` | 30 s timeout; window of the model's context; max output tokens inherit the parent run's cap |
+| `approval` | The approval reviewer of the `auto_approve` modes, with one cached conversation per session ([The approval reviewer](#the-approval-reviewer)) | `${utility_model}`, then `${parent_model}` | 30 s timeout; window of the model's context; max output tokens inherit the parent run's cap |
 | `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 3 min timeout; model-derived input budget; max output tokens inherit the parent run's cap |
-| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${small_model}`, then `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
+| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${utility_model}`, then `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 
-`approval` and `title` run on `small_model` when it is set and available,
+`approval` and `title` run on `utility_model` when it is set and available,
 else on the parent run's model. `compaction` stays on `${parent_model}`, which
 keeps the session's prompt cache warm. `${parent_model}` is the model the
 parent run is currently using — including its position in the fallback chain:
 if the run has fallen back to its second model, internal agents resolve to
 that second model too. An ACP agent's session has no model of its own, so its
-approval reviewer runs on `small_model` alone; without it the review fails
+approval reviewer runs on `utility_model` alone; without it the review fails
 and `ask` requests go to the user. An internal agent's input budget is derived from each
 resolved model's input limit when it declares one, otherwise from its context
 limit after reserving its effective maximum output (at most 32,000 tokens or half
@@ -566,13 +600,18 @@ The title agent runs only for root sessions that still need an automatic title.
 Delegated sessions already have the `delegate_subagent` description as their
 title, so they never invoke the title agent.
 
-The built-in documents are replaced by authored documents with the same ID,
+The official documents are replaced by authored documents with the same ID,
 `mode: internal`, and an explicit `models` list. `${parent_model}` is
-allowed only in internal agents. When an internal agent document is disabled, or
-its fallback chain yields no available model, the internal call fails safely
-(approval escalates to the user with the reason `internal_agent_failed`,
-compaction is skipped, and title falls back to an input excerpt) and a failed
-`internal_agent_finished` event is recorded.
+allowed only in internal agents. When an internal agent document is
+missing (official agents off or not fetched yet, and none authored), is
+disabled, or its fallback chain yields no available model, the internal call
+fails safely (approval escalates to the user with the reason
+`internal_agent_failed`, compaction is skipped, and title falls back to an
+input excerpt) and a failed `internal_agent_finished` event is recorded.
+Compaction alone never goes missing: without an authored or official
+`compaction.md`, the daemon runs the compaction prompt it carries on
+`${parent_model}`, so a long session never fails at its context limit for
+want of a summary.
 
 Example replacement — run compaction on a cheaper model while the primary run
 keeps its own selection:
@@ -652,30 +691,34 @@ restart. Its cache lifetime is [`[approval] cache_ttl`](../engine/approval.md#th
 
 ### Internal agent prompt placeholders
 
-The bodies of `approval.md`, `compaction.md`, and `title.md` are templates. Each
-built-in body is exactly `{{default_prompt}}`, which expands to that agent's
-built-in prompt:
+The official `approval.md` and `title.md` hold their whole prompts, with no
+placeholder: to change one, copy it into `agents/` and edit it. The body of
+`compaction.md` is a template, and the official one is exactly
+`{{default_prompt}}`, which expands to the compaction prompt the daemon
+carries:
 
-| Agent | `{{default_prompt}}` expands to | Where it is sent | Other placeholders |
+| Agent | Body | Where it is sent | Placeholders |
 |---|---|---|---|
 | `approval` | The approval reviewer prompt: how its conversation is labelled and which entries carry the user's authority, when to choose `allow`, `ask`, or `deny`, which kinds of calls need the user, and the rules of judging a call against the whole task. | System prompt | none |
-| `compaction` | The structured checkpoint prompt. When the span being compacted starts with an earlier summary, this is the variant that merges it into one updated checkpoint. | Final user message after the history being summarized | `{{focus}}` |
+| `compaction` | `{{default_prompt}}`: the structured checkpoint prompt. When the span being compacted starts with an earlier summary, it is the variant that merges it into one updated checkpoint. | Final user message after the history being summarized | `{{default_prompt}}`, `{{focus}}` |
 | `title` | The session title prompt: what makes a good title, its length, language, and casing. | System prompt | none |
 
-The output format each agent must follow is not part of `{{default_prompt}}`.
-It stays in the request the engine builds, so a custom body cannot break
-parsing: approval still asks for `{"decision":"allow"|"deny"|"ask","reason":"…"}`
-in each request block and title still asks for plain text only.
+A placeholder in `approval.md` or `title.md` is an error. The output format
+each agent must follow is not part of its body. It stays in the request the
+engine builds, so a custom body cannot break parsing: approval still asks
+for `{"decision":"allow"|"deny"|"ask","reason":"…"}` in each request block
+and title still asks for plain text only.
 
-To keep a default prompt and add your own rules, wrap it:
+To keep the compaction prompt and add your own rules, wrap it:
 
 ```markdown
 {{default_prompt}}
 
-Network access to github.com for this project is routine; allow read-only requests to it.
+Keep every test name the session mentions.
 ```
 
-A body without `{{default_prompt}}` replaces the default prompt entirely.
+A `compaction.md` body without `{{default_prompt}}` replaces the prompt
+entirely.
 
 #### Compaction focus
 
@@ -741,8 +784,8 @@ picks up the current documents.
 
 In the TUI, `/new` creates a root session after choosing from agents in the
 selected effective set that are runnable as a root (`primary` or `all`, enabled,
-with at least one available model). If none are runnable, that effective set's
-built-in `default` agent is used.
+with at least one available model), the [default agent](#the-default-agent)
+preselected.
 
 ## Permissions
 
@@ -891,12 +934,6 @@ allows such as `"*": allow` or
 `deny` and `ask` rules follow the same specificity as any other file, across
 the agent document and the session overlay alike; unmatched resources are
 denied.
-
-The synthesized `default` agent still declares explicit dotenv read denies and
-`.env.example` allows in its permission map. These are ordinary policy rules,
-not an implicit guard applied to authored agents or session overlays. The same
-applies to its explicit credential-file denies (such as `store-v3.json`,
-`id_*`, `.netrc`, and `application_default_credentials.json`).
 
 This contract governs tool permission evaluation. It does not replace filesystem
 integrity and resource-binding checks, or govern engine configuration and prompt
@@ -1138,6 +1175,26 @@ show, the run gets no memory turn at all, while the tools stay offered. See
 [What the model sees](../sessions/memory.md#what-the-model-sees) and the
 [memory spec](../specs/memory.md#9-permissions).
 
+### Attach permissions
+
+`attach_machine` and `detach_machine`, tools of the `global` runtime, use
+the `attach` action. It is checked on the target runtime, so
+`attach@<runtime>` narrows where, and its resource is the workspace the
+call names (`detach_machine`: the attachment's workspace):
+
+```yaml
+permissions:
+  attach@labpc:
+    "~/src/*": allow
+    "*": ask
+  attach: deny
+```
+
+**Defaults.** When the agent document has no `attach` key, a root run of an
+agent that is not internal gets `attach: allow`, and a delegated run or an
+internal agent gets none, so a subagent's machine tools are hidden. See
+[Attaching from a session](../concepts/runtimes.md#attaching-from-a-session).
+
 ### Cron permissions
 
 The cron tools of the `global` runtime (`cron_create`, `cron_list`,
@@ -1221,7 +1278,7 @@ the list, and `list_runtimes: deny` hides it from a primary agent.
 
 MCP tools use the `mcp` action, with the complete generated tool name as
 resource (see [MCP tool names](mcp.md#tool-names-and-permissions)). When an
-agent document, the built-in `default` included, has no `mcp` key (in any
+agent document has no `mcp` key (in any
 form, `mcp@<runtime>` included), the daemon supplies `mcp: {"*": ask}` for
 `primary`, `all`, and `subagent` agents, so the connected servers' tools are
 offered and every call asks; `internal` agents get none. A declared `mcp`

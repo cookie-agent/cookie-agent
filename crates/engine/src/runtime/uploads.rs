@@ -188,6 +188,7 @@ struct Upload {
     received: u64,
     hasher: Sha256,
     filename: Option<String>,
+    kind: cookie_agent_protocol::UploadKind,
     published: bool,
 }
 
@@ -240,6 +241,26 @@ impl Engine {
         session: SessionId,
         byte_length: u64,
         filename: Option<String>,
+    ) -> Result<UploadId, EngineError> {
+        self.begin_upload_of_kind(
+            connection,
+            session,
+            byte_length,
+            filename,
+            cookie_agent_protocol::UploadKind::Media,
+        )
+        .await
+    }
+
+    /// [`Self::begin_upload`] of an upload of `kind`: a `file` upload is any
+    /// file, stored as `application/octet-stream`.
+    pub async fn begin_upload_of_kind(
+        &self,
+        connection: u64,
+        session: SessionId,
+        byte_length: u64,
+        filename: Option<String>,
+        kind: cookie_agent_protocol::UploadKind,
     ) -> Result<UploadId, EngineError> {
         if byte_length == 0 {
             return Err(
@@ -297,6 +318,7 @@ impl Engine {
             received: 0,
             hasher: Sha256::new(),
             filename,
+            kind,
             published: false,
         };
         let mut in_progress = self
@@ -599,11 +621,13 @@ impl Engine {
 
     /// Admits the file parts of `content`, an input to a run of `model`,
     /// whose accepted media are `accepted` (section 11.4): each names an
-    /// artifact of the tree's store whose content is what the part says, of
-    /// a kind and media type the model accepts, within its byte and image
-    /// limits, and no kind outnumbers its `max_count`. The artifacts stay
-    /// pinned for as long as the result lives, which the caller keeps until
-    /// the event naming them is written.
+    /// artifact of the tree's store whose content is what the part says.
+    /// One of a kind and media type the model accepts, within its byte
+    /// limit, must also be within its image limits, and no kind may
+    /// outnumber its `max_count`; any other reaches the model as its label
+    /// (`docs/site/specs/machines-on-demand.md` section 6.4). The artifacts
+    /// stay pinned for as long as the result lives, which the caller keeps
+    /// until the event naming them is written.
     pub(crate) async fn admit_input_media(
         &self,
         session: SessionId,
@@ -617,20 +641,9 @@ impl Engine {
             artifact
                 .validate()
                 .map_err(|error| MediaError::InvalidRequest(error.to_string()))?;
-            let media = accepted_media(artifact, model, accepted)?;
-            if artifact.byte_length > media.max_bytes {
-                return Err(MediaError::TooLarge {
-                    kind: media.kind.as_str().to_owned(),
-                    byte_length: artifact.byte_length,
-                    max_bytes: media.max_bytes,
-                    width: None,
-                    height: None,
-                    max_dimension: None,
-                    max_pixels: None,
-                }
-                .into());
+            if let Some(media) = taken_inline(artifact, model, accepted) {
+                *counts.entry(media.kind.as_str()).or_default() += 1;
             }
-            *counts.entry(media.kind.as_str()).or_default() += 1;
         }
         for (kind, count) in counts {
             let max_count = accepted
@@ -732,31 +745,42 @@ fn finish(
         }
         .into());
     }
-    let validated =
-        runtime_media::validate_upload(&bytes).map_err(|rejection| match rejection {
-            UploadRejection::Unrecognized => MediaError::TypeUnsupported {
-                media_type: "application/octet-stream".into(),
-                reason: "not a recognized image, PDF, audio, video, or text file".into(),
-            },
-            UploadRejection::Malformed { media_type } => MediaError::TypeUnsupported {
-                media_type: media_type.into(),
-                reason: "the content does not parse as one".into(),
-            },
-            UploadRejection::TooLarge {
-                kind,
-                byte_length,
-                max_bytes,
-                image,
-            } => MediaError::TooLarge {
-                kind: kind.into(),
-                byte_length,
-                max_bytes,
-                width: image.map(|(width, _)| width),
-                height: image.map(|(_, height)| height),
-                max_dimension: image.map(|_| runtime_media::MAX_IMAGE_DIMENSION),
-                max_pixels: image.map(|_| runtime_media::MAX_IMAGE_PIXELS),
-            },
-        })?;
+    let validated = if upload.kind == cookie_agent_protocol::UploadKind::File {
+        // Any file: a model only ever sees its label.
+        Ok(runtime_media::ValidatedUpload {
+            media_type: cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE,
+            kind: "file",
+            image: None,
+        })
+    } else {
+        runtime_media::validate_upload(&bytes)
+    };
+    let validated = validated.map_err(|rejection| match rejection {
+        UploadRejection::Unrecognized => MediaError::TypeUnsupported {
+            media_type: "application/octet-stream".into(),
+            reason: "not a recognized image, PDF, audio, video, or text file; upload it \
+                         with `kind: file` to attach it as a file"
+                .into(),
+        },
+        UploadRejection::Malformed { media_type } => MediaError::TypeUnsupported {
+            media_type: media_type.into(),
+            reason: "the content does not parse as one".into(),
+        },
+        UploadRejection::TooLarge {
+            kind,
+            byte_length,
+            max_bytes,
+            image,
+        } => MediaError::TooLarge {
+            kind: kind.into(),
+            byte_length,
+            max_bytes,
+            width: image.map(|(width, _)| width),
+            height: image.map(|(_, height)| height),
+            max_dimension: image.map(|_| runtime_media::MAX_IMAGE_DIMENSION),
+            max_pixels: image.map(|_| runtime_media::MAX_IMAGE_PIXELS),
+        },
+    })?;
     drop(bytes);
     {
         // Publishing under the lease lock: a sweep of an earlier lease of
@@ -783,6 +807,19 @@ fn finish(
             .image
             .map(|(width, height)| ImageSize { width, height }),
     })
+}
+
+/// The entry of `accepted` under which the model takes `artifact` inline:
+/// its kind and media type, within the byte limit. `None` for a file the
+/// model only sees the label of.
+fn taken_inline<'a>(
+    artifact: &ArtifactRef,
+    model: &ModelKey,
+    accepted: &'a [InputMedia],
+) -> Option<&'a InputMedia> {
+    accepted_media(artifact, model, accepted)
+        .ok()
+        .filter(|media| artifact.byte_length <= media.max_bytes)
 }
 
 /// The entry of `accepted` that takes `artifact`'s kind and media type.
@@ -817,7 +854,8 @@ fn accepted_media<'a>(
 }
 
 /// Reads `artifact` from the store and checks that its content is what the
-/// reference says and fits the model's image limits.
+/// reference says and, for a file the model takes inline, that it is that
+/// media and fits the model's image limits.
 fn check_stored_media(
     artifacts: &super::artifacts::ArtifactRouter,
     session: SessionId,
@@ -851,6 +889,10 @@ fn check_stored_media(
             return Err(not_found(error.to_string()).into());
         }
         Err(error) => return Err(error.into()),
+    };
+    // A file the model only sees the label of is never read as media.
+    let Some(media) = taken_inline(artifact, model, accepted) else {
+        return Ok(());
     };
     let validated =
         runtime_media::validate_upload(&bytes).map_err(|rejection| match rejection {
@@ -886,7 +928,6 @@ fn check_stored_media(
         ))
         .into());
     }
-    let media = accepted_media(artifact, model, accepted)?;
     if let Some((width, height)) = validated.image {
         let too_wide = media
             .max_dimension

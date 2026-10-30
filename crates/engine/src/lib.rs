@@ -14,6 +14,7 @@ pub mod events;
 mod goal_projection;
 pub mod grant_journal;
 mod machines;
+mod machines_tool;
 mod media;
 mod memory;
 mod memory_tools;
@@ -47,6 +48,7 @@ pub use cron_tools::cron_tool_specs;
 pub use crons::CronError;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation, DelegatedCapability};
 pub use machines::MachineError;
+pub use machines_tool::machines_tool_specs;
 pub use memory_tools::memory_tool_specs;
 pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
 pub use projects::ProjectError;
@@ -66,13 +68,15 @@ pub use runtime::messaging_api::{
     MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED,
     MESSAGE_NOT_TREE_PEER, MESSAGE_SELF_SEND, MESSAGE_UNKNOWN_SESSION,
 };
+pub use runtime::official_agents::{
+    OFFICIAL_AGENTS_REFRESH, OFFICIAL_AGENTS_URL, OfficialAgentsReport,
+};
 pub use runtime::official_skills::{
     OFFICIAL_SKILLS_REFRESH, OFFICIAL_SKILLS_URL, OfficialSkillsReport, UserSkillRoots,
     version_satisfies,
 };
 pub use runtime::onboarding::{
-    KitError, KitFileAction, KitFilePlan, KitManifest, KitPreview, KitSource, OnboardingOutcome,
-    OnboardingRequest, OnboardingRequirement, OnboardingState, RELEASES_URL,
+    OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
 };
 pub use runtime::push_signals::{
     NeedsYouItem, NeedsYouSignal, PushSignal, SettledOutcome, SettledSignal,

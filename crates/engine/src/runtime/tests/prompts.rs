@@ -214,14 +214,16 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         .agent
         .composed_prompt;
     let agent = prompt.find("Test prompt.").unwrap();
-    let directory = prompt.find("Working directory: ").unwrap();
+    let directory = prompt
+        .find("This session is attached to the following machines.")
+        .unwrap();
     let provider = prompt.find("Provider section.").unwrap();
     let skills = prompt.find("<available_skills>").unwrap();
     let plugin = prompt.find("Plugin tail.").unwrap();
     assert!(agent < directory && directory < provider && provider < skills && skills < plugin);
     // Every appended block is introduced by the markdown horizontal-rule
     // separator, so block boundaries are visible in the assembled prompt.
-    assert!(prompt.contains("---\n\nWorking directory: "));
+    assert!(prompt.contains("---\n\nThis session is attached to the following machines."));
     assert!(prompt.contains("---\n\n<tool_instructions provider=\"test.order\">"));
     assert!(prompt.contains("---\n\n<available_skills>"));
     assert!(prompt.contains("---\n\nPlugin tail."));
@@ -301,15 +303,27 @@ async fn one_runtime_gives_the_prompt_its_working_directory() {
         .composed_prompt
         .split_once("\n\n---\n\n<tool_instructions provider=\"builtin.memory\">")
         .expect("the default agent's memory section");
+    // A session with `global` routes its tools by machine: the machines
+    // block names the one machine, its directory, and what it offers.
+    let (_, block) = before_memory
+        .split_once("\n\n---\n\n")
+        .expect("the runtimes block follows the body");
     assert!(
-        before_memory.ends_with(&format!(
-            "---\n\nWorking directory: {cwd}\nMachine: {machine} ({})",
+        block.starts_with("This session is attached to the following machines."),
+        "{block}"
+    );
+    assert!(
+        block.contains(&format!(
+            "<machine name=\"{machine}\" platform=\"{}\"",
             std::env::consts::OS
         )),
-        "{}",
-        run.agent.composed_prompt
+        "{block}"
     );
-    assert!(!before_memory.contains("runtime"));
+    assert!(
+        block.contains(&format!(" directory=\"{cwd}\" default=\"true\">")),
+        "{block}"
+    );
+    assert!(block.ends_with("</machine>\n</machines>"), "{block}");
     assert_eq!(
         Sha256Digest::of_bytes(run.agent.composed_prompt.as_bytes()),
         run.agent.prompt_fingerprint

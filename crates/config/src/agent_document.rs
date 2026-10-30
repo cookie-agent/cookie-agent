@@ -17,6 +17,13 @@ pub struct AgentDocument {
     pub frontmatter: AgentFrontmatter,
     pub body: String,
     pub source: AgentDocumentSource,
+    /// An official agent, kept by the daemon in `official_agents/`
+    /// (`docs/site/specs/machines-on-demand.md` section 2.1). Its `source`
+    /// is [`AgentDocumentSource::BuiltIn`]: cookie wrote it, not the user.
+    pub official: bool,
+    /// An official agent's version, from the daemon's record of the
+    /// official agents it keeps.
+    pub official_version: Option<String>,
     pub document_fingerprint: Sha256Digest,
     pub prompt_fingerprint: Sha256Digest,
 }
@@ -81,6 +88,8 @@ pub(crate) fn parse_agent(
         frontmatter,
         body,
         source,
+        official: false,
+        official_version: None,
         document_fingerprint,
         prompt_fingerprint,
     })

@@ -109,6 +109,18 @@ mod unix {
             }
         }
 
+        /// The names in the directory.
+        pub(in crate::runtime::artifacts) fn names(&self) -> std::io::Result<Vec<String>> {
+            let mut names = Vec::new();
+            for entry in rustix::fs::Dir::read_from(&self.0)? {
+                let entry = entry?;
+                if let Ok(name) = entry.file_name().to_str() {
+                    names.push(name.to_owned());
+                }
+            }
+            Ok(names)
+        }
+
         /// The byte length of `name`, or `None` when it does not exist.
         pub(in crate::runtime::artifacts) fn len(
             &self,
@@ -219,6 +231,13 @@ mod windows {
                 }
                 Err(error) => Err(error),
             }
+        }
+
+        /// The names in the directory.
+        pub(in crate::runtime::artifacts) fn names(&self) -> std::io::Result<Vec<String>> {
+            fs::read_dir(&self.0)?
+                .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+                .collect()
         }
 
         /// The byte length of `name`, or `None` when it does not exist.

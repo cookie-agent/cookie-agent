@@ -54,7 +54,7 @@ struct CapabilityArg {
 }
 
 /// What each `capabilities` item does and how to write it.
-const CAPABILITY_ITEMS: &str = "Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The same runtime may be listed twice with different workspaces. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.";
+const CAPABILITY_ITEMS: &str = "Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -321,11 +321,9 @@ impl ToolProvider for DelegateToolProvider {
              - stop_background with the child's handle stops its current turn.\n\
              - Use get_subagent_result to read a child's full output; it does not wait.",
         );
-        if self.capabilities_param(ctx.session)? == CapabilitiesParam::Required {
-            body.push_str(
-                "\n\nThis session has no workspace: only `global` is attached. Work that needs files or commands goes to a subagent given `capabilities`, and list_runtimes shows the machines and runtimes you can name.",
-            );
-        }
+        // A session with only `global` hears how to reach a machine from the
+        // runtimes block (`docs/site/specs/machines-on-demand.md` section
+        // 2.4), whether or not it may delegate.
         Ok(vec![PromptSection {
             title: "Available subagents".into(),
             body,

@@ -259,8 +259,8 @@ pub(crate) fn agent_default_model(
         })
 }
 
-/// The agent a run falls back to when its own is gone: `primary`, else the
-/// first root-runnable agent of the registry.
+/// The agent a run falls back to when its own is gone: `[agents] default`,
+/// else the first root-runnable agent of the registry.
 pub(crate) fn default_root_agent(registry: &AgentRegistry) -> Option<&ResolvedAgent> {
     let runnable = || {
         registry
@@ -269,7 +269,7 @@ pub(crate) fn default_root_agent(registry: &AgentRegistry) -> Option<&ResolvedAg
             .filter(|agent| agent.runnable_as_root)
     };
     runnable()
-        .find(|agent| agent.document.id.as_str() == "primary")
+        .find(|agent| agent.document.id == *registry.default_agent())
         .or_else(|| runnable().next())
 }
 

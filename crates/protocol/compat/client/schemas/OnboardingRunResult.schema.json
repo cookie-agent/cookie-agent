@@ -45,7 +45,12 @@
         },
         {
           "const": "small_model",
-          "description": "`small_model` is unset or names no model a connected provider offers.",
+          "description": "`small_model` is unset or names no model a connected provider offers.\nNot sent since 1.56.0: `small_model` is optional.",
+          "type": "string"
+        },
+        {
+          "const": "default_agent",
+          "description": "`[agents] default` names no agent that can run as a root, such as\nbefore the first refresh of the official agents (client protocol\n1.56.0).",
           "type": "string"
         }
       ],
@@ -95,6 +100,17 @@
               "type": "null"
             }
           ]
+        },
+        "utility_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnboardingModel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`utility_model` (client protocol 1.56.0)."
         }
       },
       "required": [

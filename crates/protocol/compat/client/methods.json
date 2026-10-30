@@ -4,6 +4,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "agents.update",
+      "params": "AgentsUpdateParams",
+      "params_role": "command",
+      "result": "AgentsUpdateResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "approval.list",
       "params": "ApprovalListParams",
       "params_role": "command",

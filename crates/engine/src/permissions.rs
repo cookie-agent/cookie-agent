@@ -927,6 +927,20 @@ pub(crate) fn cron_default_rules(mode: AgentMode, delegated: bool) -> Vec<Permis
     )]
 }
 
+/// The `attach` default (`docs/site/specs/machines-on-demand.md` section
+/// 3.3): a root run may attach and detach machines, and a delegated one,
+/// or an internal agent, has no rule, so the tools are hidden.
+pub(crate) fn attach_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    if delegated || mode == AgentMode::Internal {
+        return Vec::new();
+    }
+    vec![PermissionRule::new(
+        PermissionAction::ATTACH,
+        WildcardPattern::new("*").expect("static default pattern"),
+        PermissionEffect::Allow,
+    )]
+}
+
 /// Every rule the daemon supplies to a run of an agent of `mode`, root or
 /// `delegated`, each for an action its document names no key for.
 pub(crate) fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
@@ -934,6 +948,7 @@ pub(crate) fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<Permiss
         .into_iter()
         .chain(memory_default_rules(mode, delegated))
         .chain(cron_default_rules(mode, delegated))
+        .chain(attach_default_rules(mode, delegated))
         .collect()
 }
 

@@ -120,6 +120,7 @@ pub(crate) fn build_runtime_snapshot(
         providers,
         models: available_models,
         agents: agent_descriptors,
+        default_agent: Some(agents.default_agent().clone()),
     };
     view.validate()
         .map_err(|_| EngineError::RuntimeCompileFailed)?;

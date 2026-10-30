@@ -95,7 +95,7 @@ impl App {
             .or_else(|| {
                 candidates
                     .iter()
-                    .find(|agent| agent.id.as_str() == "primary")
+                    .find(|agent| agent.id == self.default_agent)
                     .copied()
             })
             .or_else(|| candidates.first().copied())?;
@@ -124,6 +124,7 @@ impl App {
         match project_agent(
             project,
             &self.agents,
+            &self.default_agent,
             |selection| self.selection_is_live(selection),
             fallback,
         ) {
@@ -143,7 +144,7 @@ impl App {
         let agents = self.selectable_agents();
         let agent = agents
             .iter()
-            .find(|agent| agent.id.as_str() == "primary")
+            .find(|agent| agent.id == self.default_agent)
             .or_else(|| agents.first())?;
         let model = agent
             .resolved_fallback

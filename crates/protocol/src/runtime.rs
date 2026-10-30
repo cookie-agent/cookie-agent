@@ -124,6 +124,12 @@ pub struct ModelCatalogView {
     pub models: Vec<AvailableModelDescriptor>,
     #[schemars(length(max = 4096))]
     pub agents: Vec<AgentDescriptor>,
+    /// `[agents] default`: the agent a new root session starts with when
+    /// neither the client nor its project chooses one (client protocol
+    /// 1.56.0). A client preselects it; an older daemon sends none, and its
+    /// default is `primary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<AgentId>,
 }
 
 impl ModelCatalogView {
@@ -177,6 +183,8 @@ impl<'de> Deserialize<'de> for ModelCatalogView {
             providers: Vec<ProviderDescriptor>,
             models: Vec<AvailableModelDescriptor>,
             agents: Vec<AgentDescriptor>,
+            #[serde(default)]
+            default_agent: Option<AgentId>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let value = Self {
@@ -185,6 +193,7 @@ impl<'de> Deserialize<'de> for ModelCatalogView {
             providers: wire.providers,
             models: wire.models,
             agents: wire.agents,
+            default_agent: wire.default_agent,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

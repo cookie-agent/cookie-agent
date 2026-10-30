@@ -214,7 +214,10 @@ async fn a_global_only_root_delegates_to_the_runtimes_it_names() {
         "{delegate}"
     );
     assert!(request_tool(root_request, "list_runtimes").is_some());
-    assert!(root_request.contains("This session has no workspace: only `global` is attached."));
+    assert!(
+        root_request
+            .contains("No machine is attached: you have no files or shell of your own yet.")
+    );
 
     // Each child got `global`, then the listed capabilities in order, under
     // the usual names, and no `capabilities` of its own.
@@ -843,9 +846,10 @@ async fn list_runtimes_prints_machines_runtimes_and_the_session_s_own_attachment
          <machine name=\"labpc\" platform=\"linux\">\n    \
          <runtime id=\"labpc\" connected=\"false\" starts_on_use=\"true\" home=\"/home/labpc\"/>\n  \
          </machine>\n  \
-         <unplaced>\n    \
+         <!-- The daemon does not know these runtimes' machines yet: they are not connected. One is placed on a machine when it connects, as attaching or delegating to it makes it do. -->\n  \
+         <not_connected_yet>\n    \
          <runtime id=\"roamer\" connected=\"false\" platform=\"\" message=\"runtime `roamer` disconnected: the other end closed the &lt;connection&gt;\"/>\n  \
-         </unplaced>\n\
+         </not_connected_yet>\n\
          </runtimes>",
         os = std::env::consts::OS,
         name = local.name,
@@ -870,7 +874,7 @@ async fn list_runtimes_prints_machines_runtimes_and_the_session_s_own_attachment
         .unwrap();
     let text = fixture.engine.list_runtimes_text(session).unwrap();
     assert!(
-        !text.contains("<global/>") && !text.contains("<!--"),
+        !text.contains("<global/>") && !text.contains("<!-- global"),
         "{text}"
     );
     assert!(text.contains(&format!("<attachment name=\"{local_name}\"")));

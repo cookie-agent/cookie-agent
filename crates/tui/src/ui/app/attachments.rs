@@ -7,8 +7,10 @@ use super::*;
 
 use std::path::{Path, PathBuf};
 
-use cookie_agent_protocol::ArtifactRef;
-use cookie_agent_runtime_api::media::{UploadRejection, validate_upload};
+use cookie_agent_protocol::{ArtifactRef, UploadKind};
+use cookie_agent_runtime_api::media::{
+    MAX_VIDEO_ATTACHMENT_BYTES, UploadRejection, validate_upload,
+};
 
 /// A pasted path the TUI offers to attach instead of typing it.
 #[derive(Clone, Debug)]
@@ -19,7 +21,7 @@ pub(in crate::ui) struct AttachOffer {
 }
 
 pub(in crate::ui) use cookie_agent_client_state::uploads::AcceptedMedia;
-use cookie_agent_client_state::uploads::too_large;
+use cookie_agent_client_state::uploads::{attached_as_file, too_large};
 
 /// The file a paste names when it is exactly one existing file path, as
 /// terminals paste a file dropped on them: absolute, `~/…`, or a `file://`
@@ -98,7 +100,7 @@ async fn upload_file(
     session_id: SessionId,
     path: PathBuf,
     accepted: AcceptedMedia,
-) -> Result<ArtifactRef, String> {
+) -> Result<Uploaded, String> {
     let shown = path.display().to_string();
     let name = upload_name(&path).unwrap_or_else(|| shown.clone());
     let bytes = tokio::fs::read(&path)
@@ -107,49 +109,66 @@ async fn upload_file(
     if bytes.is_empty() {
         return Err(format!("{name} is empty"));
     }
-    match validate_upload(&bytes) {
-        Ok(upload) => accepted.check(
-            &name,
-            upload.kind,
-            upload.media_type,
-            bytes.len() as u64,
-            upload.image,
-        )?,
-        Err(UploadRejection::Unrecognized) => {
-            return Err(format!(
-                "{name} is not a file the model can take; {} accepts {}",
-                accepted.model,
-                accepted.kinds()
-            ));
-        }
+    // What the model cannot take inline is attached as a file: the model
+    // sees its label and can copy it to a machine with `transfer`.
+    let as_file = match validate_upload(&bytes) {
+        Ok(upload) => accepted
+            .check(
+                &name,
+                upload.kind,
+                upload.media_type,
+                bytes.len() as u64,
+                upload.image,
+            )
+            .err(),
+        Err(UploadRejection::Unrecognized) => Some(format!(
+            "{} takes {} inline",
+            accepted.model,
+            accepted.kinds()
+        )),
         Err(UploadRejection::Malformed { media_type }) => {
-            return Err(format!("{name} starts like {media_type} but is not valid"));
+            Some(format!("it starts like {media_type} but is not valid"))
         }
         Err(UploadRejection::TooLarge {
             kind,
             byte_length,
             max_bytes,
             image,
-        }) => {
-            return Err(match image {
-                Some((width, height)) => format!(
-                    "{name} is {width}×{height} pixels; images are accepted up to {} pixels a side and {} pixels",
-                    cookie_agent_runtime_api::media::MAX_IMAGE_DIMENSION,
-                    cookie_agent_runtime_api::media::MAX_IMAGE_PIXELS
-                ),
-                None => too_large(&name, kind, byte_length, max_bytes),
-            });
-        }
-    }
-    cookie_agent_client_state::uploads::upload(
+        }) => Some(match image {
+            Some((width, height)) => format!(
+                "{width}×{height} pixels; images are taken up to {} pixels a side and {} pixels",
+                cookie_agent_runtime_api::media::MAX_IMAGE_DIMENSION,
+                cookie_agent_runtime_api::media::MAX_IMAGE_PIXELS
+            ),
+            None => too_large(&name, kind, byte_length, max_bytes),
+        }),
+    };
+    let kind = if as_file.is_some() {
+        UploadKind::File
+    } else {
+        UploadKind::Media
+    };
+    let artifact = cookie_agent_client_state::uploads::upload(
         &client,
         session_id,
         &name,
         upload_name(&path),
         &bytes,
+        kind,
     )
     .await
-    .map_err(|failure| failure.message)
+    .map_err(|failure| failure.message)?;
+    Ok(Uploaded {
+        artifact,
+        note: as_file.map(|reason| attached_as_file(&name, &reason)),
+    })
+}
+
+/// A file uploaded, and what the status line says of it when it went up as
+/// a file the model does not take inline.
+pub(in crate::ui) struct Uploaded {
+    pub(in crate::ui) artifact: ArtifactRef,
+    pub(in crate::ui) note: Option<String>,
 }
 
 impl App {
@@ -177,17 +196,16 @@ impl App {
         })
     }
 
-    /// Whether attaching is offered at all: the selected model accepts some
-    /// kind of file.
+    /// Whether attaching is offered at all: a model is selected. A file it
+    /// does not take inline goes up as a file, which it sees as its label.
     pub(in crate::ui) fn attachments_offered(&self) -> bool {
-        self.accepted_media()
-            .is_some_and(|accepted| !accepted.media.is_empty())
+        self.accepted_media().is_some()
     }
 
     /// Upload the file at `path` and attach it to the draft once the daemon
-    /// stored it. Refuses, without reading it, a path that is no file, a
-    /// model that accepts no files, and a file larger than anything the
-    /// model accepts; the rest of the checks run on the file's content.
+    /// stored it. Refuses, without reading it, a path that is no file and a
+    /// file larger than the daemon's upload limit; what the model does not
+    /// take inline goes up as a file.
     pub(in crate::ui) async fn attach_file(&mut self, path: &str) {
         let Some(path) = expand_home(path.trim()) else {
             self.status = "cannot expand ~ without HOME".into();
@@ -198,10 +216,6 @@ impl App {
             self.status = "select a model before attaching a file".into();
             return;
         };
-        if accepted.media.is_empty() {
-            self.status = format!("{} accepts no attachments", accepted.model);
-            return;
-        }
         let metadata = match std::fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => {
@@ -214,12 +228,13 @@ impl App {
             }
         };
         let name = upload_name(&path).unwrap_or_else(|| shown.clone());
-        if metadata.len() > accepted.largest() {
+        // A file the model does not take still goes up as a file, up to
+        // the daemon's upload limit.
+        if metadata.len() > MAX_VIDEO_ATTACHMENT_BYTES {
             self.status = format!(
-                "{name} is {}; {} accepts files up to {}",
+                "{name} is {}; files are attached up to {}",
                 cookie_agent_protocol::human_bytes(metadata.len()),
-                accepted.model,
-                cookie_agent_protocol::human_bytes(accepted.largest())
+                cookie_agent_protocol::human_bytes(MAX_VIDEO_ATTACHMENT_BYTES)
             );
             return;
         }
@@ -255,11 +270,13 @@ impl App {
         &mut self,
         session_id: SessionId,
         name: String,
-        result: Result<ArtifactRef, String>,
+        result: Result<Uploaded, String>,
     ) {
         match result {
-            Ok(artifact) if self.selected == Some(session_id) => {
-                self.status = format!("attached {}", crate::state::attachment_chip(&artifact));
+            Ok(Uploaded { artifact, note }) if self.selected == Some(session_id) => {
+                self.status = note.unwrap_or_else(|| {
+                    format!("attached {}", crate::state::attachment_chip(&artifact))
+                });
                 if !self
                     .attachments
                     .iter()

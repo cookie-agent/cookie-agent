@@ -3126,6 +3126,7 @@ impl Engine {
         context.extend(self.runtimes_block(
             session,
             Some(&super::super::runtime_notes::BuiltinTools { runtime, cwd }),
+            None,
         ));
         context.extend(
             events

@@ -259,17 +259,17 @@ fn internal_chain(fixture: &Fixture, id: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn approval_and_title_use_the_small_model_then_the_parent_and_compaction_the_parent() {
+async fn approval_and_title_use_the_utility_model_then_the_parent_and_compaction_the_parent() {
     let fixture = fixture_with(None);
     for id in ["approval", "title"] {
         assert_eq!(internal_chain(&fixture, id), ["parent:None"], "{id}");
-        assert_eq!(descriptor(&fixture, id).unset_models, ["small_model"]);
+        assert_eq!(descriptor(&fixture, id).unset_models, ["utility_model"]);
     }
     assert_eq!(internal_chain(&fixture, "compaction"), ["parent:None"]);
 
     set(
         &fixture,
-        "small_model",
+        "utility_model",
         serde_json::json!("custom.test/z-model"),
     )
     .await;
@@ -316,7 +316,7 @@ async fn parent_model_takes_the_entry_variant_when_frozen_and_live() {
     write_agent(
         &fixture,
         "title.md",
-        "---\ndescription: Titles\nmode: internal\nmodels:\n  - { model: \"${parent_model}\", variant: alpha }\n---\n{{default_prompt}}\n",
+        "---\ndescription: Titles\nmode: internal\nmodels:\n  - { model: \"${parent_model}\", variant: alpha }\n---\nName the session.\n",
     )
     .await;
     let selection = root_selection(&fixture, "primary");
@@ -361,7 +361,7 @@ async fn parent_model_takes_the_entry_variant_when_frozen_and_live() {
     write_agent(
         &fixture,
         "title.md",
-        "---\ndescription: Titles\nmode: internal\nmodels:\n  - { model: \"${parent_model}\", variant: missing }\n---\n{{default_prompt}}\n",
+        "---\ndescription: Titles\nmode: internal\nmodels:\n  - { model: \"${parent_model}\", variant: missing }\n---\nName the session.\n",
     )
     .await;
     let policy = frozen_root_policy(&fixture, &selection);
@@ -374,9 +374,9 @@ async fn parent_model_takes_the_entry_variant_when_frozen_and_live() {
 }
 
 #[tokio::test]
-async fn without_a_parent_model_the_reviewer_runs_on_the_small_model_alone() {
+async fn without_a_parent_model_the_reviewer_runs_on_the_utility_model_alone() {
     // An ACP agent's run has no model of its own: its reviewer has only
-    // `${small_model}`, and without it nothing, so `ask` goes to the user.
+    // `${utility_model}`, and without it nothing, so `ask` goes to the user.
     let fixture = fixture_with(Some(
         "---\ndescription: Primary\nmode: primary\nmodels: [custom.test/a-model]\npermissions: {}\n---\nWork.\n",
     ));
@@ -390,7 +390,7 @@ async fn without_a_parent_model_the_reviewer_runs_on_the_small_model_alone() {
 
     set(
         &fixture,
-        "small_model",
+        "utility_model",
         serde_json::json!("custom.test/z-model"),
     )
     .await;

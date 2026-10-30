@@ -1,6 +1,8 @@
 # Machines on demand: official agents, model tiers, attachments from tools, routed tools, and transfers
 
-Approved draft, 2026-10-29. Every decision is made.
+Implemented, 2026-10-30 (client protocol 1.56.0, runtime protocol 1.13.0).
+Every decision is made; the [implementation notes](#implementation-notes)
+list where the code departs from the text below.
 
 **Decided by the user, 2026-10-29:**
 
@@ -39,6 +41,71 @@ Approved draft, 2026-10-29. Every decision is made.
   media the model cannot take (section 6.4).
 - Official agents' refreshes apply as they arrive, frontmatter and
   permissions included, as official skills' do (section 2.1).
+
+## Implementation notes
+
+What the implementation does differently from the sections below, or adds:
+
+- **`transfer` is offered only where it can run** (section 6.1): when the
+  session has a machine attached whose runtime reports `files`, besides the
+  `write` rule its permission name needs. A session on `global` alone gets
+  it once `attach_machine` attaches a machine.
+- **The relay pipeline** (section 6.3, step 3) reads one chunk while the one
+  before it is written, rather than keeping up to 4 in flight: two chunks,
+  at most 2 MiB, per transfer.
+- **`fs/copy` takes two prepared routes** (`from`, `to`) instead of paths:
+  both ends are prepared for the permission check anyway. Closing its `to`
+  route stops it. A folder copied within one runtime while `[transfer]
+  max_bytes` is set is relayed through the daemon instead, which counts it.
+- **`fs/prepare` answers more** than a route: the lexical absolute `path`
+  results show, the permission `label`, and a `binding` of the resolved
+  location for the approval identity. The destination's existence is
+  checked there too, so an existing destination without `overwrite` is
+  refused before anyone is asked to approve.
+- **Links that may lead outside a folder** (section 6.3) are left out at
+  the destination and counted in `skipped`, as devices are at the source,
+  rather than failing the transfer: a virtual environment's absolute links
+  would otherwise make it impossible to copy. A link counts as inside when
+  it is relative and climbs (`..`) only before its first name and no higher
+  than the folder; names that climb and entries below a link the stream
+  made still fail it.
+- **Permissions per resource**: a prepared call can check each resource in
+  its own scope (`ResourceScope`: runtime, workspace, home), so the source is
+  checked as `read@<source runtime>` and the destination as
+  `write@<destination runtime>` only, not each under both runtimes.
+- **`kind: file` uploads** are stored as `application/octet-stream`, the
+  type no model is sent as bytes; the label carries the name and size. The
+  clients upload as a file whatever the selected model does not take
+  inline, rather than refusing it, and offer attaching for any selected
+  model; only the 25 MiB upload limit refuses a file.
+- **Labels in the clients**: the label is model input the engine adds
+  while it builds the history; the clients show a file as before, by its
+  chip, not by the label.
+- **Golden history**: the frozen golden logs predate labels, so their
+  comparison ignores label text parts in the history views and nothing
+  else.
+- **An internal agent without a document** (`approval` or `title` before
+  the official agents were first fetched, or with `[agents] official =
+  false` and no document of the user's) is frozen disabled: its runs end
+  unavailable, so a review passes the call to the user and a title falls
+  back, instead of every run failing to start.
+- **The web client's runtime cards** take one workspace each, and the note
+  about prefixed tool names is gone; a second coding runtime on the same
+  machine is refused on its card with the daemon's reason.
+- **ACP sessions** keep the earlier runtimes block and are exempt from
+  section 4's one-name-per-machine rule: an ACP agent takes no routed
+  tools, and its extra directories are attachments of one capability.
+- **`[agents] default`** is diagnosed only when it is set and names no
+  runnable agent; without it the first runnable agent is the fallback.
+- **Partial-copy cleanup after a crash** uses a journal: each partial copy
+  is recorded under `~/.cookie-agent/transfers/` while it exists, and a
+  start of `cookie runtime serve` (or the daemon's own `local` runtime)
+  removes the ones recorded more than a day ago.
+
+**Not done yet** (section 5.4, items 4 and 5): `list_runtimes` does not show
+each runtime's tool groups, and the clients show a routed call's machine
+only among its arguments, as the model sent `machine`, not as a badge in the
+tool header.
 
 ## 1. Goal and scope
 

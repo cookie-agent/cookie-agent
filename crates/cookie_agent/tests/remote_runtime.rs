@@ -263,7 +263,7 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 65536, o
 
 [runtimes.remote]
 command = {command}
-env = {{ HOME = {home} }}
+env = {{ HOME = {home}, COOKIE_AGENT_TEST_MACHINE_ID = "remote-machine" }}
 startup_timeout_ms = {startup_timeout_ms}
 shutdown_grace_ms = 2000
 {extra}"#,
@@ -276,7 +276,7 @@ shutdown_grace_ms = 2000
         private_dir(&agents);
         fs::write(
             agents.join("primary.md"),
-            "---\ndescription: Remote runtime agent\nmode: primary\nenabled: true\nmodels:\n  - { model: \"custom.local/test\", variant: null }\npermissions:\n  read: allow\n  bash: allow\n  mcp: allow\n---\nUse the tools.\n",
+            "---\ndescription: Remote runtime agent\nmode: primary\nenabled: true\nmodels:\n  - { model: \"custom.local/test\", variant: null }\npermissions:\n  read: allow\n  write: allow\n  bash: allow\n  mcp: allow\n---\nUse the tools.\n",
         )
         .expect("agent");
         let configuration =
@@ -409,12 +409,23 @@ shutdown_grace_ms = 2000
         .unwrap_or_else(|_| panic!("`remote` never became {status:?}"));
     }
 
+    /// The machine the remote runtime is on, as calls name it.
+    fn remote_machine(&self) -> String {
+        self.engine
+            .runtime_machine("remote")
+            .expect("the remote runtime's machine")
+            .to_string()
+    }
+
     /// Runs `bash` on the remote runtime to record its process ID in
     /// `file` (relative to the remote workspace) and returns it.
     async fn remote_pid(&self, session: SessionId, file: &str) -> i32 {
         self.model.enqueue(tool_call(
-            "remote_repo_bash",
-            &serde_json::json!({"command": format!("echo $PPID > {file}")}),
+            "bash",
+            &serde_json::json!({
+                "command": format!("echo $PPID > {file}"),
+                "machine": self.remote_machine(),
+            }),
         ));
         self.model.enqueue(final_answer("recorded"));
         let ended = self.run(session, "record the runtime process").await;
@@ -475,13 +486,16 @@ async fn a_configured_runtime_runs_tools_in_its_workspace_next_to_local() {
         .expect("local attachment");
     assert_eq!(local.name.as_str(), "local_web");
 
+    // One `bash` and one `read` for both machines, each call naming where
+    // it runs (machines on demand, section 5).
+    let machine = fixture.remote_machine();
     fixture.model.enqueue(tool_call(
-        "remote_repo_bash",
-        &serde_json::json!({"command": "pwd > where.txt"}),
+        "bash",
+        &serde_json::json!({"command": "pwd > where.txt", "machine": machine}),
     ));
     fixture.model.enqueue(tool_call(
-        "remote_repo_read",
-        &serde_json::json!({"filePath": "note.txt"}),
+        "read",
+        &serde_json::json!({"filePath": "note.txt", "machine": machine}),
     ));
     fixture.model.enqueue(final_answer("done"));
     let ended = fixture.run(session, "look at the remote repository").await;
@@ -497,20 +511,20 @@ async fn a_configured_runtime_runs_tools_in_its_workspace_next_to_local() {
         "{ended:?}"
     );
 
-    // Both coding runtimes offer the same tools, so each is prefixed with
-    // its attachment name (the agent may use only `read` and `bash`).
+    // Both coding runtimes offer the same tools, published once each and
+    // routed by `machine` (the agent may use only `read` and `bash`).
     let requests = fixture.model.requests();
     assert_eq!(requests.len(), 3, "{requests:#?}");
     let tools = offered_tools(&requests[0]);
-    for name in [
-        "local_web_bash",
-        "local_web_read",
-        "remote_repo_bash",
-        "remote_repo_read",
-    ] {
+    for name in ["bash", "read"] {
         assert!(tools.iter().any(|tool| tool == name), "{name}: {tools:?}");
     }
-    assert!(!tools.iter().any(|tool| tool == "bash"), "{tools:?}");
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool.starts_with("remote_repo_") || tool.starts_with("local_web_")),
+        "{tools:?}"
+    );
     // `bash` ran in the remote workspace, and `read` read from it.
     assert_eq!(
         fs::read_to_string(fixture.repo.join("where.txt"))
@@ -535,6 +549,105 @@ async fn a_configured_runtime_runs_tools_in_its_workspace_next_to_local() {
         .filter(|instance| instance.runtime_id == "remote")
         .count();
     assert_eq!(remote_instances, 1);
+    fixture.engine.shutdown().await;
+    drop(fixture.root);
+}
+
+/// Every file below `root` whose bytes hold `needle`.
+fn files_holding(root: &Path, needle: &[u8]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_owned()];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if fs::read(&path)
+                .is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+#[tokio::test]
+async fn transfer_relays_files_and_folders_between_machines_and_keeps_none_of_them() {
+    let fixture = Fixture::new(30_000).await;
+    let session = fixture.session().await;
+    let remote = fixture.remote_machine();
+    let local = fixture
+        .engine
+        .runtime_machine("local")
+        .expect("the local runtime's machine")
+        .to_string();
+    assert_ne!(local, remote);
+    fs::create_dir_all(fixture.web.join("site/assets")).unwrap();
+    fs::write(
+        fixture.web.join("site/index.html"),
+        "<h1>only in transit</h1>",
+    )
+    .unwrap();
+    fs::write(fixture.web.join("site/assets/app.js"), "run();").unwrap();
+    let copy_note = serde_json::json!({
+        "from": {"machine": remote, "path": "note.txt"},
+        "to": {"machine": local, "path": "copies/note.txt"},
+    });
+    fixture.model.enqueue(tool_call("transfer", &copy_note));
+    fixture.model.enqueue(tool_call(
+        "transfer",
+        &serde_json::json!({
+            "from": {"machine": local, "path": "site"},
+            "to": {"machine": remote, "path": "~/deployed"},
+        }),
+    ));
+    // The copy exists now: without overwrite the second is refused.
+    fixture.model.enqueue(tool_call("transfer", &copy_note));
+    fixture.model.enqueue(final_answer("done"));
+    let ended = fixture.run(session, "move the files").await;
+    assert!(
+        matches!(
+            ended,
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Completed { .. }
+                )
+            }
+        ),
+        "{ended:?}"
+    );
+    let requests = fixture.model.requests();
+    assert_eq!(requests.len(), 4, "{requests:#?}");
+    assert!(
+        offered_tools(&requests[0])
+            .iter()
+            .any(|tool| tool == "transfer")
+    );
+    assert!(requests[1].contains("SHA-256"), "{}", requests[1]);
+    assert!(requests[2].contains("2 files"), "{}", requests[2]);
+    assert!(requests[3].contains("exists already"), "{}", requests[3]);
+    assert_eq!(
+        fs::read_to_string(fixture.web.join("copies/note.txt")).unwrap(),
+        "remote note\n"
+    );
+    let deployed = fixture.remote_home.join("deployed");
+    assert_eq!(
+        fs::read_to_string(deployed.join("index.html")).unwrap(),
+        "<h1>only in transit</h1>"
+    );
+    assert_eq!(
+        fs::read_to_string(deployed.join("assets/app.js")).unwrap(),
+        "run();"
+    );
+    // The bytes passed through the daemon and stayed nowhere in its data.
+    assert_eq!(
+        files_holding(&fixture.root.path().join("data"), b"only in transit"),
+        Vec::<PathBuf>::new()
+    );
     fixture.engine.shutdown().await;
     drop(fixture.root);
 }
@@ -579,20 +692,17 @@ async fn a_killed_runtime_reconnects_and_one_that_cannot_is_dropped() {
     );
     assert_eq!(fixture.remote_status(), Some(RuntimeInstanceStatus::Failed));
 
-    // Without the remote runtime nothing collides, but names stay put for
-    // the round: `local_web_bash` is still `local`'s, and the remote
-    // runtime's tools stay declared until the round ends.
+    // Without the remote runtime its machine no longer offers the tools,
+    // but `bash` stays, named the same, for `local`'s machine.
     fixture.model.enqueue(final_answer("only local"));
     let before = fixture.model.requests().len();
     fixture.run(session, "what can you use?").await;
     let tools = offered_tools(&fixture.model.requests()[before]);
+    assert!(tools.iter().any(|tool| tool == "bash"), "{tools:?}");
     assert!(
-        tools.iter().any(|tool| tool == "local_web_bash"),
-        "{tools:?}"
-    );
-    assert!(!tools.iter().any(|tool| tool == "bash"), "{tools:?}");
-    assert!(
-        tools.iter().any(|tool| tool.starts_with("remote_repo_")),
+        !tools
+            .iter()
+            .any(|tool| tool.starts_with("remote_repo_") || tool.starts_with("local_web_")),
         "{tools:?}"
     );
 
@@ -758,7 +868,9 @@ async fn a_workspace_outside_the_runtime_roots_is_refused_and_records_nothing() 
     .unwrap();
     let fixture = Fixture::with_config(
         30_000,
-        &format!("\n[runtimes.rooted]\ncommand = {command}\nstartup_timeout_ms = 30000\n"),
+        &format!(
+            "\n[runtimes.rooted]\ncommand = {command}\nenv = {{ COOKIE_AGENT_TEST_MACHINE_ID = \"rooted-machine\" }}\nstartup_timeout_ms = 30000\n"
+        ),
     )
     .await;
     let outside = fixture.web.canonicalize().unwrap();
@@ -991,6 +1103,8 @@ async fn a_runtime_dials_in_and_serves_a_session() {
     let mut runtime = tokio::process::Command::new(env!("CARGO_BIN_EXE_cookie"))
         .args(["runtime", "serve", "--daemon", "--id", "labpc"])
         .env("HOME", &fixture.remote_home)
+        // A machine of its own, as another computer's runtime has.
+        .env("COOKIE_AGENT_TEST_MACHINE_ID", "labpc-machine")
         .env_remove("COOKIE_DAEMON_TOKEN")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1114,6 +1228,8 @@ fn dial_in_command(
         .arg(format!("ws://{address}/ws"))
         .args(["--id", id, "--token", token])
         .env("HOME", &fixture.remote_home)
+        // A machine of its own, as another computer's runtime has.
+        .env("COOKIE_AGENT_TEST_MACHINE_ID", format!("{id}-machine"))
         .env_remove("COOKIE_DAEMON_TOKEN")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

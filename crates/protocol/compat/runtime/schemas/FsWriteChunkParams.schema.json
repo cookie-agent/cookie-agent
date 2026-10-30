@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/write_chunk`.",
+  "properties": {
+    "data": {
+      "description": "Standard base64, at most [`MAX_FS_CHUNK_BYTES`] decoded.",
+      "type": "string"
+    },
+    "handle": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "offset": {
+      "description": "Bytes the handle has taken before these: chunks come in order.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "handle",
+    "offset",
+    "data"
+  ],
+  "title": "FsWriteChunkParams",
+  "type": "object"
+}

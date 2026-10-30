@@ -538,17 +538,24 @@ impl App {
                 });
             }
             PaletteAction::Attach => {
-                let Some(accepted) = self
-                    .accepted_media()
-                    .filter(|accepted| !accepted.media.is_empty())
-                else {
-                    self.status = "the selected model accepts no attachments".into();
+                let Some(accepted) = self.accepted_media() else {
+                    self.status = "select a model before attaching a file".into();
                     return;
                 };
+                let accepts = if accepted.media.is_empty() {
+                    format!(
+                        "{} takes no files inline; any file goes up as a file",
+                        accepted.model
+                    )
+                } else {
+                    format!(
+                        "{} takes {} inline; other files go up as files",
+                        accepted.model,
+                        accepted.kinds()
+                    )
+                };
                 self.push_palette_step(PaletteStep::Text {
-                    target: TextTarget::AttachPath {
-                        accepts: format!("{} accepts {}", accepted.model, accepted.kinds()),
-                    },
+                    target: TextTarget::AttachPath { accepts },
                     input: InputState::default(),
                 });
             }

@@ -42,7 +42,8 @@ pub use execution::{
 pub use media::AdapterFamily;
 pub use prepared::{
     PreparedDeclaration, PreparedExecutor, PreparedExecutorCell, PreparedSerializationKey,
-    PreparedTool, ToolCompletion, bounded_tool_display, sanitize_tool_display, text_head,
+    PreparedTool, ResourceScope, ToolCompletion, bounded_tool_display, sanitize_tool_display,
+    text_head,
 };
 pub use producers::{ProducerChannel, ProducerMessage};
 pub use provider::{

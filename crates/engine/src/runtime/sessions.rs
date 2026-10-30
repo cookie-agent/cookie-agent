@@ -177,7 +177,8 @@ impl Engine {
                 );
             }
         }
-        let attachments = self.resolve_session_runtimes(&runtimes).await?;
+        let acp = self.selects_acp_agent(&selection.agent, selection.preset.as_deref());
+        let attachments = self.resolve_session_runtimes(&runtimes, acp).await?;
         let cwd = runtimes
             .cwd
             .as_deref()

@@ -17,7 +17,7 @@ use super::{
     permission_actions, permission_rows, source_label, status_name,
 };
 use crate::{
-    attach::{accept_attribute, accepts_images},
+    attach::{accept_attribute, accepts_images, camera_accept_attribute},
     files::{CAMERA_INPUT, FILE_INPUT, files_of, pick_files},
     icons::Glyph,
     workspace::{RuleRef, Workspace},
@@ -183,16 +183,15 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
 
 /// Which attach buttons [`AttachButtons`] shows for the draft's model.
 pub(super) fn attach_buttons(workspace: Workspace) -> crate::attach::AttachButtons {
-    crate::attach::attach_buttons(
-        &workspace
-            .accepted_media()
-            .map(|accepted| accepted.media)
-            .unwrap_or_default(),
-    )
+    workspace
+        .accepted_media()
+        .map_or(crate::attach::AttachButtons::None, |accepted| {
+            crate::attach::attach_buttons(&accepted.media)
+        })
 }
 
-/// The attach and camera buttons and their hidden file inputs, offered
-/// only for the media the selected model accepts.
+/// The attach and camera buttons and their hidden file inputs, once a model
+/// is selected: any file, and the camera for a model that takes images.
 #[component]
 pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
     let media = Memo::new(move |_| {
@@ -202,15 +201,7 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
             .unwrap_or_default()
     });
     let accept = move || accept_attribute(&media.get());
-    let camera_accept = move || {
-        let media = media.get();
-        accept_attribute(
-            &media
-                .into_iter()
-                .filter(|entry| entry.kind.as_str() == "image")
-                .collect::<Vec<_>>(),
-        )
-    };
+    let camera_accept = move || camera_accept_attribute(&media.get());
     let on_change = move |event: ev::Event| {
         let Some(input) = event.target().and_then(|target| {
             wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlInputElement>(target).ok()
@@ -222,7 +213,7 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
         workspace.attach_files(files);
     };
     view! {
-        <Show when=move || !media.with(Vec::is_empty)>
+        <Show when=move || workspace.accepted_media().is_some()>
             <input
                 type="file"
                 id=FILE_INPUT

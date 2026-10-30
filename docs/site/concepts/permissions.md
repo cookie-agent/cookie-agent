@@ -18,7 +18,9 @@ Each tool declares a permission *action* and names the *resource* of each call:
 - `memory` and `memory_write`: the memory URL;
 - `cron`: the target kind of the cron job a call touches, `session`,
   `subagent`, or `new`;
-- `list_runtimes`: nothing to name; any rule pattern matches.
+- `list_runtimes`: nothing to name; any rule pattern matches;
+- `attach` (`attach_machine`, `detach_machine`): the workspace, checked on
+  the target runtime (`attach@labpc`).
 
 Actions are free-form labels, a lowercase letter then up to 31 lowercase
 letters, digits, or underscores, so a runtime's or a plugin's tools can
@@ -83,6 +85,12 @@ subagent sees the cron tools only when its document grants `cron`. Whatever
 the rules say, an agent can target only its own session or one below it, and
 only you, from a client, can set a new-session job's permission mode or pin
 its model. See [Cron permissions](../extend/agents.md#cron-permissions).
+
+The `attach` action defaults the same way: `attach: allow` for a root run of
+any agent but an internal one, and none for a delegated run, so a subagent
+attaches machines only when its document grants `attach`. A run attaches to
+its own session only. See
+[Attaching from a session](runtimes.md#attaching-from-a-session).
 
 ## How the levels combine
 

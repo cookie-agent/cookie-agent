@@ -3,7 +3,6 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use base64::Engine as _;
 use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
@@ -13,8 +12,8 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    CatalogRevision, ClientDelivery, OnboardingFileAction, OnboardingKitSource,
-    OnboardingModelInput, OnboardingRequirement, OnboardingRunParams,
+    CatalogRevision, ClientDelivery, OnboardingModelInput, OnboardingRequirement,
+    OnboardingRunParams,
 };
 use jiff::Timestamp;
 
@@ -98,16 +97,13 @@ fn fixture() -> Fixture {
 const AGENT: &[u8] =
     b"---\ndescription: Primary\nmode: primary\nmodels: [\"${default_model}\"]\n---\nWork.\n";
 
-fn kit() -> String {
-    base64::engine::general_purpose::STANDARD.encode(cookie_agent_engine::testing::pack_kit(&[(
-        "agents/primary.md",
-        AGENT,
-    )]))
-}
-
 #[tokio::test]
 async fn a_plain_client_onboards_through_the_daemon() {
     let fixture = fixture();
+    // No official agents can be fetched here: the address answers nothing.
+    fixture
+        .engine
+        .set_official_agents_url("http://127.0.0.1:9/agents");
     let client = Arc::clone(&fixture.server).connect_in_process();
     client.handshake().await.expect("handshake");
     let mut deliveries = client.subscribe_deliveries().expect("deliveries");
@@ -118,65 +114,57 @@ async fn a_plain_client_onboards_through_the_daemon() {
         status.missing,
         [
             OnboardingRequirement::DefaultModel,
-            OnboardingRequirement::SmallModel
+            OnboardingRequirement::DefaultAgent
         ]
     );
     assert_eq!(status.providers_connected[0].as_str(), "custom.test");
 
-    let source = OnboardingKitSource::Archive { data: kit() };
-    let preview = client
-        .preview_onboarding(Some(source.clone()))
-        .await
-        .expect("onboarding.preview");
-    assert_eq!(preview.origin, "archive");
-    assert_eq!(preview.files.len(), 1);
-    assert_eq!(preview.files[0].path, "agents/primary.md");
-    assert_eq!(preview.files[0].action, OnboardingFileAction::Write);
-
-    // Without a small model the daemon would not be set up: refused, and
+    // Without a default agent the daemon would not be set up: refused, and
     // nothing is written.
+    let models = OnboardingRunParams {
+        install_kit: false,
+        source: None,
+        default_model: Some(OnboardingModelInput::Key(
+            "custom.test/a-model".parse().unwrap(),
+        )),
+        small_model: Some(OnboardingModelInput::Table(
+            cookie_agent_protocol::OnboardingModelTable {
+                model: "custom.test/a-model".parse().unwrap(),
+                variant: Some(serde_json::from_value(serde_json::json!("low")).unwrap()),
+            },
+        )),
+        utility_model: None,
+    };
     let refused = client
-        .run_onboarding(OnboardingRunParams {
-            install_kit: true,
-            source: Some(source.clone()),
-            default_model: Some(OnboardingModelInput::Key(
-                "custom.test/a-model".parse().unwrap(),
-            )),
-            small_model: None,
-        })
+        .run_onboarding(models.clone())
         .await
         .expect_err("refused");
     assert!(refused.is(&cookie_agent_protocol::errors::ONBOARDING_INCOMPLETE));
     let data = refused.error_data().expect("error data");
-    assert_eq!(data.fields["missing"], serde_json::json!(["small_model"]));
+    assert_eq!(data.fields["missing"], serde_json::json!(["default_agent"]));
     let root = fixture.directory.path().join(".cookie-agent");
-    assert!(!root.join("agents").exists());
+    let before = std::fs::read(root.join("config.toml")).expect("config");
 
-    let result = client
-        .run_onboarding(OnboardingRunParams {
-            install_kit: true,
-            source: Some(source),
-            default_model: Some(OnboardingModelInput::Key(
-                "custom.test/a-model".parse().unwrap(),
-            )),
-            small_model: Some(OnboardingModelInput::Table(
-                cookie_agent_protocol::OnboardingModelTable {
-                    model: "custom.test/a-model".parse().unwrap(),
-                    variant: Some(serde_json::from_value(serde_json::json!("low")).unwrap()),
-                },
-            )),
-        })
-        .await
-        .expect("onboarding.run");
+    // The user's own agent is the default agent: the run sets the models.
+    std::fs::create_dir_all(root.join("agents")).unwrap();
+    std::fs::write(root.join("agents/primary.md"), AGENT).unwrap();
+    fixture.engine.reload_configuration().await.expect("reload");
+    assert_eq!(
+        std::fs::read(root.join("config.toml")).expect("config"),
+        before,
+        "the refused run wrote nothing"
+    );
+    let result = client.run_onboarding(models).await.expect("onboarding.run");
     assert!(result.status.ready);
-    assert_eq!(result.written, ["agents/primary.md"]);
+    assert!(result.written.is_empty() && result.written_new.is_empty());
     assert_eq!(result.settings, ["default_model", "small_model"]);
-    assert!(root.join("agents/primary.md").exists());
 
     let changed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             match deliveries.recv().await {
-                Some(ClientDelivery::OnboardingChanged(status)) => return status,
+                Some(ClientDelivery::OnboardingChanged(status)) if status.ready => {
+                    return status;
+                }
                 Some(_) => {}
                 None => panic!("deliveries ended"),
             }
@@ -184,7 +172,6 @@ async fn a_plain_client_onboards_through_the_daemon() {
     })
     .await
     .expect("onboarding.changed");
-    assert!(changed.ready);
     assert_eq!(
         serde_json::to_value(&changed.small_model).unwrap(),
         serde_json::json!({"model": "custom.test/a-model", "variant": "low"})
@@ -193,34 +180,11 @@ async fn a_plain_client_onboards_through_the_daemon() {
 }
 
 #[tokio::test]
-async fn a_bad_archive_and_a_bad_model_value_are_refused() {
+async fn there_is_no_starter_kit_to_preview() {
     let fixture = fixture();
     let client = Arc::clone(&fixture.server).connect_in_process();
     client.handshake().await.expect("handshake");
-    let error = client
-        .preview_onboarding(Some(OnboardingKitSource::Archive {
-            data: base64::engine::general_purpose::STANDARD.encode(b"not a kit"),
-        }))
-        .await
-        .expect_err("refused");
+    let error = client.preview_onboarding(None).await.expect_err("refused");
     assert!(error.is(&cookie_agent_protocol::errors::ONBOARDING_KIT_UNAVAILABLE));
-
-    let result = client
-        .run_onboarding(OnboardingRunParams {
-            install_kit: false,
-            source: None,
-            default_model: Some(OnboardingModelInput::Table(
-                cookie_agent_protocol::OnboardingModelTable {
-                    model: "custom.test/a-model".parse().unwrap(),
-                    variant: None,
-                },
-            )),
-            small_model: Some(OnboardingModelInput::Key(
-                "custom.test/z-model".parse().unwrap(),
-            )),
-        })
-        .await
-        .expect("setting the models alone completes onboarding");
-    assert!(result.status.ready);
     fixture.engine.shutdown().await;
 }

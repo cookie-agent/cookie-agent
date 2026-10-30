@@ -228,6 +228,9 @@ impl Engine {
             }
         }
         diagnostics.extend(self.official_skills_diagnostic());
+        diagnostics.extend(self.official_agents_diagnostics());
+        diagnostics.extend(self.inner.machines.save_diagnostic());
+        diagnostics.extend(self.default_agent_diagnostic(&published));
         diagnostics.extend(self.approval_cache_diagnostics(&published));
         diagnostics.extend(self.shell_environment_diagnostics());
         diagnostics.truncate(256);
@@ -248,6 +251,28 @@ impl Engine {
                 shell_environment_diagnostic(&runtime, known, capture)
             })
             .collect()
+    }
+
+    /// `[agents] default`, set, names no agent that can run as a root: new
+    /// sessions that choose no agent fall back to the first one that can,
+    /// and fail with none.
+    fn default_agent_diagnostic(
+        &self,
+        published: &crate::runtime_snapshot::PublishedRuntime,
+    ) -> Option<String> {
+        // Unset, the default is `primary`, and a daemon without it falls
+        // back to its first root agent quietly, as it always has.
+        self.inner.config.load().runtime.agents.default.as_ref()?;
+        let default = published.agents.default_agent();
+        let runnable = published
+            .agents
+            .get(default)
+            .is_some_and(|agent| agent.runnable_as_root);
+        (!runnable).then(|| {
+            format!(
+                "the default agent `{default}` (`[agents] default`) cannot start a session: it does not exist or cannot run as a root; run `cookie agents update`, or write `agents/{default}.md`"
+            )
+        })
     }
 
     /// What `[approval] cache_ttl` does on each model the approval reviewer

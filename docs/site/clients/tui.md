@@ -25,8 +25,8 @@ no run is active). Configure the
 [theme](../tui/theme.md) and [diagnostic filter](../tui/minimum_event_level.md)
 in the independent client configuration.
 When at least one model is available, select an agent and model if needed, type
-a request in the composer, and press Enter. If no authored root agent is
-runnable, the engine supplies the built-in `default` coding agent.
+a request in the composer, and press Enter. A new session starts on the
+daemon's [default agent](../extend/agents.md#the-default-agent).
 Every clickable element highlights under the mouse pointer; text fields, such
 as the composer and picker searches, show their caret instead.
 
@@ -80,16 +80,18 @@ continued.
 
 ### Attachments
 
-When the selected model accepts files (images, PDFs, audio, or video; see
-[Attaching media](../sessions/media.md)), `/attach` asks for the path of a file and
-attaches it to the next message. Pasting text that is exactly the path of one
-existing file, as a terminal pastes a file dropped on it, asks whether to
-attach that file; Cancel pastes the path as text instead. The TUI uploads the
-file to the daemon, which may run on another machine, so the path only needs
-to exist where the TUI runs. Before uploading, it refuses a kind of file the
-model does not accept (and says which kinds it does), a file larger than the
-model's limit, and an image with more pixels than the model takes, naming the
-limit; it does not shrink images. Each attachment shows on the composer's
+`/attach` asks for the path of a file and attaches it to the next message
+(see [Attaching media](../sessions/media.md)). Pasting text that is exactly
+the path of one existing file, as a terminal pastes a file dropped on it,
+asks whether to attach that file; Cancel pastes the path as text instead. The
+TUI uploads the file to the daemon, which may run on another machine, so the
+path only needs to exist where the TUI runs. A file the selected model takes
+(images, PDFs, audio, or video within its limits) goes up as media. Any
+other file, such as an archive, a kind the model does not accept, or one over
+its byte or pixel limit, goes up as a file: the status line says why, and the
+model sees its label, `[file report.zip, 3.2 MB, artifact 5f2c81d0]`, and
+can copy it to a machine with `transfer`. Only a file over the daemon's
+25 MB upload limit is refused. The TUI does not shrink images. Each attachment shows on the composer's
 bottom border as `📎 name · type · size`; Backspace at the start of the draft
 removes the newest one. A message may be attachments alone. A message taken
 back from the pending strip, or handed back after it failed to send, returns
@@ -128,7 +130,7 @@ Esc in a step returns to the command list with the search intact.
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
 | `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, reload hand edits (`r` or *Reload from disk*), and restart the daemon (`R` or *Restart daemon*, highlighted while a part waits for a restart); see [config.toml](../engine/configuration.md#changes-while-the-daemon-runs) |
 | `/restart` | Restart the daemon, when idle or now; see [Restarting the daemon](#restarting-the-daemon) |
-| `/onboard` | Set up Cookie: connect a provider, choose the default and small models, and install the starter kit; see [Setting up](#setting-up) |
+| `/onboard` | Set up Cookie: connect a provider and choose the default, small, and utility models; see [Setting up](#setting-up) |
 | `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](../sessions/memory.md#managing-memory) |
 | `/cron` (also `crons`) | List, create, edit, enable and disable, run now, and delete the daemon's cron jobs; see [Scheduled prompts](#scheduled-prompts) |
 | `/cron new` | Schedule a prompt in the session on screen: opens a new job's form for it; listed only while a session is open; see [Scheduled prompts](#scheduled-prompts) |
@@ -138,7 +140,7 @@ Esc in a step returns to the command list with the search intact.
 | `/project` (also `projects`) | Choose the project of the selected session, or of a new session before its first prompt; see [Projects](#projects) |
 | `/rename` (also `title`) | Rename the selected session: `/rename <title>` sets the title, `/rename --auto` goes back to the generated title, and `/rename` alone asks for the title in a field holding the current one; see [Renaming](#renaming) |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](../extend/skills.md) |
-| `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed only when the selected model accepts files; see [Attachments](#attachments) |
+| `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed once a model is selected; see [Attachments](#attachments) |
 | `/usage` | Show selected-session and session-tree usage |
 | `/cancel` | Cancel the active run |
 | `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](../sessions/goals.md) |
@@ -201,7 +203,8 @@ restart itself and says so. See
 ## Setting up
 
 When the TUI connects to a daemon that is not set up (no provider connected,
-or `default_model` or `small_model` not naming an available model), a notice
+`default_model` not naming an available model, or its default agent
+missing), a notice
 takes the bar above the composer: what is left, then **Set up** and **Not
 now**. Set up opens the onboarding panel; Not now hides the notice on this
 machine (in `~/.cookie-agent/tui-state.json`) until what the daemon misses
@@ -218,18 +221,17 @@ The panel shows the four steps as tabs, each done one with a check; ← and →
 2. **Default model**: Enter opens the model list, searchable and grouped by
    provider; choosing a model with variants opens its variants, the model's
    default variant highlighted.
-3. **Small model**: the same list with nothing suggested; the variant list
-   highlights the model's first listed variant, its cheapest. It may be the
-   same model as the default.
-4. **Starter kit**: what installing the kit does to each file (new, same as
-   yours and skipped, or differs and written beside yours as `.new`); Up and
-   Down select a file and `d` shows its diff. `i` turns installing on or off,
-   and `o` takes the path of a downloaded `cookie-agent-defaults.tar.gz`
-   instead of the release's kit.
+3. **Small model** (optional): the same list, for the subagents that carry
+   out work; the variant list highlights the model's default variant.
+4. **Utility model** (optional): the same list, for approvals and session
+   titles; the variant list highlights the model's first listed variant,
+   its cheapest.
 
-`f` (or the **finish** button) sets everything up with `onboarding.run`; while
-something is missing the panel says what instead. The summary lists the
-settings and files written and offers a first session on `primary`. `n` is
+`f` (or the **finish** button) sets everything up with `onboarding.run`,
+which fetches the [official agents](../extend/agents.md#official-agents)
+first when the daemon has none; while something is missing the panel says
+what instead. The summary lists the settings written and offers a first
+session on the daemon's default agent. `n` is
 Not now, and Esc closes the panel.
 
 ## Steering, queueing, and the pending strip

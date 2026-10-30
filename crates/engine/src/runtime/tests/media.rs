@@ -126,6 +126,37 @@ async fn upload(
         .expect("finish upload")
 }
 
+/// Uploads `bytes` as a `file` upload: any file, which a model sees only as
+/// its label.
+async fn upload_file(
+    fixture: &Fixture,
+    session: SessionId,
+    bytes: &[u8],
+    filename: &str,
+) -> cookie_agent_protocol::ArtifactUploadFinishResult {
+    let id = fixture
+        .engine
+        .begin_upload_of_kind(
+            CONNECTION,
+            session,
+            bytes.len() as u64,
+            Some(filename.into()),
+            cookie_agent_protocol::UploadKind::File,
+        )
+        .await
+        .expect("begin upload");
+    fixture
+        .engine
+        .upload_chunk(CONNECTION, &id, 0, bytes.to_vec())
+        .await
+        .expect("upload chunk");
+    fixture
+        .engine
+        .finish_upload(CONNECTION, &id, &digest(bytes))
+        .await
+        .expect("finish upload")
+}
+
 fn media(error: EngineError) -> MediaError {
     match error {
         EngineError::Media(error) => error,
@@ -649,16 +680,9 @@ async fn a_lease_sweep_never_takes_an_upload_an_input_holds_or_references() {
 }
 
 #[tokio::test]
-async fn admission_refuses_files_the_run_model_cannot_take() {
-    let small_image = IMAGE_CAPABILITIES.replace("max_bytes = 20971520", "max_bytes = 100");
-    for (capabilities, expected) in [
-        (TEXT_CAPABILITIES.to_owned(), "unsupported" as &'static str),
-        (small_image, "too_large"),
-        (IMAGE_CAPABILITIES.to_owned(), "count"),
-        (IMAGE_CAPABILITIES.to_owned(), "type"),
-        (IMAGE_CAPABILITIES.to_owned(), "missing"),
-    ] {
-        let (fixture, selection) = media_fixture("http://127.0.0.1:9/v1", &capabilities);
+async fn admission_refuses_only_files_it_cannot_send_as_they_are() {
+    for expected in ["count", "missing"] {
+        let (fixture, selection) = media_fixture("http://127.0.0.1:9/v1", IMAGE_CAPABILITIES);
         let session = fixture.engine.create_session(selection.clone()).unwrap();
         let image = upload(&fixture, session.session_id, &png(2, 2, 200), "a.png")
             .await
@@ -672,20 +696,13 @@ async fn admission_refuses_files_the_run_model_cannot_take() {
                 parts.push(Open::Known(UserContentPart::File { artifact: second }));
                 UserContent::new(parts).unwrap()
             }
-            "type" => with_file(
-                "gif",
-                &upload(&fixture, session.session_id, &gif(2, 2), "a.gif")
-                    .await
-                    .artifact,
-            ),
-            "missing" => with_file(
+            _ => with_file(
                 "gone",
                 &ArtifactRef {
                     sha256: "e".repeat(64),
                     ..image.clone()
                 },
             ),
-            _ => with_file("look", &image),
         };
         let error = media(
             fixture
@@ -697,19 +714,7 @@ async fn admission_refuses_files_the_run_model_cannot_take() {
                 .await
                 .unwrap_err(),
         );
-        let model = selection.model.model.clone();
         match expected {
-            "unsupported" => assert_eq!(
-                error,
-                MediaError::Unsupported {
-                    kind: "image".into(),
-                    model
-                }
-            ),
-            "too_large" => assert!(matches!(
-                error,
-                MediaError::TooLarge { kind, max_bytes: 100, .. } if kind == "image"
-            )),
             "count" => assert_eq!(
                 error,
                 MediaError::LimitExceeded {
@@ -718,15 +723,86 @@ async fn admission_refuses_files_the_run_model_cannot_take() {
                     max_count: 1
                 }
             ),
-            "type" => assert!(matches!(
-                error,
-                MediaError::TypeUnsupported { media_type, .. } if media_type == "image/gif"
-            )),
             _ => assert!(matches!(error, MediaError::ArtifactNotFound { .. })),
         }
         // Nothing of the run was recorded.
         let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
         assert!(projection.runs.is_empty(), "{expected}");
+        fixture.engine.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn files_the_run_model_cannot_take_are_admitted_and_reach_it_as_labels() {
+    let small_image = IMAGE_CAPABILITIES.replace("max_bytes = 20971520", "max_bytes = 100");
+    for (capabilities, case, reason) in [
+        (
+            TEXT_CAPABILITIES.to_owned(),
+            "unsupported",
+            "does not accept images",
+        ),
+        (small_image, "too_large", "larger than the 100 B"),
+        (
+            IMAGE_CAPABILITIES.to_owned(),
+            "type",
+            "does not accept image/gif",
+        ),
+        (IMAGE_CAPABILITIES.to_owned(), "file", ""),
+    ] {
+        let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
+            vec![anthropic_usage_body("noted", 1, 0, 0)],
+            usize::MAX,
+        )
+        .await;
+        let (fixture, selection) = media_fixture(&endpoint, &capabilities);
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        let artifact = match case {
+            "type" => {
+                upload(&fixture, session.session_id, &gif(2, 2), "a.gif")
+                    .await
+                    .artifact
+            }
+            "file" => {
+                upload_file(
+                    &fixture,
+                    session.session_id,
+                    b"PK\x03\x04 an archive",
+                    "a.zip",
+                )
+                .await
+                .artifact
+            }
+            _ => {
+                upload(&fixture, session.session_id, &png(2, 2, 200), "a.png")
+                    .await
+                    .artifact
+            }
+        };
+        fixture
+            .engine
+            .start_run(
+                start(
+                    session.session_id,
+                    &selection,
+                    case,
+                    with_file("look", &artifact),
+                ),
+                origin(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        let requests = with_watchdog("captured requests", captured).await.unwrap();
+        let body = request_body(&requests[0]).to_string();
+        let name = artifact.filename.clone().unwrap();
+        let label = format!("[file {name}, ");
+        assert!(body.contains(&label), "{case}: {body}");
+        assert!(
+            body.contains(&format!("artifact {}", &artifact.sha256[..8])),
+            "{case}: {body}"
+        );
+        assert!(body.contains(reason), "{case}: {body}");
+        assert!(!body.contains("\"type\":\"image\""), "{case}: {body}");
         fixture.engine.shutdown().await;
     }
 }
@@ -776,11 +852,18 @@ async fn a_reference_must_say_what_the_stored_content_is() {
 async fn steered_and_queued_input_is_admitted_against_the_model_it_will_reach() {
     let (endpoint, _captured, reached, release) =
         scripted_server_with_delayed_response(vec![anthropic_usage_body("done", 1, 0, 0)], 0).await;
-    let (fixture, selection) = media_fixture(&endpoint, TEXT_CAPABILITIES);
+    let (fixture, selection) = media_fixture(&endpoint, IMAGE_CAPABILITIES);
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     let image = upload(&fixture, session.session_id, &png(2, 2, 32), "a.png")
         .await
         .artifact;
+    let second = upload(&fixture, session.session_id, &png(3, 3, 32), "b.png")
+        .await
+        .artifact;
+    // Two images, where the model takes one a message.
+    let mut parts = with_file("and these", &image).into_parts();
+    parts.push(Open::Known(UserContentPart::File { artifact: second }));
+    let two = UserContent::new(parts).unwrap();
     fixture
         .engine
         .start_run(
@@ -797,7 +880,7 @@ async fn steered_and_queued_input_is_admitted_against_the_model_it_will_reach() 
                 .submit_input(
                     SessionSubmitInputParams {
                         session_id: session.session_id,
-                        content: with_file("and this", &image),
+                        content: two.clone(),
                         delivery,
                         selection: None,
                         client_run_id: ClientRunId::new(format!("{delivery:?}")).unwrap(),
@@ -810,9 +893,10 @@ async fn steered_and_queued_input_is_admitted_against_the_model_it_will_reach() 
         );
         assert_eq!(
             error,
-            MediaError::Unsupported {
+            MediaError::LimitExceeded {
                 kind: "image".into(),
-                model: selection.model.model.clone()
+                count: 2,
+                max_count: 1
             },
             "{delivery:?}"
         );
@@ -986,7 +1070,7 @@ async fn image_then_text_fixture(endpoint: &str) -> (Fixture, RunSelection) {
 }
 
 #[tokio::test]
-async fn an_image_in_history_reaches_a_text_only_model_as_a_placeholder() {
+async fn an_image_in_history_reaches_a_text_only_model_as_its_label() {
     let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
         vec![
             anthropic_usage_body("a pixel", 1, 0, 0),
@@ -1050,9 +1134,12 @@ async fn an_image_in_history_reaches_a_text_only_model_as_a_placeholder() {
         !second.to_string().contains("\"type\":\"image\""),
         "{second}"
     );
+    // The reason joins the file's label, which still names the artifact.
     let placeholder = format!(
-        "[image omitted: custom.test/group/fallback does not accept images (pixel.png, {} B)]",
-        bytes.len()
+        "[file pixel.png, {} B, artifact {}; not shown: custom.test/group/fallback does not \
+         accept images]",
+        bytes.len(),
+        &artifact.sha256[..8]
     );
     assert!(
         second["messages"]

@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.12.0**
+The protocol version is a semver string, currently **1.13.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -218,6 +218,9 @@ same order.
 1.12.0 added the [shell environment](#shell-environment): the optional
 `shell_environment` of the settings, `runtime/shell_environment_refresh`,
 and `runtime/shell_environment`.
+1.13.0 added [transfers](#transfers): the optional `files` of
+`runtime/initialize`'s result and the `fs/*` requests, with which the
+daemon copies files and folders between machines without storing them.
 
 ## Capabilities and instances
 
@@ -385,6 +388,11 @@ that dials in after its instances failed reopens them. Calls are never retried t
 | `agent/mcp_close` | daemon → runtime | notification | Close a bridge; since 1.7.0 |
 | `agent/mcp` | both | notification | One MCP message of a bridge connection; since 1.7.0 |
 | `agent/mcp_closed` | runtime → daemon | notification | A bridge connection ended; since 1.7.0 |
+| `fs/prepare` | daemon → runtime | request | Normalize a transfer's path and resolve its route once; since 1.13.0 (see [Transfers](#transfers)) |
+| `fs/read_open`, `fs/read_chunk` | daemon → runtime | request | Open a prepared route to read, and read it a chunk at a time; since 1.13.0 |
+| `fs/write_open`, `fs/write_chunk`, `fs/write_commit` | daemon → runtime | request | Open a prepared route to write, write it a chunk at a time, and put it in place; since 1.13.0 |
+| `fs/copy` | daemon → runtime | request | Copy one prepared route to another on the runtime's machine; since 1.13.0 |
+| `fs/close` | daemon → runtime | request | Release a route or handle, removing an uncommitted copy; since 1.13.0 |
 
 An unknown request is answered with `-32601`; an unknown notification is
 ignored.
@@ -417,6 +425,7 @@ or enables OAuth, which stays with the daemon's global runtime.
 | `capabilities` | What the runtime offers: `name` (`[a-z][a-z0-9_]{0,31}`, unique within the runtime); `kind`, a self-declared label such as `coding` (a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens) that the daemon shows to clients and in approval reviews and never branches on; `takes_workspace`; and an optional `description`. The coding runtime offers `coding`, which takes a workspace. |
 | `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |
 | `acp_agents` | Optional, since 1.7.0: the ACP agents the runtime hosts, `{ id, description, enabled }` each, in ID order. Absent when it hosts none. |
+| `files` | Optional, default `false`, since 1.13.0: the runtime answers the `fs/*` requests of [transfers](#transfers). The coding runtime does. |
 | `mcp_servers` | Optional, since 1.5.0: every MCP server the runtime is configured with, in name order, as server reports (see [`capability/open`](#capabilityopen)) with a `scope`: the runtime-scoped ones with their status now (usually `connecting`), the workspace-scoped ones as configured, `disconnected` (or `disabled`) with no tools. Absent when it has none. |
 
 ### `capability/open`
@@ -804,6 +813,50 @@ them; the daemon speaks ACP to them.
 These messages are information: the daemon reads the agent's messages
 tolerantly, and an `agent/*` message from a plugin is ignored.
 
+### Transfers
+
+Since 1.13.0 a runtime that reports `files: true` takes part in the
+`transfer` tool, which copies a file or a folder from one of a session's
+machines, or from an artifact of its tree, to another machine (see the
+[machines on demand spec](../specs/machines-on-demand.md#6-transfers)). The
+daemon is the only party that reaches both runtimes, so it relays the bytes,
+a chunk at a time, and stores none of them. Every request is daemon →
+runtime.
+
+| Method | Params | Result |
+|---|---|---|
+| `fs/prepare` | `instance`, `path`, `direction` (`read` or `write`) | `route`; `path`, the path made absolute lexically; `label`, the path as a `read` or `write` rule matches it; `binding`, the location the route led to; `kind` (`file` or `folder`) of what is there, absent for a destination that does not exist; `size` of a file |
+| `fs/read_open` | `route` | `handle`, `kind`, and a file's `size` |
+| `fs/read_chunk` | `handle`, `max_bytes` (at most 1 MiB) | `data` (base64), `eof`, and at the end `summary`: `sha256` of the stream, `bytes` and `files` of the content, and `skipped` |
+| `fs/write_open` | `route`, `kind`, `overwrite`, `size` when known | `handle` |
+| `fs/write_chunk` | `handle`, `offset` (the bytes before it), `data` | `{}` |
+| `fs/write_commit` | `handle`, the source's `sha256` | `path`, `bytes`, `files`, `sha256`, `skipped` |
+| `fs/copy` | `from` and `to`, two routes of the runtime, `overwrite` | as `fs/write_commit` |
+| `fs/close` | `handle`, a route or handle | `{}` |
+
+- **Paths** follow the file tools' contract: a leading `~` is the runtime's
+  home, a relative path resolves against the instance's workspace, and the
+  `label` is lexical, never resolved through symbolic links. The route is
+  resolved once, at `fs/prepare`, with every link expanded; opening uses it,
+  so a link retargeted after approval does not redirect the transfer.
+- **A folder** moves as a tar stream: regular files, folders, and links as
+  links, with mode bits and modification times and no owners. Devices,
+  sockets, and FIFOs are left out at the source and counted in `skipped`.
+  Unpacking refuses names that are absolute or climb with `..` and entries
+  below a link the stream made; a link that may lead outside the folder (an
+  absolute one, or one that climbs above it) is left out and counted.
+- **A destination** is written to a hidden sibling,
+  `.<name>.cookie-partial-<id>`, and put in place at `fs/write_commit` when
+  the digest of what arrived matches the source's. Without `overwrite` an
+  existing destination fails the open; with it a file is replaced and a
+  folder merged. A handle closed uncommitted, or dropped with the
+  connection, removes its partial copy, and `cookie runtime serve` removes
+  those a crash left behind once they are a day old.
+- **`fs/copy`** copies within one runtime, with the same partial-and-rename
+  rule; closing its `to` route stops it.
+
+Failures are `fs_failed`, with the reason in `detail`.
+
 ## Errors
 
 Errors follow the scheme of the [compatibility spec](../specs/compatibility-v1.md#6-errors),
@@ -826,7 +879,8 @@ protocol crate's registry (`cookie_agent_protocol::errors`):
 | `-32000` | `not_initialized` | A request before `runtime/initialize`. |
 | `-32000` | `capability_open_failed` | `capability/open` for a capability the runtime does not offer or a workspace it cannot open; `data.capability` and `data.workspace` name what was asked. |
 | `-32000` | `agent_failed` | `agent/start` or `agent/mcp_open` for an ACP agent the runtime does not host, a disabled one, one it could not start, or a bridge it could not open; `data.agent` names the agent (since 1.7.0). |
-| `-32000` | `unknown_handle` | Unknown prepared call or instance. |
+| `-32000` | `unknown_handle` | Unknown prepared call, instance, or transfer handle. |
+| `-32000` | `fs_failed` | An `fs/*` request failed: the path is missing or exists already, it could not be read or written, or the bytes written do not match the source (since 1.13.0). |
 | `-32000` | `context_failed` | Reading the runtime's context failed; `data.path` names the file. |
 | `-32000` | `reply_too_large` | The reply would exceed the frame bound. |
 | `-32000` | `producer_rejected` | The daemon rejected a producer request: messaging is not open on the connection, the session is not attached to the runtime, or the operation failed. |

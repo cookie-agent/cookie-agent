@@ -110,7 +110,11 @@ pub(crate) fn production_provider_harness(
         ModelManager::new(BTreeMap::new(), catalog, store).expect("production model manager"),
     );
     let config = LoadedConfiguration {
+        official_agent_diagnostics: Vec::new(),
         runtime: EngineConfig {
+            agents: cookie_agent_config::AgentsConfig::default(),
+            transfer: cookie_agent_config::TransferConfig::default(),
+            utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
                 ..Default::default()
@@ -1068,6 +1072,8 @@ pub(crate) fn approval(session_id: SessionId) -> ApprovalState {
 
 pub(crate) fn descriptor(agent: &str, runnable: bool) -> cookie_agent_protocol::AgentDescriptor {
     cookie_agent_protocol::AgentDescriptor {
+        official: false,
+        official_version: None,
         id: AgentId::new(agent).expect("agent id"),
         preset: None,
         description: format!("Test {agent} agent"),
@@ -1288,6 +1294,7 @@ pub(crate) fn runtime_snapshot(
     agents: Vec<cookie_agent_protocol::AgentDescriptor>,
 ) -> cookie_agent_protocol::ModelCatalogView {
     cookie_agent_protocol::ModelCatalogView {
+        default_agent: None,
         revision: cookie_agent_protocol::ViewRevision::new(format!("view-{digit}"))
             .expect("view revision"),
         catalog: cookie_agent_protocol::CatalogStatus {

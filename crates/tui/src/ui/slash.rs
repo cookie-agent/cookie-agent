@@ -224,7 +224,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "onboard",
         aliases: &[],
-        description: "set up Cookie: a provider, the default and small models, the starter kit",
+        description: "set up Cookie: a provider and the default, small, and utility models",
         action: PaletteAction::Run(SlashCommand::Onboard),
         writes_session: false,
     },

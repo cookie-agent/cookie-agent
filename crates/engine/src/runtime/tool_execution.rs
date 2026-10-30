@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalId, ApprovalRequest, ApprovalTrigger,
@@ -15,6 +18,7 @@ use tokio::sync::mpsc;
 use super::{
     ActiveRun, ApprovalToolInput, Engine, EngineError, Event, OutputCapture, PreparedToolCall,
     PublishedTool, PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
+    ToolRoutes,
     approval_projection::denied_tool_failure,
     helpers::{safe_display, session_depth},
 };
@@ -162,6 +166,20 @@ impl Engine {
                 scope,
             )
         };
+        let scopes = prepared.resource_scopes();
+        if !scopes.is_empty() {
+            // Each resource is checked in its own scope only.
+            let decisions = scopes
+                .iter()
+                .map(|scope| {
+                    decide(
+                        PermissionScope::runtime(&scope.runtime, scope.workspace.as_deref())
+                            .with_home(scope.home.as_deref()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Ok(per_resource_decision(decisions));
+        }
         let runtimes = prepared.permission_runtimes();
         if runtimes.is_empty() {
             return Ok(decide(
@@ -282,10 +300,13 @@ impl Engine {
         // Calls grouped by the provider and attachment that answer them, each
         // with the name its source knows the tool by.
         let mut groups: Vec<(SourcedProvider, Vec<(usize, crate::ToolSpec)>)> = Vec::new();
-        for (index, (call, _)) in calls.iter().enumerate() {
+        for (index, (call, published)) in calls.iter().enumerate() {
+            // A routed call finds its machine's tool by its composed name.
+            let composed =
+                published.map_or(call.name.as_str(), |published| published.composed.as_str());
             let Some(tool) = composition
                 .as_ref()
-                .and_then(|composition| composition.get(&call.name))
+                .and_then(|composition| composition.get(composed))
             else {
                 continue;
             };
@@ -417,7 +438,7 @@ impl Engine {
                 let current = self
                     .compose_for_policy_with(session_id, policy, true)
                     .ok()
-                    .and_then(|composition| composition.get(&call.name).cloned());
+                    .and_then(|composition| composition.get(&published.composed).cloned());
                 if current.is_some_and(|current| {
                     current.source.attachment == published.source.attachment
                         && current.source.generation == published.source.generation
@@ -1294,27 +1315,132 @@ impl Engine {
         let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
         let mut candidates = Vec::new();
         let mut loaders = Vec::new();
-        for ComposedTool { name, source, spec } in composition.tools {
+        // A runtime attachment's tools are routed by `machine` once the
+        // session can work on several machines (machines on demand, section
+        // 5); a tool all of whose machines are one is routed too, so the
+        // schema stays put as machines come and go.
+        let machines = self.routing_machines(session)?;
+        let (routed, composed): (Vec<_>, Vec<_>) =
+            composition.tools.into_iter().partition(|tool| {
+                machines.as_ref().is_some_and(|machines| {
+                    tool.source
+                        .attachment
+                        .as_ref()
+                        .is_some_and(|attachment| machines.contains_key(attachment))
+                })
+            });
+        let taken = composed
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<HashSet<_>>();
+        let mut groups = Vec::<(String, Vec<ComposedTool>)>::new();
+        for tool in routed {
+            match groups.iter_mut().find(|(name, _)| *name == tool.spec.name) {
+                Some((_, members)) => members.push(tool),
+                None => groups.push((tool.spec.name.clone(), vec![tool])),
+            }
+        }
+        let mut routed_names = Vec::new();
+        let mut entries = composed
+            .into_iter()
+            .map(|tool| (tool, None))
+            .collect::<Vec<_>>();
+        for (name, members) in groups {
+            if taken.contains(&name) {
+                self.inner.runtimes.report(&[format!(
+                    "tool `{name}` of runtime attachment `{}` is not published: the base layer or `global` has a tool of that name",
+                    members[0].source.attachment.as_ref().map(ToString::to_string).unwrap_or_default()
+                )]);
+                continue;
+            }
+            let machines = machines.as_ref().expect("routing machines");
+            let mut routes = Vec::<(String, PublishedTool)>::new();
+            for member in members {
+                // `machine` is the host's, as `background` is.
+                if member
+                    .spec
+                    .parameters
+                    .pointer("/properties/machine")
+                    .is_some()
+                {
+                    self.inner.runtimes.report(&[format!(
+                        "tool `{name}` of runtime attachment `{}` is not published: it declares its own `machine` argument",
+                        member.source.attachment.as_ref().map(ToString::to_string).unwrap_or_default()
+                    )]);
+                    continue;
+                }
+                let machine = member
+                    .source
+                    .attachment
+                    .as_ref()
+                    .and_then(|attachment| machines.get(attachment))
+                    .cloned()
+                    .unwrap_or_default();
+                if routes.iter().any(|(known, _)| *known == machine) {
+                    self.inner.runtimes.report(&[format!(
+                        "tool `{name}` of runtime attachment `{}` is left out: another attachment on machine `{machine}` offers it",
+                        member.source.attachment.as_ref().map(ToString::to_string).unwrap_or_default()
+                    )]);
+                    continue;
+                }
+                routes.push((
+                    machine,
+                    PublishedTool {
+                        composed: member.name.clone(),
+                        source: member.source,
+                        spec: member.spec,
+                        routes: None,
+                    },
+                ));
+            }
+            let Some((default, first)) = routes.first() else {
+                continue;
+            };
+            let routed = ComposedTool {
+                name: name.clone(),
+                source: first.source.clone(),
+                spec: first.spec.clone(),
+            };
+            let default = default.clone();
+            routed_names.push(name);
+            entries.push((
+                routed,
+                Some(ToolRoutes {
+                    default: Some(default),
+                    machines: routes,
+                }),
+            ));
+        }
+        for (ComposedTool { name, source, spec }, routes) in entries {
             spec.output.validate().map_err(EngineError::ToolFailed)?;
             let mut parameters = spec.parameters.clone();
+            if let Some(routes) = &routes {
+                add_machine_argument(&mut parameters, routes.default.as_deref());
+            }
             if spec.background {
                 add_background_argument(&mut parameters, spec.background_default);
             }
             let schema = JsonSchema::new(parameters).map_err(|error| {
                 EngineError::ToolFailed(format!("tool `{name}` has invalid JSON Schema: {error}"))
             })?;
-            let description = match source.attachment.as_ref().and_then(|name| notes.get(name)) {
+            let description = match source
+                .attachment
+                .as_ref()
+                .filter(|_| routes.is_none())
+                .and_then(|name| notes.get(name))
+            {
                 Some(note) if spec.description.is_empty() => note.clone(),
                 Some(note) => format!("{}\n\n{note}", spec.description),
                 None => spec.description.clone(),
             };
             let definition = ToolDefinition::new(name.clone(), description, schema);
-            let round_source = crate::runtimes::composition_source(&source).map(|label| {
-                cookie_agent_protocol::RoundToolSource {
+            // A routed tool's name is the tool's own: nothing to pin.
+            let round_source = crate::runtimes::composition_source(&source)
+                .filter(|_| routes.is_none())
+                .map(|label| cookie_agent_protocol::RoundToolSource {
                     label,
                     tool: spec.name.clone(),
-                }
-            });
+                });
             if defers {
                 if source.provider.provider_id() == crate::base_tools::LOADER_PROVIDER_ID {
                     loaders.push(definition);
@@ -1338,11 +1464,20 @@ impl Engine {
                     source: round_source,
                 });
             }
-            published.insert(name, PublishedTool { source, spec });
+            published.insert(
+                name.clone(),
+                PublishedTool {
+                    composed: name,
+                    source,
+                    spec,
+                    routes,
+                },
+            );
         }
         let fold = self.inner.store.get(session)?.log.deferral();
         if !defers {
             let plan = crate::deferred_tools::plan_eager(output, &fold);
+            declared_defaults(&mut published, &plan.definitions, &routed_names);
             return Ok(PublishedToolSet {
                 definitions: plan.definitions,
                 tools: published,
@@ -1378,6 +1513,7 @@ impl Engine {
                 plan.view.sections.insert(provider.clone(), block);
             }
         }
+        declared_defaults(&mut published, &plan.definitions, &routed_names);
         // A loader tool is callable only where the request declares it.
         let declared = plan
             .definitions
@@ -1531,6 +1667,74 @@ impl Drop for DetachRegistration<'_> {
 
 /// Adds the host-owned `background` argument to a background-capable tool's
 /// parameters; composition has already refused a tool that declares one.
+/// The host-owned argument a routed tool takes
+/// (`docs/site/specs/machines-on-demand.md` section 5.1).
+pub(crate) const MACHINE_ARGUMENT: &str = "machine";
+
+/// Adds `machine` to a routed tool's `parameters`, naming the round's
+/// default machine in its description and as its schema `default`.
+fn add_machine_argument(parameters: &mut Value, default: Option<&str>) {
+    let Some(object) = parameters.as_object_mut() else {
+        return;
+    };
+    let properties = object
+        .entry("properties")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(properties) = properties.as_object_mut() {
+        let mut machine = serde_json::json!({
+            "type": "string",
+            "description": match default {
+                Some(default) => format!(
+                    "Machine to run on, by its name in the machines block. Default: `{default}`. Other machines that offer this tool are listed there."
+                ),
+                None => "Machine to run on, by its name in the machines block, where the machines that offer this tool are listed.".to_owned(),
+            },
+        });
+        if let (Some(default), Some(machine)) = (default, machine.as_object_mut()) {
+            machine.insert("default".into(), Value::String(default.to_owned()));
+        }
+        properties.insert(MACHINE_ARGUMENT.into(), machine);
+    }
+}
+
+/// A routed tool's default machine is the one the request declares, which
+/// a tool round keeps until it ends: a machine attached since never moves
+/// it, and one detached since leaves calls without `machine` failing.
+fn declared_defaults(
+    published: &mut HashMap<String, PublishedTool>,
+    definitions: &[ToolDefinition],
+    routed: &[String],
+) {
+    for name in routed {
+        let Some(tool) = published.get_mut(name) else {
+            continue;
+        };
+        let Some(routes) = tool.routes.as_mut() else {
+            continue;
+        };
+        let Some(definition) = definitions
+            .iter()
+            .find(|definition| definition.name == *name)
+        else {
+            continue;
+        };
+        let declared = definition
+            .input_schema
+            .as_value()
+            .pointer("/properties/machine/default")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if definition
+            .input_schema
+            .as_value()
+            .pointer("/properties/machine")
+            .is_some()
+        {
+            routes.default = declared;
+        }
+    }
+}
+
 fn add_background_argument(parameters: &mut Value, default: bool) {
     let Some(object) = parameters.as_object_mut() else {
         return;
@@ -1779,12 +1983,20 @@ pub(crate) fn apply_permission_resource(
             None => Ok((prepared, None)),
         };
     };
-    if prepared
-        .operation()
-        .resources()
-        .iter()
-        .any(|prepared| prepared.capability != action)
-    {
+    let resources = prepared.operation().resources();
+    // A call whose resources are each checked in their own scope states
+    // each one's action, such as `transfer`'s `read` of its source; one of
+    // them is the tool's own.
+    let mismatched = if prepared.resource_scopes().is_empty() {
+        resources
+            .iter()
+            .any(|prepared| prepared.capability != action)
+    } else {
+        !resources
+            .iter()
+            .any(|prepared| prepared.capability == action)
+    };
+    if mismatched {
         return Err(ToolError::execution(
             "prepared permission capability does not match provider metadata",
         ));
@@ -1814,6 +2026,31 @@ pub(crate) fn strictest_decision(
             if effect_rank(candidate.effect) > effect_rank(evaluation.effect) {
                 *evaluation = candidate;
             }
+        }
+    }
+    decision.effect = decision
+        .evaluations
+        .iter()
+        .map(|evaluation| evaluation.effect)
+        .max_by_key(|effect| effect_rank(*effect))
+        .unwrap_or(cookie_agent_protocol::PermissionEffect::Allow);
+    decision
+}
+
+/// The decision of a call whose resources were each checked in their own
+/// scope: `decisions[i]` decided the whole call in resource `i`'s scope, and
+/// only its evaluation of resource `i` counts.
+fn per_resource_decision(decisions: Vec<PermissionDecision>) -> PermissionDecision {
+    let mut decisions = decisions.into_iter().enumerate();
+    let Some((_, mut decision)) = decisions.next() else {
+        return PermissionDecision::permission_free();
+    };
+    for (index, other) in decisions {
+        if let (Some(evaluation), Some(candidate)) = (
+            decision.evaluations.get_mut(index),
+            other.evaluations.into_iter().nth(index),
+        ) {
+            *evaluation = candidate;
         }
     }
     decision.effect = decision

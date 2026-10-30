@@ -52,7 +52,7 @@ pub use reduce::approval_state_from_record;
 use reduce::*;
 
 pub use model_names::{ModelDisplayNames, document_id, variant_label};
-pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
+pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState, default_agent_id};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},

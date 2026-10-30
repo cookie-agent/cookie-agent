@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/read_open`.",
+  "properties": {
+    "route": {
+      "description": "A route `fs/prepare` returned for reading; opening consumes it.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "route"
+  ],
+  "title": "FsReadOpenParams",
+  "type": "object"
+}

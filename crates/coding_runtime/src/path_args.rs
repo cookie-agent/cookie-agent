@@ -15,6 +15,13 @@ pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<
     .map_err(D::Error::custom)
 }
 
+/// `path` with a leading `~` expanded as a file-path argument's is.
+pub(crate) fn expand(path: String) -> Result<String, ToolError> {
+    expand_home(path, || {
+        crate::runtime_home().map(std::path::Path::to_owned)
+    })
+}
+
 fn expand_home(
     path: String,
     home_dir: impl FnOnce() -> Option<PathBuf>,

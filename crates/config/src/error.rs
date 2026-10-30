@@ -55,8 +55,6 @@ pub enum ConfigError {
         "invalid agent preset name `{name}` at `{path}`; expected ^[a-z0-9]+(-[a-z0-9]+)*$ with at most 64 characters"
     )]
     AgentPresetName { path: PathBuf, name: String },
-    #[error("agent ID `{0}` is reserved")]
-    ReservedAgentId(AgentId),
     #[error("invalid agent document `{path}`: {message}")]
     AgentDocument { path: PathBuf, message: String },
     #[error(

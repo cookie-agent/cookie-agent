@@ -51,7 +51,7 @@ mod approval_api;
 mod approval_context;
 mod approval_flow;
 mod approval_projection;
-mod artifact_reads;
+pub(crate) mod artifact_reads;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
@@ -69,11 +69,13 @@ mod helpers;
 mod internal_agents;
 mod loop_guard;
 pub(crate) mod machine_api;
+pub(crate) mod machine_attach;
 mod mailbox;
 pub(crate) mod memory_api;
 pub(crate) mod memory_runs;
 pub(crate) mod messaging_api;
 mod model_loop;
+pub(crate) mod official_agents;
 pub(crate) mod official_skills;
 pub(crate) mod onboarding;
 mod output_capture;
@@ -105,6 +107,7 @@ pub(crate) mod tests;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
+pub(crate) mod transfers;
 mod unread;
 pub(crate) mod uploads;
 
@@ -206,9 +209,10 @@ pub enum EngineError {
     /// written.
     #[error("onboarding is incomplete: {}", onboarding::describe_missing(.0))]
     OnboardingIncomplete(Vec<onboarding::OnboardingRequirement>),
-    /// The starter kit could not be fetched, or was refused.
-    #[error(transparent)]
-    OnboardingKit(#[from] onboarding::KitError),
+    /// `onboarding.preview` since client protocol 1.56.0: there is no
+    /// starter kit; the agents are official ones the daemon keeps.
+    #[error("there is no starter kit: the daemon keeps the official agents itself")]
+    NoStarterKit,
     #[error("agent `{0}` is not eligible in this session origin")]
     IneligibleAgent(AgentId),
     #[error(
@@ -627,6 +631,69 @@ struct PublishedTool {
     source: crate::runtimes::SourcedProvider,
     /// The tool as its source declares it, under the name the source knows.
     spec: ToolSpec,
+    /// The name composition gave it, by which a call finds it again; the
+    /// published name except for a routed tool's machines.
+    composed: String,
+    /// A routed tool's machines (`docs/site/specs/machines-on-demand.md`
+    /// section 5): one published tool, a `machine` argument choosing whose.
+    routes: Option<ToolRoutes>,
+}
+
+/// Where each machine's call of a routed tool goes.
+struct ToolRoutes {
+    /// The machine a call without `machine` runs on: the round's, as the
+    /// declared definition names it; `None` when the round names none.
+    default: Option<String>,
+    /// Each machine that offers the tool, in attach order, with the tool
+    /// it calls there.
+    machines: Vec<(String, PublishedTool)>,
+}
+
+impl PublishedTool {
+    /// The tool a call of this published tool runs, with `arguments`, from
+    /// which a routed tool's `machine` is taken: this tool itself, or the
+    /// machine's. A routed call that names no machine it offers fails with
+    /// where the tool is offered.
+    fn route(&self, name: &str, arguments: &mut serde_json::Value) -> Result<&Self, String> {
+        let Some(routes) = &self.routes else {
+            return Ok(self);
+        };
+        let named = arguments
+            .as_object_mut()
+            .and_then(|object| object.remove(crate::runtime::tool_execution::MACHINE_ARGUMENT));
+        let offered = || {
+            routes
+                .machines
+                .iter()
+                .map(|(machine, _)| machine.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let machine = match named {
+            Some(serde_json::Value::String(machine)) => machine,
+            Some(other) => {
+                return Err(format!(
+                    "`machine` of `{name}` must be a machine's name, not {other}; it is offered on: {}",
+                    offered()
+                ));
+            }
+            None => match &routes.default {
+                Some(default) => default.clone(),
+                None => {
+                    return Err(format!(
+                        "`{name}` needs a `machine`: it is offered on: {}",
+                        offered()
+                    ));
+                }
+            },
+        };
+        routes
+            .machines
+            .iter()
+            .find(|(offering, _)| *offering == machine)
+            .map(|(_, tool)| tool)
+            .ok_or_else(|| format!("`{name}` is not on `{machine}`; it is on: {}", offered()))
+    }
 }
 
 struct PublishedToolSet {
@@ -1023,6 +1090,7 @@ pub(crate) struct Inner {
     pub(crate) uploads: uploads::UploadState,
     pub(crate) onboarding: onboarding::OnboardingRuntimeState,
     pub(crate) official_skills: official_skills::OfficialSkillsState,
+    pub(crate) official_agents: official_agents::OfficialAgentsState,
     /// The revision each session last saw of each memory.
     pub(crate) memory_seen: memory_runs::SeenMemories,
     runtime: Option<tokio::runtime::Handle>,
@@ -1205,6 +1273,10 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, runtimes_tool.as_ref())?;
         mcp.reserve_provider(runtimes_tool.as_ref())
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let machines_tool = Arc::new(crate::machines_tool::MachinesTool::new());
+        reserve_provider_id(&mut provider_ids, machines_tool.as_ref())?;
+        mcp.reserve_provider(machines_tool.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         let cron_tools = Arc::new(crate::cron_tools::CronTools::new());
         reserve_provider_id(&mut provider_ids, cron_tools.as_ref())?;
         mcp.reserve_provider(cron_tools.as_ref())
@@ -1218,6 +1290,7 @@ impl Engine {
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
         global_providers.push(memory_tools.clone());
         global_providers.push(runtimes_tool.clone());
+        global_providers.push(machines_tool.clone());
         global_providers.push(cron_tools.clone());
         global_providers.push(agents_tool.clone());
         // Each plugin's tools compose under the plugin's name.
@@ -1248,7 +1321,7 @@ impl Engine {
             &published_runtime.revisions,
         )?;
         let initial_onboarding =
-            onboarding::onboarding_state(&options.config.runtime, &published_runtime.models);
+            onboarding::onboarding_state(&options.config, &published_runtime.models);
         let engine = Self {
             inner: Arc::new(Inner {
                 started_config: Arc::new(options.config.clone()),
@@ -1305,6 +1378,7 @@ impl Engine {
                 uploads: uploads::UploadState::default(),
                 onboarding: onboarding::OnboardingRuntimeState::new(initial_onboarding),
                 official_skills: official_skills::OfficialSkillsState::new(&options.data_dir),
+                official_agents: official_agents::OfficialAgentsState::new(&options.data_dir),
                 memory_seen: memory_runs::SeenMemories::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),
@@ -1314,6 +1388,7 @@ impl Engine {
         };
         memory_tools.bind(&engine);
         runtimes_tool.bind(&engine);
+        machines_tool.bind(&engine);
         cron_tools.bind(&engine);
         agents_tool.bind(&engine);
         // Engine unit tests compose their own base-layer stand-ins.
@@ -2116,12 +2191,14 @@ fn resolve_agent_registries(
     runtime_agents: &[crate::runtime_snapshot::RuntimeAgent],
 ) -> Result<ResolvedAgentRegistries, EngineError> {
     let variables = crate::runtime_snapshot::ModelVariables::of(&config.runtime);
+    let default_agent = config.runtime.agents.default_agent();
     let shared = Arc::new(AgentRegistry::resolve(
         &config.agent_registry(),
         models,
         None,
         runtime_agents,
         variables,
+        default_agent.clone(),
     )?);
     let presets = config
         .agent_preset_registries()
@@ -2133,6 +2210,7 @@ fn resolve_agent_registries(
                 Some(name.clone()),
                 runtime_agents,
                 variables,
+                default_agent.clone(),
             )
             .map(|registry| (name, Arc::new(registry)))
         })

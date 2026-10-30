@@ -21,7 +21,9 @@ pub const FOCUS_PLACEHOLDER: &str = "focus";
 pub(crate) fn internal_prompt_placeholders(agent: &str) -> Option<&'static [&'static str]> {
     match agent {
         BUILT_IN_COMPACTION_AGENT_ID => Some(&[DEFAULT_PROMPT_PLACEHOLDER, FOCUS_PLACEHOLDER]),
-        BUILT_IN_APPROVAL_AGENT_ID | BUILT_IN_TITLE_AGENT_ID => Some(&[DEFAULT_PROMPT_PLACEHOLDER]),
+        // Their prompts are the official documents' bodies: nothing is
+        // compiled in to substitute.
+        BUILT_IN_APPROVAL_AGENT_ID | BUILT_IN_TITLE_AGENT_ID => Some(&[]),
         _ => None,
     }
 }
@@ -194,10 +196,10 @@ mod tests {
     fn each_internal_agent_accepts_only_its_placeholders() {
         for agent in ["approval", "title"] {
             let allowed = internal_prompt_placeholders(agent).unwrap();
-            assert_eq!(unknown_placeholder("{{default_prompt}}", allowed), None);
+            assert_eq!(unknown_placeholder("Review calls.", allowed), None);
             assert_eq!(
-                unknown_placeholder("{{default_prompt}} {{focus}}", allowed).as_deref(),
-                Some("focus")
+                unknown_placeholder("{{default_prompt}}", allowed).as_deref(),
+                Some("default_prompt")
             );
         }
         assert_eq!(internal_prompt_placeholders("reviewer"), None);

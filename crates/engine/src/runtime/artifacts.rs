@@ -567,6 +567,18 @@ impl ArtifactStore {
         Ok(page)
     }
 
+    /// The digests of the blobs whose digest starts with `prefix`, in order.
+    pub(crate) fn digests_with_prefix(&self, prefix: &str) -> std::io::Result<Vec<String>> {
+        let mut digests = self
+            .directory
+            .names()?
+            .into_iter()
+            .filter(|name| is_digest_name_common(name) && name.starts_with(prefix))
+            .collect::<Vec<_>>();
+        digests.sort();
+        Ok(digests)
+    }
+
     /// Up to `length` bytes of blob `digest` from `offset`, its length, and
     /// its first [`MEDIA_SNIFF_BYTES`] for recognizing what it is. The whole
     /// blob is verified against its digest when it is opened; a handle kept

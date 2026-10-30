@@ -185,7 +185,7 @@ fn parent_model_takes_a_variant_override_but_stays_internal() {
     write_agent(
         internal.path(),
         "title.md",
-        "---\ndescription: Titles\nmode: internal\nmodels: [\"${small_model}\", { model: \"${parent_model}\", variant: low }]\n---\n{{default_prompt}}\n",
+        "---\ndescription: Titles\nmode: internal\nmodels: [\"${utility_model}\", { model: \"${parent_model}\", variant: low }]\n---\nName sessions.\n",
     );
     let loaded = load(&internal).expect("a variant beside ${parent_model}");
     let models = &loaded.agents[&AgentId::new("title").unwrap()]

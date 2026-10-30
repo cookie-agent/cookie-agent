@@ -7,7 +7,7 @@
 use leptos::{ev, prelude::*};
 use wasm_bindgen::JsCast as _;
 
-use super::{BUTTON, ICON_BUTTON, NOTE};
+use super::{ICON_BUTTON, NOTE};
 use crate::{
     cards::{Card, CardState, Group},
     icons::Glyph,
@@ -52,11 +52,6 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
             .selection
             .with(|selection| cards.with(|cards| selection.blocker(cards)))
     };
-    let note = move || {
-        workspace
-            .selection
-            .with(|selection| cards.with(|cards| selection.prefix_note(cards)))
-    };
     // Changing the cards answers why the last message did not create the
     // session.
     Effect::new(move |previous: Option<()>| {
@@ -91,12 +86,6 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                     .into_any()
             }}
             <div class="flex flex-col gap-1">
-                {move || note().map(|note| view! {
-                    <p id="prefix-note" class="flex items-start gap-1.5 text-xs">
-                        <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5 text-caramel dark:text-maple" />
-                        <span>{note}</span>
-                    </p>
-                })}
                 {move || blocker().map(|blocker| view! {
                     <p id="start-blocker" class=NOTE>{blocker}</p>
                 })}
@@ -286,9 +275,15 @@ fn workspace_fields(workspace: Workspace, card: Card, set: CardSet) -> impl Into
                 .map(|(index, text)| {
                     let edited = card.clone();
                     let removed = card.clone();
-                    let error = set
-                        .errors
-                        .with(|errors| errors.get(&(card.key(), index)).cloned());
+                    // A runtime that started while the session was being
+                    // created has a card per capability now (`alt` became
+                    // `alt/coding`): the error its first card got shows here.
+                    let error = set.errors.with(|errors| {
+                        errors
+                            .get(&(card.key(), index))
+                            .or_else(|| errors.get(&(card.runtime_id.to_string(), index)))
+                            .cloned()
+                    });
                     view! {
                         <div class="flex flex-col gap-1">
                             <div class="flex items-center gap-1">
@@ -331,22 +326,14 @@ fn workspace_fields(workspace: Workspace, card: Card, set: CardSet) -> impl Into
                 .collect_view()
         }
     };
-    let added = card.clone();
+    // One workspace a card: one machine offers each tool once, so a second
+    // directory there is reached by absolute path.
     view! {
         <div class="flex flex-col gap-2" data-card-fields>
             {rows}
             <datalist id=list>
                 {suggestions.into_iter().map(|suggestion| view! { <option value=suggestion></option> }).collect_view()}
             </datalist>
-            <button
-                type="button"
-                class=format!("{BUTTON} self-start")
-                data-add-workspace
-                on:click=move |_| set.selection.update(|selection| selection.add_workspace(&added))
-            >
-                <Glyph icon=icondata::FaPlusSolid />
-                "another workspace"
-            </button>
         </div>
     }
 }

@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "FsDirection": {
+      "description": "What a transfer does with a prepared path.",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "The source: the path must exist.",
+          "type": "string"
+        },
+        {
+          "const": "write",
+          "description": "The destination: the path may exist, and its parents need not.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/prepare`.",
+  "properties": {
+    "direction": {
+      "$ref": "#/$defs/FsDirection"
+    },
+    "instance": {
+      "description": "The open instance whose workspace a relative path resolves against.",
+      "type": "string"
+    },
+    "path": {
+      "description": "As the model wrote it; a leading `~` is the runtime's home.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instance",
+    "path",
+    "direction"
+  ],
+  "title": "FsPrepareParams",
+  "type": "object"
+}

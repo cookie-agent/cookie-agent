@@ -157,7 +157,11 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         .map(|(name, server)| (name.clone(), server.config.clone()))
         .collect();
     let config = LoadedConfiguration {
+        official_agent_diagnostics: Vec::new(),
         runtime: EngineConfig {
+            agents: cookie_agent_config::AgentsConfig::default(),
+            transfer: cookie_agent_config::TransferConfig::default(),
+            utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
                 ..Default::default()
@@ -419,7 +423,11 @@ fn harness_with_catalog_and_mcp(
     let manager =
         Arc::new(ModelManager::new(BTreeMap::new(), catalog, store).expect("model manager"));
     let config = LoadedConfiguration {
+        official_agent_diagnostics: Vec::new(),
         runtime: EngineConfig {
+            agents: cookie_agent_config::AgentsConfig::default(),
+            transfer: cookie_agent_config::TransferConfig::default(),
+            utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
                 ..Default::default()

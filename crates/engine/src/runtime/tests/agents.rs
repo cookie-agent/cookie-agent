@@ -108,12 +108,14 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
     assert_eq!(
         tool_names,
         [
+            "attach_machine",
             "bash",
             "cron_create",
             "cron_delete",
             "cron_list",
             "cron_run",
             "cron_update",
+            "detach_machine",
             "edit",
             "fixture_mcp",
             "list_agents",
@@ -252,14 +254,16 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        // A primary agent that names no MCP, `list_runtimes`, memory, or
-        // cron rule gets them by default in a root run.
+        // A primary agent that names no MCP, `list_runtimes`, memory, cron,
+        // or attach rule gets them by default in a root run.
         [
+            "attach_machine",
             "cron_create",
             "cron_delete",
             "cron_list",
             "cron_run",
             "cron_update",
+            "detach_machine",
             "fixture_mcp",
             "list_agents",
             "list_runtimes",
@@ -314,6 +318,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .map(|tool| tool.name)
             .collect::<Vec<_>>(),
         [
+            "attach_machine",
             "bash",
             "cron_create",
             "cron_delete",
@@ -321,6 +326,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "cron_run",
             "cron_update",
             "delegate",
+            "detach_machine",
             "edit",
             "fixture_mcp",
             "list_agents",
@@ -432,11 +438,13 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             .collect::<Vec<_>>(),
         [
             "alpha",
+            "attach_machine",
             "cron_create",
             "cron_delete",
             "cron_list",
             "cron_run",
             "cron_update",
+            "detach_machine",
             "list_agents",
             "list_runtimes",
             "memory_delete",

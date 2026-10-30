@@ -181,6 +181,15 @@ permissions:
 ---
 Answer briefly.
 AGENT
+    # The internal agents a daemon gets from the official agents, which it
+    # cannot fetch here: the bodies the engine's tests use, which are the
+    # official ones.
+    for internal in approval title; do
+        {
+            printf -- '---\ndescription: The %s agent of the browser scenarios\nmode: internal\nmodels:\n  - ${utility_model}\n  - ${parent_model}\nlimits:\n  timeout_ms: 30000\n---\n' "$internal"
+            cat "$root/crates/engine/src/runtime_snapshot/test_agents/$internal.md"
+        } >"$allowing/.cookie-agent/agents/$internal.md"
+    done
     # A preset with its own root agent, for a project's default agent.
     mkdir -p -m 700 "$allowing/.cookie-agent/agents/review"
     cat >"$allowing/.cookie-agent/agents/review/builder.md" <<'AGENT'
@@ -245,11 +254,12 @@ command = [\"python3\", \"$root/crates/engine/tests/fixtures/acp_agent.py\"]
 description = \"Disabled fixture\"
 enabled = false"
     fi
-    # Set up for onboarding (a provider, default_model, small_model), so no
-    # first-run sheet covers the scenarios; the other daemon has no
-    # provider and offers it.
+    # Set up for onboarding (a provider and the default, small, and utility
+    # models), so no first-run sheet covers the scenarios; the other daemon
+    # has no provider and offers it.
     write_config "$allowing" "$port" 'default_model = "custom.local/test"
-small_model = "custom.local/test"' <<TOML
+small_model = "custom.local/test"
+utility_model = "custom.local/test"' <<TOML
 [session_title]
 generate_on_first_turn = false
 

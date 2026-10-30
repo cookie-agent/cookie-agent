@@ -206,6 +206,12 @@ impl Engine {
                         None => format!("`{written}` could not be opened: {error}"),
                     })
                 })?;
+            self.refuse_overlap_with(
+                &attachments,
+                &instance,
+                &cookie_agent_runtime_api::SessionToolContext::new(SessionId::new_v7()),
+            )
+            .map_err(|error| refused(format!("`{written}`: {error}")))?;
             super::attachments::push_instance(&mut attachments, &instance)
                 .map_err(|error| refused(format!("`{written}`: {error}")))?;
         }
@@ -482,11 +488,16 @@ impl Engine {
             text.push_str("  </machine>\n");
         }
         if !unplaced.is_empty() {
-            text.push_str("  <unplaced>\n");
+            // Only a runtime that never connected has no machine: the daemon
+            // learns it as the runtime first connects
+            // (`docs/site/specs/machines-on-demand.md` section 4.1).
+            text.push_str(
+                "  <!-- The daemon does not know these runtimes' machines yet: they are not connected. One is placed on a machine when it connects, as attaching or delegating to it makes it do. -->\n  <not_connected_yet>\n",
+            );
             for runtime in &unplaced {
                 write_runtime(&mut text, "    ", runtime, true);
             }
-            text.push_str("  </unplaced>\n");
+            text.push_str("  </not_connected_yet>\n");
         }
         text.push_str("</runtimes>");
         Ok(text)

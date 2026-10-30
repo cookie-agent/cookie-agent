@@ -171,6 +171,10 @@ pub fn builtin_tool_groups(
             names(vec![crate::runtimes_tool::runtimes_tool_spec()]),
         ),
         (
+            crate::machines_tool::MachinesTool::GROUP,
+            names(crate::machines_tool::machines_tool_specs()),
+        ),
+        (
             crate::agents_tool::AgentsTool::GROUP,
             names(vec![crate::agents_tool::agents_tool_spec()]),
         ),

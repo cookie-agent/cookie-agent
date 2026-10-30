@@ -60,37 +60,41 @@ fn compaction_document_rejects_unknown_placeholders() {
 }
 
 #[test]
-fn approval_and_title_accept_only_the_default_prompt_placeholder() {
+fn approval_and_title_take_no_placeholder() {
+    // Their prompts are the official documents' bodies: nothing compiled in
+    // is substituted, so `{{default_prompt}}` would send itself literally.
     let temp = TempDir::new().unwrap();
     for agent in ["approval", "title"] {
         let file = format!("{agent}.md");
         let root = root_with_agent(
             &temp,
-            &format!("{agent}-default"),
+            &format!("{agent}-plain"),
             &file,
-            "{{default_prompt}}\nPrefer ask for network access.",
+            "Review calls.\nPrefer ask for network access.",
         );
         let loaded = load(&root).unwrap();
         let document = loaded.agents.get(&AgentId::new(agent).unwrap()).unwrap();
         assert_eq!(
             document.body,
-            "{{default_prompt}}\nPrefer ask for network access.\n"
+            "Review calls.\nPrefer ask for network access.\n"
         );
 
-        let root = root_with_agent(
-            &temp,
-            &format!("{agent}-focus"),
-            &file,
-            "{{default_prompt}} {{focus}}",
-        );
-        assert!(
-            matches!(
-                load(&root),
-                Err(ConfigError::UnknownPromptPlaceholder { agent: id, placeholder })
-                    if id.as_str() == agent && placeholder == "focus"
-            ),
-            "{agent}"
-        );
+        for placeholder in ["default_prompt", "focus"] {
+            let root = root_with_agent(
+                &temp,
+                &format!("{agent}-{placeholder}"),
+                &file,
+                &format!("{{{{{placeholder}}}}}\nMore."),
+            );
+            assert!(
+                matches!(
+                    load(&root),
+                    Err(ConfigError::UnknownPromptPlaceholder { agent: id, placeholder: found })
+                        if id.as_str() == agent && found == placeholder
+                ),
+                "{agent} {placeholder}"
+            );
+        }
     }
 }
 

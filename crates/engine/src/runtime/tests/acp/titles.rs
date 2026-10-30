@@ -41,13 +41,13 @@ async fn title_model(answers: &[&str]) -> (String, tokio::task::JoinHandle<Vec<S
     )
     .await;
     let config = format!(
-        "small_model = \"custom.test/group/model\"\n\n[session_title]\ngenerate_on_first_turn = true\nfallback_to_input_excerpt = false\n\n[providers.\"custom.test\"]\nsource = \"custom\"\nendpoint = \"{endpoint}\"\nadaptor = \"openai-compatible\"\nauth = {{ method = \"no-auth-v1\", values = {{}} }}\n\n[providers.\"custom.test\".models.\"group/model\"]\ndisplay_name = \"Model\"\n\n[providers.\"custom.test\".models.\"group/model\".capabilities]\ninput = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nmedia = {{}}\n"
+        "utility_model = \"custom.test/group/model\"\n\n[session_title]\ngenerate_on_first_turn = true\nfallback_to_input_excerpt = false\n\n[providers.\"custom.test\"]\nsource = \"custom\"\nendpoint = \"{endpoint}\"\nadaptor = \"openai-compatible\"\nauth = {{ method = \"no-auth-v1\", values = {{}} }}\n\n[providers.\"custom.test\".models.\"group/model\"]\ndisplay_name = \"Model\"\n\n[providers.\"custom.test\".models.\"group/model\".capabilities]\ninput = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nmedia = {{}}\n"
     );
     (config, captured)
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_small_model_an_untitled_acp_session_stays_untitled() {
+async fn without_a_utility_model_an_untitled_acp_session_stays_untitled() {
     let acp = acp_fixture_with(
         &[],
         &[],

@@ -484,7 +484,7 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: auto compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nTest auto compaction.\n",
+            "---\ndescription: auto compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  attach: deny\n---\nTest auto compaction.\n",
             Some((
                 "compaction.md",
                 "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize.\n",
@@ -801,7 +801,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: Recent-tail compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny, list_runtimes: deny }\n---\nTest recent-tail compaction.\n",
+            "---\ndescription: Recent-tail compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny, list_runtimes: deny, attach: deny }\n---\nTest recent-tail compaction.\n",
             None,
             None,
             false,
@@ -1253,7 +1253,7 @@ async fn compaction_summary_streams_live_deltas_for_its_invocation() {
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: Streamed compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest streamed compaction.\n",
+            "---\ndescription: Streamed compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { attach: deny }\n---\nTest streamed compaction.\n",
             None,
             None,
             false,

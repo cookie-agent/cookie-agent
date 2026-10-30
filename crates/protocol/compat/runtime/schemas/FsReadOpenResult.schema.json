@@ -1,0 +1,39 @@
+{
+  "$defs": {
+    "FsKind": {
+      "description": "A file, or a folder moved with everything below it.",
+      "enum": [
+        "file",
+        "folder"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What `fs/read_open` opened.",
+  "properties": {
+    "handle": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "kind": {
+      "$ref": "#/$defs/FsKind"
+    },
+    "size": {
+      "description": "A file's size in bytes; a folder's is known at its end.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "handle",
+    "kind"
+  ],
+  "title": "FsReadOpenResult",
+  "type": "object"
+}

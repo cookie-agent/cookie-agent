@@ -56,9 +56,13 @@ impl PermissionAction {
     /// (`cron_create`, `cron_list`, `cron_update`, `cron_delete`,
     /// `cron_run`); the resource is a job's target kind.
     pub const CRON: Self = Self(Cow::Borrowed("cron"));
+    /// Attaching and detaching machines (`attach_machine`,
+    /// `detach_machine`); checked on the target runtime, with the workspace
+    /// as resource.
+    pub const ATTACH: Self = Self(Cow::Borrowed("attach"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 12] = [
+    pub const BUILT_IN: [Self; 13] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -71,6 +75,7 @@ impl PermissionAction {
         Self::MEMORY_WRITE,
         Self::LIST_RUNTIMES,
         Self::CRON,
+        Self::ATTACH,
     ];
 
     pub const MAX_LEN: usize = 32;
@@ -548,13 +553,21 @@ pub struct AgentDescriptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 256))]
     pub runtimes: Vec<AgentRuntime>,
-    /// The configuration fields (`default_model`, `small_model`) the agent's
-    /// `models` entries name but that are not set, sorted (client protocol
-    /// 1.22.0). Those entries are skipped; an agent with no other entry is
-    /// unavailable until a field is set.
+    /// The configuration fields (`default_model`, `small_model`,
+    /// `utility_model`) the agent's `models` entries name but that are not
+    /// set, sorted (client protocol 1.22.0). Those entries are skipped; an
+    /// agent with no other entry is unavailable until a field is set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 8))]
     pub unset_models: Vec<String>,
+    /// An official agent the daemon keeps up to date, not one the user
+    /// wrote (client protocol 1.56.0).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub official: bool,
+    /// An official agent's version (client protocol 1.56.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 64))]
+    pub official_version: Option<String>,
 }
 
 /// A runtime that offers an ACP agent (`docs/site/specs/acp-agents.md`
@@ -721,6 +734,10 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             runtimes: Vec<AgentRuntime>,
             #[serde(default)]
             unset_models: Vec<String>,
+            #[serde(default)]
+            official: bool,
+            #[serde(default)]
+            official_version: Option<String>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -735,6 +752,8 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             runtime: w.runtime,
             runtimes: w.runtimes,
             unset_models: w.unset_models,
+            official: w.official,
+            official_version: w.official_version,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

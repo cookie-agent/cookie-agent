@@ -117,6 +117,17 @@
         }
       ],
       "description": "`release` when absent; ignored without `install_kit`."
+    },
+    "utility_model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OnboardingModelInput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`utility_model` (client protocol 1.56.0)."
     }
   },
   "required": [

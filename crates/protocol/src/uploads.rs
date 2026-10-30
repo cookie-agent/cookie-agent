@@ -102,7 +102,36 @@ pub struct ArtifactUploadBeginParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 255))]
     pub filename: Option<String>,
+    /// What the upload is: media a model may take inline (the default), or
+    /// a file the model only names, such as an archive, a data file, or
+    /// text over 1 MiB (client protocol 1.56.0).
+    #[serde(default, skip_serializing_if = "UploadKind::is_media")]
+    pub kind: UploadKind,
 }
+
+/// What an upload is (`docs/site/specs/machines-on-demand.md` section 6.4).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadKind {
+    /// An image, PDF, audio, video, or text file, recognized from its
+    /// content and refused when it is none of them.
+    #[default]
+    Media,
+    /// Any file, stored as `application/octet-stream`: never sent to a
+    /// model as bytes, it reaches the model as its label, which names the
+    /// artifact for `transfer`.
+    File,
+}
+
+impl UploadKind {
+    #[must_use]
+    pub fn is_media(&self) -> bool {
+        *self == Self::Media
+    }
+}
+
+/// The media type a `file` upload is stored under.
+pub const FILE_UPLOAD_MEDIA_TYPE: &str = "application/octet-stream";
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ArtifactUploadBeginResult {

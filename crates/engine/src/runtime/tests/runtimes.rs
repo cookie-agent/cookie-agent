@@ -7,9 +7,7 @@ use cookie_agent_runtime_api::ToolCollision;
 
 use crate::{
     EngineError, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolLayer, ToolOrigin,
-    ToolPreparationContext, ToolProvider, ToolSpec, TurnAgentContext,
-    policy::FrozenRunPolicy,
-    runtime::{ToolCallFailureCode, ToolFailure},
+    ToolPreparationContext, ToolProvider, ToolSpec, TurnAgentContext, policy::FrozenRunPolicy,
 };
 
 use super::support::*;
@@ -40,6 +38,7 @@ fn without_memory(mut policy: FrozenRunPolicy) -> FrozenRunPolicy {
             && rule.action != cookie_agent_protocol::PermissionAction::MEMORY_WRITE
             && rule.action != cookie_agent_protocol::PermissionAction::LIST_RUNTIMES
             && rule.action != cookie_agent_protocol::PermissionAction::CRON
+            && rule.action != cookie_agent_protocol::PermissionAction::ATTACH
     });
     policy
 }
@@ -290,7 +289,7 @@ async fn the_base_layer_is_registered_once_and_has_no_workspace() {
 }
 
 #[tokio::test]
-async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
+async fn several_machines_publish_one_tool_routed_by_machine() {
     let (fixture, selection) = custom_fixture();
     let policy = without_memory(frozen_root_policy(&fixture, &selection));
     let root = fixture._directory.path();
@@ -338,47 +337,47 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
         .info()
         .attachment_name()
         .to_owned();
-    let mut expected = vec![format!("{local_name}_write"), "labpc_api_write".to_owned()];
-    expected.sort();
-    assert_eq!(published_names(&fixture, session, &policy), expected);
-    // Several: each attachment's tools say where they run. The fake labpc
-    // runtime reports a machine of its own, named after it.
+    // One tool for both machines (machines on demand, section 5): no
+    // prefixes, a `machine` argument naming the default, the first.
+    assert_eq!(published_names(&fixture, session, &policy), ["write"]);
     let daemon = fixture.engine.runtime_machine("local").expect("machine");
-    let labpc_description = description("labpc_api_write");
-    assert!(
-        labpc_description.ends_with(
-            "\n\nBelongs to attachment `labpc_api` (runtime `labpc` on machine `labpc`)."
-        ),
-        "{labpc_description}"
+    let published = fixture
+        .engine
+        .published_tool_definitions(session, &policy)
+        .expect("composed tools");
+    let definition = published
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "write")
+        .expect("write");
+    assert_eq!(
+        definition
+            .input_schema
+            .as_value()
+            .pointer("/properties/machine/default")
+            .and_then(serde_json::Value::as_str),
+        Some(daemon.as_str())
     );
-    assert!(
-        description(&format!("{local_name}_write")).ends_with(&format!(
-            "Belongs to attachment `{local_name}` (runtime `local` on machine `{daemon}`)."
-        )),
-    );
-    // And the system prompt lists both by machine, without `global`.
+    assert!(!definition.description.contains("Belongs to attachment"));
+    // The system prompt names each machine and what it offers.
     let mut composed = policy.clone();
     fixture
         .engine
         .compose_runtimes_prompt(&mut composed, session);
     let prompt = &composed.agent.composed_prompt;
     assert!(
-        prompt.contains("This session has several attachments."),
+        prompt.contains("This session is attached to the following machines."),
         "{prompt}"
     );
-    assert!(prompt.contains(&format!(
-        "<machine name=\"{daemon}\" platform=\"{}\">\n<runtime name=\"local\">\n\
-         <attachment name=\"{local_name}\" kind=\"coding\"",
-        std::env::consts::OS
-    )));
     assert!(
         prompt.contains(&format!(
-            "<machine name=\"labpc\" platform=\"{}\">\n<runtime name=\"labpc\">\n\
-             <attachment name=\"labpc_api\" kind=\"coding\"",
+            "<machine name=\"{daemon}\" platform=\"{}\"",
             std::env::consts::OS
         )),
         "{prompt}"
     );
+    assert!(prompt.contains("default=\"true\""), "{prompt}");
+    assert!(prompt.contains("<machine name=\"labpc\""), "{prompt}");
     assert!(!prompt.contains("name=\"global\""));
     // Renaming the machine renames it in the next composition.
     fixture
@@ -399,14 +398,28 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
             .composed_prompt
             .contains("<machine name=\"lab-pc\"")
     );
-    assert!(description("labpc_api_write").ends_with("(runtime `labpc` on machine `lab-pc`)."));
 
-    // A prefixed call runs on its own runtime under the name it knows.
+    // A call naming a machine runs there, under the name its runtime knows;
+    // without one, on the default.
     let published = fixture
         .engine
         .published_tool_definitions(session, &policy)
         .expect("composed tools");
-    let labpc_write = &published.tools["labpc_api_write"];
+    let write = &published.tools["write"];
+    let routed = |machine: Option<&str>| {
+        let mut arguments = serde_json::json!({"value": "x"});
+        if let Some(machine) = machine {
+            arguments["machine"] = serde_json::Value::String(machine.to_owned());
+        }
+        write
+            .route("write", &mut arguments)
+            .map(|route| (route, arguments))
+    };
+    let (labpc_route, arguments) = routed(Some("lab-pc")).expect("lab-pc offers write");
+    assert!(
+        arguments.get("machine").is_none(),
+        "the host's argument is taken"
+    );
     let prepared = fixture
         .engine
         .prepare_published_tool_calls(
@@ -415,10 +428,10 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
             vec![(
                 ToolCall {
                     id: ToolCallId::new_v7(),
-                    name: "labpc_api_write".into(),
-                    arguments: serde_json::json!({"value":"x"}),
+                    name: "write".into(),
+                    arguments,
                 },
-                Some(labpc_write),
+                Some(labpc_route),
             )],
             &policy,
             test_turn_context(&policy),
@@ -426,18 +439,6 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
         .await;
     assert!(prepared[0].prepared.is_ok(), "the labpc tool prepares");
     assert_eq!(prepared[0].call.name, "write");
-    let runtime_tool = cookie_agent_protocol::ToolIdentity {
-        name: "write".into(),
-        published_name: "labpc_api_write".into(),
-        source: Some(cookie_agent_protocol::Open::Known(
-            cookie_agent_protocol::ToolSource::Runtime {
-                runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
-                attachment: cookie_agent_protocol::AttachmentName::new("labpc_api").unwrap(),
-                capability: cookie_agent_protocol::CapabilityName::new("coding").unwrap(),
-            },
-        )),
-    };
-    assert_eq!(prepared[0].presentation.tool, runtime_tool);
     assert_eq!(
         prepared[0].attachment().map(|name| name.as_str()),
         Some("labpc_api")
@@ -450,6 +451,17 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
                 .as_path()
         )
     );
+    let (default_route, _) = routed(None).expect("the default machine");
+    assert_eq!(
+        default_route
+            .source
+            .attachment
+            .as_ref()
+            .map(|name| name.as_str()),
+        Some(local_name.as_str())
+    );
+    let refused = routed(Some("nowhere")).err().expect("no such machine");
+    assert!(refused.contains("is not on `nowhere`"), "{refused}");
 
     fixture
         .engine
@@ -457,35 +469,17 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
         .await
         .expect("detach labpc");
     assert_eq!(published_names(&fixture, session, &policy), ["write"]);
-
-    // What the model was offered before the detach no longer exists.
-    let stale = fixture
+    let published = fixture
         .engine
-        .prepare_published_tool_calls(
-            session,
-            RunId::new_v7(),
-            vec![(
-                ToolCall {
-                    id: ToolCallId::new_v7(),
-                    name: "labpc_api_write".into(),
-                    arguments: serde_json::json!({"value":"x"}),
-                },
-                Some(labpc_write),
-            )],
-            &policy,
-            test_turn_context(&policy),
-        )
-        .await;
-    assert!(matches!(
-        stale[0].prepared,
-        Err(ToolFailure {
-            code: ToolCallFailureCode::OperationChanged,
-            ..
-        })
-    ));
-    // The failure still names the tool the model was offered.
-    assert_eq!(stale[0].presentation.title.as_str(), "labpc_api_write");
-    assert_eq!(stale[0].presentation.tool, runtime_tool);
+        .published_tool_definitions(session, &policy)
+        .expect("composed tools");
+    let mut arguments = serde_json::json!({"value": "x", "machine": "lab-pc"});
+    assert!(
+        published.tools["write"]
+            .route("write", &mut arguments)
+            .is_err(),
+        "a detached machine no longer offers it"
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -543,25 +537,24 @@ async fn sessions_attach_runtimes_under_unique_names() {
 
     let first = workspace_dir(&workspace_dir(root, "one"), "api");
     let second = workspace_dir(&workspace_dir(root, "two"), "api");
-    let names = [first.clone(), second]
-        .into_iter()
-        .map(|workspace| {
-            let engine = fixture.engine.clone();
-            async move {
-                engine
-                    .attach_runtime(session, "labpc", None, Some(workspace), origin())
-                    .await
-                    .expect("attach")
-                    .name
-                    .into_string()
-            }
-        })
-        .collect::<Vec<_>>();
-    let mut attached = Vec::new();
-    for name in names {
-        attached.push(name.await);
-    }
-    assert_eq!(attached, ["labpc_api", "labpc_api_2"]);
+    let attached = fixture
+        .engine
+        .attach_runtime(session, "labpc", None, Some(first.clone()), origin())
+        .await
+        .expect("attach");
+    assert_eq!(attached.name.as_str(), "labpc_api");
+    // A second directory of one machine would offer its tools twice
+    // (machines on demand, section 4).
+    let overlapping = fixture
+        .engine
+        .attach_runtime(session, "labpc", None, Some(second), origin())
+        .await;
+    assert!(
+        matches!(&overlapping, Err(EngineError::Runtime(message))
+            if message.contains("machine `labpc` already has `labpc/coding` attached")
+                && message.contains("offers `write`")),
+        "{overlapping:?}"
+    );
 
     // One instance per (runtime ID, workspace), shared and never attached twice.
     let again = fixture
@@ -611,12 +604,7 @@ async fn sessions_attach_runtimes_under_unique_names() {
         .to_owned();
     assert_eq!(
         runtimes,
-        [
-            "global".to_owned(),
-            local_name,
-            "labpc_api".into(),
-            "labpc_api_2".into()
-        ]
+        ["global".to_owned(), local_name, "labpc_api".into()]
     );
     fixture.engine.shutdown().await;
 }

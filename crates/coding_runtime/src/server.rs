@@ -102,6 +102,19 @@ pub struct ServeOptions {
     /// before `--socket <path>`: this executable's `runtime mcp-bridge` when
     /// empty.
     pub bridge_command: Vec<String>,
+    /// Where transfers record their partial copies while they exist, so a
+    /// later start removes those a crash left behind, such as
+    /// [`default_transfer_journal`]; `None` keeps no record.
+    pub transfer_journal: Option<PathBuf>,
+}
+
+/// The folder `cookie runtime serve` records transfers' partial copies in:
+/// `~/.cookie-agent/transfers`.
+#[must_use]
+pub fn default_transfer_journal() -> Option<PathBuf> {
+    cookie_agent_protocol::paths::user_data_root()
+        .ok()
+        .map(|root| root.join("transfers"))
 }
 
 /// `cookie runtime mcp-bridge` of this executable.
@@ -124,6 +137,7 @@ impl Default for ServeOptions {
             stop: CancellationToken::new(),
             acp_agents: Vec::new(),
             bridge_command: Vec::new(),
+            transfer_journal: None,
         }
     }
 }
@@ -211,6 +225,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> Stri
     } else {
         options.bridge_command.clone()
     };
+    let options_journal = options.transfer_journal.clone();
     let server = Arc::new(Server {
         acp: Arc::new(crate::acp_host::AcpHost::new(
             peer.clone(),
@@ -229,7 +244,11 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> Stri
         next_prepared: AtomicU64::new(1),
         settings_changes: tokio::sync::watch::channel(None).0,
         stop,
+        files: crate::files::Files::new(options_journal.clone()),
     });
+    if let Some(journal) = options_journal {
+        tokio::task::spawn_blocking(move || crate::files::sweep_stale_partials(&journal));
+    }
     let stopped = loop {
         tokio::select! {
             () = server.stop.cancelled() => break true,
@@ -305,6 +324,8 @@ struct Server {
     settings_changes: tokio::sync::watch::Sender<Option<RuntimeSettings>>,
     /// Cancelled when the server stops; every call runs under a child of it.
     stop: CancellationToken,
+    /// Transfers' routes and handles; dropped with the connection.
+    files: crate::files::Files,
 }
 
 /// What `runtime/initialize` set, and `runtime/settings_changed` changes.
@@ -519,6 +540,15 @@ struct AdmittedExecution {
     cancel: CancellationToken,
 }
 
+/// An `fs/*` failure on the wire.
+fn fs_error(error: crate::files::FsError) -> RpcError {
+    match error {
+        crate::files::FsError::UnknownHandle(id) => unknown_handle("transfer handle", id),
+        crate::files::FsError::Invalid(detail) => errors::BAD_PARAMS.error().detail(detail).into(),
+        crate::files::FsError::Failed(detail) => errors::FS_FAILED.error().detail(detail).into(),
+    }
+}
+
 fn unknown_handle(what: &str, id: u64) -> RpcError {
     errors::UNKNOWN_HANDLE
         .error()
@@ -663,6 +693,7 @@ impl Server {
                 let result = self.reconnect_runtime_mcp(&state, &request).await;
                 reply(request, result).await;
             }
+            other if other.starts_with("fs/") => self.handle_files(request).await,
             other if other.starts_with("agent/") => match self.acp.handle_request(&request).await {
                 Some(result) => reply(request, result).await,
                 None => {
@@ -818,6 +849,121 @@ impl Server {
         Ok(())
     }
 
+    /// The `fs/*` requests of transfers.
+    async fn handle_files(&self, request: IncomingRequest) {
+        use cookie_agent_protocol::runtime_protocol::{
+            FsCopyParams, FsHandle, FsPrepareParams, FsReadChunkParams, FsReadOpenParams,
+            FsWriteChunkParams, FsWriteCommitParams, FsWriteOpenParams,
+        };
+
+        let files = &self.files;
+        match request.method.as_str() {
+            method::FS_PREPARE => {
+                let result = async {
+                    let params: FsPrepareParams = request.params()?;
+                    let instance = self.instance(Some(&params.instance))?;
+                    let workspace = instance
+                        .info
+                        .workspace()
+                        .map(|workspace| workspace.root().to_owned())
+                        .ok_or_else(|| {
+                            RpcError::from(
+                                errors::BAD_PARAMS
+                                    .error()
+                                    .field("field", "instance")
+                                    .detail("the instance has no workspace"),
+                            )
+                        })?;
+                    let path = crate::path_args::expand(params.path).map_err(|error| {
+                        RpcError::from(errors::FS_FAILED.error().detail(error.to_string()))
+                    })?;
+                    files
+                        .prepare(workspace, path, params.direction)
+                        .await
+                        .map_err(fs_error)
+                }
+                .await;
+                reply(request, result).await;
+            }
+            method::FS_READ_OPEN => {
+                let result = async {
+                    let params: FsReadOpenParams = request.params()?;
+                    files.read_open(params.route).await.map_err(fs_error)
+                }
+                .await;
+                reply(request, result).await;
+            }
+            method::FS_READ_CHUNK => {
+                let result = async {
+                    let params: FsReadChunkParams = request.params()?;
+                    files
+                        .read_chunk(params.handle, params.max_bytes)
+                        .await
+                        .map_err(fs_error)
+                }
+                .await;
+                reply(request, result).await;
+            }
+            method::FS_WRITE_OPEN => {
+                let result = async {
+                    let params: FsWriteOpenParams = request.params()?;
+                    files
+                        .write_open(params.route, params.kind, params.overwrite)
+                        .await
+                        .map(|handle| FsHandle { handle })
+                        .map_err(fs_error)
+                }
+                .await;
+                reply(request, result).await;
+            }
+            method::FS_WRITE_CHUNK => {
+                let result = async {
+                    let params: FsWriteChunkParams = request.params()?;
+                    files
+                        .write_chunk(params.handle, params.offset, &params.data)
+                        .await
+                        .map(|()| Empty {})
+                        .map_err(fs_error)
+                }
+                .await;
+                reply(request, result).await;
+            }
+            method::FS_WRITE_COMMIT => {
+                let result = async {
+                    let params: FsWriteCommitParams = request.params()?;
+                    files
+                        .write_commit(params.handle, &params.sha256)
+                        .await
+                        .map_err(fs_error)
+                }
+                .await;
+                reply(request, result).await;
+            }
+            method::FS_CLOSE => {
+                let result = request.params::<FsHandle>().map(|params| {
+                    files.close(params.handle);
+                    Empty {}
+                });
+                reply(request, result).await;
+            }
+            method::FS_COPY => {
+                let result = async {
+                    let params: FsCopyParams = request.params()?;
+                    files
+                        .copy(params.from, params.to, params.overwrite)
+                        .await
+                        .map_err(fs_error)
+                }
+                .await;
+                reply(request, result).await;
+            }
+            other => {
+                let error = errors::UNKNOWN_METHOD.error().field("method", other);
+                let _ = request.fail(error.into()).await;
+            }
+        }
+    }
+
     /// The open instance `id` names.
     fn instance(&self, id: Option<&str>) -> Result<Arc<Instance>, RpcError> {
         let id = id.ok_or_else(|| {
@@ -921,6 +1067,7 @@ impl Server {
             producer_messaging: self.options.producer_messaging,
             mcp_servers: mcp_reports,
             acp_agents: self.acp.reports(),
+            files: true,
         })
     }
 

@@ -67,13 +67,7 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     app.poll_onboarding();
     pump_until(&mut app, |app| app.onboarding.status.is_some()).await;
     let status = app.onboarding.status.clone().expect("status");
-    assert_eq!(
-        status.missing,
-        [
-            OnboardingRequirement::DefaultModel,
-            OnboardingRequirement::SmallModel
-        ]
-    );
+    assert_eq!(status.missing, [OnboardingRequirement::DefaultModel]);
     assert!(app.onboarding_notice_visible());
     assert!(rendered_frame(&mut app, 120, 40).contains("Cookie is not set up"));
 
@@ -84,7 +78,7 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     assert_eq!(app.onboarding.step, Some(OnboardingStep::DefaultModel));
     assert_eq!(
         app.onboarding_finish_refusal().as_deref(),
-        Some("Choose a default model, choose a small model first.")
+        Some("Choose a default model first.")
     );
     let frame = rendered_frame(&mut app, 120, 40);
     assert!(frame.contains("✓ Provider"), "{frame}");
@@ -99,13 +93,15 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     assert_eq!(app.modal, Modal::Onboarding);
     assert_eq!(app.onboarding.step, Some(OnboardingStep::SmallModel));
     assert!(app.onboarding.default_choice.is_some());
-    // The kit step stays offline: its preview is already answered.
-    app.onboarding.preview = Some(Err("offline".into()));
-    app.handle_key(key(KeyCode::Enter)).await;
-    assert_eq!(app.onboarding.picking, Some(ModelSlot::Small));
-    app.choose_picker_entry(0).await;
-    assert_eq!(app.onboarding.step, Some(OnboardingStep::Kit));
+    // The optional models: the small one is skipped, the utility one set.
     assert_eq!(app.onboarding_finish_refusal(), None);
+    app.handle_key(key(KeyCode::Right)).await;
+    assert_eq!(app.onboarding.step, Some(OnboardingStep::UtilityModel));
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert_eq!(app.onboarding.picking, Some(ModelSlot::Utility));
+    app.choose_picker_entry(0).await;
+    assert_eq!(app.modal, Modal::Onboarding);
+    assert!(app.onboarding.utility_choice.is_some());
 
     app.handle_key(key(KeyCode::Char('f'))).await;
     pump_until(&mut app, |app| app.onboarding.summary.is_some()).await;
@@ -119,8 +115,8 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
         "{summary:?}"
     );
     assert!(!app.onboarding_notice_visible());
-    // `primary` runs on the default model now: the summary offers a first
-    // session on it.
+    // `primary`, the default agent, runs on the default model now: the
+    // summary offers a first session on it.
     app.request_runtime_resync();
     pump_until(&mut app, |app| !app.runtime_resync.in_flight()).await;
     assert!(
@@ -150,7 +146,7 @@ async fn not_now_hides_the_notice_until_what_is_missing_changes() {
 
     app.install_onboarding_status(Some(sample_status(&[
         OnboardingRequirement::DefaultModel,
-        OnboardingRequirement::SmallModel,
+        OnboardingRequirement::DefaultAgent,
     ])));
     assert!(app.onboarding_notice_visible());
     rendered_frame(&mut app, 120, 40);
@@ -172,12 +168,12 @@ async fn not_now_hides_the_notice_until_what_is_missing_changes() {
         remembered.not_now,
         Some(vec![
             OnboardingRequirement::DefaultModel,
-            OnboardingRequirement::SmallModel
+            OnboardingRequirement::DefaultAgent
         ])
     );
 
     // Once something else is missing, the notice is offered again.
-    app.install_onboarding_status(Some(sample_status(&[OnboardingRequirement::SmallModel])));
+    app.install_onboarding_status(Some(sample_status(&[OnboardingRequirement::DefaultAgent])));
     assert!(app.onboarding_notice_visible());
     // A ready daemon has no notice.
     app.install_onboarding_status(Some(sample_status(&[])));
@@ -214,5 +210,6 @@ async fn the_model_steps_preselect_the_default_and_the_first_listed_variant() {
             .map(|variant| variant.to_string())
     };
     assert_eq!(variant(ModelSlot::Default).as_deref(), Some("medium"));
-    assert_eq!(variant(ModelSlot::Small).as_deref(), Some("fast"));
+    assert_eq!(variant(ModelSlot::Small).as_deref(), Some("medium"));
+    assert_eq!(variant(ModelSlot::Utility).as_deref(), Some("fast"));
 }

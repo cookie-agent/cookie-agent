@@ -1,21 +1,21 @@
 //! Onboarding (`docs/site/specs/default-models-and-onboarding.md` section
 //! 9): the notice offered while the daemon is not set up, and the
 //! `/onboard` panel with its four steps. Step 1 hands over to the provider
-//! connect panel and steps 2 and 3 to the model picker; each returns to the
+//! connect panel and steps 2 to 4 to the model picker; each returns to the
 //! panel when it closes. Everything the panel does is a daemon call:
-//! `onboarding.get`, `onboarding.preview`, `onboarding.run`, and
-//! `provider.connect`.
+//! `onboarding.get`, `onboarding.run`, and `provider.connect`. There is no
+//! starter kit: the daemon keeps the official agents itself.
 
 use std::path::PathBuf;
 
 use cookie_agent_client_state::onboarding::{
-    self as rules, OnboardingStep, archive_source, default_model_variant, finish_refusal,
-    first_step, kit_file_status, model_input, model_label, run_summary, small_model_variant,
+    self as rules, OnboardingStep, default_model_variant, finish_refusal, first_step, model_input,
+    model_label, run_summary, small_model_variant, utility_model_variant,
 };
 use cookie_agent_client_state::refresh::{Latest, Ticket};
 use cookie_agent_protocol::{
-    AgentId, ModelKey, OnboardingFileAction, OnboardingKitSource, OnboardingPreviewResult,
-    OnboardingRequirement, OnboardingRunParams, OnboardingRunResult, OnboardingStatus, VariantId,
+    AgentId, ModelKey, OnboardingRequirement, OnboardingRunParams, OnboardingRunResult,
+    OnboardingStatus, VariantId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -27,7 +27,6 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 
 use super::{App, Modal, RpcUpdate, centered, paint_panel};
-use crate::ui::input::InputState;
 
 /// The file under the user data root where the TUI remembers its own
 /// state between runs: for now, which notice "Not now" dismissed.
@@ -38,6 +37,7 @@ const STATE_FILE: &str = "tui-state.json";
 pub(in crate::ui) enum ModelSlot {
     Default,
     Small,
+    Utility,
 }
 
 /// A button of the notice or of the panel.
@@ -50,18 +50,12 @@ pub(in crate::ui) enum OnboardingAction {
     NotNow,
     /// Step 1: the provider connect panel.
     Connect,
-    /// Steps 2 and 3: the model picker.
+    /// Steps 2 to 4: the model picker.
     ChooseModel,
-    /// Step 4: install the kit or not.
-    ToggleKit,
-    /// Step 4: a downloaded kit instead of the release's.
-    UseArchive,
-    /// Step 4: the selected file's diff.
-    ToggleDiff,
     Back,
     Next,
     Finish,
-    /// After a run: a new-session draft on `primary`.
+    /// After a run: a new-session draft on the default agent.
     StartSession,
     Close,
 }
@@ -73,13 +67,10 @@ impl OnboardingAction {
             Self::NotNow => "Not now",
             Self::Connect => "connect a provider",
             Self::ChooseModel => "choose",
-            Self::ToggleKit => "install on/off",
-            Self::UseArchive => "use a downloaded kit…",
-            Self::ToggleDiff => "diff",
             Self::Back => "back",
             Self::Next => "next",
             Self::Finish => "finish",
-            Self::StartSession => "start a session on primary",
+            Self::StartSession => "start a session",
             Self::Close => "close",
         }
     }
@@ -88,9 +79,6 @@ impl OnboardingAction {
         match self {
             Self::SetUp | Self::Connect | Self::ChooseModel | Self::StartSession => "enter",
             Self::NotNow => "n",
-            Self::ToggleKit => "i",
-            Self::UseArchive => "o",
-            Self::ToggleDiff => "d",
             Self::Back => "←",
             Self::Next => "→",
             Self::Finish => "f",
@@ -104,8 +92,6 @@ impl OnboardingAction {
 pub(in crate::ui) struct OnboardingHits {
     pub(in crate::ui) notice: Vec<(Rect, OnboardingAction)>,
     pub(in crate::ui) tabs: Vec<(Rect, OnboardingStep)>,
-    /// Kit file rows, by index.
-    pub(in crate::ui) rows: Vec<(Rect, usize)>,
     pub(in crate::ui) actions: Vec<(Rect, OnboardingAction)>,
 }
 
@@ -132,18 +118,7 @@ pub(in crate::ui) struct OnboardingState {
     pub(in crate::ui) step: Option<OnboardingStep>,
     pub(in crate::ui) default_choice: Option<(ModelKey, Option<VariantId>)>,
     pub(in crate::ui) small_choice: Option<(ModelKey, Option<VariantId>)>,
-    pub(in crate::ui) install_kit: bool,
-    /// A downloaded kit: its path and bytes.
-    pub(in crate::ui) archive: Option<(PathBuf, Vec<u8>)>,
-    pub(in crate::ui) path_input: Option<InputState>,
-    pub(in crate::ui) preview: Option<Result<OnboardingPreviewResult, String>>,
-    /// A preview of the kit chosen now is on its way.
-    pub(in crate::ui) preview_in_flight: bool,
-    /// The `onboarding.preview` reads: only the newest, of the kit chosen
-    /// last, is installed.
-    preview_reads: Latest,
-    pub(in crate::ui) selected_file: usize,
-    pub(in crate::ui) show_diff: bool,
+    pub(in crate::ui) utility_choice: Option<(ModelKey, Option<VariantId>)>,
     pub(in crate::ui) running: bool,
     pub(in crate::ui) summary: Option<Vec<String>>,
     pub(in crate::ui) error: Option<String>,
@@ -198,6 +173,7 @@ impl OnboardingState {
         match slot {
             ModelSlot::Default => self.default_choice.as_ref(),
             ModelSlot::Small => self.small_choice.as_ref(),
+            ModelSlot::Utility => self.utility_choice.as_ref(),
         }
     }
 }
@@ -252,18 +228,13 @@ impl App {
     pub(super) fn open_onboarding_panel(&mut self) {
         let status = self.onboarding.status.clone();
         let status_reads = self.onboarding.status_reads;
-        // A preview on its way was of the kit chosen before: dropped.
-        let mut preview_reads = self.onboarding.preview_reads;
-        preview_reads.supersede();
         let state_file = self.onboarding.state_file.take();
         let not_now = self.onboarding.not_now.take();
         self.onboarding = OnboardingState {
             status,
             status_reads,
-            preview_reads,
             state_file,
             not_now,
-            install_kit: true,
             ..OnboardingState::default()
         };
         self.onboarding.step = Some(
@@ -274,9 +245,6 @@ impl App {
         );
         self.modal = Modal::Onboarding;
         self.poll_onboarding();
-        if self.onboarding.step == Some(OnboardingStep::Kit) {
-            self.preview_kit();
-        }
     }
 
     /// Reopens the panel after the modal it handed over to closed.
@@ -291,57 +259,13 @@ impl App {
 
     /// A tab's click: that step.
     pub(in crate::ui) fn show_onboarding_step(&mut self, step: OnboardingStep) {
-        if self.onboarding.path_input.is_none() && self.onboarding.summary.is_none() {
+        if self.onboarding.summary.is_none() {
             self.go_to_step(step);
         }
     }
 
     fn go_to_step(&mut self, step: OnboardingStep) {
         self.onboarding.step = Some(step);
-        self.onboarding.show_diff = false;
-        if step == OnboardingStep::Kit
-            && self.onboarding.preview.is_none()
-            && !self.onboarding.preview_in_flight
-        {
-            self.preview_kit();
-        }
-    }
-
-    /// Previews the kit chosen now; a preview of a kit chosen before that
-    /// is still on its way is dropped when it lands.
-    fn preview_kit(&mut self) {
-        let read = self.onboarding.preview_reads.begin();
-        self.onboarding.preview_in_flight = true;
-        let source = self.kit_source();
-        let client = self.client.clone();
-        let updates = self.rpc_updates_tx.clone();
-        self.spawn_rpc(async move {
-            let result = client
-                .preview_onboarding(source)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::OnboardingPreview { read, result });
-        });
-    }
-
-    fn kit_source(&self) -> Option<OnboardingKitSource> {
-        self.onboarding
-            .archive
-            .as_ref()
-            .map(|(_, bytes)| archive_source(bytes))
-    }
-
-    pub(in crate::ui) fn install_onboarding_preview(
-        &mut self,
-        read: Ticket,
-        result: Result<OnboardingPreviewResult, String>,
-    ) {
-        if !self.onboarding.preview_reads.is_current(read) {
-            return;
-        }
-        self.onboarding.preview_in_flight = false;
-        self.onboarding.selected_file = 0;
-        self.onboarding.preview = Some(result);
     }
 
     /// Why Finish is disabled, if it is.
@@ -352,16 +276,7 @@ impl App {
         if self.onboarding.running {
             return Some("Setting up…".into());
         }
-        // Finishing now would leave out the kit the preview is still
-        // reading, though it is to be installed.
-        if self.onboarding.install_kit && self.onboarding.preview_in_flight {
-            return Some("Reading the starter kit…".into());
-        }
-        finish_refusal(
-            status,
-            self.onboarding.default_choice.is_some(),
-            self.onboarding.small_choice.is_some(),
-        )
+        finish_refusal(status, self.onboarding.default_choice.is_some())
     }
 
     fn finish_onboarding(&mut self) {
@@ -375,16 +290,16 @@ impl App {
                     .map(|descriptor| model_input(descriptor, variant.as_ref()))
             })
         };
-        let install_kit = self.onboarding.install_kit
-            && matches!(&self.onboarding.preview, Some(Ok(preview)) if preview.files.iter().any(|file| file.action != OnboardingFileAction::Skip));
         let params = OnboardingRunParams {
-            install_kit,
-            source: if install_kit { self.kit_source() } else { None },
+            install_kit: false,
+            source: None,
             default_model: input(self.onboarding.choice(ModelSlot::Default)),
             small_model: input(self.onboarding.choice(ModelSlot::Small)),
+            utility_model: input(self.onboarding.choice(ModelSlot::Utility)),
         };
         self.onboarding.running = true;
         self.onboarding.error = None;
+        // The daemon fetches the official agents first when it has none.
         self.status = "setting up…".into();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
@@ -411,7 +326,6 @@ impl App {
                 };
                 self.onboarding.summary = Some(run_summary(&result));
                 self.onboarding.status = Some(result.status);
-                self.onboarding.preview = None;
             }
             Err(error) => {
                 self.status = "Not set up.".into();
@@ -420,24 +334,27 @@ impl App {
         }
     }
 
-    fn primary_agent(&self) -> Option<AgentId> {
+    fn default_root_agent(&self) -> Option<AgentId> {
         self.agents
             .iter()
             .find(|agent| {
-                agent.id.as_str() == "primary" && agent.preset.is_none() && agent.runnable_as_root
+                agent.id == self.default_agent && agent.preset.is_none() && agent.runnable_as_root
             })
             .map(|agent| agent.id.clone())
     }
 
     fn start_primary_session(&mut self) {
-        let Some(primary) = self.primary_agent() else {
-            self.status = "No runnable `primary` agent.".into();
+        let Some(agent) = self.default_root_agent() else {
+            self.status = format!(
+                "The default agent `{}` cannot start a session yet: run `cookie agents update`.",
+                self.default_agent
+            );
             return;
         };
         self.new_session_draft =
-            self.draft_selection_for_preset(self.selected_preset.as_deref(), Some(&primary));
+            self.draft_selection_for_preset(self.selected_preset.as_deref(), Some(&agent));
         self.modal = Modal::None;
-        self.status = "New session on primary: type the first message.".into();
+        self.status = format!("New session on {agent}: type the first message.");
     }
 
     fn not_now(&mut self) {
@@ -478,11 +395,13 @@ impl App {
         self.status = match slot {
             ModelSlot::Default => "Choose the default model.".into(),
             ModelSlot::Small => "Choose the small model.".into(),
+            ModelSlot::Utility => "Choose the utility model.".into(),
         };
     }
 
     /// The variant the picker highlights for an onboarding choice: the
-    /// default model's own default, the small model's first listed one.
+    /// default and small models' own default, the utility model's first
+    /// listed one.
     pub(in crate::ui) fn onboarding_preferred_variant(
         &self,
         slot: ModelSlot,
@@ -492,6 +411,7 @@ impl App {
         match slot {
             ModelSlot::Default => default_model_variant(descriptor),
             ModelSlot::Small => small_model_variant(descriptor),
+            ModelSlot::Utility => utility_model_variant(descriptor),
         }
     }
 
@@ -505,6 +425,7 @@ impl App {
         match slot {
             ModelSlot::Default => self.onboarding.default_choice = Some((model, variant)),
             ModelSlot::Small => self.onboarding.small_choice = Some((model, variant)),
+            ModelSlot::Utility => self.onboarding.utility_choice = Some((model, variant)),
         }
         self.model_search.reset();
         self.model_then_variant = false;
@@ -513,19 +434,6 @@ impl App {
         self.resume_onboarding();
         if let Some(next) = self.onboarding.step().next() {
             self.go_to_step(next);
-        }
-    }
-
-    fn submit_archive_path(&mut self, path: String) {
-        let path = PathBuf::from(path.trim());
-        match std::fs::read(&path) {
-            Ok(bytes) if bytes.len() <= cookie_agent_protocol::MAX_ONBOARDING_ARCHIVE_BYTES => {
-                self.onboarding.archive = Some((path, bytes));
-                self.onboarding.preview = None;
-                self.preview_kit();
-            }
-            Ok(_) => self.status = "That file is too large to be a starter kit.".into(),
-            Err(error) => self.status = format!("cannot read {}: {error}", path.display()),
         }
     }
 
@@ -539,15 +447,11 @@ impl App {
                     self.choose_model_from_onboarding(ModelSlot::Default)
                 }
                 OnboardingStep::SmallModel => self.choose_model_from_onboarding(ModelSlot::Small),
-                _ => {}
+                OnboardingStep::UtilityModel => {
+                    self.choose_model_from_onboarding(ModelSlot::Utility)
+                }
+                OnboardingStep::Provider => {}
             },
-            OnboardingAction::ToggleKit => {
-                self.onboarding.install_kit = !self.onboarding.install_kit
-            }
-            OnboardingAction::UseArchive => {
-                self.onboarding.path_input = Some(InputState::default())
-            }
-            OnboardingAction::ToggleDiff => self.onboarding.show_diff = !self.onboarding.show_diff,
             OnboardingAction::Back => {
                 if let Some(step) = self.onboarding.step().previous() {
                     self.go_to_step(step);
@@ -566,12 +470,9 @@ impl App {
 
     /// The actions the panel offers now.
     pub(in crate::ui) fn onboarding_actions(&self) -> Vec<OnboardingAction> {
-        if self.onboarding.path_input.is_some() {
-            return vec![OnboardingAction::Close];
-        }
         if self.onboarding.summary.is_some() {
             let mut actions = Vec::new();
-            if self.primary_agent().is_some() {
+            if self.default_root_agent().is_some() {
                 actions.push(OnboardingAction::StartSession);
             }
             actions.push(OnboardingAction::Close);
@@ -580,16 +481,9 @@ impl App {
         let step = self.onboarding.step();
         let mut actions = match step {
             OnboardingStep::Provider => vec![OnboardingAction::Connect],
-            OnboardingStep::DefaultModel | OnboardingStep::SmallModel => {
-                vec![OnboardingAction::ChooseModel]
-            }
-            OnboardingStep::Kit => {
-                let mut kit = vec![OnboardingAction::ToggleKit, OnboardingAction::UseArchive];
-                if self.selected_kit_diff().is_some() {
-                    kit.push(OnboardingAction::ToggleDiff);
-                }
-                kit
-            }
+            OnboardingStep::DefaultModel
+            | OnboardingStep::SmallModel
+            | OnboardingStep::UtilityModel => vec![OnboardingAction::ChooseModel],
         };
         if step.previous().is_some() {
             actions.push(OnboardingAction::Back);
@@ -612,40 +506,7 @@ impl App {
         actions
     }
 
-    fn kit_files(&self) -> &[cookie_agent_protocol::OnboardingKitFile] {
-        match &self.onboarding.preview {
-            Some(Ok(preview)) => &preview.files,
-            _ => &[],
-        }
-    }
-
-    fn selected_kit_diff(&self) -> Option<&str> {
-        self.kit_files()
-            .get(self.onboarding.selected_file)
-            .and_then(|file| file.diff.as_deref())
-    }
-
-    pub(in crate::ui) fn select_onboarding_file(&mut self, index: usize) {
-        if index < self.kit_files().len() {
-            self.onboarding.selected_file = index;
-        }
-    }
-
     pub(super) fn handle_onboarding_key(&mut self, key: KeyEvent) {
-        if let Some(input) = self.onboarding.path_input.as_mut() {
-            match key.code {
-                KeyCode::Esc => self.onboarding.path_input = None,
-                KeyCode::Enter => {
-                    let path = input.as_str().to_owned();
-                    self.onboarding.path_input = None;
-                    if !path.trim().is_empty() {
-                        self.submit_archive_path(path);
-                    }
-                }
-                _ => super::keys::edit_plain_input(input, key),
-            }
-            return;
-        }
         let offered = self.onboarding_actions();
         let offers = |action| offered.contains(&action);
         let action = match key.code {
@@ -660,18 +521,7 @@ impl App {
                         | OnboardingAction::StartSession
                 )
             }),
-            KeyCode::Up if self.onboarding.step() == OnboardingStep::Kit => {
-                self.select_onboarding_file(self.onboarding.selected_file.saturating_sub(1));
-                None
-            }
-            KeyCode::Down if self.onboarding.step() == OnboardingStep::Kit => {
-                self.select_onboarding_file(self.onboarding.selected_file + 1);
-                None
-            }
             KeyCode::Char('n') if key.modifiers.is_empty() => Some(OnboardingAction::NotNow),
-            KeyCode::Char('i') => Some(OnboardingAction::ToggleKit),
-            KeyCode::Char('o') => Some(OnboardingAction::UseArchive),
-            KeyCode::Char('d') => Some(OnboardingAction::ToggleDiff),
             KeyCode::Char('f') if key.modifiers == KeyModifiers::NONE => {
                 if let Some(reason) = self.onboarding_finish_refusal() {
                     self.status = reason;
@@ -774,7 +624,7 @@ impl App {
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
         // The body.
-        let lines = self.onboarding_body(current, body_area, &mut hits);
+        let lines = self.onboarding_body(current);
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body_area);
         if let Some(reason) = self
             .onboarding_finish_refusal()
@@ -811,31 +661,15 @@ impl App {
         match step {
             OnboardingStep::DefaultModel => self.onboarding.default_choice.is_some(),
             OnboardingStep::SmallModel => self.onboarding.small_choice.is_some(),
-            OnboardingStep::Provider | OnboardingStep::Kit => false,
+            OnboardingStep::UtilityModel => self.onboarding.utility_choice.is_some(),
+            OnboardingStep::Provider => false,
         }
     }
 
-    fn onboarding_body(
-        &self,
-        step: OnboardingStep,
-        area: Rect,
-        hits: &mut OnboardingHits,
-    ) -> Vec<Line<'static>> {
+    fn onboarding_body(&self, step: OnboardingStep) -> Vec<Line<'static>> {
         let body = self.theme.body();
         let muted = self.theme.muted();
         let mut lines = Vec::new();
-        if let Some(input) = &self.onboarding.path_input {
-            lines.push(Line::styled(
-                "Path of a downloaded cookie-agent-defaults.tar.gz:",
-                body,
-            ));
-            lines.push(Line::styled(
-                input.as_str().to_owned(),
-                self.theme.selected(),
-            ));
-            lines.push(Line::styled("Enter uses it; Esc cancels.", muted));
-            return lines;
-        }
         if let Some(summary) = &self.onboarding.summary {
             lines.extend(summary.iter().map(|line| Line::styled(line.clone(), body)));
             return lines;
@@ -872,19 +706,25 @@ impl App {
                     muted,
                 ));
             }
-            OnboardingStep::DefaultModel | OnboardingStep::SmallModel => {
-                let (slot, configured, about) = if step == OnboardingStep::DefaultModel {
-                    (
+            OnboardingStep::DefaultModel
+            | OnboardingStep::SmallModel
+            | OnboardingStep::UtilityModel => {
+                let (slot, configured, about) = match step {
+                    OnboardingStep::DefaultModel => (
                         ModelSlot::Default,
                         status.default_model.as_ref(),
-                        "The model agents reach as ${default_model}.",
-                    )
-                } else {
-                    (
+                        "The model root agents reach as ${default_model}.",
+                    ),
+                    OnboardingStep::SmallModel => (
                         ModelSlot::Small,
                         status.small_model.as_ref(),
-                        "The model approvals, titles, and agents that name ${small_model} use. It may be the same as the default.",
-                    )
+                        "Optional: the model subagents that carry out work, such as the official worker and explorer, reach as ${small_model}. Without it they use the default model.",
+                    ),
+                    _ => (
+                        ModelSlot::Utility,
+                        status.utility_model.as_ref(),
+                        "Optional: a fast, cheap model for approvals and session titles, reached as ${utility_model}. Without it they use the session's own model.",
+                    ),
                 };
                 lines.push(Line::styled(about, body));
                 lines.push(Line::raw(""));
@@ -912,80 +752,6 @@ impl App {
                     muted,
                 ));
             }
-            OnboardingStep::Kit => {
-                lines.push(Line::styled(
-                    format!(
-                        "Install the starter kit: {}",
-                        if self.onboarding.install_kit {
-                            "yes"
-                        } else {
-                            "no"
-                        }
-                    ),
-                    body,
-                ));
-                match &self.onboarding.preview {
-                    None if self.onboarding.preview_in_flight => {
-                        lines.push(Line::styled("Fetching the kit…", muted));
-                    }
-                    None => lines.push(Line::styled("The kit is not loaded.", muted)),
-                    Some(Err(error)) => {
-                        lines.push(Line::styled(
-                            format!("The kit is not available: {error}"),
-                            self.theme.warning(),
-                        ));
-                        lines.push(Line::styled(
-                            "o uses a downloaded kit; Finish without it still sets the models.",
-                            muted,
-                        ));
-                    }
-                    Some(Ok(preview)) => {
-                        let origin = self.onboarding.archive.as_ref().map_or_else(
-                            || preview.origin.clone(),
-                            |(path, _)| path.display().to_string(),
-                        );
-                        lines.push(Line::styled(format!("From {origin}"), muted));
-                        let first_row = area
-                            .y
-                            .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
-                        for (index, file) in preview.files.iter().enumerate() {
-                            let marker = if index == self.onboarding.selected_file {
-                                "> "
-                            } else {
-                                "  "
-                            };
-                            let y =
-                                first_row.saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
-                            if y < area.bottom() {
-                                hits.rows.push((Rect::new(area.x, y, area.width, 1), index));
-                            }
-                            lines.push(Line::styled(
-                                format!("{marker}{}: {}", file.path, kit_file_status(file)),
-                                if index == self.onboarding.selected_file {
-                                    self.theme.selected()
-                                } else {
-                                    body
-                                },
-                            ));
-                        }
-                        if self.onboarding.show_diff
-                            && let Some(diff) = self.selected_kit_diff()
-                        {
-                            lines.push(Line::raw(""));
-                            for line in diff.lines() {
-                                let style = if line.starts_with('+') {
-                                    self.theme.diff_added()
-                                } else if line.starts_with('-') {
-                                    self.theme.diff_removed()
-                                } else {
-                                    muted
-                                };
-                                lines.push(Line::styled(line.to_owned(), style));
-                            }
-                        }
-                    }
-                }
-            }
         }
         lines
     }
@@ -999,19 +765,6 @@ pub(in crate::ui) fn sample_status(missing: &[OnboardingRequirement]) -> Onboard
         providers_connected: Vec::new(),
         default_model: None,
         small_model: None,
+        utility_model: None,
     }
-}
-
-#[cfg(test)]
-pub(in crate::ui) fn sample_preview() -> OnboardingPreviewResult {
-    serde_json::from_value(serde_json::json!({
-        "kit_version": 1,
-        "origin": "archive",
-        "files": [
-            {"path": "agents/primary.md", "action": "write"},
-            {"path": "config.toml", "action": "write_new", "diff": "--- config.toml\n+++ config.toml.new\n-old\n+new\n"},
-            {"path": "skills/customize-cookie-agent/SKILL.md", "action": "skip"}
-        ]
-    }))
-    .expect("sample preview")
 }

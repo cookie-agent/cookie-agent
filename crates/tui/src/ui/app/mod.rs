@@ -522,10 +522,8 @@ pub(super) enum PointerTarget {
     CronSession(SessionId),
     /// A button of the onboarding notice.
     OnboardingNotice(onboarding::OnboardingAction),
-    /// An onboarding panel step tab, a starter kit file row (selects it),
-    /// and an action the panel offers.
+    /// An onboarding panel step tab, and an action the panel offers.
     OnboardingTab(cookie_agent_client_state::onboarding::OnboardingStep),
-    OnboardingRow(usize),
     OnboardingAction(onboarding::OnboardingAction),
     ConfirmButton(ConfirmButton),
     /// A button of the restart confirmation.
@@ -789,6 +787,8 @@ pub struct App {
     session_search_rows_cache: SessionSearchRowsCache,
     pub(super) runtime: RuntimeState,
     pub(super) agents: Vec<AgentDescriptor>,
+    /// The daemon's `[agents] default`, from its catalog view.
+    pub(super) default_agent: cookie_agent_protocol::AgentId,
     /// Client-local preset used only when creating a new root session.
     pub(super) selected_preset: Option<String>,
     /// Draft owned by the `/new` flow, independent of the viewed session draft.
@@ -1148,7 +1148,7 @@ pub(in crate::ui) enum RpcUpdate {
     AttachmentUploaded {
         session_id: SessionId,
         name: String,
-        result: Result<cookie_agent_protocol::ArtifactRef, String>,
+        result: Result<attachments::Uploaded, String>,
     },
     /// A revert RPC committed; the `rewound` notification rebuilds the
     /// transcript, and the message text is owed back to the composer.
@@ -1271,10 +1271,6 @@ pub(in crate::ui) enum RpcUpdate {
     OnboardingStatus {
         read: cookie_agent_client_state::refresh::Ticket,
         status: Option<cookie_agent_protocol::OnboardingStatus>,
-    },
-    OnboardingPreview {
-        read: cookie_agent_client_state::refresh::Ticket,
-        result: Result<cookie_agent_protocol::OnboardingPreviewResult, String>,
     },
     OnboardingRun {
         result: Result<cookie_agent_protocol::OnboardingRunResult, String>,
@@ -1617,6 +1613,7 @@ impl App {
             session_search_rows_cache: SessionSearchRowsCache::default(),
             runtime: RuntimeState::default(),
             agents: Vec::new(),
+            default_agent: cookie_agent_client_state::default_agent_id(None),
             selected_preset: None,
             new_session_draft: None,
             draft_permissions: DraftPermissions::default(),

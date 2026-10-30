@@ -925,7 +925,7 @@ helper (all) — Helper test agent
   usable for: delegate, cron
   permissions as a root run:
     bash: ask
-    defaults: list_runtimes, mcp, memory, memory_write, cron
+    defaults: list_runtimes, mcp, memory, memory_write, cron, attach
   permissions as a subagent:
     bash: ask
     defaults: list_runtimes, mcp, memory, memory_write
@@ -937,7 +937,7 @@ primary (primary) — Primary test agent
     write: ${workspace_dir}/* allow; * ask
     memory_write: agent://primary allow
     delegate: worker allow; helper allow
-    defaults: list_runtimes, mcp, memory, cron
+    defaults: list_runtimes, mcp, memory, cron, attach
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
@@ -951,6 +951,7 @@ Defaults (for actions an agent document names no key for):
     memory: allow
     memory_write: user://* allow; agent://<agent id> allow; machine://${session_machine}/* allow; project://${session_project}/* allow
     cron: allow
+    attach: allow
   as a subagent:
     list_runtimes: allow (only agents of mode all)
     mcp: ask

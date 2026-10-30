@@ -384,8 +384,8 @@ impl McpServerConfig {
     }
 }
 
-/// A model and an optional variant, as `default_model` and `small_model`
-/// take them: a model key string (`"provider/model"`, its default variant),
+/// A model and an optional variant, as `default_model`, `small_model`, and
+/// `utility_model` take them: a model key string (`"provider/model"`, its default variant),
 /// or a table `{ model, variant }`. Whether the model is available is a
 /// runtime matter; only the key's grammar is checked here.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -457,9 +457,13 @@ pub struct EngineConfig {
     #[serde(default)]
     pub default_model: Option<ConfiguredModel>,
     /// `small_model`: the model and variant agent documents reach as
-    /// `${small_model}`.
+    /// `${small_model}`, for subagents that carry out work.
     #[serde(default)]
     pub small_model: Option<ConfiguredModel>,
+    /// `utility_model`: the model and variant agent documents reach as
+    /// `${utility_model}`, for the internal approval and title agents.
+    #[serde(default)]
+    pub utility_model: Option<ConfiguredModel>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -503,6 +507,12 @@ pub struct EngineConfig {
     /// `[skills]`: the official skills.
     #[serde(default)]
     pub skills: SkillsConfig,
+    /// `[agents]`: the official agents and the default agent.
+    #[serde(default)]
+    pub agents: AgentsConfig,
+    /// `[transfer]`: the `transfer` tool's limit.
+    #[serde(default)]
+    pub transfer: TransferConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -516,6 +526,7 @@ pub struct EngineConfig {
 pub(crate) struct RawRuntimeLayer {
     pub(crate) default_model: Option<ConfiguredModel>,
     pub(crate) small_model: Option<ConfiguredModel>,
+    pub(crate) utility_model: Option<ConfiguredModel>,
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) subagent_output: Option<SubagentOutputConfig>,
@@ -535,6 +546,8 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) shell_environment: Option<ShellEnvironmentConfig>,
     pub(crate) acp: Option<AcpConfig>,
     pub(crate) skills: Option<SkillsConfig>,
+    pub(crate) agents: Option<AgentsConfig>,
+    pub(crate) transfer: Option<TransferConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -1214,6 +1227,66 @@ impl Default for SkillsConfig {
     }
 }
 
+/// The agent a new root session starts with when `[agents] default` is
+/// unset: the official assistant.
+pub const DEFAULT_ROOT_AGENT_ID: &str = "primary";
+
+/// `[agents]`: whether the daemon keeps the official agents up to date and
+/// offers them, and which agent new sessions start with
+/// (`docs/site/specs/machines-on-demand.md` section 2.1).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsConfig {
+    /// Refresh the official agents at start and daily, and offer them below
+    /// the user's own documents; `false` stops refreshing and leaves them
+    /// unused.
+    #[serde(default = "yes")]
+    pub official: bool,
+    /// The agent a new root session starts with when neither its client nor
+    /// its project chooses one, and the agent a later turn falls back to
+    /// when its own is gone. `None` means [`DEFAULT_ROOT_AGENT_ID`].
+    #[serde(default)]
+    pub default: Option<cookie_agent_identity::AgentId>,
+}
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self {
+            official: true,
+            default: None,
+        }
+    }
+}
+impl AgentsConfig {
+    /// The default agent's ID: `default`, else [`DEFAULT_ROOT_AGENT_ID`].
+    #[must_use]
+    pub fn default_agent(&self) -> cookie_agent_identity::AgentId {
+        self.default.clone().unwrap_or_else(|| {
+            cookie_agent_identity::AgentId::new(DEFAULT_ROOT_AGENT_ID).expect("a valid agent ID")
+        })
+    }
+}
+
+/// `[transfer]`: the `transfer` tool's limit
+/// (`docs/site/specs/machines-on-demand.md` section 6.3).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TransferConfig {
+    /// The most bytes one transfer moves: a file's size, or a folder's
+    /// files together. 0 or less means no limit.
+    #[serde(default)]
+    pub max_bytes: i64,
+}
+
+impl TransferConfig {
+    /// The limit in bytes, `None` when there is none.
+    #[must_use]
+    pub fn limit(&self) -> Option<u64> {
+        u64::try_from(self.max_bytes)
+            .ok()
+            .filter(|bytes| *bytes > 0)
+    }
+}
+
 /// `[acp]`: how the daemon runs ACP agents
 /// (`docs/site/specs/acp-agents.md` section 7).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -1525,6 +1598,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.small_model {
         runtime.small_model = Some(value.clone());
     }
+    if let Some(value) = &layer.utility_model {
+        runtime.utility_model = Some(value.clone());
+    }
     if let Some(value) = &layer.server {
         runtime.server = value.clone();
     }
@@ -1578,6 +1654,12 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     }
     if let Some(value) = &layer.acp {
         runtime.acp = value.clone();
+    }
+    if let Some(value) = &layer.agents {
+        runtime.agents = value.clone();
+    }
+    if let Some(value) = layer.transfer {
+        runtime.transfer = value;
     }
     if let Some(value) = &layer.skills {
         runtime.skills = value.clone();

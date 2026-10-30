@@ -98,7 +98,7 @@ impl Engine {
         policy: &FrozenRunPolicy,
     ) -> Result<Vec<(String, String)>, EngineError> {
         let mut blocks = Vec::new();
-        if let Some(block) = self.runtimes_block(session, None) {
+        if let Some(block) = self.runtimes_block(session, None, Some(policy)) {
             blocks.push((RUNTIMES_BLOCK.to_owned(), block));
         }
         if let Some(block) = self.live_tool_instructions_block(policy, session)? {

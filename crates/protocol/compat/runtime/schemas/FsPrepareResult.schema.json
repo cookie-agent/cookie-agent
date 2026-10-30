@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "FsKind": {
+      "description": "A file, or a folder moved with everything below it.",
+      "enum": [
+        "file",
+        "folder"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What `fs/prepare` resolved.",
+  "properties": {
+    "binding": {
+      "description": "Identifies the location the route resolved to, for approval\nbindings.",
+      "type": "string"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FsKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What is at the path: the source's kind, or what already exists at\nthe destination (absent when nothing does)."
+    },
+    "label": {
+      "description": "The path as a `read` or `write` rule matches it: as written,\nnormalized lexically against the workspace, never resolved through\nsymbolic links.",
+      "type": "string"
+    },
+    "path": {
+      "description": "The path made absolute and normalized lexically, as a result shows\nit.",
+      "type": "string"
+    },
+    "route": {
+      "description": "The route, until `fs/close` or an open consumes it.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "size": {
+      "description": "A file's size in bytes.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "route",
+    "path",
+    "label",
+    "binding"
+  ],
+  "title": "FsPrepareResult",
+  "type": "object"
+}

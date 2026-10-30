@@ -26,7 +26,9 @@ keeps the defaults unchanged. Global [headers](headers.md) are the
 exception: names merge with the built-in headers and empty values delete them.
 Model and variant sparse inheritance happens within one provider definition.
 
-Agents are separate [Markdown documents](../extend/agents.md); [skills](../extend/skills.md) have
+Agents are separate [Markdown documents](../extend/agents.md), your own in
+`agents/` and the [official ones](../extend/agents.md#official-agents) the
+daemon keeps in `official_agents/`; [skills](../extend/skills.md) have
 their own discovery rules. The client loads [tui.toml](../tui/configuration.md)
 independently.
 
@@ -37,7 +39,8 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | Key | Canonical settings page |
 |---|---|
 | `default_model` | [Default models](#default-models): the model agents reach as `${default_model}` |
-| `small_model` | [Default models](#default-models): the model agents reach as `${small_model}` |
+| `small_model` | [Default models](#default-models): the model agents reach as `${small_model}`, for subagents that carry out work |
+| `utility_model` | [Default models](#default-models): the model agents reach as `${utility_model}`, for the internal approval and title agents |
 | `server` | [Server](server.md): where the daemon listens, its token, and the daemon clients on this machine use |
 | `tool_output` | [Tool Output](tool_output.md) |
 | `subagent_output` | [Subagent Output](subagent_output.md) |
@@ -56,46 +59,62 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `notifications` | [Push Notifications](notifications.md) |
 | `shell_environment` | [Shell Environment](shell_environment.md): the environment runtimes start processes in |
 | `acp` | [ACP Agents](acp.md) |
+| `transfer` | [Transfers](transfer.md): `max_bytes`, the most one `transfer` call moves |
 | `skills` | [Official skills](../extend/skills.md#official-skills): `official`, whether the daemon keeps the official skills up to date and offers them |
+| `agents` | [Official agents](../extend/agents.md#official-agents): `official`, whether the daemon keeps the official agents up to date and offers them, and `default`, the agent new sessions start with |
 | `headers` | [Request Header](headers.md) |
 | `providers` | [Providers](../extend/providers.md) |
 | `mcp` | [MCP](../extend/mcp.md) |
 | `plugins` | [Plugins](../extend/plugins.md) |
 | `runtimes` | [Runtimes](../runtimes/templates.md) |
 
-Every key above except `default_model` and `small_model`, which are values,
-is a **top-level** table: write `[messaging]`, `[delegation]`,
+Every key above except `default_model`, `small_model`, and `utility_model`,
+which are values, is a **top-level** table: write `[messaging]`, `[delegation]`,
 and so on, never `[runtime.messaging]` or another nested spelling. Older docs
 used the `[runtime.messaging]` form; a nested table such as that is an unknown
 top-level field and fails strict validation.
 
 ## Default models
 
-`default_model` and `small_model` name the models agent documents reach as
-`${default_model}` and `${small_model}`, so one edit retargets every agent
-that uses them. Each is a model key, which means the model's default
-variant, or a table `{ model, variant }`; both are optional, and unknown keys
-in the table fail. Being top-level values, they go before the first table:
+`default_model`, `small_model`, and `utility_model` name the models agent
+documents reach as `${default_model}`, `${small_model}`, and
+`${utility_model}`, so one edit retargets every agent that uses them. Each
+is a model key, which means the model's default variant, or a table
+`{ model, variant }`; all three are optional, and unknown keys in the table
+fail. Being top-level values, they go before the first table:
 
 ```toml
 default_model = { model = "anthropic/claude-opus-5-5", variant = "high" }
-small_model   = "deepseek/deepseek-flash"
+small_model   = { model = "deepseek/deepseek-flash", variant = "max" }
+utility_model = { model = "deepseek/deepseek-flash", variant = "off" }
 
 [model_retry]
 standard_retries = 1
 ```
 
-In the starter kit `small_model` serves the internal `approval` and `title`
-agents, and the variant chosen for it, during onboarding or here, is the
-approval reviewer's effort. Reasoning output dominates what each review
-costs, and the reviewer's prompt cache reduces only the input side, so a low
-variant keeps reviews cheap ([the reviewer's cache](approval.md#the-reviewers-cache)).
+The [official agents](../extend/agents.md#official-agents) use them in tiers:
+
+| Field | Official agents on it |
+|---|---|
+| `default_model` | the root agents, `primary` and `coder` |
+| `small_model` | the subagents that carry out work, `worker` and `explore`, then `default_model` |
+| `utility_model` | the internal `approval` and `title` agents, then the session's own model; an ACP session's approval reviewer |
+
+The variant chosen for `utility_model` is the approval reviewer's effort.
+Reasoning output dominates what each review costs, and the reviewer's
+prompt cache reduces only the input side, so a low variant keeps reviews
+cheap ([the reviewer's cache](approval.md#the-reviewers-cache)).
+
+`utility_model` was called `small_model` until client protocol 1.56.0, when
+`small_model` became the working subagents' model. A `small_model` written
+for approvals and titles still loads, and then runs the subagents: rename it
+to `utility_model`.
 
 Only the key's grammar is checked when the file loads. Whether the model is
 available is a runtime matter: a model whose provider is disconnected loads
 fine, and the agent entries naming it are skipped until it is available
 again. See [agents](../extend/agents.md#models) for how documents use them
-and [onboarding](../quickstart.md) for setting both from a client.
+and [onboarding](../quickstart.md) for setting them from a client.
 
 ## Changes while the daemon runs
 
@@ -111,8 +130,9 @@ error. Applying a configuration does this:
 
 | Part | When it takes effect |
 |---|---|
-| `default_model`, `small_model` | At once for new runs: the agents are recompiled, and every entry naming them follows |
+| `default_model`, `small_model`, `utility_model` | At once for new runs: the agents are recompiled, and every entry naming them follows |
 | `skills` | `official = false` stops refreshing at once; whether the official skills are offered follows at the next start |
+| `agents` | At once: `official = false` stops refreshing and leaves the official agents out; `default` is the agent the next new session starts with |
 | `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers`, `memory`, `cron`, `notifications` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
 | Agent documents and presets | At once for new runs; a run in progress keeps its agent, and its delegated children resolve against the agents it started with |
 | `providers`, `headers` | At once: models are recompiled |

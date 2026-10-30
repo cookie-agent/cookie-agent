@@ -12,8 +12,10 @@ use crate::runtime_protocol::{
     AgentExitedParams, AgentMcpBridgeRef, AgentMcpClosedParams, AgentMcpOpenResult, AgentMcpParams,
     AgentMessageParams, AgentRef, AgentsChangedParams, CapabilityOpenParams, CapabilityOpenResult,
     CapabilityToolsChangedParams, ContextParams, ContextResult, DetachableParams, Empty,
-    ExecuteParams, ExecuteResult, InitializeParams, InitializeResult, McpChangedParams,
-    McpReconnectParams, Outcome, PrepareParams, PrepareResult, PreparedRef,
+    ExecuteParams, ExecuteResult, FsCopyParams, FsHandle, FsPrepareParams, FsPrepareResult,
+    FsReadChunkParams, FsReadChunkResult, FsReadOpenParams, FsReadOpenResult, FsWriteChunkParams,
+    FsWriteCommitParams, FsWriteOpenParams, FsWritten, InitializeParams, InitializeResult,
+    McpChangedParams, McpReconnectParams, Outcome, PrepareParams, PrepareResult, PreparedRef,
     RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeSettingsChangedParams, RuntimeTools,
     ShellEnvironmentReport, ToolProgressParams, method as runtime_method,
 };
@@ -302,6 +304,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!("skills.list", ToDaemon, SkillsListParams => SkillsListResult),
         request!("skills.get", ToDaemon, SkillsGetParams => SkillsGetResult),
         request!(SKILLS_UPDATE_METHOD, ToDaemon, SkillsUpdateParams => SkillsUpdateResult),
+        request!(AGENTS_UPDATE_METHOD, ToDaemon, AgentsUpdateParams => AgentsUpdateResult),
         request!("session.compact", ToDaemon, SessionCompactParams => SessionCompactResult),
         request!("session.revert", ToDaemon, SessionRevertParams => SessionRevertResult),
         request!(SESSION_DELETE_METHOD, ToDaemon, SessionDeleteParams => SessionDeleteResult),
@@ -519,6 +522,14 @@ fn runtime_methods() -> Vec<MethodSpec> {
         notification!(runtime_method::AGENT_MCP, FromDaemon, AgentMcpParams),
         declaration!(runtime_method::AGENT_MCP, AgentMcpParams),
         declaration!(runtime_method::AGENT_MCP_CLOSED, AgentMcpClosedParams),
+        request!(runtime_method::FS_PREPARE, FromDaemon, FsPrepareParams => FsPrepareResult),
+        request!(runtime_method::FS_READ_OPEN, FromDaemon, FsReadOpenParams => FsReadOpenResult),
+        request!(runtime_method::FS_READ_CHUNK, FromDaemon, FsReadChunkParams => FsReadChunkResult),
+        request!(runtime_method::FS_WRITE_OPEN, FromDaemon, FsWriteOpenParams => FsHandle),
+        request!(runtime_method::FS_WRITE_CHUNK, FromDaemon, FsWriteChunkParams => Empty),
+        request!(runtime_method::FS_WRITE_COMMIT, FromDaemon, FsWriteCommitParams => FsWritten),
+        request!(runtime_method::FS_CLOSE, FromDaemon, FsHandle => Empty),
+        request!(runtime_method::FS_COPY, FromDaemon, FsCopyParams => FsWritten),
     ]
 }
 

@@ -128,6 +128,9 @@ impl std::fmt::Display for ConfigPath {
     }
 }
 
+/// The daemon's record of the official agents it keeps, in their folder.
+pub const OFFICIAL_AGENTS_RECORD: &str = ".index.json";
+
 /// The configuration documents of one user root.
 #[derive(Clone, Debug, Default)]
 pub struct ConfigTree {
@@ -136,6 +139,16 @@ pub struct ConfigTree {
     /// Preset directories that hold no document; a preset exists while its
     /// directory does.
     empty_presets: BTreeSet<String>,
+    /// The official agents the daemon keeps in `<root>/official_agents/`,
+    /// by ID. Not documents of the tree: never written through it and not
+    /// part of its revision.
+    official_agents: BTreeMap<AgentId, Zeroizing<Vec<u8>>>,
+    /// The official agents' versions, from the daemon's record
+    /// (`official_agents/.index.json`).
+    official_versions: BTreeMap<AgentId, String>,
+    /// Why entries of `official_agents/` could not be read; a configuration
+    /// load reports them and goes on without those agents.
+    official_agent_errors: Vec<String>,
 }
 
 impl ConfigTree {
@@ -166,6 +179,7 @@ impl ConfigTree {
         if let Some(bytes) = read_optional_file(&root.path, CONFIG_FILE, MAX_CONFIG_BYTES)? {
             tree.documents.insert(ConfigPath::config(), bytes);
         }
+        tree.read_official_agents(&root.path);
         let Some(agents) = open_optional_directory(&root.path, "agents")? else {
             return Ok(tree);
         };
@@ -210,6 +224,102 @@ impl ConfigTree {
         let bytes = read_required_file(directory, name, MAX_AGENT_BYTES)?;
         self.documents.insert(path, bytes);
         Ok(())
+    }
+
+    /// Reads `official_agents/*.md` below `root`. Nothing there fails the
+    /// read: the daemon writes the folder, and an entry it cannot use is
+    /// recorded in `official_agent_errors` and left out.
+    fn read_official_agents(&mut self, root: &Path) {
+        let directory = match open_optional_directory(root, crate::OFFICIAL_AGENTS_DIRECTORY) {
+            Ok(Some(directory)) => directory,
+            Ok(None) => return,
+            Err(error) => {
+                self.official_agent_errors
+                    .push(format!("{}: {error}", crate::OFFICIAL_AGENTS_DIRECTORY));
+                return;
+            }
+        };
+        let names = match sorted_entry_names(&directory) {
+            Ok(names) => names,
+            Err(error) => {
+                self.official_agent_errors
+                    .push(format!("{}: {error}", crate::OFFICIAL_AGENTS_DIRECTORY));
+                return;
+            }
+        };
+        if let Ok(Some(bytes)) =
+            read_optional_file(&directory, OFFICIAL_AGENTS_RECORD, MAX_AGENT_BYTES)
+        {
+            #[derive(serde::Deserialize)]
+            struct Kept {
+                id: String,
+                version: String,
+            }
+            if let Ok(kept) = serde_json::from_slice::<Vec<Kept>>(&bytes) {
+                self.official_versions = kept
+                    .into_iter()
+                    .filter_map(|kept| Some((AgentId::new(kept.id).ok()?, kept.version)))
+                    .collect();
+            }
+        }
+        for name in names {
+            // The daemon's own records and leftovers start with `.`.
+            let Some(id) = name.strip_suffix(".md").filter(|_| !name.starts_with('.')) else {
+                continue;
+            };
+            let read = AgentId::new(id)
+                .map_err(|error| error.to_string())
+                .and_then(|id| {
+                    if !regular_file_at(&directory, &name).map_err(|error| error.to_string())? {
+                        return Err("not a regular file".to_owned());
+                    }
+                    read_required_file(&directory, &name, MAX_AGENT_BYTES)
+                        .map(|bytes| (id, bytes))
+                        .map_err(|error| error.to_string())
+                });
+            match read {
+                Ok((id, bytes)) => {
+                    self.official_agents.insert(id, bytes);
+                }
+                Err(error) => self.official_agent_errors.push(format!(
+                    "{}/{name}: {error}",
+                    crate::OFFICIAL_AGENTS_DIRECTORY
+                )),
+            }
+        }
+    }
+
+    /// The official agents read with the tree, by ID.
+    pub fn official_agents(&self) -> impl Iterator<Item = (&AgentId, &[u8])> {
+        self.official_agents
+            .iter()
+            .map(|(id, bytes)| (id, bytes.as_slice()))
+    }
+
+    /// An official agent's version, from the daemon's record.
+    #[must_use]
+    pub fn official_version(&self, id: &AgentId) -> Option<&str> {
+        self.official_versions.get(id).map(String::as_str)
+    }
+
+    /// Why entries of `official_agents/` could not be read.
+    #[must_use]
+    pub fn official_agent_errors(&self) -> &[String] {
+        &self.official_agent_errors
+    }
+
+    /// Sets the official agent `id` as if read from `official_agents/`, for
+    /// tests and for validating a refresh before it is written.
+    pub fn put_official_agent(&mut self, id: AgentId, bytes: Vec<u8>) {
+        self.official_agents.insert(id, Zeroizing::new(bytes));
+    }
+
+    /// Removes every official agent, as `[agents] official = false` leaves
+    /// them unused.
+    pub fn clear_official_agents(&mut self) {
+        self.official_agents.clear();
+        self.official_versions.clear();
+        self.official_agent_errors.clear();
     }
 
     /// The user root the tree belongs to.

@@ -436,6 +436,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         AgentDescriptor {
+            official: false,
+            official_version: None,
             resolved_fallback: if offers.is_empty() {
                 Vec::new()
             } else {

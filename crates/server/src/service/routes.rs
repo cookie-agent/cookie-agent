@@ -294,6 +294,30 @@ impl ServerProtocol for Server {
         }
     }
 
+    async fn update_agents(
+        &self,
+        _params: cookie_agent_protocol::AgentsUpdateParams,
+    ) -> Result<cookie_agent_protocol::AgentsUpdateResult> {
+        let report = self.engine.refresh_official_agents().await;
+        let id = |id: String| cookie_agent_protocol::AgentId::new(id).ok();
+        Ok(cookie_agent_protocol::AgentsUpdateResult {
+            enabled: report.enabled,
+            agents: report
+                .agents
+                .into_iter()
+                .filter_map(|(agent, version)| {
+                    Some(cookie_agent_protocol::OfficialAgent {
+                        id: id(agent)?,
+                        version,
+                    })
+                })
+                .collect(),
+            updated: report.updated.into_iter().filter_map(id).collect(),
+            removed: report.removed.into_iter().filter_map(id).collect(),
+            error: report.error,
+        })
+    }
+
     async fn update_skills(
         &self,
         _params: cookie_agent_protocol::SkillsUpdateParams,
@@ -1089,20 +1113,18 @@ impl ServerProtocol for Server {
         &self,
         params: cookie_agent_protocol::OnboardingPreviewParams,
     ) -> Result<cookie_agent_protocol::OnboardingPreviewResult> {
-        let source = crate::onboarding::source_from_wire(params.source).map_err(protocol_fault)?;
-        let preview = self
-            .engine
-            .preview_kit(source)
-            .await
-            .map_err(protocol_fault)?;
-        Ok(crate::onboarding::preview_to_wire(preview))
+        // There is no starter kit since client protocol 1.56.0.
+        let _ = params;
+        Err(protocol_fault(
+            cookie_agent_engine::EngineError::NoStarterKit,
+        ))
     }
 
     async fn run_onboarding(
         &self,
         params: cookie_agent_protocol::OnboardingRunParams,
     ) -> Result<cookie_agent_protocol::OnboardingRunResult> {
-        let request = crate::onboarding::request_from_wire(params).map_err(protocol_fault)?;
+        let request = crate::onboarding::request_from_wire(params);
         let outcome = self
             .engine
             .run_onboarding(request)
@@ -1365,11 +1387,12 @@ impl ServerProtocol for Server {
     ) -> Result<cookie_agent_protocol::ArtifactUploadBeginResult> {
         let upload_id = self
             .engine
-            .begin_upload(
+            .begin_upload_of_kind(
                 context.connection_id(),
                 params.session_id,
                 params.byte_length,
                 params.filename,
+                params.kind,
             )
             .await
             .map_err(protocol_fault)?;

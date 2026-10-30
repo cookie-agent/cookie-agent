@@ -193,6 +193,18 @@ fn unusable_providers(snapshot: &ModelCatalogView) -> Option<String> {
     })
 }
 
+/// The agent a new session starts with when nothing else chooses one: the
+/// daemon's `[agents] default` from its catalog view, else `primary`, the
+/// default of a daemon too old to send one.
+#[must_use]
+pub fn default_agent_id(
+    default_agent: Option<&cookie_agent_protocol::AgentId>,
+) -> cookie_agent_protocol::AgentId {
+    default_agent.cloned().unwrap_or_else(|| {
+        cookie_agent_protocol::AgentId::new("primary").expect("a valid agent ID")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +243,7 @@ mod tests {
             variant: None,
         };
         ModelCatalogView {
+            default_agent: None,
             revision: cookie_agent_protocol::ViewRevision::new("view-test").expect("view revision"),
             catalog: cookie_agent_protocol::CatalogStatus {
                 source: CatalogSource::Network,
@@ -244,6 +257,8 @@ mod tests {
             models: if with_model { vec![model] } else { Vec::new() },
             agents: if with_model {
                 vec![cookie_agent_protocol::AgentDescriptor {
+                    official: false,
+                    official_version: None,
                     id: cookie_agent_protocol::AgentId::new("default").expect("agent ID"),
                     preset: None,
                     description: "Built-in default coding agent".to_owned(),
@@ -289,6 +304,8 @@ mod tests {
     fn an_acp_agent_without_models_is_enough_to_go_on() {
         let mut only_acp = snapshot(false);
         only_acp.agents = vec![cookie_agent_protocol::AgentDescriptor {
+            official: false,
+            official_version: None,
             id: cookie_agent_protocol::AgentId::new("codex").expect("agent ID"),
             preset: None,
             description: "Codex".to_owned(),

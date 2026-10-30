@@ -567,7 +567,11 @@ pub(crate) fn empty_catalog() -> Arc<CatalogSnapshot> {
 /// A configuration without providers, agents, or extensions.
 pub(crate) fn empty_configuration() -> LoadedConfiguration {
     LoadedConfiguration {
+        official_agent_diagnostics: Vec::new(),
         runtime: EngineConfig {
+            agents: cookie_agent_config::AgentsConfig::default(),
+            transfer: cookie_agent_config::TransferConfig::default(),
+            utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
                 ..Default::default()

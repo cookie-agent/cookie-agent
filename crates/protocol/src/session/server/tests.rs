@@ -187,6 +187,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SkillsUpdateResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn update_agents(
+        &self,
+        _: crate::AgentsUpdateParams,
+    ) -> Result<crate::AgentsUpdateResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn compact_session(
         &self,
         _: crate::SessionCompactParams,

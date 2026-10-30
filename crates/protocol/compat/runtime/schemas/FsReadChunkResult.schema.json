@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "FsStreamSummary": {
+      "description": "What a read stream held, at its end.",
+      "properties": {
+        "bytes": {
+          "description": "The file's bytes, or the folder's files' bytes together.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "Files in it: 1 for a file.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 of the stream, lowercase hex: a file's own digest, or the\ntar stream's for a folder.",
+          "type": "string"
+        },
+        "skipped": {
+          "default": 0,
+          "description": "Entries of a folder left out: devices, sockets, and FIFOs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "files"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The next bytes of a read handle.",
+  "properties": {
+    "data": {
+      "description": "Standard base64; empty at the end.",
+      "type": "string"
+    },
+    "eof": {
+      "description": "No bytes follow these.",
+      "type": "boolean"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FsStreamSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "At the end: what the stream held."
+    }
+  },
+  "required": [
+    "data",
+    "eof"
+  ],
+  "title": "FsReadChunkResult",
+  "type": "object"
+}

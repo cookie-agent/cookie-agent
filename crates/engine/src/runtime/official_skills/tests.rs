@@ -8,11 +8,11 @@ use sha2::{Digest as _, Sha256};
 use super::{UserSkillRoots, version_satisfies};
 use crate::runtime::tests::support::{Fixture, synthetic_default_fixture_with_config};
 
-type Routes = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
+pub(crate) type Routes = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
 
 /// Serves `GET <path>` from `routes`, which the test may change; 404 for
 /// anything else. The source URL.
-async fn serve(routes: Routes) -> String {
+pub(crate) async fn serve(routes: Routes) -> String {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

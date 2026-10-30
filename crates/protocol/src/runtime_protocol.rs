@@ -44,6 +44,9 @@ pub const MAX_PREPARE_BATCH: usize = 256;
 /// text; one after it is a close frame whose reason is the reason. A
 /// runtime stops dialing in on a permanent refusal and dials in again,
 /// after a wait, on any other.
+mod files;
+pub use files::*;
+
 pub mod dial_in {
     /// HTTP 400: the runtime ID is malformed. Permanent.
     pub const STATUS_INVALID_ID: u16 = 400;
@@ -178,6 +181,26 @@ pub mod method {
     /// runtime → daemon (notification): a bridge connection ended (since
     /// 1.7.0).
     pub const AGENT_MCP_CLOSED: &str = "agent/mcp_closed";
+    /// daemon → runtime: normalizes a path and resolves its route once,
+    /// for a transfer (since 1.13.0, runtimes that report `files`).
+    pub const FS_PREPARE: &str = "fs/prepare";
+    /// daemon → runtime: opens a prepared route to read (since 1.13.0).
+    pub const FS_READ_OPEN: &str = "fs/read_open";
+    /// daemon → runtime: the next bytes of a read handle (since 1.13.0).
+    pub const FS_READ_CHUNK: &str = "fs/read_chunk";
+    /// daemon → runtime: opens a prepared route to write (since 1.13.0).
+    pub const FS_WRITE_OPEN: &str = "fs/write_open";
+    /// daemon → runtime: the next bytes of a write handle (since 1.13.0).
+    pub const FS_WRITE_CHUNK: &str = "fs/write_chunk";
+    /// daemon → runtime: puts what a write handle received in place
+    /// (since 1.13.0).
+    pub const FS_WRITE_COMMIT: &str = "fs/write_commit";
+    /// daemon → runtime: releases a route or a handle; an uncommitted
+    /// write is removed (since 1.13.0).
+    pub const FS_CLOSE: &str = "fs/close";
+    /// daemon → runtime: copies one prepared route to another on the
+    /// runtime's own machine (since 1.13.0).
+    pub const FS_COPY: &str = "fs/copy";
 }
 
 /// An empty params or result object.
@@ -615,6 +638,10 @@ pub struct InitializeResult {
     /// `runtime/agents_changed` reports them later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acp_agents: Vec<AcpAgentReport>,
+    /// The runtime takes part in transfers: it answers the `fs/*` requests
+    /// (runtime protocol 1.13.0).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub files: bool,
 }
 
 /// The machine a runtime runs on, as `runtime/initialize` reports it.

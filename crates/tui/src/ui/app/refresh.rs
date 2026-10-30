@@ -312,6 +312,8 @@ impl App {
         self.providers = snapshot.providers;
         self.models = snapshot.models;
         self.agents = snapshot.agents;
+        self.default_agent =
+            cookie_agent_client_state::default_agent_id(snapshot.default_agent.as_ref());
         self.runtime_panel.agents.clone_from(&self.agents);
         if self
             .selected_preset
@@ -700,9 +702,6 @@ impl App {
             RpcUpdate::ConfigLoaded { result } => self.install_config(result),
             RpcUpdate::OnboardingStatus { read, status } => {
                 self.install_onboarding_read(read, status)
-            }
-            RpcUpdate::OnboardingPreview { read, result } => {
-                self.install_onboarding_preview(read, result)
             }
             RpcUpdate::OnboardingRun { result } => self.install_onboarding_run(result),
             RpcUpdate::ConfigApplied {

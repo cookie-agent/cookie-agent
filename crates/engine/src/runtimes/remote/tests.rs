@@ -2954,10 +2954,11 @@ async fn a_runtime_scoped_server_is_listed_and_composed_once_per_runtime() {
     );
     assert_eq!(browser.tool_count, 2);
 
-    // A session with two workspaces of `local` gets its tools once.
+    // A second workspace of `local` would offer the machine's tools twice
+    // (machines on demand, section 4).
     let session = engine.create_session(selection).unwrap().session_id;
     let second = private_tempdir();
-    engine
+    let refused = engine
         .attach_runtime(
             session,
             "local",
@@ -2966,7 +2967,13 @@ async fn a_runtime_scoped_server_is_listed_and_composed_once_per_runtime() {
             cookie_agent_protocol::EventOrigin::new("user").unwrap(),
         )
         .await
-        .unwrap();
+        .expect_err("a second workspace of the machine");
+    assert!(
+        refused
+            .to_string()
+            .contains("one machine offers each tool once"),
+        "{refused}"
+    );
     let composition = engine.compose_session_tools(session, |_, _| true).unwrap();
     let names = composition
         .tools
@@ -2980,13 +2987,12 @@ async fn a_runtime_scoped_server_is_listed_and_composed_once_per_runtime() {
             .collect::<Vec<_>>(),
         [&"browser_echo_text"]
     );
-    // The workspace-scoped one is offered by each workspace, so prefixed.
     assert_eq!(
         names
             .iter()
             .filter(|name| name.ends_with("docs_echo_text"))
             .count(),
-        2,
+        1,
         "{names:?}"
     );
     let echo = composition.get("browser_echo_text").unwrap();

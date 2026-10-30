@@ -225,14 +225,11 @@ impl App {
                 if let Some((_, step)) = onboarding.tabs.iter().find(|(rect, _)| over(*rect)) {
                     return Some(PointerTarget::OnboardingTab(*step));
                 }
-                if let Some((_, action)) = onboarding.actions.iter().find(|(rect, _)| over(*rect)) {
-                    return Some(PointerTarget::OnboardingAction(*action));
-                }
                 return onboarding
-                    .rows
+                    .actions
                     .iter()
                     .find(|(rect, _)| over(*rect))
-                    .map(|(_, index)| PointerTarget::OnboardingRow(*index));
+                    .map(|(_, action)| PointerTarget::OnboardingAction(*action));
             }
             Modal::Cron => {
                 let cron = &hits.cron;
@@ -440,7 +437,6 @@ impl App {
                 self.activate_onboarding_action(action);
             }
             PointerTarget::OnboardingTab(step) => self.show_onboarding_step(step),
-            PointerTarget::OnboardingRow(index) => self.select_onboarding_file(index),
             PointerTarget::BackgroundStop(index) => self.stop_background_call(index),
             PointerTarget::ConfirmButton(button) => {
                 if self.modal == Modal::RevertConfirm {
@@ -809,9 +805,6 @@ impl App {
                     .map(|(rect, _)| *rect)),
                 fill_style,
             ),
-            PointerTarget::OnboardingRow(index) => {
-                (one(indexed_rect(&hits.onboarding.rows, index)), text_style)
-            }
             PointerTarget::PickerRow(index) => (
                 one(hits
                     .picker_rows

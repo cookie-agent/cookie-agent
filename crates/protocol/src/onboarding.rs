@@ -34,7 +34,12 @@ pub enum OnboardingRequirement {
     /// offers.
     DefaultModel,
     /// `small_model` is unset or names no model a connected provider offers.
+    /// Not sent since 1.56.0: `small_model` is optional.
     SmallModel,
+    /// `[agents] default` names no agent that can run as a root, such as
+    /// before the first refresh of the official agents (client protocol
+    /// 1.56.0).
+    DefaultAgent,
     #[serde(other)]
     Unknown,
 }
@@ -64,6 +69,9 @@ pub struct OnboardingStatus {
     pub default_model: Option<OnboardingModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub small_model: Option<OnboardingModel>,
+    /// `utility_model` (client protocol 1.56.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utility_model: Option<OnboardingModel>,
 }
 
 /// `onboarding.get`.
@@ -169,6 +177,9 @@ pub struct OnboardingRunParams {
     pub default_model: Option<OnboardingModelInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub small_model: Option<OnboardingModelInput>,
+    /// `utility_model` (client protocol 1.56.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utility_model: Option<OnboardingModelInput>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

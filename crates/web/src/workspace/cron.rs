@@ -136,9 +136,9 @@ impl Workspace {
             editing: None,
             draft: CronDraft::for_session(session, subagent),
             session: Some((session, subagent)),
-            template: self.cron_template().unwrap_or_else(|| {
-                new_template("primary".parse().expect("an agent ID"), None, None)
-            }),
+            template: self
+                .cron_template()
+                .unwrap_or_else(|| new_template(self.default_agent(), None, None)),
         }));
     }
 
@@ -180,7 +180,7 @@ impl Workspace {
             cookie_agent_protocol::CronTarget::New(template) => Some(template.clone()),
             _ => self.cron_template(),
         }
-        .unwrap_or_else(|| new_template("primary".parse().expect("an agent ID"), None, None));
+        .unwrap_or_else(|| new_template(self.default_agent(), None, None));
         self.cron_error.set(None);
         self.cron_form.set(Some(CronForm {
             draft: CronDraft::of_job(&job, &zone),

@@ -29,24 +29,67 @@ can offer any tools; see [Write a runtime](../development/runtimes.md).
 
 Each attachment has a session-unique name: `global` for the global runtime,
 and for a workspace the runtime ID and the directory's name, such as
-`local_web` or `labpc_api` (with `_2`, `_3`, … when taken). The model sees a
-tool by its bare name while one attachment offers it. When several do, each
-copy is published as `<attachment>_<tool>`, such as `local_web_bash` and
-`labpc_api_bash`, and the bare name disappears. A tool can instead declare
-that it overrides others of its name, or that it is only a fallback, like the
-`global` runtime's `webfetch`, which hides whenever `local` offers one. A
-runtime tool never takes the name of a built-in tool such as
-`delegate_subagent`.
+`local_web` or `labpc_api` (with `_2`, `_3`, … when taken).
 
-Names change only at a compaction, so the model's cached conversation
-stays valid. Attach `labpc_api` while the model works with `local_web`'s
-`bash`, and `bash` stays `local_web`'s while `labpc_api`'s arrives as
-`labpc_api_bash`; from the next compaction both are prefixed. A tool that
-leaves stays declared until then, and a call to it is refused. See
-[Example: a repository on another machine](../runtimes/templates.md#example-a-repository-on-another-machine-over-ssh).
+**One machine offers each tool once.** A session may not have two
+attachments on one machine that offer a tool of the same name: two
+`coding` attachments of one machine, such as `local_web` and `local_api`,
+or the daemon's `local` and a TUI's `client_<host>` on the same laptop,
+would give the model two spellings of one computer. The second is refused,
+with the attachment that holds the machine named; another directory there
+is reached by absolute path. Capabilities whose tools differ may share a
+machine. A container or WSL runtime the daemon groups with its host
+overlaps the host's `coding`; give it a machine of its own with
+[`cookie machine unassign`](../clients/cli.md#cookie-machine).
+
+**Tools are routed by machine.** A session that has `global`, or
+attachments on several machines, publishes each runtime tool once under its
+own name, with a `machine` argument choosing where it runs: `bash`,
+`read`, `write`, `edit`, a runtime's MCP tools, and any tool a runtime of
+your own offers. `machine` is optional; without it a call runs on the
+tool's default machine, the first attached machine that offers it, which
+the tool's definition and the system prompt name. A call that names a
+machine without the tool fails with where the tool is offered. The default
+stays put until the next compaction, so attaching another machine changes
+no tool definition, and the model's cached conversation stays valid. A
+session created without `global` on one machine publishes its tools as
+their runtime declares them, without `machine`.
+
+A tool can instead declare that it is only a fallback, like the `global`
+runtime's `webfetch`, which hides whenever an attachment offers one. A
+runtime tool never takes the name of a built-in or `global` tool such as
+`delegate_subagent`; one that would is left out with a configuration
+diagnostic, and so is one that declares its own `machine` argument.
 
 Permission rules can target one runtime's tools with `action@runtime`; see
-[Permissions](permissions.md#rules-for-one-runtime).
+[Permissions](permissions.md#rules-for-one-runtime). A routed call is
+checked against the runtime of the machine it runs on.
+
+## Attaching from a session
+
+A run attaches a machine to its own session with `attach_machine`, naming a
+runtime capability from `list_runtimes` (`labpc/coding`) and the directory
+to work in, and detaches one with `detach_machine`. Its tools join the
+session at once, and the result says where they run and carries the
+workspace's `AGENTS.md`. Both are checked as the `attach` action on the
+target runtime, with the workspace as resource (`attach@labpc`): root runs
+are allowed by default and subagents denied, and an agent document's own
+`attach` key replaces that. `detach_machine` is refused while a background
+call runs on the attachment. Clients attach and detach between runs, as
+before.
+
+## Moving files between machines
+
+`transfer` copies a file or a folder to one of the session's machines, from
+another of them or from an artifact of the session, such as a file the user
+sent: each user file reaches the model with a label naming its artifact,
+`[file report.zip, 3.2 MB, artifact 5f2c81d0]`. The machines need not reach
+each other: the daemon relays the bytes between their runtimes and keeps none
+of them, so a large copy adds only its summary to the session log. The source
+is checked as `read` on its machine and the destination as `write` on its
+own, with the paths as the file tools label them. The model never writes the
+artifact store; it only copies out of it. See
+[`transfer`](../reference/tools.md#transfer).
 
 ## Workspaces and homes
 
@@ -89,9 +132,11 @@ has `list_runtimes`, which lists every machine and runtime, and its
 `delegate_subagent` takes `capabilities`: the runtime capabilities the
 child works through, such as `labpc/coding` at `~/src/api`. The daemon starts
 those runtimes before it creates the child. Without `capabilities` a child
-inherits its parent's attachments, and only the root can choose. A root with
-only `global` has no workspace at all and must name one for each subagent,
-which lets it orchestrate work across machines. `delegate@<runtime>` rules
+inherits its parent's attachments, and only the root can choose (a subagent
+that may attach reaches another machine with `attach_machine`). A root with
+only `global` has no workspace at all until it attaches one, and names one
+for each subagent it delegates, which lets it orchestrate work across
+machines. `delegate@<runtime>` rules
 limit where it may delegate. See
 [Delegating to runtimes](../sessions/delegation.md).
 

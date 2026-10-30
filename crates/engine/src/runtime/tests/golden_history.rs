@@ -243,6 +243,33 @@ fn differences(expected: &Value, actual: &Value, path: &str, found: &mut Vec<Str
     }
 }
 
+/// Removes from `read`'s history views the file labels a build adds before
+/// each user file (`docs/site/specs/machines-on-demand.md` section 6.4):
+/// model text the engine injects as it reads, which logs recorded before it
+/// cannot hold. Everything else of the history must still read as recorded.
+fn without_file_labels(read: &mut Value) {
+    for_each_session(read, |session| {
+        for view in ["full", "assembled"] {
+            let Some(turns) = session["history"][view].as_array_mut() else {
+                continue;
+            };
+            for turn in turns {
+                if turn["type"] != "user" {
+                    continue;
+                }
+                if let Some(content) = turn["value"]["content"].as_array_mut() {
+                    content.retain(|part| {
+                        !(part["type"] == "text"
+                            && part["value"]["text"].as_str().is_some_and(|text| {
+                                text.starts_with("[file") && text.contains(", artifact ")
+                            }))
+                    });
+                }
+            }
+        }
+    });
+}
+
 fn for_each_session(snapshot: &mut Value, mut visit: impl FnMut(&mut Value)) {
     for tree in snapshot["trees"].as_array_mut().expect("trees") {
         for session in tree["sessions"].as_array_mut().expect("sessions") {
@@ -382,7 +409,8 @@ async fn golden_history_reads_as_recorded() {
         let name = scenario.strip_prefix(GOLDEN_ROOT).unwrap_or(&scenario);
         for opening in [Opening::ReadOnly, Opening::Owned] {
             let opened = open_scenario(&scenario, opening).await;
-            let read = snapshot(&opened.engine, &opened.roots).await;
+            let mut read = snapshot(&opened.engine, &opened.roots).await;
+            without_file_labels(&mut read);
             let mut found = Vec::new();
             differences(&recorded["trees"], &read["trees"], "trees", &mut found);
             if matches!(opening, Opening::ReadOnly) {
@@ -1613,6 +1641,7 @@ async fn tolerates_future_data(name: &str) {
                     clear_skipped(&mut tree["tree"]);
                 }
             }
+            without_file_labels(&mut read);
             let mut found = Vec::new();
             differences(&recorded["trees"], &read["trees"], "trees", &mut found);
             assert!(

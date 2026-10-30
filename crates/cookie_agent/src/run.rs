@@ -1366,6 +1366,8 @@ mod tests {
     fn acp_agent() -> cookie_agent_protocol::AgentDescriptor {
         let model: ModelKey = "acp/codex".parse().expect("model key");
         cookie_agent_protocol::AgentDescriptor {
+            official: false,
+            official_version: None,
             id: AgentId::new("codex").expect("agent ID"),
             preset: None,
             description: "Codex".to_owned(),

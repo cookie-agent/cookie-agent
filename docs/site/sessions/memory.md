@@ -322,8 +322,8 @@ in this check.
 
 The tools use two permission actions with the memory URL as resource:
 `memory` for searching and reading, `memory_write` for writing, editing, and
-deleting. A root run of an agent document that names neither, the built-in
-`default` agent included, gets a default: it reads every memory and writes
+deleting. A root run of an agent document that names neither gets a
+default: it reads every memory and writes
 the memory related to its session, `user://`, its own `agent://` file, and
 its session's machines and project. A key replaces the default for its
 action: `memory_write: deny` leaves an agent that only reads, and

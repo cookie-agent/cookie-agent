@@ -207,9 +207,9 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
-    /// Set up a daemon: connect a provider, choose the default and small
-    /// models, and install the starter kit. The daemon writes everything,
-    /// on its own machine.
+    /// Set up a daemon: connect a provider and choose the default, small,
+    /// and utility models. The daemon writes everything, on its own
+    /// machine, and fetches its official agents.
     Onboard {
         #[command(flatten)]
         args: onboard_command::OnboardArgs,
@@ -347,6 +347,26 @@ enum Command {
         )]
         token: Option<String>,
     },
+    /// List a daemon's agents, refresh its official agents, or check agent
+    /// documents before publishing them.
+    Agents {
+        #[command(subcommand)]
+        command: agents_command::AgentsCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
     /// Manage the session history this machine stores.
     Sessions {
         #[command(subcommand)]
@@ -451,6 +471,8 @@ struct Runtime {
     catalog_refresh_task: Option<tokio::task::JoinHandle<()>>,
     /// The official skills' refresh loop, stopped with the catalog's.
     official_skills_task: Option<tokio::task::JoinHandle<()>>,
+    /// The official agents' refresh loop, stopped with the catalog's.
+    official_agents_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Runtime {
@@ -462,6 +484,42 @@ impl Runtime {
         if let Some(task) = self.official_skills_task.take() {
             let _ = task.await;
         }
+        if let Some(task) = self.official_agents_task.take() {
+            let _ = task.await;
+        }
+    }
+
+    /// Starts keeping the official agents up to date: at once, then every
+    /// [`cookie_agent_engine::OFFICIAL_AGENTS_REFRESH`]. A refresh that
+    /// changes them reloads the configuration.
+    fn start_official_agents(&mut self) {
+        // Debug builds under test keep off the network unless a test serves
+        // its own source.
+        #[cfg(debug_assertions)]
+        {
+            if let Ok(url) = env::var("COOKIE_AGENT_TEST_OFFICIAL_AGENTS_URL") {
+                self.engine.set_official_agents_url(url);
+            } else if matches!(
+                env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
+                Ok("1")
+            ) {
+                return;
+            }
+        }
+        let engine = self.engine.clone();
+        let shutdown = self.catalog_refresh_shutdown.clone();
+        self.official_agents_task = Some(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    _ = engine.refresh_official_agents() => {}
+                }
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(cookie_agent_engine::OFFICIAL_AGENTS_REFRESH) => {}
+                }
+            }
+        }));
     }
 
     /// Starts keeping the official skills up to date: at once, then every
@@ -888,6 +946,18 @@ async fn main_result(cli: Cli, launch: &mut Launch) -> anyhow::Result<()> {
             let target = daemon_target(url, token)?;
             project_command::run_project(&target.url, &target.token, command).await
         }
+        Some(Command::Agents {
+            command: agents_command::AgentsCommand::Check { dir },
+            ..
+        }) => agents_command::run_check(&dir),
+        Some(Command::Agents {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            agents_command::run_agents(&target.url, &target.token, command).await
+        }
         Some(Command::Skills {
             command: skills_command::SkillsCommand::Check { dir, docs },
             ..
@@ -963,6 +1033,7 @@ fn local_workspace(
                 | Command::Config { .. }
                 | Command::Onboard { .. }
                 | Command::Skills { .. }
+                | Command::Agents { .. }
                 | Command::Machine { .. }
                 | Command::Memory { .. }
                 | Command::Project { .. }
@@ -1120,6 +1191,7 @@ async fn compose(workspace: &Path) -> anyhow::Result<Runtime> {
     )
     .await?;
     runtime.start_official_skills();
+    runtime.start_official_agents();
     Ok(runtime)
 }
 
@@ -1138,6 +1210,7 @@ async fn compose_loaded(
     )
     .await?;
     runtime.start_official_skills();
+    runtime.start_official_agents();
     Ok(runtime)
 }
 
@@ -1244,6 +1317,7 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         catalog_refresh_shutdown,
         catalog_refresh_task: Some(catalog_refresh_task),
         official_skills_task: None,
+        official_agents_task: None,
     })
 }
 
@@ -2581,6 +2655,7 @@ fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
     Ok(())
 }
 
+mod agents_command;
 mod config_command;
 mod cron_command;
 mod daemon_restart;

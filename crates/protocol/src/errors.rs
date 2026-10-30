@@ -805,18 +805,18 @@ error_codes! {
     ONBOARDING_INCOMPLETE {
         code: "onboarding_incomplete",
         rpc: APPLICATION_ERROR,
-        fields: [required("missing", "What the daemon would still need: `provider`, `default_model`, `small_model`.")],
+        fields: [required("missing", "What the daemon would still need: `provider`, `default_model`, `default_agent` (and `small_model` from a daemon older than 1.56.0).")],
         message: "Onboarding would leave the daemon not set up; nothing was written.",
-        hint: Some("Connect a provider and choose a default and a small model that a connected provider offers."),
-        description: "`onboarding.run` refused: after its own fields, a provider, `default_model`, or `small_model` would still be missing.",
+        hint: Some("Connect a provider, choose a default model a connected provider offers, and let the daemon fetch its official agents (`cookie agents update`) or write the default agent's document."),
+        description: "`onboarding.run` refused: after its own fields, and after fetching the official agents when the default agent was missing, a provider, `default_model`, or the default agent would still be missing.",
     }
     ONBOARDING_KIT_UNAVAILABLE {
         code: "onboarding_kit_unavailable",
         rpc: APPLICATION_ERROR,
         fields: [],
-        message: "The starter kit could not be used.",
-        hint: Some("See the details; download the kit from the release page and send it as an archive instead."),
-        description: "`onboarding.preview` or `onboarding.run` could not download the starter kit, or refused it: a hash that does not match its manifest, a file this build does not load, or an archive that does not read.",
+        message: "There is no starter kit.",
+        hint: Some("The daemon keeps the official agents itself; `onboarding.run` sets the models."),
+        description: "`onboarding.preview` since 1.56.0: there is no starter kit to preview. A daemon older than 1.56.0 sends it when it could not download the starter kit, or refused it.",
     }
 
     // --- approvals ----------------------------------------------------------
@@ -1172,7 +1172,15 @@ error_codes! {
         fields: [],
         message: "The tool call or workspace the request names is no longer open.",
         hint: None,
-        description: "A request named a prepared call, job, or instance the runtime does not have.",
+        description: "A request named a prepared call, job, instance, or transfer handle the runtime does not have.",
+    }
+    FS_FAILED {
+        code: "fs_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The transfer failed on the runtime.",
+        hint: None,
+        description: "An `fs/*` request failed: the path is missing or exists already, it could not be read or written, or the bytes written do not match the source.",
     }
     CONTEXT_FAILED {
         code: "context_failed",

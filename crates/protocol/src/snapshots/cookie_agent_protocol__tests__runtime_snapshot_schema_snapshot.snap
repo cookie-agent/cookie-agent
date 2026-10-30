@@ -1,6 +1,5 @@
 ---
 source: crates/protocol/src/tests.rs
-assertion_line: 2951
 expression: schema_for!(RuntimeSnapshotResult)
 ---
 {
@@ -130,6 +129,18 @@ expression: schema_for!(RuntimeSnapshotResult)
         "mode": {
           "$ref": "#/$defs/AgentMode"
         },
+        "official": {
+          "description": "An official agent the daemon keeps up to date, not one the user\nwrote (client protocol 1.56.0).",
+          "type": "boolean"
+        },
+        "official_version": {
+          "description": "An official agent's version (client protocol 1.56.0).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
         "preset": {
           "type": [
             "string",
@@ -191,7 +202,7 @@ expression: schema_for!(RuntimeSnapshotResult)
           "maxItems": 256
         },
         "unset_models": {
-          "description": "The configuration fields (`default_model`, `small_model`) the agent's\n`models` entries name but that are not set, sorted (client protocol\n1.22.0). Those entries are skipped; an agent with no other entry is\nunavailable until a field is set.",
+          "description": "The configuration fields (`default_model`, `small_model`,\n`utility_model`) the agent's `models` entries name but that are not\nset, sorted (client protocol 1.22.0). Those entries are skipped; an\nagent with no other entry is unavailable until a field is set.",
           "type": "array",
           "items": {
             "type": "string"
@@ -805,6 +816,16 @@ expression: schema_for!(RuntimeSnapshotResult)
         },
         "catalog": {
           "$ref": "#/$defs/CatalogStatus"
+        },
+        "default_agent": {
+          "description": "`[agents] default`: the agent a new root session starts with when\nneither the client nor its project chooses one (client protocol\n1.56.0). A client preselects it; an older daemon sends none, and its\ndefault is `primary`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
         },
         "models": {
           "type": "array",

@@ -51,6 +51,9 @@ block under the system prompt in the TUI transcript.
 | [`memory_delete`](#memory_delete) | `memory_write` |
 | [`list_runtimes`](#list_runtimes) | `list_runtimes` |
 | [`list_agents`](#list_agents) | *none* |
+| [`attach_machine`](#attach_machine) | `attach` |
+| [`detach_machine`](#detach_machine) | `attach` |
+| [`transfer`](#transfer) | `write` |
 | [`cron_create`](#cron_create) | `cron` |
 | [`cron_list`](#cron_list) | *none* |
 | [`cron_update`](#cron_update) | `cron` |
@@ -455,9 +458,12 @@ placeholder says why, for example
 `[image omitted: acme/text-model does not accept images (screenshot.png, 471 KB)]`,
 `[image omitted: acme/model does not accept image/webp (…)]`,
 `[image omitted: larger than the 3.8 MB acme/model accepts (…)]`, or
-`[image omitted: acme/model does not accept images in tool results (…)]`. It
-depends only on the history and the model, so the prompt prefix stays
-cacheable; the saved history keeps the files.
+`[image omitted: acme/model does not accept images in tool results (…)]`.
+A user's file has its label just before it, and the reason joins the label
+instead, so the model can still copy the file to a machine with `transfer`:
+`[file screenshot.png, 471 KB, artifact 5f2c81d0; not shown: acme/text-model
+does not accept images]`. It depends only on the history and the model, so
+the prompt prefix stays cacheable; the saved history keeps the files.
 
 MCP media blocks (images, audio, embedded resource blobs) follow the same gate
 and delivery selection. Blob resources without a declared MIME type are
@@ -1025,6 +1031,7 @@ tools instead of in the system prompt.
 | `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | yes | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
 | `delegation` | [`delegate_subagent`](#delegate_subagent), [`get_subagent_result`](#get_subagent_result) | no | Subagents: hand a focused task to another agent, and collect its result. |
 | `goal` | [`goal_get`](#goal_get), [`goal_set`](#goal_set), [`goal_update`](#goal_update) | yes | The session's goal and the checklist that tracks it. |
+| `machines` | [`attach_machine`](#attach_machine), [`detach_machine`](#detach_machine), [`transfer`](#transfer) | no | The user's machines: attach one to this session to work on it, detach it, or copy files between machines. |
 | `memory` | [`memory_search`](#memory_search), [`memory_read`](#memory_read), [`memory_write`](#memory_write), [`memory_edit`](#memory_edit), [`memory_delete`](#memory_delete) | yes | Durable notes across sessions: what the user prefers, project decisions, and facts about machines. |
 | `messaging` | [`send_message`](#send_message) | no | Messages between the agents of a session tree. |
 | `runtimes` | [`list_runtimes`](#list_runtimes) | yes | The runtimes this session can work through: the machines and capabilities a subagent can be started on. |
@@ -1319,8 +1326,8 @@ it has other attachments too, and absent everywhere else, where a child
 inherits its parent's attachments. Each runtime it names is checked as
 `delegate@<runtime>`, and every runtime starts before the child is created:
 one that cannot start fails the call and creates nothing. A root with only
-`global` also gets a paragraph in its delegation instructions saying it has no
-workspace.
+`global` is told in its system prompt that no machine is attached
+([runtimes](system-prompt.md#runtimes)).
 
 ### `skill`
 
@@ -1387,7 +1394,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `agent_type` | `"<subagent id>"` | yes |  |
-| `capabilities` | `object[]` | no | Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The same runtime may be listed twice with different workspaces. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id. |
+| `capabilities` | `object[]` | no | Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id. |
 | `description` | `string` | yes | Short (3-5 words) summary of the task |
 | `inherit_context` | `boolean` | no | Default: `false`. |
 | `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
@@ -1406,7 +1413,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
           "type": "string"
         },
         "capabilities": {
-          "description": "Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The same runtime may be listed twice with different workspaces. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.",
+          "description": "Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.",
           "items": {
             "additionalProperties": false,
             "properties": {
@@ -2026,7 +2033,7 @@ list_runtimes()
 Description sent to the model:
 
 ```text
-List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external coding agents such as Claude Code; a session runs one on the attached runtime that offers it), and this session's own attachments on it. Name a runtime capability from here in delegate_subagent's `capabilities`, as `<runtime id>/<capability name>`. A runtime that connects later shows up on the next call.
+List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external agents such as Claude Code), and this session's own attachments on it. Name a runtime capability from here, as `<runtime id>/<capability name>`, in attach_machine to work on it in this session, or in delegate_subagent's `capabilities` to start a subagent there. A runtime that connects later shows up on the next call.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `list_runtimes`, which `primary` and `all` agents have by default.
@@ -2047,8 +2054,9 @@ Only when the session has the `global` runtime attached and the agent or the ses
 
 `list_runtimes` reads the daemon's state at each call. Its output is grouped
 by machine, the daemon's own first and the rest by name, and within a machine
-by runtime ID; a runtime the daemon cannot place on a machine goes under
-`<unplaced>`. `global` is never listed as a runtime: a `<global/>` element,
+by runtime ID; a runtime that is not connected and whose machine the daemon
+does not know yet goes under `<not_connected_yet>`, with a comment saying it
+is placed when it connects. A connected runtime always has a machine. `global` is never listed as a runtime: a `<global/>` element,
 with a comment, says when the root of the caller's tree has it. Only the
 calling session's own attachments are shown. A runtime that is not connected
 keeps the machine, platform, and home the daemon last saw it with. The output
@@ -2083,7 +2091,7 @@ list_agents(for?: "delegate" | "cron")
 Description sent to the model:
 
 ```text
-List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external coding agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here: it runs on the one attached runtime that offers it, and not with none or several. Leave `for` out to list both.
+List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here, on the one attached runtime that offers it. Leave `for` out to list both.
 ```
 
 Only when the session has the `global` runtime attached and the run is offered `delegate_subagent` or a cron tool. It has no permission of its own.
@@ -2128,6 +2136,241 @@ which ones only some modes get, and what `${session_machine}`,
 `${session_project}`, and `${workspace_dir}` stand for. The result ends
 with `Actions not listed are denied.` ([cron spec](../specs/cron.md)
 section 8.1).
+
+## Machine tools
+
+A session without a project starts on the `global` runtime alone and reaches
+the user's machines as it needs them
+([machines on demand](../specs/machines-on-demand.md)): `attach_machine`
+attaches a runtime capability that `list_runtimes` lists, `detach_machine`
+lets it go, and `transfer` copies files between the machines attached. They
+are `global` tools of the `machines` group, sent up front.
+
+### `attach_machine`
+
+<!-- generated: tool attach_machine -->
+
+```text
+attach_machine(capability: string, workspace?: string)
+```
+
+Description sent to the model:
+
+```text
+Attach a machine to this session: one runtime capability from list_runtimes, written `<runtime id>/<capability name>` (e.g. `labpc/coding`), at `workspace` when the capability takes one. Its tools join this session at once, and the result says where they run: the machine, its home, the workspace, and the workspace's AGENTS.md. A machine offers each tool once: a second directory on a machine already attached is reached by absolute path, or by detaching the first.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `attach`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it. Each call is checked as `attach@<runtime>`, with the workspace as resource.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `capability` | `string` | yes | `<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding` |
+| `workspace` | `string` | no | Directory on that runtime's machine; required when the capability takes a workspace |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`attach_machine`'s arguments.",
+      "properties": {
+        "capability": {
+          "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Directory on that runtime's machine; required when the capability\ntakes a workspace",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "capability"
+      ],
+      "title": "AttachArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+The attachment is recorded as when a client attaches the runtime, while the
+session runs: its tools join this session's next request, routed by their
+`machine` argument. The runtimes block of the system prompt is frozen for
+the run, so the result says where the tools run: the machine, its platform
+and home, the working directory, and the workspace's `AGENTS.md` files. One
+machine offers each tool once: an attachment whose tools share a name with
+another attachment on the same machine is refused, naming both (see
+[Runtimes](../concepts/runtimes.md#attachments-and-tool-names)).
+
+### `detach_machine`
+
+<!-- generated: tool detach_machine -->
+
+```text
+detach_machine(capability: string)
+```
+
+Description sent to the model:
+
+```text
+Detach a machine's runtime capability from this session, written `<runtime id>/<capability name>` as attach_machine took it. Its tools leave the session; refused while one of its background calls still runs.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `attach`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it. Each call is checked as `attach@<runtime>`, with the workspace as resource.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `capability` | `string` | yes | `<runtime_id>/<capability_id>`, as attach_machine took it |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`detach_machine`'s arguments.",
+      "properties": {
+        "capability": {
+          "description": "`<runtime_id>/<capability_id>`, as attach_machine took it",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability"
+      ],
+      "title": "DetachArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+Refused for `global`, and while one of the session's background calls runs
+on the attachment.
+
+### `transfer`
+
+<!-- generated: tool transfer -->
+
+```text
+transfer(from: object | object, overwrite?: boolean, to: object)
+```
+
+Description sent to the model:
+
+```text
+Copy a file or folder to a machine of this session: from another of its machines, or from an artifact of this session, such as a file the user sent, whose label names it (`[file report.zip, 3.2 MB, artifact 5f2c81d0]`). `from` is `{"machine": "labpc", "path": "~/data"}` or `{"artifact": "5f2c81d0"}` (with `stream` for one stream of retained tool output); `to` is `{"machine": "laptop", "path": "~/Downloads/data"}`, the path the copy will have, not a folder to put it in. Machines are named as the machines block and list_runtimes name them; a relative path resolves against that machine's working directory, and `~` against its home. A folder is copied with everything below it. An existing destination is an error unless `overwrite` is true, which replaces a file or merges into a folder. The daemon relays the bytes, so the machines need not reach each other. The source is checked as `read` on its machine and the destination as `write` on its own. The result gives the bytes and files copied and, for a file, its SHA-256.
+```
+
+Only when the session has the `global` runtime and a machine whose runtime takes transfers (runtime protocol 1.13.0) attached, and the agent or the session overlay has an `allow` or `ask` rule for `write`. The source is checked as `read@<its runtime>` on its path and the destination as `write@<its runtime>` on its own; an artifact source needs no rule. Both machines must be attached to the session.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `from` | `object \| object` | yes | Where the bytes come from: `{"machine", "path"}` for a file or folder on a machine, or `{"artifact"}` (a file label's digest, a longer prefix, or the full digest) with an optional `stream` |
+| `overwrite` | `boolean` | no | Replace an existing file, or merge into an existing folder. Defaults to false: an existing destination is an error |
+| `to` | `object` | yes | A path on one of the session's machines. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$defs": {
+        "ArtifactSource": {
+          "additionalProperties": false,
+          "description": "An artifact of this session.",
+          "properties": {
+            "artifact": {
+              "description": "Its digest, or the first 8 or more hex digits of it",
+              "type": "string"
+            },
+            "stream": {
+              "description": "One stream of retained tool output, such as `stdout`",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "artifact"
+          ],
+          "type": "object"
+        },
+        "MachinePath": {
+          "additionalProperties": false,
+          "description": "A path on one of the session's machines.",
+          "properties": {
+            "machine": {
+              "description": "A machine of this session",
+              "type": "string"
+            },
+            "path": {
+              "description": "Relative to the machine's working directory, absolute, or under `~`",
+              "type": "string"
+            }
+          },
+          "required": [
+            "machine",
+            "path"
+          ],
+          "type": "object"
+        },
+        "Source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MachinePath"
+            },
+            {
+              "$ref": "#/$defs/ArtifactSource"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`transfer`'s arguments.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Source",
+          "description": "Where the bytes come from: `{\"machine\", \"path\"}` for a file or folder\non a machine, or `{\"artifact\"}` (a file label's digest, a longer\nprefix, or the full digest) with an optional `stream`"
+        },
+        "overwrite": {
+          "description": "Replace an existing file, or merge into an existing folder. Defaults\nto false: an existing destination is an error",
+          "type": "boolean"
+        },
+        "to": {
+          "$ref": "#/$defs/MachinePath",
+          "description": "Where they go: `{\"machine\", \"path\"}`, the path the copy will have"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "title": "TransferArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+The daemon relays the bytes between the two runtimes a chunk at a time and
+keeps none of them: no artifact, nothing in the session log but the call
+and its summary. Progress is display only. A copy within one runtime is
+made by that runtime (`fs/copy`). A folder moves with its files, folders,
+and links, mode bits, and modification times; devices, sockets, FIFOs, and
+links that would lead outside it are left out and counted. A destination is
+written to a hidden sibling and put in place once its SHA-256 matches the
+source's, so nobody sees half of it; a stopped or failed transfer leaves
+nothing. `[transfer] max_bytes` limits what one call moves. An artifact
+source is a user's upload, named by its [file label](protocol.md#media), or
+retained tool output; the model can never write the artifact store. Both
+runtimes need runtime protocol 1.13.0 (see
+[Transfers](runtime-protocol.md#transfers)).
 
 ## Cron tools
 

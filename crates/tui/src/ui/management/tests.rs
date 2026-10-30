@@ -1320,6 +1320,8 @@ fn the_machines_view_lists_a_runtimes_tools_and_acp_agents() {
         .collect();
     panel.install_mcp_servers(vec![browser]);
     let agent = |id: &str, declaration: &str| AgentDescriptor {
+        official: false,
+        official_version: None,
         id: AgentId::new(id).unwrap(),
         preset: None,
         description: String::new(),

@@ -4,12 +4,9 @@ use cookie_agent_config::ConfiguredModel;
 use cookie_agent_config::{
     AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
     AgentModelFallback, AgentModelRef, AgentRegistry as ConfigAgentRegistry,
-    BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID,
-    BUILT_IN_TITLE_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
+    BUILT_IN_COMPACTION_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
 };
-use cookie_agent_identity::{
-    AgentId as IdentityAgentId, ConfiguredVariantRef, ModelKey, WildcardPattern,
-};
+use cookie_agent_identity::{AgentId as IdentityAgentId, ConfiguredVariantRef, ModelKey};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
 use cookie_agent_protocol::{AgentDescriptor, AgentId, ModelSelection};
 use indexmap::IndexMap;
@@ -18,12 +15,16 @@ use sha2::{Digest as _, Sha256};
 
 use crate::EngineError;
 
+/// The agent test builds synthesize when no document can run as a root.
+#[cfg(any(test, feature = "test-support"))]
+const TEST_DEFAULT_AGENT_ID: &str = "default";
+
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedAgent {
     pub document: AgentDocument,
     pub resolved_fallback: Vec<ResolvedAgentFallback>,
-    /// The configuration fields (`default_model`, `small_model`) that
-    /// entries of `models` name but that are not set; those entries are
+    /// The configuration fields (`default_model`, `small_model`,
+    /// `utility_model`) that entries of `models` name but that are not set; those entries are
     /// skipped. Sorted, without repeats.
     pub unset_models: Vec<&'static str>,
     pub runnable_as_root: bool,
@@ -153,12 +154,13 @@ pub(crate) enum ResolvedAgentFallback {
     },
 }
 
-/// The values of `${default_model}` and `${small_model}`: the
-/// configuration's `default_model` and `small_model`.
+/// The values of `${default_model}`, `${small_model}`, and
+/// `${utility_model}`: the configuration's fields of those names.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ModelVariables<'a> {
     pub default_model: Option<&'a ConfiguredModel>,
     pub small_model: Option<&'a ConfiguredModel>,
+    pub utility_model: Option<&'a ConfiguredModel>,
 }
 
 impl<'a> ModelVariables<'a> {
@@ -166,6 +168,7 @@ impl<'a> ModelVariables<'a> {
         Self {
             default_model: config.default_model.as_ref(),
             small_model: config.small_model.as_ref(),
+            utility_model: config.utility_model.as_ref(),
         }
     }
 
@@ -173,6 +176,7 @@ impl<'a> ModelVariables<'a> {
         match model {
             AgentModelRef::DefaultModel => self.default_model,
             AgentModelRef::SmallModel => self.small_model,
+            AgentModelRef::UtilityModel => self.utility_model,
             AgentModelRef::Model(_) | AgentModelRef::ParentModel => None,
         }
     }
@@ -214,6 +218,9 @@ pub(crate) fn configured_selection(
 #[derive(Clone, Debug)]
 pub struct AgentRegistry {
     preset: Option<String>,
+    /// `[agents] default`: the agent a new root session starts with when
+    /// nothing chooses one, and a run falls back to when its own is gone.
+    default_agent: AgentId,
     agents: BTreeMap<AgentId, ResolvedAgent>,
     descriptors: Vec<AgentDescriptor>,
 }
@@ -229,6 +236,8 @@ impl AgentRegistry {
         preset: Option<String>,
         runtime_agents: &[RuntimeAgent],
         variables: ModelVariables<'_>,
+        #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
+        mut default_agent: AgentId,
     ) -> Result<Self, EngineError> {
         let mut documents = built_in_internal_documents()?;
         // An ACP agent's document is an agent only while a runtime declares
@@ -308,9 +317,6 @@ impl AgentRegistry {
         }
         for document in documents.into_values() {
             let id = document.id.clone();
-            if id.as_str() == BUILT_IN_DEFAULT_AGENT_ID {
-                return Err(EngineError::RuntimeCompileFailed);
-            }
             let mut resolved_fallback = Vec::new();
             let mut unset_models = Vec::new();
             for fallback in &document.frontmatter.models {
@@ -334,7 +340,9 @@ impl AgentRegistry {
                             cache: fallback.cache.clone(),
                         });
                     }
-                    variable @ (AgentModelRef::DefaultModel | AgentModelRef::SmallModel) => {
+                    variable @ (AgentModelRef::DefaultModel
+                    | AgentModelRef::SmallModel
+                    | AgentModelRef::UtilityModel) => {
                         match variables.get(variable) {
                             Some(configured) => {
                                 resolved_fallback.push(ResolvedAgentFallback::Selection {
@@ -389,6 +397,10 @@ impl AgentRegistry {
                 },
             );
         }
+        // Test builds only: the engine's tests were written on an agent the
+        // engine synthesized when no document could run as a root. Daemons
+        // supply none (`docs/site/specs/machines-on-demand.md` section 2.1).
+        #[cfg(any(test, feature = "test-support"))]
         if !agents.values().any(|agent| agent.runnable_as_root) {
             // `${default_model}` first, then the first available model.
             let configured = variables
@@ -407,6 +419,7 @@ impl AgentRegistry {
                 .collect::<Vec<_>>();
             if !resolved_fallback.is_empty() {
                 let document = built_in_default_document(first.as_ref())?;
+                default_agent = document.id.clone();
                 agents.insert(
                     document.id.clone(),
                     ResolvedAgent {
@@ -451,6 +464,8 @@ impl AgentRegistry {
                     .iter()
                     .map(|field| (*field).to_owned())
                     .collect(),
+                official: agent.document.official,
+                official_version: agent.document.official_version.clone(),
                 runtime: agent.acp.as_ref().and_then(|acp| match &acp.offers[..] {
                     [offer] => Some(agent_runtime(offer, &agent.document)),
                     _ => None,
@@ -468,6 +483,7 @@ impl AgentRegistry {
             .collect();
         Ok(Self {
             preset,
+            default_agent,
             agents,
             descriptors,
         })
@@ -485,6 +501,11 @@ impl AgentRegistry {
         self.preset.as_deref()
     }
 
+    /// `[agents] default`, whether or not an agent of that ID can run.
+    pub(crate) fn default_agent(&self) -> &AgentId {
+        &self.default_agent
+    }
+
     /// The delegation rules of its agents that reach no agent yet: a named
     /// target no agent has, and a pattern that matches no eligible agent.
     /// Either may be an ACP agent a runtime has not reported (or a typo);
@@ -497,7 +518,8 @@ impl AgentRegistry {
         let mut diagnostics = self.delegation_diagnostics();
         for (id, agent) in &self.agents {
             if agent.unset_models.is_empty()
-                || agent.document.source == AgentDocumentSource::BuiltIn
+                || (agent.document.source == AgentDocumentSource::BuiltIn
+                    && !agent.document.official)
             {
                 continue;
             }
@@ -612,60 +634,57 @@ fn acp_document_diagnostics(
     diagnostics
 }
 
-fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelection> {
-    models.models().values().find_map(|model| {
-        (model.model.status == CompiledModelStatus::Available).then(|| ModelSelection {
-            model: model.key.clone(),
-            variant: model.model.default_variant.clone(),
-        })
-    })
-}
-
-/// The built-in internal agent documents.
+/// The built-in internal agent documents: `compaction` alone, the
+/// last-resort fallback for a daemon with neither an authored nor an
+/// official `compaction` document (`docs/site/specs/machines-on-demand.md`
+/// section 2.1). `approval` and `title` come from the official agents only;
+/// without them, their calls fail safely.
 ///
-/// Each declares `max_output_tokens: 0`, so every built-in internal agent
-/// inherits the owner run's document cap at execution time.
+/// It declares `max_output_tokens: 0`, so it inherits the owner run's
+/// document cap at execution time, and stays on the run's model, whose
+/// prompt cache the session keeps warm.
 fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, EngineError> {
-    // Approval and titles run on the small model when one is set, then on
-    // the run's own; compaction stays on the run's model, whose prompt
-    // cache the session keeps warm.
-    let small_then_parent = [AgentModelRef::SmallModel, AgentModelRef::ParentModel];
-    [
+    let document = built_in_internal_document(
+        BUILT_IN_COMPACTION_AGENT_ID,
+        "Built-in context compaction agent",
+        "{{default_prompt}}\n",
+        &[AgentModelRef::ParentModel],
+        AgentLimits {
+            timeout_ms: 180_000,
+            max_output_tokens: 0,
+        },
+    )?;
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
+    let mut documents = BTreeMap::from([(document.id.clone(), document)]);
+    // Test builds only: the official `approval` and `title`, as the
+    // engine's tests ran on built-in ones; daemons get them from the
+    // official agents.
+    #[cfg(any(test, feature = "test-support"))]
+    for (id, description, body) in [
         (
-            BUILT_IN_APPROVAL_AGENT_ID,
-            "Built-in approval evaluator",
-            &small_then_parent[..],
+            cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID,
+            "Approval reviewer (test builds)",
+            include_str!("test_agents/approval.md"),
+        ),
+        (
+            cookie_agent_config::BUILT_IN_TITLE_AGENT_ID,
+            "Session titles (test builds)",
+            include_str!("test_agents/title.md"),
+        ),
+    ] {
+        let document = built_in_internal_document(
+            id,
+            description,
+            body,
+            &[AgentModelRef::UtilityModel, AgentModelRef::ParentModel],
             AgentLimits {
                 timeout_ms: 30_000,
                 max_output_tokens: 0,
             },
-        ),
-        (
-            BUILT_IN_COMPACTION_AGENT_ID,
-            "Built-in context compaction agent",
-            &[AgentModelRef::ParentModel][..],
-            AgentLimits {
-                timeout_ms: 180_000,
-                max_output_tokens: 0,
-            },
-        ),
-        (
-            BUILT_IN_TITLE_AGENT_ID,
-            "Built-in session title agent",
-            &small_then_parent[..],
-            AgentLimits {
-                timeout_ms: 30_000,
-                max_output_tokens: 0,
-            },
-        ),
-    ]
-    .into_iter()
-    .map(|(id, description, models, limits)| {
-        let document =
-            built_in_internal_document(id, description, "{{default_prompt}}\n", models, limits)?;
-        Ok((document.id.clone(), document))
-    })
-    .collect()
+        )?;
+        documents.insert(document.id.clone(), document);
+    }
+    Ok(documents)
 }
 
 fn built_in_internal_document(
@@ -704,6 +723,8 @@ fn built_in_internal_document(
         frontmatter,
         body,
         source: AgentDocumentSource::BuiltIn,
+        official: false,
+        official_version: None,
         document_fingerprint,
         prompt_fingerprint,
     })
@@ -767,6 +788,8 @@ fn runtime_agent_default_document(agent: &AcpOffers) -> Result<AgentDocument, En
         frontmatter,
         body,
         source: AgentDocumentSource::BuiltIn,
+        official: false,
+        official_version: None,
         document_fingerprint,
         prompt_fingerprint,
     })
@@ -774,8 +797,9 @@ fn runtime_agent_default_document(agent: &AcpOffers) -> Result<AgentDocument, En
 
 /// The built-in `default` agent: `${default_model}`, then `first`, the
 /// first available model, when it is another model.
+#[cfg(any(test, feature = "test-support"))]
 fn built_in_default_document(first: Option<&ModelSelection>) -> Result<AgentDocument, EngineError> {
-    let id = IdentityAgentId::new(BUILT_IN_DEFAULT_AGENT_ID)
+    let id = IdentityAgentId::new(TEST_DEFAULT_AGENT_ID)
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
     let body = "You are Cookie Agent's built-in default coding agent. Help the user inspect, understand, and modify software safely and precisely.\n".to_owned();
     let models = std::iter::once(AgentModelFallback {
@@ -809,6 +833,8 @@ fn built_in_default_document(first: Option<&ModelSelection>) -> Result<AgentDocu
         frontmatter,
         body,
         source: AgentDocumentSource::BuiltIn,
+        official: false,
+        official_version: None,
         document_fingerprint,
         prompt_fingerprint,
     })
@@ -826,6 +852,7 @@ fn fingerprint(
         .map_err(|_| EngineError::RuntimeCompileFailed)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn built_in_default_permissions()
 -> Result<IndexMap<cookie_agent_config::PermissionKey, PermissionValue>, EngineError> {
     let definitions = [
@@ -887,11 +914,22 @@ fn built_in_default_permissions()
             unreachable!("synthetic permissions use map form")
         };
         resources.insert(
-            WildcardPattern::new(resource).map_err(|_| EngineError::RuntimeCompileFailed)?,
+            cookie_agent_identity::WildcardPattern::new(resource)
+                .map_err(|_| EngineError::RuntimeCompileFailed)?,
             effect,
         );
     }
     Ok(permissions)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelection> {
+    models.models().values().find_map(|model| {
+        (model.model.status == CompiledModelStatus::Available).then(|| ModelSelection {
+            model: model.key.clone(),
+            variant: model.model.default_variant.clone(),
+        })
+    })
 }
 
 pub(crate) fn delegation_targets(
@@ -972,10 +1010,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{
-        ResolvedAgent, built_in_default_permissions, built_in_internal_documents,
-        delegation_targets, fingerprint,
-    };
+    use super::{ResolvedAgent, built_in_internal_documents, delegation_targets, fingerprint};
     use cookie_agent_config::{
         AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
         AgentModelFallback, AgentModelRef, BUILT_IN_APPROVAL_AGENT_ID,
@@ -1020,14 +1055,6 @@ mod tests {
 
     #[test]
     fn built_in_agents_ship_without_message_rules() {
-        let default_permissions =
-            built_in_default_permissions().expect("built-in default permissions");
-        assert!(
-            default_permissions
-                .get(&PermissionAction::MESSAGE)
-                .is_none(),
-            "built-in default agent must not grant message authority"
-        );
         for document in built_in_internal_documents()
             .expect("built-in internal documents")
             .values()
@@ -1078,20 +1105,14 @@ mod tests {
     }
 
     #[test]
-    fn built_in_internal_documents_declare_their_timeouts() {
+    fn compaction_keeps_its_prompt_as_a_fallback() {
+        // Approval and titles come from the official agents (test builds
+        // add them); only compaction keeps a document daemons fall back to.
         let documents = built_in_internal_documents().expect("built-in internal documents");
-        let timeout = |id: &str| {
-            documents
-                .values()
-                .find(|document| document.id.as_str() == id)
-                .unwrap_or_else(|| panic!("built-in document `{id}`"))
-                .frontmatter
-                .limits
-                .timeout_ms
-        };
-        assert_eq!(timeout(BUILT_IN_APPROVAL_AGENT_ID), 30_000);
-        assert_eq!(timeout(BUILT_IN_COMPACTION_AGENT_ID), 180_000);
-        assert_eq!(timeout(BUILT_IN_TITLE_AGENT_ID), 30_000);
+        let compaction = &documents[&IdentityAgentId::new(BUILT_IN_COMPACTION_AGENT_ID).unwrap()];
+        assert_eq!(compaction.body, "{{default_prompt}}\n");
+        assert!(documents.contains_key(&IdentityAgentId::new(BUILT_IN_APPROVAL_AGENT_ID).unwrap()));
+        assert!(documents.contains_key(&IdentityAgentId::new(BUILT_IN_TITLE_AGENT_ID).unwrap()));
     }
 
     fn test_agent(id: &str, mode: AgentMode, enabled: bool) -> ResolvedAgent {
@@ -1123,6 +1144,8 @@ mod tests {
             fingerprint("cookie-agent/system-prompt/v1", &body).expect("fingerprint");
         ResolvedAgent {
             document: AgentDocument {
+                official: false,
+                official_version: None,
                 id,
                 frontmatter,
                 body,

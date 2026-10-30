@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "FsKind": {
+      "description": "A file, or a folder moved with everything below it.",
+      "enum": [
+        "file",
+        "folder"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/write_open`.",
+  "properties": {
+    "kind": {
+      "$ref": "#/$defs/FsKind"
+    },
+    "overwrite": {
+      "default": false,
+      "description": "Replace an existing file, or merge into an existing folder; without\nit an existing destination fails the open.",
+      "type": "boolean"
+    },
+    "route": {
+      "description": "A route `fs/prepare` returned for writing; opening consumes it.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "size": {
+      "description": "The bytes to come, when known.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "route",
+    "kind"
+  ],
+  "title": "FsWriteOpenParams",
+  "type": "object"
+}

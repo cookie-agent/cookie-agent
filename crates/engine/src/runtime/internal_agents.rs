@@ -440,10 +440,25 @@ impl Engine {
         .into_iter()
         .map(|kind| {
             let id = internal_agent_id(kind)?;
-            let resolved = owner
-                .registry
-                .get(&id)
-                .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))?;
+            // An agent the daemon has no document for, such as the official
+            // `approval` before the first refresh, is frozen disabled: its
+            // runs end unavailable, which their callers handle, and the run
+            // still records one definition per kind.
+            match owner.registry.get(&id) {
+                Some(resolved) => Self::freeze_internal_agent(kind, id, resolved, owner),
+                None => Ok(unavailable_internal_definition(kind, id)),
+            }
+        })
+        .collect()
+    }
+
+    fn freeze_internal_agent(
+        kind: InternalAgentKind,
+        id: AgentId,
+        resolved: &crate::runtime_snapshot::ResolvedAgent,
+        owner: &FrozenRunPolicy,
+    ) -> Result<FrozenInternalAgentDefinition, EngineError> {
+        {
             if resolved.document.frontmatter.mode != cookie_agent_config::AgentMode::Internal {
                 return Err(EngineError::InvalidRuntimeAgent(id));
             }
@@ -501,8 +516,7 @@ impl Engine {
                 .validate()
                 .map_err(|_| EngineError::RuntimeCompileFailed)?;
             Ok(definition)
-        })
-        .collect()
+        }
     }
 
     pub(crate) fn internal_agent_policy(
@@ -527,10 +541,9 @@ impl Engine {
             );
         }
         let id = internal_agent_id(kind)?;
-        let resolved = owner
-            .registry
-            .get(&id)
-            .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))?;
+        let Some(resolved) = owner.registry.get(&id) else {
+            return unavailable_internal_policy(id, owner);
+        };
         if resolved.document.frontmatter.mode != cookie_agent_config::AgentMode::Internal {
             return Err(EngineError::InvalidRuntimeAgent(id));
         }
@@ -616,6 +629,66 @@ impl Engine {
             cache_strategies,
         })
     }
+}
+
+/// What an internal agent the daemon has no document for stands in as.
+const UNAVAILABLE_DESCRIPTION: &str = "Not available: the daemon has no document for it";
+const UNAVAILABLE_PROMPT: &str = "Unavailable.";
+
+/// The frozen definition of internal agent `id` of `kind` when the daemon
+/// has no document for it: disabled, so each of its runs ends unavailable.
+fn unavailable_internal_definition(
+    kind: InternalAgentKind,
+    id: AgentId,
+) -> FrozenInternalAgentDefinition {
+    FrozenInternalAgentDefinition {
+        kind,
+        agent: id,
+        description: UNAVAILABLE_DESCRIPTION.into(),
+        document_source: cookie_agent_config::AgentDocumentSource::BuiltIn,
+        document_fingerprint: Sha256Digest::of_bytes(b""),
+        composed_prompt: UNAVAILABLE_PROMPT.into(),
+        prompt_fingerprint: Sha256Digest::of_bytes(UNAVAILABLE_PROMPT.as_bytes()),
+        enabled: false,
+        max_output_tokens: 0,
+        timeout_ms: 0,
+        fallbacks: Vec::new(),
+    }
+}
+
+/// The policy of internal agent `id` when the daemon has no document for
+/// it, such as the official `approval` or `title` before the official agents
+/// were first fetched: no models, so each of its runs ends unavailable, as
+/// a disabled agent's does.
+fn unavailable_internal_policy(
+    id: AgentId,
+    owner: &FrozenRunPolicy,
+) -> Result<FrozenInternalAgentPolicy, EngineError> {
+    let empty = Sha256Digest::of_bytes(b"");
+    Ok(FrozenInternalAgentPolicy {
+        agent: cookie_agent_protocol::AgentSnapshot {
+            agent: id,
+            mode: AgentMode::Internal,
+            description: UNAVAILABLE_DESCRIPTION.into(),
+            document_source: cookie_agent_config::AgentDocumentSource::BuiltIn,
+            document_fingerprint: empty,
+            composed_prompt: UNAVAILABLE_PROMPT.into(),
+            prompt_fingerprint: Sha256Digest::of_bytes(UNAVAILABLE_PROMPT.as_bytes()),
+            max_output_tokens: 0,
+            permissions: Vec::new(),
+            delegation: None,
+            fallback_chain: Vec::new(),
+            selected_suffix_start: 0,
+        },
+        models: Vec::new(),
+        runtime: Some(Arc::clone(&owner.runtime)),
+        limits: InternalAgentLimits {
+            max_output_tokens: 0,
+            inherited_max_output_tokens: owner.agent.max_output_tokens,
+            timeout_ms: 0,
+        },
+        cache_strategies: Vec::new(),
+    })
 }
 
 /// `${parent_model}` for an owner run on `parent`: its binding, or with
@@ -1239,5 +1312,22 @@ mod tests {
             })
         );
         assert!(!wire.to_string().contains("raw-media-bytes"));
+    }
+
+    #[test]
+    fn an_internal_agent_without_a_document_is_frozen_disabled_and_valid() {
+        for kind in [
+            cookie_agent_protocol::InternalAgentKind::Approval,
+            cookie_agent_protocol::InternalAgentKind::SessionTitle,
+        ] {
+            let definition = super::unavailable_internal_definition(
+                kind,
+                cookie_agent_protocol::AgentId::new("approval").expect("agent ID"),
+            );
+            assert!(!definition.enabled);
+            assert!(definition.fallbacks.is_empty());
+            // A run's `run_started` carries it, so it must validate.
+            assert_eq!(definition.validate(), Ok(()));
+        }
     }
 }

@@ -70,8 +70,8 @@ address bar.
 
 ## Setting up a daemon
 
-A daemon that is not set up yet, with no provider connected or without a
-`default_model` and a `small_model` its providers offer (see
+A daemon that is not set up yet, with no provider connected, without a
+`default_model` its providers offer, or without its default agent (see
 [onboarding](../quickstart.md)), offers a first-run sheet when the page
 connects. It walks four steps, each starting from what is already
 configured, with **Back** and **Next** and a check on each step done:
@@ -83,19 +83,17 @@ configured, with **Back** and **Next** and a check on each step done:
 2. **Default model**: a searchable list of the connected providers' models,
    grouped by provider, with their context size. Choosing one shows its
    variants as chips, the model's own default variant chosen.
-3. **Small model**: the same list, with nothing suggested; its chips start
-   on the model's first listed variant, the cheapest. It may be the default
-   model.
-4. **Starter kit**: what installing the release's kit does to each file,
-   **new**, **same as yours (skipped)**, or **differs → written as .new**,
-   with **Show the diff** on a changed file; **Install the kit** or **Skip
-   it**, and **Use a downloaded kit…** for a `cookie-agent-defaults.tar.gz`
-   saved earlier.
+3. **Small model** (optional): the same list, for the subagents that carry
+   out work; its chips start on the model's default variant.
+4. **Utility model** (optional): the same list, for approvals and session
+   titles; its chips start on the model's first listed variant, the
+   cheapest.
 
 **Finish** (`onboarding.run`) is disabled, with what is still needed beside
-it, until the daemon would be set up. It ends on a summary of the settings
-and files written and **Start your first session**, a new session drafted
-on the kit's `primary` agent. **Not now** closes the sheet; the browser
+it, until the daemon would be set up; it fetches the
+[official agents](../extend/agents.md#official-agents) first when the
+daemon has none. It ends on a summary of the settings written and **Start
+your first session**, a new session drafted on the daemon's default agent. **Not now** closes the sheet; the browser
 remembers it for this daemon, and Settings › **Set up Cookie** opens the
 sheet again at any time, also on a daemon that is set up. Every page
 connected to the daemon follows `onboarding.changed`: finishing in one tab
@@ -325,13 +323,13 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     select or deselect it.
   - **Workspaces.** A selected card asks for its workspace, suggesting
     the directories this browser opened on that runtime and the ones
-    sessions use there, as `~/…`; any path works. **another workspace**
-    adds a field for the same runtime at a second directory. While a field
-    is empty, the cards say so and the first message waits, staying in the
-    composer. With no coding card selected, the session works in no
-    workspace. With two workspaces or more, a note says their tools get
-    prefixes, with an example name. Under the cards, a line shows where the
-    session will work.
+    sessions use there, as `~/…`; any path works. A card takes one
+    workspace: one machine offers each tool once, so the session reaches
+    another directory there by absolute path, and a second coding runtime
+    on the same machine is refused on its card. While a field is empty, the
+    cards say so and the first message waits, staying in the composer. With
+    no coding card selected, the session works in no workspace. Under the
+    cards, a line shows where the session will work.
   - **Colours.** Each card has a dot in its machine's colour, the colour
     of that machine's badge in the session rows.
   - **When the session cannot be created.** A runtime that fails to start,
@@ -559,10 +557,15 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   the camera button takes a photo. They upload at once and wait on the
   draft as chips; the × on a chip removes it. A new session's files wait
   in the page and upload once the first message has created the session.
-  - Only the kinds of file the selected model takes are offered: the picker
-    lists their types, and a model that takes none offers no attaching.
-  - The page reads each file's type from its content, as the daemon does,
-    and says why it cannot attach one the model does not take.
+  - Every file is offered once a model is selected; the camera only for a
+    model that takes images.
+  - The page reads each file's type from its content, as the daemon does. A
+    file the model takes goes up as media; any other (an archive, a kind
+    the model does not accept, a file over its limit) goes up as a file,
+    and the status line says why. The model sees a file's label, `[file
+    report.zip, 3.2 MB, artifact 5f2c81d0]`, and can copy it to a machine
+    with `transfer`. Only a file over the daemon's 25 MB upload limit is
+    refused.
   - An image too large for the model or the daemon is offered as
     **Downscale and attach**: the page redraws it smaller and attaches that.
     Video is never downscaled.

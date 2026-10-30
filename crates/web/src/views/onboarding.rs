@@ -1,31 +1,32 @@
 //! The first-run sheet (`docs/site/specs/default-models-and-onboarding.md`
 //! section 9): a four-step stepper over the daemon's onboarding API. The
-//! provider step is Settings' connect form; the model steps are searchable
-//! lists with variant chips; the kit step previews what installing the
-//! starter kit does to each file. Full screen on a phone.
-
-use std::collections::HashSet;
+//! provider step is Settings' connect form; the three model steps are
+//! searchable lists with variant chips, the small and utility models
+//! optional. There is no starter kit: the daemon keeps the official agents
+//! itself. Full screen on a phone.
 
 use cookie_agent_client_state::onboarding::{
-    OnboardingStep, archive_source, default_model_variant, finish_refusal, first_step,
-    kit_file_status, model_groups, model_input, model_label, run_summary, small_model_variant,
-    variants,
+    OnboardingStep, default_model_variant, finish_refusal, first_step, model_groups, model_input,
+    model_label, run_summary, small_model_variant, utility_model_variant, variants,
 };
-use cookie_agent_client_state::refresh::Latest;
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, ModelKey, OnboardingFileAction, OnboardingKitSource,
-    OnboardingPreviewResult, OnboardingRunParams, OnboardingStatus, VariantId,
+    AvailableModelDescriptor, ModelKey, OnboardingRunParams, OnboardingStatus, VariantId,
 };
-use leptos::{prelude::*, task::spawn_local};
+use leptos::prelude::*;
 
-use super::{BUTTON, ERROR, NOTE, PRIMARY, ROW, loading, manage::FIELD};
+use super::{BUTTON, ERROR, NOTE, PRIMARY, ROW, manage::FIELD};
 use crate::{icons::Glyph, workspace::Workspace};
 
 /// A model picker's choice: the model and the variant chosen for it.
 type Choice = Option<(ModelKey, Option<VariantId>)>;
 
-/// The DOM ID of the hidden file input of "Use a downloaded kit…".
-const KIT_INPUT: &str = "onboarding-kit-input";
+/// Which model a model step chooses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Slot {
+    Default,
+    Small,
+    Utility,
+}
 
 /// The sheet, while it is open.
 #[component]
@@ -50,61 +51,10 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
     );
     let default_choice = RwSignal::new(None::<(ModelKey, Option<VariantId>)>);
     let small_choice = RwSignal::new(None::<(ModelKey, Option<VariantId>)>);
-    let kit = RwSignal::new(None::<Result<OnboardingPreviewResult, String>>);
-    let kit_source = RwSignal::new(None::<OnboardingKitSource>);
-    let install = RwSignal::new(true);
-    // Only the preview of the kit chosen last shows: one of a kit chosen
-    // before, landing later, is dropped, so Finish installs what it shows.
-    let kit_reads = StoredValue::new(Latest::default());
-    let kit_loading = RwSignal::new(false);
-    let load_kit = move |source: Option<OnboardingKitSource>| {
-        kit.set(None);
-        kit_source.set(source.clone());
-        kit_loading.set(true);
-        let read = kit_reads.try_update_value(|reads| reads.begin());
-        spawn_local(async move {
-            let preview = workspace.preview_kit(source).await;
-            let current = read.is_some_and(|read| {
-                kit_reads
-                    .try_with_value(|reads| reads.is_current(read))
-                    .unwrap_or(false)
-            });
-            if !current {
-                return;
-            }
-            kit_loading.set(false);
-            install.set(preview.as_ref().is_ok_and(|preview| {
-                preview
-                    .files
-                    .iter()
-                    .any(|file| file.action != OnboardingFileAction::Skip)
-            }));
-            kit.set(Some(preview));
-        });
-    };
-    // The kit is read when its step first shows.
-    Effect::new(move |_| {
-        if step.get() == OnboardingStep::Kit
-            && kit.with_untracked(Option::is_none)
-            && !kit_loading.get_untracked()
-        {
-            load_kit(kit_source.get_untracked());
-        }
-    });
+    let utility_choice = RwSignal::new(None::<(ModelKey, Option<VariantId>)>);
     let status = move || onboarding.status.get();
     let refusal = move || {
-        // Finishing now would leave out the kit still being read, though
-        // it is to be installed.
-        if install.get() && kit_loading.get() {
-            return Some("Reading the starter kit…".to_owned());
-        }
-        status().and_then(|status| {
-            finish_refusal(
-                &status,
-                default_choice.with(Option::is_some),
-                small_choice.with(Option::is_some),
-            )
-        })
+        status().and_then(|status| finish_refusal(&status, default_choice.with(Option::is_some)))
     };
     let finish = move || {
         let models = workspace.models();
@@ -116,17 +66,13 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                     .map(|model| model_input(model, variant.as_ref()))
             })
         };
-        let kit_ready = kit.with_untracked(|kit| matches!(kit, Some(Ok(_))));
-        let install_kit = install.get_untracked() && kit_ready;
+        // The daemon fetches the official agents first when it has none.
         workspace.run_onboarding(OnboardingRunParams {
-            install_kit,
-            source: if install_kit {
-                kit_source.get_untracked()
-            } else {
-                None
-            },
+            install_kit: false,
+            source: None,
             default_model: input(default_choice.get_untracked()),
             small_model: input(small_choice.get_untracked()),
+            utility_model: input(utility_choice.get_untracked()),
         });
     };
     view! {
@@ -159,6 +105,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                         status().is_some_and(|status| each.done(&status))
                                             || (each == OnboardingStep::DefaultModel && default_choice.with(Option::is_some))
                                             || (each == OnboardingStep::SmallModel && small_choice.with(Option::is_some))
+                                            || (each == OnboardingStep::UtilityModel && utility_choice.with(Option::is_some))
                                     };
                                     view! {
                                         <button
@@ -186,9 +133,9 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                         <div class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-3" data-onboarding-body>
                             {move || match step.get() {
                                 OnboardingStep::Provider => provider_step(workspace).into_any(),
-                                OnboardingStep::DefaultModel => model_step(workspace, false, default_choice).into_any(),
-                                OnboardingStep::SmallModel => model_step(workspace, true, small_choice).into_any(),
-                                OnboardingStep::Kit => kit_step(kit, install, load_kit).into_any(),
+                                OnboardingStep::DefaultModel => model_step(workspace, Slot::Default, default_choice).into_any(),
+                                OnboardingStep::SmallModel => model_step(workspace, Slot::Small, small_choice).into_any(),
+                                OnboardingStep::UtilityModel => model_step(workspace, Slot::Utility, utility_choice).into_any(),
                             }}
                         </div>
                         <footer class="flex flex-col gap-2 border-t border-toasted px-4 py-2 dark:border-ember">
@@ -209,7 +156,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                     "Back"
                                 </button>
                                 <span class=format!("min-w-0 flex-1 {NOTE}") id="onboarding-refusal">
-                                    {move || (step.get() == OnboardingStep::Kit).then(refusal).flatten()}
+                                    {move || step.get().next().is_none().then(refusal).flatten()}
                                 </span>
                                 {move || match step.get().next() {
                                     Some(next) => view! {
@@ -248,7 +195,7 @@ const fn step_id(step: OnboardingStep) -> &'static str {
         OnboardingStep::Provider => "provider",
         OnboardingStep::DefaultModel => "default-model",
         OnboardingStep::SmallModel => "small-model",
-        OnboardingStep::Kit => "kit",
+        OnboardingStep::UtilityModel => "utility-model",
     }
 }
 
@@ -303,41 +250,39 @@ fn provider_step(workspace: Workspace) -> impl IntoView {
 }
 
 /// A searchable list of the connected providers' models with variant
-/// chips. The small model's list suggests nothing.
-fn model_step(workspace: Workspace, small: bool, choice: RwSignal<Choice>) -> impl IntoView {
+/// chips.
+fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> impl IntoView {
     let search = RwSignal::new(String::new());
-    let field = if small {
-        "small_model"
-    } else {
-        "default_model"
+    let field = match slot {
+        Slot::Default => "default_model",
+        Slot::Small => "small_model",
+        Slot::Utility => "utility_model",
     };
     let current = move || {
         workspace
             .onboarding
             .status
             .get()
-            .and_then(|status: OnboardingStatus| {
-                if small {
-                    status.small_model
-                } else {
-                    status.default_model
-                }
+            .and_then(|status: OnboardingStatus| match slot {
+                Slot::Default => status.default_model,
+                Slot::Small => status.small_model,
+                Slot::Utility => status.utility_model,
             })
     };
     let pick = move |model: &AvailableModelDescriptor| {
-        let variant = if small {
-            small_model_variant(model)
-        } else {
-            default_model_variant(model)
+        let variant = match slot {
+            Slot::Default => default_model_variant(model),
+            Slot::Small => small_model_variant(model),
+            Slot::Utility => utility_model_variant(model),
         };
         choice.set(Some((model.key.clone(), variant)));
     };
     view! {
         <p class="text-sm">
-            {if small {
-                "The small model runs quick work: approvals, titles, and the explorer. It may be the default model."
-            } else {
-                "The default model runs your agents."
+            {match slot {
+                Slot::Default => "The default model runs your agents.",
+                Slot::Small => "Optional: the model of subagents that carry out work, such as the worker and the explorer. Without it they use the default model.",
+                Slot::Utility => "Optional: a fast, cheap model for approvals and session titles. Without it they use the session's own model.",
             }}
         </p>
         {move || current().map(|current| view! {
@@ -431,106 +376,6 @@ fn model_step(workspace: Workspace, small: bool, choice: RwSignal<Choice>) -> im
                 .collect_view()
                 .into_any()
         }}
-    }
-}
-
-/// What installing the starter kit does to each file, install or skip, and
-/// a downloaded kit instead of the release's.
-fn kit_step(
-    kit: RwSignal<Option<Result<OnboardingPreviewResult, String>>>,
-    install: RwSignal<bool>,
-    load_kit: impl Fn(Option<OnboardingKitSource>) + Copy + 'static,
-) -> impl IntoView {
-    let opened = RwSignal::new(HashSet::<String>::new());
-    let picked = move |event: leptos::ev::Event| {
-        let input: web_sys::HtmlInputElement = event_target(&event);
-        let Some(file) = crate::files::files_of(input.files()).into_iter().next() else {
-            return;
-        };
-        input.set_value("");
-        spawn_local(async move {
-            match crate::files::read_file(&file).await {
-                Ok(bytes) => load_kit(Some(archive_source(&bytes))),
-                Err(error) => kit.set(Some(Err(error))),
-            }
-        });
-    };
-    view! {
-        <p class="text-sm">"The starter kit: a commented config.toml, a primary agent with explore and worker subagents, and a skill for changing Cookie itself. Optional; your own files are never overwritten."</p>
-        {move || match kit.get() {
-            None => loading("Reading the starter kit…").into_any(),
-            Some(Err(message)) => view! {
-                <p class=ERROR id="onboarding-kit-error">{format!("The starter kit is not available: {message}")}</p>
-            }
-            .into_any(),
-            Some(Ok(preview)) => view! {
-                <p class=NOTE>{format!(
-                    "Kit {} from {}",
-                    preview.cookie_version.as_deref().map_or_else(|| format!("version {}", preview.kit_version), |version| format!("for cookie {version}")),
-                    preview.origin,
-                )}</p>
-                <ul class="flex flex-col gap-1">
-                    {preview
-                        .files
-                        .into_iter()
-                        .map(|file| {
-                            let path = file.path.clone();
-                            let toggled = path.clone();
-                            let shown = Memo::new(move |_| opened.with(|opened| opened.contains(&path)));
-                            let action = match file.action {
-                                OnboardingFileAction::Write => "write",
-                                OnboardingFileAction::Skip => "skip",
-                                OnboardingFileAction::WriteNew => "write_new",
-                                OnboardingFileAction::Unknown => "unknown",
-                            };
-                            let diff = file.diff.clone();
-                            view! {
-                                <li class="flex flex-col gap-1 rounded-md border border-toasted p-2 dark:border-ember" data-kit-file=file.path.clone() data-kit-action=action>
-                                    <span class="flex flex-wrap items-center gap-2">
-                                        <span class="min-w-0 flex-1 break-all font-mono text-sm">{file.path.clone()}</span>
-                                        <span class="shrink-0 rounded-full bg-toasted px-2 py-0.5 text-xs dark:bg-ember">{kit_file_status(&file)}</span>
-                                    </span>
-                                    {diff.map(|diff| view! {
-                                        <button type="button" class=BUTTON data-kit-diff on:click=move |_| opened.update(|opened| {
-                                            if !opened.remove(&toggled) {
-                                                opened.insert(toggled.clone());
-                                            }
-                                        })>
-                                            {move || if shown.get() { "Hide the diff" } else { "Show the diff" }}
-                                        </button>
-                                        <Show when=move || shown.get()>
-                                            <pre class="max-h-64 overflow-auto rounded-md bg-parchment p-2 font-mono text-xs dark:bg-char">{diff.clone()}</pre>
-                                        </Show>
-                                    })}
-                                </li>
-                            }
-                        })
-                        .collect_view()}
-                </ul>
-                <div class="flex flex-wrap gap-2" role="group" aria-label="Install the starter kit">
-                    <button type="button" id="onboarding-install" class=BUTTON class:bg-toasted=move || install.get() class:dark:bg-ember=move || install.get() aria-pressed=move || install.get().to_string() on:click=move |_| install.set(true)>
-                        "Install the kit"
-                    </button>
-                    <button type="button" id="onboarding-skip" class=BUTTON class:bg-toasted=move || !install.get() class:dark:bg-ember=move || !install.get() aria-pressed=move || (!install.get()).to_string() on:click=move |_| install.set(false)>
-                        "Skip it"
-                    </button>
-                </div>
-            }
-            .into_any(),
-        }}
-        <input type="file" id=KIT_INPUT class="hidden" accept=".gz,.tgz,application/gzip" on:change=picked />
-        <button type="button" id="onboarding-kit-file" class=BUTTON on:click=move |_| {
-            if let Some(input) = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.get_element_by_id(KIT_INPUT))
-                .and_then(|element| wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(element).ok())
-            {
-                input.click();
-            }
-        }>
-            <Glyph icon=icondata::FaFolderOpenRegular />
-            "Use a downloaded kit…"
-        </button>
     }
 }
 

@@ -1,6 +1,7 @@
 //! Renders the generated regions of `docs/site/reference/tools.md` from the
 //! built-in tool specs: the local coding runtime's tools, the engine's base
-//! layer, and the `global` runtime's memory tools, `list_runtimes`,
+//! layer, and the `global` runtime's memory tools, `list_runtimes`, the
+//! machines tools,
 //! `list_agents`, and cron tools.
 //!
 //! The page is written by hand around the regions. A region starts with a
@@ -16,7 +17,7 @@ use std::fmt::Write as _;
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
 use cookie_agent_engine::{
     agents_tool_spec, base_layer_tool_specs, builtin_tool_groups, cron_tool_specs,
-    memory_tool_specs, runtimes_tool_spec,
+    machines_tool_specs, memory_tool_specs, runtimes_tool_spec,
 };
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
@@ -42,6 +43,7 @@ fn documented_specs() -> Vec<ToolSpec> {
     specs.extend(memory_tool_specs());
     specs.push(runtimes_tool_spec());
     specs.push(agents_tool_spec());
+    specs.extend(machines_tool_specs());
     specs.extend(cron_tool_specs());
     specs
 }
@@ -95,6 +97,21 @@ fn availability(name: &str) -> Option<&'static str> {
              session overlay has an `allow` or `ask` rule for `cron`, which a root run of any \
              agent but an internal one has by default; a delegated run has none unless its \
              agent document grants it."
+        }
+        "attach_machine" | "detach_machine" => {
+            "Only when the session has the `global` runtime attached and the agent or the \
+             session overlay has an `allow` or `ask` rule for `attach`, which a root run of any \
+             agent but an internal one has by default; a delegated run has none unless its \
+             agent document grants it. Each call is checked as `attach@<runtime>`, with the \
+             workspace as resource."
+        }
+        "transfer" => {
+            "Only when the session has the `global` runtime and a machine whose runtime takes \
+             transfers (runtime protocol 1.13.0) attached, and the agent or the session overlay \
+             has an `allow` or `ask` rule for `write`. The source is checked as \
+             `read@<its runtime>` on its path and the destination as `write@<its runtime>` on \
+             its own; an artifact source needs no rule. Both machines must be attached to the \
+             session."
         }
         "cron_list" => {
             "Only next to the other cron tools. It needs no rule of its own: it lists the jobs \

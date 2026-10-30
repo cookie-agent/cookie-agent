@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/read_chunk`.",
+  "properties": {
+    "handle": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_bytes": {
+      "description": "At most [`MAX_FS_CHUNK_BYTES`].",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "handle",
+    "max_bytes"
+  ],
+  "title": "FsReadChunkParams",
+  "type": "object"
+}

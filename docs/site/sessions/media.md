@@ -1,8 +1,10 @@
 # Attaching Media
 
-A message can carry images, PDFs, audio, and video alongside its text, when
-the session's model accepts them. The daemon stores each attachment in the
-session's artifact store and sends it to the model as a file.
+A message can carry files alongside its text. The daemon stores each in the
+session's artifact store. Images, PDFs, audio, and video the session's model
+accepts are sent to it as files; any other file reaches the model as its
+label, which names it so the model can copy it to a machine with
+[`transfer`](../reference/tools.md#transfer).
 
 ## What a model accepts
 
@@ -11,8 +13,8 @@ accepts in a message, the media types of each, and the limits that apply
 (see [The catalog view](../reference/protocol.md#the-catalog-view)). The
 limits are the lowest of the model's own, its provider's for a message, and
 the daemon's caps: 20 MiB per file, 25 MiB for video, and at most 16384
-pixels a side and 16 Mi pixels for an image. A client offers attachments only
-for the kinds the selected model accepts and checks a file before sending it.
+pixels a side and 16 Mi pixels for an image. A client checks a file against
+them before sending it, and uploads one that does not fit as a file.
 
 For example, an Anthropic model that accepts PNG and JPEG images and PDFs
 takes images of up to 7.5 MiB and PDFs of up to 20 MiB, and no video; a
@@ -24,11 +26,14 @@ request within the Gemini API's limit.
 A client uploads the file into the session first, then names it in the
 message:
 
-1. `artifact.upload.begin` with the session, the file's size, and its name.
+1. `artifact.upload.begin` with the session, the file's size, its name,
+   and its `kind`: `media` (the default) for a file the model may take, or
+   `file` for any other, up to 25 MiB.
 2. `artifact.upload.chunk` for each piece of at most 1 MiB, in order.
 3. `artifact.upload.finish` with the file's SHA-256. The daemon recognizes
-   the file by its content (the name never decides its type), checks it, and
-   returns the reference to send.
+   media by its content (the name never decides its type), checks it, and
+   returns the reference to send; a `file` upload is stored as
+   `application/octet-stream` without checks.
 4. `run.start`, `run.steer`, or `session.submit_input` with `content` holding
    the text and a `file` part with that reference.
 
@@ -36,19 +41,33 @@ The [protocol reference](../reference/protocol.md#media) lists every rule and
 error. An upload the connection leaves unfinished is dropped when it closes.
 
 The daemon checks every attachment again when the message arrives, against
-the model the message goes to. An attachment the model does not accept, one
-over its limits, or more of a kind than it takes refuses the message, and
-nothing of it is recorded; the error says which limit, so a client can offer
-to downscale an image that is too large.
+the model the message goes to. One the model takes must be the media it says
+and within the model's image limits, and no more of a kind than the model
+takes; otherwise the message is refused and nothing of it is recorded, and
+the error says which limit, so a client can offer to downscale an image that
+is too large. An attachment the model does not take reaches it as its label.
+
+## File labels
+
+Each attached file reaches the model with a label just before it:
+
+```text
+[file report.zip, 3.2 MB, artifact 5f2c81d0]
+```
+
+The label names the artifact by the first 8 hex digits of its digest, which
+`transfer` takes, so "save this to labpc" from a phone is a single call. A
+`file` upload is its label alone.
 
 ## In the terminal UI
 
 `/attach` asks for a file's path and attaches the file to the next message,
 and pasting the path of one existing file (what a terminal pastes when a file
-is dropped on it) offers to attach it. Both appear only while the selected
-model accepts some kind of file. The TUI checks the file's kind, size, and an
-image's pixels against the model's limits before it uploads, and shows the
-limit when a file is refused, by the TUI or the daemon; it does not downscale.
+is dropped on it) offers to attach it, once a model is selected. The TUI
+checks the file's kind, size, and an image's pixels against the model's
+limits before it uploads, and uploads one that does not fit as a file,
+saying why; only a file over the daemon's 25 MiB limit is refused. It does
+not downscale.
 Attachments show on the composer's border as `📎 name · type · size`, and
 Backspace at the start of the draft removes the newest. See
 [Terminal UI](../clients/tui.md#attachments).
@@ -56,12 +75,16 @@ Backspace at the start of the draft removes the newest. See
 ## When the model changes
 
 A session can move to another model, or a run can fall back to one. A model
-that does not accept a file in the history is sent a short note in its place,
-such as:
+that does not accept a file in the history gets the reason in the file's
+label instead of the file, such as:
 
 ```text
-[image omitted: acme/text-model does not accept images (screenshot.png, 471 KB)]
+[file screenshot.png, 471 KB, artifact 5f2c81d0; not shown: acme/text-model does not accept images]
 ```
+
+A file a tool returned has no label; a short note stands in for it, such as
+`[image omitted: acme/text-model does not accept images (screenshot.png, 471
+KB)]`.
 
 The saved history keeps the file, so a later model that accepts it sees it
 again. Compaction summaries never see media: the summarizer reads notes in

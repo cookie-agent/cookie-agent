@@ -32,7 +32,7 @@ const LIST_RUNTIMES: &str = "list_runtimes";
 /// The policy label of the call's one resource.
 const RESOURCE_LABEL: &str = "runtimes";
 
-const DESCRIPTION: &str = "List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external coding agents such as Claude Code; a session runs one on the attached runtime that offers it), and this session's own attachments on it. Name a runtime capability from here in delegate_subagent's `capabilities`, as `<runtime id>/<capability name>`. A runtime that connects later shows up on the next call.";
+const DESCRIPTION: &str = "List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external agents such as Claude Code), and this session's own attachments on it. Name a runtime capability from here, as `<runtime id>/<capability name>`, in attach_machine to work on it in this session, or in delegate_subagent's `capabilities` to start a subagent there. A runtime that connects later shows up on the next call.";
 
 /// `list_runtimes` takes no arguments.
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]

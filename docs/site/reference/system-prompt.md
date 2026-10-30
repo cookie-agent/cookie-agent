@@ -88,7 +88,49 @@ and no configuration switch enables that path.
 ## Runtimes
 
 `global` (MCP servers, plugins, the fallback `webfetch`) is available to every
-session and is never mentioned. The model is told about the session's other
+session and is never mentioned by name. A root session with nothing else
+attached is told how to reach a machine, naming only the tools its run is
+offered:
+
+```text
+No machine is attached: you have no files or shell of your own yet. list_runtimes shows the user's machines. Work that needs files or commands goes to a subagent there: delegate with `capabilities` naming the machine's runtime and the directory to work in.
+Project: web
+```
+
+The `Project:` line follows only in a project; the sentences naming
+`list_runtimes`, `attach_machine`, and delegation are left out when the run
+is not offered them.
+
+A session whose runtime tools are routed by `machine` (it has `global`, or
+attachments on several machines; see
+[Attachments and tool names](../concepts/runtimes.md#attachments-and-tool-names))
+is told which machines it is attached to, what each offers, and which is
+each tool's default:
+
+```text
+This session is attached to the following machines. Tools that take a `machine` argument run on the machine you name in it; when you leave it out, they run on the tool's default machine, which each tool's definition names and which is marked default below. Relative paths resolve against the machine's directory, and a path on one machine means nothing on another. To see every machine and runtime you could attach, call list_runtimes; attach one with attach_machine.
+<machines project="web">
+<machine name="laptop" platform="linux" home="/home/me" directory="/home/me/web" default="true">
+coding: read, write, edit, bash
+playwright: playwright_* (21 tools)
+</machine>
+<machine name="labpc" platform="linux" home="/home/lab" directory="/home/lab/api">
+coding: read, write, edit, bash
+</machine>
+</machines>
+```
+
+Each machine lists the tools the run is offered there by group (the
+deferred-tools groups: the runtime's own, and each runtime-scoped MCP
+server); a group of more than eight tools is written as the prefix their
+names share and how many there are. The first machine is marked
+`default="true"`; a group whose tools another machine offers first is
+marked `(default)` on that machine. A machine the daemon cannot name is
+named by its runtime ID. Tool descriptions carry no attachment note; each
+routed tool's `machine` argument names its default machine.
+
+Otherwise, in a session created without `global`, the model is told about
+the session's other
 **attachments**, nested in the **runtime** that serves them and the
 **machine** that runtime runs on (see [machines](protocol.md#machines)), so
 that it knows which tools share files. What it is told depends on how many

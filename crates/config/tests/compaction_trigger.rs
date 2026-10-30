@@ -522,20 +522,22 @@ fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
 }
 
 #[test]
-fn authored_agents_cannot_use_the_built_in_default_id() {
+fn an_agent_may_be_named_default() {
+    // No agent is built in under that ID any more.
     let temp = TempDir::new().unwrap();
-    let root = temp.path().join("reserved-agent");
+    let root = temp.path().join("default-agent");
     write_config(&root, "");
     write_agent(
         &root,
         "default.md",
-        &agent("Reserved", "[{ model: \"custom.test/model\" }]"),
+        &agent(
+            "An agent called default",
+            "[{ model: \"custom.test/model\" }]",
+        ),
     );
 
-    assert!(matches!(
-        load_from_user_root(Some(&root)),
-        Err(ConfigError::ReservedAgentId(id)) if id.as_str() == "default"
-    ));
+    let loaded = load_from_user_root(Some(&root)).expect("loads");
+    assert!(loaded.agents.keys().any(|id| id.as_str() == "default"));
 }
 
 #[test]
@@ -832,18 +834,6 @@ fn preset_override_cannot_disable_a_shared_delegation_target() {
 #[test]
 fn reserved_agent_rules_apply_inside_presets() {
     let temp = TempDir::new().unwrap();
-    let default_root = temp.path().join("preset-default");
-    write_config(&default_root, "");
-    write_agent(
-        &default_root,
-        "python/default.md",
-        &agent("Reserved", "[{ model: \"custom.test/model\" }]"),
-    );
-    assert!(matches!(
-        load_from_user_root(Some(&default_root)),
-        Err(ConfigError::ReservedAgentId(id)) if id.as_str() == "default"
-    ));
-
     let internal_root = temp.path().join("preset-internal");
     write_config(&internal_root, "");
     write_agent(

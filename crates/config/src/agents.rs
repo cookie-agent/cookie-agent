@@ -8,13 +8,22 @@ use serde::{Deserialize, Serialize};
 use crate::{AgentDocument, ConfigError};
 
 const MAX_LIST: usize = 256;
-pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
 pub const BUILT_IN_APPROVAL_AGENT_ID: &str = "approval";
 pub const BUILT_IN_COMPACTION_AGENT_ID: &str = "compaction";
 pub const BUILT_IN_TITLE_AGENT_ID: &str = "title";
 pub const PARENT_MODEL_EXPRESSION: &str = "${parent_model}";
 pub const DEFAULT_MODEL_EXPRESSION: &str = "${default_model}";
 pub const SMALL_MODEL_EXPRESSION: &str = "${small_model}";
+pub const UTILITY_MODEL_EXPRESSION: &str = "${utility_model}";
+/// The folder below the data root where the daemon keeps the official
+/// agents.
+pub const OFFICIAL_AGENTS_DIRECTORY: &str = "official_agents";
+
+/// Where the daemon keeps the official agents below `data_root`.
+#[must_use]
+pub fn official_agents_root(data_root: &std::path::Path) -> std::path::PathBuf {
+    data_root.join(OFFICIAL_AGENTS_DIRECTORY)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -211,8 +220,9 @@ impl PermissionValue {
 }
 
 /// The model of a `models` entry: a model key, or one of the variables
-/// `${parent_model}` (internal agents only), `${default_model}`, and
-/// `${small_model}`, which carry a model and its variant.
+/// `${parent_model}` (internal agents only), `${default_model}`,
+/// `${small_model}`, and `${utility_model}`, which carry a model and its
+/// variant.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum AgentModelRef {
     Model(ModelKey),
@@ -221,16 +231,20 @@ pub enum AgentModelRef {
     DefaultModel,
     /// `${small_model}`: the configuration's `small_model`.
     SmallModel,
+    /// `${utility_model}`: the configuration's `utility_model`.
+    UtilityModel,
 }
 
 impl AgentModelRef {
-    /// The configuration field a variable names: `default_model` or
-    /// `small_model`; `None` for a model key and `${parent_model}`.
+    /// The configuration field a variable names: `default_model`,
+    /// `small_model`, or `utility_model`; `None` for a model key and
+    /// `${parent_model}`.
     #[must_use]
     pub const fn config_field(&self) -> Option<&'static str> {
         match self {
             Self::DefaultModel => Some("default_model"),
             Self::SmallModel => Some("small_model"),
+            Self::UtilityModel => Some("utility_model"),
             Self::Model(_) | Self::ParentModel => None,
         }
     }
@@ -244,6 +258,7 @@ impl std::str::FromStr for AgentModelRef {
             PARENT_MODEL_EXPRESSION => Ok(Self::ParentModel),
             DEFAULT_MODEL_EXPRESSION => Ok(Self::DefaultModel),
             SMALL_MODEL_EXPRESSION => Ok(Self::SmallModel),
+            UTILITY_MODEL_EXPRESSION => Ok(Self::UtilityModel),
             _ => value
                 .parse::<ModelKey>()
                 .map(Self::Model)
@@ -393,7 +408,8 @@ pub struct AcpModelChoice {
 
 impl AcpModelChoice {
     /// The variable an entry names instead of a model value
-    /// (`${default_model}`, `${small_model}`, `${parent_model}`, or any
+    /// (`${default_model}`, `${small_model}`, `${utility_model}`,
+    /// `${parent_model}`, or any
     /// other `${...}`): those name cookie's models, which an ACP agent does
     /// not run on, so the entry is skipped with a configuration diagnostic.
     #[must_use]
@@ -561,6 +577,14 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Validates one document against the registry `all` it belongs to.
+    pub(crate) fn validate_one(
+        document: &AgentDocument,
+        all: &BTreeMap<AgentId, AgentDocument>,
+    ) -> Result<(), ConfigError> {
+        validate_agent_document(document, all)
+    }
+
     pub(crate) fn from_validated(agents: BTreeMap<AgentId, AgentDocument>) -> Self {
         Self { agents }
     }
@@ -663,9 +687,6 @@ fn validate_agent_document(
     document: &AgentDocument,
     all: &BTreeMap<AgentId, AgentDocument>,
 ) -> Result<(), ConfigError> {
-    if document.id.as_str() == BUILT_IN_DEFAULT_AGENT_ID {
-        return Err(ConfigError::ReservedAgentId(document.id.clone()));
-    }
     let frontmatter = &document.frontmatter;
     if matches!(
         document.id.as_str(),

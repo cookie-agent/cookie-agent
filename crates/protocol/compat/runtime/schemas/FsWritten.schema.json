@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What a commit or a copy put in place.",
+  "properties": {
+    "bytes": {
+      "description": "The file's bytes, or the folder's files' bytes together.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "files": {
+      "description": "Files written: 1 for a file.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "path": {
+      "description": "The destination, as the runtime spells it.",
+      "type": "string"
+    },
+    "sha256": {
+      "description": "The stream's SHA-256, lowercase hex.",
+      "type": "string"
+    },
+    "skipped": {
+      "default": 0,
+      "description": "Entries of a folder left out: links that may lead outside it, and,\nfor `fs/copy`, the source's devices, sockets, and FIFOs.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "path",
+    "bytes",
+    "files",
+    "sha256"
+  ],
+  "title": "FsWritten",
+  "type": "object"
+}

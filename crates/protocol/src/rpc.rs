@@ -1472,6 +1472,39 @@ pub struct SkillsUpdateResult {
     pub error: Option<String>,
 }
 
+pub const AGENTS_UPDATE_METHOD: &str = "agents.update";
+
+/// `agents.update`: refresh the official agents now (client protocol
+/// 1.56.0).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsUpdateParams {}
+
+/// One official agent the daemon keeps.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OfficialAgent {
+    pub id: AgentId,
+    pub version: String,
+}
+
+/// What `agents.update` did: the official agents kept afterwards, what
+/// changed, and why the refresh failed, if it did (the cached agents stay).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentsUpdateResult {
+    /// `false` when `[agents] official` is off: nothing was refreshed.
+    pub enabled: bool,
+    #[schemars(length(max = 1024))]
+    pub agents: Vec<OfficialAgent>,
+    /// Agents added or changed by this refresh.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updated: Vec<AgentId>,
+    /// Agents removed by this refresh.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SkillsListResult {
     pub skills: Vec<SkillDescriptor>,

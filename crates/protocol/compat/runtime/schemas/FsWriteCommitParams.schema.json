@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`fs/write_commit`.",
+  "properties": {
+    "handle": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "sha256": {
+      "description": "The source's [`FsStreamSummary::sha256`]; a mismatch fails the\ncommit and removes what was written.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "handle",
+    "sha256"
+  ],
+  "title": "FsWriteCommitParams",
+  "type": "object"
+}

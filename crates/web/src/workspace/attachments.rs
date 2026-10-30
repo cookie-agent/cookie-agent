@@ -2,13 +2,16 @@
 //! the camera, drag and drop, or paste. Each file's content is sniffed in
 //! the page as the daemon sniffs it, checked against what the selected
 //! model accepts, and uploaded at once in chunks (the shared upload
-//! policy); the draft shows it as a chip. A new session's draft keeps its
+//! policy); the draft shows it as a chip. A file the model does not take
+//! inline goes up as a `file` upload, which the model sees as its label. A new session's draft keeps its
 //! files in the page until the first message created the session, then
 //! uploads them. An image too large is offered downscaled through a
 //! canvas; video never is.
 
-use cookie_agent_client_state::uploads::{AcceptedMedia, UploadFailure, upload};
-use cookie_agent_protocol::{ArtifactRef, Client, SessionId, media_sniff::validate_upload};
+use cookie_agent_client_state::uploads::{AcceptedMedia, UploadFailure, attached_as_file, upload};
+use cookie_agent_protocol::{
+    ArtifactRef, Client, SessionId, UploadKind, media_sniff::validate_upload,
+};
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
@@ -26,6 +29,7 @@ pub(super) struct DraftFile {
     artifact: ArtifactRef,
     name: String,
     bytes: Vec<u8>,
+    kind: UploadKind,
 }
 
 /// An image the page offers to downscale and attach.
@@ -91,15 +95,14 @@ impl Workspace {
                 .set("select a model before attaching a file".into());
             return;
         };
-        if accepted.media.is_empty() {
-            self.status
-                .set(format!("{} accepts no attachments", accepted.model));
-            return;
-        }
         match assess(&name, &bytes, &accepted) {
-            Assessment::Attach => self.upload(name, bytes),
+            Assessment::Attach => self.upload(name, bytes, UploadKind::Media, None),
             Assessment::Downscale { reason, limits } => {
                 self.offer_downscale(name, reason, limits, bytes)
+            }
+            Assessment::AsFile(reason) => {
+                let note = attached_as_file(&name, &reason);
+                self.upload(name, bytes, UploadKind::File, Some(note));
             }
             Assessment::Refuse(reason) => self.status.set(reason),
         }
@@ -181,10 +184,10 @@ impl Workspace {
                             "downscaled {} to {}×{}",
                             offer.name, size.0, size.1
                         ));
-                        self.upload(name, encoded);
+                        self.upload(name, encoded, UploadKind::Media, None);
                         return;
                     }
-                    Assessment::Refuse(reason) => {
+                    Assessment::Refuse(reason) | Assessment::AsFile(reason) => {
                         self.status.set(reason);
                         return;
                     }
@@ -201,9 +204,9 @@ impl Workspace {
     /// Uploads `bytes` into the viewed session's store and adds the file
     /// to the draft; a new session's draft keeps them until its first
     /// message.
-    fn upload(self, name: String, bytes: Vec<u8>) {
+    fn upload(self, name: String, bytes: Vec<u8>, kind: UploadKind, note: Option<String>) {
         if self.new_session.get_untracked() {
-            self.hold_draft_file(name, bytes);
+            self.hold_draft_file(name, bytes, kind);
             return;
         }
         let Some(client) = self.client() else {
@@ -214,13 +217,15 @@ impl Workspace {
         };
         self.status.set(format!("attaching {name}…"));
         spawn_local(async move {
-            match upload(&client, session_id, &name, Some(name.clone()), &bytes).await {
+            match upload(&client, session_id, &name, Some(name.clone()), &bytes, kind).await {
                 // It joins its session's draft, shown or put aside.
                 Ok(artifact) => {
-                    self.status.set(format!(
-                        "attached {}",
-                        cookie_agent_client_state::attachment_chip(&artifact)
-                    ));
+                    self.status.set(note.unwrap_or_else(|| {
+                        format!(
+                            "attached {}",
+                            cookie_agent_client_state::attachment_chip(&artifact)
+                        )
+                    }));
                     self.attach_to_draft(session_id, artifact);
                 }
                 Err(failure) => self.refuse_upload(name, bytes, failure),
@@ -257,15 +262,19 @@ impl Workspace {
 
     /// Keeps a new session's file in the page, as a chip under a stand-in
     /// reference, until the first message created the session.
-    fn hold_draft_file(self, name: String, bytes: Vec<u8>) {
+    fn hold_draft_file(self, name: String, bytes: Vec<u8>, kind: UploadKind) {
         self.next_draft_file.update_value(|next| *next += 1);
+        let media_type = match kind {
+            UploadKind::File => cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE.to_owned(),
+            UploadKind::Media => validate_upload(&bytes).map_or_else(
+                |_| cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE.to_owned(),
+                |upload| upload.media_type.to_owned(),
+            ),
+        };
         let artifact = ArtifactRef {
             sha256: format!("{:064x}", self.next_draft_file.get_value()),
             byte_length: bytes.len() as u64,
-            media_type: validate_upload(&bytes).map_or_else(
-                |_| "application/octet-stream".to_owned(),
-                |upload| upload.media_type.to_owned(),
-            ),
+            media_type,
             filename: Some(name.clone()),
         };
         self.status.set(format!(
@@ -278,6 +287,7 @@ impl Workspace {
                 artifact,
                 name,
                 bytes,
+                kind,
             });
         });
     }
@@ -315,6 +325,7 @@ impl Workspace {
                 &draft.name,
                 Some(draft.name.clone()),
                 &draft.bytes,
+                draft.kind,
             )
             .await
             {

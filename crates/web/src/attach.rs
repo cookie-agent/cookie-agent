@@ -6,22 +6,24 @@ use cookie_agent_client_state::uploads::{AcceptedMedia, RefusedLimits, too_large
 use cookie_agent_protocol::{
     InputMedia,
     media_sniff::{
-        MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS, UploadRejection, max_attachment_bytes,
-        validate_upload,
+        MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS, MAX_VIDEO_ATTACHMENT_BYTES, UploadRejection,
+        max_attachment_bytes, validate_upload,
     },
 };
 
-/// The `accept` attribute for a file input: every media type the model
-/// takes. Empty when it takes none, so the page offers no attaching.
-pub fn accept_attribute(media: &[InputMedia]) -> String {
-    // Text files have no media type the browser knows them by (a `.rs` or
-    // `.md` file is not `text/plain` to a file picker): offer every file,
-    // and let the content decide.
-    if media.iter().any(|entry| entry.kind.as_str() == "text") {
-        return String::new();
-    }
+/// The `accept` attribute for the file input: empty, every file. One the
+/// model does not take inline goes up as a file, which the model sees as
+/// its label.
+pub fn accept_attribute(_: &[InputMedia]) -> String {
+    String::new()
+}
+
+/// The `accept` attribute for the camera input: the image types the model
+/// takes.
+pub fn camera_accept_attribute(media: &[InputMedia]) -> String {
     let mut types = media
         .iter()
+        .filter(|entry| entry.kind.as_str() == "image")
         .flat_map(|entry| entry.mime_types.iter().cloned())
         .collect::<Vec<_>>();
     types.sort();
@@ -37,7 +39,7 @@ pub fn accepts_images(media: &[InputMedia]) -> bool {
 /// The attach buttons in the composer's box, by what the model takes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachButtons {
-    /// The model takes no files.
+    /// No model is selected yet.
     None,
     /// Attach a file.
     File,
@@ -45,11 +47,10 @@ pub enum AttachButtons {
     FileAndCamera,
 }
 
-/// Which attach buttons the composer shows for a model taking `media`.
+/// Which attach buttons the composer shows for a model taking `media`:
+/// a file always, and the camera when it takes images.
 pub fn attach_buttons(media: &[InputMedia]) -> AttachButtons {
-    if media.is_empty() {
-        AttachButtons::None
-    } else if accepts_images(media) {
+    if accepts_images(media) {
         AttachButtons::FileAndCamera
     } else {
         AttachButtons::File
@@ -101,6 +102,9 @@ pub enum Assessment {
     /// An image too large for the model or the daemon: offer to re-encode
     /// it within `limits`.
     Downscale { reason: String, limits: ImageLimits },
+    /// The model does not take it inline, for `0`: upload it as a file,
+    /// which the model sees as its label and can copy to a machine.
+    AsFile(String),
     /// It cannot be attached, for `0`.
     Refuse(String),
 }
@@ -151,30 +155,33 @@ pub fn assess(name: &str, bytes: &[u8], accepted: &AcceptedMedia) -> Assessment 
         return Assessment::Refuse(format!("{name} is empty"));
     }
     let length = bytes.len() as u64;
+    if length > MAX_VIDEO_ATTACHMENT_BYTES {
+        return Assessment::Refuse(too_large(name, "file", length, MAX_VIDEO_ATTACHMENT_BYTES));
+    }
     let downscale = |reason: String| match image_limits(accepted) {
         Some(limits) => Assessment::Downscale { reason, limits },
-        None => Assessment::Refuse(reason),
+        None => Assessment::AsFile(reason),
     };
     match validate_upload(bytes) {
         Ok(upload) => {
             // The kind and type first: a file of a type the model does not
-            // take is refused whatever its size.
+            // take goes up as a file whatever its size.
             if let Err(reason) = accepted.check(name, upload.kind, upload.media_type, 0, None) {
-                return Assessment::Refuse(reason);
+                return Assessment::AsFile(reason);
             }
             match accepted.check(name, upload.kind, upload.media_type, length, upload.image) {
                 Ok(()) => Assessment::Attach,
                 Err(reason) if upload.kind == "image" => downscale(reason),
-                Err(reason) => Assessment::Refuse(reason),
+                Err(reason) => Assessment::AsFile(reason),
             }
         }
-        Err(UploadRejection::Unrecognized) => Assessment::Refuse(format!(
-            "{name} is not a file the model can take; {} accepts {}",
+        Err(UploadRejection::Unrecognized) => Assessment::AsFile(format!(
+            "{} takes {} inline",
             accepted.model,
             accepted.kinds()
         )),
         Err(UploadRejection::Malformed { media_type }) => {
-            Assessment::Refuse(format!("{name} starts like {media_type} but is not valid"))
+            Assessment::AsFile(format!("it starts like {media_type} but is not valid"))
         }
         Err(UploadRejection::TooLarge {
             kind,
@@ -191,7 +198,7 @@ pub fn assess(name: &str, bytes: &[u8], accepted: &AcceptedMedia) -> Assessment 
             if kind == "image" {
                 downscale(reason)
             } else {
-                Assessment::Refuse(reason)
+                Assessment::AsFile(reason)
             }
         }
     }
@@ -212,7 +219,8 @@ mod tests {
 
     use super::{
         Assessment, AttachButtons, ImageLimits, accept_attribute, accepts_images, assess,
-        attach_buttons, downscale_target, image_limits, shrink_again, tightened,
+        attach_buttons, camera_accept_attribute, downscale_target, image_limits, shrink_again,
+        tightened,
     };
 
     fn png_chunk(bytes: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
@@ -269,26 +277,26 @@ mod tests {
     fn the_file_input_accepts_what_the_model_takes() {
         let image = media("image", &["image/png", "image/jpeg"]);
         let pdf = media("pdf", &["application/pdf"]);
+        // Every file is offered: what the model does not take goes up as a
+        // file. The camera offers the images it takes.
+        assert_eq!(accept_attribute(&[image.clone(), pdf.clone()]), "");
         assert_eq!(
-            accept_attribute(&[image.clone(), pdf.clone()]),
-            "application/pdf,image/jpeg,image/png"
+            camera_accept_attribute(&[image.clone(), pdf.clone()]),
+            "image/jpeg,image/png"
         );
-        assert_eq!(accept_attribute(&[]), "");
-        // An ACP agent that takes text files is offered every file.
         let text = media("text", &["text/plain"]);
-        assert_eq!(accept_attribute(&[image.clone(), text.clone()]), "");
         assert_eq!(
             assess("notes.md", b"# Notes\n", &accepted(vec![text.clone()])),
             Assessment::Attach
         );
         assert!(matches!(
             assess("notes.md", b"# Notes\n", &accepted(vec![image.clone()])),
-            Assessment::Refuse(reason) if reason.contains("does not accept text files")
+            Assessment::AsFile(reason) if reason.contains("does not accept text files")
         ));
         assert!(accepts_images(&[pdf.clone(), image.clone()]));
         assert!(!accepts_images(std::slice::from_ref(&pdf)));
         // The composer's buttons, whose room its padding keeps.
-        assert_eq!(attach_buttons(&[]), AttachButtons::None);
+        assert_eq!(attach_buttons(&[]), AttachButtons::File);
         assert_eq!(
             attach_buttons(std::slice::from_ref(&pdf)),
             AttachButtons::File
@@ -348,10 +356,10 @@ mod tests {
     }
 
     #[test]
-    fn files_the_model_does_not_take_are_refused_whatever_their_size() {
+    fn files_the_model_does_not_take_go_up_as_files_whatever_their_size() {
         let pdf_only = accepted(vec![media("pdf", &["application/pdf"])]);
-        let Assessment::Refuse(reason) = assess("dot.png", &png(100, 50), &pdf_only) else {
-            panic!("an image for a pdf-only model is refused");
+        let Assessment::AsFile(reason) = assess("dot.png", &png(100, 50), &pdf_only) else {
+            panic!("an image for a pdf-only model goes up as a file");
         };
         assert!(reason.contains("does not accept image"), "{reason}");
         assert_eq!(
@@ -360,7 +368,11 @@ mod tests {
         );
         assert!(matches!(
             assess("notes.txt", b"plain words", &pdf_only),
-            Assessment::Refuse(_)
+            Assessment::AsFile(_)
+        ));
+        assert!(matches!(
+            assess("data.bin", b"nul\0byte", &pdf_only),
+            Assessment::AsFile(_)
         ));
     }
 

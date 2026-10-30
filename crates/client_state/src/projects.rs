@@ -282,12 +282,13 @@ pub enum ProjectAgent {
 
 /// The selection `project`'s default agent and preset give a new session
 /// (`docs/site/specs/projects.md` section 4): the agent among `agents` that
-/// runs as root in that preset (with no agent named, the preset's `primary`,
-/// else its first), and that agent's model: an ACP agent's synthetic one,
-/// else its first `live` accepts, else `fallback_model`.
+/// runs as root in that preset (with no agent named, the preset's
+/// `default_agent`, else its first), and that agent's model: an ACP agent's
+/// synthetic one, else its first `live` accepts, else `fallback_model`.
 pub fn project_agent(
     project: &ProjectInfo,
     agents: &[AgentDescriptor],
+    default_agent: &cookie_agent_protocol::AgentId,
     live: impl Fn(&ModelSelection) -> bool,
     fallback_model: Option<ModelSelection>,
 ) -> ProjectAgent {
@@ -309,7 +310,7 @@ pub fn project_agent(
         Some(wanted) => candidates.iter().find(|agent| agent.id == *wanted).copied(),
         None => candidates
             .iter()
-            .find(|agent| agent.id.as_str() == "primary")
+            .find(|agent| agent.id == *default_agent)
             .or_else(|| candidates.first())
             .copied(),
     };

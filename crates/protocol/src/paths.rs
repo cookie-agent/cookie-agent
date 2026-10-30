@@ -60,6 +60,15 @@ pub fn machine_id() -> Option<String> {
     static MACHINE_ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     MACHINE_ID
         .get_or_init(|| {
+            // Debug builds under test: a runtime process of the test's own
+            // machine reports another, as a runtime of another computer would.
+            #[cfg(debug_assertions)]
+            if let Some(id) = std::env::var("COOKIE_AGENT_TEST_MACHINE_ID")
+                .ok()
+                .filter(|id| !id.is_empty())
+            {
+                return Some(id);
+            }
             let raw = ["/etc/machine-id", "/var/lib/dbus/machine-id"]
                 .into_iter()
                 .find_map(|path| {

@@ -17,7 +17,7 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
     ];
     let (endpoint, captured, _reached, _release) =
         scripted_server_with_delayed_response(bodies, usize::MAX).await;
-    let primary = "---\ndescription: Anthropic cache test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  memory: deny\n  cron: deny\n  list_runtimes: deny\n---\nStable cache system prompt.\n";
+    let primary = "---\ndescription: Anthropic cache test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  memory: deny\n  cron: deny\n  list_runtimes: deny\n  attach: deny\n---\nStable cache system prompt.\n";
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             &endpoint,
@@ -63,7 +63,10 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
     for request in &requests {
         let body = request_body(request);
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
-        assert_eq!(body["tools"][0]["cache_control"]["ttl"], "1h");
+        assert_eq!(
+            body["tools"].as_array().unwrap().last().unwrap()["cache_control"]["ttl"],
+            "1h"
+        );
         assert_eq!(cache_marker_count(&body), 3);
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(
@@ -276,7 +279,7 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
     ];
     let (endpoint, captured, _reached, _release) =
         scripted_server_with_delayed_response(bodies, usize::MAX).await;
-    let primary = "---\ndescription: Anthropic checkpoint cache test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  memory: deny\n  cron: deny\n  list_runtimes: deny\n---\nStable checkpoint system prompt.\n";
+    let primary = "---\ndescription: Anthropic checkpoint cache test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  memory: deny\n  cron: deny\n  list_runtimes: deny\n  attach: deny\n---\nStable checkpoint system prompt.\n";
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             &endpoint,
@@ -375,7 +378,10 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
     let body = request_body(&requests[2]);
     assert_eq!(cache_marker_count(&body), 3);
     assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
-    assert_eq!(body["tools"][0]["cache_control"]["ttl"], "1h");
+    assert_eq!(
+        body["tools"].as_array().unwrap().last().unwrap()["cache_control"]["ttl"],
+        "1h"
+    );
     let messages = body["messages"].as_array().unwrap();
     assert_eq!(messages[0]["role"], "user");
     assert!(

@@ -83,8 +83,7 @@ jobs:
 
   # Hand-maintained (allow-dirty = ["ci"]): the web client's bundle, built
   # once. Every binary embeds it, the crates publish it, and the release
-  # attaches it as an archive for hosting elsewhere. The job also packs the
-  # starter kit, cookie-agent-defaults.tar.gz.
+  # attaches it as an archive for hosting elsewhere.
   build-web:
     needs:
       - plan
@@ -117,18 +116,6 @@ jobs:
         with:
           name: artifacts-web
           path: cookie-agent-web.tar.gz
-          retention-days: 2
-      # The starter kit (defaults/) that `cookie onboard` installs, with the
-      # cookie version it was built for in its manifest.
-      - name: Pack the starter kit
-        env:
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: scripts/pack-defaults.sh "$RELEASE_TAG" cookie-agent-defaults.tar.gz
-      - name: Upload the starter kit for the release
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: artifacts-defaults
-          path: cookie-agent-defaults.tar.gz
           retention-days: 2
 
   # Build and packages all the platform-specific things

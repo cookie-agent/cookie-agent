@@ -194,7 +194,7 @@ async fn a_message_of_attachments_alone_is_sent() {
 }
 
 #[tokio::test]
-async fn a_kind_the_model_does_not_take_is_refused_before_uploading() {
+async fn a_kind_the_model_does_not_take_goes_up_as_a_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write_file(dir.path(), "shot.png", &png(4, 3, 16));
     let (mut app, _session, recorded) = attach_app(
@@ -209,45 +209,64 @@ async fn a_kind_the_model_does_not_take_is_refused_before_uploading() {
     app.attach_file(&path).await;
     apply_next_update(&mut app).await;
     assert!(
-        app.status
-            .contains("does not accept image files; it accepts pdf"),
+        app.status.contains("attached shot.png as a file")
+            && app.status.contains("does not accept image files"),
         "{}",
         app.status
     );
-    assert!(requests(&recorded, "artifact.upload.begin").is_empty());
-    assert!(app.attachments.is_empty());
+    let begun = requests(&recorded, "artifact.upload.begin");
+    assert_eq!(begun.len(), 1);
+    assert_eq!(begun[0]["kind"], "file");
+    assert_eq!(app.attachments.len(), 1);
 }
 
 #[tokio::test]
-async fn a_file_over_the_model_limit_is_refused_with_the_limit() {
+async fn files_over_the_models_limits_go_up_as_files_and_only_the_daemons_limit_refuses() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = write_file(dir.path(), "big.png", &png(4, 3, 4096));
     let (mut app, _session, recorded) = attach_app(
         vec![media(MediaKindLabel::IMAGE, &["image/png"], 1024)],
         |_, _| None,
     )
     .await;
-    // Larger than anything the model takes: refused from its size alone.
-    app.attach_file(&path).await;
+    // Over the daemon's upload limit: refused from its size alone.
+    let huge = dir.path().join("huge.bin");
+    std::fs::File::create(&huge)
+        .and_then(|file| file.set_len(26 * 1024 * 1024))
+        .expect("huge file");
+    app.attach_file(&huge.to_string_lossy()).await;
     assert!(
         app.status
-            .contains("big.png is 4 KB; Arbitrary Model accepts files up to 1 KB"),
+            .contains("huge.bin is 26.0 MB; files are attached up to 25.0 MB"),
         "{}",
         app.status
     );
-    // An image over the pixel limit is read and refused before uploading.
+    assert!(requests(&recorded, "artifact.upload.begin").is_empty());
+    // Over the model's byte or pixel limit: a file.
+    let big = write_file(dir.path(), "big.png", &png(4, 3, 4096));
+    app.attach_file(&big).await;
+    apply_next_update(&mut app).await;
+    assert!(
+        app.status.contains("attached big.png as a file"),
+        "{}",
+        app.status
+    );
     let wide = write_file(dir.path(), "wide.png", &png(9000, 2, 16));
     app.models[0].input_media = vec![media(MediaKindLabel::IMAGE, &["image/png"], 1024 * 1024)];
     app.attach_file(&wide).await;
     apply_next_update(&mut app).await;
     assert!(
-        app.status.contains(
-            "wide.png is 9000×2 pixels; Arbitrary Model accepts images up to 8000 pixels a side"
-        ),
+        app.status.contains("attached wide.png as a file")
+            && app
+                .status
+                .contains("accepts images up to 8000 pixels a side"),
         "{}",
         app.status
     );
-    assert!(requests(&recorded, "artifact.upload.begin").is_empty());
+    let kinds = requests(&recorded, "artifact.upload.begin")
+        .iter()
+        .map(|params| params["kind"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, [json!("file"), json!("file")]);
 }
 
 #[tokio::test]
@@ -369,26 +388,21 @@ async fn a_pasted_file_path_is_offered_for_attaching_not_attached() {
     assert_eq!(requests(&recorded, "artifact.upload.begin").len(), 1);
     assert_eq!(app.attachments.len(), 1);
 
-    // A model that takes no files gets the paste as text.
+    // A model that takes no files inline is still offered the file.
     app.models[0].input_media = Vec::new();
     app.handle_paste(&path);
-    assert_eq!(app.modal, Modal::None);
+    assert_eq!(app.modal, Modal::AttachConfirm);
 }
 
 #[tokio::test]
-async fn attach_is_offered_only_for_a_model_that_takes_files() {
+async fn attach_is_offered_for_any_selected_model() {
     let (mut app, _session, _recorded) = attach_app(Vec::new(), |_, _| None).await;
     let attach = crate::ui::slash::COMMANDS
         .iter()
         .find(|spec| spec.name == "attach")
         .expect("attach command");
-    assert!(!app.command_is_available(attach));
-    app.attach_file("/dev/null").await;
-    assert!(
-        app.status.contains("accepts no attachments"),
-        "{}",
-        app.status
-    );
+    // A model that takes no files inline still gets them as files.
+    assert!(app.command_is_available(attach));
     app.models[0].input_media = vec![
         media(MediaKindLabel::IMAGE, &["image/png"], 1024),
         media(MediaKindLabel::PDF, &["application/pdf"], 1024),

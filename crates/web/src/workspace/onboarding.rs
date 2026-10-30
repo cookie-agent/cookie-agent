@@ -4,10 +4,7 @@
 //! is this browser's choice; the daemon's answer stays what its
 //! configuration says.
 
-use cookie_agent_protocol::{
-    OnboardingKitSource, OnboardingPreviewResult, OnboardingRunParams, OnboardingRunResult,
-    OnboardingStatus,
-};
+use cookie_agent_protocol::{OnboardingRunParams, OnboardingRunResult, OnboardingStatus};
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
@@ -128,18 +125,6 @@ impl Workspace {
         self.onboarding.result.set(None);
     }
 
-    /// `onboarding.preview` of `source`.
-    pub async fn preview_kit(
-        self,
-        source: Option<OnboardingKitSource>,
-    ) -> Result<OnboardingPreviewResult, String> {
-        let client = self.client().ok_or("not connected to the daemon")?;
-        client
-            .preview_onboarding(source)
-            .await
-            .map_err(|error| crate::errors::describe(&error))
-    }
-
     /// `onboarding.run`; the summary on success, the reason in the sheet
     /// otherwise.
     pub fn run_onboarding(self, params: OnboardingRunParams) {
@@ -164,16 +149,17 @@ impl Workspace {
         });
     }
 
-    /// "Start your first session": a new-session draft, on `primary` when
-    /// the daemon has it.
+    /// "Start your first session": a new-session draft, on the daemon's
+    /// default agent when it has it.
     pub fn start_first_session(self) {
         self.close_onboarding();
         self.start_new_session();
-        if let Some(primary) = untrack(|| self.selectable_agents())
+        let default = untrack(|| self.default_agent());
+        if let Some(agent) = untrack(|| self.selectable_agents())
             .into_iter()
-            .find(|agent| agent.id.as_str() == "primary")
+            .find(|agent| agent.id == default)
         {
-            self.pick_agent(&primary);
+            self.pick_agent(&agent);
         }
     }
 }
@@ -195,6 +181,7 @@ mod tests {
             providers_connected: Vec::new(),
             default_model: None,
             small_model: None,
+            utility_model: None,
         }
     }
 

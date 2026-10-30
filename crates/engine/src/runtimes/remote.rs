@@ -738,6 +738,9 @@ struct ClientInner {
     acp_agents: Mutex<Vec<protocol::AcpAgentReport>>,
     /// The runtime's protocol version, from its initialize reply.
     protocol_version: OnceLock<cookie_agent_protocol::SemVer>,
+    /// The runtime answers transfers' `fs/*` requests, from its initialize
+    /// reply.
+    files: std::sync::atomic::AtomicBool,
     /// How the runtime's latest capture of the user's shell environment
     /// went, from its latest `runtime/shell_environment`.
     shell_environment: Mutex<Option<protocol::ShellEnvironmentReport>>,
@@ -903,6 +906,7 @@ impl RuntimeClient {
             probe: super::liveness::Probe::default(),
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
+            files: std::sync::atomic::AtomicBool::new(false),
             shell_environment: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
@@ -924,6 +928,9 @@ impl RuntimeClient {
             read_handshake(cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION, reply)
                 .map_err(|reason| format!("runtime `{runtime_id}`: {reason}"))?;
         let _ = inner.protocol_version.set(result.protocol_version);
+        inner
+            .files
+            .store(result.files, std::sync::atomic::Ordering::Release);
         // No runtime feature is defined yet.
         for feature in &result.features {
             eprintln!(
@@ -1118,6 +1125,7 @@ impl RuntimeClient {
             probe: super::liveness::Probe::default(),
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
+            files: std::sync::atomic::AtomicBool::new(false),
             shell_environment: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
@@ -2590,5 +2598,6 @@ impl PreparedExecutor for RemoteExecutor {
 
 #[cfg(test)]
 mod corpus_tests;
+mod files;
 #[cfg(test)]
 mod tests;

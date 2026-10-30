@@ -37,7 +37,22 @@ pub(crate) fn read_artifact(
     target: &ArtifactReadTarget,
     window: LineWindow,
 ) -> Result<ArtifactReadPage, ToolError> {
-    let (digest, source) = if let Some(name) = &target.stream {
+    let (digest, source) = target_digest(store, session, target)?;
+    let page = store
+        .read_numbered(session, digest.as_str(), window, MAX_PAGE_BYTES)
+        .map_err(read_error)?;
+    page.check_in_range(&shown(target))?;
+    Ok(ArtifactReadPage { page, source })
+}
+
+/// The blob `target` names: the artifact itself, or the blob of its named
+/// stream; and where the read came from, as a result names it.
+fn target_digest(
+    store: &ArtifactRouter,
+    session: SessionId,
+    target: &ArtifactReadTarget,
+) -> Result<(cookie_agent_protocol::Sha256Digest, String), ToolError> {
+    Ok(if let Some(name) = &target.stream {
         let page = store
             .read_paged(session, target.digest.as_str(), 0, 1)
             .map_err(read_error)?;
@@ -59,12 +74,81 @@ pub(crate) fn read_artifact(
         (digest, format!("artifact.{name}"))
     } else {
         (target.digest.clone(), "artifact".into())
+    })
+}
+
+/// The shortest digest prefix a transfer takes: as many hex digits as a
+/// file label shows.
+pub(crate) const MIN_ARTIFACT_PREFIX: usize = 8;
+
+/// The blob a transfer's `from` names in `session`'s tree, and its length:
+/// `artifact` is a digest or a prefix of one, at least
+/// [`MIN_ARTIFACT_PREFIX`] lowercase hex digits, that names one artifact of
+/// the tree; `stream` one stream of retained tool output.
+pub(crate) fn transfer_source(
+    store: &ArtifactRouter,
+    session: SessionId,
+    artifact: &str,
+    stream: Option<&str>,
+) -> Result<(String, u64), ToolError> {
+    if artifact.len() < MIN_ARTIFACT_PREFIX
+        || artifact.len() > 64
+        || !artifact
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ToolError::execution(format!(
+            "`{artifact}` is no artifact: give its digest, or the first {MIN_ARTIFACT_PREFIX} or \
+             more lowercase hex digits of it, as a file label shows them"
+        )));
+    }
+    let none = || {
+        ToolError::execution(format!(
+            "no artifact of this session starts with `{artifact}`"
+        ))
     };
-    let page = store
-        .read_numbered(session, digest.as_str(), window, MAX_PAGE_BYTES)
+    let store_of_tree = store
+        .read_store(session)
+        .map_err(read_error)?
+        .ok_or_else(none)?;
+    let mut digests = store_of_tree
+        .digests_with_prefix(artifact)
         .map_err(read_error)?;
-    page.check_in_range(&shown(target))?;
-    Ok(ArtifactReadPage { page, source })
+    let digest = match digests.len() {
+        0 => return Err(none()),
+        1 => digests.remove(0),
+        _ => {
+            return Err(ToolError::execution(format!(
+                "`{artifact}` starts several artifacts of this session: {}; give more digits",
+                digests.join(", ")
+            )));
+        }
+    };
+    let target = ArtifactReadTarget::parse(&digest, stream).map_err(ToolError::execution)?;
+    let (digest, _) = target_digest(store, session, &target)?;
+    let length = store_of_tree
+        .read_range(digest.as_str(), 0, 0)
+        .map_err(read_error)?
+        .total_bytes;
+    Ok((digest.to_string(), length))
+}
+
+/// `length` bytes of blob `digest` of `session`'s tree from `offset`.
+pub(crate) fn read_transfer_chunk(
+    store: &ArtifactRouter,
+    session: SessionId,
+    digest: &str,
+    offset: u64,
+    length: u64,
+) -> Result<Vec<u8>, ToolError> {
+    let store = store
+        .read_store(session)
+        .map_err(read_error)?
+        .ok_or_else(|| ToolError::execution("the session's artifacts are gone"))?;
+    Ok(store
+        .read_range(digest, offset, length)
+        .map_err(read_error)?
+        .data)
 }
 
 /// The artifact as an out-of-range error names it: the start of its

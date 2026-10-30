@@ -1327,16 +1327,30 @@ impl Engine {
                 .into());
             }
             let mut prepared = Vec::new();
+            // A routed tool's call goes to the machine its `machine` names,
+            // else the round's default (machines on demand, section 5.1).
+            let mut routing_failures = HashMap::new();
             let batch_calls = calls
                 .iter()
                 .map(|(id, _, _, _, tool, arguments, _)| {
+                    let mut arguments = arguments.clone();
+                    let published = match published_tools.tools.get(tool.as_str()) {
+                        Some(published) => match published.route(tool.as_str(), &mut arguments) {
+                            Ok(route) => Some(route),
+                            Err(message) => {
+                                routing_failures.insert(*id, message);
+                                Some(published)
+                            }
+                        },
+                        None => None,
+                    };
                     (
                         ToolCall {
                             id: *id,
                             name: tool.to_string(),
-                            arguments: arguments.clone(),
+                            arguments,
                         },
-                        published_tools.tools.get(tool.as_str()),
+                        published,
                     )
                 })
                 .collect();
@@ -1367,7 +1381,13 @@ impl Engine {
                     .or_insert_with(|| OutputHub::new(*id, 64 * 1024))
                     .declare(&output_declaration);
                 let mut prepared_call = batch_prepared.next().expect("batch preparation count");
-                if published_tools.departed.contains(tool.as_str()) {
+                if let Some(message) = routing_failures.remove(id) {
+                    prepared_call.prepared = Err(ToolFailure {
+                        partial_output: None,
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message,
+                    });
+                } else if published_tools.departed.contains(tool.as_str()) {
                     // Still declared until the round ends (deferred tools in
                     // cookie, section 8.2), but nothing serves it.
                     prepared_call.prepared = Err(ToolFailure {

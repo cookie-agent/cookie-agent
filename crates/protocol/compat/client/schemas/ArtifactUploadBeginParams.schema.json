@@ -1,4 +1,21 @@
 {
+  "$defs": {
+    "UploadKind": {
+      "description": "What an upload is (`docs/site/specs/machines-on-demand.md` section 6.4).",
+      "oneOf": [
+        {
+          "const": "media",
+          "description": "An image, PDF, audio, video, or text file, recognized from its\ncontent and refused when it is none of them.",
+          "type": "string"
+        },
+        {
+          "const": "file",
+          "description": "Any file, stored as `application/octet-stream`: never sent to a\nmodel as bytes, it reaches the model as its label, which names the\nartifact for `transfer`.",
+          "type": "string"
+        }
+      ]
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "`artifact.upload.begin`: starts an upload of `byte_length` bytes into\nthe store of `session_id`'s tree.",
@@ -17,6 +34,10 @@
         "string",
         "null"
       ]
+    },
+    "kind": {
+      "$ref": "#/$defs/UploadKind",
+      "description": "What the upload is: media a model may take inline (the default), or\na file the model only names, such as an archive, a data file, or\ntext over 1 MiB (client protocol 1.56.0)."
     },
     "session_id": {
       "format": "uuid",
