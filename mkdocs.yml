@@ -165,6 +165,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - "`cookie update`: self-update by channel": specs/self-update.md
           - Full tool headers on open rows: specs/tool-header-wrap.md
           - Reduced transcript display: specs/reduced-transcript.md
           - A stable prompt prefix: specs/stable-prefix.md
