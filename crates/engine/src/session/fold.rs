@@ -559,6 +559,12 @@ impl SessionProjection {
                 let interrupted_without_usage = turn.finish_reason
                     == cookie_agent_protocol::ModelFinishReason::Aborted
                     && !crate::usage::has_observed_tokens(reported);
+                // An ACP agent's turn is one step of its round, whose usage
+                // the agent reports once, with the round's last turn: a step
+                // without tokens of its own is no request of its own.
+                let acp_step_without_usage = resolved_model.provider_id.as_str()
+                    == cookie_agent_protocol::ACP_MODEL_PROVIDER
+                    && !crate::usage::has_observed_tokens(reported);
                 let recorded_later = match step {
                     FoldStep::Full {
                         recorded_usage_turns,
@@ -566,7 +572,7 @@ impl SessionProjection {
                     } => recorded_usage_turns.contains(model_turn_seq),
                     FoldStep::Append => false,
                 };
-                if !recorded_later && !interrupted_without_usage {
+                if !recorded_later && !interrupted_without_usage && !acp_step_without_usage {
                     crate::usage::record_stamped(
                         &mut self.usage_rollup,
                         resolved_model,

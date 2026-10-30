@@ -13,6 +13,8 @@ Each prompt's last text block is a command:
   think-blank <text>     a thought that opens with blank lines, as Codex's
                          summaries do, then <text>
   two-messages           answers "first" and then "second", two messages
+  cached                 answers "cached", ending with usage that reports cache
+                         reads and writes beside its uncached input, as ACP does
   echo                   answers every text block of the prompt joined by " | ",
                          then the type of every other block, as it does any
                          prompt that is not a command
@@ -654,6 +656,11 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         update(session_id, {"sessionUpdate": "agent_thought_chunk", "messageId": next_message_id("thought"),
                             "content": {"type": "text", "text": "**Pondering**"}})
         say(session_id, rest)
+    elif word == "cached":
+        say(session_id, "cached")
+        finish(session_id, "end_turn", {"inputTokens": 20, "cachedReadTokens": 100,
+                                        "cachedWriteTokens": 5, "outputTokens": 3, "totalTokens": 128})
+        return
     elif word == "two-messages":
         say(session_id, "first")
         say(session_id, "second")

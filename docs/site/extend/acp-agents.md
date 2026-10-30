@@ -543,6 +543,12 @@ not in it.
 - **Context.** The status line shows how much context the agent's
   conversation uses, as the agent reports it (`ctx` in the TUI, with the
   share of the agent's context window; the tokens in the web client).
+- **Usage and cost.** Each turn's usage is what the agent reports when
+  its work ends, once for the turn however many steps it took: its input
+  counts the cached tokens too (ACP's `inputTokens` leaves them out), and
+  its cost is the one the agent reports (Claude Code reports one; Codex
+  none). The session's usage and estimated cost add these up, as for any
+  other agent.
 - **Plan.** The agent's plan shows in the transcript as a checklist after
   the turn's reply, each step done (`[x]`), in progress (`[~]`), or pending
   (`[ ]`), updated in place as the agent works; each turn's plan stays where

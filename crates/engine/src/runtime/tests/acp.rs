@@ -2890,3 +2890,34 @@ async fn an_unattended_session_declines_a_question_at_once() {
         Some("a headless run has no one to answer")
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acp_agents_input_counts_its_cache_and_its_rounds_cost_is_the_sessions() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "cached", "cached").await;
+    let usage = events(engine, session)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.payload {
+            EventPayload::ModelUsageRecorded { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("the round's usage");
+    assert_eq!(
+        usage.input_tokens,
+        Some(125),
+        "uncached, cache reads and writes"
+    );
+    assert_eq!(usage.input_tokens_no_cache, Some(20));
+    assert_eq!(usage.input_tokens_cache_read, Some(100));
+    assert_eq!(usage.input_tokens_cache_write, Some(5));
+    // A round of several steps (a thought, text, a tool call) reports its
+    // usage and cost once: the session's cost is the round's.
+    let priced = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, priced, "work", "work").await;
+    let usage = engine.session_usage(priced).expect("usage").usage;
+    assert_eq!(usage.request_count, 1, "{usage:?}");
+    assert_eq!(usage.estimated_cost_usd, Some(0.5), "{usage:?}");
+}

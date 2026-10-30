@@ -321,11 +321,21 @@ fn commands_of(update: &Value) -> Vec<cookie_agent_protocol::AcpCommand> {
 fn usage_of(response: Option<&Value>, update: Option<&Value>) -> Option<Usage> {
     let number = |value: &Value, name: &str| value.get(name).and_then(Value::as_u64);
     if let Some(usage) = response.filter(|usage| usage.is_object()) {
+        // ACP's `inputTokens` leaves the cache out (`totalTokens` is input,
+        // cache reads and writes, and output); cookie's input counts it.
+        let uncached = number(usage, "inputTokens");
+        let cache_read = number(usage, "cachedReadTokens");
+        let cache_write = number(usage, "cachedWriteTokens");
+        let input = uncached.map(|uncached| {
+            uncached
+                .saturating_add(cache_read.unwrap_or(0))
+                .saturating_add(cache_write.unwrap_or(0))
+        });
         return Some(Usage {
-            input_tokens: number(usage, "inputTokens"),
-            input_tokens_no_cache: None,
-            input_tokens_cache_read: number(usage, "cachedReadTokens"),
-            input_tokens_cache_write: number(usage, "cachedWriteTokens"),
+            input_tokens: input,
+            input_tokens_no_cache: uncached,
+            input_tokens_cache_read: cache_read,
+            input_tokens_cache_write: cache_write,
             output_tokens: number(usage, "outputTokens"),
             output_tokens_text: None,
             output_tokens_reasoning: number(usage, "thoughtTokens"),
