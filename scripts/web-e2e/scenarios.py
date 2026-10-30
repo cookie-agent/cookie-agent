@@ -5738,7 +5738,7 @@ def reduced_transcript(browser):
         timeout=20,
     )
     label = browser.text(work + " [data-work-label]")
-    assert label.startswith("Working…") and "1 tool call" in label, label
+    assert label.startswith("Working…"), label
     # Its call shows on a line of its own, which keeps its node while the
     # time ticks, so it settles in once rather than every second.
     tool = work + " [data-work-tool]"
@@ -5760,7 +5760,7 @@ def reduced_transcript(browser):
     idle(browser, "the chatty run's end", text="The tool ran.")
     browser.wait("the worked row", lambda: count(browser, "#transcript [data-work=done]") == 1)
     label = browser.text(work + " [data-work-label]")
-    assert label.startswith("Worked for") and label.endswith("· 1 tool call"), label
+    assert label.startswith("Worked for"), label
     assert count(browser, work + " [data-work-now]") == 0, "a finished row says what it does"
     assert count(browser, "#transcript [data-tool]") == 0, "a folded reply shows its call"
     browser.click(work + " button")

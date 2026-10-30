@@ -898,6 +898,10 @@ pub struct App {
     pub(super) theme: Theme,
     pub(super) highlighter: Box<dyn Highlighter>,
     pub(super) hit_map: UiHitMap,
+    /// The open work row the conversation pins over its top, and the line
+    /// it starts at, as of the last frame: folding it from there brings the
+    /// row back to the top.
+    pub(super) pinned_work: Option<(crate::ui::transcript::BlockId, usize)>,
     /// Interactive element under the pointer as of the last mouse event or
     /// frame; resolved against the hit map at render time and purely visual.
     pub(super) hover: Option<PointerTarget>,
@@ -1689,6 +1693,7 @@ impl App {
             theme,
             highlighter: Box::<SyntectHighlighter>::default(),
             hit_map: UiHitMap::default(),
+            pinned_work: None,
             hover: None,
             animation_ticks: 0,
             transient_notices: Vec::new(),

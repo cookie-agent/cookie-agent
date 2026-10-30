@@ -138,6 +138,16 @@ mod tests {
     }
 
     #[test]
+    fn elapsed_times_turn_over_at_the_minute_and_the_hour() {
+        let at = |seconds| super::format_elapsed(Duration::from_secs(seconds));
+        assert_eq!(at(59), "59s");
+        assert_eq!(at(60), "1m 0s");
+        assert_eq!(at(3599), "59m 59s");
+        assert_eq!(at(3600), "1h 0m");
+        assert_eq!(at(3840), "1h 4m");
+    }
+
+    #[test]
     fn a_thought_shows_its_time_from_a_second() {
         assert_eq!(thought_label(None), "thought");
         assert_eq!(thought_label(Some(Duration::from_millis(999))), "thought");

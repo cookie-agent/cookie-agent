@@ -633,7 +633,20 @@ impl App {
                     .find(|hit| hit.id == id)
                     .map(|hit| hit.hover_cells(hits.conversation))
                     .unwrap_or_default(),
-                self.theme.block_hover(),
+                // An open work row already shows the hover's colour, so its
+                // hover sets its text in bold too.
+                if matches!(id, BlockId::Work { .. })
+                    && self
+                        .selected
+                        .and_then(|session| self.expanded_blocks.get(&session))
+                        .is_some_and(|open| open.contains(&id))
+                {
+                    self.theme
+                        .block_hover()
+                        .add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    self.theme.block_hover()
+                },
             ),
             PointerTarget::BackgroundButton(call_id) => (
                 one(hits

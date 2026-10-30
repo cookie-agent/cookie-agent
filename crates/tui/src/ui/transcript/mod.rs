@@ -350,6 +350,13 @@ pub(super) enum BlockId {
         item: u64,
         child: u32,
     },
+    /// The lines an open fold shows, its work row through its work, in one
+    /// item: never a click target, it tells the pane how long to pin the
+    /// row (`render_conversation`). A fold across items has one in each.
+    WorkSpan {
+        item: u64,
+        child: u32,
+    },
     Tool(cookie_agent_protocol::ToolCallId),
     ToolOutput {
         call_id: cookie_agent_protocol::ToolCallId,
@@ -618,6 +625,22 @@ impl BlockId {
         Self::Work {
             item: key.item,
             child: key.child,
+        }
+    }
+
+    /// The lines the open fold `key` shows in one item.
+    pub(super) fn work_span(key: WorkKey) -> Self {
+        Self::WorkSpan {
+            item: key.item,
+            child: key.child,
+        }
+    }
+
+    /// The work row a span belongs to.
+    fn span_row(self) -> Option<Self> {
+        match self {
+            Self::WorkSpan { item, child } => Some(Self::Work { item, child }),
+            _ => None,
         }
     }
 }
@@ -2047,11 +2070,15 @@ impl App {
         } else {
             (&splice.block_regions, &splice.user_regions)
         };
-        self.hit_map
-            .blocks
-            .extend(block_regions.iter().filter_map(|region| {
-                block_hit_at(*region, line_at, viewport, self.conversation_scroll.offset)
-            }));
+        self.hit_map.blocks.extend(
+            block_regions
+                .iter()
+                .filter(|region| region.id.span_row().is_none())
+                .filter_map(|region| {
+                    block_hit_at(*region, line_at, viewport, self.conversation_scroll.offset)
+                }),
+        );
+        let open_work = work_spans(block_regions);
         self.hit_map.user_messages.clear();
         self.hit_map
             .user_messages
@@ -2122,6 +2149,20 @@ impl App {
                 line,
                 Rect::new(viewport.x, viewport.y + row, viewport.width, 1),
             );
+        }
+        self.pinned_work = None;
+        for band in &open_work {
+            if let Some(pinned) = paint_open_work(
+                frame,
+                band,
+                viewport,
+                self.conversation_scroll.offset,
+                &self.theme,
+                &mut self.hit_map.blocks,
+                line_at,
+            ) {
+                self.pinned_work = Some(pinned);
+            }
         }
         // The reservation always exists; the thumb only does. A pane too tight
         // for the track, or content that fits the viewport, keeps its reserved
@@ -2260,7 +2301,12 @@ impl App {
         }
         // An explicit layout change preserves what the user is reading. Only
         // output received while already following should advance to the tail.
-        self.conversation_scroll.hold();
+        // Folding the work row pinned over the top brings the row back there,
+        // with what follows the work under it.
+        match self.pinned_work.take() {
+            Some((pinned, line)) if pinned == block_id => self.conversation_scroll.scroll_to(line),
+            _ => self.conversation_scroll.hold(),
+        }
         let expanded = self.expanded_blocks.entry(session_id).or_default();
         if !expanded.insert(block_id) {
             expanded.remove(&block_id);
@@ -2313,6 +2359,125 @@ impl App {
             });
         });
     }
+}
+
+/// Paints an open fold's work row in the hover's colour, so it is easy to
+/// find and fold again. Once the row scrolled above the viewport while its
+/// work still fills the top, a copy of the row is pinned there and takes
+/// the row's clicks: then the pinned row and the line it starts at.
+fn paint_open_work<'a>(
+    frame: &mut ratatui::Frame,
+    band: &WorkSpan,
+    viewport: Rect,
+    offset: usize,
+    theme: &Theme,
+    hits: &mut Vec<BlockHit>,
+    line_at: impl Fn(usize) -> Option<&'a Line<'static>>,
+) -> Option<(BlockId, usize)> {
+    let style = theme.block_hover();
+    let rows = usize::from(viewport.height);
+    let gutter = band.gutter.min(viewport.width);
+    let paint = |frame: &mut ratatui::Frame, row: usize, from: u16| {
+        let area = Rect::new(
+            viewport.x + from,
+            viewport.y + u16::try_from(row).unwrap_or(u16::MAX),
+            viewport.width.saturating_sub(from),
+            1,
+        );
+        frame
+            .buffer_mut()
+            .set_style(area.intersection(viewport), style);
+    };
+    let header = band.header.len();
+    let pinned = band.header.start < offset && band.end > offset + header && header < rows;
+    for line in band.header.start.max(offset)..band.header.end.min(offset + rows) {
+        let row = line - offset;
+        if !(pinned && row < header) {
+            paint(frame, row, gutter);
+        }
+    }
+    if !pinned {
+        return None;
+    }
+    let height = u16::try_from(header).unwrap_or(u16::MAX);
+    let rect = Rect::new(viewport.x, viewport.y, viewport.width, height);
+    frame.render_widget(ratatui::widgets::Clear, rect);
+    for (row, line) in band.header.clone().enumerate() {
+        if let Some(line) = line_at(line) {
+            frame.render_widget(
+                line,
+                Rect::new(
+                    viewport.x,
+                    viewport.y + u16::try_from(row).unwrap_or(u16::MAX),
+                    viewport.width,
+                    1,
+                ),
+            );
+        }
+    }
+    frame.buffer_mut().set_style(
+        Rect::new(
+            viewport.x + gutter,
+            viewport.y,
+            viewport.width.saturating_sub(gutter),
+            height,
+        ),
+        style,
+    );
+    hits.retain(|hit| hit.id != band.row);
+    hits.push(BlockHit {
+        rect,
+        id: band.row,
+        hover_rect: Some(Rect::new(
+            viewport.x + gutter,
+            viewport.y,
+            viewport.width.saturating_sub(gutter),
+            height,
+        )),
+        toggle_rect: Some(rect),
+        action_rect: None,
+        link_rect: None,
+    });
+    Some((band.row, band.header.start))
+}
+
+/// An open fold as the pane paints it: its work row, the row's lines,
+/// and the line after its work.
+pub(super) struct WorkSpan {
+    row: BlockId,
+    header: std::ops::Range<usize>,
+    /// The columns of the row's gutter.
+    gutter: u16,
+    end: usize,
+}
+
+/// Each open fold among `regions`, its spans across items merged.
+fn work_spans(regions: &[BlockRegion]) -> Vec<WorkSpan> {
+    let mut bands: Vec<WorkSpan> = Vec::new();
+    for region in regions {
+        let Some(row) = region.id.span_row() else {
+            continue;
+        };
+        if let Some(band) = bands.iter_mut().find(|band| band.row == row) {
+            band.end = band.end.max(region.end_line);
+            continue;
+        }
+        let Some(head) = regions.iter().find(|head| head.id == row) else {
+            continue;
+        };
+        bands.push(WorkSpan {
+            row,
+            header: head.start_line
+                ..head.start_line
+                    + head
+                        .header_lines
+                        .unwrap_or(1)
+                        .min(head.end_line - head.start_line),
+            gutter: head.header_gutter.unwrap_or(2),
+            end: region.end_line,
+        });
+    }
+    bands
 }
 
 /// Render the reserved scrollbar column: a subdued track with a distinct

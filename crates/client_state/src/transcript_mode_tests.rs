@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use cookie_agent_protocol::{SafeCode, ToolCallId};
 
 use super::*;
@@ -25,6 +23,36 @@ fn tool() -> AssistantChild {
     AssistantChild::Tool {
         call_id: ToolCallId::new_v7(),
     }
+}
+
+/// A call `title` in `state`, with `status`.
+fn call(state: &mut SessionState, title: &str, status: crate::ToolStatus) -> AssistantChild {
+    let call_id = ToolCallId::new_v7();
+    let presentation = cookie_agent_protocol::PreparedPresentation::new(
+        cookie_agent_protocol::SafeDisplayText::new(title).expect("title"),
+        None,
+    );
+    let mut call = crate::ToolCallState::started(
+        call_id,
+        crate::AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new("call").expect("model call id"),
+            provider_item_id: None,
+        },
+        cookie_agent_protocol::ToolPresentation::new(
+            presentation,
+            cookie_agent_protocol::ToolIdentity {
+                name: title.to_owned(),
+                published_name: title.to_owned(),
+                source: None,
+            },
+        ),
+        "{}".into(),
+    );
+    call.status = status;
+    state.tools.insert(call_id, call);
+    AssistantChild::Tool { call_id }
 }
 
 fn committed_tool(name: &str) -> AssistantChild {
@@ -67,32 +95,16 @@ fn the_reply_starts_after_the_last_thinking_part_or_tool_call() {
 }
 
 #[test]
-fn labels_say_working_worked_or_stopped_with_their_counts() {
-    let summary = |live, stopped, seconds, tool_calls, failed| WorkSummary {
-        live,
-        stopped,
-        elapsed: Duration::from_secs(seconds),
-        tool_calls,
-        failed,
-    };
-    assert_eq!(
-        summary(true, false, 42, 3, 0).label(),
-        "Working… 42s · 3 tool calls"
-    );
-    assert_eq!(summary(true, false, 0, 0, 0).label(), "Working… 0s");
-    assert_eq!(
-        summary(false, false, 83, 1, 0).label(),
-        "Worked for 1m 23s · 1 tool call"
-    );
-    assert_eq!(
-        summary(false, true, 3840, 0, 0).label(),
-        "Stopped after 1h 4m"
-    );
-    assert_eq!(
-        summary(false, false, 5, 7, 2).failed_label().as_deref(),
-        Some("· 2 failed")
-    );
-    assert_eq!(summary(false, false, 5, 7, 0).failed_label(), None);
+fn a_row_counts_its_calls_and_the_failed_ones() {
+    let mut state = SessionState::default();
+    let work = [
+        call(&mut state, "bash", crate::ToolStatus::Failed),
+        call(&mut state, "read", crate::ToolStatus::Completed),
+        committed_tool("edit"),
+        thinking("**Plan**"),
+    ];
+    let summary = work_summary(&state, 1, &work, jiff::Timestamp::UNIX_EPOCH);
+    assert_eq!((summary.tool_calls, summary.failed), (3, 1));
 }
 
 #[test]
@@ -151,23 +163,19 @@ fn a_work_row_says_its_latest_text_and_its_latest_call() {
         lines(&state, &[thinking("")], 80),
         shown(Some("Thinking…"), None)
     );
-    // Both the latest text and the latest call, whichever came last.
+    // Both the latest text and the latest call still running, whichever
+    // came last.
+    let mut state = SessionState::default();
+    let running = call(&mut state, "bash", crate::ToolStatus::Running);
+    let done = call(&mut state, "read", crate::ToolStatus::Completed);
     assert_eq!(
-        lines(
-            &state,
-            &[thinking("**Plan**\nfirst"), committed_tool("bash")],
-            80
-        ),
+        lines(&state, &[thinking("**Plan**\nfirst"), running.clone()], 80),
         shown(Some("Plan"), Some("bash"))
     );
     assert_eq!(
         lines(
             &state,
-            &[
-                committed_tool("read"),
-                text("Now the tests.\n"),
-                committed_tool("bash")
-            ],
+            &[done.clone(), text("Now the tests.\n"), running.clone()],
             80
         ),
         shown(Some("Now the tests."), Some("bash"))
@@ -176,16 +184,36 @@ fn a_work_row_says_its_latest_text_and_its_latest_call() {
     assert_eq!(
         lines(
             &state,
-            &[thinking("**Plan**"), committed_tool("bash"), text("…")],
+            &[thinking("**Plan**"), running.clone(), text("…")],
             80
         ),
         shown(Some("Plan"), Some("bash"))
     );
-    // A call this state never started says nothing; an older one does.
+    // A call that ended, or went on in the background, says nothing: an
+    // older one still running does.
     assert_eq!(
-        lines(&state, &[committed_tool("read"), tool()], 80),
-        shown(None, Some("read"))
+        lines(&state, &[running.clone(), done.clone()], 80),
+        shown(None, Some("bash"))
     );
+    assert_eq!(
+        lines(&state, &[thinking("**Plan**"), done.clone()], 80),
+        shown(Some("Plan"), None)
+    );
+    let AssistantChild::Tool { call_id } = &running else {
+        unreachable!()
+    };
+    state.tools.get_mut(call_id).expect("call").backgrounded = true;
+    assert_eq!(
+        lines(&state, std::slice::from_ref(&running), 80),
+        shown(None, None)
+    );
+    // Calls that ended leave no line, and the row does not start again.
+    assert_eq!(
+        lines(&state, &[committed_tool("read"), done], 80),
+        shown(None, None)
+    );
+    // A call this state never started says nothing.
+    assert_eq!(lines(&state, &[tool()], 80), shown(None, None));
 }
 
 #[test]
@@ -210,12 +238,22 @@ fn a_streaming_line_waits_until_it_ends_or_fills_the_row() {
             .as_deref(),
         Some("Plan")
     );
-    // Long enough to be cut anyway, the open line shows.
+    // Long enough to be cut anyway, the open line shows, cut at the room:
+    // streaming on past it, it stays the same line.
     assert_eq!(
         lines(&state, &[text_part("done.\nNow the tests")], 10)
             .text
             .as_deref(),
-        Some("Now the tests")
+        Some("Now the te…")
+    );
+    assert_eq!(
+        lines(&state, &[text_part("done.\nNow the tests run")], 10),
+        lines(&state, &[text_part("done.\nNow the tests")], 10)
+    );
+    // Once it ends, the line it became is the one already shown.
+    assert_eq!(
+        lines(&state, &[text_part("done.\nNow the tests run.\nAnd")], 10),
+        lines(&state, &[text_part("done.\nNow the tests")], 10)
     );
     // Once the part stops streaming, its last line shows whole.
     assert_eq!(

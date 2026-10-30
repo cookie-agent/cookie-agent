@@ -95,27 +95,39 @@ pub struct WorkSummary {
 }
 
 impl WorkSummary {
-    /// The row's label: `Working… 42s · 3 tool calls`, `Worked for 1m 23s`,
-    /// or `Stopped after 12s`, the count left out at none.
+    /// The row's label: `Working… 42s`, `Worked for 1m 23s · 3 tool calls`,
+    /// or `Stopped after 12s`, the count left out at none. A live row
+    /// counts its calls on its call line instead ([`Self::calls_label`]).
     #[must_use]
     pub fn label(&self) -> String {
         let elapsed = format_elapsed(self.elapsed);
-        let mut label = if self.live {
-            format!("Working… {elapsed}")
-        } else if self.stopped {
+        if self.live {
+            return format!("Working… {elapsed}");
+        }
+        let mut label = if self.stopped {
             format!("Stopped after {elapsed}")
         } else {
             format!("Worked for {elapsed}")
         };
-        match self.tool_calls {
-            0 => {}
-            1 => label.push_str(" · 1 tool call"),
-            count => label.push_str(&format!(" · {count} tool calls")),
+        if self.tool_calls > 0 {
+            label.push_str(&format!(" · {}", self.calls_label()));
         }
         label
     }
 
-    /// The failed calls, shown after the label in the warning colour:
+    /// The calls counted: `1 tool call`, `3 tool calls`, and `No tool
+    /// calls yet` at none, which a live row's call line says while no call
+    /// runs.
+    #[must_use]
+    pub fn calls_label(&self) -> String {
+        match self.tool_calls {
+            0 => "No tool calls yet".to_owned(),
+            1 => "1 tool call".to_owned(),
+            count => format!("{count} tool calls"),
+        }
+    }
+
+    /// The failed calls, shown after the calls in the warning colour:
     /// `· 1 failed`; `None` at none.
     #[must_use]
     pub fn failed_label(&self) -> Option<String> {
@@ -210,8 +222,10 @@ pub struct WorkLines {
     /// `Thinking…` while a thinking part has nothing settled yet, and
     /// `Starting…` before the work says or does anything.
     pub text: Option<String>,
-    /// Its newest tool call's header, `Waiting for approval: …` while the
-    /// call waits on the user.
+    /// The header of its newest tool call still running (not moved to the
+    /// background), `Waiting for approval: …` while the call waits on the
+    /// user; none while no call runs, when the line counts the calls
+    /// ([`WorkSummary::calls_label`]).
     pub tool: Option<String>,
 }
 
@@ -237,26 +251,43 @@ pub fn work_lines<'a>(
         ),
         _ => None,
     });
+    // The newest call the work still waits on: once every call ended, or
+    // went on in the background, the line goes.
     let tool = work.clone().rev().find_map(|(_, child)| match child {
         AssistantChild::Tool { call_id } => {
-            let header = state.tools.get(call_id)?.header_text();
-            Some(if needs_user(state, call_id) {
-                format!("Waiting for approval: {header}")
-            } else {
-                header
-            })
+            let call = state.tools.get(call_id)?;
+            let going = call.status == crate::ToolStatus::Running && !call.backgrounded;
+            if !going && !needs_user(state, call_id) {
+                return None;
+            }
+            let header = call.header_text();
+            // Cut like the text: arguments streaming on past the row's
+            // room leave the line as it is.
+            Some(cut_line(
+                if needs_user(state, call_id) {
+                    format!("Waiting for approval: {header}")
+                } else {
+                    header
+                },
+                room,
+            ))
         }
-        AssistantChild::CommittedTool { name, .. } => Some(name.as_str().to_owned()),
         _ => None,
+    });
+    let called = work.clone().any(|(_, child)| {
+        matches!(
+            child,
+            AssistantChild::Tool { .. } | AssistantChild::CommittedTool { .. }
+        )
     });
     let thinking = work.rev().find_map(|(_, child)| match child {
         AssistantChild::Thinking { .. } => Some(true),
         AssistantChild::Text { .. } => Some(false),
         _ => None,
     });
-    let text = text.or_else(|| match (thinking, &tool) {
+    let text = text.or_else(|| match (thinking, called) {
         (Some(true), _) => Some("Thinking…".to_owned()),
-        (None, None) => Some("Starting…".to_owned()),
+        (None, false) => Some("Starting…".to_owned()),
         _ => None,
     });
     WorkLines { text, tool }
@@ -265,7 +296,22 @@ pub fn work_lines<'a>(
 /// The newest line of `text` a work row may show: with `streaming`, a line
 /// that has ended, or the unfinished last line once it is `room`
 /// characters long. With `thinking`, its newest step where it has one.
+/// A line past `room` is cut there and ends in `…`, so an open line that
+/// streams on past what the row shows stays the same line, and the row
+/// does not take it for a new one.
 fn settled_line(text: &str, streaming: bool, room: usize, thinking: bool) -> Option<String> {
+    settled_line_whole(text, streaming, room, thinking).map(|line| cut_line(line, room))
+}
+
+/// `line` cut to its first `room` characters and `…` when it is longer.
+fn cut_line(line: String, room: usize) -> String {
+    match line.char_indices().nth(room) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line,
+    }
+}
+
+fn settled_line_whole(text: &str, streaming: bool, room: usize, thinking: bool) -> Option<String> {
     let (ended, open) = match text.rfind('\n') {
         Some(at) if streaming => (&text[..at], text[at + 1..].trim()),
         None if streaming => ("", text.trim()),

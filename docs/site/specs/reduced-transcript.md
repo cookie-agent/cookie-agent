@@ -111,7 +111,7 @@ A block that is still open (its run is going and nothing has split it)
 shows its work as one row in place of the work children:
 
 ```
-▸ Working… 42s · 3 tool calls
+▸ Working… 42s
   Reading the reducer to see where blocks split.
   ⎿ Read crates/client_state/src/reduce.rs
 ```
@@ -128,13 +128,18 @@ shows its work as one row in place of the work children:
     changes per step rather than per word. `Thinking…` while a thinking
     part has nothing settled yet, `Starting…` before the work says or does
     anything;
-  - **the latest tool call**: its header as the tool row shows it
+  - **the call running now**: the newest call still running (not moved to
+    the background), its header as the tool row shows it
     (`client_state::tool_header`), `Waiting for approval: …` while it waits
-    on the user; left out before the first call.
+    on the user. While no call runs, the line counts the calls so far and
+    the failed ones, `3 tool calls · 1 failed` (`No tool calls yet` before
+    the first), so the row keeps its height (user decision of 2026-10-30).
 - **A streaming line waits** (user decision): the line a thinking or text
   part is still writing shows only once it ends, or once it is as long as
   the row can show (the TUI's columns; on the web, 96 characters), where
-  the row cuts it anyway. Until then the line before it shows.
+  the row cuts it anyway. Until then the line before it shows. A line
+  past that length is cut there with `…`, so a line that streams on past
+  what the row shows stays the same line and does not settle in again.
 - **Transitions.** On the web a line that says something new rises into
   place out of a soft blur (280 ms; none under `prefers-reduced-motion`);
   each line is keyed by its text (`data-key`, which the page's DOM patcher
@@ -144,8 +149,8 @@ shows its work as one row in place of the work children:
 - **Sizes on the web** (user decision): the label and the text line read
   at the transcript's small size, the tool call line at the smaller note
   size in monospace, under a `↳`.
-- **Counts.** After the time, muted: the tool calls so far, `· 7 tool
-  calls`, left out while there are none.
+- **Counts.** The label is the time alone; the call line counts the calls
+  while none runs (user decision of 2026-10-30).
 - **Click** opens the work as a sealed row does (section 6); open, the
   live work streams in place as in `full` mode.
 
@@ -191,6 +196,16 @@ user leaves them. Clicking again folds it.
   `reduced`.
 - Copying a selection copies what is shown: a folded row copies as its
   label line.
+- **An open row stands out** (user decision of 2026-10-30): it keeps the
+  hover's colour, so it is easy to find and fold again; its work keeps its
+  own colours.
+- **An open row pins** (user decision of 2026-10-30): once it scrolled
+  above the transcript's top while its work still shows there, a copy of
+  it is pinned to the top, until the work's end scrolls up under it.
+  Clicking the copy folds the work and scrolls the row back to the top.
+  In the TUI each open fold records its lines as a `WorkSpan` region; on
+  the web each part and row of an open fold's work carries
+  `data-work-in` with its row's block key.
 
 ## 7. Elapsed time
 
@@ -331,6 +346,11 @@ The user decided on 2026-10-30:
 15. **Any text between calls breaks the work** (section 2), closing the
     row before it as `Worked for`, but filler: blank text or only
     ellipses, as Kimi models write between calls.
+16. **The call line shows only a call still running** (section 4); while
+    none runs it counts the calls and failures, and a live row's label is
+    the time alone. Replaces decision 5 for live rows.
+17. **An open row keeps the hover's colour and pins to the top** while its
+    work scrolls past (section 6); no band or edge marks its work.
 
 ## 11. Tests and phases
 

@@ -480,6 +480,12 @@ body {
   animation: work-line-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* The pinned copy of an open work row (`[data-work-pinned]`) takes the
+   rounding of the box it sits in. */
+[data-work-pinned] > button {
+  border-radius: 0;
+}
+
 /* A status message comes in at once and dims out once it is no longer
    live (`StatusTip`). */
 .status-tip {

@@ -43,6 +43,12 @@ pub(super) fn assistant_item_layout(
     if fold.first {
         layout.lines.push_lines(header(context));
     }
+    // The lines each open fold shows in this block, for its pinned row.
+    let mut bands: Vec<(WorkKey, usize, usize)> = Vec::new();
+    let mut band = |key: WorkKey, start: usize, end: usize| match bands.last_mut() {
+        Some((last, _, band_end)) if *last == key => *band_end = end,
+        _ => bands.push((key, start, end)),
+    };
     for (index, child) in children.iter().enumerate() {
         let place = fold
             .children
@@ -71,6 +77,7 @@ pub(super) fn assistant_item_layout(
                     context.theme,
                 ));
             }
+            let start = layout.lines.len();
             layout.push_layout(work_row_layout(
                 key,
                 row,
@@ -79,11 +86,15 @@ pub(super) fn assistant_item_layout(
                 context.width,
                 context.theme,
             ));
+            if open {
+                band(key, start, layout.lines.len());
+            }
             previous_is_prose = Some(false);
         }
         let shown = open
             || matches!(child, AssistantChild::Tool { call_id } if transcript_mode::needs_user(state, call_id));
         if shown {
+            let start = layout.lines.len();
             push_assistant_child(
                 state,
                 item_id,
@@ -92,11 +103,23 @@ pub(super) fn assistant_item_layout(
                 &mut previous_is_prose,
                 context,
             );
+            if open {
+                band(key, start, layout.lines.len());
+            }
         } else {
             // Rows spliced in before a folded child land below the row.
             context.assistant_child_lines.push(layout.lines.len());
         }
     }
+    layout
+        .regions
+        .extend(bands.into_iter().map(|(key, start, end)| BlockRegion {
+            id: BlockId::work_span(key),
+            start_line: start,
+            end_line: end,
+            header_lines: Some(0),
+            header_gutter: None,
+        }));
     if fold.last {
         return finish_assistant_layout(state, item_id, layout, context);
     }
@@ -284,7 +307,9 @@ fn work_row_layout(
         format!("{chevron} {}", summary.label()),
         theme.muted_text(),
     )];
-    if let Some(failed) = summary.failed_label() {
+    // A live row counts its calls on its call line, so its label stays the
+    // time alone.
+    if let Some(failed) = summary.failed_label().filter(|_| !summary.live) {
         spans.push(Span::styled(format!(" {failed}"), theme.warning()));
     }
     let label = Line::from(spans);
@@ -295,30 +320,46 @@ fn work_row_layout(
         (assistant_body_line(label, width, theme), None)
     };
     // Under the label's text, one line each, cut to fit: what the work
-    // last said, then its last call. A line that just changed draws dim for
-    // one animation step, so it settles in rather than snapping.
+    // last said, then the call running now, or while none runs the calls so
+    // far and the failed ones. A line that just changed draws dim for one
+    // animation step, so it settles in rather than snapping.
     let room = work_line_room(width);
+    let calls = row.lines.as_ref().map(|_| summary.calls_label());
     let shown = row.lines.iter().flat_map(|shown| {
         [
             shown
                 .text
                 .as_deref()
-                .map(|text| ("  ", text, theme.muted_text(), fresh.text)),
-            shown
-                .tool
-                .as_deref()
-                .map(|tool| ("  ⎿ ", tool, theme.muted(), fresh.tool)),
+                .map(|text| ("  ", text, theme.muted_text(), fresh.text, None)),
+            match shown.tool.as_deref() {
+                Some(tool) => Some(("  ⎿ ", tool, theme.muted(), fresh.tool, None)),
+                None => calls.as_deref().map(|calls| {
+                    (
+                        "  ⎿ ",
+                        calls,
+                        theme.muted(),
+                        fresh.tool,
+                        summary.failed_label(),
+                    )
+                }),
+            },
         ]
     });
-    for (prefix, text, style, fresh) in shown.flatten() {
+    for (prefix, text, style, fresh, failed) in shown.flatten() {
         let room = room.saturating_sub(UnicodeWidthStr::width(prefix) - 2);
         let text = crate::ui::app::truncate_with_ellipsis(text, room);
-        let style = if fresh {
-            style.add_modifier(ratatui::style::Modifier::DIM)
-        } else {
-            style
+        let dim = |style: Style| {
+            if fresh {
+                style.add_modifier(ratatui::style::Modifier::DIM)
+            } else {
+                style
+            }
         };
-        let line = Line::from(Span::styled(format!("{prefix}{text}"), style));
+        let mut spans = vec![Span::styled(format!("{prefix}{text}"), dim(style))];
+        if let Some(failed) = failed {
+            spans.push(Span::styled(format!(" {failed}"), dim(theme.warning())));
+        }
+        let line = Line::from(spans);
         let rows = if panel_margin(width) {
             margin_rows(line, width, theme, None).0
         } else {

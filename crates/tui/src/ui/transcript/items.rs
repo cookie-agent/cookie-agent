@@ -85,6 +85,7 @@ pub(super) fn item_fold_key(
             .hash(&mut hasher);
         if starts && let Some((row, fresh)) = work_rows.get(&key) {
             row.summary.label().hash(&mut hasher);
+            row.summary.tool_calls.hash(&mut hasher);
             row.summary.failed.hash(&mut hasher);
             row.lines.hash(&mut hasher);
             fresh.hash(&mut hasher);
@@ -292,7 +293,22 @@ pub(super) fn chunked_item_layout(
             children,
             ..
         } => assistant_item_layout(state, *id, attribution, children, context),
-        _ => transcript_item_layout(state, item, context).into(),
+        _ => {
+            let mut layout = transcript_item_layout(state, item, context);
+            // A background row an open fold shows is part of its work.
+            if let Some(ItemFold::Row { key }) = context.folds.get(item.id())
+                && !layout.lines.is_empty()
+            {
+                layout.regions.push(BlockRegion {
+                    id: BlockId::work_span(*key),
+                    start_line: 0,
+                    end_line: layout.lines.len(),
+                    header_lines: Some(0),
+                    header_gutter: None,
+                });
+            }
+            layout.into()
+        }
     }
 }
 

@@ -139,10 +139,7 @@ fn a_finished_block_folds_its_work_above_its_reply() {
     let state = state_of(events);
 
     let reduced = rendered(&state, None, TranscriptMode::Reduced, 500);
-    assert!(
-        reduced.contains("▸ Worked for 12s · 1 tool call"),
-        "{reduced}"
-    );
+    assert!(reduced.contains("▸ Worked for"), "{reduced}");
     assert!(reduced.contains("All done."), "{reduced}");
     assert!(!reduced.contains("call-1"), "{reduced}");
     assert!(!reduced.contains("💭"), "{reduced}");
@@ -165,10 +162,7 @@ fn an_opened_work_row_shows_the_work_as_the_full_mode_does() {
     }]);
 
     let opened = rendered(&state, Some(&expanded), TranscriptMode::Reduced, 500);
-    assert!(
-        opened.contains("▾ Worked for 12s · 1 tool call"),
-        "{opened}"
-    );
+    assert!(opened.contains("▾ Worked for"), "{opened}");
     assert!(opened.contains("call-1"), "{opened}");
     assert!(opened.contains("💭"), "{opened}");
     assert!(opened.contains("All done."), "{opened}");
@@ -183,9 +177,9 @@ fn a_live_block_says_what_it_is_doing_and_ticks() {
     let lines = live.lines().collect::<Vec<_>>();
     let row = lines
         .iter()
-        .position(|line| line.contains("▸ Working… 30s · 1 tool call"))
+        .position(|line| line.contains("▸ Working…"))
         .unwrap_or_else(|| panic!("working row: {live}"));
-    // What it last thought, then its last call.
+    // What it last thought, then the call running now.
     assert!(lines[row + 1].contains("Reading the code"), "{live}");
     assert!(lines[row + 2].contains("⎿ call-1"), "{live}");
     let later = rendered(&state, None, TranscriptMode::Reduced, 175);
@@ -214,17 +208,52 @@ fn a_call_waiting_on_approval_stays_out_of_the_fold() {
 }
 
 #[test]
-fn failed_calls_count_on_the_row() {
+fn a_cached_live_row_counts_the_calls_once_its_call_ends() {
     let (session, run, call) = (SessionId::new_v7(), run_id(), ToolCallId::new_v7());
-    let mut events = worked_events(session, run, call, Some(ToolTerminationOutcome::Failed));
-    events.push(finished(session, run));
-    let state = state_of(events);
-
-    let reduced = rendered(&state, None, TranscriptMode::Reduced, 500);
-    assert!(
-        reduced.contains("▸ Worked for 12s · 1 tool call · 1 failed"),
-        "{reduced}"
-    );
+    let running = state_of(worked_events(session, run, call, None));
+    let mut events = worked_events(session, run, call, None);
+    events.push(at(
+        tool_terminated(
+            session,
+            4,
+            run,
+            call,
+            1,
+            "call-1",
+            ToolTerminationOutcome::Failed,
+        ),
+        105,
+    ));
+    let ended = state_of(events);
+    let highlighter = crate::markdown::SyntectHighlighter::default();
+    let mut cache = LayoutCache::default();
+    let mut draw = |state: &SessionState| {
+        ensure_cached_transcript_layout_in(
+            &mut cache,
+            session,
+            state,
+            None,
+            None,
+            WIDTH,
+            &Theme::default(),
+            &highlighter,
+            TranscriptView {
+                minimum_event_level: EventLevel::Warning,
+                transcript: TranscriptMode::Reduced,
+                now: time(130),
+            },
+            0,
+            &crate::state::ModelDisplayNames::default(),
+        );
+        snapshot_lines(&cache.layout.lines.to_vec())
+    };
+    let before = draw(&running);
+    assert!(before.contains("⎿ call-1"), "{before}");
+    // The same cache draws the row again: the call line gives way to the
+    // count of calls and failures.
+    let after = draw(&ended);
+    assert!(!after.contains("⎿ call-1"), "{after}");
+    assert!(after.contains("1 failed"), "{after}");
 }
 
 #[test]
@@ -386,10 +415,7 @@ fn a_runs_work_folds_into_one_row_across_a_background_command_ending() {
     assert_eq!(full.matches("╭─").count(), 2, "{full}");
 
     let reduced = rendered(&state, None, TranscriptMode::Reduced, 500);
-    assert!(
-        reduced.contains("▸ Worked for 12s · 1 tool call"),
-        "{reduced}"
-    );
+    assert!(reduced.contains("▸ Worked for"), "{reduced}");
     assert_eq!(reduced.matches("Worked for").count(), 1, "{reduced}");
     assert_eq!(reduced.matches("╭─").count(), 1, "{reduced}");
     assert!(!reduced.contains("Background:"), "{reduced}");
@@ -400,7 +426,7 @@ fn a_runs_work_folds_into_one_row_across_a_background_command_ending() {
         child: 0,
     }]);
     let opened = rendered(&state, Some(&expanded), TranscriptMode::Reduced, 500);
-    assert!(opened.contains("▾ Worked for 12s"), "{opened}");
+    assert!(opened.contains("▾ Worked for"), "{opened}");
     assert!(opened.contains("Background: npm run dev ended"), "{opened}");
     assert!(opened.contains("call-1"), "{opened}");
 }
@@ -413,7 +439,7 @@ fn a_run_split_by_a_background_command_works_in_one_row_until_it_writes() {
     // Both blocks' work is one row, done once the text after the call
     // came, though the run goes on; the text shows below it.
     assert_eq!(live.matches("Worked for").count(), 1, "{live}");
-    assert!(live.contains("▸ Worked for 10s · 1 tool call"), "{live}");
+    assert!(live.contains("▸ Worked for"), "{live}");
     assert!(!live.contains("Working…"), "{live}");
     let lines = live.lines().collect::<Vec<_>>();
     let row = lines

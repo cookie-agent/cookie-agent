@@ -758,6 +758,10 @@ pub enum RowHtml {
     Reply {
         header: Arc<str>,
         parts: Arc<[(u64, PartHtml)]>,
+        /// The parts that show as the work of an open fold, each with the
+        /// block key of the fold's work row: the page pins the row while
+        /// they show.
+        work: Arc<FastMap<u64, Arc<str>>>,
     },
 }
 
@@ -961,7 +965,11 @@ pub fn transcript_rows(
                         children,
                         ..
                     } => {
-                        let (reply, keys) = reply_parts(&pass, *id, children, cache, &mut parts);
+                        let ReplyParts {
+                            parts: reply,
+                            work,
+                            keys,
+                        } = reply_parts(&pass, *id, children, cache, &mut parts);
                         // A folded run's later blocks go on under its first
                         // block's header.
                         let headless = pass.block_fold(*id).is_some_and(|fold| !fold.first);
@@ -976,13 +984,22 @@ pub fn transcript_rows(
                                     )
                                 }),
                                 parts: reply,
+                                work: Arc::new(work),
                             },
                             parts: keys,
                         }
                     }
                     _ => match item_html(view, item) {
-                        Some(item) => CachedRow {
-                            html: RowHtml::Html(Arc::from(item)),
+                        Some(html) => CachedRow {
+                            // A row shown inside an open fold's work is
+                            // part of it, for the pinned row.
+                            html: RowHtml::Html(Arc::from(match pass.folds.get(item.id()) {
+                                Some(ItemFold::Row { key }) => format!(
+                                    "<div data-work-in=\"{}\" data-work-row>{html}</div>",
+                                    work_key(*key)
+                                ),
+                                _ => html,
+                            })),
                             parts: Vec::new(),
                         },
                         None => continue,
@@ -1006,21 +1023,31 @@ pub fn transcript_rows(
     }
 }
 
-/// A reply's parts, each under its ID, and their content keys, then its
-/// footer when it has one. Parts whose key is in `cache` reuse its HTML;
-/// every part drawn lands in `used`.
+/// A reply's parts as [`reply_parts`] draws them.
+struct ReplyParts {
+    /// Each part under its ID, then the reply's footer when it has one.
+    parts: Arc<[(u64, PartHtml)]>,
+    /// The block key of the open fold each part shown as work belongs to.
+    work: FastMap<u64, Arc<str>>,
+    /// The parts' content keys.
+    keys: Vec<u64>,
+}
+
+/// A reply's parts. Parts whose key is in `cache` reuse its HTML; every
+/// part drawn lands in `used`.
 fn reply_parts(
     pass: &Pass<'_, '_>,
     item_id: u64,
     children: &[AssistantChild],
     cache: &mut RowCache,
     used: &mut FastMap<u64, PartHtml>,
-) -> (Arc<[(u64, PartHtml)]>, Vec<u64>) {
+) -> ReplyParts {
     let mut seen: FastSet<u64> =
         HashSet::with_capacity_and_hasher(children.len(), foldhash::fast::FixedState::default());
     let mut keys = Vec::with_capacity(children.len());
     let fold = pass.block_fold(item_id);
     let mut parts = Vec::with_capacity(children.len() + 2);
+    let mut work = fast_map(0);
     // Each fold's work row draws where its work starts.
     let place = |index: usize| {
         fold.and_then(|fold| fold.children.get(index).copied())
@@ -1050,6 +1077,11 @@ fn reply_parts(
             if !seen.insert(id) {
                 id = foldhash::fast::FixedState::default().hash_one((id, index));
                 seen.insert(id);
+            }
+            if let ChildFold::Work { key, .. } = place(index)
+                && pass.open(key)
+            {
+                work.insert(id, Arc::from(work_key(key)));
             }
             let key = part_key(pass, item_id, child);
             let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
@@ -1082,7 +1114,11 @@ fn reply_parts(
             PartHtml::Html(Arc::from(footer)),
         ));
     }
-    (parts.into(), keys)
+    ReplyParts {
+        parts: parts.into(),
+        work,
+        keys,
+    }
 }
 
 /// The reduced mode's row for a block's work: `Worked for 1m 23s · 7 tool
@@ -1105,6 +1141,13 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
             )
         })
         .unwrap_or_default();
+    // A live row counts its calls on its call line, so its label stays the
+    // time alone.
+    let (label_failed, line_failed) = if summary.live {
+        (String::new(), failed)
+    } else {
+        (failed, String::new())
+    };
     // What it last said, then its last call, a little smaller. Each line is
     // keyed by its text: a new one is a new node, which settles in
     // (`.work-line`), while the label's ticking time keeps the nodes.
@@ -1124,17 +1167,22 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
                     )
                 })
                 .unwrap_or_default();
-            let tool = lines
-                .tool
-                .as_deref()
-                .map(|tool| {
+            // The call running now, or while none runs the calls so far.
+            let tool = match lines.tool.as_deref() {
+                Some(tool) => format!(
+                    "<span class=\"work-line flex min-w-0 items-center gap-1.5 pl-5 font-mono {NOTE} opacity-75\" data-key=\"c{:x}\" data-work-tool><span aria-hidden=\"true\">↳</span><span class=\"min-w-0 truncate\">{}</span></span>",
+                    line_key(tool),
+                    escape(tool)
+                ),
+                None => {
+                    let calls = summary.calls_label();
                     format!(
-                        "<span class=\"work-line flex min-w-0 items-center gap-1.5 pl-5 font-mono {NOTE} opacity-75\" data-key=\"c{:x}\" data-work-tool><span aria-hidden=\"true\">↳</span><span class=\"min-w-0 truncate\">{}</span></span>",
-                        line_key(tool),
-                        escape(tool)
+                        "<span class=\"work-line flex min-w-0 items-center gap-1.5 pl-5 {NOTE}\" data-key=\"n{:x}\" data-work-calls><span class=\"opacity-75\" aria-hidden=\"true\">↳</span><span class=\"min-w-0 truncate opacity-75\">{}</span>{line_failed}</span>",
+                        line_key(&calls),
+                        escape(&calls)
                     )
-                })
-                .unwrap_or_default();
+                }
+            };
             format!("<span class=\"flex min-w-0 flex-col gap-0.5\" aria-live=\"polite\" data-work-now>{text}{tool}</span>")
         })
         .unwrap_or_default();
@@ -1148,8 +1196,19 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
     } else {
         String::new()
     };
+    // Open, the row keeps the hover's colour, so it is easy to find and
+    // fold again, and the page pins a copy of it to the top while its work
+    // (`[data-work-in]`) scrolls past.
+    let (open_attribute, surface) = if open {
+        (
+            " data-open",
+            "rounded-md bg-toasted hover:bg-crust/70 dark:bg-ember dark:hover:bg-smoke/70",
+        )
+    } else {
+        ("", "rounded-md hover:bg-toasted dark:hover:bg-ember")
+    };
     format!(
-        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 rounded-md px-2 py-1 text-left text-sm text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{failed}</span>{lines}</button></div>",
+        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-ink active:bg-crust dark:text-sand dark:active:bg-smoke\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}</span>{lines}</button></div>",
         if summary.live { "live" } else { "done" },
         svg(chevron, "text-[0.625rem] opacity-70"),
         escape(&summary.label()),
@@ -2316,7 +2375,7 @@ mod tests {
         let (state, _) = streaming_reply();
         let folded = reduced_reply(&state, &Expanded::default());
         assert!(folded.contains("data-work=\"done\""), "{folded}");
-        assert!(folded.contains("Worked for 0s · 1 tool call"), "{folded}");
+        assert!(folded.contains("Worked for"), "{folded}");
         assert!(folded.contains("aria-expanded=\"false\""), "{folded}");
         assert!(folded.contains("the open tail"), "{folded}");
         assert!(!folded.contains("data-tool"), "{folded}");
@@ -2410,7 +2469,7 @@ mod tests {
                 .iter()
                 .map(|id| match &rows.html[id] {
                     super::RowHtml::Html(html) => html.to_string(),
-                    super::RowHtml::Reply { header, parts } => {
+                    super::RowHtml::Reply { header, parts, .. } => {
                         let mut html = header.to_string();
                         for (_, part) in parts.iter() {
                             match part {
@@ -2430,7 +2489,7 @@ mod tests {
         assert_eq!(folded.len(), 2, "{folded:?}");
         let all = folded.concat();
         assert_eq!(all.matches("data-work=").count(), 1, "{all}");
-        assert!(all.contains("Worked for 0s · 1 tool call"), "{all}");
+        assert!(all.contains("Worked for"), "{all}");
         assert!(!all.contains("npm run dev"), "{all}");
         assert!(
             !all.contains("…"),

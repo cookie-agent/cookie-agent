@@ -10,7 +10,8 @@
 //!
 //! Optional: `PREVIEW_WIDTH` (110), `PREVIEW_HEIGHT` (120), `PREVIEW_OFFSET`
 //! (scroll row; the tail is followed when unset), `PREVIEW_EVENT_LIMIT`
-//! (replay only the first N events), and `PREVIEW_DARK` (dark theme).
+//! (replay only the first N events), `PREVIEW_DARK` (dark theme), and
+//! `PREVIEW_OPEN_WORK` (open the reduced mode's work rows too).
 
 use std::collections::HashSet;
 
@@ -60,16 +61,28 @@ async fn render_preview() {
         .keys()
         .map(|id| BlockId::Tool(*id))
         .collect::<HashSet<_>>();
+    let open_work = std::env::var("PREVIEW_OPEN_WORK").is_ok();
     for item in &state.transcript {
-        if let crate::state::TranscriptItem::Assistant { children, .. } = item {
-            for child in children {
+        if let crate::state::TranscriptItem::Assistant { id, children, .. } = item {
+            for (index, child) in children.iter().enumerate() {
                 if let crate::state::AssistantChild::Thinking { id, .. } = child {
                     expanded.insert(BlockId::Thinking(*id));
+                }
+                // Wherever a fold may start: only the real ones are read.
+                if open_work {
+                    expanded.insert(BlockId::Work {
+                        item: *id,
+                        child: u32::try_from(index).unwrap(),
+                    });
                 }
             }
         }
     }
     app.expanded_blocks.insert(session, expanded);
+    if open_work {
+        app.tui_config.transcript =
+            cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced;
+    }
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| app.draw_for_test(frame)).unwrap();

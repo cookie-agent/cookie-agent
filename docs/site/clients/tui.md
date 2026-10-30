@@ -385,10 +385,14 @@ open the message menu.
 
 By default the transcript is **reduced**: each reply's thinking, tool calls,
 and the text written between calls fold into one row above the reply,
-`▸ Working… 42s · 3 tool calls` with what the agent is doing now on the line
-under it while it works, then `▸ Worked for 1m 23s · 7 tool calls`. Click
-the row to open the work, and again to fold it. A call waiting for your
-approval stays outside the fold. Ctrl-O, `/transcript full`, and
+`▸ Working… 42s` while it works, with the latest line it wrote or thought
+under it, then the call running now, or while no call runs the calls so far
+(`3 tool calls · 1 failed`); then `▸ Worked for 1m 23s · 7 tool calls`.
+Click the row to open the work, and again to fold it. An open row keeps the
+hover's colour, and once you scroll past it while its work still fills the
+top of the pane, it stays pinned there; clicking it there folds the work
+and brings the row back to the top. A call waiting for your approval stays
+outside the fold. Ctrl-O, `/transcript full`, and
 `/transcript reduced` switch between the reduced and the full transcript,
 which shows every thinking block and tool call, and save the choice; see
 [Transcript](../tui/transcript.md).

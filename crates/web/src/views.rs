@@ -1590,9 +1590,34 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     // Whether the rows overflow the box: without, there is no older row to
     // jump back from.
     let overflows = RwSignal::new(false);
+    // A copy of the open work row whose work the view's top is in, pinned
+    // there, and the work row a click on that copy folded, to bring back
+    // to the top once it drew folded.
+    let pinned_work = NodeRef::<html::Div>::new();
+    let reveal = StoredValue::new(None::<String>);
+    let pin_work = move || {
+        let (Some(column), Some(pinned)) = (
+            content.try_get_untracked().flatten(),
+            pinned_work.try_get_untracked().flatten(),
+        ) else {
+            return;
+        };
+        let pinned: web_sys::HtmlElement = pinned.into();
+        if let Some(head) = pinned_work_head(&column, &pinned) {
+            crate::morph::patch(&pinned, &head.html);
+            let _ = pinned
+                .style()
+                .set_property("transform", &format!("translateY({}px)", head.offset));
+            let _ = pinned.remove_attribute("hidden");
+        } else if !pinned.has_attribute("hidden") {
+            let _ = pinned.set_attribute("hidden", "");
+            pinned.set_inner_html("");
+        }
+    };
     // Mirrors `follow` into `following` once it changed, and whether the
     // rows overflow.
     let shown = move || {
+        pin_work();
         if let Some(now) = follow.try_with_value(|follow| follow.following())
             && following.try_get_untracked() != Some(now)
         {
@@ -1671,6 +1696,10 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 return;
             }
             pin();
+            if let Some(key) = reveal.try_update_value(Option::take).flatten() {
+                reveal_work_row(container, content, pinned_work, &key);
+                shown();
+            }
             // Code and media in the rows and parts that changed, not the
             // whole page.
             let Some(document) = web_sys::window().and_then(|window| window.document()) else {
@@ -1713,6 +1742,16 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
             "toggle-block" => {
                 if let Some(key) = target.get_attribute("data-block-key") {
+                    // The pinned copy of a work row folds it and brings the
+                    // row back to the top, where the view goes on after it.
+                    if target
+                        .closest("[data-work-pinned]")
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        reveal.set_value(Some(key.clone()));
+                    }
                     workspace.toggle_expanded(key);
                 }
             }
@@ -1857,6 +1896,17 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             <Show when=move || workspace.new_session.get()>
                 <cards::NewSessionCards workspace=workspace />
             </Show>
+            // Over the top of the transcript, an open work row the view
+            // scrolled past while its work is still in view; the row it
+            // sits in takes no room.
+            <div class="pointer-events-none sticky top-0 z-10 mx-auto h-0 max-w-4xl" data-work-pin>
+                <div
+                    node_ref=pinned_work
+                    class="pointer-events-auto overflow-hidden rounded-md shadow-md"
+                    data-work-pinned
+                    hidden
+                ></div>
+            </div>
             <div node_ref=content class="mx-auto flex max-w-4xl flex-col gap-2">
                 <For
                     each=move || rows.with(|rows| rows.order.to_vec())
@@ -1918,6 +1968,92 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 </Show>
             </div>
         </div>
+    }
+}
+
+/// The open work row to pin over the top of the transcript: its button's
+/// HTML, and how far up the end of its work pushes the copy.
+struct PinnedHead {
+    html: String,
+    offset: f64,
+}
+
+/// The open work row in `column` that scrolled past the top `pinned`
+/// sticks at while its work, the parts marked as its, still shows there.
+fn pinned_work_head(
+    column: &web_sys::Element,
+    pinned: &web_sys::HtmlElement,
+) -> Option<PinnedHead> {
+    let top = pinned.parent_element()?.get_bounding_client_rect().top();
+    let heads = column.query_selector_all("[data-work][data-open]").ok()?;
+    let mut found = None;
+    for index in 0..heads.length() {
+        let Some(head) = heads
+            .item(index)
+            .and_then(|head| head.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let rect = head.get_bounding_client_rect();
+        // In order: this one and every later one still show.
+        if rect.bottom() > top {
+            break;
+        }
+        let Some(key) = head.get_attribute("data-block-key") else {
+            continue;
+        };
+        let work = column
+            .query_selector_all(&format!("[data-work-in=\"{key}\"]"))
+            .ok()?;
+        let Some(last) = work
+            .item(work.length().saturating_sub(1))
+            .and_then(|last| last.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        // The copy rides up with the end of the work, and goes with it.
+        let room = last.get_bounding_client_rect().bottom() - top;
+        if room <= 0.0 {
+            continue;
+        }
+        let Some(button) = head.first_element_child() else {
+            continue;
+        };
+        found = Some(PinnedHead {
+            html: button.outer_html(),
+            offset: (room - rect.height()).min(0.0),
+        });
+    }
+    found
+}
+
+/// Scrolls the transcript so the work row `key` sits at its top.
+fn reveal_work_row(
+    container: NodeRef<html::Div>,
+    content: NodeRef<html::Div>,
+    pinned: NodeRef<html::Div>,
+    key: &str,
+) {
+    let (Some(scroller), Some(column), Some(pinned)) = (
+        container.try_get_untracked().flatten(),
+        content.try_get_untracked().flatten(),
+        pinned.try_get_untracked().flatten(),
+    ) else {
+        return;
+    };
+    let Some(top) = pinned
+        .parent_element()
+        .map(|pin| pin.get_bounding_client_rect().top())
+    else {
+        return;
+    };
+    let Ok(Some(row)) = column.query_selector(&format!("[data-work][data-block-key=\"{key}\"]"))
+    else {
+        return;
+    };
+    let above = row.get_bounding_client_rect().top() - top;
+    if above < 0.0 {
+        scroller.set_scroll_top(scroller.scroll_top() + above.floor() as i32);
     }
 }
 
@@ -2019,10 +2155,21 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
             })
         }
     });
-    let parts = Memo::new(move |_| {
+    let parts = Memo::new({
+        let row = row.clone();
+        move |_| {
+            row.with(|row| match row {
+                Some(RowHtml::Reply { parts, .. }) => Arc::clone(parts),
+                _ => Arc::from([]),
+            })
+        }
+    });
+    // Which parts show as an open fold's work: settles to the same map
+    // while the reply streams, so the parts' marks wake only on a change.
+    let work = Memo::new(move |_| {
         row.with(|row| match row {
-            Some(RowHtml::Reply { parts, .. }) => Arc::clone(parts),
-            _ => Arc::from([]),
+            Some(RowHtml::Reply { work, .. }) => Arc::clone(work),
+            _ => Arc::default(),
         })
     });
     let part_slots = Slots::new();
@@ -2056,7 +2203,8 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
                             })
                         });
                         on_cleanup(move || part_slots.remove(part));
-                        view! { <ReplyPart part=slot row=id id=part /> }
+                        let work = Memo::new(move |_| work.with(|work| work.get(&part).cloned()));
+                        view! { <ReplyPart part=slot work=work row=id id=part /> }
                     }
                 />
             </div>
@@ -2067,8 +2215,16 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
 
 /// One part of a reply: a tool call, a thinking block, text. Text keeps the
 /// nodes of its settled markdown blocks and redraws only its open tail.
+/// Shown as an open fold's work, it says so (`work`, the work row's block
+/// key), for the work row pinned while its work shows.
 #[component]
-fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl IntoView {
+fn ReplyPart(
+    part: ArcRwSignal<Option<PartHtml>>,
+    work: Memo<Option<Arc<str>>>,
+    row: u64,
+    id: u64,
+) -> impl IntoView {
+    let work = move || work.get().map(|key| key.to_string());
     let markdown = part.with_untracked(|part| matches!(part, Some(PartHtml::Markdown(_))));
     if !markdown {
         let html = move || {
@@ -2087,6 +2243,7 @@ fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl Int
             <div
                 class="min-w-0"
                 data-part
+                data-work-in=work
                 id=part_element_id(row, id)
                 node_ref=node
                 inner_html=first.to_string()
@@ -2108,7 +2265,7 @@ fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl Int
         };
         drawn.update_value(|drawn| draw_blocks(&element, drawn, &blocks));
     });
-    view! { <div class="markdown" data-part node_ref=node></div> }.into_any()
+    view! { <div class="markdown" data-part data-work-in=work node_ref=node></div> }.into_any()
 }
 
 /// Brings `node`, drawn with `first`, in step with each later `html` in
