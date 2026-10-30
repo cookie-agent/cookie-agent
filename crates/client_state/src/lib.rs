@@ -664,6 +664,9 @@ pub enum TranscriptItem {
     /// hides it (client protocol 1.20.0).
     AcpNotice {
         id: u64,
+        /// Bumped when the notice changes, as an agent's question's does
+        /// once it is answered.
+        version: u64,
         notice: cookie_agent_protocol::AcpNotice,
     },
     /// A compaction of the session's ACP agent's own, at its end, shown as
@@ -849,10 +852,10 @@ impl TranscriptItem {
             | Self::AgentMd { version, .. }
             | Self::SkillLoaded { version, .. }
             | Self::ModelInput { version, .. }
+            | Self::AcpNotice { version, .. }
             | Self::Plan { version, .. } => *version,
             Self::Goal { .. }
             | Self::MemoryChange { .. }
-            | Self::AcpNotice { .. }
             | Self::AgentCompaction { .. }
             | Self::AgentSessionMessage { .. }
             | Self::AgentBackgroundEnded { .. } => 0,
@@ -1259,6 +1262,9 @@ pub struct SessionState {
     /// The questions an agent asked the user that still wait for an
     /// answer, oldest first.
     pub questions: Vec<elicitation::QuestionState>,
+    /// The transcript row of each question an agent asked, by its ID: the
+    /// row splits the run's work where it was asked, and says the answer.
+    pub question_rows: HashMap<cookie_agent_protocol::ElicitationId, u64>,
     /// AGENTS.md entries loaded by the latest run and by the run before it,
     /// per attachment (events without one count as `local`). A run loads
     /// one event per coding attachment that returned a file. A row appears

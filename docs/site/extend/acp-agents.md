@@ -461,8 +461,12 @@ No permission rule or mode answers a question: it is the agent asking you,
 not an action. Where no one is there to answer, cookie declines it at once
 with the reason, so the turn goes on: a session in `auto_approve_n` (a cron
 run's default mode), and a headless `cookie run`. Interrupting the turn
-cancels a question still waiting. The transcript keeps a line for each
-answered question (an *info* event).
+cancels a question still waiting. The transcript shows each question as
+a row where the agent asked it, `claude asks: “…”`, which says *waiting
+for your answer* until it is answered and then how, with the answers given
+(`accepted`, then `Plan: safe`). The row splits the turn's work: in the
+reduced transcript, what the agent did before the question folds into
+its own `Worked for` row, and what it does after opens a new one.
 
 ## Cookie's tools for the agent: the MCP bridge
 

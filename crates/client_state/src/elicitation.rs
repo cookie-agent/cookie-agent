@@ -317,6 +317,39 @@ pub fn resolution_text(resolution: &ElicitationResolution) -> String {
     }
 }
 
+/// What the user answered `question` with: each answered field's title
+/// (else its name) and value, one per line; empty for an answer with no
+/// values.
+pub fn answer_text(
+    question: &QuestionState,
+    content: &cookie_agent_protocol::ElicitationContent,
+) -> String {
+    use cookie_agent_protocol::ElicitationValue;
+    let title = |name: &str| {
+        question
+            .request
+            .form
+            .as_ref()
+            .and_then(|form| form.fields.iter().find(|field| field.name == name))
+            .and_then(|field| field.title.clone())
+            .unwrap_or_else(|| name.to_owned())
+    };
+    content
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                ElicitationValue::Boolean(value) => if *value { "yes" } else { "no" }.to_owned(),
+                ElicitationValue::Integer(value) => value.to_string(),
+                ElicitationValue::Number(value) => value.to_string(),
+                ElicitationValue::Text(value) => value.clone(),
+                ElicitationValue::List(values) => values.join(", "),
+            };
+            format!("{}: {value}", title(name))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

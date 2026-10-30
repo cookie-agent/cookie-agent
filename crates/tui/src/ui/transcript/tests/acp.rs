@@ -338,6 +338,7 @@ fn a_notice_and_a_steered_message_render() {
     state.acp.steered.insert(7);
     state.transcript.push(TranscriptItem::AcpNotice {
         id: 2,
+        version: 0,
         notice: cookie_agent_protocol::AcpNotice {
             severity: cookie_agent_protocol::AcpNoticeSeverity::Info,
             title: "The agent compacted its conversation".into(),

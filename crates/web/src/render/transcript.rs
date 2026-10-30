@@ -2698,6 +2698,7 @@ mod tests {
             &view,
             &TranscriptItem::AcpNotice {
                 id: 2,
+                version: 0,
                 notice: cookie_agent_protocol::AcpNotice {
                     severity: cookie_agent_protocol::AcpNoticeSeverity::Warning,
                     title: "Rate limited".into(),

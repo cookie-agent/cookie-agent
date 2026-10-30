@@ -1152,11 +1152,39 @@ pub(super) fn reduce_event_from(
             state
                 .questions
                 .retain(|question| question.request.elicitation_id != request.elicitation_id);
-            state.questions.push(crate::elicitation::QuestionState {
+            let question = crate::elicitation::QuestionState {
                 session_id,
                 run_id,
                 request,
-            });
+            };
+            // The question splits the work: what the agent did before it
+            // folds into a block of its own, then the question, then what
+            // it does after.
+            if !state
+                .question_rows
+                .contains_key(&question.request.elicitation_id)
+            {
+                let notice = cookie_agent_protocol::AcpNotice {
+                    severity: cookie_agent_protocol::AcpNoticeSeverity::Info,
+                    title: format!("{}: “{}”", question.heading(), question.request.message),
+                    description: Some("waiting for your answer".to_owned()),
+                };
+                let mut row = None;
+                push_split_item(state, timestamp, |id| {
+                    row = Some(id);
+                    TranscriptItem::AcpNotice {
+                        id,
+                        version: 0,
+                        notice,
+                    }
+                });
+                if let Some(row) = row {
+                    state
+                        .question_rows
+                        .insert(question.request.elicitation_id, row);
+                }
+            }
+            state.questions.push(question);
         }
         EventPayload::ElicitationResolved { resolution } => {
             let asked = state
@@ -1164,10 +1192,30 @@ pub(super) fn reduce_event_from(
                 .iter()
                 .position(|question| question.request.elicitation_id == resolution.elicitation_id)
                 .map(|index| state.questions.remove(index));
-            let message = asked.map_or_else(
+            let message = asked.as_ref().map_or_else(
                 || "a question".to_owned(),
                 |question| format!("{}: “{}”", question.heading(), question.request.message),
             );
+            // Its row says how it was answered, and with what.
+            if let Some(row) = state.question_rows.get(&resolution.elicitation_id).copied() {
+                let answers = asked
+                    .as_ref()
+                    .map(|question| crate::elicitation::answer_text(question, &resolution.content))
+                    .unwrap_or_default();
+                let outcome = crate::elicitation::resolution_text(&resolution);
+                let description = if answers.is_empty() {
+                    outcome
+                } else {
+                    format!("{outcome}\n{answers}")
+                };
+                if let Some(TranscriptItem::AcpNotice {
+                    version, notice, ..
+                }) = state.transcript.iter_mut().find(|item| item.id() == row)
+                {
+                    notice.description = Some(description);
+                    *version = version.wrapping_add(1);
+                }
+            }
             push_event(
                 state,
                 EventLevel::Info,
@@ -1474,6 +1522,7 @@ pub(super) fn reduce_event_from(
             if let Some(notice) = update.notice {
                 push_split_item(state, timestamp, |id| TranscriptItem::AcpNotice {
                     id,
+                    version: 0,
                     notice,
                 });
             }

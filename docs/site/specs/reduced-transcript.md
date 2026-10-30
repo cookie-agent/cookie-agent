@@ -376,8 +376,13 @@ Phases:
 - **Deviations.**
   - The TUI has no keyboard focus on transcript rows, so a work row opens
     by click only, like every other row (section 6 said Enter too).
-  - Only approvals stay out of the fold. An ACP agent's question names no
+  - Only approvals stay out of the fold. An agent's question names no
     tool call, so it shows in its own bar and panel as before (section 3).
+    Since 2026-10-30 (user request) it also splits the block where it was
+    asked, as a user or producer row does: a question row
+    (`TranscriptItem::AcpNotice`, which then says the answer) stands
+    between the work before it, sealed as `Worked for`, and the work after,
+    a new block.
   - "Waiting on the user" counts approvals escalated to the user that have
     not expired, as the approvals panel does; a call the reviewer is still
     looking at stays folded.

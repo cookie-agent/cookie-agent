@@ -5756,3 +5756,105 @@ fn an_acp_subagent_shows_what_it_inherits_and_no_system_prompt() {
         )]
     );
 }
+
+#[test]
+fn an_agents_question_splits_its_work_and_its_row_says_the_answer() {
+    use cookie_agent_protocol::{
+        ElicitationAction, ElicitationAnsweredBy, ElicitationId, ElicitationRequest,
+        ElicitationResolution, ElicitationValue,
+    };
+    let session_id = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let mut state = SessionState::default();
+    let apply = |state: &mut SessionState, seq, payload| {
+        reduce_event(
+            state,
+            session_id,
+            Some(run),
+            seq,
+            jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            payload,
+        );
+    };
+    let attempt = || EventPayload::ModelAttemptStarted {
+        attempt_id: AttemptId::new_v7(),
+        attempt_ordinal: 1,
+        fallback_index: 0,
+        retry_ordinal: 0,
+        resolved_model: resolved_model(),
+        prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+    };
+    let request: ElicitationRequest = serde_json::from_value(serde_json::json!({
+        "elicitation_id": ElicitationId::new_v7(),
+        "agent": "claude",
+        "message": "Which plan?",
+        "form": {"fields": [{"name": "plan", "title": "Plan", "required": true,
+                             "input": {"type": "text"}}]},
+    }))
+    .expect("request");
+    apply(&mut state, 1, attempt());
+    let item_id = state.transcript[0].id();
+    append_assistant_delta(
+        &mut state,
+        item_id,
+        1,
+        "reading".into(),
+        AssistantPartKind::Text,
+        jiff::Timestamp::now(),
+    );
+    apply(
+        &mut state,
+        2,
+        EventPayload::ElicitationRequested {
+            request: request.clone(),
+        },
+    );
+    let question = |state: &SessionState| {
+        state.transcript.iter().find_map(|item| match item {
+            TranscriptItem::AcpNotice {
+                version, notice, ..
+            } => Some((*version, notice.title.clone(), notice.description.clone())),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        question(&state),
+        Some((
+            0,
+            "claude asks: “Which plan?”".to_owned(),
+            Some("waiting for your answer".to_owned())
+        ))
+    );
+    apply(
+        &mut state,
+        3,
+        EventPayload::ElicitationResolved {
+            resolution: ElicitationResolution {
+                elicitation_id: request.elicitation_id,
+                action: ElicitationAction::Accept,
+                content: [("plan".to_owned(), ElicitationValue::Text("safe".into()))]
+                    .into_iter()
+                    .collect(),
+                answered_by: ElicitationAnsweredBy::User,
+                reason: None,
+            },
+        },
+    );
+    assert_eq!(
+        question(&state).map(|(version, _, description)| (version, description)),
+        Some((1, Some("accepted\nPlan: safe".to_owned())))
+    );
+    // What the agent does after it opens below the question.
+    apply(&mut state, 4, attempt());
+    let rows = state
+        .transcript
+        .iter()
+        .filter(|item| !matches!(item, TranscriptItem::Event { .. }))
+        .map(|item| match item {
+            TranscriptItem::Assistant { .. } => "assistant",
+            TranscriptItem::AcpNotice { .. } => "question",
+            _ => "other",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows, ["assistant", "question", "assistant"]);
+}
