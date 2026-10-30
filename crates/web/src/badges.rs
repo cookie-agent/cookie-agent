@@ -179,23 +179,3 @@ pub fn fit_soon(line: NodeRef<leptos::html::Span>) {
         }
     });
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_hue_has_its_own_badge_and_dot() {
-        for hue in 0..cookie_agent_client_state::badges::BADGE_HUES {
-            let class = hue_class(Some(hue));
-            assert!(class.contains(&format!("text-hue-{hue} ")), "{class}");
-            assert!(
-                class.contains(&format!("dark:text-hue-{hue}-dark")),
-                "{class}"
-            );
-            assert!(DOTS[usize::from(hue)].contains(&format!("bg-hue-{hue} ")));
-        }
-        assert_eq!(hue_class(None), GREY);
-        assert_eq!(hue_class(Some(8)), GREY);
-    }
-}

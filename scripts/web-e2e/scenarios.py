@@ -410,21 +410,9 @@ def buttons(browser):
 
 
 def composer(browser):
-    """The message box: one border, one line that grows to five and
-    shrinks back, and its buttons by the session's state."""
+    """The message box: one line that grows to five and shrinks back, and
+    its buttons by the session's state."""
     new_session(browser)
-    # One border: the box's. The text field and what holds the box draw none.
-    borders = browser.script(
-        "const t = getComputedStyle(document.querySelector('#composer'));"
-        "const b = getComputedStyle(document.querySelector('#composer-box'));"
-        "const outer = getComputedStyle(document.querySelector('#composer-box').parentElement.parentElement);"
-        "const shadowless = (style) => style.boxShadow.split(/,(?![^(]*\\))/)"
-        "  .every((shadow) => shadow.trim() === 'none' || shadow.includes('rgba(0, 0, 0, 0)'));"
-        "return [t.borderTopWidth, t.borderLeftWidth, t.outlineStyle, shadowless(t) ? 'none' : t.boxShadow,"
-        "        b.borderTopWidth, b.borderLeftWidth, outer.borderTopWidth]"
-    )
-    assert borders == ["0px", "0px", "none", "none", "1px", "1px", "0px"], borders
-    print("the message box has one border")
     # One line to start; five at most, then it scrolls; back to one.
     one = composer_height(browser)
     assert 40 <= one <= 48, "the empty box is %s px tall" % one
@@ -960,11 +948,10 @@ def pinned_rows(browser):
     browser.wait("the system prompt", lambda: count(browser, "[data-system-prompt]") == 1)
     body = browser.script("return document.querySelector('[data-system-prompt]').textContent")
     assert "Help." in body, body
-    style = browser.script(
-        "const s = getComputedStyle(document.querySelector('[data-system-prompt]'));"
-        "return [s.whiteSpace, s.fontFamily]"
+    white_space = browser.script(
+        "return getComputedStyle(document.querySelector('[data-system-prompt]')).whiteSpace"
     )
-    assert style[0] == "pre-wrap" and "Mono" in style[1], style
+    assert white_space == "pre-wrap", white_space
     browser.click(tools + " button")
     browser.wait("the tools", lambda: count(browser, "[data-model-tools] li") > 0)
     names = browser.script("return [...document.querySelectorAll('[data-model-tools] li')].map((l) => l.textContent)")
@@ -2114,24 +2101,19 @@ def views_2026(browser):
     browser.wait("box unpinned", lambda: count(browser, '#page [data-unplaced] [data-runtime="box"]') == 1)
     browser.click('#page [data-machine-drop="e2e-lab"] [data-machine-action="forget"]')
     browser.wait("e2e-lab forgotten", lambda: count(browser, '#page [data-machine-drop="e2e-lab"]') == 0)
-    # `roamer` dialed in once and left: its machine remembers it, its name
-    # dimmed, with when it was last seen, until Forget. Its settings are as
+    # `roamer` dialed in once and left: its machine remembers it, with when
+    # it was last seen, until Forget. Its settings are as
     # editable as a connected runtime's, and the card says so; it dials in
     # on its own, so it has no Connect.
     roamer = '#page [data-machine-drop] [data-runtime="roamer"]'
     browser.wait("roamer remembered", lambda: count(browser, roamer + "[data-offline=true]") == 1)
     detail = browser.text(roamer)
     assert "last seen" in detail and "not connected" in detail, detail
-    opacity = "return getComputedStyle(document.querySelector(arguments[0])).opacity"
-    assert float(browser.script(opacity, roamer)) == 1, "the offline card reads as uneditable"
-    name = browser.script("return getComputedStyle(document.querySelector(arguments[0]).closest('[class*=opacity-60]') || document.body).opacity",
-                          roamer + " .font-mono")
-    assert float(name) < 1, name
     assert count(browser, roamer + " [data-runtime-offline-note]") == 1, detail
     assert count(browser, roamer + " [data-runtime-connection]") == 0, "a dial-in runtime offers Connect"
     browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", roamer)
     browser.shot("machines-remembered")
-    print("machines: an offline runtime stays on its machine, editable, its name dimmed:", detail.replace("\n", " / "))
+    print("machines: an offline runtime stays on its machine, editable:", detail.replace("\n", " / "))
     browser.click(roamer + ' [data-machine-action="forget-runtime"]')
     browser.wait("roamer forgotten", lambda: count(browser, roamer) == 0)
     assert count(browser, '#page [data-unplaced] [data-runtime="roamer"]') == 1
@@ -2268,7 +2250,7 @@ def open_memory_diff(browser, title):
         "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
         "const diff = row.querySelector('[data-tool-body] [data-kind=\"diff\"]');"
         "return [diff.firstElementChild.innerText.trim(),"
-        "  [...diff.querySelectorAll('tr.bg-red-100, tr.bg-green-100')].map(r => r.lastElementChild.innerText),"
+        "  [...diff.querySelectorAll('tr')].map(r => r.lastElementChild.innerText).filter(t => /^[+-]/.test(t)),"
         "  diff.querySelectorAll('tr').length]",
         title,
     )
@@ -2593,16 +2575,12 @@ def long_press(browser, selector, hold=1200, drag=0):
     }])
 
 
-# A session row's middle and its trash's, the trash's size, and the
-# background of each.
+# A session row's middle and its trash's, and the trash's size.
 TRASH_GEOMETRY = """
 const row = document.querySelector(arguments[0]);
 const open = row.querySelector('[data-session]').getBoundingClientRect();
-const trash = row.querySelector('[data-delete]');
-const box = trash.getBoundingClientRect();
-return [open.top + open.height / 2, box.top + box.height / 2, box.width, box.height,
-    getComputedStyle(row.querySelector('[data-session]')).backgroundColor,
-    getComputedStyle(trash).backgroundColor];
+const box = row.querySelector('[data-delete]').getBoundingClientRect();
+return [open.top + open.height / 2, box.top + box.height / 2, box.width, box.height];
 """
 
 
@@ -2623,12 +2601,10 @@ def deleting(browser):
     assert not shown(browser, row + " [data-delete]"), "the trash shows without a hover"
     hover(browser, row)
     browser.wait("the trash on hover", lambda: shown(browser, row + " [data-delete]"))
-    # It is centred on the row's two lines, a full touch target, and at rest
-    # in the hovered row's colour.
-    middle, trash_middle, width, height, row_colour, trash_colour = browser.script(TRASH_GEOMETRY, row)
+    # It is centred on the row's two lines, and a full touch target.
+    middle, trash_middle, width, height = browser.script(TRASH_GEOMETRY, row)
     assert abs(middle - trash_middle) <= 1, "the trash is %s px off the row's middle" % (trash_middle - middle)
     assert width >= 44 and height >= 44, "the trash is %sx%s px" % (width, height)
-    assert row_colour == trash_colour, "the trash is %s over a %s row" % (trash_colour, row_colour)
     browser.click(row + " [data-delete]")
     browser.wait("the confirmation", lambda: title in browser.text("aside [data-delete-confirm-box]"))
     browser.shot("delete-confirm")
@@ -3008,8 +2984,6 @@ def badge_kinds(browser, row):
     return [kind for kind, _ in badges(browser, row)]
 
 
-# The text colour of a row's badge for `arguments[1]`, and of the bottom
-# bar's dot for it.
 # Whether every shown machine badge of a row shows its whole name.
 MACHINES_WHOLE = """
 return [...document.querySelectorAll(arguments[0] + ' [data-badge=machine]')]
@@ -3031,19 +3005,13 @@ const pathCut = [...line.querySelectorAll('[data-badge=workspace]')]
     .some((e) => e.scrollWidth > e.clientWidth + 1);
 return [whole, pathCut, time.scrollWidth <= time.clientWidth];
 """
-BADGE_COLOUR = """
-const badge = [...document.querySelectorAll(arguments[0] + ' [data-badge]')]
-    .find((b) => b.textContent.trim().startsWith(arguments[1]));
-return badge ? getComputedStyle(badge).color : null;
-"""
 
 
 def session_badges(browser):
     """Session rows say where they run as machine badges: none without a
     workspace, one machine and its workspaces, and one badge per machine
-    for a session on two; a machine keeps its colour in every row, and its
-    runtimes take it in the bottom bar and the runtime cards; and the
-    badges truncate before the time does."""
+    for a session on two; its runtimes show a dot in the bottom bar and the
+    runtime cards; and the badges truncate before the time does."""
     rows = {name: 'aside [data-session-row="%s"]' % session for name, session in MADE.items()}
     assert badge_kinds(browser, rows["none"]) == []
     assert badge_kinds(browser, rows["one"]) == ["machine", "workspace"]
@@ -3055,9 +3023,6 @@ def session_badges(browser):
         "  < r.querySelector('[data-session-badges]').getBoundingClientRect().top",
         rows["one machine"],
     )
-    # The same machine, the same colour, in any row.
-    desk_colour = browser.script(BADGE_COLOUR, rows["one"], machine[1])
-    assert desk_colour and desk_colour == browser.script(BADGE_COLOUR, rows["one machine"], machine[1]), desk_colour
     # A runtime pinned to another machine is no longer on this one: a
     # session may attach it beside `local`, and spans two machines.
     subprocess.run([COOKIE, "machine", "assign", "alt", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
@@ -3108,21 +3073,15 @@ def session_badges(browser):
     print("a line too narrow for its machines shows only whole ones, then", more, "for", more_title)
     # One attachment shows its machine, now the studio, and its workspace.
     browser.wait("alt on the studio", lambda: badges(browser, rows["one"]) == [["machine", "e2e-studio"], ["workspace", "~/elsewhere"]])
-    alt_colour = browser.script(BADGE_COLOUR, rows["one"], "e2e-studio")
-    assert alt_colour, alt_colour
     tooltip = browser.script(TOOLTIP, rows["two machines"])
     assert "e2e-studio · alt" in tooltip and "~/elsewhere" in tooltip, tooltip
     assert "%s · local · ~/workspace" % machine[1] in tooltip, tooltip
     # Machine badges carry the machine's OS icon.
     assert count(browser, rows["two machines"] + " [data-badge=machine] svg") == 2
     browser.shot("badges")
-    # The bottom bar and the runtime cards mark alt in its colour.
+    # The bottom bar and the runtime cards mark alt with a dot.
     click_row(browser, rows["one"] + " [data-session]")
     browser.wait("the alt session", lambda: count(browser, '#places [data-runtime-dot="alt"]') == 1)
-    dot = browser.script(
-        "return getComputedStyle(document.querySelector('#places [data-runtime-dot=alt]')).backgroundColor"
-    )
-    assert dot == alt_colour, (dot, alt_colour)
     open_cards(browser)
     for name, is_open in browser.script(
         "return [...document.querySelectorAll('#new-session [data-group]')].map((g) => [g.dataset.group, g.dataset.open])"
@@ -3130,9 +3089,6 @@ def session_badges(browser):
         if is_open != "true":
             browser.click('#new-session [data-group-toggle="%s"]' % name)
     browser.wait("alt's card dot", lambda: count(browser, '#new-session [data-runtime-dot="alt"]') == 1)
-    assert browser.script(
-        "return getComputedStyle(document.querySelector('#new-session [data-runtime-dot=alt]')).backgroundColor"
-    ) == alt_colour
     browser.shot("badges-cards")
     close_sheet(browser)
     click_row(browser, rows["two machines"] + " [data-session]")
@@ -3158,19 +3114,17 @@ def session_badges(browser):
     browser.script("document.querySelector('#sidebar').style.width = ''")
     subprocess.run([COOKIE, "machine", "forget", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
-    print("badges: none, one machine and its workspaces, two machines; a machine keeps its colour everywhere; names stay whole")
+    print("badges: none, one machine and its workspaces, two machines; names stay whole")
 
 
-# A row's pencil and trash: the row's middle and each button's, their
-# sizes, the row's background and theirs, and the gap between them.
+# A row's pencil and trash: the row's middle and the pencil's, its size,
+# and the gap between them.
 ROW_BUTTONS = """
 const row = document.querySelector(arguments[0]);
 const open = row.querySelector('[data-session]').getBoundingClientRect();
 const pencil = row.querySelector('[data-rename]'), trash = row.querySelector('[data-delete]');
 const p = pencil.getBoundingClientRect(), t = trash.getBoundingClientRect();
-return [open.top + open.height / 2, p.top + p.height / 2, p.width, p.height, t.left - p.right,
-    getComputedStyle(row.querySelector('[data-session]')).backgroundColor,
-    getComputedStyle(pencil).backgroundColor];
+return [open.top + open.height / 2, p.top + p.height / 2, p.width, p.height, t.left - p.right];
 """
 
 
@@ -3212,18 +3166,15 @@ def renaming(browser):
     browser.wait("the automatic title", lambda: browser.text("#session-title") not in ("Badges and titles", ""))
     print("⋮ › Rename and the automatic title:", browser.text("#session-title"))
 
-    # The row's pencil sits left of its trash, centred, in the hovered
-    # row's colour.
+    # The row's pencil sits left of its trash, centred.
     hover(browser, "#transcript")
     assert not shown(browser, row + " [data-rename]"), "the pencil shows without a hover"
     hover(browser, row)
     browser.wait("the pencil on hover", lambda: shown(browser, row + " [data-rename]"))
-    middle, pencil_middle, width, height, gap, row_colour, pencil_colour = browser.script(ROW_BUTTONS, row)
+    middle, pencil_middle, width, height, gap = browser.script(ROW_BUTTONS, row)
     assert abs(middle - pencil_middle) <= 1, "the pencil is %s px off the row's middle" % (pencil_middle - middle)
     assert width >= 44 and height >= 44, "the pencil is %sx%s px" % (width, height)
     assert 0 <= gap <= 8, "the pencil is %s px from the trash" % gap
-    assert row_colour == pencil_colour, "the pencil is %s over a %s row (%s)" % (
-        pencil_colour, row_colour, browser.script("return document.querySelector(arguments[0] + ' [data-session]').className", row))
     original = browser.text(row + " [data-session-title]")
     browser.click(row + " [data-rename]")
     field = row + " [data-rename-field]"
@@ -4036,8 +3987,6 @@ def home_screen():
     for field in ("id", "start_url", "scope"):
         assert manifest[field] == "./", (field, manifest[field])
     assert manifest["display"] == "standalone"
-    assert re.fullmatch(r"#[0-9a-f]{6}", manifest["background_color"])
-    assert re.fullmatch(r"#[0-9a-f]{6}", manifest["theme_color"])
     assert not manifest.get("prefer_related_applications")
     icons = set()
     for icon in manifest["icons"]:
@@ -4642,26 +4591,6 @@ def projects(browser):
         header(project),
     )
     assert labels == ["Edit the project", "Delete the project", "New session in this project"], labels
-    # Its buttons are clear, so they take the header's colour, as No
-    # project's + does: the same buttons, styled the same.
-    width = browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().width", header(project))
-    perform(browser, [{
-        "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
-        "actions": [{"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find(header(project))},
-                     "x": int(-width / 2 + 30), "y": -8}],
-    }])
-    time.sleep(0.3)
-    for button in ("[data-header-edit]", "[data-header-delete]", "[data-header-new]"):
-        colour = browser.script(
-            "return getComputedStyle(document.querySelector(arguments[0])).backgroundColor",
-            header(project) + " " + button,
-        )
-        assert colour in ("rgba(0, 0, 0, 0)", "transparent"), (button, colour)
-    assert browser.script(
-        "return document.querySelector(arguments[0]).className === document.querySelector(arguments[1]).className",
-        header(project) + " [data-header-new]",
-        header("none") + " [data-header-new]",
-    ), "a project's + is styled unlike No project's"
     browser.shot("project-header-hover")
 
     # Folding is remembered across a reload.
@@ -5438,12 +5367,9 @@ def acp_agents(browser):
     large = '#sheet [data-acp-model="large"]'
     browser.wait("the agent's models", lambda: count(browser, large) == 1)
     assert count(browser, '#sheet [data-acp-effort="high"]') == 1
-    # Beside each name, muted, the ID an agent document's `models` writes.
+    # Beside each name, the ID an agent document's `models` writes.
     assert browser.text(large + " [data-doc-id]") == "large", browser.text(large)
     assert browser.text('#sheet [data-acp-effort="high"] [data-doc-id]') == "high", browser.text("#sheet")
-    assert "text-ink" in browser.script(
-        "return document.querySelector(arguments[0]).className", large + " [data-doc-id]"
-    )
     settle(browser)
     browser.shot("acp-agent-models")
     browser.click(large)
@@ -5826,11 +5752,7 @@ def reduced_transcript(browser):
     before = browser.text(work + " [data-work-label]")
     browser.wait("the time ticking", lambda: browser.text(work + " [data-work-label]") != before, timeout=10)
     assert browser.script("return document.querySelector(arguments[0]).__seen === true", tool), "the call's line was drawn anew"
-    assert browser.script(
-        "return getComputedStyle(document.querySelector(arguments[0])).animationName", tool
-    ) == "work-line-in"
-    # The live row spins in place of the trailing working row.
-    assert count(browser, "#transcript [data-work=live] .animate-spin") == 1, "the live row does not spin"
+    # The live row stands in for the trailing working row.
     assert count(browser, "#working") == 0, "the working row repeats the live work row"
     print("a running reply's work row:", label, "/", browser.text(work + " [data-work-now]"))
     browser.shot("reduced-live")

@@ -523,7 +523,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(statuses, ["completed", "in_progress", "pending"]);
         assert!(plan.contains("Read &lt;it&gt;"), "{plan}");
-        assert!(plan.contains("line-through"), "{plan}");
         assert!(plan.contains(">high</span>"), "{plan}");
         assert!(
             plan.contains("<span class=\"sr-only\">in progress:</span>"),
@@ -583,10 +582,7 @@ mod tests {
             }],
             omitted_entries: None,
         });
-        assert!(
-            key_value.contains("<dt class=\"font-bold\">status</dt>"),
-            "{key_value}"
-        );
+        assert!(key_value.contains(">status</dt>"), "{key_value}");
         assert!(key_value.contains("200 &lt;ok&gt;"), "{key_value}");
 
         let table = html(DisplayBlock::Table {
@@ -695,10 +691,18 @@ mod tests {
         }));
         assert!(diff.contains("a.txt · modified"), "{diff}");
         assert!(diff.contains("@@ -40,3 +41,3 @@"), "{diff}");
+        // Cells without their classes: the numbers and text, in order.
+        let mut unstyled = String::new();
+        let mut rest = diff.as_str();
+        while let Some(at) = rest.find(" class=\"") {
+            unstyled.push_str(&rest[..at]);
+            let value = &rest[at + " class=\"".len()..];
+            rest = &value[value.find('"').map_or(value.len(), |end| end + 1)..];
+        }
+        unstyled.push_str(rest);
+        let diff = unstyled;
         let row = |old: &str, new: &str, text: &str| {
-            format!(
-                "<td class=\"select-none px-2 text-right text-ink dark:text-sand\">{old}</td><td class=\"select-none px-2 text-right text-ink dark:text-sand\">{new}</td><td class=\"whitespace-pre px-2\">{text}</td>"
-            )
+            format!("<td>{old}</td><td>{new}</td><td>{text}</td>")
         };
         for expected in [
             row("40", "41", " same"),

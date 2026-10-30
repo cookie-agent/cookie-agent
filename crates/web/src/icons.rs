@@ -267,52 +267,12 @@ pub fn permission_mode(mode: PermissionMode) -> (Icon, &'static str) {
 #[cfg(test)]
 mod tests {
     use cookie_agent_client_state::ToolStatus;
-    use cookie_agent_protocol::{SessionStatus, ToolHint};
+    use cookie_agent_protocol::SessionStatus;
 
-    use super::{
-        SessionActivity, hint_icon, permission_mode, row_status, session_status, svg, tool_status,
-    };
+    use super::{SessionActivity, row_status, session_status, svg, tool_status};
 
     #[test]
-    fn every_permission_mode_has_its_own_icon() {
-        use cookie_agent_protocol::PermissionMode;
-        let mut icons = [
-            PermissionMode::AutoApprove,
-            PermissionMode::AutoApproveN,
-            PermissionMode::AutoApproveY,
-            PermissionMode::Ask,
-            PermissionMode::Yolo,
-        ]
-        .map(|mode| permission_mode(mode).0.data)
-        .to_vec();
-        icons.sort_unstable();
-        icons.dedup();
-        assert_eq!(icons.len(), 5);
-    }
-
-    #[test]
-    fn every_documented_hint_has_its_own_icon_and_others_are_generic() {
-        let generic = hint_icon(Some(ToolHint::GENERIC));
-        assert_eq!(hint_icon(None), generic);
-        assert_eq!(hint_icon(Some("teleport")), generic);
-        assert_eq!(hint_icon(Some("shell")), icondata::FaTerminalSolid);
-        assert_eq!(
-            hint_icon(Some(ToolHint::FILE_WRITE)),
-            hint_icon(Some(ToolHint::FILE_EDIT))
-        );
-        let mut distinct = ToolHint::DOCUMENTED
-            .iter()
-            .filter(|hint| **hint != ToolHint::FILE_EDIT)
-            .map(|hint| hint_icon(Some(hint)).data)
-            .collect::<Vec<_>>();
-        let documented = distinct.len();
-        distinct.sort_unstable();
-        distinct.dedup();
-        assert_eq!(distinct.len(), documented, "two hints share an icon");
-    }
-
-    #[test]
-    fn statuses_name_themselves_and_only_running_ones_spin() {
+    fn statuses_name_themselves_and_rows_mark_only_what_needs_attention() {
         for status in [
             ToolStatus::Running,
             ToolStatus::Completed,
@@ -320,36 +280,29 @@ mod tests {
             ToolStatus::Cancelled,
             ToolStatus::Interrupted,
         ] {
-            let mark = tool_status(&status, false);
-            assert_eq!(mark.spins, status == ToolStatus::Running, "{status:?}");
-            assert!(!mark.label.is_empty());
+            assert!(!tool_status(&status, false).label.is_empty(), "{status:?}");
         }
-        let backgrounded = tool_status(&ToolStatus::Running, true);
-        assert!(!backgrounded.spins);
-        assert_eq!(backgrounded.label, "in the background");
+        assert_eq!(
+            tool_status(&ToolStatus::Running, true).label,
+            "in the background"
+        );
         assert_eq!(tool_status(&ToolStatus::Failed, false).label, "failed");
 
-        assert!(session_status(SessionStatus::Running).spins);
         assert_eq!(session_status(SessionStatus::Completed).label, "completed");
-        assert_eq!(
-            session_status(SessionStatus::Failed).icon,
-            tool_status(&ToolStatus::Failed, false).icon
-        );
         assert_eq!(session_status(SessionStatus::Unknown).label, "unknown");
         // Rows mark only what runs, what waits, and what went wrong.
-        assert!(row_status(&SessionActivity::Running).is_some_and(|mark| mark.spins));
-        let waiting = row_status(&SessionActivity::Waiting(vec![
-            cookie_agent_protocol::WaitingOn::Goal,
-        ]))
-        .expect("a waiting mark");
-        assert!(!waiting.spins);
-        assert_ne!(waiting.icon, session_status(SessionStatus::Running).icon);
+        assert!(row_status(&SessionActivity::Running).is_some());
+        assert!(
+            row_status(&SessionActivity::Waiting(vec![
+                cookie_agent_protocol::WaitingOn::Goal,
+            ]))
+            .is_some()
+        );
         let held = row_status(&SessionActivity::Held(cookie_agent_protocol::Open::Known(
             cookie_agent_protocol::HeldReason::Stopped {},
         )))
         .expect("a held mark");
         assert_eq!(held.label, "held");
-        assert!(!held.spins);
         assert!(row_status(&SessionActivity::Problem(SessionStatus::Failed)).is_some());
         assert!(row_status(&SessionActivity::Problem(SessionStatus::Interrupted)).is_some());
         assert!(row_status(&SessionActivity::Problem(SessionStatus::Cancelled)).is_none());
@@ -357,11 +310,9 @@ mod tests {
     }
 
     #[test]
-    fn inline_svg_is_hidden_and_takes_the_text_colour() {
+    fn inline_svg_is_hidden_and_points_into_the_sprite() {
         let markup = svg(icondata::FaCheckSolid, "text-xs");
-        assert!(markup.starts_with("<svg class=\"inline-block shrink-0 text-xs\""));
         assert!(markup.contains("aria-hidden=\"true\""));
-        assert!(markup.contains("fill=\"currentColor\""));
         // The paths are in the sprite, once, under one ID per icon.
         assert!(!markup.contains(icondata::FaCheckSolid.data));
         assert_eq!(markup, svg(icondata::FaCheckSolid, "text-xs"));

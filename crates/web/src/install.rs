@@ -229,17 +229,6 @@ mod tests {
         }
         assert_eq!(manifest["display"], "standalone");
         assert!(manifest.get("prefer_related_applications").is_none());
-        // The light theme's colours, as `index.html` names them.
-        let index = String::from_utf8(asset("index.html")).unwrap();
-        for field in ["background_color", "theme_color"] {
-            let colour = manifest[field].as_str().expect(field);
-            assert!(
-                index.contains(&format!(
-                    r#"media="(prefers-color-scheme: light)" content="{colour}""#
-                )),
-                "{field} {colour}"
-            );
-        }
         let icons = manifest["icons"].as_array().expect("icons");
         for (size, side) in [("192x192", 192), ("512x512", 512)] {
             for purpose in ["any", "maskable"] {

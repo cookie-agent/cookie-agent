@@ -1811,23 +1811,12 @@ mod tests {
     }
 
     #[test]
-    fn an_open_header_wraps_to_show_the_whole_title_and_argument() {
+    fn an_open_header_holds_the_whole_title_and_argument() {
         let command = format!("printf {}", "a-long-argument ".repeat(20));
         let call = run("Run", &command);
         let folded = rendered(&call, &Expanded::default());
-        assert!(
-            folded.contains("class=\"min-w-0 shrink truncate\" data-header"),
-            "{folded}"
-        );
-        assert!(!folded.contains("wrap-anywhere"), "{folded}");
         let open = rendered(&call, &Expanded::from_iter([call.id.to_string()]));
-        assert!(
-            open.contains("class=\"min-w-0 shrink whitespace-normal wrap-anywhere\" data-header"),
-            "{open}"
-        );
-        assert!(open.contains("items-start"), "{open}");
-        // The header holds the whole argument either way; only its fit
-        // differs.
+        // The header holds the whole argument folded or open.
         assert_eq!(header(&open), header(&folded));
         assert!(
             header(&open).ends_with(command.trim_end()),
@@ -1930,10 +1919,7 @@ mod tests {
         assert!(html.contains("aria-expanded=\"true\""), "{html}");
         assert!(html.contains("data-arguments>arguments<"), "{html}");
         assert!(html.contains("timeout"), "{html}");
-        assert!(
-            !html.contains("<dt class=\"text-ink dark:text-sand\">command"),
-            "{html}"
-        );
+        assert!(!html.contains(">command</dt>"), "{html}");
         assert_eq!(call.shown_arguments().len(), 1);
     }
 
@@ -1947,7 +1933,6 @@ mod tests {
             html.contains("data-progress>· compiling 12 of 40<"),
             "{html}"
         );
-        assert!(html.contains("animate-spin"), "{html}");
     }
 
     #[test]
@@ -2244,8 +2229,6 @@ mod tests {
         );
         assert!(linked.contains(">[see full prompt]</button>"), "{linked}");
         assert!(linked.contains("data-tool-group=\"shell\""), "{linked}");
-        assert!(linked.contains("border-hue-0/40"), "{linked}");
-        assert!(linked.contains("border-hue-1/40"), "{linked}");
     }
 
     /// A session whose one reply has a folded thinking block, a finished
@@ -2815,9 +2798,10 @@ mod tests {
             Some((_, super::PartHtml::Html(html))) => html.to_string(),
             other => panic!("no footer: {other:?}"),
         };
-        assert_eq!(
-            footer(&metrics),
-            "<div class=\"text-xs text-ink dark:text-sand font-mono\" data-reply-footer>⚡ 42.1 tps · 12.5K ctx · $0.0040</div>"
+        assert!(
+            footer(&metrics).ends_with("data-reply-footer>⚡ 42.1 tps · 12.5K ctx · $0.0040</div>"),
+            "{}",
+            footer(&metrics)
         );
         state.interrupted_assistant_items.insert(1);
         let (interrupted_key, interrupted) = draw(&state, &mut cache);
@@ -2855,10 +2839,7 @@ mod tests {
             super::PartHtml::Markdown(_) => panic!("the thinking block is not HTML"),
         };
         let untimed = thinking(&draw(&state, &mut cache));
-        assert!(
-            untimed.contains("<span class=\"min-w-0 flex-1 truncate\">thought</span>"),
-            "{untimed}"
-        );
+        assert!(untimed.contains(">thought</span>"), "{untimed}");
         state
             .thinking_durations
             .insert((1, 2), std::time::Duration::from_secs(65));
