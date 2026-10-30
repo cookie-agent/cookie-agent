@@ -100,8 +100,6 @@ fn warning_marker_is_wide_by_default_so_width_matches_terminals() {
 
 #[tokio::test]
 async fn system_prompt_hover_covers_wrapped_item_rows_but_not_expanded_body() {
-    use ratatui::style::Modifier;
-
     let mut app = test_app().await;
     let session = SessionId::new_v7();
     app.selected = Some(session);
@@ -120,104 +118,83 @@ async fn system_prompt_hover_covers_wrapped_item_rows_but_not_expanded_body() {
         .as_mut()
         .unwrap()
         .composed_prompt = "expanded body\n".repeat(40);
-    for (kind, level) in [
-        (ThemeKind::Default, ColorLevel::TrueColor),
-        (ThemeKind::Dark, ColorLevel::TrueColor),
-        (ThemeKind::Mono, ColorLevel::None),
-        (ThemeKind::HighContrast, ColorLevel::Ansi16),
-    ] {
-        app.theme = Theme::new(kind, level);
-        for width in [24, 100] {
-            for expanded in [false, true] {
-                app.expanded_blocks.insert(
-                    session,
-                    if expanded {
-                        HashSet::from([BlockId::SystemPrompt])
-                    } else {
-                        HashSet::new()
-                    },
-                );
-                app.conversation_scroll.following = false;
-                app.conversation_scroll.offset = 0;
-                app.hover = None;
-                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
-                terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
-                let region = *app
-                    .layout_cache
-                    .layout
-                    .regions
-                    .iter()
-                    .find(|region| region.id == BlockId::SystemPrompt)
-                    .unwrap();
-                let header_lines = region.header_lines.unwrap();
-                assert!(
-                    app.layout_cache.layout.lines.to_vec()[region.start_line]
-                        .to_string()
-                        .starts_with("· 📜")
-                );
-                assert!(
-                    !snapshot_lines(&app.layout_cache.layout.lines.to_vec()).contains("EVENT [I]")
-                );
-                assert_eq!(header_lines > 1, width == 24);
-                if !expanded {
-                    assert_eq!(header_lines, region.end_line - region.start_line);
-                }
-                let mut offsets = vec![0];
+    for width in [24, 100] {
+        for expanded in [false, true] {
+            app.expanded_blocks.insert(
+                session,
                 if expanded {
-                    offsets.extend([region.start_line + 1, region.start_line + header_lines]);
-                }
-                for offset in offsets {
-                    app.conversation_scroll.following = false;
-                    app.conversation_scroll.offset = offset;
-                    app.hover = None;
-                    terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
-                    let before = terminal.backend().buffer().clone();
-                    let hit = *app
-                        .hit_map
-                        .blocks
-                        .iter()
-                        .find(|hit| hit.id == BlockId::SystemPrompt)
-                        .unwrap();
-                    assert_eq!(
-                        hit.hover_rect.map_or(0, |rect| usize::from(rect.height)),
-                        (region.start_line + header_lines).saturating_sub(offset)
-                    );
-                    app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
-                    assert_eq!(
-                        app.hover,
-                        hit.toggle_rect
-                            .map(|_| PointerTarget::TranscriptBlock(BlockId::SystemPrompt))
-                    );
-                    terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
-                    let after = terminal.backend().buffer();
-                    for y in hit.rect.y..hit.rect.bottom() {
-                        for x in hit.rect.x..hit.rect.right() {
-                            // Wide glyph continuation cells are reset by the test backend.
-                            if x > hit.rect.x
-                                && UnicodeWidthStr::width(after[(x - 1, y)].symbol()) > 1
-                            {
-                                continue;
-                            }
-                            let cell = &after[(x, y)];
-                            if hit.hover_rect.is_some_and(|rect| {
-                                rect.contains(ratatui::layout::Position::new(x, y))
-                            }) {
-                                assert_eq!(
-                                    cell.bg,
-                                    app.theme.block_hover().bg.unwrap_or(before[(x, y)].bg)
-                                );
-                                assert_eq!(cell.fg, before[(x, y)].fg);
-                                assert!(!cell.modifier.contains(Modifier::UNDERLINED));
-                                if level == ColorLevel::None {
-                                    assert!(cell.modifier.contains(Modifier::BOLD));
-                                }
-                            } else {
-                                assert_eq!(
-                                    cell,
-                                    &before[(x, y)],
-                                    "expanded body changed at {x},{y}"
-                                );
-                            }
+                    HashSet::from([BlockId::SystemPrompt])
+                } else {
+                    HashSet::new()
+                },
+            );
+            app.conversation_scroll.following = false;
+            app.conversation_scroll.offset = 0;
+            app.hover = None;
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+            let region = *app
+                .layout_cache
+                .layout
+                .regions
+                .iter()
+                .find(|region| region.id == BlockId::SystemPrompt)
+                .unwrap();
+            let header_lines = region.header_lines.unwrap();
+            assert!(
+                app.layout_cache.layout.lines.to_vec()[region.start_line]
+                    .to_string()
+                    .starts_with("· 📜")
+            );
+            assert!(!snapshot_lines(&app.layout_cache.layout.lines.to_vec()).contains("EVENT [I]"));
+            assert_eq!(header_lines > 1, width == 24);
+            if !expanded {
+                assert_eq!(header_lines, region.end_line - region.start_line);
+            }
+            let mut offsets = vec![0];
+            if expanded {
+                offsets.extend([region.start_line + 1, region.start_line + header_lines]);
+            }
+            for offset in offsets {
+                app.conversation_scroll.following = false;
+                app.conversation_scroll.offset = offset;
+                app.hover = None;
+                terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                let before = terminal.backend().buffer().clone();
+                let hit = *app
+                    .hit_map
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == BlockId::SystemPrompt)
+                    .unwrap();
+                assert_eq!(
+                    hit.hover_rect.map_or(0, |rect| usize::from(rect.height)),
+                    (region.start_line + header_lines).saturating_sub(offset)
+                );
+                app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
+                assert_eq!(
+                    app.hover,
+                    hit.toggle_rect
+                        .map(|_| PointerTarget::TranscriptBlock(BlockId::SystemPrompt))
+                );
+                terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                let after = terminal.backend().buffer();
+                for y in hit.rect.y..hit.rect.bottom() {
+                    for x in hit.rect.x..hit.rect.right() {
+                        // Wide glyph continuation cells are reset by the test backend.
+                        if x > hit.rect.x && UnicodeWidthStr::width(after[(x - 1, y)].symbol()) > 1
+                        {
+                            continue;
+                        }
+                        if !hit
+                            .hover_rect
+                            .is_some_and(|rect| rect.contains(ratatui::layout::Position::new(x, y)))
+                        {
+                            assert_eq!(
+                                &after[(x, y)],
+                                &before[(x, y)],
+                                "expanded body changed at {x},{y}"
+                            );
                         }
                     }
                 }

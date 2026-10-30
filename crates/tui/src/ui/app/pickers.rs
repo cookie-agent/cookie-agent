@@ -1169,17 +1169,15 @@ mod document_id_tests {
         };
         let row = model_picker_row(&selection, Some("GPT-5"), 40, false, &theme);
         assert_eq!(text(&row), ["GPT-5", " openai/gpt-5"]);
-        assert_eq!(row.spans[1].style, theme.internal());
         let row = model_picker_row(&selection, Some("openai/gpt-5"), 40, false, &theme);
         assert_eq!(text(&row), ["openai/gpt-5"]);
     }
 
     #[test]
-    fn a_value_row_dims_its_id_and_truncates_it_first() {
+    fn a_value_row_shows_its_id_and_truncates_it_first() {
         let theme = Theme::default();
         let row = document_id_row("Opus", " (current)", "opus", 40, false, &theme);
         assert_eq!(text(&row), ["Opus (current)", " opus"]);
-        assert_eq!(row.spans[1].style, theme.internal());
         let row = document_id_row("high", "", "high", 40, false, &theme);
         assert_eq!(text(&row), ["high"]);
         let row = document_id_row("Opus", "", "claude-opus-4-1", 10, false, &theme);

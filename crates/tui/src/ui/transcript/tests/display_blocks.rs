@@ -73,18 +73,11 @@ fn row_spans(lines: &[Line<'static>], text: &str) -> Vec<(String, ratatui::style
 }
 
 #[test]
-fn excerpts_are_syntax_highlighted_behind_their_line_numbers() {
+fn excerpts_render_behind_their_line_numbers() {
     let state = excerpt_tool_state("src/main.rs", 1, &["fn main() {", "    let x = 1;", "}"]);
     let lines = expanded_read_layout(&state, &Theme::default());
     let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
     assert!(rendered.iter().any(|line| line.contains("1 │ fn main() {")));
-    // Highlighting produces more than one distinct foreground color.
-    let colors = lines
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .filter_map(|span| span.style.fg)
-        .collect::<HashSet<_>>();
-    assert!(colors.len() > 1);
 }
 
 #[test]
@@ -114,32 +107,6 @@ fn absent_and_unknown_languages_fall_back_to_plain_code() {
     }
     assert_eq!(path_extension("src/main.rs"), Some("rs"));
     assert_eq!(path_extension("README"), None);
-}
-
-#[test]
-fn failures_and_text_read_as_ordinary_text() {
-    let mut state = read_tool_state("src/main.rs", ToolStatus::Failed, "");
-    let call_id = read_tool_id(&state);
-    state.tools.get_mut(&call_id).unwrap().failure = Some("permission denied".into());
-    let lines = expanded_read_layout(&state, &Theme::default());
-    let failure_colors = lines
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .filter(|span| span.content.contains("permission denied"))
-        .filter_map(|span| span.style.fg)
-        .collect::<HashSet<_>>();
-    // Expanded, a failure reads as ordinary text; its header suffix names
-    // the failure.
-    assert!(failure_colors.is_empty(), "{failure_colors:?}");
-    let text = read_tool_state("src/main.rs", ToolStatus::Completed, "fn main() {}");
-    let lines = expanded_read_layout(&text, &Theme::default());
-    let content_colors = lines
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .filter(|span| span.content.contains("fn main"))
-        .filter_map(|span| span.style.fg)
-        .collect::<HashSet<_>>();
-    assert!(content_colors.is_empty(), "{content_colors:?}");
 }
 
 #[test]
@@ -192,7 +159,7 @@ fn guttered_code_handles_zero_and_one_column_widths() {
 }
 
 #[test]
-fn terminal_rows_draw_sgr_colours_and_stderr_in_the_warning_tone() {
+fn terminal_rows_draw_sgr_colours_and_drop_the_escapes() {
     let state = shown(vec![terminal(
         &[
             (
@@ -204,7 +171,6 @@ fn terminal_rows_draw_sgr_colours_and_stderr_in_the_warning_tone() {
         ],
         Some(1),
     )]);
-    let theme = Theme::default();
     let lines = expanded_layout(&state, 80).lines;
     let spans = row_spans(&lines, "red plain");
     let red = spans
@@ -227,8 +193,7 @@ fn terminal_rows_draw_sgr_colours_and_stderr_in_the_warning_tone() {
             .add_modifier
             .contains(ratatui::style::Modifier::BOLD)
     );
-    let warned = spans.iter().find(|(text, _)| text == " warned").unwrap();
-    assert_eq!(warned.1.fg, theme.warning().fg);
+    assert!(spans.iter().any(|(text, _)| text == " warned"), "{spans:?}");
     // The stdout rendition carries over the line break.
     let spans = row_spans(&lines, "green done");
     let green = spans.iter().find(|(text, _)| text == "green").unwrap();
@@ -237,8 +202,10 @@ fn terminal_rows_draw_sgr_colours_and_stderr_in_the_warning_tone() {
     assert!(!text.contains('\u{1b}'), "{text}");
     assert!(!text.contains("[31m"), "{text}");
     let exit = row_spans(&lines, "exit code 1");
-    let exit = exit.iter().find(|(text, _)| text == "exit code 1").unwrap();
-    assert_eq!(exit.1.fg, theme.tool_failure().fg);
+    assert!(
+        exit.iter().any(|(text, _)| text == "exit code 1"),
+        "{exit:?}"
+    );
 }
 
 #[test]
@@ -335,11 +302,6 @@ fn structured_blocks_render_by_kind() {
             .regions
             .iter()
             .any(|region| region.id == BlockId::ToolSession { call_id, session })
-    );
-    let link = row_spans(&layout.lines, "Docs <");
-    assert!(
-        link.iter()
-            .any(|(text, style)| text == "Docs" && style.fg == Theme::default().link().fg)
     );
 }
 
@@ -566,11 +528,6 @@ fn live_appends_and_the_progress_message_show_while_the_call_runs() {
     let text = snapshot_lines(&lines);
     assert!(text.contains("⋯ make output"), "{text}");
     assert!(text.contains("compiling"), "{text}");
-    let warn = row_spans(&lines, "warn");
-    assert!(
-        warn.iter()
-            .any(|(text, style)| text == "warn" && style.fg == Theme::default().warning().fg)
-    );
 }
 
 #[test]

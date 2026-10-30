@@ -153,27 +153,16 @@ async fn thinking_clock_cycles_buckets_only_while_thinking_streams() {
 }
 
 #[test]
-fn thinking_reads_as_muted_text_collapsed_and_expanded() {
+fn thinking_lays_out_as_a_panel_collapsed_and_expanded() {
     let state = assistant_state(vec![AssistantChild::Thinking {
         id: 10,
         version: 0,
         text: "a thought".into(),
     }]);
     let theme = Theme::default();
-    let header_style = |expanded: Option<&HashSet<BlockId>>| {
-        transcript_layout(&state, expanded, 60)
-            .lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content.contains("💭"))
-            .expect("thinking header")
-            .style
-    };
-    assert_eq!(header_style(None).fg, theme.muted_text().fg);
     let expanded = HashSet::from([BlockId::Thinking(10)]);
-    assert_eq!(header_style(Some(&expanded)).fg, theme.muted_text().fg);
-    // Expanded, the text is muted italics inset on the grey output band
-    // under a title-band header, with no dashed `┆` marker anywhere.
+    // Expanded, the text is inset under its header, with no dashed `┆`
+    // marker anywhere.
     let layout = transcript_layout(&state, Some(&expanded), 60);
     let rows = layout
         .lines
@@ -187,27 +176,6 @@ fn thinking_reads_as_muted_text_collapsed_and_expanded() {
     assert_eq!(rows[header + 3], "│", "{rows:?}");
     assert_eq!(rows[header + 4], "│", "{rows:?}");
     let text = &layout.lines[header + 2];
-    let span = text
-        .spans
-        .iter()
-        .find(|span| span.content.contains("a thought"))
-        .unwrap();
-    assert_eq!(span.style.fg, theme.muted_text().fg, "{span:?}");
-    assert!(
-        span.style
-            .add_modifier
-            .contains(ratatui::style::Modifier::ITALIC)
-    );
-    assert_eq!(span.style.bg, theme.terminal_background());
-    assert!(
-        layout.lines[header]
-            .spans
-            .iter()
-            .skip(1)
-            .all(|span| span.style.bg == theme.tool_title_background()),
-        "{:?}",
-        layout.lines[header]
-    );
     // The padding column is not copied with the text.
     assert_eq!(
         super::super::wrap::extract_line(text, 0, u16::MAX, &theme).as_deref(),

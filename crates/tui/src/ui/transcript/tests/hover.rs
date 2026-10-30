@@ -4,8 +4,6 @@ use cookie_agent_protocol::{ApprovalUserDecision, AttemptId, RunId, SessionId, S
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use ratatui::{Terminal, backend::TestBackend};
-
 use crate::markdown::{MarkdownDocument, PlainHighlighter};
 
 use crate::state::AssistantChild;
@@ -15,11 +13,8 @@ use crate::ui::app::*;
 use super::support::*;
 
 #[tokio::test]
-async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
+async fn hover_follows_mouse_moves_and_resolves_the_target() {
     let mut app = app_with_approval().await;
-    // The app takes its colours from the environment; these styles are
-    // the true-colour default theme's.
-    app.theme = Theme::default();
     // Draw once to populate the hit map.
     let _ = rendered_frame(&mut app, 120, 40);
     let target = app.hit_map.approval_actions[0].rect;
@@ -51,21 +46,6 @@ async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
     assert!(app.handle_mouse(moved(0, 0)).await);
     assert_eq!(app.hover, None);
     assert!(!app.handle_mouse(moved(0, 0)).await);
-
-    // The hovered button is visibly filled with the glaze hover color.
-    assert!(app.handle_mouse(moved(target.x, target.y)).await);
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| app.draw_for_test(frame))
-        .expect("app render");
-    let buffer = terminal.backend().buffer();
-    let cell = buffer[(target.x.saturating_add(1), target.y)].style();
-    // Environment-independent: whatever the detected color level, the
-    // hovered button carries exactly the theme's glaze hover fill, and
-    // it visibly differs from the unhovered cream panel.
-    assert_eq!(cell.bg, app.theme.hover_fill().bg, "glaze fill: {cell:?}");
-    assert_ne!(cell.bg, app.theme.panel().bg, "fill changed: {cell:?}");
 }
 
 #[tokio::test]

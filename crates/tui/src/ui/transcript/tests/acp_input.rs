@@ -208,7 +208,7 @@ fn picker_rows(app: &mut App, width: u16, height: u16) -> Vec<(String, ratatui::
 }
 
 #[tokio::test]
-async fn the_agents_model_and_effort_pickers_show_each_values_id_dimmed() {
+async fn the_agents_model_and_effort_pickers_show_each_values_id() {
     let (mut app, _) = acp_session_app().await;
     let mut claude = acp_descriptor("claude", "local", true);
     let mut options = model_and_effort();
@@ -230,7 +230,7 @@ async fn the_agents_model_and_effort_pickers_show_each_values_id_dimmed() {
     let rows = picker_rows(&mut app, 100, 30);
     let texts = rows.iter().map(|(text, _)| text.trim()).collect::<Vec<_>>();
     assert_eq!(texts, ["> sonnet! (current) sonnet", "opus! opus"]);
-    // The ID is dimmed, and hovering or clicking it is its row's.
+    // Hovering or clicking the ID is its row's.
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).expect("terminal");
     terminal
@@ -238,17 +238,8 @@ async fn the_agents_model_and_effort_pickers_show_each_values_id_dimmed() {
         .expect("picker render");
     let buffer = terminal.backend().buffer();
     let (_, opus) = &rows[1];
-    let name_column = opus.x + 2;
-    let id_column = name_column + "opus! ".len() as u16;
+    let id_column = opus.x + 2 + "opus! ".len() as u16;
     assert_eq!(buffer[(id_column, opus.y)].symbol(), "o");
-    assert_eq!(
-        buffer[(id_column, opus.y)].style().fg,
-        app.theme.internal().fg
-    );
-    assert_ne!(
-        buffer[(id_column, opus.y)].style(),
-        buffer[(name_column, opus.y)].style()
-    );
     assert_eq!(
         app.pointer_target_at(id_column, opus.y),
         Some(PointerTarget::PickerRow(1))

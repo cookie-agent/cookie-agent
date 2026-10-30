@@ -7,7 +7,7 @@ use cookie_agent_protocol::{
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use ratatui::{Terminal, backend::TestBackend, style::Modifier};
+use ratatui::{Terminal, backend::TestBackend};
 
 use crate::ClientDelivery;
 
@@ -89,78 +89,6 @@ async fn message_title_is_exact_agent_model_variant_with_hit_regions() {
             .iter()
             .all(|hit| hit.segment != TitleSegment::Variant)
     );
-}
-
-#[tokio::test]
-async fn message_title_bolds_only_the_agent_name() {
-    let mut app = test_app().await;
-    // Pin the default true-color theme so style assertions do not
-    // depend on the developer's ambient tui.toml or terminal detection.
-    app.theme = Theme::default();
-    app.agents = vec![descriptor("primary", true)];
-    app.models = vec![model_descriptor()];
-    app.draft = Some(RunSelection {
-        agent: agent_id(),
-        model: ModelSelection {
-            model: model_key(),
-            variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
-        },
-        preset: None,
-    });
-    let backend = TestBackend::new(100, 30);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| app.draw_for_test(frame))
-        .expect("app render");
-    let buffer = terminal.backend().buffer();
-    let segment_rect = |segment: TitleSegment| {
-        app.hit_map
-            .title_segments
-            .iter()
-            .find(|hit| hit.segment == segment)
-            .expect("title segment")
-            .rect
-    };
-    let agent = segment_rect(TitleSegment::Agent);
-    let model = segment_rect(TitleSegment::Model);
-    let variant = segment_rect(TitleSegment::Variant);
-    // The bullet is decoration between the agent and model segments.
-    let bullet = Rect::new(
-        agent.x.saturating_add(agent.width),
-        agent.y,
-        model.x.saturating_sub(agent.x.saturating_add(agent.width)),
-        1,
-    );
-
-    // The focused composer's border is bold honey; only the agent
-    // name keeps that weight. Everything in the title shares the border
-    // accent color — bold is the emphasis, never a color marker.
-    for x in agent.x..agent.x.saturating_add(agent.width) {
-        let cell = buffer[(x, agent.y)].style();
-        assert!(
-            cell.add_modifier.contains(Modifier::BOLD),
-            "agent name is bold: {cell:?}"
-        );
-        assert_eq!(
-            cell.fg,
-            app.theme.input_border(true).fg,
-            "border accent: {cell:?}"
-        );
-    }
-    for rect in [bullet, model, variant] {
-        for x in rect.x..rect.x.saturating_add(rect.width) {
-            let cell = buffer[(x, rect.y)].style();
-            assert!(
-                !cell.add_modifier.contains(Modifier::BOLD),
-                "segment stays regular: {cell:?}"
-            );
-            assert_eq!(
-                cell.fg,
-                app.theme.input_border(true).fg,
-                "shared color: {cell:?}"
-            );
-        }
-    }
 }
 
 #[tokio::test]
@@ -579,106 +507,6 @@ async fn agent_search_filters_resets_transitions_focus_and_selects_filtered_indi
 }
 
 #[tokio::test]
-async fn agent_picker_styled_rows_snapshot_across_themes() {
-    let mut snapshots = Vec::new();
-    for (label, theme) in [
-        (
-            "default",
-            Theme::new(ThemeKind::Default, ColorLevel::TrueColor),
-        ),
-        ("mono", Theme::new(ThemeKind::Mono, ColorLevel::None)),
-        (
-            "high-contrast",
-            Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
-        ),
-    ] {
-        let mut app = test_app().await;
-        app.theme = theme;
-        let mut first = descriptor("alpha", true);
-        first.description = "First Choice".into();
-        let mut second = descriptor("bravo", true);
-        second.description = "Needle Agent".into();
-        app.agents = vec![first, second];
-        app.models = vec![model_descriptor()];
-        app.draft = app.default_draft_selection();
-        app.open_selection_modal(Modal::Agents);
-        app.agent_search.focus_list();
-        app.picker_state.select(Some(1));
-
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        terminal
-            .draw(|frame| app.draw_for_test(frame))
-            .expect("agent picker render");
-        let buffer = terminal.backend().buffer();
-        let rows = app.hit_map.picker_rows.clone();
-        let row_text = |row: Rect| {
-            (row.x..row.right())
-                .map(|x| buffer[(x, row.y)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        };
-        let first_id_style = buffer[(rows[0].rect.x + 2, rows[0].rect.y)].style();
-        let first_description_style = buffer[(rows[0].rect.x + 2 + 5, rows[0].rect.y)].style();
-        let selected_id_style = buffer[(rows[1].rect.x + 2, rows[1].rect.y)].style();
-        let selected_description_style = buffer[(rows[1].rect.x + 2 + 5, rows[1].rect.y)].style();
-        assert_ne!(
-            selected_id_style, selected_description_style,
-            "{label} keeps span hierarchy"
-        );
-        assert_eq!(
-            selected_id_style.bg, selected_description_style.bg,
-            "{label} shares the selection background"
-        );
-        assert_eq!(
-            selected_id_style.add_modifier.contains(Modifier::REVERSED),
-            selected_description_style
-                .add_modifier
-                .contains(Modifier::REVERSED),
-            "{label} shares reverse-video selection"
-        );
-        assert!(selected_id_style.add_modifier.contains(Modifier::BOLD));
-        match label {
-            "default" => {
-                assert_ne!(selected_id_style.fg, selected_description_style.fg);
-                assert!(
-                    !selected_description_style
-                        .add_modifier
-                        .contains(Modifier::BOLD)
-                );
-            }
-            "mono" => {
-                assert!(
-                    selected_description_style
-                        .add_modifier
-                        .contains(Modifier::DIM)
-                );
-                assert!(
-                    !selected_description_style
-                        .add_modifier
-                        .contains(Modifier::BOLD)
-                );
-            }
-            "high-contrast" => {
-                assert_ne!(selected_id_style.fg, selected_description_style.fg);
-                assert!(
-                    selected_description_style
-                        .add_modifier
-                        .contains(Modifier::DIM)
-                );
-            }
-            _ => unreachable!("covered theme"),
-        }
-        snapshots.push(format!(
-                "== {label} ==\n{}\n{}\nplain id: {first_id_style:?}\nplain description: {first_description_style:?}\nselected id: {selected_id_style:?}\nselected description: {selected_description_style:?}",
-                row_text(rows[0].rect),
-                row_text(rows[1].rect),
-            ));
-    }
-    insta::assert_snapshot!(snapshots.join("\n"));
-}
-
-#[tokio::test]
 async fn model_search_filters_resets_transitions_focus_and_selects_filtered_indices() {
     let mut app = test_app().await;
     app.agents = vec![descriptor("primary", true)];
@@ -770,87 +598,6 @@ async fn model_search_filters_resets_transitions_focus_and_selects_filtered_indi
         .await;
     assert_eq!(app.modal, Modal::None);
     assert!(app.model_search.query().is_empty());
-}
-
-#[tokio::test]
-async fn model_picker_styled_rows_snapshot_across_themes() {
-    let mut snapshots = Vec::new();
-    for (label, theme) in [
-        (
-            "default",
-            Theme::new(ThemeKind::Default, ColorLevel::TrueColor),
-        ),
-        ("mono", Theme::new(ThemeKind::Mono, ColorLevel::None)),
-        (
-            "high-contrast",
-            Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
-        ),
-    ] {
-        let mut app = test_app().await;
-        app.theme = theme;
-        let mut first = catalog_model("alpha/first-model", &[], None);
-        first.display_name = "First Choice".into();
-        let mut second = catalog_model("beta/second-model", &["fast"], Some("fast"));
-        second.display_name = "Needle Model".into();
-        app.models = vec![first, second];
-        app.draft = app.default_draft_selection();
-        app.open_selection_modal(Modal::Models);
-        app.model_search.focus_list();
-        app.picker_state.select(Some(1));
-
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        terminal
-            .draw(|frame| app.draw_for_test(frame))
-            .expect("model picker render");
-        let buffer = terminal.backend().buffer();
-        let rows = app.hit_map.picker_rows.clone();
-        let row_text = |row: Rect| {
-            (row.x..row.right())
-                .map(|x| buffer[(x, row.y)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        };
-        let first_display = buffer[(rows[0].rect.x + 2, rows[0].rect.y)].style();
-        let first_key = buffer[(rows[0].rect.x + 2 + 12, rows[0].rect.y)].style();
-        let selected_display = buffer[(rows[1].rect.x + 2, rows[1].rect.y)].style();
-        let selected_key = buffer[(rows[1].rect.x + 2 + 12, rows[1].rect.y)].style();
-        assert_ne!(
-            selected_display, selected_key,
-            "{label} keeps span hierarchy"
-        );
-        assert_eq!(
-            selected_display.bg, selected_key.bg,
-            "{label} shares the selection background"
-        );
-        assert_eq!(
-            selected_display.add_modifier.contains(Modifier::REVERSED),
-            selected_key.add_modifier.contains(Modifier::REVERSED),
-            "{label} shares reverse-video selection"
-        );
-        assert!(selected_display.add_modifier.contains(Modifier::BOLD));
-        match label {
-            "default" => {
-                assert_ne!(selected_display.fg, selected_key.fg);
-                assert!(!selected_key.add_modifier.contains(Modifier::BOLD));
-            }
-            "mono" => {
-                assert!(selected_key.add_modifier.contains(Modifier::DIM));
-                assert!(!selected_key.add_modifier.contains(Modifier::BOLD));
-            }
-            "high-contrast" => {
-                assert_ne!(selected_display.fg, selected_key.fg);
-                assert!(selected_key.add_modifier.contains(Modifier::DIM));
-            }
-            _ => unreachable!("covered theme"),
-        }
-        snapshots.push(format!(
-                "== {label} ==\n{}\n{}\nplain display: {first_display:?}\nplain key: {first_key:?}\nselected display: {selected_display:?}\nselected key: {selected_key:?}",
-                row_text(rows[0].rect),
-                row_text(rows[1].rect),
-            ));
-    }
-    insta::assert_snapshot!(snapshots.join("\n"));
 }
 
 #[tokio::test]

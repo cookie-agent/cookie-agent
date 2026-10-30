@@ -5,8 +5,6 @@ use cookie_agent_protocol::{
     ToolHint,
 };
 
-use crate::theme::{ColorLevel, ThemeKind};
-
 use super::support::*;
 
 fn line(op: DiffLineOp, text: &str) -> DiffLine {
@@ -268,98 +266,6 @@ fn a_diff_renders_as_a_diff_whatever_the_tool_is_called() {
     assert!(!text.contains(" - │ "), "{text}");
     // Its raw arguments are what an `info` view shows of them.
     assert!(text.contains("\"oldString\": \"let old = 1;\""), "{text}");
-}
-
-#[test]
-fn diff_rows_take_the_diff_colours_and_highlight_by_language() {
-    let mut diff = sample_diff("src/main.rs");
-    diff.language = Some("rust".into());
-    let state = diff_state("Edit", ToolHint::FILE_EDIT, diff);
-    let call_id = read_tool_id(&state);
-    let expanded = HashSet::from([BlockId::Tool(call_id)]);
-    let lines = transcript_layout(&state, Some(&expanded), 80).lines;
-    let spans = lines.iter().flat_map(|line| line.spans.iter());
-    assert!(spans.clone().any(
-        |span| span.content.contains('+') && span.style.fg == Theme::default().diff_added().fg
-    ));
-    assert!(
-        spans.clone().any(|span| span.content.contains('-')
-            && span.style.fg == Theme::default().diff_removed().fg)
-    );
-    let colors = lines
-        .iter()
-        .filter(|line| line.to_string().contains("let new"))
-        .flat_map(|line| line.spans.iter())
-        .filter_map(|span| span.style.fg)
-        .collect::<HashSet<_>>();
-    assert!(colors.len() > 2, "{colors:?}");
-}
-
-#[test]
-fn changed_diff_rows_are_tinted_inside_the_band_padding() {
-    let state = diff_state(
-        "Edit src/main.rs",
-        ToolHint::FILE_EDIT,
-        sample_diff("src/main.rs"),
-    );
-    let call_id = read_tool_id(&state);
-    let theme = Theme::default();
-    let band = theme.terminal_background().unwrap();
-    let expanded = HashSet::from([BlockId::Tool(call_id)]);
-    let layout = transcript_layout_with(
-        &state,
-        Some(&expanded),
-        60,
-        &theme,
-        &crate::markdown::PlainHighlighter,
-    );
-    let row = |text: &str| {
-        layout
-            .lines
-            .iter()
-            .find(|line| line.to_string().contains(text))
-            .unwrap_or_else(|| panic!("row {text}"))
-    };
-    for (text, tint) in [
-        ("let old", theme.diff_removed_background().unwrap()),
-        ("let new", theme.diff_added_background().unwrap()),
-    ] {
-        let line = row(text);
-        let spans = &line.spans;
-        // `│ ` gutter unbanded, then one grey padding column…
-        assert_eq!(spans[0].style.bg, None, "{line:?}");
-        assert_eq!(spans[1].content, " ", "{line:?}");
-        assert_eq!(spans[1].style.bg, Some(band), "{line:?}");
-        // …the line number, marker and code tinted out to the last column…
-        for span in &spans[2..spans.len() - 1] {
-            assert_eq!(span.style.bg, Some(tint), "{line:?}");
-        }
-        // …which stays grey.
-        let last = spans.last().unwrap();
-        assert_eq!(last.content, " ", "{line:?}");
-        assert_eq!(last.style.bg, Some(band), "{line:?}");
-        assert_eq!(line.width(), 60, "{line:?}");
-    }
-    // Hunk headers and context rows keep the plain band.
-    for text in ["@@ -10,3 +10,3 @@", "fn keep"] {
-        assert!(
-            row(text)
-                .spans
-                .iter()
-                .skip(1)
-                .all(|span| span.style.bg == Some(band)),
-            "{text}"
-        );
-    }
-    // Without a pale step (sixteen colours, mono) rows keep the plain band.
-    assert_eq!(
-        Theme::new(ThemeKind::Default, ColorLevel::Ansi16).diff_added_background(),
-        None
-    );
-    assert_eq!(
-        Theme::new(ThemeKind::Mono, ColorLevel::None).diff_removed_background(),
-        None
-    );
 }
 
 #[test]

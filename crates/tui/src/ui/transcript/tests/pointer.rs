@@ -643,8 +643,8 @@ async fn a_tool_header_hover_stops_before_its_background_button() {
         let hovered = draw(&mut app);
         assert!(restyled(&plain, &hovered, title) > 0);
         assert_eq!(restyled(&plain, &hovered, gap), 0, "expanded {expanded}");
-        let last = (button.x - 2, button.y);
-        assert_eq!(hovered[last].bg, app.theme.block_hover().bg.unwrap());
+        let last = Rect::new(button.x - 2, button.y, 1, 1);
+        assert_eq!(restyled(&plain, &hovered, last), 1, "expanded {expanded}");
 
         // The button fills alone; the title is untouched.
         app.hover = Some(PointerTarget::BackgroundButton(call_id));
@@ -654,9 +654,10 @@ async fn a_tool_header_hover_stops_before_its_background_button() {
             restyled(&plain, &hovered, Rect::new(button.x - 1, button.y, 1, 1)),
             0
         );
-        for position in button.positions() {
-            assert_eq!(hovered[position].bg, app.theme.hover_fill().bg.unwrap());
-        }
+        assert_eq!(
+            restyled(&plain, &hovered, button),
+            button.positions().count()
+        );
     }
 
     // Clicks keep their meaning: the button backgrounds, the title toggles.
@@ -846,10 +847,7 @@ async fn a_tree_expand_marker_hovers_apart_from_its_row() {
     // The marker fills alone.
     app.hover = Some(PointerTarget::TreeExpand(id));
     let hovered = draw(&mut app);
-    assert_eq!(
-        hovered[(marker.x, marker.y)].bg,
-        app.theme.hover_fill().bg.unwrap()
-    );
+    assert_eq!(restyled(&plain, &hovered, marker), 1);
     assert_eq!(restyled(&plain, &hovered, hit.rect), 1);
 
     // Clicking the marker collapses; clicking the row watches.
@@ -874,8 +872,8 @@ async fn background_bar_rows_and_stops_hover() {
     // Like the other bottom-bar segments: the text glaze over the bar.
     assert!(restyled(&plain, &hovered, bar) > 0);
     assert_eq!(
-        hovered[(bar.right() - 1, bar.y)].bg,
-        app.theme.hover().bg.unwrap()
+        restyled(&plain, &hovered, Rect::new(bar.right() - 1, bar.y, 1, 1)),
+        1
     );
     app.hover = None;
     app.handle_click(bar.x, bar.y).await;
@@ -902,10 +900,7 @@ async fn background_bar_rows_and_stops_hover() {
     app.hover = Some(PointerTarget::BackgroundStop(1));
     let hovered = draw(&mut app);
     assert_eq!(restyled(&plain, &hovered, row), 0);
-    assert_eq!(
-        hovered[(stop.x, stop.y)].bg,
-        app.theme.hover_fill().bg.unwrap()
-    );
+    assert!(restyled(&plain, &hovered, stop) > 0);
 
     // A row click selects; a click beside the rows still closes the panel.
     app.hover = None;

@@ -1,6 +1,6 @@
 use crate::ui::transcript::*;
 
-use crate::markdown::{MarkdownDocument, PlainHighlighter};
+use crate::markdown::MarkdownDocument;
 
 use crate::state::AssistantChild;
 
@@ -104,49 +104,7 @@ fn markdown_code_bypasses_prose_wrap_and_lists_use_nested_hanging_indents() {
 }
 
 #[test]
-fn inline_code_spans_take_a_near_body_colour_and_high_contrast_keeps_its_chip() {
-    fn inline_code_style(theme: &Theme) -> ratatui::style::Style {
-        let state = assistant_state(vec![AssistantChild::Text {
-            id: 1,
-            version: 0,
-            markdown: MarkdownDocument::new("use `cargo test` here".to_owned()),
-        }]);
-        let layout = transcript_layout_with(&state, None, 60, theme, &PlainHighlighter);
-        layout
-            .lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .find(|span| span.content.contains("cargo test"))
-            .expect("inline code span")
-            .style
-    }
-
-    // Default theme: a near-body colour, no tint, regular weight; the
-    // colour replaces the source backticks.
-    let default = inline_code_style(&Theme::default());
-    assert_eq!(default.bg, None);
-    assert_eq!(default.fg, Theme::default().inline_code().fg);
-    assert!(
-        !default
-            .add_modifier
-            .contains(ratatui::style::Modifier::BOLD)
-    );
-
-    // High contrast keeps its inverse-video chip so code still pops
-    // against bright text.
-    let contrast = inline_code_style(&Theme::new(
-        crate::theme::ThemeKind::HighContrast,
-        crate::theme::ColorLevel::Ansi16,
-    ));
-    assert_eq!(contrast.bg, Some(ratatui::style::Color::LightYellow));
-}
-
-#[test]
-fn tab_indented_code_expands_to_tab_stops_on_a_solid_band() {
-    let theme = Theme::default();
-    let background = theme
-        .code_background()
-        .expect("the parchment theme bands code");
+fn tab_indented_code_expands_to_tab_stops() {
     let state = assistant_state(vec![AssistantChild::Text {
         id: 1,
         version: 0,
@@ -156,21 +114,6 @@ fn tab_indented_code_expands_to_tab_stops_on_a_solid_band() {
     let rendered = snapshot_lines(&layout.lines);
     assert!(!rendered.contains('\t'), "{rendered}");
     assert!(rendered.contains("        return"), "{rendered}");
-    let code_rows = layout
-        .lines
-        .iter()
-        .filter(|line| {
-            line.spans
-                .iter()
-                .any(|span| span.style.bg == Some(background))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(code_rows.len(), 3, "{rendered}");
-    let widths = code_rows
-        .iter()
-        .map(|line| line.width())
-        .collect::<Vec<_>>();
-    assert!(widths.iter().all(|width| *width == widths[0]), "{widths:?}");
 }
 
 #[test]

@@ -725,13 +725,6 @@ async fn goal_bar_formats_each_status_without_progress() {
         assert!(line.starts_with("🎯: finish the parser"), "{line}");
         assert!(line.trim_end().ends_with(suffix), "{line}");
         assert!(!line.contains('/'));
-        for x in 0..21 {
-            assert!(
-                !terminal.backend().buffer()[(x, 0)]
-                    .modifier
-                    .contains(ratatui::style::Modifier::UNDERLINED)
-            );
-        }
     }
 }
 

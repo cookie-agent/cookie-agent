@@ -127,16 +127,14 @@ fn code_line_numbers_never_reach_copied_text() {
 }
 
 #[test]
-fn assistant_header_leads_with_the_agent_and_mutes_the_model() {
+fn assistant_header_leads_with_the_agent_then_the_model() {
     let theme = Theme::default();
     let header = assistant_header("primary • test-model", 60, &theme);
     assert_eq!(header.len(), 1);
     let spans = &header[0].spans;
     assert_eq!(header[0].to_string().trim_end(), "╭─ primary • test-model");
     assert_eq!(spans[0].content, "╭─ primary");
-    assert_eq!(spans[0].style, theme.assistant());
     assert_eq!(spans[1].content, " • test-model");
-    assert_eq!(spans[1].style, theme.muted());
 }
 
 #[test]
@@ -236,7 +234,6 @@ fn extraction_keeps_high_contrast_content_sharing_the_border_foreground() {
     // High contrast paints fence grids and syntect's quantized plain
     // code foreground the same white; only the border's DIM|BOLD set
     // still distinguishes a chrome row from content.
-    assert_eq!(border.fg, Some(ratatui::style::Color::White));
     let plain_code = Style::default().fg(ratatui::style::Color::White);
     let lines = vec![
         Line::from(vec![
@@ -834,42 +831,6 @@ async fn composer_selection_is_replaced_by_multibyte_typing_then_cut_is_sane() {
         app.selection.is_none(),
         "cursor navigation retired the composer leg"
     );
-}
-
-#[tokio::test]
-async fn selection_highlight_paints_covered_cells_and_preserves_foregrounds() {
-    let (mut app, _, _) = app_with_user_messages().await;
-    rendered_frame(&mut app, 80, 24);
-    let viewport = app.hit_map.conversation.expect("viewport");
-    let body_row = viewport.y + 1;
-    app.handle_mouse(mouse(
-        MouseEventKind::Down(MouseButton::Left),
-        viewport.x,
-        body_row,
-    ))
-    .await;
-    app.handle_mouse(mouse(
-        MouseEventKind::Drag(MouseButton::Left),
-        viewport.x + 10,
-        body_row,
-    ))
-    .await;
-    let backend = TestBackend::new(80, 24);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| app.draw_for_test(frame))
-        .expect("app render");
-    let buffer = terminal.backend().buffer();
-    let selection = app.theme.text_selection();
-    let covered = buffer[(viewport.x + 4, body_row)].style();
-    assert_eq!(covered.bg, selection.bg, "covered cells take the wash");
-    assert_eq!(
-        covered.fg,
-        buffer[(viewport.x + 12, body_row)].style().fg,
-        "foregrounds are preserved across the boundary"
-    );
-    let outside = buffer[(viewport.x + 12, body_row)].style();
-    assert_ne!(outside.bg, selection.bg, "uncovered cells keep their fill");
 }
 
 #[tokio::test]

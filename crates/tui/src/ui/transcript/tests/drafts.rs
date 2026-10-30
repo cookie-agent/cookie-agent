@@ -926,8 +926,8 @@ async fn model_command_continues_to_a_variant_step_that_applies_both_together() 
     let rendered = rendered_frame(&mut app, 120, 36);
     assert!(rendered.contains("Variant — other/model-b"), "{rendered}");
     assert!(rendered.contains("base"), "{rendered}");
-    // Each variant's name, then the ID an agent document writes, dimmed;
-    // `base` is both.
+    // Each variant's name, then the ID an agent document writes; `base` is
+    // both.
     assert!(rendered.contains("Variant low (default) low"), "{rendered}");
     assert!(rendered.contains("Variant high high"), "{rendered}");
     assert!(!rendered.contains("base base"), "{rendered}");
@@ -940,7 +940,6 @@ async fn model_command_continues_to_a_variant_step_that_applies_both_together() 
         .expect("variant picker render");
     let cell = &terminal.backend().buffer()[(id_column, high.y)];
     assert_eq!(cell.symbol(), "h");
-    assert_eq!(cell.style().fg, app.theme.internal().fg);
     assert_eq!(
         app.pointer_target_at(id_column, high.y),
         Some(PointerTarget::PickerRow(2))

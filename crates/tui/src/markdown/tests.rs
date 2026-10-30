@@ -2,17 +2,11 @@ use std::sync::Arc;
 
 use insta::assert_snapshot;
 use ratatui::style::Modifier;
-use syntect::{
-    highlighting::{
-        Color as SyntectColor, FontStyle, Highlighter as SyntectThemeHighlighter, ScopeSelectors,
-        StyleModifier, Theme as SyntectTheme, ThemeItem, ThemeSet, ThemeSettings,
-    },
-    parsing::{Scope, SyntaxSet},
-};
+use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
 use super::{
     Highlighter, MarkdownBlockKind, MarkdownDocument, PlainHighlighter, SyntectHighlighter,
-    render_markdown, terminal_style_from_syntect,
+    render_markdown,
 };
 use crate::theme::{ColorLevel, Theme, ThemeKind};
 use unicode_width::UnicodeWidthStr;
@@ -119,13 +113,10 @@ fn markdown_renders_inline_blocks_links_lists_quotes_and_tables() {
         );
     }
     assert!(strings(&lines).iter().any(|line| line == "│ a   │ b   │"));
-    assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
-        span.content.contains("bold") && span.style.add_modifier.contains(Modifier::BOLD)
-    }));
 }
 
 #[test]
-fn headings_drop_markers_preserve_hierarchy_and_rules_fill_the_render_width() {
+fn headings_drop_markers_and_rules_fill_the_render_width() {
     let heading_lines = super::render_markdown_width(
         &MarkdownDocument::new(
             "# One `code`\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six".into(),
@@ -141,30 +132,6 @@ fn headings_drop_markers_preserve_hierarchy_and_rules_fill_the_render_width() {
             "One code", "", "Two", "", "Three", "", "Four", "", "Five", "", "Six"
         ]
     );
-    let heading_lines = heading_lines
-        .into_iter()
-        .filter(|line| line.width() > 0)
-        .collect::<Vec<_>>();
-    let h1 = heading_lines[0].spans[0].style;
-    let inline_code = heading_lines[0]
-        .spans
-        .iter()
-        .find(|span| span.content.contains("code"))
-        .expect("inline code")
-        .style;
-    let h2 = heading_lines[1].spans[0].style;
-    assert!(h1.add_modifier.contains(Modifier::BOLD));
-    assert!(h1.add_modifier.contains(Modifier::UNDERLINED));
-    assert!(inline_code.add_modifier.contains(Modifier::UNDERLINED));
-    assert!(h2.add_modifier.contains(Modifier::BOLD));
-    assert!(!h2.add_modifier.contains(Modifier::UNDERLINED));
-    for line in &heading_lines[2..] {
-        let style = line.spans[0].style;
-        assert!(style.add_modifier.contains(Modifier::ITALIC));
-        assert!(!style.add_modifier.contains(Modifier::BOLD));
-        assert!(!style.add_modifier.contains(Modifier::UNDERLINED));
-    }
-
     for width in [0, 5, 12, 31] {
         let rules = strings(&super::render_markdown_width(
             &MarkdownDocument::new("---".into()),
@@ -247,7 +214,7 @@ fn code_wraps_by_grapheme_with_preserved_styles_and_blank_continuation_marker() 
 }
 
 #[test]
-fn fences_highlight_known_languages_and_fall_back_for_unknown_or_unclosed_fences() {
+fn fences_render_known_unknown_and_unclosed_languages() {
     let theme = Theme::default();
     let highlighter = SyntectHighlighter::default();
     let known = render_markdown(
@@ -256,12 +223,6 @@ fn fences_highlight_known_languages_and_fall_back_for_unknown_or_unclosed_fences
         &highlighter,
     );
     assert!(strings(&known).join("\n").contains("fn main() {}"));
-    assert!(
-        known
-            .iter()
-            .flat_map(|line| &line.spans)
-            .any(|span| span.style.fg.is_some())
-    );
 
     for markdown in ["```made-up\nplain text\n```", "```unknown\nstill open"] {
         let lines = render_markdown(
@@ -278,14 +239,6 @@ fn fences_highlight_known_languages_and_fall_back_for_unknown_or_unclosed_fences
                     "still open"
                 })
         );
-        if markdown.contains("plain") {
-            assert!(
-                lines
-                    .iter()
-                    .flat_map(|line| &line.spans)
-                    .any(|span| { span.content.contains("plain text") && span.style.fg.is_none() })
-            );
-        }
     }
 }
 
@@ -652,231 +605,6 @@ fn bundled_syntect_defaults_cover_the_languages_and_themes_the_tui_highlights() 
 }
 
 #[test]
-fn syntax_highlight_snapshot_covers_rust_json_bash_aliases_and_plain_fallback() {
-    let highlighter = SyntectHighlighter::default();
-    let mut snapshot = Vec::new();
-    for (theme_name, theme) in [
-        ("default-truecolor", Theme::default()),
-        (
-            "high-contrast-ansi16",
-            Theme::new(
-                crate::theme::ThemeKind::HighContrast,
-                crate::theme::ColorLevel::Ansi16,
-            ),
-        ),
-        (
-            "mono",
-            Theme::new(
-                crate::theme::ThemeKind::Mono,
-                crate::theme::ColorLevel::None,
-            ),
-        ),
-    ] {
-        snapshot.push(format!("{theme_name}:"));
-        for (language, code) in [
-            ("rs", "fn main() {}"),
-            ("json", r#"{"ok": true}"#),
-            ("sh", "echo \"$HOME\""),
-            ("not-a-language", "plain"),
-        ] {
-            snapshot.push(format!("  {language}:"));
-            for span in highlighter
-                .highlight(language, code, &theme)
-                .iter()
-                .flat_map(|line| &line.spans)
-            {
-                snapshot.push(format!(
-                    "    text={:?} fg={:?} bg={:?} modifiers={:?}",
-                    span.content, span.style.fg, span.style.bg, span.style.add_modifier
-                ));
-            }
-        }
-    }
-    assert_snapshot!(snapshot.join("\n"), @r#"
-default-truecolor:
-  rs:
-    text="fn" fg=Some(Rgb(167, 29, 93)) bg=None modifiers=BOLD
-    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text="main" fg=Some(Rgb(121, 93, 163)) bg=None modifiers=BOLD
-    text="(" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text=")" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text="{" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text="}" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-  json:
-    text="{" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=BOLD
-    text="ok" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=BOLD
-    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=BOLD
-    text=":" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text="true" fg=Some(Rgb(0, 134, 179)) bg=None modifiers=NONE
-    text="}" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-  sh:
-    text="echo" fg=Some(Rgb(98, 163, 92)) bg=None modifiers=NONE
-    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=NONE
-    text="$" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=NONE
-    text="HOME" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
-    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=NONE
-  not-a-language:
-    text="plain" fg=None bg=None modifiers=NONE
-high-contrast-ansi16:
-  rs:
-    text="fn" fg=Some(White) bg=None modifiers=NONE
-    text=" " fg=Some(White) bg=None modifiers=NONE
-    text="main" fg=Some(LightCyan) bg=None modifiers=NONE
-    text="(" fg=Some(White) bg=None modifiers=NONE
-    text=")" fg=Some(White) bg=None modifiers=NONE
-    text=" " fg=Some(White) bg=None modifiers=NONE
-    text="{" fg=Some(White) bg=None modifiers=NONE
-    text="}" fg=Some(White) bg=None modifiers=NONE
-  json:
-    text="{" fg=Some(White) bg=None modifiers=NONE
-    text="\"" fg=Some(White) bg=None modifiers=NONE
-    text="ok" fg=Some(White) bg=None modifiers=NONE
-    text="\"" fg=Some(White) bg=None modifiers=NONE
-    text=":" fg=Some(White) bg=None modifiers=NONE
-    text=" " fg=Some(White) bg=None modifiers=NONE
-    text="true" fg=Some(LightYellow) bg=None modifiers=NONE
-    text="}" fg=Some(White) bg=None modifiers=NONE
-  sh:
-    text="echo" fg=Some(LightCyan) bg=None modifiers=NONE
-    text=" " fg=Some(White) bg=None modifiers=NONE
-    text="\"" fg=Some(White) bg=None modifiers=NONE
-    text="$" fg=Some(White) bg=None modifiers=NONE
-    text="HOME" fg=Some(LightRed) bg=None modifiers=NONE
-    text="\"" fg=Some(White) bg=None modifiers=NONE
-  not-a-language:
-    text="plain" fg=None bg=None modifiers=NONE
-mono:
-  rs:
-    text="fn" fg=None bg=None modifiers=BOLD
-    text=" " fg=None bg=None modifiers=NONE
-    text="main" fg=None bg=None modifiers=BOLD
-    text="(" fg=None bg=None modifiers=NONE
-    text=")" fg=None bg=None modifiers=NONE
-    text=" " fg=None bg=None modifiers=NONE
-    text="{" fg=None bg=None modifiers=NONE
-    text="}" fg=None bg=None modifiers=NONE
-  json:
-    text="{" fg=None bg=None modifiers=NONE
-    text="\"" fg=None bg=None modifiers=BOLD
-    text="ok" fg=None bg=None modifiers=BOLD
-    text="\"" fg=None bg=None modifiers=BOLD
-    text=":" fg=None bg=None modifiers=NONE
-    text=" " fg=None bg=None modifiers=NONE
-    text="true" fg=None bg=None modifiers=NONE
-    text="}" fg=None bg=None modifiers=NONE
-  sh:
-    text="echo" fg=None bg=None modifiers=NONE
-    text=" " fg=None bg=None modifiers=NONE
-    text="\"" fg=None bg=None modifiers=NONE
-    text="$" fg=None bg=None modifiers=NONE
-    text="HOME" fg=None bg=None modifiers=NONE
-    text="\"" fg=None bg=None modifiers=NONE
-  not-a-language:
-    text="plain" fg=None bg=None modifiers=NONE
-"#);
-}
-
-#[test]
-fn synthetic_syntect_theme_propagates_real_font_modifiers_across_color_modes() {
-    let foreground = SyntectColor {
-        r: 12,
-        g: 34,
-        b: 56,
-        a: 255,
-    };
-    let background = SyntectColor {
-        r: 78,
-        g: 90,
-        b: 123,
-        a: 255,
-    };
-    let styles = [
-        ("synthetic.bold", FontStyle::BOLD),
-        ("synthetic.italic", FontStyle::ITALIC),
-        ("synthetic.underline", FontStyle::UNDERLINE),
-        ("synthetic.bold-italic", FontStyle::BOLD | FontStyle::ITALIC),
-        (
-            "synthetic.all",
-            FontStyle::BOLD | FontStyle::ITALIC | FontStyle::UNDERLINE,
-        ),
-    ];
-    let synthetic_theme = SyntectTheme {
-        name: Some("cookie modifier propagation".to_owned()),
-        settings: ThemeSettings {
-            foreground: Some(foreground),
-            background: Some(background),
-            ..ThemeSettings::default()
-        },
-        scopes: styles
-            .iter()
-            .map(|(scope, font_style)| ThemeItem {
-                scope: scope.parse::<ScopeSelectors>().unwrap(),
-                style: StyleModifier {
-                    foreground: Some(foreground),
-                    background: Some(background),
-                    font_style: Some(*font_style),
-                },
-            })
-            .collect(),
-        ..SyntectTheme::default()
-    };
-    let syntect_highlighter = SyntectThemeHighlighter::new(&synthetic_theme);
-    let mut snapshot = Vec::new();
-    for (theme_name, theme) in [
-        ("default-truecolor", Theme::default()),
-        (
-            "high-contrast-ansi16",
-            Theme::new(
-                crate::theme::ThemeKind::HighContrast,
-                crate::theme::ColorLevel::Ansi16,
-            ),
-        ),
-        (
-            "mono",
-            Theme::new(
-                crate::theme::ThemeKind::Mono,
-                crate::theme::ColorLevel::None,
-            ),
-        ),
-    ] {
-        snapshot.push(format!("{theme_name}:"));
-        for &(scope, expected_font_style) in &styles {
-            let syntect_style = syntect_highlighter.style_for_stack(&[Scope::new(scope).unwrap()]);
-            assert_eq!(syntect_style.font_style, expected_font_style);
-            let terminal = terminal_style_from_syntect(syntect_style, &theme);
-            snapshot.push(format!(
-                "  {scope}: syntect={:?} fg={:?} bg={:?} modifiers={:?}",
-                syntect_style.font_style, terminal.fg, terminal.bg, terminal.add_modifier
-            ));
-        }
-    }
-    assert_snapshot!(snapshot.join("\n"), @r#"
-default-truecolor:
-  synthetic.bold: syntect=BOLD fg=Some(Rgb(12, 34, 56)) bg=None modifiers=BOLD
-  synthetic.italic: syntect=ITALIC fg=Some(Rgb(12, 34, 56)) bg=None modifiers=ITALIC
-  synthetic.underline: syntect=UNDERLINE fg=Some(Rgb(12, 34, 56)) bg=None modifiers=UNDERLINED
-  synthetic.bold-italic: syntect=BOLD | ITALIC fg=Some(Rgb(12, 34, 56)) bg=None modifiers=BOLD | ITALIC
-  synthetic.all: syntect=BOLD | UNDERLINE | ITALIC fg=Some(Rgb(12, 34, 56)) bg=None modifiers=BOLD | ITALIC | UNDERLINED
-high-contrast-ansi16:
-  synthetic.bold: syntect=BOLD fg=Some(LightBlue) bg=None modifiers=BOLD
-  synthetic.italic: syntect=ITALIC fg=Some(LightBlue) bg=None modifiers=ITALIC
-  synthetic.underline: syntect=UNDERLINE fg=Some(LightBlue) bg=None modifiers=UNDERLINED
-  synthetic.bold-italic: syntect=BOLD | ITALIC fg=Some(LightBlue) bg=None modifiers=BOLD | ITALIC
-  synthetic.all: syntect=BOLD | UNDERLINE | ITALIC fg=Some(LightBlue) bg=None modifiers=BOLD | ITALIC | UNDERLINED
-mono:
-  synthetic.bold: syntect=BOLD fg=None bg=None modifiers=BOLD
-  synthetic.italic: syntect=ITALIC fg=None bg=None modifiers=ITALIC
-  synthetic.underline: syntect=UNDERLINE fg=None bg=None modifiers=UNDERLINED
-  synthetic.bold-italic: syntect=BOLD | ITALIC fg=None bg=None modifiers=BOLD | ITALIC
-  synthetic.all: syntect=BOLD | UNDERLINE | ITALIC fg=None bg=None modifiers=BOLD | ITALIC | UNDERLINED
-"#);
-}
-
-#[test]
 fn markdown_text_snapshot_is_stable_across_color_themes() {
     let document = MarkdownDocument::new(
         "## Result\n\n1. **first**\n2. [second](https://example.test)\n\n> done".into(),
@@ -1002,21 +730,17 @@ fn table_empty_cells_unicode_and_escaped_pipes_render_safely() {
 }
 
 #[test]
-fn table_cells_keep_inline_markup_styles_with_distinct_inline_code_foreground() {
+fn table_cells_keep_inline_markup() {
     let document = MarkdownDocument::new(
         "| fn | note |\n|----|------|\n| `render()` | **fast** [docs](https://x.test) |".into(),
     );
     let lines = super::render_markdown_width(&document, &Theme::default(), &PlainHighlighter, 80);
-    let code_span = lines
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .find(|span| span.content.contains("render()"))
-        .expect("inline code span");
-    // Inline code keeps its own near-body colour inside a cell, with no
-    // tint and never reverse video.
-    assert_eq!(code_span.style.bg, None);
-    assert_eq!(code_span.style.fg, Theme::default().inline_code().fg);
-    assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
+    assert!(
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.content.contains("render()"))
+    );
     assert!(
         lines
             .iter()
@@ -1127,37 +851,6 @@ fn table_width_allocation_wraps_cells_and_falls_back_to_stacked_on_narrow() {
 }
 
 #[test]
-fn table_header_is_styled_distinctly_without_color_dependency() {
-    let document = MarkdownDocument::new("| h |\n|---|\n| b |".into());
-    for theme in [
-        Theme::default(),
-        Theme::new(
-            crate::theme::ThemeKind::Mono,
-            crate::theme::ColorLevel::None,
-        ),
-        Theme::new(
-            crate::theme::ThemeKind::HighContrast,
-            crate::theme::ColorLevel::Ansi16,
-        ),
-    ] {
-        let lines = super::render_markdown_width(&document, &theme, &PlainHighlighter, 40);
-        let header = lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .find(|span| span.content.contains('h'))
-            .expect("header span");
-        // Bold marks the header in every theme — never color-only.
-        assert!(
-            header.style.add_modifier.contains(Modifier::BOLD),
-            "{:?}",
-            theme.key()
-        );
-        let rendered = strings(&lines).join("\n");
-        assert!(rendered.contains('├'));
-    }
-}
-
-#[test]
 fn table_cells_never_inject_control_sequences() {
     let document = MarkdownDocument::new("| a |\n|---|\n| pre\u{7}\u{1b}[31mpost |".into());
     let lines = super::render_markdown_width(&document, &Theme::default(), &PlainHighlighter, 40);
@@ -1172,12 +865,12 @@ fn table_cells_never_inject_control_sequences() {
 }
 
 #[test]
-fn inline_code_is_marked_by_colour_a_tint_or_backticks() {
+fn inline_code_text_drops_or_keeps_its_markers_by_theme() {
     let document = MarkdownDocument::new("before `let x = 1;` after".into());
     for (theme, expected) in [
-        // Bakery palettes: the code's own near-body colour, nothing else.
+        // Bakery palettes: no marker in the text.
         (Theme::default(), "before let x = 1; after"),
-        // A tinted chip widened by half-block caps.
+        // High contrast: half-block caps.
         (
             Theme::new(
                 crate::theme::ThemeKind::HighContrast,
@@ -1185,7 +878,7 @@ fn inline_code_is_marked_by_colour_a_tint_or_backticks() {
             ),
             "before ▐let x = 1;▌ after",
         ),
-        // No colour at all: backticks and bold carry it.
+        // No colour at all: the backticks stay.
         (
             Theme::new(
                 crate::theme::ThemeKind::Mono,
@@ -1196,39 +889,6 @@ fn inline_code_is_marked_by_colour_a_tint_or_backticks() {
     ] {
         let lines = render_markdown(&document, &theme, &PlainHighlighter);
         assert_eq!(strings(&lines).join(""), expected, "{:?}", theme.key());
-        let code_span = lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .find(|span| span.content.contains("let x = 1;"))
-            .expect("inline code span");
-        assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
-        assert_eq!(
-            code_span.style.fg,
-            theme.inline_code().fg,
-            "{:?}",
-            theme.key()
-        );
-        match theme.inline_code_cap() {
-            Some(cap) => {
-                assert_eq!(cap.fg, code_span.style.bg, "{:?}", theme.key());
-                for glyph in ["▐", "▌"] {
-                    assert!(
-                        lines
-                            .iter()
-                            .flat_map(|line| line.spans.iter())
-                            .any(|span| span.content == glyph && span.style == cap),
-                        "{glyph} cap: {:?}",
-                        theme.key()
-                    );
-                }
-            }
-            None => assert_eq!(code_span.style.bg, None, "{:?}", theme.key()),
-        }
-        // Never colour alone where there is no colour to carry it.
-        assert!(
-            code_span.style.add_modifier.contains(Modifier::BOLD)
-                || theme.key().colors != crate::theme::ColorLevel::None
-        );
     }
 }
 

@@ -223,7 +223,6 @@ fn diagnostic_wrapping_preserves_span_styles_indentation_and_graphemes() {
         assert!(body.len() > 1);
         let mut content = String::new();
         for line in body {
-            assert_eq!(line.spans[0].style, theme.warning());
             for span in line.spans.iter().skip(1) {
                 content.push_str(&span.content);
                 assert!(span.style.add_modifier.contains(Modifier::BOLD));

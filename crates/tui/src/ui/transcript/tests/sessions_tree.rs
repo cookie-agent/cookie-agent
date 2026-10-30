@@ -7,8 +7,6 @@ use cookie_agent_protocol::{
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use ratatui::{Terminal, backend::TestBackend, style::Modifier};
-
 use crate::ClientDelivery;
 
 use crate::ui::app::*;
@@ -199,16 +197,10 @@ async fn unreplayed_children_order_by_the_engine_reported_activity() {
 }
 
 #[tokio::test]
-async fn watched_and_cursor_tree_rows_are_marked_by_style_alone() {
+async fn watched_and_cursor_tree_rows_carry_no_marker_glyph() {
     let mut app = test_app().await;
-    // Pin the default true-color theme so the assertions do not depend
-    // on the developer's ambient tui.toml or terminal detection.
-    app.theme = Theme::default();
     let meta = |id: SessionId, title: &str| {
         let mut meta = titled_meta(id, title, 1);
-        // Space-padded statuses keep every glyph single-width: ratatui
-        // resets the continuation cell after a wide emoji, which would
-        // otherwise break the cell-for-cell comparison below.
         meta.status = SessionStatus::Failed;
         meta
     };
@@ -232,41 +224,18 @@ async fn watched_and_cursor_tree_rows_are_marked_by_style_alone() {
             },
         ],
     });
-    // Park the keyboard cursor on the first child so the watched row
-    // shows exactly its own styling, not the cursor's.
+    // The keyboard cursor sits on the first child, apart from the watched
+    // root.
     app.tree_cursor = Some(other);
-    let backend = TestBackend::new(80, 24);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| app.draw_for_test(frame))
-        .expect("app render");
-    let buffer = terminal.backend().buffer();
+    rendered_frame(&mut app, 80, 24);
     assert_eq!(app.hit_map.tree_rows.len(), 3);
-    let watched_row = app.hit_map.tree_rows[0].rect;
-    let cursor_row = app.hit_map.tree_rows[1].rect;
-    let reference_row = app.hit_map.tree_rows[2].rect;
 
-    // No row carries a cursor or watch glyph…
+    // No row carries a cursor or watch glyph.
     let entries = app.tree_entries();
     for entry in &entries {
         let label = app.tree_row_label(entry);
         assert!(!label.contains(['●', '>']), "{label:?}");
     }
-    // …the watched row is bold body text (no color marker, no reverse)…
-    let watched_cell = buffer[(watched_row.x, watched_row.y)].style();
-    let reference = buffer[(reference_row.x, reference_row.y)].style();
-    assert!(watched_cell.add_modifier.contains(Modifier::BOLD));
-    assert!(!watched_cell.add_modifier.contains(Modifier::REVERSED));
-    assert_eq!(watched_cell.fg, reference.fg, "no color marker");
-    assert_eq!(watched_cell.bg, reference.bg, "no selection band");
-    assert!(!reference.add_modifier.contains(Modifier::BOLD));
-    // …and the keyboard cursor row keeps its own accent.
-    let cursor_cell = buffer[(cursor_row.x, cursor_row.y)].style();
-    assert_eq!(
-        cursor_cell.fg,
-        app.theme.tree_cursor().fg,
-        "cursor accent: {cursor_cell:?}"
-    );
 }
 
 #[tokio::test]

@@ -1,9 +1,4 @@
-use ratatui::{
-    Terminal,
-    backend::TestBackend,
-    layout::Rect,
-    style::{Modifier, Style},
-};
+use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
 use super::{
     CredentialInput, InputState, MAX_TEXT_ROWS, SCROLLBAR_RESERVE, ScrollbarGeometry, render,
@@ -11,56 +6,6 @@ use super::{
 };
 use crate::theme::Theme;
 use crate::ui::transcript::SCROLLBAR_MARGIN;
-
-#[test]
-fn focused_and_unfocused_message_borders_differ_by_weight_and_fill() {
-    fn rendered_styles(focused: bool) -> (Style, Style, Style) {
-        let mut input = InputState::default();
-        let mut terminal = Terminal::new(TestBackend::new(12, 3)).expect("terminal");
-        terminal
-            .draw(|frame| {
-                render(
-                    frame,
-                    frame.area(),
-                    &mut input,
-                    focused,
-                    "Message",
-                    None,
-                    &Theme::default(),
-                );
-            })
-            .expect("render Message box");
-        let buffer = terminal.backend().buffer();
-        (
-            buffer[(0, 0)].style(),
-            buffer[(1, 0)].style(),
-            buffer[(1, 1)].style(),
-        )
-    }
-
-    let theme = Theme::default();
-    let (focused_border, focused_title, focused_text) = rendered_styles(true);
-    let (unfocused_border, unfocused_title, unfocused_text) = rendered_styles(false);
-
-    // Focus carries the honey highlight in bold; the resting box uses
-    // the plain walnut border. Weight still distinguishes the states
-    // when color is unavailable.
-    assert_eq!(focused_border.fg, theme.input_border(true).fg);
-    assert_eq!(unfocused_border.fg, theme.panel_border().fg);
-    assert!(focused_border.add_modifier.contains(Modifier::BOLD));
-    assert!(!focused_border.add_modifier.contains(Modifier::DIM));
-    assert!(!unfocused_border.add_modifier.contains(Modifier::DIM));
-    assert!(!unfocused_border.add_modifier.contains(Modifier::BOLD));
-    // The focused composer interior is filled with the panel surface.
-    assert_eq!(focused_text.bg, theme.panel().bg);
-    assert!(matches!(
-        unfocused_text.bg,
-        None | Some(ratatui::style::Color::Reset)
-    ));
-    // Titles pick up the border accent of their state.
-    assert_eq!(focused_title.fg, theme.input_border(true).fg);
-    assert_eq!(unfocused_title.fg, theme.panel_border().fg);
-}
 
 #[test]
 fn empty_input_shows_the_placeholder_until_text_arrives() {

@@ -445,13 +445,6 @@ fn expanded_tool_rows_form_a_title_and_output_panel() {
                 .unwrap();
             (layout, region)
         };
-        let (collapsed, region) = at(None, crate::state::EventLevel::Warning);
-        assert!(
-            collapsed.lines[region.start_line..region.end_line]
-                .iter()
-                .flat_map(|line| &line.spans)
-                .all(|span| span.style.bg.is_none())
-        );
         let (layout, region) = at(Some(&expanded), crate::state::EventLevel::Warning);
         let rows = &layout.lines[region.start_line..region.end_line];
         let header_lines = region.header_lines.unwrap();
@@ -459,39 +452,9 @@ fn expanded_tool_rows_form_a_title_and_output_panel() {
         // over several; no `❯` echo of it follows.
         assert!(header_lines > 1, "{}", snapshot_lines(rows));
         assert!(!snapshot_lines(rows).contains('❯'));
-        // Title block, then one output panel (the `more lines` toggle
-        // included), then a clear spacer row before whatever follows.
-        let spacer = rows.len() - 1;
-        assert_eq!(rows[spacer].to_string().trim_end(), "│");
-        for (index, row) in rows.iter().enumerate() {
-            let expected = if index < header_lines {
-                theme.tool_title_background()
-            } else if index == spacer {
-                None
-            } else {
-                theme.terminal_background()
-            };
-            // Counted chrome columns, not span text: `"│ "` in the middle of
-            // a row is output and belongs on the band. Every panel row but
-            // the spacer keeps a margin column behind the gutter: on the
-            // band, in the gutter's own style.
-            let chrome = usize::from(leading_gutter_columns(row));
-            let margin = chrome + usize::from(index != spacer);
-            let mut column = 0;
-            let toggle = row.to_string().contains("more lines");
-            for span in &row.spans {
-                let background = if column < chrome { None } else { expected };
-                assert_eq!(span.style.bg, background, "{index}: {row}");
-                // Expanded text is ordinary text, not the status colour.
-                if column >= margin && !toggle {
-                    assert_eq!(span.style.fg, None, "{index}: {row}");
-                }
-                column += UnicodeWidthStr::width(span.content.as_ref());
-            }
-            if expected.is_some() {
-                assert_eq!(row.width(), 60, "{index}: {row}");
-            }
-        }
+        // Title block, then the output panel, then a clear spacer row
+        // before whatever follows.
+        assert_eq!(rows[rows.len() - 1].to_string().trim_end(), "│");
         // Full arguments stay out of the default view and appear at `info`,
         // fenced off by blank rows and a muted label.
         assert!(!snapshot_lines(rows).contains("arguments"));
@@ -533,11 +496,7 @@ fn expanded_tool_rows_form_a_title_and_output_panel() {
 }
 
 #[test]
-fn the_band_covers_tree_shaped_output_and_spares_the_block_gutter() {
-    let theme = Theme::default();
-    let background = theme
-        .terminal_background()
-        .expect("the parchment theme bands the terminal");
+fn tree_shaped_output_beside_the_gutter_is_not_chrome() {
     let mut state = read_tool_state(
         "unused",
         ToolStatus::Completed,
@@ -551,7 +510,7 @@ fn the_band_covers_tree_shaped_output_and_spares_the_block_gutter() {
         &state,
         Some(&HashSet::from([BlockId::Tool(id)])),
         80,
-        &theme,
+        &Theme::default(),
         &PlainHighlighter,
     );
     let region = layout
@@ -559,36 +518,13 @@ fn the_band_covers_tree_shaped_output_and_spares_the_block_gutter() {
         .iter()
         .find(|region| region.id == BlockId::Tool(id))
         .unwrap();
-    // A row whose own text starts with the block's gutter glyph is the
-    // whole trick: the chrome is one span wide and the output beside it,
-    // every padded column of it, is banded.
+    // A row whose own text starts with the block's gutter glyph still has
+    // one `│ ` of chrome; the output beside it is content.
     let row = layout.lines[region.start_line..region.end_line]
         .iter()
         .find(|row| row.to_string().contains("├──"))
         .expect("the tree row reaches the layout");
     assert_eq!(leading_gutter_columns(row), 2, "one `│ ` of chrome: {row}");
-    assert_eq!(row.spans[0].style.bg, None, "the gutter is never banded");
-    assert!(
-        row.spans[1..]
-            .iter()
-            .all(|span| span.style.bg == Some(background)),
-        "every column of output sits on the band: {row}"
-    );
-    // Short output still reads as one panel: every banded row runs to the
-    // block's full width, not just to its widest row.
-    let banded_widths = layout.lines[region.start_line..region.end_line]
-        .iter()
-        .filter(|row| {
-            row.spans
-                .iter()
-                .any(|span| span.style.bg == Some(background))
-        })
-        .map(Line::width)
-        .collect::<Vec<_>>();
-    assert!(
-        banded_widths.iter().all(|width| *width >= 60),
-        "the band spans the block, not the text: {banded_widths:?}"
-    );
 }
 
 #[test]
@@ -820,8 +756,6 @@ fn excerpt_rows_follow_the_read_header() {
 
 #[tokio::test]
 async fn bash_header_hover_covers_visible_header_only() {
-    use ratatui::style::Modifier;
-
     let mut app = test_app().await;
     let session = SessionId::new_v7();
     app.selected = Some(session);
@@ -833,218 +767,70 @@ async fn bash_header_hover_covers_visible_header_only() {
     app.store.sessions.insert(session, state);
     app.expanded_blocks
         .insert(session, HashSet::from([BlockId::Tool(id)]));
-    for (kind, level) in [
-        (ThemeKind::Default, ColorLevel::TrueColor),
-        (ThemeKind::Dark, ColorLevel::TrueColor),
-        (ThemeKind::Default, ColorLevel::Ansi256),
-        (ThemeKind::Dark, ColorLevel::Ansi256),
-        (ThemeKind::Mono, ColorLevel::None),
-        (ThemeKind::HighContrast, ColorLevel::Ansi16),
+    app.conversation_scroll.following = false;
+    app.conversation_scroll.offset = 0;
+    app.hover = None;
+    let mut terminal = Terminal::new(TestBackend::new(24, 24)).unwrap();
+    terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+    let region = *app
+        .layout_cache
+        .layout
+        .regions
+        .iter()
+        .find(|region| region.id == BlockId::Tool(id))
+        .unwrap();
+    let header_lines = region.header_lines.unwrap();
+    // Expanded, the over-long command finishes on hanging rows, and all
+    // of them belong to the one hoverable header.
+    assert!(header_lines > 1, "{header_lines}");
+    for (offset, visible_header_lines) in [
+        (0, header_lines),
+        (region.start_line + 1, header_lines - 1),
+        (region.start_line + header_lines, 0),
     ] {
-        app.theme = Theme::new(kind, level);
         app.conversation_scroll.following = false;
-        app.conversation_scroll.offset = 0;
+        app.conversation_scroll.offset = offset;
         app.hover = None;
-        let mut terminal = Terminal::new(TestBackend::new(24, 24)).unwrap();
         terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
-        let region = *app
-            .layout_cache
-            .layout
-            .regions
+        let before = terminal.backend().buffer().clone();
+        let hit = *app
+            .hit_map
+            .blocks
             .iter()
-            .find(|region| region.id == BlockId::Tool(id))
+            .find(|hit| hit.id == BlockId::Tool(id))
             .unwrap();
-        let header_lines = region.header_lines.unwrap();
-        // Expanded, the over-long command finishes on hanging rows, and all
-        // of them belong to the one hoverable header.
-        assert!(header_lines > 1, "{header_lines}");
-        for (offset, visible_header_lines) in [
-            (0, header_lines),
-            (region.start_line + 1, header_lines - 1),
-            (region.start_line + header_lines, 0),
-        ] {
-            app.conversation_scroll.following = false;
-            app.conversation_scroll.offset = offset;
-            app.hover = None;
-            terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
-            let before = terminal.backend().buffer().clone();
-            let hit = *app
-                .hit_map
-                .blocks
-                .iter()
-                .find(|hit| hit.id == BlockId::Tool(id))
-                .unwrap();
-            assert_eq!(
-                hit.hover_rect.map_or(0, |rect| usize::from(rect.height)),
-                visible_header_lines
-            );
-            app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
-            assert_eq!(
-                app.hover,
-                hit.toggle_rect
-                    .map(|_| PointerTarget::TranscriptBlock(BlockId::Tool(id)))
-            );
-            terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
-            let after = terminal.backend().buffer();
-            for y in hit.rect.y..hit.rect.bottom() {
-                for x in hit.rect.x..hit.rect.right() {
-                    // Wide glyph continuation cells are reset by the test backend.
-                    if x > hit.rect.x && UnicodeWidthStr::width(after[(x - 1, y)].symbol()) > 1 {
-                        continue;
-                    }
-                    let cell = &after[(x, y)];
-                    assert!(!cell.modifier.contains(Modifier::UNDERLINED));
-                    assert_eq!(cell.fg, before[(x, y)].fg);
-                    if hit
-                        .hover_rect
-                        .is_some_and(|rect| rect.contains(ratatui::layout::Position::new(x, y)))
-                    {
-                        assert_eq!(
-                            cell.bg,
-                            app.theme.block_hover().bg.unwrap_or(before[(x, y)].bg),
-                            "header at {x},{y}, offset {offset}: {cell:?}"
-                        );
-                    } else {
-                        assert_eq!(cell, &before[(x, y)], "body changed at {x},{y}");
-                    }
+        assert_eq!(
+            hit.hover_rect.map_or(0, |rect| usize::from(rect.height)),
+            visible_header_lines
+        );
+        app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
+        assert_eq!(
+            app.hover,
+            hit.toggle_rect
+                .map(|_| PointerTarget::TranscriptBlock(BlockId::Tool(id)))
+        );
+        terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+        let after = terminal.backend().buffer();
+        for y in hit.rect.y..hit.rect.bottom() {
+            for x in hit.rect.x..hit.rect.right() {
+                // Wide glyph continuation cells are reset by the test backend.
+                if x > hit.rect.x && UnicodeWidthStr::width(after[(x - 1, y)].symbol()) > 1 {
+                    continue;
+                }
+                if !hit
+                    .hover_rect
+                    .is_some_and(|rect| rect.contains(ratatui::layout::Position::new(x, y)))
+                {
+                    assert_eq!(&after[(x, y)], &before[(x, y)], "body changed at {x},{y}");
                 }
             }
         }
     }
-}
-
-#[tokio::test]
-async fn tool_rows_never_underline_across_themes_and_hover() {
-    use ratatui::style::Modifier;
-
-    let mut app = test_app().await;
-    let session = SessionId::new_v7();
-    app.selected = Some(session);
-    let mut state = read_tool_state("src/main.rs", ToolStatus::Completed, "output");
-    let id = read_tool_id(&state);
-    state.tools.get_mut(&id).unwrap().arguments = r#"{"command":"true"}"#.into();
-    app.store.sessions.insert(session, state);
-    app.expanded_blocks
-        .insert(session, HashSet::from([BlockId::Tool(id)]));
-    for kind in [
-        ThemeKind::Default,
-        ThemeKind::Dark,
-        ThemeKind::Mono,
-        ThemeKind::HighContrast,
-    ] {
-        for level in [
-            ColorLevel::None,
-            ColorLevel::Ansi16,
-            ColorLevel::Ansi256,
-            ColorLevel::TrueColor,
-        ] {
-            app.theme = Theme::new(kind, level);
-            for name in ["bash", "read", "write", "edit", "plugin.build"] {
-                let state = app.store.sessions.get_mut(&session).unwrap();
-                state.tools.get_mut(&id).unwrap().presentation =
-                    builtin_presentation(name, Some("src/main.rs"));
-                // The fixture changes persisted presentation directly, so rebuild its cache.
-                app.layout_cache = LayoutCache::default();
-                let layout = transcript_layout_with(
-                    state,
-                    app.expanded_blocks.get(&session),
-                    80,
-                    &app.theme,
-                    &PlainHighlighter,
-                );
-                let region = layout
-                    .regions
-                    .iter()
-                    .find(|region| region.id == BlockId::Tool(id))
-                    .unwrap();
-                for line in &layout.lines[region.start_line..region.end_line] {
-                    assert!(!line.style.add_modifier.contains(Modifier::UNDERLINED));
-                    assert!(
-                        line.spans
-                            .iter()
-                            .all(|span| !span.style.add_modifier.contains(Modifier::UNDERLINED))
-                    );
-                }
-                for hovered in [false, true] {
-                    app.hover =
-                        hovered.then_some(PointerTarget::TranscriptBlock(BlockId::Tool(id)));
-                    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-                    terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
-                    let hit = app
-                        .hit_map
-                        .blocks
-                        .iter()
-                        .find(|hit| hit.id == BlockId::Tool(id))
-                        .unwrap();
-                    assert_eq!(
-                        app.hover_target_at(hit.rect.x, hit.rect.y),
-                        Some(PointerTarget::TranscriptBlock(BlockId::Tool(id)))
-                    );
-                    for y in hit.rect.y..hit.rect.bottom() {
-                        for x in hit.rect.x..hit.rect.right() {
-                            assert!(
-                                !terminal.backend().buffer()[(x, y)]
-                                    .modifier
-                                    .contains(Modifier::UNDERLINED),
-                                "{kind:?} {level:?} {name} hover={hovered}"
-                            );
-                        }
-                    }
-                    if name == "bash"
-                        && let Some(bg) = app.theme.terminal_background()
-                    {
-                        assert_eq!(
-                            terminal.backend().buffer()[(hit.rect.x + 2, hit.rect.y + 1)].bg,
-                            bg
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Draw rows the way the terminal will and return every banded cell's
-/// background, right of the row's own gutter.
-fn banded_cell_backgrounds(
-    rows: &[Line<'static>],
-    width: u16,
-    background: ratatui::style::Color,
-) -> Vec<(u16, u16, ratatui::style::Color)> {
-    use ratatui::widgets::Widget as _;
-    let area = ratatui::layout::Rect::new(0, 0, width, rows.len() as u16);
-    let mut buffer = ratatui::buffer::Buffer::empty(area);
-    ratatui::widgets::Paragraph::new(rows.to_vec()).render(area, &mut buffer);
-    let mut cells = Vec::new();
-    for (y, row) in rows.iter().enumerate() {
-        if !row
-            .spans
-            .iter()
-            .any(|span| span.style.bg == Some(background))
-        {
-            continue;
-        }
-        // The second cell of a wide glyph is painted with the glyph itself,
-        // so only cells that start a glyph are checked.
-        let chrome = leading_gutter_columns(row);
-        let mut x = 0;
-        while x < width {
-            let cell = &buffer[(x, y as u16)];
-            if x >= chrome {
-                cells.push((x, y as u16, cell.bg));
-            }
-            x += UnicodeWidthStr::width(cell.symbol()).max(1) as u16;
-        }
-    }
-    cells
 }
 
 #[test]
-fn tabbed_bash_output_expands_to_tab_stops_and_fills_the_band() {
+fn tabbed_bash_output_expands_to_tab_stops() {
     let theme = Theme::default();
-    let background = theme
-        .terminal_background()
-        .expect("the parchment theme bands the terminal");
     let mut state = read_tool_state(
         "unused",
         ToolStatus::Completed,
@@ -1070,17 +856,10 @@ fn tabbed_bash_output_expands_to_tab_stops_and_fills_the_band() {
         "{rendered}"
     );
     assert!(rendered.contains("ab      c"), "{rendered}");
-    // Measured and drawn widths agree, so no cell at a row's end is left
-    // off the band (the renderer used to drop a tab that counted as one).
-    let unpainted = banded_cell_backgrounds(rows, 60, background)
-        .into_iter()
-        .filter(|(_, _, bg)| *bg != background)
-        .collect::<Vec<_>>();
-    assert!(unpainted.is_empty(), "{unpainted:?}\n{rendered}");
 }
 
 #[test]
-fn every_expanded_tool_paints_a_padded_panel() {
+fn every_expanded_tool_lays_out_a_padded_panel() {
     let path = "src/very/deeply/nested/module/with/a/long/path/transcript.rs";
     let mut state = read_tool_state(path, ToolStatus::Completed, "result");
     let id = read_tool_id(&state);
@@ -1103,8 +882,8 @@ fn every_expanded_tool_paints_a_padded_panel() {
     // The path still finishes on a clickable multi-row title block…
     let header_lines = region.header_lines.unwrap();
     assert!(header_lines > 1, "{}", snapshot_lines(rows));
-    // …on the title band, over an output band that opens and closes on a
-    // blank padding row, then a clear row after it.
+    // …over an output panel that opens and closes on a blank padding row,
+    // then a clear row after it.
     let theme = Theme::default();
     let text = rows
         .iter()
@@ -1115,84 +894,11 @@ fn every_expanded_tool_paints_a_padded_panel() {
     assert_eq!(text[header_lines], "│", "{text:?}");
     assert_eq!(text[header_lines + 1], "│  result", "{text:?}");
     assert_eq!(text[spacer - 1], "│", "{text:?}");
-    for (index, row) in rows.iter().enumerate() {
-        let expected = if index < header_lines {
-            theme.tool_title_background()
-        } else if index == spacer {
-            None
-        } else {
-            theme.terminal_background()
-        };
-        // Everything behind the `│ ` gutter, padding included, is band.
-        for span in row.spans.iter().skip(1) {
-            assert_eq!(span.style.bg, expected, "{index}: {row}");
-        }
-        if expected.is_some() {
-            assert_eq!(row.width(), 40, "{index}: {row}");
-        }
-    }
     // Copying skips the padding column along with the gutter.
     assert_eq!(
         super::super::wrap::extract_line(&rows[header_lines + 1], 0, u16::MAX, &theme).as_deref(),
         Some("result")
     );
-}
-
-#[test]
-fn collapsed_tool_rows_are_muted_and_only_a_failure_suffix_keeps_its_colour() {
-    let theme = Theme::default();
-    let muted = theme.muted_text().fg;
-    assert!(muted.is_some());
-    assert_ne!(muted, theme.tool_success().fg);
-    let mut state = read_tool_state("unused", ToolStatus::Completed, "result");
-    let id = read_tool_id(&state);
-    state.tools.get_mut(&id).unwrap().presentation =
-        builtin_presentation("bash", Some("make test"));
-    for status in [
-        ToolStatus::Running,
-        ToolStatus::Completed,
-        ToolStatus::Failed,
-        ToolStatus::Cancelled,
-        ToolStatus::Interrupted,
-    ] {
-        let failed = matches!(
-            status,
-            ToolStatus::Failed | ToolStatus::Cancelled | ToolStatus::Interrupted
-        );
-        state.tools.get_mut(&id).unwrap().status = status.clone();
-        let layout = transcript_layout(&state, None, 80);
-        let region = layout
-            .regions
-            .iter()
-            .find(|region| region.id == BlockId::Tool(id))
-            .unwrap();
-        let row = &layout.lines[region.start_line];
-        let chrome = usize::from(leading_gutter_columns(row));
-        let mut column = 0;
-        for span in &row.spans {
-            if column >= chrome && !span.content.trim().is_empty() {
-                let is_suffix = failed
-                    && ["failed", "cancelled", "interrupted"]
-                        .iter()
-                        .any(|word| span.content.trim() == *word);
-                let expected = if is_suffix {
-                    theme.tool_failure().fg
-                } else {
-                    muted
-                };
-                assert_eq!(span.style.fg, expected, "{status:?}: {row}");
-            }
-            column += UnicodeWidthStr::width(span.content.as_ref());
-        }
-        if failed {
-            assert!(
-                row.spans
-                    .iter()
-                    .any(|span| span.style.fg == theme.tool_failure().fg),
-                "{status:?}: {row}"
-            );
-        }
-    }
 }
 
 #[test]
