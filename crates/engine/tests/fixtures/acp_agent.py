@@ -78,6 +78,10 @@ Each prompt's last text block is a command:
                          own stream (running, a read call, "subagent says:
                          <task>", idle) while this session answers "subagent
                          done"
+  subagent-mcp <tool> <json>
+                         a subagent that reports a call of cookie's tool <tool>
+                         in its own session, makes it over its parent's bridge,
+                         and says "subagent result: <text> error: <isError>"
   subagent-wait <title>  the same, but the subagent says "waiting" and waits (up to
                          10 s) for session/cancel, while this session answers
                          "subagent started" at once
@@ -549,6 +553,28 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
                               "content": [{"type": "content", "content": {"type": "text", "text": "one"}}]})
             say(child, "subagent says: " + task)
         subagent(session_id, title, task, work)
+        say(session_id, "subagent done")
+    elif word == "subagent-mcp":
+        tool, _, arguments = rest.partition(" ")
+        arguments = json.loads(arguments or "{}")
+        def work(child):
+            import time
+            # Its run is under way before it calls, as a real subagent's is.
+            time.sleep(0.5)
+            call = {"toolCallId": f"{child}-mcp", "name": f"mcp__cookie__{tool}",
+                    "title": f"mcp__cookie__{tool}", "kind": "other", "status": "pending",
+                    "rawInput": arguments}
+            tool_call(child, call)
+            if not mcp_open(session):
+                say(child, "no bridge")
+                return
+            reply = mcp(session, "tools/call", {"name": tool, "arguments": arguments}, 7)
+            result = reply.get("result", {})
+            text = " ".join(item.get("text", "") for item in result.get("content", []))
+            tool_call(child, {"toolCallId": call["toolCallId"],
+                              "status": "failed" if result.get("isError") else "completed"})
+            say(child, f"subagent result: {text} error: {result.get('isError')}")
+        subagent(session_id, "caller", "call a tool", work)
         say(session_id, "subagent done")
     elif word == "subagent-wait":
         def work(child):

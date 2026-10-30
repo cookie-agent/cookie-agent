@@ -38,6 +38,23 @@ pub(crate) fn is_acp_subagent(events: &[Arc<StoredEvent>]) -> bool {
     })
 }
 
+/// The ACP adapters whose subagents get a prompt of their own rather than
+/// the session's system prompt (Claude Code's: a subagent runs on its own
+/// definition), by the name their `initialize` answer gives.
+const OWN_PROMPT_SUBAGENTS: [&str; 2] = [
+    "@agentclientprotocol/claude-agent-acp",
+    "@zed-industries/claude-code-acp",
+];
+
+/// Whether the subagents of the agent that answered `initialize` with
+/// `init` get the session's system prompt: an agent that takes one, and is
+/// not known to give its subagents a prompt of their own (Codex hands its
+/// on to the threads it spawns).
+pub(crate) fn subagents_inherit_system_prompt(init: &super::wire::InitializeResponse) -> bool {
+    let name = init.info.get("name").and_then(Value::as_str).unwrap_or("");
+    init.capabilities.session("systemPrompt") && !OWN_PROMPT_SUBAGENTS.contains(&name)
+}
+
 impl Engine {
     /// A `subagent_update` in `parent`'s session, during its run `run` or
     /// between runs: the child's cookie session, made on first sight, and
@@ -208,6 +225,25 @@ impl Engine {
             waiting: Arc::default(),
             rounds: Arc::default(),
         };
+        // What the agent passes its subagent of what cookie gave it: the
+        // parent's system prompt, when cookie sent its context as one and
+        // the agent hands that on.
+        let inherited = super::prompt::recorded_prompt_context(&events);
+        if !inherited.is_empty() && subagents_inherit_system_prompt(parent.process.init()) {
+            let _ = self
+                .append(
+                    child,
+                    None,
+                    origin(),
+                    Event::AcpSessionUpdated {
+                        update: cookie_agent_protocol::AcpSessionUpdate {
+                            prompt_context: Some(inherited),
+                            ..cookie_agent_protocol::AcpSessionUpdate::default()
+                        },
+                    },
+                )
+                .await;
+        }
         self.inner
             .acp
             .subagents
@@ -269,5 +305,76 @@ impl Engine {
             },
         )
         .await
+    }
+}
+
+impl Engine {
+    /// The parent session of `session` when it is the ACP agent's own
+    /// subagent.
+    pub(crate) fn acp_subagent_parent(&self, session: SessionId) -> Option<SessionId> {
+        let projection = self.inner.store.get(session).ok()?;
+        if !is_acp_subagent(&projection.log.event_snapshot()) {
+            return None;
+        }
+        match projection.meta.origin {
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => Some(parent_session_id),
+            SessionOrigin::Root => None,
+        }
+    }
+
+    /// The tools the latest model request of `session` was offered
+    /// (`model_tools_published`).
+    pub(crate) fn latest_model_tool_names(&self, session: SessionId) -> Option<Vec<String>> {
+        let projection = self.inner.store.get(session).ok()?;
+        projection
+            .log
+            .event_snapshot()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                Event::ModelToolsPublished { tool_names, .. } => Some(tool_names.clone()),
+                _ => None,
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subagents_inherit_system_prompt;
+
+    fn init(name: &str, system_prompt: bool) -> super::super::wire::InitializeResponse {
+        let mut session = serde_json::json!({});
+        if system_prompt {
+            session["systemPrompt"] = serde_json::json!({});
+        }
+        serde_json::from_value(serde_json::json!({
+            "protocolVersion": 2,
+            "info": {"name": name},
+            "capabilities": {"session": session},
+        }))
+        .expect("initialize answer")
+    }
+
+    #[test]
+    fn subagents_inherit_a_system_prompt_unless_their_agent_gives_them_their_own() {
+        assert!(subagents_inherit_system_prompt(&init(
+            "@agentclientprotocol/codex-acp",
+            true
+        )));
+        assert!(subagents_inherit_system_prompt(&init(
+            "some-new-agent",
+            true
+        )));
+        assert!(!subagents_inherit_system_prompt(&init(
+            "@agentclientprotocol/claude-agent-acp",
+            true
+        )));
+        // Without a system prompt, the context went with the first message.
+        assert!(!subagents_inherit_system_prompt(&init(
+            "some-new-agent",
+            false
+        )));
     }
 }

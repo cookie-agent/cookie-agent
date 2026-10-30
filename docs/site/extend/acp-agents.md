@@ -605,6 +605,16 @@ not in it.
   calls as a `subagent`, beside cookie's own subagents (`delegate_subagent`);
   Stop there or in its own session stops its work. It lives in the agent's
   process: once that process ends, it takes no more turns.
+  Its session shows what its agent gives it, never what cookie composes
+  for its parent: no system prompt row and no memory row, and its tools
+  row lists its parent's cookie tools, since it reaches cookie over its
+  parent's bridge. Codex hands the context cookie sent as its parent's
+  system prompt on to its subagents, which show it as context from the
+  parent; Claude Code gives its subagents a prompt of their own and none of
+  that context. An agent cookie does not know is taken to hand its system
+  prompt on. A call of cookie's tools the subagent makes shows once, in
+  the subagent's session, decided by its rules; one its rules do not offer
+  runs in the parent, and shows there.
 - **Questions.** A question from the agent (see [Questions from the
   agent](#questions-from-the-agent)) docks a panel above the TUI's status
   bar, titled `<agent> asks · waiting on you`: Tab moves between the fields

@@ -1223,7 +1223,9 @@ pub fn pinned_rows(
     draft_agent: Option<&cookie_agent_protocol::AgentId>,
 ) -> Option<(u64, String)> {
     let (snapshot, from_run) = system_prompt_source(state)?;
-    let mut rows = vec![pinned_row(
+    let mut rows = Vec::new();
+    if cookie_agent_client_state::rows::shows_system_prompt(state) {
+        rows.push(pinned_row(
         SYSTEM_PROMPT_KEY,
         icondata::FaScrollSolid,
         &system_prompt_summary(snapshot, from_run, draft_agent),
@@ -1246,7 +1248,8 @@ pub fn pinned_rows(
             }
             html
         },
-    )];
+    ));
+    }
     if let Some(tools) = state.model_tools.as_deref() {
         rows.push(pinned_row(
             MODEL_TOOLS_KEY,
@@ -1311,6 +1314,9 @@ pub fn pinned_rows(
                 }
             },
         ));
+    }
+    if rows.is_empty() {
+        return None;
     }
     let html = format!(
         "<div class=\"flex flex-wrap items-start gap-x-3 gap-y-1\" data-pinned-rows>{}</div>",

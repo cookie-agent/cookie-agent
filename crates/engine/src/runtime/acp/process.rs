@@ -64,6 +64,9 @@ pub(crate) enum SessionEvent {
     BridgeCall {
         name: String,
         arguments: Value,
+        /// It stands for a call one of the agent's own subagents reported,
+        /// which it runs here: no report of this session's will claim it.
+        for_subagent: bool,
         reply: tokio::sync::oneshot::Sender<Value>,
     },
     /// An `elicitation/create` to ask the user.

@@ -1421,3 +1421,43 @@ async fn the_tools_rows_link_opens_the_deferred_tools_prompt() {
         "{panel}"
     );
 }
+
+#[tokio::test]
+async fn an_acp_subagent_shows_its_tools_but_no_system_prompt() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    assert!(app.store.apply_event(session_created(session, 1)));
+    let started = run_started_with_suffix(session, 2, RunId::new_v7(), vec![resolved_model(None)]);
+    let mut subagent = started.clone();
+    subagent.seq = 3;
+    subagent.payload = EventPayload::AcpSessionStarted {
+        record: cookie_agent_protocol::AcpSessionRecord {
+            agent: cookie_agent_protocol::AgentId::new("claude").unwrap(),
+            runtime_id: cookie_agent_protocol::RuntimeId::new("local").unwrap(),
+            runtime_agent: cookie_agent_protocol::AgentId::new("claude").unwrap(),
+            acp_session_id: "s-1".into(),
+            cwd: "/work".into(),
+            protocol_version: 2,
+            agent_info: serde_json::Value::Null,
+            how: cookie_agent_protocol::AcpSessionStart::Subagent,
+            steering: true,
+            forked_from: None,
+            fork: None,
+            fork_point: None,
+        },
+    };
+    let mut published = started.clone();
+    published.seq = 4;
+    published.payload = EventPayload::ModelToolsPublished {
+        attempt_id: AttemptId::new_v7(),
+        tool_names: vec!["memory_search".to_owned()],
+        deferred_tool_names: Vec::new(),
+    };
+    for event in [started, subagent, published] {
+        assert!(app.store.apply_event(event));
+    }
+    app.selected = Some(session);
+    let rendered = rendered_frame(&mut app, 100, 24);
+    assert!(!rendered.contains("system prompt"), "{rendered}");
+    assert!(rendered.contains("tools · 1"), "{rendered}");
+}

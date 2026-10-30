@@ -68,6 +68,11 @@ pub(crate) struct AcpState {
     /// The cookie sessions of the agents' own subagents, by the
     /// subagent's ACP session ID.
     pub(crate) subagents: Mutex<HashMap<String, SessionId>>,
+    /// The agents' reports of their calls of cookie's tools that no bridge
+    /// call has claimed yet, oldest first: which session a bridge call
+    /// belongs to, the agent's or one of its own subagents', which share
+    /// its bridge.
+    pub(crate) bridge_reports: Mutex<Vec<mcp::BridgeReport>>,
     /// The agents' commands still running after their calls ended.
     pub(crate) background: Mutex<Vec<background::AgentCommand>>,
     /// When a command of each session's agent last ended between runs, for
@@ -116,6 +121,7 @@ impl AcpState {
             questions: elicitation::Questions::default(),
             steering: Mutex::new(HashMap::new()),
             subagents: Mutex::new(HashMap::new()),
+            bridge_reports: Mutex::new(Vec::new()),
             background: Mutex::new(Vec::new()),
             background_ended: Mutex::new(HashMap::new()),
         }

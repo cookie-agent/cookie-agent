@@ -208,6 +208,14 @@ pub fn system_prompt_source(state: &SessionState) -> Option<(&AgentSnapshot, boo
         })
 }
 
+/// Whether the session shows the system prompt row: not for an ACP agent's
+/// own subagent, which runs on the prompt its agent gives it, never on the
+/// agent document cookie composed (what it inherits of cookie's context
+/// shows as its own row).
+pub fn shows_system_prompt(state: &SessionState) -> bool {
+    !state.acp.subagent
+}
+
 /// The system prompt row's title, after its icon and chevron:
 /// `system prompt · primary (last run) · next: fast (42 lines)`. The next
 /// agent shows only when the draft's differs from the snapshot's.

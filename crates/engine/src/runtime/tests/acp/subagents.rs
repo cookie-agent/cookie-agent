@@ -218,3 +218,133 @@ async fn cookies_and_the_agents_own_subagents_show_and_stop_side_by_side() {
     .await;
     assert!(engine.background_calls(session).is_empty());
 }
+
+/// The cookie tool calls `session` recorded, by the tool's name.
+fn cookie_calls(engine: &Engine, session: SessionId) -> Vec<String> {
+    events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ToolCallStarted { start } => Some(start.presentation.tool.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagent_shows_only_what_its_agent_gives_it() {
+    let document =
+        "---\ndescription: Fixture with a body\nmode: all\nacp: {}\n---\nYou review changes.\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "subagent reviewer look").await;
+    let child = subagent_of(engine, session).await;
+    first_run(engine, child).await;
+    let logged = events(engine, child);
+    // No memory snapshot: the agent gives its subagent none of cookie's.
+    assert!(
+        !logged
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::MemoryLoaded { .. }))
+    );
+    // The context went ahead of the parent's first message, which the
+    // subagent does not get.
+    assert!(!logged.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::AcpSessionUpdated { update } if update.prompt_context.is_some()
+    )));
+    // Its tools are its parent's bridge's.
+    let published = |session| {
+        events(engine, session)
+            .into_iter()
+            .rev()
+            .find_map(|event| match event.payload {
+                EventPayload::ModelToolsPublished { tool_names, .. } => Some(tool_names),
+                _ => None,
+            })
+    };
+    assert!(published(session).is_some());
+    assert_eq!(published(child), published(session));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagent_of_an_agent_that_takes_a_system_prompt_inherits_it() {
+    let document =
+        "---\ndescription: Fixture with a body\nmode: all\nacp: {}\n---\nYou review changes.\n";
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_SYSTEM_PROMPT", "1")],
+        &[("fixture.md", document)],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "subagent reviewer look").await;
+    let child = subagent_of(engine, session).await;
+    first_run(engine, child).await;
+    let context = |session| {
+        events(engine, session)
+            .into_iter()
+            .find_map(|event| match event.payload {
+                EventPayload::AcpSessionUpdated { update } => update.prompt_context,
+                _ => None,
+            })
+    };
+    let parent = context(session).expect("the parent's system prompt");
+    assert_eq!(
+        parent.last().map(String::as_str),
+        Some("You review changes.\n")
+    );
+    assert_eq!(
+        context(child),
+        Some(parent),
+        "the parent's, as the agent hands it on"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_call_of_cookies_tools_shows_once_in_its_own_session() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(
+        engine,
+        session,
+        "first",
+        r#"subagent-mcp memory_search {"query": "notes"}"#,
+    )
+    .await;
+    let child = subagent_of(engine, session).await;
+    let outcome = first_run(engine, child).await;
+    assert!(
+        final_text(&outcome).starts_with("subagent result: "),
+        "{outcome:?}"
+    );
+    assert!(
+        final_text(&outcome).ends_with("error: False"),
+        "{outcome:?}"
+    );
+    // Cookie's call, in the subagent's session, and not the agent's report
+    // of it there or a call in the parent's.
+    assert_eq!(cookie_calls(engine, child), ["memory_search"]);
+    assert!(
+        !cookie_calls(engine, session).contains(&"memory_search".to_owned()),
+        "{:?}",
+        cookie_calls(engine, session)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_call_its_rules_do_not_offer_runs_in_the_parent_and_shows_there_only() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "subagent-mcp cron_list {}").await;
+    let child = subagent_of(engine, session).await;
+    let outcome = first_run(engine, child).await;
+    assert!(
+        final_text(&outcome).ends_with("error: False"),
+        "{outcome:?}"
+    );
+    assert_eq!(cookie_calls(engine, child), Vec::<String>::new());
+    assert!(cookie_calls(engine, session).contains(&"cron_list".to_owned()));
+}

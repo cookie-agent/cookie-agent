@@ -383,6 +383,11 @@ impl Engine {
         policy: &FrozenRunPolicy,
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(session)?;
+        // An ACP agent's own subagent gets what its agent gives it, never a
+        // snapshot of cookie's: none is recorded as though it had.
+        if super::acp::is_acp_subagent(&projection.log.event_snapshot()) {
+            return Ok(());
+        }
         let delegated = matches!(projection.meta.origin, SessionOrigin::Delegated { .. });
         let access = memory_access(
             self.global_attached(session),

@@ -1164,8 +1164,10 @@ pub(super) fn ensure_cached_transcript_layout_in(
         cache.system_prompt = if let (Some(snapshot), Some(prompt_key)) =
             (state.run_snapshot.as_deref(), prompt_key)
         {
-            let layout = system_prompt_layout(snapshot, draft_agent, expanded, width, theme);
-            append_chunked_item(&mut cache.layout, &layout.into());
+            if cookie_agent_client_state::rows::shows_system_prompt(state) {
+                let layout = system_prompt_layout(snapshot, draft_agent, expanded, width, theme);
+                append_chunked_item(&mut cache.layout, &layout.into());
+            }
             if let Some(tools) = state.model_tools.as_deref() {
                 append_chunked_item(
                     &mut cache.layout,
@@ -2444,10 +2446,12 @@ pub(super) fn transcript_layout_viewed(
     let mut assistant_part_layout_passes = 0;
     let model_names = ModelDisplayNames::default();
     if let Some(snapshot) = state.run_snapshot.as_deref() {
-        append_item_layout(
-            &mut layout,
-            system_prompt_layout(snapshot, Some(&snapshot.agent), expanded, width, theme),
-        );
+        if cookie_agent_client_state::rows::shows_system_prompt(state) {
+            append_item_layout(
+                &mut layout,
+                system_prompt_layout(snapshot, Some(&snapshot.agent), expanded, width, theme),
+            );
+        }
         if let Some(tools) = state.model_tools.as_deref() {
             append_item_layout(
                 &mut layout,

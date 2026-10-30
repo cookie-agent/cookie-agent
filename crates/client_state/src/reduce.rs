@@ -1452,20 +1452,24 @@ pub(super) fn reduce_event_from(
             }
             if let Some(parts) = update.prompt_context.filter(|parts| !parts.is_empty()) {
                 let text = parts.join("\n\n");
-                let agent = state
-                    .acp
-                    .agent
-                    .as_ref()
-                    .map_or("the agent", |agent| agent.as_str());
-                let header = crate::model_input::agent_context_header(agent, &text);
-                push_model_input(
-                    state,
-                    timestamp,
-                    sequence,
-                    crate::model_input::ModelInputKind::AgentContext,
-                    header,
-                    text,
-                );
+                // The agent's own subagent's is what it inherited.
+                let (kind, header) = if state.acp.subagent {
+                    (
+                        crate::model_input::ModelInputKind::InheritedContext,
+                        crate::model_input::inherited_system_prompt_header(&text),
+                    )
+                } else {
+                    let agent = state
+                        .acp
+                        .agent
+                        .as_ref()
+                        .map_or("the agent", |agent| agent.as_str());
+                    (
+                        crate::model_input::ModelInputKind::AgentContext,
+                        crate::model_input::agent_context_header(agent, &text),
+                    )
+                };
+                push_model_input(state, timestamp, sequence, kind, header, text);
             }
             if let Some(notice) = update.notice {
                 push_split_item(state, timestamp, |id| TranscriptItem::AcpNotice {

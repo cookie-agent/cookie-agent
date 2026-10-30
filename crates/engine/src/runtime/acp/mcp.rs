@@ -32,6 +32,28 @@ pub(crate) const BRIDGE_SERVER: &str = "cookie";
 /// for another gets the first.
 const MCP_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// How long a bridge call waits for the agent's report of it, which names
+/// the session that made it, before it goes to the bridge's own session.
+const REPORT_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// An agent's report of its call of cookie's tool `tool` (its tool call
+/// `call`) in `session`, which no bridge call has claimed yet.
+#[derive(Clone, Debug)]
+pub(crate) struct BridgeReport {
+    pub session: SessionId,
+    /// The parent session, when `session` is the agent's own subagent,
+    /// whose calls reach cookie over its parent's bridge.
+    pub parent: Option<SessionId>,
+    pub call: String,
+    pub tool: String,
+    /// Whether `session`'s own rules offer the tool, so the call runs
+    /// there; else it runs in the parent.
+    pub offered: bool,
+    /// A bridge call ran it in the parent: the subagent does not show it
+    /// again.
+    pub claimed_elsewhere: bool,
+}
+
 /// The cookie session and agent a bridge serves.
 #[derive(Clone, Debug)]
 pub(crate) struct BridgeBinding {
@@ -264,6 +286,43 @@ impl Engine {
             .collect())
     }
 
+    /// The session a call of `tool` over `bridge_session`'s bridge belongs
+    /// to: the one whose oldest unclaimed report of a call of the tool the
+    /// agent sent, the bridge's own or one of its subagents' (which share
+    /// the bridge), waited for a moment since the report and the call
+    /// travel apart; the bridge's own without one. A subagent whose rules
+    /// do not offer the tool has its call run in the parent, and does not
+    /// show it again; the second value says so.
+    async fn bridge_call_session(
+        &self,
+        bridge_session: SessionId,
+        tool: &str,
+    ) -> (SessionId, bool) {
+        let deadline = tokio::time::Instant::now() + REPORT_WAIT;
+        loop {
+            {
+                let mut reports = super::lock(&self.inner.acp.bridge_reports);
+                if let Some(index) = reports.iter().position(|report| {
+                    report.tool == tool
+                        && !report.claimed_elsewhere
+                        && (report.session == bridge_session
+                            || report.parent == Some(bridge_session))
+                }) {
+                    let report = &mut reports[index];
+                    if report.session == bridge_session || report.offered {
+                        return (reports.remove(index).session, false);
+                    }
+                    report.claimed_elsewhere = true;
+                    return (bridge_session, true);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return (bridge_session, false);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     /// Runs one `tools/call` as a call of the agent's turn (the runner of
     /// the session's turn records and runs it): a result for the agent, an
     /// error one when the call failed or was refused.
@@ -275,7 +334,8 @@ impl Engine {
         if hidden(name, &self.hidden_tools(binding)) {
             return failed(format!("tool `{name}` is not offered to this agent"));
         }
-        let Some(live) = self.live_session(binding.session) else {
+        let (session, for_subagent) = self.bridge_call_session(binding.session, name).await;
+        let Some(live) = self.live_session(session) else {
             return failed("cookie's tools can be called only during the agent's turns".to_owned());
         };
         let (reply, answer) = tokio::sync::oneshot::channel();
@@ -285,6 +345,7 @@ impl Engine {
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({})),
+            for_subagent,
             reply,
         };
         if live.process.send_to(&live.acp_session_id, event).is_err() {

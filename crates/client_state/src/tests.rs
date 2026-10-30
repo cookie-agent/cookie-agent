@@ -5714,3 +5714,45 @@ fn an_acp_turn_that_said_nothing_leaves_no_empty_reply() {
         "a model's empty turn still shows"
     );
 }
+
+#[test]
+fn an_acp_subagent_shows_what_it_inherits_and_no_system_prompt() {
+    use cookie_agent_protocol::{AcpSessionRecord, AcpSessionStart};
+    let session = SessionId::new_v7();
+    let started = EventPayload::AcpSessionStarted {
+        record: AcpSessionRecord {
+            agent: AgentId::new("codex").unwrap(),
+            runtime_id: cookie_agent_protocol::RuntimeId::new("local").unwrap(),
+            runtime_agent: AgentId::new("codex").unwrap(),
+            acp_session_id: "s-1".into(),
+            cwd: "/work".into(),
+            protocol_version: 2,
+            agent_info: serde_json::Value::Null,
+            how: AcpSessionStart::Subagent,
+            steering: true,
+            forked_from: None,
+            fork: None,
+            fork_point: None,
+        },
+    };
+    let inherited = EventPayload::AcpSessionUpdated {
+        update: cookie_agent_protocol::AcpSessionUpdate {
+            prompt_context: Some(vec!["<tool_instructions>".into(), "You review.".into()]),
+            ..cookie_agent_protocol::AcpSessionUpdate::default()
+        },
+    };
+    let events = vec![
+        stored_event(session, None, 1, started),
+        stored_event(session, None, 2, inherited),
+    ];
+    let replayed = reduce_session_events(session, 0, &events);
+    assert!(!crate::rows::shows_system_prompt(&replayed));
+    assert_eq!(
+        model_inputs(&replayed),
+        [(
+            crate::model_input::ModelInputKind::InheritedContext,
+            "context from the parent · its system prompt · 3 lines",
+            "<tool_instructions>\n\nYou review."
+        )]
+    );
+}

@@ -84,6 +84,16 @@ pub fn inherited_context(turns: &[DelegatedContextTurn]) -> (String, String) {
     (format!("context from the parent · {count}"), body)
 }
 
+/// The inherited context row's heading for the agent's own subagent: what
+/// its agent hands it of the context cookie gave the parent, its parent's
+/// system prompt (Codex passes it to the threads it spawns).
+pub fn inherited_system_prompt_header(text: &str) -> String {
+    format!(
+        "context from the parent · its system prompt · {}",
+        lines(text)
+    )
+}
+
 /// Every file of the `AGENTS.md` turn `sources` make, in the turn's order
 /// (a project's first), and the turn as the model reads it.
 pub fn agent_md_turn(
