@@ -778,8 +778,15 @@ space enables or disables it, `d` removes it (its documents stay), `o`
 opens its document in the editor (a new one from a template when it has
 none), `t` writes a template over it (`acp.agent`), and Esc returns to the
 machines. Every change is written to the runtime's `[runtimes.<id>]` table
-in the daemon's `config.toml`, and a connected runtime takes it at once.
-The panel refreshes on every runtime change and while it is open.
+in the daemon's `config.toml`, and a connected runtime takes it at once; a
+runtime that is not connected is edited the same way, and its details say
+its changes apply when it connects. On a runtime the daemon starts from a
+template, `c` connects it now, to try that it starts (`runtimes.connect`),
+and `d` disconnects it (`runtimes.disconnect`) until a session, run, or
+delegation needs it again; opening a session does not start it. While a
+run of a session that attaches the runtime or a background call on it is
+going on, the action bar says so in place of `d`. The panel refreshes on
+every runtime change and while it is open.
 
 Press `a` to attach: the panel lists every capability of every runtime
 (`labpc/coding`, `devbox/computer_use`), with its description and whether

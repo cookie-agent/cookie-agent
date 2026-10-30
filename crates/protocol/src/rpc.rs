@@ -486,6 +486,8 @@ pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
 pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
 pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
 pub const RUNTIMES_RECONNECT_METHOD: &str = "runtimes.reconnect";
+pub const RUNTIMES_CONNECT_METHOD: &str = "runtimes.connect";
+pub const RUNTIMES_DISCONNECT_METHOD: &str = "runtimes.disconnect";
 pub const RUNTIMES_AGENTS_LIST_METHOD: &str = "runtimes.agents.list";
 pub const RUNTIMES_AGENTS_SET_METHOD: &str = "runtimes.agents.set";
 pub const RUNTIMES_AGENTS_REMOVE_METHOD: &str = "runtimes.agents.remove";
@@ -664,6 +666,21 @@ pub struct RuntimesReconnectResult {
     pub instance: RuntimeInstanceInfo,
 }
 
+/// `runtimes.connect` and `runtimes.disconnect` (client protocol 1.55.0):
+/// connect a runtime the daemon starts (`lifetime: spawned`) without
+/// opening an instance, to try that it starts, or disconnect it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesConnectParams {
+    pub runtime_id: RuntimeId,
+}
+
+/// The runtime afterwards, as `runtimes.list` reports it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimesConnectResult {
+    pub runtime: RuntimeListing,
+}
+
 /// `runtimes.agents.list` (client protocol 1.37.0): the ACP agents a
 /// runtime's `[runtimes.<id>.acp.agents]` declares.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -776,6 +793,14 @@ pub struct RuntimeListing {
     /// Why the last attempt to connect failed, while it is not connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Active runs of sessions that attach the runtime (client protocol
+    /// 1.55.0); `runtimes.disconnect` is refused while any run or
+    /// background call uses it. Always 0 for `global` and `local`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub active_runs: u32,
+    /// Background calls executing on the runtime (client protocol 1.55.0).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub background_calls: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1641,6 +1666,10 @@ pub struct RunStartParams {
     // An explicit model/agent/preset choice may restore a previously skipped prefix.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reset_fallback: bool,
+}
+
+const fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 fn is_false(value: &bool) -> bool {

@@ -329,8 +329,20 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Result<Vec<(AttachmentName, EngineError)>, EngineError> {
+        self.ensure_session_runtimes_where(session, |_| true).await
+    }
+
+    /// [`Self::ensure_session_runtimes`] for the attachments `wanted` keeps.
+    async fn ensure_session_runtimes_where(
+        &self,
+        session: SessionId,
+        wanted: impl Fn(&RuntimeAttachment) -> bool,
+    ) -> Result<Vec<(AttachmentName, EngineError)>, EngineError> {
         let mut failures = Vec::new();
         for attachment in self.session_runtimes(session)? {
+            if !wanted(&attachment) {
+                continue;
+            }
             if let Err(error) = self.inner.runtimes.ensure_attachment(&attachment).await {
                 failures.push((attachment.name, error));
             }
@@ -339,12 +351,21 @@ impl Engine {
     }
 
     /// Connects what `session` uses, as when it is created or opened: every
-    /// attached instance is started, and every MCP server of an attached
-    /// instance whose last connection attempt failed is retried. The next
-    /// run waits for those attempts to finish; failures reach clients
-    /// viewing the session through the failure broadcasts.
+    /// attached instance is started, except on a runtime a client
+    /// disconnected, and every MCP server of an attached instance whose last
+    /// connection attempt failed is retried. The next run waits for those
+    /// attempts to finish; failures reach clients viewing the session
+    /// through the failure broadcasts.
     pub(crate) async fn connect_session(&self, session: SessionId) {
-        self.ensure_session_runtimes_logged(session).await;
+        let result = self
+            .ensure_session_runtimes_where(session, |attachment| {
+                !self
+                    .inner
+                    .runtimes
+                    .is_parked(attachment.runtime_id.as_str())
+            })
+            .await;
+        Self::log_session_runtimes(session, result);
         for attachment in self.session_runtimes(session).unwrap_or_default() {
             if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
                 self.retry_global_mcp();
@@ -434,7 +455,15 @@ impl Engine {
     /// [`Self::ensure_session_runtimes`] that reports failures on stderr:
     /// the attachment then publishes no tools.
     pub(crate) async fn ensure_session_runtimes_logged(&self, session: SessionId) {
-        match self.ensure_session_runtimes(session).await {
+        let result = self.ensure_session_runtimes(session).await;
+        Self::log_session_runtimes(session, result);
+    }
+
+    fn log_session_runtimes(
+        session: SessionId,
+        result: Result<Vec<(AttachmentName, EngineError)>, EngineError>,
+    ) {
+        match result {
             Ok(failures) => {
                 for (name, error) in failures {
                     eprintln!(
@@ -611,6 +640,110 @@ impl Engine {
             .runtimes
             .summary(&instance)
             .ok_or_else(|| EngineError::Runtime(format!("runtime `{runtime_id}` stopped")))
+    }
+
+    /// Connects template runtime `runtime_id` without opening an instance
+    /// (`runtimes.connect`), to try that it starts. A connected runtime is
+    /// left as it is; the error says why it did not connect.
+    pub async fn connect_runtime(&self, runtime_id: &str) -> Result<(), EngineError> {
+        self.inner.runtimes.connect(runtime_id).await
+    }
+
+    /// Disconnects template runtime `runtime_id` (`runtimes.disconnect`):
+    /// its instances stop, and opening a session leaves it down until a
+    /// run, attachment, new session, or delegation uses it. Refused while
+    /// it is busy ([`Self::runtime_activity`]).
+    pub async fn disconnect_runtime(&self, runtime_id: &str) -> Result<(), EngineError> {
+        let activity = self
+            .runtime_activity()
+            .remove(runtime_id)
+            .unwrap_or_default();
+        if !activity.is_idle() {
+            return Err(EngineError::Runtime(format!(
+                "runtime `{runtime_id}` is in use ({activity}); disconnect it once they end"
+            )));
+        }
+        let connections = self.inner.runtimes.disconnect(runtime_id)?;
+        futures_util::future::join_all(
+            connections
+                .iter()
+                .map(crate::runtimes::RuntimeClient::shutdown),
+        )
+        .await;
+        Ok(())
+    }
+
+    /// What keeps each runtime busy, by runtime ID; a runtime nothing uses
+    /// is left out, and so are the built-in `global` and `local`, which are
+    /// never disconnected and which nearly every run uses. A run counts
+    /// against every runtime its session attaches (an ACP agent runs on one
+    /// of them), and a background call against the runtime it executes on.
+    #[must_use]
+    pub fn runtime_activity(&self) -> std::collections::BTreeMap<String, crate::RuntimeActivity> {
+        let sessions = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .map(|run| run.session)
+            .collect::<Vec<_>>();
+        let mut activity = std::collections::BTreeMap::<String, crate::RuntimeActivity>::new();
+        for session in sessions {
+            let mut runtimes = self
+                .session_runtimes(session)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|attachment| attachment.runtime_id.as_str().to_owned())
+                .collect::<Vec<_>>();
+            runtimes.sort_unstable();
+            runtimes.dedup();
+            for runtime in runtimes {
+                activity.entry(runtime).or_default().active_runs += 1;
+            }
+        }
+        for runtime in self
+            .inner
+            .background
+            .pending_runtimes()
+            .into_iter()
+            .chain(self.acp_background_runtimes())
+        {
+            activity.entry(runtime).or_default().background_calls += 1;
+        }
+        activity.retain(|runtime, _| {
+            runtime != cookie_agent_runtime_api::GLOBAL_RUNTIME_ID
+                && runtime != cookie_agent_runtime_api::LOCAL_RUNTIME_ID
+        });
+        activity
+    }
+
+    /// Signals whenever a run starts or ends or a background call changes,
+    /// which may change [`Self::runtime_activity`]; bursts coalesce.
+    #[must_use]
+    pub fn subscribe_runtime_activity(&self) -> tokio::sync::watch::Receiver<()> {
+        let (sender, receiver) = tokio::sync::watch::channel(());
+        let mut runs = self.inner.sessions.active.subscribe_changed();
+        let mut background = self.subscribe_background_changes();
+        let task = async move {
+            loop {
+                tokio::select! {
+                    () = sender.closed() => return,
+                    changed = runs.changed() => if changed.is_err() { return },
+                    changed = background.recv() => match changed {
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                }
+                sender.send_replace(());
+            }
+        };
+        match &self.inner.runtime {
+            Some(runtime) => drop(runtime.spawn(task)),
+            None => drop(tokio::spawn(task)),
+        }
+        receiver
     }
 
     /// Runtime instances that failed to start, as they happen.

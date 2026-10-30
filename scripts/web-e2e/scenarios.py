@@ -2095,21 +2095,35 @@ def views_2026(browser):
     browser.wait("box unpinned", lambda: count(browser, '#page [data-unplaced] [data-runtime="box"]') == 1)
     browser.click('#page [data-machine-drop="e2e-lab"] [data-machine-action="forget"]')
     browser.wait("e2e-lab forgotten", lambda: count(browser, '#page [data-machine-drop="e2e-lab"]') == 0)
-    # `roamer` dialed in once and left: its machine remembers it, dimmed,
-    # with when it was last seen, until Forget.
+    # `roamer` dialed in once and left: its machine remembers it, its name
+    # dimmed, with when it was last seen, until Forget. Its settings are as
+    # editable as a connected runtime's, and the card says so; it dials in
+    # on its own, so it has no Connect.
     roamer = '#page [data-machine-drop] [data-runtime="roamer"]'
     browser.wait("roamer remembered", lambda: count(browser, roamer + "[data-offline=true]") == 1)
     detail = browser.text(roamer)
     assert "last seen" in detail and "not connected" in detail, detail
-    opacity = browser.script("return getComputedStyle(document.querySelector(arguments[0])).opacity", roamer)
-    assert float(opacity) < 1, opacity
+    opacity = "return getComputedStyle(document.querySelector(arguments[0])).opacity"
+    assert float(browser.script(opacity, roamer)) == 1, "the offline card reads as uneditable"
+    name = browser.script("return getComputedStyle(document.querySelector(arguments[0]).closest('[class*=opacity-60]') || document.body).opacity",
+                          roamer + " .font-mono")
+    assert float(name) < 1, name
+    assert count(browser, roamer + " [data-runtime-offline-note]") == 1, detail
+    assert count(browser, roamer + " [data-runtime-connection]") == 0, "a dial-in runtime offers Connect"
     browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", roamer)
     browser.shot("machines-remembered")
-    print("machines: an offline runtime stays on its machine, dimmed:", detail.replace("\n", " / "))
+    print("machines: an offline runtime stays on its machine, editable, its name dimmed:", detail.replace("\n", " / "))
     browser.click(roamer + ' [data-machine-action="forget-runtime"]')
     browser.wait("roamer forgotten", lambda: count(browser, roamer) == 0)
     assert count(browser, '#page [data-unplaced] [data-runtime="roamer"]') == 1
     print("machines: Forget leaves an offline runtime on no machine")
+    # `box` is a template whose command fails: Connect tries it and says why.
+    box = '#page [data-runtime="box"]'
+    browser.wait("box's Connect", lambda: count(browser, box + ' [data-runtime-connection="connect"]') == 1)
+    browser.click(box + ' [data-runtime-connection="connect"]')
+    browser.wait("the failed connect", lambda: "did not connect" in browser.text("#status"))
+    assert count(browser, box + ' [data-runtime-connection="connect"]') == 1, browser.text(box)
+    print("machines: Connect tried a template runtime:", browser.text("#status"))
 
     # Add a runtime: an ssh template into config.toml, the dial-in
     # command, and the guides.

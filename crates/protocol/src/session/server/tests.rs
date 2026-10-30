@@ -335,6 +335,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RuntimesReconnectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn connect_runtime(
+        &self,
+        _: crate::RuntimesConnectParams,
+    ) -> Result<crate::RuntimesConnectResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn disconnect_runtime(
+        &self,
+        _: crate::RuntimesConnectParams,
+    ) -> Result<crate::RuntimesConnectResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_machines(
         &self,
         _: crate::MachinesListParams,

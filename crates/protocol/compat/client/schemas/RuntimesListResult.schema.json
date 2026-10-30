@@ -129,6 +129,18 @@
     },
     "RuntimeListing": {
       "properties": {
+        "active_runs": {
+          "description": "Active runs of sessions that attach the runtime (client protocol\n1.55.0); `runtimes.disconnect` is refused while any run or\nbackground call uses it. Always 0 for `global` and `local`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "background_calls": {
+          "description": "Background calls executing on the runtime (client protocol 1.55.0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "capabilities": {
           "description": "What the runtime offers; empty until it has connected once.",
           "items": {

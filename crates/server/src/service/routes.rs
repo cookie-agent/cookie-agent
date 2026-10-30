@@ -1141,6 +1141,28 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::RuntimesReconnectResult { instance })
     }
 
+    async fn connect_runtime(
+        &self,
+        params: cookie_agent_protocol::RuntimesConnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesConnectResult> {
+        self.engine
+            .connect_runtime(params.runtime_id.as_str())
+            .await
+            .map_err(protocol_fault)?;
+        self.connect_result(&params.runtime_id)
+    }
+
+    async fn disconnect_runtime(
+        &self,
+        params: cookie_agent_protocol::RuntimesConnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesConnectResult> {
+        self.engine
+            .disconnect_runtime(params.runtime_id.as_str())
+            .await
+            .map_err(protocol_fault)?;
+        self.connect_result(&params.runtime_id)
+    }
+
     async fn list_runtime_agents(
         &self,
         params: cookie_agent_protocol::RuntimesAgentsListParams,
@@ -1493,6 +1515,20 @@ impl ServerProtocol for Server {
 }
 
 impl Server {
+    /// The answer of `runtimes.connect` and `runtimes.disconnect`.
+    fn connect_result(
+        &self,
+        runtime_id: &cookie_agent_protocol::RuntimeId,
+    ) -> Result<cookie_agent_protocol::RuntimesConnectResult> {
+        self.runtime_listing(runtime_id)
+            .map(|runtime| cookie_agent_protocol::RuntimesConnectResult { runtime })
+            .ok_or_else(|| {
+                protocol_fault(EngineError::Runtime(format!(
+                    "unknown runtime `{runtime_id}`"
+                )))
+            })
+    }
+
     /// Drops the connection's uploads in progress once it closes.
     fn start_upload_cleanup(&self, context: &ServerContext) {
         let engine = self.engine.clone();

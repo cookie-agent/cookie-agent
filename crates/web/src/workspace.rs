@@ -241,6 +241,9 @@ pub struct Workspace {
     /// `runtimes.list`: read on connect and whenever runtimes or machines
     /// change, for the runtime cards and every runtime's home.
     pub runtimes: RwSignal<Option<cookie_agent_protocol::RuntimesListResult>>,
+    /// The runtimes a `runtimes.connect` or `runtimes.disconnect` is on its
+    /// way for.
+    pub connecting: RwSignal<std::collections::BTreeSet<cookie_agent_protocol::RuntimeId>>,
     pub machines: RwSignal<Option<Result<cookie_agent_protocol::MachinesListResult, String>>>,
     pub mcp_servers: RwSignal<Option<Result<Vec<cookie_agent_protocol::McpServerInfo>, String>>>,
     /// The daemon takes the page's own address as the OAuth redirect
@@ -486,6 +489,7 @@ impl Workspace {
             downscale_offer: RwSignal::new(None),
             offer_bytes: StoredValue::new(Vec::new()),
             runtimes: RwSignal::new(None),
+            connecting: RwSignal::new(std::collections::BTreeSet::new()),
             machines: RwSignal::new(None),
             mcp_servers: RwSignal::new(None),
             can_sign_in: RwSignal::new(false),

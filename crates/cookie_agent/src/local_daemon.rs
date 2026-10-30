@@ -306,6 +306,8 @@ mod tests {
             machine: machine.map(|name| MachineName::new(name).unwrap()),
             home: None,
             message: None,
+            active_runs: 0,
+            background_calls: 0,
         }
     }
 

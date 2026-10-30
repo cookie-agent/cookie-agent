@@ -7,10 +7,12 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use cookie_agent_client_state::runtimes::{
     AcpAgentFields, MachineEntry, acp_agent_document, acp_template_document, agent_document_path,
+    connection_request, connection_status,
 };
 use cookie_agent_protocol::{
     AgentId, RuntimeAgentDeclaration, RuntimeId, RuntimesAgentsListParams,
     RuntimesAgentsRemoveParams, RuntimesAgentsRenameParams, RuntimesAgentsSetParams,
+    RuntimesConnectParams,
 };
 
 use crate::ui::management::{
@@ -60,6 +62,19 @@ impl App {
     /// Starts `action` on the selected row: sent at once, or once the form
     /// it opens has a machine name.
     pub(super) fn begin_machine_action(&mut self, action: MachineAction) {
+        if matches!(action, MachineAction::Connect | MachineAction::Disconnect) {
+            let Some(MachineEntry::Runtime { runtime, .. }) =
+                self.runtime_panel.selected_machine_entry()
+            else {
+                self.status = format!("select a runtime to {}", action.label());
+                return;
+            };
+            match connection_request(self.runtime_panel.runtimes(), &runtime, action) {
+                Ok(()) => self.dispatch_runtime_connection(runtime, action),
+                Err(error) => self.status = error,
+            }
+            return;
+        }
         if action.opens_panel() {
             let runtime = match self.runtime_panel.selected_machine_entry() {
                 Some(MachineEntry::Runtime { runtime, .. }) => runtime,
@@ -85,6 +100,39 @@ impl App {
             Ok(None) => {}
             Err(error) => self.status = error,
         }
+    }
+
+    /// Connects or disconnects `runtime` (`runtimes.connect`,
+    /// `runtimes.disconnect`).
+    fn dispatch_runtime_connection(&mut self, runtime: RuntimeId, action: MachineAction) {
+        let connect = action == MachineAction::Connect;
+        self.status = if connect {
+            format!("connecting runtime `{runtime}`...")
+        } else {
+            format!("disconnecting runtime `{runtime}`...")
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let params = RuntimesConnectParams {
+                runtime_id: runtime.clone(),
+            };
+            let result = if connect {
+                client.connect_runtime(params).await
+            } else {
+                client.disconnect_runtime(params).await
+            };
+            let result = result
+                .map(|result| connection_status(&result.runtime))
+                .map_err(|error| {
+                    if connect {
+                        format!("runtime `{runtime}` did not connect: {error}")
+                    } else {
+                        format!("runtime `{runtime}` did not disconnect: {error}")
+                    }
+                });
+            let _ = updates.send(RpcUpdate::RuntimeAttachmentChanged { result });
+        });
     }
 
     fn dispatch_machine_request(&mut self, request: MachineRequest) {

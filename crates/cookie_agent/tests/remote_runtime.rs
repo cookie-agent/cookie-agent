@@ -611,6 +611,60 @@ async fn a_killed_runtime_reconnects_and_one_that_cannot_is_dropped() {
 }
 
 #[tokio::test]
+async fn a_disconnected_runtime_stays_down_until_used_or_connected() {
+    let fixture = Fixture::new(30_000).await;
+    let session = fixture.session().await;
+    let first = fixture.remote_pid(session, "pid-1").await;
+    let connected = || {
+        fixture
+            .engine
+            .runtime_templates()
+            .into_iter()
+            .find(|template| template.runtime_id == "remote")
+            .expect("remote template")
+            .listing
+            .connected
+    };
+    assert!(connected());
+
+    fixture
+        .engine
+        .disconnect_runtime("remote")
+        .await
+        .expect("disconnect");
+    assert!(!connected());
+    assert_eq!(
+        fixture.remote_status(),
+        Some(RuntimeInstanceStatus::Stopped)
+    );
+    // Opening the session does not start it again.
+    fixture.engine.resume(session).await.expect("resume");
+    assert!(!connected());
+    assert_eq!(
+        fixture.remote_status(),
+        Some(RuntimeInstanceStatus::Stopped)
+    );
+
+    // Connecting tries the runtime alone: no instance opens.
+    fixture
+        .engine
+        .connect_runtime("remote")
+        .await
+        .expect("connect");
+    assert!(connected());
+    assert_eq!(
+        fixture.remote_status(),
+        Some(RuntimeInstanceStatus::Stopped)
+    );
+
+    // A run uses it: the instance opens on a new process.
+    let second = fixture.remote_pid(session, "pid-2").await;
+    assert_ne!(first, second, "a new runtime process");
+    assert_eq!(fixture.remote_status(), Some(RuntimeInstanceStatus::Ready));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn failed_starts_name_the_reason_and_the_runtime_stderr() {
     let fixture = Fixture::new(30_000).await;
     let session = fixture

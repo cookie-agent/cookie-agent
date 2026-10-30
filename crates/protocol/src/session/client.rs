@@ -968,6 +968,24 @@ impl Client {
         self.call(crate::RUNTIMES_RECONNECT_METHOD, &params).await
     }
 
+    /// Connects a runtime the daemon starts, to try that it starts (client
+    /// protocol 1.55.0).
+    pub async fn connect_runtime(
+        &self,
+        params: crate::RuntimesConnectParams,
+    ) -> Result<crate::RuntimesConnectResult, ClientError> {
+        self.call(crate::RUNTIMES_CONNECT_METHOD, &params).await
+    }
+
+    /// Disconnects a runtime the daemon starts; refused while a run or
+    /// background call uses it (client protocol 1.55.0).
+    pub async fn disconnect_runtime(
+        &self,
+        params: crate::RuntimesConnectParams,
+    ) -> Result<crate::RuntimesConnectResult, ClientError> {
+        self.call(crate::RUNTIMES_DISCONNECT_METHOD, &params).await
+    }
+
     /// A runtime's ACP agent declarations (client protocol 1.37.0).
     pub async fn list_runtime_agents(
         &self,

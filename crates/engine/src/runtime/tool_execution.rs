@@ -666,6 +666,10 @@ impl Engine {
                 ..
             } = prepared;
             let mut prepared = prepared?;
+            let runtime = interception
+                .as_ref()
+                .and_then(|interception| interception.preparation.origin.runtime())
+                .map(|runtime| runtime.id().to_owned());
             let result_truncation = interception
                 .as_ref()
                 .map(|interception| interception.spec.result_truncation)
@@ -978,6 +982,7 @@ impl Engine {
                                 session: active.session,
                                 tool_call_id: call.id,
                                 tool: call.name.clone(),
+                                runtime: runtime.clone(),
                                 display: presentation
                                     .primary_argument
                                     .as_ref()

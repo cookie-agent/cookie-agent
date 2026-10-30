@@ -1552,3 +1552,185 @@ async fn mcp_tools_are_offered_by_the_merged_rules_for_their_names() {
     );
     fixture.engine.shutdown().await;
 }
+
+fn instance_status(engine: &crate::Engine, runtime: &str) -> Option<crate::RuntimeInstanceStatus> {
+    engine
+        .runtime_instances()
+        .into_iter()
+        .find(|instance| instance.runtime_id == runtime)
+        .map(|instance| instance.status)
+}
+
+#[tokio::test]
+async fn a_disconnected_runtime_stays_down_on_open_and_starts_on_use() {
+    let (fixture, selection) = custom_fixture();
+    let api = workspace_dir(fixture._directory.path(), "api");
+    let labpc = FakeRuntimeTemplate::with_workspace("labpc", probe_tools(ToolCollision::Prefix));
+    fixture
+        .engine
+        .register_runtime_template(labpc.clone())
+        .expect("register labpc");
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .attach_runtime(session, "labpc", None, Some(api), origin())
+        .await
+        .expect("attach labpc");
+    let starts = || labpc.starts.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(starts(), 1);
+
+    fixture
+        .engine
+        .disconnect_runtime("labpc")
+        .await
+        .expect("disconnect an idle runtime");
+    assert_eq!(
+        instance_status(&fixture.engine, "labpc"),
+        Some(crate::RuntimeInstanceStatus::Stopped)
+    );
+    // Opening the session leaves it down.
+    fixture.engine.resume(session).await.expect("resume");
+    assert_eq!(starts(), 1);
+    assert_eq!(
+        instance_status(&fixture.engine, "labpc"),
+        Some(crate::RuntimeInstanceStatus::Stopped)
+    );
+    // A run's start uses it, which starts it again; opening then keeps it.
+    fixture.engine.ensure_session_runtimes_logged(session).await;
+    assert_eq!(starts(), 2);
+    assert_eq!(
+        instance_status(&fixture.engine, "labpc"),
+        Some(crate::RuntimeInstanceStatus::Ready)
+    );
+    fixture
+        .engine
+        .disconnect_runtime("labpc")
+        .await
+        .expect("disconnect");
+    fixture
+        .engine
+        .connect_runtime("labpc")
+        .await
+        .expect("connect");
+    fixture.engine.resume(session).await.expect("resume");
+    assert_eq!(starts(), 3);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn only_template_runtimes_connect_and_disconnect_by_hand() {
+    let (fixture, _selection) = custom_fixture();
+    for runtime in ["global", "local"] {
+        let error = fixture
+            .engine
+            .disconnect_runtime(runtime)
+            .await
+            .expect_err("built in");
+        assert!(
+            error.to_string().contains("built into the daemon"),
+            "{error}"
+        );
+        let error = fixture
+            .engine
+            .connect_runtime(runtime)
+            .await
+            .expect_err("built in");
+        assert!(
+            error.to_string().contains("built into the daemon"),
+            "{error}"
+        );
+    }
+    let error = fixture
+        .engine
+        .connect_runtime("nowhere")
+        .await
+        .expect_err("unknown");
+    assert!(error.to_string().contains("unknown runtime"), "{error}");
+    fixture
+        .engine
+        .register_runtime_template(Arc::new(UnreachableTemplate))
+        .expect("register labpc");
+    let error = fixture
+        .engine
+        .connect_runtime("labpc")
+        .await
+        .expect_err("unreachable");
+    assert!(error.to_string().contains("Connection refused"), "{error}");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_runtime_a_run_uses_cannot_disconnect() {
+    let response = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let (endpoint, _captured, reached, release) =
+        scripted_server_with_delayed_response(vec![response], 0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let labpc = FakeRuntimeTemplate::fixed(
+        "labpc",
+        fixture._directory.path(),
+        probe_tools(ToolCollision::Prefix),
+    );
+    fixture
+        .engine
+        .register_runtime_template(labpc)
+        .expect("register labpc");
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .attach_runtime(session, "labpc", None, None, origin())
+        .await
+        .expect("attach labpc");
+    let mut activity = fixture.engine.subscribe_runtime_activity();
+    fixture
+        .engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("busy-run").unwrap(),
+                selection,
+                content: "hold".into(),
+            },
+            origin(),
+        )
+        .await
+        .expect("start run");
+    reached.await.expect("request reached");
+    activity
+        .changed()
+        .await
+        .expect("the run's start is signalled");
+    let busy = fixture.engine.runtime_activity();
+    assert_eq!(
+        busy.get("labpc"),
+        Some(&crate::RuntimeActivity {
+            active_runs: 1,
+            background_calls: 0
+        })
+    );
+    // The built-in runtimes the session also attaches are left out.
+    assert_eq!(busy.keys().collect::<Vec<_>>(), ["labpc"]);
+    let error = fixture
+        .engine
+        .disconnect_runtime("labpc")
+        .await
+        .expect_err("in use");
+    assert!(error.to_string().contains("1 active run"), "{error}");
+    release.notify_one();
+    wait_for_session_not_running(&fixture.engine, session).await;
+    assert!(fixture.engine.runtime_activity().is_empty());
+    fixture
+        .engine
+        .disconnect_runtime("labpc")
+        .await
+        .expect("disconnect once idle");
+    fixture.engine.shutdown().await;
+}

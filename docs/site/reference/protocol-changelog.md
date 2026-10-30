@@ -5,6 +5,18 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.55.0
+
+- `runtimes.connect` and `runtimes.disconnect` (`runtime_id`, answering the
+  `runtime` as `runtimes.list` reports it) connect a runtime the daemon
+  starts without opening an instance, to try that it starts, and disconnect
+  it; disconnecting is refused while a run or background call uses it (see
+  [Connecting by hand](protocol.md#connecting-by-hand)).
+- `RuntimeListing` has `active_runs` and `background_calls`, omitted when
+  zero: the active runs of sessions that attach the runtime and the
+  background calls executing on it. `runtimes.changed` announces a change
+  to either.
+
 ## 1.54.0
 
 - Two audit events ([stable prompt prefix](../specs/stable-prefix.md)

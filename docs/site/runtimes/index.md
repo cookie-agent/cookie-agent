@@ -66,7 +66,8 @@ expand against it (see
 ## Lifecycle and failures
 
 - **Start.** A runtime's process starts when a session first needs one of
-  its capabilities, and stays up until the daemon exits; its instances open
+  its capabilities, and stays up until the daemon exits or a client
+  disconnects it (below); its instances open
   as sessions attach them. Creating a session, attaching a runtime, and
   delegating with `capabilities` wait until the runtime is actually online,
   `runtime/initialize` and `capability/open` answered, before anything is
@@ -120,6 +121,15 @@ expand against it (see
 - **Retry.** A failed instance is retried when a session that uses it is
   created or opened, and on demand with `r` in `/runtime` (or
   `runtimes.reconnect`).
+- **Connect and disconnect by hand.** A runtime the daemon starts from a
+  template can be connected without a session, to try that it starts:
+  **Connect** in the web's Machines & runtimes view, `c` in the TUI's
+  machines view, or `runtimes.connect`. **Disconnect** (`d`,
+  `runtimes.disconnect`) stops it: its instances become `stopped` with no
+  reconnect, and opening a session that attaches it leaves it down. The next
+  session, attachment, run, or delegation that needs it starts it again.
+  Disconnecting is refused while a run of a session that attaches the
+  runtime, or a background call on it, is going on.
 - **Shutdown.** When the daemon exits it sends `runtime/shutdown`, waits up to
   [`shutdown_grace_ms`](templates.md#configuration), and then kills the
   process group (a job object on Windows).

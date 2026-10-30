@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`runtimes.connect` and `runtimes.disconnect` (client protocol 1.55.0):\nconnect a runtime the daemon starts (`lifetime: spawned`) without\nopening an instance, to try that it starts, or disconnect it.",
+  "properties": {
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime_id"
+  ],
+  "title": "RuntimesConnectParams",
+  "type": "object"
+}

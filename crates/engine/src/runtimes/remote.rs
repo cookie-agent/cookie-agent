@@ -300,8 +300,10 @@ impl RuntimeTemplate for ProtocolTemplate {
         })
     }
 
-    fn disconnect(&self) {
-        lock(&self.connection).take();
+    fn disconnect(&self) -> Option<super::registry::RuntimeLink> {
+        lock(&self.connection)
+            .take()
+            .map(super::registry::RuntimeLink)
     }
 
     fn update_settings(&self, settings: &RuntimeSettings) {
@@ -361,8 +363,8 @@ impl RuntimeTemplate for ProtocolTemplate {
         }
     }
 
-    async fn agent_connection(&self) -> Result<super::registry::AgentConnection, String> {
-        self.connected().await.map(super::registry::AgentConnection)
+    async fn agent_connection(&self) -> Result<super::registry::RuntimeLink, String> {
+        self.connected().await.map(super::registry::RuntimeLink)
     }
 }
 

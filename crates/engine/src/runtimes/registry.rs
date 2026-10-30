@@ -83,9 +83,11 @@ pub trait RuntimeTemplate: Send + Sync {
         workspace: Option<&Path>,
     ) -> Result<StartedRuntime, StartError>;
 
-    /// Lets go of the template's connection as the daemon stops; the
-    /// daemon shuts it down through the instances that use it.
-    fn disconnect(&self) {}
+    /// Lets go of the template's connection and returns it, as the daemon
+    /// stops or a client disconnects the runtime; the caller shuts it down.
+    fn disconnect(&self) -> Option<RuntimeLink> {
+        None
+    }
 
     /// Takes the runtime's settings as the daemon's configuration has them
     /// now (`docs/site/specs/runtime-management.md` section 3.1): the next
@@ -132,7 +134,7 @@ pub trait RuntimeTemplate: Send + Sync {
     /// The runtime's connection, connecting it when the daemon starts the
     /// runtime, for its ACP agents. Refused at once when the runtime dials
     /// in and is not connected.
-    async fn agent_connection(&self) -> Result<AgentConnection, String> {
+    async fn agent_connection(&self) -> Result<RuntimeLink, String> {
         Err(format!(
             "runtime `{}` hosts no ACP agents",
             self.runtime_id()
@@ -160,9 +162,11 @@ pub struct RuntimeAcpAgents {
     pub available: bool,
 }
 
-/// A runtime connection, as the ACP agents it hosts use it.
+/// A runtime's protocol connection, opaque outside the engine: what the
+/// ACP agents it hosts use, and what a template lets go of as it
+/// disconnects.
 #[derive(Clone)]
-pub struct AgentConnection(pub(crate) super::RuntimeClient);
+pub struct RuntimeLink(pub(crate) super::RuntimeClient);
 
 /// Why [`RuntimeTemplate::start`] failed, with a human-readable reason.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -531,6 +535,39 @@ impl InstanceSlot {
     }
 }
 
+/// What keeps a runtime busy, which a client cannot disconnect it during
+/// ([`crate::Engine::runtime_activity`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeActivity {
+    /// Active runs of sessions that attach the runtime.
+    pub active_runs: u32,
+    /// Background calls executing on the runtime.
+    pub background_calls: u32,
+}
+
+impl RuntimeActivity {
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.active_runs == 0 && self.background_calls == 0
+    }
+}
+
+impl std::fmt::Display for RuntimeActivity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = |count: u32, one: &str, many: &str| match count {
+            1 => format!("1 {one}"),
+            count => format!("{count} {many}"),
+        };
+        let parts = [
+            (self.active_runs > 0).then(|| count(self.active_runs, "active run", "active runs")),
+            (self.background_calls > 0)
+                .then(|| count(self.background_calls, "background call", "background calls")),
+        ];
+        let parts = parts.into_iter().flatten().collect::<Vec<_>>();
+        formatter.write_str(&parts.join(", "))
+    }
+}
+
 /// A runtime instance that failed to start, or dropped and did not
 /// reconnect.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -591,6 +628,9 @@ pub(crate) struct RuntimeRegistry {
     shutdown: CancellationToken,
     /// Composition diagnostics already reported, so each is reported once.
     reported: Mutex<std::collections::HashSet<String>>,
+    /// Runtimes a client disconnected ([`Self::disconnect`]): opening a
+    /// session leaves them down until something uses them.
+    parked: Mutex<std::collections::HashSet<String>>,
 }
 
 impl RuntimeRegistry {
@@ -630,6 +670,7 @@ impl RuntimeRegistry {
             reconnect: Mutex::new(ReconnectPolicy::default()),
             shutdown: CancellationToken::new(),
             reported: Mutex::default(),
+            parked: Mutex::default(),
         }
     }
 
@@ -1047,6 +1088,8 @@ impl RuntimeRegistry {
         let template = self
             .template(runtime_id)
             .ok_or_else(|| EngineError::Runtime(format!("unknown runtime `{runtime_id}`")))?;
+        // Using a runtime a client disconnected starts it again.
+        self.unpark(runtime_id);
         let offered = match Self::capability(template.as_ref(), capability).await {
             Ok(offered) => offered,
             Err((error, Some(_))) => {
@@ -1664,14 +1707,109 @@ impl RuntimeRegistry {
     }
 
     /// Runtime `runtime_id`'s connection, for its ACP agents.
-    pub(crate) async fn agent_connection(
-        &self,
-        runtime_id: &str,
-    ) -> Result<AgentConnection, String> {
+    pub(crate) async fn agent_connection(&self, runtime_id: &str) -> Result<RuntimeLink, String> {
         let template = self
             .template(runtime_id)
             .ok_or_else(|| format!("runtime `{runtime_id}` is not registered"))?;
+        self.unpark(runtime_id);
         template.agent_connection().await
+    }
+
+    /// Whether a client disconnected `runtime_id` and nothing has used it
+    /// since.
+    pub(crate) fn is_parked(&self, runtime_id: &str) -> bool {
+        self.parked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(runtime_id)
+    }
+
+    fn unpark(&self, runtime_id: &str) {
+        self.parked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(runtime_id);
+    }
+
+    /// A runtime the daemon starts from a template, which clients may
+    /// connect and disconnect by hand; the error says why `runtime_id` is
+    /// not one.
+    fn startable(&self, runtime_id: &str) -> Result<Arc<dyn RuntimeTemplate>, EngineError> {
+        let template = self
+            .template(runtime_id)
+            .ok_or_else(|| EngineError::Runtime(format!("unknown runtime `{runtime_id}`")))?;
+        match template.lifetime() {
+            RuntimeLifetime::Spawned => Ok(template),
+            RuntimeLifetime::Builtin => Err(EngineError::Runtime(format!(
+                "runtime `{runtime_id}` is built into the daemon and is always connected"
+            ))),
+            RuntimeLifetime::DialIn => Err(EngineError::Runtime(format!(
+                "runtime `{runtime_id}` dials in to the daemon: it connects and disconnects on its own"
+            ))),
+        }
+    }
+
+    /// Connects template runtime `runtime_id` without opening an instance,
+    /// as `runtimes.connect` does: its process starts and answers
+    /// `runtime/initialize`. A connected runtime is left as it is.
+    pub(crate) async fn connect(&self, runtime_id: &str) -> Result<(), EngineError> {
+        let template = self.startable(runtime_id)?;
+        self.unpark(runtime_id);
+        let result = template.capabilities().await;
+        self.notify();
+        result.map(drop).map_err(EngineError::Runtime)
+    }
+
+    /// Disconnects template runtime `runtime_id`, as `runtimes.disconnect`
+    /// does: its instances stop, with no reconnect, and opening a session
+    /// leaves it down until a run, attachment, new session, or delegation
+    /// uses it. Returns the connections for the caller to shut down.
+    pub(crate) fn disconnect(
+        &self,
+        runtime_id: &str,
+    ) -> Result<Vec<super::remote::RuntimeClient>, EngineError> {
+        let template = self.startable(runtime_id)?;
+        self.parked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(runtime_id.to_owned());
+        let mut connections = Vec::new();
+        {
+            let mut slots = self
+                .slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (key, slot) in slots.iter_mut() {
+                if key.runtime_id != runtime_id {
+                    continue;
+                }
+                match slot {
+                    InstanceSlot::Ready(instance) | InstanceSlot::Reconnecting(instance) => {
+                        connections.extend(instance.clear());
+                        *slot = InstanceSlot::Stopped(Arc::clone(instance));
+                    }
+                    InstanceSlot::Failed {
+                        instance: Some(instance),
+                        ..
+                    } => {
+                        connections.extend(instance.clear());
+                        *slot = InstanceSlot::Stopped(Arc::clone(instance));
+                    }
+                    InstanceSlot::Starting
+                    | InstanceSlot::Failed { instance: None, .. }
+                    | InstanceSlot::Stopped(_) => {}
+                }
+            }
+            // Instances that never opened have nothing to show.
+            slots.retain(|key, slot| {
+                key.runtime_id != runtime_id || !matches!(slot, InstanceSlot::Failed { .. })
+            });
+        }
+        connections.extend(template.disconnect().map(|connection| connection.0));
+        let mut epochs = std::collections::HashSet::new();
+        connections.retain(|connection| epochs.insert(connection.epoch()));
+        self.notify();
+        Ok(connections)
     }
 
     /// How `runtimes.list` reports `instance`.
@@ -1772,7 +1910,7 @@ impl RuntimeRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
         {
-            template.disconnect();
+            connections.extend(template.disconnect().map(|connection| connection.0));
         }
         // Instances of one runtime share its connection: shut each down once.
         let mut epochs = std::collections::HashSet::new();

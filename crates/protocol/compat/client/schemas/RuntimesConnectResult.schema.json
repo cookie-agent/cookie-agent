@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "RuntimeCapabilityInfo": {
+      "description": "One capability a runtime offers.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "The capability's self-declared kind label.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "takes_workspace": {
+          "description": "Whether attaching it requires a workspace.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "takes_workspace"
+      ],
+      "type": "object"
+    },
+    "RuntimeLifetime": {
+      "description": "How the daemon reaches a runtime.\n\nA value this build does not know reads as `spawned`.",
+      "oneOf": [
+        {
+          "const": "builtin",
+          "description": "Built into the daemon: `global` and `local`.",
+          "type": "string"
+        },
+        {
+          "const": "dial_in",
+          "description": "Connected to the daemon on its own: a persistent runtime, or one a\nclient runs for as long as it does.",
+          "type": "string"
+        },
+        {
+          "const": "spawned",
+          "description": "Started by the daemon from a `[runtimes.<id>]` template.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "RuntimeListing": {
+      "properties": {
+        "active_runs": {
+          "description": "Active runs of sessions that attach the runtime (client protocol\n1.55.0); `runtimes.disconnect` is refused while any run or\nbackground call uses it. Always 0 for `global` and `local`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "background_calls": {
+          "description": "Background calls executing on the runtime (client protocol 1.55.0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "capabilities": {
+          "description": "What the runtime offers; empty until it has connected once.",
+          "items": {
+            "$ref": "#/$defs/RuntimeCapabilityInfo"
+          },
+          "type": "array"
+        },
+        "connected": {
+          "description": "Whether the daemon holds a connection to the runtime now.",
+          "type": "boolean"
+        },
+        "home": {
+          "description": "The home directory the runtime reported when it last connected, as a\ncanonical absolute path on its machine (client protocol 1.7.0).\nClients show the paths of the runtime's attachments under it as `~/…`;\nwithout one they show them absolute.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lifetime": {
+          "$ref": "#/$defs/RuntimeLifetime"
+        },
+        "machine": {
+          "description": "The machine the runtime belongs to: the one it is assigned to while\nit is connected, else the one it is pinned to or the daemon last saw\nit on (client protocol 1.10.0: remembered across restarts). Absent\nwhile the daemon cannot tell.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Why the last attempt to connect failed, while it is not connected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "description": "The runtime's operating system, once it has connected and said.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_id",
+        "lifetime",
+        "connected",
+        "capabilities"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The runtime afterwards, as `runtimes.list` reports it.",
+  "properties": {
+    "runtime": {
+      "$ref": "#/$defs/RuntimeListing"
+    }
+  },
+  "required": [
+    "runtime"
+  ],
+  "title": "RuntimesConnectResult",
+  "type": "object"
+}

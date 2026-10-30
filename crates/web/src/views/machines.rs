@@ -4,9 +4,11 @@
 //! card (a mouse drags at once; a finger presses for half a second
 //! first, and a press let go in place opens "Move to…"), or with its
 //! "Move to…" button, which the keyboard reaches. A machine lists the
-//! offline runtimes it remembers under its connected ones, dimmed, with
-//! when they were last seen and a Forget. A runtime that hosts MCP servers
-//! counts them by state. [`crate::machines`] holds the rules.
+//! offline runtimes it remembers under its connected ones, their names
+//! dimmed but their settings as editable as a connected one's, with when
+//! they were last seen and a Forget. A runtime the daemon starts connects
+//! and disconnects by hand, to try that it starts. A runtime that hosts MCP
+//! servers counts them by state. [`crate::machines`] holds the rules.
 
 use std::time::Duration;
 
@@ -14,9 +16,10 @@ use cookie_agent_client_state::{
     mcp::PersistChoice,
     mcp::{runtime_servers, servers_badge},
     runtimes::{
-        AcpAgentFields, MachineAction, MachineEntry, RuntimeAcpAgent, acp_agent_document,
-        acp_template_document, agent_document_path, machine_action_request, machine_entries,
-        machine_form_title, machine_name_request, runtime_acp_agents,
+        AcpAgentFields, ConnectionControl, MachineAction, MachineEntry, RuntimeAcpAgent,
+        acp_agent_document, acp_template_document, agent_document_path, connection_control,
+        machine_action_request, machine_entries, machine_form_title, machine_name_request,
+        runtime_acp_agents,
     },
 };
 use cookie_agent_protocol::{
@@ -1250,6 +1253,20 @@ fn runtime_row(
     let forgotten = card.id.clone();
     let offline = remembered.is_some();
     let picker_card = card.clone();
+    // Offline is not read-only: the daemon keeps every runtime's settings,
+    // and they reach the runtime when it connects.
+    let connection = card
+        .listing
+        .as_ref()
+        .and_then(connection_control)
+        .map(|control| connection_button(workspace, card.id.clone(), control));
+    let offline_note = (!card.connected && card.listing.is_some()).then(|| {
+        view! {
+            <span class=NOTE data-runtime-offline-note>
+                "Not connected. Its MCP servers and ACP agents can still be changed; the changes apply when it connects."
+            </span>
+        }
+    });
     view! {
         <li
             class="runtime-entry no-callout relative flex cursor-grab touch-manipulation items-center gap-2 border-b border-toasted py-1 pr-1 pl-2 select-none last:border-b-0 dark:border-ember"
@@ -1262,10 +1279,6 @@ fn runtime_row(
             class:ring-2=lifted.clone()
             class:ring-caramel=lifted.clone()
             class:dark:ring-maple=lifted.clone()
-            class:opacity-60={
-                let lifted = lifted.clone();
-                move || offline && !lifted()
-            }
             data-offline=offline.then_some("true")
             style:transform={
                 let lifted = lifted.clone();
@@ -1290,11 +1303,15 @@ fn runtime_row(
             }
         >
             <Glyph icon=icondata::FaGripVerticalSolid class="opacity-40" />
-            <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-toasted dark:bg-ember" title=lifetime.map_or("not listed", lifetime_label)>
+            <span
+                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-toasted dark:bg-ember"
+                class:opacity-60=!card.connected
+                title=lifetime.map_or("not listed", lifetime_label)
+            >
                 <Glyph icon=lifetime_icon(lifetime) />
             </span>
             <div class="flex min-w-0 flex-1 flex-col gap-0.5 py-1">
-                <span class="flex min-w-0 items-center gap-2">
+                <span class="flex min-w-0 items-center gap-2" class:opacity-60=!card.connected>
                     <span class="min-w-0 truncate font-mono text-sm font-bold">{id.to_string()}</span>
                     {card.pinned.then(|| view! {
                         <span class=format!("{STATE} inline-flex items-center gap-1") title="Pinned to this machine, whatever it reports">
@@ -1335,8 +1352,10 @@ fn runtime_row(
                     runtime_acp_agent_list(workspace, manage, card.id.clone(), card.agents.clone())
                 })}
                 {runtime_manage_buttons(manage, card.id.clone())}
+                {offline_note}
                 {message.map(|message| view! { <span class="text-xs break-words text-red-800 dark:text-red-300">{message}</span> })}
             </div>
+            {connection}
             <button
                 type="button"
                 class=format!("{BUTTON} px-2")
@@ -1382,6 +1401,67 @@ fn runtime_row(
             Some(Form::Move(open)) if open.id == picker_card.id => move_picker(workspace, *open, names.clone(), form).into_any(),
             _ => ().into_any(),
         }}
+    }
+}
+
+/// Connect or Disconnect, for a runtime the daemon starts; a runtime that is
+/// in use cannot disconnect and says why.
+fn connection_button(
+    workspace: Workspace,
+    id: RuntimeId,
+    control: ConnectionControl,
+) -> impl IntoView {
+    let pending = {
+        let id = id.clone();
+        move || {
+            workspace
+                .connecting
+                .with(|connecting| connecting.contains(&id))
+        }
+    };
+    let connect = control == ConnectionControl::Connect;
+    let (busy, title) = match &control {
+        ConnectionControl::Connect => (
+            false,
+            "Start this runtime now, to try that it connects".to_owned(),
+        ),
+        ConnectionControl::Disconnect => (
+            false,
+            "Stop this runtime; the next session, run, or delegation that needs it starts it again"
+                .to_owned(),
+        ),
+        ConnectionControl::Busy(reason) => {
+            (true, format!("Cannot disconnect while it is {reason}"))
+        }
+    };
+    let label = move |pending: bool| match (connect, pending) {
+        (true, true) => "Connecting…",
+        (true, false) => "Connect",
+        (false, true) => "Disconnecting…",
+        (false, false) => "Disconnect",
+    };
+    let (disabled, icon) = (pending.clone(), pending.clone());
+    view! {
+        <button
+            type="button"
+            class=format!("{BUTTON} px-2")
+            aria-label=label(false)
+            title=title
+            data-runtime-connection=if connect { "connect" } else { "disconnect" }
+            disabled=move || busy || disabled()
+            on:click=move |_| workspace.set_runtime_connected(id.clone(), connect)
+        >
+            {
+                move || if icon() {
+                    view! { <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" /> }.into_any()
+                } else if connect {
+                    view! { <Glyph icon=icondata::FaPlugSolid /> }.into_any()
+                } else {
+                    view! { <Glyph icon=icondata::FaPlugCircleXmarkSolid /> }.into_any()
+                }
+            }
+            <span class="hidden sm:inline">{move || label(pending())}</span>
+        </button>
     }
 }
 

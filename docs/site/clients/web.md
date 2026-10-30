@@ -675,10 +675,23 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     old ID), **Enable** or **Disable**, **New template** (a document over it
     with `acp.agent`), and **Remove**, which keeps its documents. A document
     opens in the Agents view; **Create document** starts one when it has
-    none. A runtime that connected before and is
-  offline now stays on its machine, under the connected ones, dimmed, with
-  when it was last seen and **Forget**, which drops the daemon's record of
-  where it ran (see [Offline runtimes](../concepts/machines.md#offline-runtimes)).
+    none.
+  - **Connect** and **Disconnect.** A runtime the daemon starts from a
+    template has **Connect** while it is not connected, which starts it
+    now to try that it connects (a failure shows as its reason), and
+    **Disconnect** while it is, which stops it until a session, run, or
+    delegation needs it again; opening a session does not start it.
+    **Disconnect** is disabled, and says why, while a run of a session that
+    attaches the runtime or a background call on it is going on. Built-in
+    and dial-in runtimes connect on their own and have neither.
+
+  A runtime that is not connected has its name and status dimmed, but its
+  MCP servers and ACP agents are edited as a connected one's are, and the
+  card says the changes apply when it connects. A runtime that connected
+  before and is offline now stays on its machine, under the connected ones,
+  with when it was last seen and **Forget**, which drops the daemon's
+  record of where it ran (see
+  [Offline runtimes](../concepts/machines.md#offline-runtimes)).
   Runtimes that have never connected, such as a template no session has
   used, sit under **On no machine yet**.
   - **Moving a runtime.** Drag it onto another machine's card: with a

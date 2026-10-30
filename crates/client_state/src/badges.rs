@@ -373,6 +373,8 @@ mod tests {
                 machine: machine.map(|name| MachineName::new(name).unwrap()),
                 home: Some(format!("/home/{id}")),
                 message: None,
+                active_runs: 0,
+                background_calls: 0,
             }
         };
         RuntimesListResult {

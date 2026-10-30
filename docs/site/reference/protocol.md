@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.54.0",
+    "protocol_version": "1.55.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.54.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.55.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -250,6 +250,8 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Every `runtimes` entry (built-in, configured, and dial-in, with lifetime, connection, capabilities, and machine) and the opened `instances` with status (see [Runtimes](#runtimes)) |
 | `runtimes.reconnect` | `runtime_id`, optional `capability`, `workspace` when the capability takes one | The `instance` afterwards, as `runtimes.list` reports it |
+| `runtimes.connect` | `runtime_id` of a `spawned` runtime; since 1.55.0 | The `runtime` afterwards, as `runtimes.list` reports it (see [Connecting by hand](#connecting-by-hand)) |
+| `runtimes.disconnect` | `runtime_id` of a `spawned` runtime; since 1.55.0 | The `runtime` afterwards; refused while a run or background call uses it |
 | `runtimes.agents.list` | `runtime_id`; since 1.37.0 | `agents`: the runtime's `[runtimes.<id>.acp.agents]` declarations, or for `global` (since 1.43.0) the `[acp.agents]` ones every runtime offers (see [Runtime tables](#runtime-tables)) |
 | `runtimes.agents.set` | `runtime_id`, `agent`, `definition` (`command`, `env`, `description`, `enabled`) | `agents` afterwards |
 | `runtimes.agents.remove` | `runtime_id`, `agent` | `agents` afterwards |
@@ -497,7 +499,11 @@ since 1.7.0 its `home`, the home directory it reported (runtime protocol
 the daemon's; and a `message` saying why its last attempt to connect failed, or, for a
 dial-in runtime that went away, ``runtime `<id>` disconnected: <reason>``,
 where a runtime that stopped cleanly gives `the other end closed the
-connection`. Clients store and compare paths canonical and absolute and only show them
+connection`. Since 1.55.0 it also has `active_runs`, the active runs of
+sessions that attach it, and `background_calls`, the background calls
+executing on it (an ACP agent's commands included), each omitted when zero
+and always zero for `global` and `local`; `runtimes.changed` announces a
+change to either. Clients store and compare paths canonical and absolute and only show them
 shorter: a path of a runtime with a `home` reads `~` for the home itself and
 `~/rest` under it, and a path of a runtime without one stays absolute
 (`cookie_agent_client_state::paths::display_path`). Each instance has its `runtime_id`, `capability`, reported
@@ -514,6 +520,24 @@ the reason, worded as for attach. An instance `runtimes.list` already showed
 stays `failed` with the new reason, which `runtimes.changed` reports; one it
 did not show stays unrecorded. Retrying `global`
 also retries its failed MCP servers.
+
+#### Connecting by hand
+
+`runtimes.connect` and `runtimes.disconnect` (since 1.55.0) take a runtime
+the daemon starts from a template (`lifetime: spawned`); `builtin` and
+`dial_in` runtimes are refused, since they connect on their own.
+
+- `runtimes.connect` starts the runtime's process and waits for its
+  `runtime/initialize`, up to its `startup_timeout_ms`, without opening an
+  instance: it tries that the runtime starts. A connected runtime is left as
+  it is. A start that fails is an error with the reason, and
+  `runtimes.list` shows it as the runtime's `message`.
+- `runtimes.disconnect` is refused while the runtime's `active_runs` or
+  `background_calls` is not zero. Otherwise its instances become `stopped`,
+  without a reconnect, and its process gets `runtime/shutdown`. Opening a
+  session that attaches it (`session.resume`) leaves it down; the next
+  run, attach, session creation, or delegation that needs it starts it
+  again, as do `runtimes.connect` and `runtimes.reconnect`.
 
 ### Machines
 

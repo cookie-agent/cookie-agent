@@ -512,6 +512,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::RuntimesReconnectParams,
     ) -> Result<crate::RuntimesReconnectResult, ServerFault>;
+    /// Connects a runtime the daemon starts (client protocol 1.55.0).
+    async fn connect_runtime(
+        &self,
+        params: crate::RuntimesConnectParams,
+    ) -> Result<crate::RuntimesConnectResult, ServerFault>;
+    /// Disconnects a runtime the daemon starts (client protocol 1.55.0).
+    async fn disconnect_runtime(
+        &self,
+        params: crate::RuntimesConnectParams,
+    ) -> Result<crate::RuntimesConnectResult, ServerFault>;
     /// A runtime's ACP agent declarations (client protocol 1.37.0).
     async fn list_runtime_agents(
         &self,
@@ -1296,6 +1306,10 @@ async fn dispatch<S: ServerProtocol>(
         }
         crate::RUNTIMES_LIST_METHOD => value(server.list_runtimes(decode_default(params)?).await?),
         crate::RUNTIMES_RECONNECT_METHOD => value(server.reconnect_runtime(decode(params)?).await?),
+        crate::RUNTIMES_CONNECT_METHOD => value(server.connect_runtime(decode(params)?).await?),
+        crate::RUNTIMES_DISCONNECT_METHOD => {
+            value(server.disconnect_runtime(decode(params)?).await?)
+        }
         crate::RUNTIMES_AGENTS_LIST_METHOD => {
             value(server.list_runtime_agents(decode(params)?).await?)
         }

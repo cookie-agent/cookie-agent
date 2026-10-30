@@ -692,6 +692,22 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "runtimes.connect",
+      "params": "RuntimesConnectParams",
+      "params_role": "command",
+      "result": "RuntimesConnectResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtimes.disconnect",
+      "params": "RuntimesConnectParams",
+      "params_role": "command",
+      "result": "RuntimesConnectResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "runtimes.list",
       "params": "RuntimesListParams",
       "params_role": "command",

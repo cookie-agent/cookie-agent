@@ -390,15 +390,19 @@ impl Server {
     }
 
     /// Signals runtime template and instance status changes to this
-    /// connection; bursts coalesce. An instance failure is sent on its own,
-    /// naming the subscribed sessions attached to the instance.
+    /// connection, and changes to what keeps each runtime busy; bursts
+    /// coalesce. An instance failure is sent on its own, naming the
+    /// subscribed sessions attached to the instance.
     pub(super) fn start_runtime_instance_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_runtime_instance_changes();
         receiver.mark_unchanged();
         let mut failures = self.engine.subscribe_runtime_failures();
+        let mut activity_changes = self.engine.subscribe_runtime_activity();
+        activity_changes.mark_unchanged();
         let engine = self.engine.clone();
         tokio::spawn(async move {
             let shutdown = context.shutdown();
+            let mut activity = engine.runtime_activity();
             loop {
                 let notification = tokio::select! {
                     _ = shutdown.cancelled() => return,
@@ -406,6 +410,19 @@ impl Server {
                         if changed.is_err() {
                             return;
                         }
+                        cookie_agent_protocol::RuntimesChangedNotification::default()
+                    }
+                    changed = activity_changes.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        // A run of a session that attaches only the
+                        // built-in runtimes changes nothing listed.
+                        let now = engine.runtime_activity();
+                        if now == activity {
+                            continue;
+                        }
+                        activity = now;
                         cookie_agent_protocol::RuntimesChangedNotification::default()
                     }
                     failure = failures.recv() => match failure {

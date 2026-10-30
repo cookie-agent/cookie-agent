@@ -795,6 +795,8 @@ fn runtime_listing() -> cookie_agent_protocol::RuntimesListResult {
         machine: None,
         home: None,
         message: None,
+        active_runs: 0,
+        background_calls: 0,
     };
     cookie_agent_protocol::RuntimesListResult {
         runtimes: vec![

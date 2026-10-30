@@ -34,6 +34,8 @@ pub(crate) const WAKE_GRACE: Duration = Duration::from_secs(5);
 /// One command of the agent's, running after its call ended.
 pub(crate) struct AgentCommand {
     session: SessionId,
+    /// The runtime the agent runs on.
+    runtime: cookie_agent_protocol::RuntimeId,
     /// Its terminal's ID, the job clients name it by.
     terminal: String,
     tool_call_id: ToolCallId,
@@ -76,6 +78,7 @@ impl Engine {
             }
             commands.push(AgentCommand {
                 session: live.session,
+                runtime: live.agent.runtime.clone(),
                 terminal,
                 tool_call_id,
                 tool,
@@ -241,5 +244,13 @@ impl Engine {
     /// How many agent commands run, in every session.
     pub(crate) fn acp_background_count(&self) -> usize {
         self.acp_commands().len()
+    }
+
+    /// The runtime of each agent command that runs, in every session.
+    pub(crate) fn acp_background_runtimes(&self) -> Vec<String> {
+        self.acp_commands()
+            .iter()
+            .map(|command| command.runtime.as_str().to_owned())
+            .collect()
     }
 }

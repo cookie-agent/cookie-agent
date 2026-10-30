@@ -170,6 +170,8 @@ mod tests {
             machine: None,
             home: home.map(str::to_owned),
             message: None,
+            active_runs: 0,
+            background_calls: 0,
         };
         RuntimeHomes::from_listing(&RuntimesListResult {
             runtimes: vec![

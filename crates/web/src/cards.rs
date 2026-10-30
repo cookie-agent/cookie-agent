@@ -720,6 +720,8 @@ mod tests {
             machine: machine.map(|machine| MachineName::new(machine).unwrap()),
             home: None,
             message: (!connected).then(|| "not running".to_owned()),
+            active_runs: 0,
+            background_calls: 0,
         }
     }
 

@@ -85,9 +85,9 @@ pub use runtime::{
 };
 pub use runtime_snapshot::PublishedRuntime;
 pub use runtimes::{
-    DialInRefusal, McpServerFailure, RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary,
-    RuntimeListingState, RuntimeShellEnvironment, RuntimeTemplate, RuntimeTemplateSummary,
-    StartError, StartedRuntime, ToolLayer,
+    DialInRefusal, McpServerFailure, RuntimeActivity, RuntimeFailure, RuntimeInstanceStatus,
+    RuntimeInstanceSummary, RuntimeListingState, RuntimeShellEnvironment, RuntimeTemplate,
+    RuntimeTemplateSummary, StartError, StartedRuntime, ToolLayer,
 };
 pub use runtimes_tool::runtimes_tool_spec;
 pub use session::TailOwner;

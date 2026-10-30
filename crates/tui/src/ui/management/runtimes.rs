@@ -26,8 +26,9 @@ use cookie_agent_client_state::{
         servers_overview,
     },
     runtimes::{
-        attach_parameters, machine_action_request, machine_entries, machine_form_title,
-        machine_name_request, reconnect_request, runtime_acp_agents, runtime_choices, status_label,
+        ConnectionControl, attach_parameters, connection_control, machine_action_request,
+        machine_entries, machine_form_title, machine_name_request, reconnect_request,
+        runtime_acp_agents, runtime_choices, status_label,
     },
 };
 
@@ -522,7 +523,7 @@ fn render_machines(
         .title(crate::ui::panel_title("Machines"))
         .title_bottom(crate::ui::panel_title(
             Line::from(Span::styled(
-                "n rename | v move | u unpin | g merge | f forget | s servers | a agents | m attachments | esc close",
+                "n rename | v move | u unpin | g merge | f forget | s servers | a agents | c connect | d disconnect | m attachments | esc close",
                 theme.internal(),
             ))
             .right_aligned(),
@@ -567,6 +568,33 @@ fn render_machines(
         spans.push(Span::styled(label, theme.link()));
         spans.push(Span::raw(" "));
         x = x.saturating_add(width + 1);
+    }
+    // A runtime the daemon starts connects and disconnects by hand; one in
+    // use says why it cannot disconnect, and is no target.
+    let control = match &selected {
+        Some(MachineEntry::Runtime { runtime, .. }) => panel
+            .runtimes()
+            .iter()
+            .find(|listing| listing.runtime_id == *runtime)
+            .and_then(connection_control),
+        _ => None,
+    };
+    match control {
+        Some(ConnectionControl::Busy(reason)) => spans.push(Span::styled(
+            format!(" {}: {reason} ", MachineAction::Disconnect.label()),
+            theme.muted(),
+        )),
+        Some(control) => {
+            let action = control.action();
+            let label = format!(" {} ({}) ", action.label(), action.key());
+            let width = u16::try_from(label.len()).unwrap_or(u16::MAX);
+            if panel.machine_form.is_none() && x.saturating_add(width) <= actions_area.right() {
+                hits.machine_actions
+                    .push((Rect::new(x, actions_area.y, width, 1), action));
+            }
+            spans.push(Span::styled(label, theme.link()));
+        }
+        None => {}
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), actions_area);
     if let Some(form) = panel.machine_form.as_mut() {
@@ -627,6 +655,26 @@ fn machine_entry_line(
     }
 }
 
+/// Whether a runtime is connected, and what that means for its settings
+/// and its connection control.
+fn connection_line(listing: &RuntimeListing) -> String {
+    let mut line = if listing.connected {
+        "connected".to_owned()
+    } else {
+        "not connected: its settings can still be changed, and apply when it connects".to_owned()
+    };
+    match connection_control(listing) {
+        Some(ConnectionControl::Connect) => line.push_str(" (c connects it now)"),
+        Some(ConnectionControl::Disconnect) => line.push_str(" (d disconnects it)"),
+        Some(ConnectionControl::Busy(reason)) => line.push_str(&format!(", {reason}")),
+        None => {}
+    }
+    if let Some(message) = listing.message.as_deref().filter(|_| !listing.connected) {
+        line.push_str(&format!("\nlast attempt failed: {message}"));
+    }
+    line
+}
+
 /// Why a runtime row sits under its machine.
 fn runtime_placement(assigned_by: Option<MachineAssignment>, pinned: bool) -> &'static str {
     match (assigned_by, pinned) {
@@ -677,6 +725,13 @@ fn machine_entry_detail(
                 "runtime {runtime} on machine {machine}: {}",
                 runtime_placement(*assigned_by, *pinned)
             );
+            if let Some(listing) = panel
+                .runtimes()
+                .iter()
+                .find(|listing| listing.runtime_id == *runtime)
+            {
+                text.push_str(&format!("\n{}", connection_line(listing)));
+            }
             let servers = panel.runtime_mcp_servers(runtime);
             if let Some(overview) = servers_overview(&servers) {
                 text.push_str(&format!("\n{overview}"));

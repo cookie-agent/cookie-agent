@@ -60,12 +60,25 @@ impl BackgroundTaskState {
     pub(crate) fn pending_count(&self) -> usize {
         self.jobs.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
+
+    /// The runtime of each background call not yet done that executes on
+    /// one.
+    pub(crate) fn pending_runtimes(&self) -> Vec<String> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter_map(|job| job.runtime.clone())
+            .collect()
+    }
 }
 
 pub(crate) use cookie_agent_protocol::BackgroundActor;
 
 struct Job {
     session: SessionId,
+    /// The runtime the call executes on; `None` for a base-layer tool.
+    runtime: Option<String>,
     job: String,
     tool: String,
     display: Option<String>,
@@ -95,6 +108,8 @@ pub(super) struct DetachedCall {
     pub(super) tool_call_id: ToolCallId,
     /// The tool's published name.
     pub(super) tool: String,
+    /// The runtime the tool executes on; `None` for a base-layer tool.
+    pub(super) runtime: Option<String>,
     /// The call's display argument, for the notification row.
     pub(super) display: Option<String>,
     pub(super) by: BackgroundActor,
@@ -133,6 +148,7 @@ impl Engine {
                 call.tool_call_id,
                 Job {
                     session: call.session,
+                    runtime: call.runtime.clone(),
                     job: job.clone(),
                     tool: call.tool.clone(),
                     display: call.display.clone(),

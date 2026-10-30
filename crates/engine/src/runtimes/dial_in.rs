@@ -287,8 +287,10 @@ impl RuntimeTemplate for DialInTemplate {
             })
     }
 
-    fn disconnect(&self) {
-        lock(&self.connection).take();
+    fn disconnect(&self) -> Option<super::registry::RuntimeLink> {
+        lock(&self.connection)
+            .take()
+            .map(super::registry::RuntimeLink)
     }
 
     fn update_settings(&self, settings: &RuntimeSettings) {
@@ -347,11 +349,11 @@ impl RuntimeTemplate for DialInTemplate {
         }
     }
 
-    async fn agent_connection(&self) -> Result<super::registry::AgentConnection, String> {
+    async fn agent_connection(&self) -> Result<super::registry::RuntimeLink, String> {
         let client = self.current().ok_or_else(|| self.not_connected())?;
         client.verify_live().await.map_err(|reason| {
             format!("runtime `{}` is not connected: {reason}", self.runtime_id)
         })?;
-        Ok(super::registry::AgentConnection(client))
+        Ok(super::registry::RuntimeLink(client))
     }
 }

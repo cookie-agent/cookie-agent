@@ -10,7 +10,7 @@ use cookie_agent_protocol::{
     AcpAgentDefinition, AgentDescriptor, AgentId, AttachmentName, CapabilityName,
     MachineAssignment, MachineName, MachinesListResult, McpServerInfo, RuntimeAgentDeclaration,
     RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId, RuntimeInstanceInfo,
-    RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
+    RuntimeInstanceStatus, RuntimeKind, RuntimeLifetime, RuntimeListing, RuntimesListResult,
 };
 
 /// One attachment row: what the session records and the instance it refers
@@ -147,6 +147,10 @@ pub enum MachineAction {
     Servers,
     /// Opens a runtime's ACP agents, to manage them.
     Agents,
+    /// Connects a runtime the daemon starts (`runtimes.connect`).
+    Connect,
+    /// Disconnects a runtime the daemon starts (`runtimes.disconnect`).
+    Disconnect,
 }
 
 impl MachineAction {
@@ -159,6 +163,8 @@ impl MachineAction {
             Self::Forget => 'f',
             Self::Servers => 's',
             Self::Agents => 'a',
+            Self::Connect => 'c',
+            Self::Disconnect => 'd',
         }
     }
 
@@ -171,6 +177,8 @@ impl MachineAction {
             Self::Forget => "forget",
             Self::Servers => "MCP servers",
             Self::Agents => "ACP agents",
+            Self::Connect => "connect",
+            Self::Disconnect => "disconnect",
         }
     }
 
@@ -195,6 +203,8 @@ impl MachineAction {
             Self::Forget,
             Self::Servers,
             Self::Agents,
+            Self::Connect,
+            Self::Disconnect,
         ]
         .into_iter()
         .find(|action| action.key() == key)
@@ -632,6 +642,101 @@ pub fn reconnect_status(runtime_id: &RuntimeId, instance: &RuntimeInstanceInfo) 
     )
 }
 
+/// What a client may do about a runtime's connection: only a runtime the
+/// daemon starts from a template is connected and disconnected by hand.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConnectionControl {
+    /// Not connected: connecting tries that it starts.
+    Connect,
+    /// Connected and idle.
+    Disconnect,
+    /// Connected, and a run or background call uses it: why it cannot be
+    /// disconnected now.
+    Busy(String),
+}
+
+impl ConnectionControl {
+    /// The action the control stands for.
+    #[must_use]
+    pub const fn action(&self) -> MachineAction {
+        match self {
+            Self::Connect => MachineAction::Connect,
+            Self::Disconnect | Self::Busy(_) => MachineAction::Disconnect,
+        }
+    }
+}
+
+/// The connection control of `listing`; `None` for a runtime that is built
+/// in or dials in, which connects on its own.
+#[must_use]
+pub fn connection_control(listing: &RuntimeListing) -> Option<ConnectionControl> {
+    if listing.lifetime != RuntimeLifetime::Spawned {
+        return None;
+    }
+    if !listing.connected {
+        return Some(ConnectionControl::Connect);
+    }
+    let count = |count: u32, one: &str, many: &str| match count {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        count => Some(format!("{count} {many}")),
+    };
+    let uses = [
+        count(listing.active_runs, "active run", "active runs"),
+        count(
+            listing.background_calls,
+            "background call",
+            "background calls",
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    Some(if uses.is_empty() {
+        ConnectionControl::Disconnect
+    } else {
+        ConnectionControl::Busy(format!("in use by {}", uses.join(" and ")))
+    })
+}
+
+/// Whether `action` (connect or disconnect) applies to runtime `runtime_id`
+/// of `runtimes` now; the error is the status line that says why not.
+pub fn connection_request(
+    runtimes: &[RuntimeListing],
+    runtime_id: &RuntimeId,
+    action: MachineAction,
+) -> Result<(), String> {
+    let listing = runtimes
+        .iter()
+        .find(|runtime| runtime.runtime_id == *runtime_id)
+        .ok_or_else(|| format!("runtime `{runtime_id}` is not a known runtime"))?;
+    match (connection_control(listing), action) {
+        (None, _) => Err(format!(
+            "runtime `{runtime_id}` connects on its own; only runtimes the daemon starts connect by hand"
+        )),
+        (Some(ConnectionControl::Connect), MachineAction::Connect)
+        | (Some(ConnectionControl::Disconnect), MachineAction::Disconnect) => Ok(()),
+        (Some(ConnectionControl::Busy(reason)), MachineAction::Disconnect) => Err(format!(
+            "runtime `{runtime_id}` is {reason}; disconnect it once they end"
+        )),
+        (Some(ConnectionControl::Connect), _) => {
+            Err(format!("runtime `{runtime_id}` is not connected"))
+        }
+        (Some(_), _) => Err(format!("runtime `{runtime_id}` is already connected")),
+    }
+}
+
+/// The status line an answered `runtimes.connect` or `runtimes.disconnect`
+/// gives.
+#[must_use]
+pub fn connection_status(listing: &RuntimeListing) -> String {
+    if listing.connected {
+        format!("runtime `{}` is connected", listing.runtime_id)
+    } else {
+        format!("runtime `{}` is disconnected", listing.runtime_id)
+    }
+}
+
 /// The machines view's rows: each machine, then its connected runtimes, the
 /// runtimes pinned to it that are not connected, and the offline runtimes
 /// it remembers (client protocol 1.10.0), placed by `last_seen`.
@@ -1055,5 +1160,95 @@ mod tests {
         assert_eq!(local.len(), 1);
         assert!(!local[0].available);
         assert!(super::runtime_acp_agents(&agents, &RuntimeId::new("global").unwrap()).is_empty());
+    }
+
+    fn listing(
+        id: &str,
+        lifetime: cookie_agent_protocol::RuntimeLifetime,
+        connected: bool,
+        active_runs: u32,
+        background_calls: u32,
+    ) -> RuntimeListing {
+        RuntimeListing {
+            runtime_id: RuntimeId::new(id).unwrap(),
+            lifetime,
+            connected,
+            capabilities: Vec::new(),
+            platform: None,
+            machine: None,
+            home: None,
+            message: None,
+            active_runs,
+            background_calls,
+        }
+    }
+
+    #[test]
+    fn only_a_runtime_the_daemon_starts_connects_by_hand_and_one_in_use_cannot_disconnect() {
+        use super::{ConnectionControl, connection_control, connection_request};
+        use cookie_agent_protocol::RuntimeLifetime::{Builtin, DialIn, Spawned};
+        assert_eq!(
+            connection_control(&listing("local", Builtin, true, 0, 0)),
+            None
+        );
+        assert_eq!(
+            connection_control(&listing("box", DialIn, false, 0, 0)),
+            None
+        );
+        assert_eq!(
+            connection_control(&listing("labpc", Spawned, false, 0, 0)),
+            Some(ConnectionControl::Connect)
+        );
+        assert_eq!(
+            connection_control(&listing("labpc", Spawned, true, 0, 0)),
+            Some(ConnectionControl::Disconnect)
+        );
+        assert_eq!(
+            connection_control(&listing("labpc", Spawned, true, 1, 0)),
+            Some(ConnectionControl::Busy("in use by 1 active run".into()))
+        );
+        assert_eq!(
+            connection_control(&listing("labpc", Spawned, true, 2, 1)),
+            Some(ConnectionControl::Busy(
+                "in use by 2 active runs and 1 background call".into()
+            ))
+        );
+
+        let labpc = RuntimeId::new("labpc").unwrap();
+        let runtimes = [listing("labpc", Spawned, true, 0, 3)];
+        assert_eq!(
+            connection_request(&runtimes, &labpc, MachineAction::Disconnect),
+            Err(
+                "runtime `labpc` is in use by 3 background calls; disconnect it once they end"
+                    .into()
+            )
+        );
+        assert_eq!(
+            connection_request(&runtimes, &labpc, MachineAction::Connect),
+            Err("runtime `labpc` is already connected".into())
+        );
+        let runtimes = [listing("labpc", Spawned, false, 0, 0)];
+        assert_eq!(
+            connection_request(&runtimes, &labpc, MachineAction::Connect),
+            Ok(())
+        );
+        assert!(
+            connection_request(
+                &runtimes,
+                &RuntimeId::new("box").unwrap(),
+                MachineAction::Connect
+            )
+            .is_err()
+        );
+        let runtimes = [listing("box", DialIn, true, 0, 0)];
+        assert!(
+            connection_request(
+                &runtimes,
+                &RuntimeId::new("box").unwrap(),
+                MachineAction::Disconnect
+            )
+            .unwrap_err()
+            .contains("connects on its own")
+        );
     }
 }

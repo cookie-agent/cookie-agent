@@ -8,6 +8,7 @@ use cookie_agent_protocol::{
 };
 
 pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
+    let mut activity = engine.runtime_activity();
     RuntimesListResult {
         runtimes: engine
             .runtime_templates()
@@ -25,6 +26,7 @@ pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
                     ),
                     None => (template.listing.platform, template.listing.home),
                 };
+                let busy = activity.remove(&template.runtime_id).unwrap_or_default();
                 Some(RuntimeListing {
                     runtime_id: RuntimeId::new(template.runtime_id.as_str()).ok()?,
                     lifetime: template.lifetime,
@@ -34,6 +36,8 @@ pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
                     machine: engine.runtime_machine(&template.runtime_id),
                     home,
                     message: template.listing.message,
+                    active_runs: busy.active_runs,
+                    background_calls: busy.background_calls,
                 })
             })
             .collect(),
@@ -72,6 +76,15 @@ pub(crate) fn instance_info(instance: RuntimeInstanceSummary) -> Option<RuntimeI
 }
 
 impl crate::Server {
+    /// Runtime `runtime_id` as `runtimes.list` reports it, for the answer of
+    /// `runtimes.connect` and `runtimes.disconnect`.
+    pub(crate) fn runtime_listing(&self, runtime_id: &RuntimeId) -> Option<RuntimeListing> {
+        runtimes_list(&self.engine)
+            .runtimes
+            .into_iter()
+            .find(|runtime| runtime.runtime_id == *runtime_id)
+    }
+
     /// `machines.list`, and the answer of every `machines.*` change.
     pub(crate) fn machines_list(&self) -> cookie_agent_protocol::MachinesListResult {
         cookie_agent_protocol::MachinesListResult {

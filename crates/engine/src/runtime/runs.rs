@@ -17,10 +17,11 @@ use super::{
 
 /// The runs whose tasks are live, by run. A run taken out signals
 /// [`Self::subscribe_released`], so a wait for a run to wind down needs no
-/// polling.
+/// polling; a run put in or taken out signals [`Self::subscribe_changed`].
 pub(super) struct ActiveRuns {
     runs: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
     released: tokio::sync::watch::Sender<()>,
+    changed: tokio::sync::watch::Sender<()>,
 }
 
 impl Default for ActiveRuns {
@@ -28,6 +29,7 @@ impl Default for ActiveRuns {
         Self {
             runs: Mutex::new(HashMap::new()),
             released: tokio::sync::watch::channel(()).0,
+            changed: tokio::sync::watch::channel(()).0,
         }
     }
 }
@@ -49,6 +51,7 @@ impl ActiveRuns {
             held: runs.len(),
             runs,
             released: &self.released,
+            changed: &self.changed,
         }
     }
 
@@ -56,6 +59,11 @@ impl ActiveRuns {
     /// the runs, so a run that leaves in between still wakes the wait.
     pub(super) fn subscribe_released(&self) -> tokio::sync::watch::Receiver<()> {
         self.released.subscribe()
+    }
+
+    /// A receiver signalled whenever a run comes or leaves.
+    pub(super) fn subscribe_changed(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changed.subscribe()
     }
 }
 
@@ -66,6 +74,7 @@ pub(super) struct ActiveRunsGuard<'a> {
     /// How many runs there were when locked.
     held: usize,
     released: &'a tokio::sync::watch::Sender<()>,
+    changed: &'a tokio::sync::watch::Sender<()>,
 }
 
 impl Deref for ActiveRunsGuard<'_> {
@@ -86,6 +95,9 @@ impl Drop for ActiveRunsGuard<'_> {
     fn drop(&mut self) {
         if self.runs.len() < self.held {
             self.released.send_replace(());
+        }
+        if self.runs.len() != self.held {
+            self.changed.send_replace(());
         }
     }
 }

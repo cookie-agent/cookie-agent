@@ -20,7 +20,10 @@ use cookie_agent_client_state::{
         ProviderAction, ProviderOperation, action_name, retry_store_contention_once,
         store_contention_message,
     },
-    runtimes::{AcpAgentFields, MachineRequest, RuntimeRow, reconnect_status, runtime_rows},
+    runtimes::{
+        AcpAgentFields, MachineAction, MachineRequest, RuntimeRow, connection_request,
+        connection_status, reconnect_status, runtime_rows,
+    },
 };
 use cookie_agent_protocol::{
     AgentId, AttachmentName, CapabilityName, ClientConnectId, ClientDelivery, ClientRequestId,
@@ -29,8 +32,8 @@ use cookie_agent_protocol::{
     McpServerRenameParams, McpServerScope, McpServerSetEnabledParams, MemoryListParams,
     ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams, RuntimeAgentDeclaration,
     RuntimeId, RuntimesAgentsListParams, RuntimesAgentsRemoveParams, RuntimesAgentsRenameParams,
-    RuntimesAgentsRenameResult, RuntimesAgentsSetParams, RuntimesReconnectParams,
-    SessionRuntimeAttachParams, SessionRuntimeDetachParams, errors,
+    RuntimesAgentsRenameResult, RuntimesAgentsSetParams, RuntimesConnectParams,
+    RuntimesReconnectParams, SessionRuntimeAttachParams, SessionRuntimeDetachParams, errors,
 };
 use leptos::{prelude::*, task::spawn_local};
 
@@ -293,6 +296,65 @@ impl Workspace {
                 Ok(result) => reconnect_status(&runtime_id, &result.instance),
                 Err(error) => format!("retry failed: {}", crate::errors::describe(&error)),
             };
+            self.status.set(status);
+            self.poll_runtimes();
+        });
+    }
+
+    /// Connects runtime `runtime_id` (`runtimes.connect`), or disconnects it
+    /// (`runtimes.disconnect`), when its listing allows.
+    pub fn set_runtime_connected(self, runtime_id: RuntimeId, connect: bool) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        let runtimes = self
+            .runtimes
+            .with_untracked(|listing| listing.as_ref().map(|listing| listing.runtimes.clone()))
+            .unwrap_or_default();
+        let action = if connect {
+            MachineAction::Connect
+        } else {
+            MachineAction::Disconnect
+        };
+        if let Err(error) = connection_request(&runtimes, &runtime_id, action) {
+            self.status.set(error);
+            return;
+        }
+        if !self
+            .connecting
+            .try_update(|connecting| connecting.insert(runtime_id.clone()))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.status.set(if connect {
+            format!("connecting runtime `{runtime_id}`…")
+        } else {
+            format!("disconnecting runtime `{runtime_id}`…")
+        });
+        spawn_local(async move {
+            let params = RuntimesConnectParams {
+                runtime_id: runtime_id.clone(),
+            };
+            let result = if connect {
+                client.connect_runtime(params).await
+            } else {
+                client.disconnect_runtime(params).await
+            };
+            let status = match result {
+                Ok(result) => connection_status(&result.runtime),
+                Err(error) if connect => format!(
+                    "runtime `{runtime_id}` did not connect: {}",
+                    crate::errors::describe(&error)
+                ),
+                Err(error) => format!(
+                    "runtime `{runtime_id}` did not disconnect: {}",
+                    crate::errors::describe(&error)
+                ),
+            };
+            self.connecting.update(|connecting| {
+                connecting.remove(&runtime_id);
+            });
             self.status.set(status);
             self.poll_runtimes();
         });

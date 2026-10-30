@@ -1250,6 +1250,22 @@ async fn runtime_attachments_are_reachable_through_rpc() {
             .is_some_and(|message| message.contains("unknown runtime `labpc`")),
         "{rejected}"
     );
+
+    // Only a runtime the daemon starts connects and disconnects by hand.
+    for (id, method, runtime, detail) in [
+        (13, "runtimes.disconnect", "local", "built into the daemon"),
+        (14, "runtimes.connect", "global", "built into the daemon"),
+        (15, "runtimes.connect", "labpc", "unknown runtime `labpc`"),
+    ] {
+        let (rejected, _) =
+            request(&mut client, id, method, json!({ "runtime_id": runtime })).await;
+        assert!(
+            rejected["error"]["data"]["detail"]
+                .as_str()
+                .is_some_and(|message| message.contains(detail)),
+            "{rejected}"
+        );
+    }
 }
 
 /// Reads frames until a `method` notification that `accept` takes.
