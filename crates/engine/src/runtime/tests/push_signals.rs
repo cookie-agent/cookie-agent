@@ -134,7 +134,7 @@ async fn failed_runs_settle_and_cancelled_or_interrupted_ones_do_not() {
 }
 
 #[tokio::test]
-async fn a_one_time_job_holds_the_push_until_it_is_gone_and_a_recurring_one_does_not() {
+async fn a_one_time_job_keeps_the_turn_from_a_push_and_a_recurring_one_does_not() {
     let (fixture, selection) = quiet_fixture().await;
     let engine = &fixture.engine;
     let mut signals = engine.subscribe_push_signals();
@@ -174,8 +174,11 @@ async fn a_one_time_job_holds_the_push_until_it_is_gone_and_a_recurring_one_does
     end_run(engine, session, completed("Waiting for the fire."));
     no_signal(&mut signals).await;
     engine.delete_cron(in_an_hour.id).await.unwrap();
-    no_signal(&mut signals).await;
     engine.delete_cron(once.id).await.unwrap();
+    // The turn that ended waiting is not pushed once the jobs are gone; the
+    // next turn that ends with only recurring jobs is.
+    no_signal(&mut signals).await;
+    end_run(engine, session, completed("Done."));
     let (root, _) = settled_root(&mut signals).await;
     assert_eq!(root, session);
 }
@@ -213,33 +216,9 @@ async fn a_subagents_one_time_job_holds_the_root_and_its_recurring_job_does_not(
     end_run(engine, root, completed("root again"));
     no_signal(&mut signals).await;
     engine.delete_cron(once.id).await.unwrap();
-    assert_eq!(settled_root(&mut signals).await.0, root);
-}
-
-#[tokio::test]
-async fn new_input_or_a_new_run_disarms_the_root() {
-    let (fixture, selection) = quiet_fixture().await;
-    let engine = &fixture.engine;
-    let mut signals = engine.subscribe_push_signals();
-    let session = engine.create_session(selection).unwrap().session_id;
-    let once = engine
-        .create_cron(job(
-            CronSchedule::In("1h".into()),
-            None,
-            CronTarget::Session(session),
-        ))
-        .await
-        .unwrap();
-    end_run(engine, session, completed("held"));
-    // The user typed: they are there, so the turn before is not pushed.
-    engine.observe_push_event(
-        session,
-        &EventPayload::UserInputAdmitted {
-            content: cookie_agent_protocol::UserContent::text("more"),
-        },
-    );
-    engine.delete_cron(once.id).await.unwrap();
     no_signal(&mut signals).await;
+    end_run(engine, root, completed("root done"));
+    assert_eq!(settled_root(&mut signals).await.0, root);
 }
 
 #[tokio::test]

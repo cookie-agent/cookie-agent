@@ -368,3 +368,35 @@ async fn a_subagents_call_its_rules_do_not_offer_runs_in_the_parent_and_shows_th
     assert_eq!(cookie_calls(engine, child), Vec::<String>::new());
     assert!(cookie_calls(engine, session).contains(&"cron_list".to_owned()));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_left_a_subagent_working_is_not_pushed_when_it_ends() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let mut signals = engine.subscribe_push_signals();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    // The agent's turn ends at once, its own subagent still working.
+    turn(engine, session, "native", "subagent-wait waiter").await;
+    let job = with_watchdog("the agent's subagent working", async {
+        loop {
+            if let Some(call) = engine.background_calls(session).into_iter().next() {
+                return call.job;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    engine
+        .stop_background_as_user(session, &job)
+        .await
+        .expect("the subagent's turn stops");
+    let native = subagent_of(engine, session).await;
+    first_run(engine, native).await;
+    // The subagent is done, and the turn that left it working is still not
+    // pushed.
+    let late = tokio::time::timeout(std::time::Duration::from_millis(500), signals.recv()).await;
+    assert!(
+        !matches!(late, Ok(Ok(crate::PushSignal::Settled(_)))),
+        "a settle for the turn: {late:?}"
+    );
+}

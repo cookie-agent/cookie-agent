@@ -8,28 +8,15 @@
 //! from eviction, waited for by an idle daemon restart, and keeping the
 //! agent's process from idling out. It ends when the terminal exits, or with
 //! the agent's process.
-//!
-//! A command that ends between runs often wakes the agent, as Claude Code
-//! follows up on its backgrounded commands, but the agent says so only once
-//! its work starts. Until then, for [`WAKE_GRACE`], the session can still
-//! wake as far as a push notification goes (push notifications spec section
-//! 3.2), so a settle is not pushed just before the follow-up and again
-//! after it.
 
 use cookie_agent_protocol::{
     AcpBackgroundEnded, BackgroundActor, BackgroundCall, SessionId, ToolCallId,
 };
 
-use std::time::{Duration, Instant};
-
 use super::super::Engine;
 use super::process::ProcessUse;
 use super::runner::LiveSession;
 use super::terminal::Exit;
-
-/// How long after an agent command ends between runs its session can still
-/// wake for a push notification: the agent's follow-up starts within it.
-pub(crate) const WAKE_GRACE: Duration = Duration::from_secs(5);
 
 /// One command of the agent's, running after its call ended.
 pub(crate) struct AgentCommand {
@@ -93,14 +80,12 @@ impl Engine {
 
     /// Terminal `terminal` of `session` exited, as `exit` says: the
     /// command that ran in the background on it, when one did, for the
-    /// session to record that it ended. One that ended `between_runs`
-    /// starts the [`WAKE_GRACE`].
+    /// session to record that it ended.
     pub(super) fn acp_terminal_exited(
         &self,
         session: SessionId,
         terminal: &str,
         exit: Exit,
-        between_runs: bool,
     ) -> Option<AcpBackgroundEnded> {
         let AgentCommand {
             tool_call_id,
@@ -118,9 +103,6 @@ impl Engine {
         };
         // The process may idle once nothing else holds it.
         drop(held);
-        if between_runs {
-            self.start_wake_grace(session);
-        }
         self.notify_background_changed(session);
         self.refresh_live_waiting(session);
         Some(AcpBackgroundEnded {
@@ -134,8 +116,10 @@ impl Engine {
     }
 
     /// The agent's process that ran `session`'s commands is gone, and they
-    /// with it.
+    /// with it, and the work of `session` when it is a subagent of the
+    /// agent's.
     pub(super) fn acp_commands_gone(&self, session: SessionId) {
+        self.set_acp_subagent_working(session, false);
         let removed = {
             let mut commands = self.acp_commands();
             let before = commands.len();
@@ -171,67 +155,6 @@ impl Engine {
         self.acp_commands()
             .iter()
             .any(|command| command.session == session && command.terminal == job)
-    }
-
-    /// Starts `session`'s [`WAKE_GRACE`], and checks the session again
-    /// when it is over.
-    fn start_wake_grace(&self, session: SessionId) {
-        let started = Instant::now();
-        self.inner
-            .acp
-            .background_ended
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session, started);
-        let Some(runtime) = tokio::runtime::Handle::try_current()
-            .ok()
-            .or_else(|| self.inner.runtime.clone())
-        else {
-            return;
-        };
-        let engine = self.clone();
-        runtime.spawn(async move {
-            tokio::time::sleep(WAKE_GRACE).await;
-            let over = {
-                let mut ended = engine
-                    .inner
-                    .acp
-                    .background_ended
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                // A later command's grace is not over yet.
-                let over = ended.get(&session) == Some(&started);
-                if over {
-                    ended.remove(&session);
-                }
-                over
-            };
-            if over {
-                engine.refresh_live_waiting(session);
-            }
-        });
-    }
-
-    /// Ends `session`'s [`WAKE_GRACE`]: a run started.
-    pub(crate) fn end_acp_wake_grace(&self, session: SessionId) {
-        self.inner
-            .acp
-            .background_ended
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&session);
-    }
-
-    /// Whether a command of `session`'s agent ended between runs less than
-    /// [`WAKE_GRACE`] ago.
-    pub(crate) fn acp_wake_grace(&self, session: SessionId) -> bool {
-        self.inner
-            .acp
-            .background_ended
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&session)
-            .is_some_and(|ended| ended.elapsed() < WAKE_GRACE)
     }
 
     /// Whether `session` has an agent command running.

@@ -1565,14 +1565,11 @@ impl Engine {
     /// refreshes the parent, so no lock is held across a step.
     ///
     /// Beside it, `waking_once` carries the same up the tree counting only
-    /// one-time cron jobs, which decides when a root settles for a push
-    /// notification (push notifications spec section 3.2); the root at the
-    /// top of a refresh is checked for settling.
+    /// one-time cron jobs, which decides whether a root's run settles for a
+    /// push notification as it ends (push notifications spec section 3.2).
     pub(super) fn refresh_live_waiting(&self, session: SessionId) {
         let mut next = Some(session);
-        let mut top = session;
         while let Some(session) = next {
-            top = session;
             let (changed, parent) = {
                 let mut waking = self
                     .inner
@@ -1604,9 +1601,6 @@ impl Engine {
                 self.inner.store.announce_live_waiting(session);
             }
             next = parent;
-        }
-        if self.inner.store.parent_of(top).is_none() {
-            self.schedule_settle_check(top);
         }
     }
 

@@ -92,8 +92,8 @@ The engine keeps, per root session and in memory only, whether it is armed.
 - **Not armed** by `cancelled` (someone stopped it, so someone is there) or
   `interrupted` (the daemon went down; the restart says nothing).
 - **Disarmed** when a run starts, when user input is admitted, when the
-  notification is sent (or suppressed, section 8), and when the session is
-  deleted.
+  check after the run's end (section 3.3) is done, whether it notified
+  (or suppressed, section 8) or not, and when the session is deleted.
 
 A restart forgets every armed flag. Nothing is written to the session log;
 session history is unchanged.
@@ -116,8 +116,9 @@ here and in every subagent below the root. So:
 |---|---|
 | an active goal | `goal` |
 | a running background call | `background_call` |
-| an ACP agent's own command still running after its call ended, or one that ended between runs less than 5 s ago (its wake grace: the agent's follow-up, such as Claude Code's, starts within it; a run starting ends it) | `background_call` |
+| an ACP agent's own command still running after its call ended | `background_call` |
 | a subagent turn running, a background delegation queued or running, or a child that can still wake | `subagent` |
+| a subagent of an ACP agent's own that its agent says works (`subagent_update` state `running` or `requires_action`), until its run of that work ends: its run can start seconds after the parent's turn ended (push only; `waiting_on` unchanged) | `subagent` |
 | a live external producer registration (plugin or runtime) | `external_producer` |
 | a one-time job aimed at it | `scheduled_job` |
 | only recurring jobs aimed at it | (nothing) |
@@ -141,14 +142,18 @@ The engine checks an armed session:
 - after a run's `RunFinished` is committed **and** the actor has decided
   whether queued input or producer messages start the next run at once, so
   a queued message never yields a notification for the turn before it;
-- whenever `refresh_live_waiting` changes the root's `wakes_once`, so a
-  turn that ended while a subagent or external producer was still live
-  notifies when that producer goes away without sending (a producer that
-  does send starts a run, which disarms and re-arms the session);
-- when a one-time job aimed at the session, or below it, is deleted,
-  disabled, or becomes recurring through `crons.update`.
+That is the only check (user decision of 2026-10-30, replacing checks on
+every change of the root's `wakes_once`, and a 5 s wake grace after an ACP
+agent's command ended between runs). A turn that ends while anything but
+recurring jobs can still wake the session is never pushed: not when that
+producer goes away without sending, nor when a one-time job is deleted,
+disabled, or becomes recurring. A producer that does send starts a run,
+whose end is checked in turn, so the turn it wakes is pushed when it
+settles. Claude Code can take seconds to follow up on a command it ran in
+the background, and may not follow up at all; neither pushes the turn that
+left the command running.
 
-When the rule holds the engine disarms the session and publishes a
+The check disarms the session; when the rule holds it also publishes a
 `SessionSettled` signal (section 5).
 
 ### 3.4 Examples
@@ -159,7 +164,13 @@ When the rule holds the engine disarms the session and publishes a
   with nothing waiting: **notify once**, for the final turn.
 - The root ends its turn with a job `in 2h` aimed at it: no push. Two
   hours later the fire runs a turn; it ends with nothing waiting:
-  **notify**.
+  **notify**. Had the user deleted the job instead: **no push**.
+- An ACP agent ends its turn with a command running in the background: no
+  push, also once the command exits. When the agent follows up on its
+  own, that turn ends with nothing waiting: **notify**, for it.
+- An ACP agent ends its turn waiting for subagents of its own: no push,
+  also once they finish. The turn in which it reads their results ends
+  with nothing waiting: **notify**, for it.
 - The root ends its turn and has a nightly job with `max_runs =
   "unlimited"`: **notify** now, and after each nightly run that settles.
   A `cron` job with `max_runs = 3` behaves the same, its last run

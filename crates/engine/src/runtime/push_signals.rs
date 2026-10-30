@@ -2,7 +2,10 @@
 //! (`docs/site/specs/push-notifications.md` sections 3 and 4): a root
 //! session that settled (its run ended and nothing but recurring cron jobs
 //! can start another), and an approval or an ACP agent's question that
-//! waits for the user. The engine decides when; the server sends.
+//! waits for the user. The engine decides when; the server sends. Whether a
+//! run's end settles is decided once, as it ends: a turn that ended while
+//! something else could still wake the session is never pushed, however
+//! that ends.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -99,9 +102,9 @@ pub enum NeedsYouItem {
 /// The engine's push bookkeeping, in memory only: a restart forgets it.
 pub(crate) struct PushSignalState {
     sender: broadcast::Sender<PushSignal>,
-    /// Root sessions whose last run ended completed or failed, until they
-    /// settle, run again, or the user acts.
-    pub(super) armed: Mutex<HashMap<SessionId, SettledOutcome>>,
+    /// Root sessions whose last run ended completed or failed, until the
+    /// check after that end, another run, or the user's input.
+    armed: Mutex<HashMap<SessionId, SettledOutcome>>,
     /// Each delegated session that can still wake counting only one-time
     /// cron jobs, keyed to its parent (`waking_children` without the
     /// recurring jobs). Locked after `waking_children`, never under the
@@ -162,11 +165,11 @@ impl Engine {
         match payload {
             Event::RunStarted { .. } | Event::UserInputAdmitted { .. } => {
                 lock(&self.inner.push.armed).remove(&session);
-                // The follow-up an ended command's grace waits for came.
-                self.end_acp_wake_grace(session);
             }
             Event::RunFinished { outcome } => {
                 if self.inner.store.parent_of(session).is_some() {
+                    // An agent's subagent's run of its work ended.
+                    self.set_acp_subagent_working(session, false);
                     return;
                 }
                 let armed = match outcome {
@@ -253,9 +256,10 @@ impl Engine {
         lock(&self.inner.push.armed).retain(|session, _| !deleted.contains(session));
     }
 
-    /// Checks an armed root on its actor once the actor is done with what
-    /// it is doing: a run that just ended may still start the next one.
-    pub(super) fn schedule_settle_check(&self, root: SessionId) {
+    /// Checks a root armed by a run's end on its actor once the actor is
+    /// done with what it is doing: a run that just ended may still start
+    /// the next one.
+    fn schedule_settle_check(&self, root: SessionId) {
         if !lock(&self.inner.push.armed).contains_key(&root) {
             return;
         }
@@ -276,12 +280,15 @@ impl Engine {
         });
     }
 
-    /// Sends `Settled` for an armed root that settled (spec section 3.2).
-    /// Called on the root's actor.
+    /// Sends `Settled` for an armed root that settled (spec section 3.2),
+    /// and disarms it either way: what still waits when its run ends keeps
+    /// that run from being pushed, even once it is gone. Called on the
+    /// root's actor.
     fn check_settled(&self, root: SessionId) {
-        if !lock(&self.inner.push.armed).contains_key(&root)
-            || self.ensure_not_shutting_down().is_err()
-        {
+        let Some(outcome) = lock(&self.inner.push.armed).remove(&root) else {
+            return;
+        };
+        if self.ensure_not_shutting_down().is_err() {
             return;
         }
         let running = self
@@ -333,9 +340,6 @@ impl Engine {
         if self.wakes_once(root, &waking_once) {
             return;
         }
-        let Some(outcome) = lock(&self.inner.push.armed).remove(&root) else {
-            return;
-        };
         let meta = &projection.meta;
         let _ = self
             .inner
@@ -356,8 +360,8 @@ impl Engine {
     /// delegation, an external producer, a one-time job, or a direct child
     /// that runs a turn or itself wakes so (`waking_once`), a child's
     /// report on its way, a wake already scheduled for a producer message
-    /// that arrived, or an ACP agent's command that runs or just ended
-    /// between runs (its wake grace). The goal is checked apart, from the
+    /// that arrived, an ACP agent's command that runs, or a subagent of the
+    /// ACP agent's own that works. The goal is checked apart, from the
     /// fold.
     pub(super) fn wakes_once(
         &self,
@@ -392,7 +396,7 @@ impl Engine {
             || waking_once.values().any(|parent| *parent == session)
             || self.has_running_subagent_turn(session)
             || self.acp_background_running(session)
-            || self.acp_wake_grace(session)
+            || self.acp_subagent_working(session)
     }
 
     /// Sends `NeedsYou` for an approval that escalated to the user in

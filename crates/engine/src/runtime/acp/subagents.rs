@@ -105,6 +105,41 @@ impl Engine {
         if let Some(title) = title {
             let _ = self.title_acp_subagent(child, title).await;
         }
+        if let Some(state) = update
+            .get("state")
+            .and_then(|state| state.get("state"))
+            .and_then(Value::as_str)
+        {
+            self.set_acp_subagent_working(child, matches!(state, "running" | "requires_action"));
+        }
+    }
+
+    /// Records whether the agent's subagent `child` works, as its parent
+    /// says, for whether its parent's turn can settle (push notifications
+    /// spec section 3.2). Its run of that work ending ends it too.
+    pub(crate) fn set_acp_subagent_working(&self, child: SessionId, working: bool) {
+        let mut working_subagents = self
+            .inner
+            .acp
+            .working_subagents
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if working {
+            working_subagents.insert(child);
+        } else {
+            working_subagents.remove(&child);
+        }
+    }
+
+    /// Whether an agent's subagent of `session`'s works.
+    pub(crate) fn acp_subagent_working(&self, session: SessionId) -> bool {
+        self.inner
+            .acp
+            .working_subagents
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|child| self.inner.store.parent_of(*child) == Some(session))
     }
 
     /// Makes the cookie session of the agent's subagent `child_acp`, a

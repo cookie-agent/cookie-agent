@@ -17,7 +17,10 @@ contact = "mailto:you@example.com"
 The daemon pushes when a root session settles (its run ended `completed` or
 `failed`, and nothing but a recurring cron job can start another run), and,
 with `approvals`, when an approval or an ACP agent's question waits for you
-anywhere in a session's tree. The persistent daemon also pushes when it goes
+anywhere in a session's tree. Whether a run settles is decided as it ends: a
+turn that ends while something else can still wake the session (a
+background call or command, a subagent, a one-time cron job) is never
+pushed, even once that is gone; the turn it wakes is, when it settles. The persistent daemon also pushes when it goes
 down for a restart a client asked for (not to the device that asked) and
 when it is up again. Nothing is pushed for a session a client shows
 you at that moment. The subscriptions themselves live in `push/` in the data

@@ -24,8 +24,6 @@ use super::Engine;
 use crate::runtime_snapshot::RuntimeAgent;
 
 mod background;
-#[cfg(test)]
-pub(crate) use background::WAKE_GRACE;
 pub(crate) mod compaction;
 mod diff;
 pub(crate) mod elicitation;
@@ -68,6 +66,11 @@ pub(crate) struct AcpState {
     /// The cookie sessions of the agents' own subagents, by the
     /// subagent's ACP session ID.
     pub(crate) subagents: Mutex<HashMap<String, SessionId>>,
+    /// The agents' own subagents whose parent says they work
+    /// (`subagent_update` state `running`), until their run of that work
+    /// ends: their own run may start a moment after their parent's turn
+    /// ended.
+    pub(crate) working_subagents: Mutex<HashSet<SessionId>>,
     /// The agents' reports of their calls of cookie's tools that no bridge
     /// call has claimed yet, oldest first: which session a bridge call
     /// belongs to, the agent's or one of its own subagents', which share
@@ -75,9 +78,6 @@ pub(crate) struct AcpState {
     pub(crate) bridge_reports: Mutex<Vec<mcp::BridgeReport>>,
     /// The agents' commands still running after their calls ended.
     pub(crate) background: Mutex<Vec<background::AgentCommand>>,
-    /// When a command of each session's agent last ended between runs, for
-    /// the grace in which the agent may still start work about it.
-    pub(crate) background_ended: Mutex<HashMap<SessionId, std::time::Instant>>,
 }
 
 impl AcpState {
@@ -121,9 +121,9 @@ impl AcpState {
             questions: elicitation::Questions::default(),
             steering: Mutex::new(HashMap::new()),
             subagents: Mutex::new(HashMap::new()),
+            working_subagents: Mutex::new(HashSet::new()),
             bridge_reports: Mutex::new(Vec::new()),
             background: Mutex::new(Vec::new()),
-            background_ended: Mutex::new(HashMap::new()),
         }
     }
 
