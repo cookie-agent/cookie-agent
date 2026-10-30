@@ -94,7 +94,11 @@ async fn a_file_is_copied_with_its_digest_and_never_replaced_without_overwrite()
     assert_eq!(written.bytes, 5);
     assert_eq!(written.files, 1);
     assert_eq!(written.sha256, hex(Sha256::digest(b"first")));
-    assert!(written.path.ends_with("out/copy.txt"), "{}", written.path);
+    assert!(
+        Path::new(&written.path).ends_with("out/copy.txt"),
+        "{}",
+        written.path
+    );
 
     fs::write(workspace.join("report.txt"), b"second").unwrap();
     let error = copy(&files, &workspace, "report.txt", "out/copy.txt", false)
