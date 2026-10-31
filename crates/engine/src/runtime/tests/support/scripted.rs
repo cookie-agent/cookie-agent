@@ -563,30 +563,54 @@ pub(crate) async fn scripted_channel_server(
     let address = listener.local_addr().expect("listener address");
     let (responses, mut response_rx) =
         tokio::sync::mpsc::unbounded_channel::<MatchedScriptedResponse>();
-    let task = tokio::spawn(async move {
-        let mut requests = Vec::with_capacity(expected_requests);
-        let mut pending_responses = Vec::<MatchedScriptedResponse>::new();
+    // Requests are taken as they arrive, each waiting for the first response
+    // that matches it: one waiting for a response the test has not sent yet
+    // holds up no other, whatever order the connections came in.
+    let (accepted, mut accepted_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
         for _ in 0..expected_requests {
-            let (mut socket, request) =
-                accept_scripted_planned_request(&listener, "channel script accept").await;
-            let body = loop {
-                if let Some(index) = pending_responses
-                    .iter()
-                    .position(|response| response.matches(&request))
-                {
-                    break pending_responses.remove(index).body;
-                }
-                pending_responses.push(
-                    response_rx
-                        .recv()
-                        .await
-                        .expect("matching channel script response"),
-                );
-            };
-            requests.push(String::from_utf8(request).expect("channel script request"));
-            write_scripted_sse(&mut socket, &body).await;
+            let request = accept_scripted_planned_request(&listener, "channel script accept").await;
+            if accepted.send(request).is_err() {
+                return;
+            }
         }
         spawn_scripted_auxiliary_tail(listener);
+    });
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::with_capacity(expected_requests);
+        let mut waiting = Vec::<(tokio::net::TcpStream, Vec<u8>)>::new();
+        let mut pending_responses = Vec::<MatchedScriptedResponse>::new();
+        let (mut accepting, mut responding) = (true, true);
+        while requests.len() < expected_requests {
+            let mut index = 0;
+            while index < waiting.len() {
+                let Some(response) = pending_responses
+                    .iter()
+                    .position(|response| response.matches(&waiting[index].1))
+                else {
+                    index += 1;
+                    continue;
+                };
+                let body = pending_responses.remove(response).body;
+                let (mut socket, request) = waiting.remove(index);
+                requests.push(String::from_utf8(request).expect("channel script request"));
+                write_scripted_sse(&mut socket, &body).await;
+            }
+            if requests.len() == expected_requests {
+                break;
+            }
+            tokio::select! {
+                request = accepted_rx.recv(), if accepting => match request {
+                    Some(request) => waiting.push(request),
+                    None => accepting = false,
+                },
+                response = response_rx.recv(), if responding => match response {
+                    Some(response) => pending_responses.push(response),
+                    None => responding = false,
+                },
+                else => panic!("matching channel script response"),
+            }
+        }
         requests
     });
     (format!("http://{address}/v1"), responses, task)
