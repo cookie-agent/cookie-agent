@@ -187,6 +187,16 @@ browser.wait(
     lambda: "passes" in browser.text("#transcript")
     and "working" not in browser.text("#status-bar"),
 )
+# The reduced transcript folds the reply's work into one row: open it,
+# then the tool calls inside it.
+browser.script(
+    "for (const work of document.querySelectorAll('#transcript [data-work] [data-action=toggle-block]'))"
+    " work.click()"
+)
+browser.wait(
+    "the open work",
+    lambda: browser.count("#transcript [data-action=toggle-tool]") > 0,
+)
 browser.script(
     "for (const tool of document.querySelectorAll('#transcript [data-action=toggle-tool]'))"
     " tool.click()"
@@ -265,21 +275,44 @@ def drag_and_shoot(source, target, name):
     """Drags `source` with the mouse until it is over `target`, photographs
     it there in both themes, then takes it back and lets go where it
     started, so nothing moves."""
+    # Both have to be on screen: scroll the pane holding them so they
+    # are, from the top of the higher one.
+    browser.script(
+        "const a = document.querySelector(arguments[0]), b = document.querySelector(arguments[1]);"
+        "let pane = a.parentElement;"
+        "while (pane && !(pane.scrollHeight > pane.clientHeight"
+        " && /(auto|scroll)/.test(getComputedStyle(pane).overflowY))) pane = pane.parentElement;"
+        "const top = Math.min(a.getBoundingClientRect().top, b.getBoundingClientRect().top);"
+        "if (pane) pane.scrollTop += top - pane.getBoundingClientRect().top - 8;",
+        source,
+        target,
+    )
+    time.sleep(0.3)
     start = {ELEMENT: browser.find(source)}
     over = {ELEMENT: browser.find(target)}
+
+    def offset(selector, wanted):
+        """`wanted` pixels left of the element's centre, kept inside it."""
+        width = browser.script(
+            "return document.querySelector(arguments[0]).getBoundingClientRect().width", selector
+        )
+        return -min(wanted, max(0, int(width / 2) - 8))
+
+    grab, drop = offset(source, 120), offset(target, 100)
     # Where it started, in the viewport: the lifted row moves with the
     # pointer, so its own centre would be over the target by then.
     x, y = browser.script(
         "const r = document.querySelector(arguments[0]).getBoundingClientRect();"
-        "return [Math.round(r.left + r.width / 2) - 120, Math.round(r.top + r.height / 2)]",
+        "return [Math.round(r.left + r.width / 2) + arguments[1], Math.round(r.top + r.height / 2)]",
         source,
+        grab,
     )
     mouse = {"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}}
     call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
-        {"type": "pointerMove", "duration": 0, "origin": start, "x": -120, "y": 0},
+        {"type": "pointerMove", "duration": 0, "origin": start, "x": grab, "y": 0},
         {"type": "pointerDown", "button": 0},
-        {"type": "pointerMove", "duration": 200, "origin": start, "x": -100, "y": 20},
-        {"type": "pointerMove", "duration": 300, "origin": over, "x": -100, "y": 10},
+        {"type": "pointerMove", "duration": 200, "origin": start, "x": grab + 20, "y": 20},
+        {"type": "pointerMove", "duration": 300, "origin": over, "x": drop, "y": 10},
     ])]})
     both_themes(name)
     call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
@@ -544,12 +577,14 @@ def badges_and_titles(size, width):
 
 
 if ALL:
-    # Sessions for every kind of badge: two runtimes on this machine, a
+    # Sessions for every kind of badge: another runtime of this machine, a
     # runtime on another machine beside one on this, and no workspace; the
-    # first session has one runtime at one workspace.
+    # first session has one runtime at one workspace. Two coding runtimes of
+    # one machine cannot share a session: their tools would have the same
+    # names (machines on demand, one tool name per machine).
     browser.size(1280, 800)
     time.sleep(1)
-    badge_session("Note: Review the website copy.", [("local", "~/greeter"), ("alt", "~/website")])
+    badge_session("Note: Review the website copy.", [("alt", "~/website")])
     badge_session("Note: Deploy the site from the studio.", [("local", "~/greeter"), ("studio", "~/website")])
     badge_session("Note: Brainstorm release names.", [])
     # The projects the memory folders became: greeter with an emoji, its

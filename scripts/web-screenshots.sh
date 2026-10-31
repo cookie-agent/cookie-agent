@@ -135,7 +135,13 @@ assert greet("Ada") == "Hello, Ada!", greet("Ada")
 print("ok: greet(\"Ada\") == \"Hello, Ada!\"")
 PY
 port="$(free_port)"
+# Set up for onboarding (a provider and the default, small, and utility
+# models), so no first-run sheet covers the page.
 cat >"$home/.cookie-agent/config.toml" <<TOML
+default_model = "openai/gpt-5"
+small_model = "openai/gpt-5"
+utility_model = "openai/gpt-5"
+
 [server]
 port = $port
 
