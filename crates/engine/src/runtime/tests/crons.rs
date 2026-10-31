@@ -211,6 +211,60 @@ async fn a_fire_is_skipped_while_the_previous_one_still_waits() {
     assert_eq!(fire_messages(engine, session, &job.id), 1);
 }
 
+/// A fire's run that ends before the fire is recorded delivered, when
+/// nothing awaited it yet, still records its end and counts it.
+#[tokio::test]
+async fn a_run_that_ends_before_its_fire_is_recorded_delivered_is_counted() {
+    let (endpoint, responses, _captured) = scripted_channel_server(1).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection).unwrap().session_id;
+    let mut create = params("Tidy the notes.", daily(), CronTarget::Session(session));
+    create.max_runs = Some(CronMaxRuns::Unlimited);
+    let job = engine.create_cron(create).await.expect("created");
+    let target = job.id.clone();
+    engine
+        .crons_now(move |_, jobs| {
+            let job = jobs.iter_mut().find(|job| job.id == target).unwrap();
+            job.consecutive_failures = 2;
+            job.next_fire = Some(Timestamp::now());
+            Ok(())
+        })
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "Tidy the notes.",
+            scripted_text_body("tidied"),
+        ))
+        .unwrap();
+
+    let (reached, release) = engine.install_cron_settle_hook();
+    let ticking = engine.clone();
+    let tick = tokio::spawn(async move { ticking.cron_tick(Timestamp::now()).await });
+    with_watchdog("the fire's delivery", reached)
+        .await
+        .expect("delivered");
+    await_projection(engine, session, "the fire's run's end", |projection| {
+        projection.status == SessionStatus::Completed
+    })
+    .await;
+    assert_eq!(
+        last_outcome(&engine.cron_store().job(&job.id).unwrap()),
+        StoredOutcome::Pending
+    );
+    release.notify_one();
+    with_watchdog("the tick", tick).await.expect("ticked");
+
+    let settled = engine.cron_store().job(&job.id).unwrap();
+    let fire = settled.history.last().unwrap();
+    assert_eq!(fire.outcome, StoredOutcome::Delivered);
+    assert_eq!(
+        fire.run_end.as_ref().map(|end| end.status),
+        Some(SessionStatus::Completed)
+    );
+    assert_eq!(settled.consecutive_failures, 0);
+}
+
 /// A fire into a held session is skipped, not a failure
 /// (`docs/site/specs/held-sessions.md`).
 #[tokio::test]

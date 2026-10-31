@@ -598,9 +598,13 @@ impl Engine {
         }
     }
 
-    /// Delivers a claimed fire and records its outcome.
+    /// Delivers a claimed fire and records its outcome. The run the prompt
+    /// landed in may have ended before the fire was recorded delivered,
+    /// when nothing awaited it yet; its end is recorded now instead.
     async fn deliver_claim(&self, claim: Claim) -> Result<Delivery, EngineError> {
         let result = self.deliver(&claim.job, &claim.key, claim.fired_at).await;
+        #[cfg(test)]
+        self.wait_for_cron_settle_hook().await;
         let limit = self
             .inner
             .config
@@ -616,7 +620,71 @@ impl Engine {
             Ok(())
         })
         .await?;
+        if let Ok(Delivery {
+            session,
+            message: Some(message),
+        }) = result
+            && let Some(run) = self.landed_run(session, message)
+            && let Err(error) = self.settle_cron_runs(session, run).await
+        {
+            eprintln!("cookie-agent: cron run outcome: {error}");
+        }
         result.map_err(EngineError::ToolFailed)
+    }
+
+    /// The run producer message `message` of `session` landed in: the run
+    /// that consumed it or that it started.
+    fn landed_run(&self, session: SessionId, message: ProducerMessageId) -> Option<RunId> {
+        let producers = self.goal_producer_projection(session).ok()?;
+        let record = producers
+            .messages
+            .iter()
+            .find(|record| record.message_id == message)?;
+        record.consumed_run.or(record.admission.map(|(run, _)| run))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_cron_settle_hook(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let (reached, receiver) = tokio::sync::oneshot::channel();
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .test_hooks
+            .cron_settle_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(std::sync::Arc::new(super::PagingRaceHook {
+                reached: Mutex::new(Some(reached)),
+                release: std::sync::Arc::clone(&release),
+            }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
+    async fn wait_for_cron_settle_hook(&self) {
+        let hook = self
+            .inner
+            .test_hooks
+            .cron_settle_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
     }
 
     /// Delivers `job`'s prompt: into its session, or into a new session

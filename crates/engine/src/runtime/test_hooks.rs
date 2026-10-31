@@ -159,6 +159,9 @@ pub(crate) struct TestHooks {
     pub(crate) skill_fork_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     pub(crate) producer_wake_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     pub(crate) delegation_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    /// Holds a cron fire between its delivery and the write that records it
+    /// delivered.
+    pub(crate) cron_settle_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     pub(crate) resume_rollback_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
     pub(crate) admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
     pub(crate) abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
