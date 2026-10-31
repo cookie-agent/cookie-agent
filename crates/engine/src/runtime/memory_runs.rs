@@ -234,18 +234,16 @@ pub(crate) fn snapshot_change(
     }
 }
 
-/// The latest `memory_loaded` of `events`, and whether a compaction
-/// finished after it.
-fn latest_snapshot(events: &[std::sync::Arc<StoredEvent>]) -> Option<(&MemorySnapshot, bool)> {
-    let mut compacted = false;
-    for event in events.iter().rev() {
-        match &event.payload {
-            Event::MemoryLoaded { snapshot } => return Some((snapshot, compacted)),
-            Event::ContextCheckpointCommitted { .. } => compacted = true,
-            _ => {}
-        }
+/// The snapshot of the `memory_loaded` record `latest`, and whether a
+/// compaction finished after it.
+fn latest_snapshot(
+    latest: Option<&(std::sync::Arc<StoredEvent>, bool)>,
+) -> Option<(&MemorySnapshot, bool)> {
+    let (event, compacted) = latest?;
+    match &event.payload {
+        Event::MemoryLoaded { snapshot } => Some((snapshot, *compacted)),
+        _ => None,
     }
-    None
 }
 
 /// The memory related to a session (section 16.9.11): what its snapshot
@@ -393,7 +391,7 @@ impl Engine {
         let projection = self.inner.store.get(session)?;
         // An ACP agent's own subagent gets what its agent gives it, never a
         // snapshot of cookie's: none is recorded as though it had.
-        if super::acp::is_acp_subagent(&projection.log.event_snapshot()) {
+        if projection.log.is_acp_subagent() {
             return Ok(());
         }
         let delegated = matches!(projection.meta.origin, SessionOrigin::Delegated { .. });
@@ -427,8 +425,8 @@ impl Engine {
             project,
             rules: memory_rules_fingerprint(&policy.agent, &projection.permission_overlay),
         };
-        let events = projection.log.event_snapshot();
-        let snapshot = match snapshot_change(latest_snapshot(&events), &facts) {
+        let latest = projection.log.last_memory_loaded();
+        let snapshot = match snapshot_change(latest_snapshot(latest.as_ref()), &facts) {
             SnapshotChange::Keep => return Ok(()),
             SnapshotChange::Clear => MemorySnapshot::unavailable(),
             SnapshotChange::Take => {

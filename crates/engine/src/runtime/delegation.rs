@@ -2717,7 +2717,7 @@ impl Engine {
         // An ACP agent's own subagent came from no delegation of cookie's:
         // no call links it and no queue holds it, so only its turn stops.
         let child = self.inner.store.get(child_session_id)?;
-        if super::acp::is_acp_subagent(&child.log.event_snapshot()) {
+        if child.log.is_acp_subagent() {
             return self.stop_child_turn(child_session_id, reason).await;
         }
         self.ensure_subagent_owned(caller_session_id, child_session_id)

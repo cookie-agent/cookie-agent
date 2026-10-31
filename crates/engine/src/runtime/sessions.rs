@@ -498,7 +498,7 @@ impl Engine {
         self.inner
             .store
             .get(session)
-            .is_ok_and(|child| super::acp::is_acp_subagent(&child.log.event_snapshot()))
+            .is_ok_and(|child| child.log.is_acp_subagent())
     }
 
     pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {

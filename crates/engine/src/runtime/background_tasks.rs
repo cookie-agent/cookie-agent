@@ -411,7 +411,7 @@ impl Engine {
                 };
                 // An ACP agent's own subagent came from no call of
                 // `delegate_subagent`.
-                let tool = if super::acp::is_acp_subagent(&projection.log.event_snapshot()) {
+                let tool = if projection.log.is_acp_subagent() {
                     "subagent"
                 } else {
                     "delegate_subagent"

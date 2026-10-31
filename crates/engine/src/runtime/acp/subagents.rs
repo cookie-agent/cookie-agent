@@ -310,7 +310,10 @@ impl Engine {
                 .or(meta.short_id);
         }
         let projection = self.inner.store.get(session).ok()?;
-        is_acp_subagent(&projection.log.event_snapshot()).then(|| "parent".to_owned())
+        projection
+            .log
+            .is_acp_subagent()
+            .then(|| "parent".to_owned())
     }
 
     /// Names the subagent's session as the agent titles it, unless the
@@ -348,7 +351,7 @@ impl Engine {
     /// subagent.
     pub(crate) fn acp_subagent_parent(&self, session: SessionId) -> Option<SessionId> {
         let projection = self.inner.store.get(session).ok()?;
-        if !is_acp_subagent(&projection.log.event_snapshot()) {
+        if !projection.log.is_acp_subagent() {
             return None;
         }
         match projection.meta.origin {

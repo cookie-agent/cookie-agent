@@ -624,23 +624,20 @@ impl Engine {
 pub(super) fn has_runless_pending_inputs(
     events: &[Arc<cookie_agent_protocol::StoredEvent>],
 ) -> bool {
-    let boundary = events
-        .iter()
-        .rev()
-        .find(|event| matches!(event.payload, Event::RunFinished { .. }))
-        .map_or(0, |event| event.seq);
-    let mut pending = Vec::new();
+    // Back from the end to the latest run's finish: an input admitted
+    // outside a run since then is pending unless a later record recalled it.
+    let mut recalled = Vec::new();
     for event in events
         .iter()
-        .filter(|event| event.seq > boundary && event.run_id.is_none())
+        .rev()
+        .take_while(|event| !matches!(event.payload, Event::RunFinished { .. }))
+        .filter(|event| event.run_id.is_none())
     {
         match &event.payload {
-            Event::UserInputAdmitted { .. } => pending.push(event.seq),
-            Event::UserInputRecalled { user_input_seq, .. } => {
-                pending.retain(|seq| seq != user_input_seq);
-            }
+            Event::UserInputAdmitted { .. } if !recalled.contains(&event.seq) => return true,
+            Event::UserInputRecalled { user_input_seq, .. } => recalled.push(*user_input_seq),
             _ => {}
         }
     }
-    !pending.is_empty()
+    false
 }

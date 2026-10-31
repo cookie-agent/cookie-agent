@@ -160,10 +160,16 @@ struct EventIndex {
     last_model_tools: Option<(Vec<String>, Vec<String>)>,
     /// The latest runtime revisions the log records.
     revisions: cookie_agent_protocol::RevisionFold,
-    /// Deferred tools since the latest checkpoint.
-    deferral: DeferralFold,
+    /// Deferred tools since the latest checkpoint, shared with the readers
+    /// handed it: copied only when a record changes it while one holds it.
+    deferral: Arc<DeferralFold>,
     /// The prompt blocks of the latest run and what the model knows of them.
     prompt_blocks: PromptBlockFold,
+    /// The log records an ACP agent's own subagent session.
+    acp_subagent: bool,
+    /// The latest `MemoryLoaded` record, and whether a checkpoint was
+    /// committed after it.
+    last_memory_loaded: Option<(Arc<StoredEvent>, bool)>,
 }
 
 /// What a log records about prompt blocks (stable prefix spec, section 6):
@@ -274,6 +280,23 @@ pub(crate) struct AnnouncedGroupState {
 }
 
 impl DeferralFold {
+    /// Whether `payload` can change the fold.
+    fn observes(payload: &EventPayload) -> bool {
+        matches!(
+            payload,
+            EventPayload::ContextCheckpointCommitted { .. }
+                | EventPayload::ToolRoundStarted { .. }
+                | EventPayload::DeferredToolsAnnounced { .. }
+        ) || matches!(
+            payload,
+            EventPayload::ToolCallTerminated { termination }
+                if termination
+                    .result
+                    .as_ref()
+                    .is_some_and(|result| !result.loaded_tools.is_empty())
+        )
+    }
+
     fn observe(&mut self, payload: &EventPayload) {
         match payload {
             EventPayload::ContextCheckpointCommitted { commit } => {
@@ -321,10 +344,23 @@ impl DeferralFold {
 }
 
 impl EventIndex {
-    fn observe(&mut self, event: &StoredEvent) {
+    fn observe(&mut self, event: &Arc<StoredEvent>) {
         self.revisions.observe(&event.payload);
-        self.deferral.observe(&event.payload);
+        if DeferralFold::observes(&event.payload) {
+            Arc::make_mut(&mut self.deferral).observe(&event.payload);
+        }
         self.prompt_blocks.observe(&event.payload);
+        match &event.payload {
+            EventPayload::AcpSessionStarted { record }
+                if record.how == cookie_agent_protocol::AcpSessionStart::Subagent =>
+            {
+                self.acp_subagent = true;
+            }
+            EventPayload::MemoryLoaded { .. } => {
+                self.last_memory_loaded = Some((Arc::clone(event), false));
+            }
+            _ => {}
+        }
         match &event.payload {
             EventPayload::RunStarted { selection, .. } => {
                 if let Some(run) = event.run_id {
@@ -332,6 +368,9 @@ impl EventIndex {
                 }
             }
             EventPayload::ContextCheckpointCommitted { commit } => {
+                if let Some((_, compacted)) = &mut self.last_memory_loaded {
+                    *compacted = true;
+                }
                 self.last_checkpoint_seq = event.seq;
                 self.last_checkpoint_input_through_seq = commit.boundaries.input_through_seq;
             }
@@ -1552,14 +1591,36 @@ impl EventLog {
             .clone()
     }
 
-    /// Deferred tools since the latest checkpoint, as the log records them.
-    pub(crate) fn deferral(&self) -> DeferralFold {
+    /// Whether the log is an ACP agent's own subagent session's.
+    pub(crate) fn is_acp_subagent(&self) -> bool {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .index
-            .deferral
+            .acp_subagent
+    }
+
+    /// The latest `MemoryLoaded` record, and whether a checkpoint was
+    /// committed after it.
+    pub(crate) fn last_memory_loaded(&self) -> Option<(Arc<StoredEvent>, bool)> {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .last_memory_loaded
             .clone()
+    }
+
+    /// Deferred tools since the latest checkpoint, as the log records them.
+    pub(crate) fn deferral(&self) -> Arc<DeferralFold> {
+        Arc::clone(
+            &self
+                .events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .index
+                .deferral,
+        )
     }
 
     /// The published names the current tool round pins (stable prefix

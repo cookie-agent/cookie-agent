@@ -971,9 +971,10 @@ impl Engine {
         let fold = self.inner.store.get(input.session)?.log.deferral();
         Ok(fold
             .folded
-            .into_iter()
-            .chain(fold.loaded)
-            .filter(|name| input.tools.iter().any(|tool| &tool.name == name))
+            .iter()
+            .chain(&fold.loaded)
+            .filter(|name| input.tools.iter().any(|tool| &tool.name == *name))
+            .cloned()
             .collect())
     }
 

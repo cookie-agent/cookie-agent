@@ -245,8 +245,7 @@ impl Engine {
     /// whose first work comes with a task.
     fn awaits_first_task(&self, session: SessionId) -> bool {
         self.inner.store.get(session).is_ok_and(|projection| {
-            projection.log.last_run_started().is_none()
-                && super::subagents::is_acp_subagent(&projection.log.event_snapshot())
+            projection.log.last_run_started().is_none() && projection.log.is_acp_subagent()
         })
     }
 
