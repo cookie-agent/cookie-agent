@@ -1095,16 +1095,11 @@ struct Turn<'a> {
     declined_steers: HashSet<u64>,
     /// The agent's compactions of the turn, by their IDs.
     compactions: HashMap<String, CompactionProgress>,
-    /// The names of the tools the session's own rules offer over cookie's
-    /// MCP bridge: what a call of the session's own runs through.
-    bridge_tools: Option<Vec<String>>,
     /// The tools the agent sees over the bridge, recorded with each attempt
-    /// as a model run's request tools are: `bridge_tools`, or for the
-    /// agent's own subagent its parent's, whose bridge it shares.
+    /// as a model run's request tools are: those the session's own rules
+    /// offer, or for the agent's own subagent its parent's, whose bridge it
+    /// shares.
     published_tools: Option<Vec<String>>,
-    /// The parent session when this is the agent's own subagent, whose
-    /// calls of cookie's tools come over its parent's bridge.
-    subagent_parent: Option<SessionId>,
 }
 
 /// A `_session/steering` request on its way.
@@ -1484,10 +1479,11 @@ impl Turn<'_> {
             SessionEvent::BridgeCall {
                 name,
                 arguments,
+                call,
                 for_subagent,
                 reply,
             } => {
-                self.bridge_call(name, arguments, for_subagent, reply)
+                self.bridge_call(name, arguments, call, for_subagent, reply)
                     .await?
             }
             SessionEvent::Elicitation(_, incoming) if cancelling => elicitation::cancel(incoming),
@@ -1935,6 +1931,14 @@ impl Turn<'_> {
         if update.tool_call_id.is_empty() {
             return Ok(());
         }
+        #[cfg(test)]
+        if self.engine.acp_subagent_parent(self.session()).is_some() {
+            self.engine
+                .inner
+                .test_hooks
+                .acp_subagent_tool_call_held()
+                .await;
+        }
         if let Some(echo) = self.echoes.get_mut(&update.tool_call_id) {
             echo.fields = permissions::merge(Some(&echo.fields), &update);
             let ended = matches!(echo.fields.status.as_deref(), Some("completed" | "failed"));
@@ -1948,7 +1952,9 @@ impl Turn<'_> {
                 .echoes
                 .remove(&update.tool_call_id)
                 .expect("echo just found");
-            if self.take_bridge_report(&update.tool_call_id) == Some(true) {
+            if self.forget_sighting(&update.tool_call_id)
+                == Some(super::mcp::SightingState::ClaimedElsewhere)
+            {
                 return Ok(());
             }
             return self.show_call(echo.fields).await;
@@ -1962,23 +1968,11 @@ impl Turn<'_> {
                 .position(|unclaimed| *unclaimed == tool)
                 .map(|index| self.unclaimed_bridge_calls.remove(index))
                 .is_some();
-            let order = self.echoes.len() as u64;
-            // Named for the bridge, so the call it stands for comes to this
-            // session even over a parent's bridge.
-            if !claimed {
-                let offered = self
-                    .bridge_tools
-                    .as_ref()
-                    .is_some_and(|tools| tools.contains(&tool));
-                super::lock(&self.engine.inner.acp.bridge_reports).push(super::mcp::BridgeReport {
-                    session: self.session(),
-                    parent: self.subagent_parent,
-                    call: update.tool_call_id.clone(),
-                    tool: tool.clone(),
-                    offered,
-                    claimed_elsewhere: false,
-                });
+            if claimed {
+                // A bridge call that came before it stands for it.
+                self.forget_sighting(&update.tool_call_id);
             }
+            let order = self.echoes.len() as u64;
             self.echoes.insert(
                 update.tool_call_id.clone(),
                 BridgeEcho {
@@ -1993,16 +1987,10 @@ impl Turn<'_> {
         self.show_call(update).await
     }
 
-    /// Removes this session's report of its call `call` from the bridge's
-    /// reports: whether a bridge call ran it in the parent, when there was
-    /// one.
-    fn take_bridge_report(&self, call: &str) -> Option<bool> {
-        let session = self.session();
-        let mut reports = super::lock(&self.engine.inner.acp.bridge_reports);
-        let index = reports
-            .iter()
-            .position(|report| report.session == session && report.call == call)?;
-        Some(reports.remove(index).claimed_elsewhere)
+    /// Forgets the process's sighting of this session's call `call` of
+    /// cookie's tools: how it stood, when there was one.
+    fn forget_sighting(&self, call: &str) -> Option<super::mcp::SightingState> {
+        super::mcp::forget_sighting(&self.live.process, &self.live.acp_session_id, call)
     }
 
     /// Shows the agent's tool call `update`, or updates the one shown,
@@ -2418,25 +2406,36 @@ impl Turn<'_> {
         &mut self,
         name: String,
         arguments: Value,
+        call: Option<String>,
         for_subagent: bool,
         reply: tokio::sync::oneshot::Sender<Value>,
     ) -> Result<(), EngineError> {
-        // This call stands for the agent's oldest unclaimed call of the
-        // tool, which is then not shown; one the agent reports later
-        // claims it instead. One a subagent reported stands for that.
-        let echo = self
-            .echoes
-            .iter_mut()
-            .filter(|(_, echo)| !echo.claimed && echo.tool == name)
-            .min_by_key(|(_, echo)| echo.order);
-        match echo {
-            _ if for_subagent => {}
-            Some((call, echo)) => {
-                echo.claimed = true;
-                let call = call.clone();
-                self.take_bridge_report(&call);
+        // This call stands for the agent's call it names, else its oldest
+        // unclaimed call of the tool, which is then not shown; one the
+        // agent reports later claims it instead. One a subagent reported
+        // stands for that.
+        if !for_subagent {
+            let echo = match &call {
+                Some(call) => self
+                    .echoes
+                    .get_mut(call)
+                    .filter(|echo| !echo.claimed)
+                    .map(|echo| (call.clone(), echo)),
+                None => self
+                    .echoes
+                    .iter_mut()
+                    .filter(|(_, echo)| !echo.claimed && echo.tool == name)
+                    .min_by_key(|(_, echo)| echo.order)
+                    .map(|(call, echo)| (call.clone(), echo)),
+            };
+            match echo {
+                Some((echoed, echo)) => {
+                    echo.claimed = true;
+                    self.forget_sighting(&echoed);
+                }
+                None if call.is_none() => self.unclaimed_bridge_calls.push(name.clone()),
+                None => {}
             }
-            None => self.unclaimed_bridge_calls.push(name.clone()),
         }
         let selection = cookie_agent_protocol::acp_model_selection(&self.live.agent.id);
         let turn_context = Arc::new(cookie_agent_runtime_api::TurnAgentContext {
@@ -2707,10 +2706,8 @@ impl Engine {
         // The agent's own subagent sees its parent's bridge: the tools row
         // names what that offers, as the parent's does.
         let published_tools = match self.acp_subagent_parent(active.session) {
-            Some(parent) => self
-                .latest_model_tool_names(parent)
-                .or(bridge_tools.clone()),
-            None => bridge_tools.clone(),
+            Some(parent) => self.latest_model_tool_names(parent).or(bridge_tools),
+            None => bridge_tools,
         };
         // The list may have changed since the agent last fetched it, by
         // rules, plugins, or an attached runtime's MCP servers.
@@ -2743,9 +2740,7 @@ impl Engine {
             steer_echo: None,
             declined_steers: HashSet::new(),
             compactions: HashMap::new(),
-            bridge_tools,
             published_tools,
-            subagent_parent: self.acp_subagent_parent(active.session),
         };
         loop {
             if active.cancellation.is_cancelled() {
@@ -3089,9 +3084,11 @@ impl Engine {
         }
         turn.end_open_calls(matches!(end, RoundEnd::Cancelled))
             .await?;
-        // The round's reports no bridge call claimed are stale now.
-        super::lock(&self.inner.acp.bridge_reports)
-            .retain(|report| report.session != turn.session());
+        // The process's sightings of the calls the round saw are stale now.
+        super::lock(&turn.live.process.bridge_sightings).retain(|known| {
+            known.acp_session != turn.live.acp_session_id
+                || !(turn.echoes.contains_key(&known.call) || turn.calls.contains_key(&known.call))
+        });
         if !turn.live.is_live() {
             self.forget_live(turn.session(), &turn.live);
         }

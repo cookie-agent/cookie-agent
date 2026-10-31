@@ -86,8 +86,11 @@ Each prompt's last text block is a command:
                          done"
   subagent-mcp <tool> <json>
                          a subagent that reports a call of cookie's tool <tool>
-                         in its own session, makes it over its parent's bridge,
-                         and says "subagent result: <text> error: <isError>"
+                         in its own session, makes it over its parent's bridge
+                         naming the call it reported (`_meta`
+                         `claudecode/toolUseId`, as Claude Code does), and says
+                         "subagent result: <text> error: <isError>";
+                         `subagent-mcp-unnamed` makes the call without naming it
   subagent-wait <title>  the same, but the subagent says "waiting" and waits (up to
                          10 s) for session/cancel, while this session answers
                          "subagent started" at once
@@ -597,7 +600,7 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             say(child, "subagent says: " + task)
         subagent(session_id, title, task, work)
         say(session_id, "subagent done")
-    elif word == "subagent-mcp":
+    elif word in ("subagent-mcp", "subagent-mcp-unnamed"):
         tool, _, arguments = rest.partition(" ")
         arguments = json.loads(arguments or "{}")
         def work(child):
@@ -611,7 +614,10 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             if not mcp_open(session):
                 say(child, "no bridge")
                 return
-            reply = mcp(session, "tools/call", {"name": tool, "arguments": arguments}, 7)
+            params = {"name": tool, "arguments": arguments}
+            if word == "subagent-mcp":
+                params["_meta"] = {"claudecode/toolUseId": call["toolCallId"]}
+            reply = mcp(session, "tools/call", params, 7)
             result = reply.get("result", {})
             text = " ".join(item.get("text", "") for item in result.get("content", []))
             tool_call(child, {"toolCallId": call["toolCallId"],

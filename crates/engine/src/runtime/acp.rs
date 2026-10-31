@@ -71,11 +71,6 @@ pub(crate) struct AcpState {
     /// ends: their own run may start a moment after their parent's turn
     /// ended.
     pub(crate) working_subagents: Mutex<HashSet<SessionId>>,
-    /// The agents' reports of their calls of cookie's tools that no bridge
-    /// call has claimed yet, oldest first: which session a bridge call
-    /// belongs to, the agent's or one of its own subagents', which share
-    /// its bridge.
-    pub(crate) bridge_reports: Mutex<Vec<mcp::BridgeReport>>,
     /// The agents' commands still running after their calls ended.
     pub(crate) background: Mutex<Vec<background::AgentCommand>>,
 }
@@ -122,7 +117,6 @@ impl AcpState {
             steering: Mutex::new(HashMap::new()),
             subagents: Mutex::new(HashMap::new()),
             working_subagents: Mutex::new(HashSet::new()),
-            bridge_reports: Mutex::new(Vec::new()),
             background: Mutex::new(Vec::new()),
         }
     }

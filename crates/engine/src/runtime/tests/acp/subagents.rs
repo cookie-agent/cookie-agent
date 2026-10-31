@@ -333,6 +333,68 @@ async fn a_subagents_call_of_cookies_tools_shows_once_in_its_own_session() {
     );
 }
 
+/// A subagent's call of cookie's tools, made with `word` (the fixture's
+/// `subagent-mcp` names the call it reported, `subagent-mcp-unnamed` does
+/// not), while the subagent's runner is held as it reaches the agent's
+/// report of the call, as a slow write before it would hold it: the bridge
+/// call still goes to the subagent's session, not to the parent's after a
+/// wait, and runs there under its rules once the runner goes on.
+async fn a_held_subagents_call_runs_in_its_own_session(word: &str) {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let (reached, release) = engine.inner.test_hooks.hold_acp_subagent_tool_call();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(
+        engine,
+        session,
+        "first",
+        &format!(r#"{word} memory_search {{"query": "notes"}}"#),
+    )
+    .await;
+    let child = subagent_of(engine, session).await;
+    with_watchdog("the subagent's runner held at the call", reached)
+        .await
+        .expect("the hold is reached");
+    // Given its session while the runner that would have reported it is
+    // still held.
+    let attributed = crate::eventually::eventually_some(
+        std::time::Duration::from_secs(30),
+        "the bridge call given a session",
+        || {
+            let attributed = engine.inner.test_hooks.bridge_attributions();
+            (!attributed.is_empty()).then_some(attributed)
+        },
+    )
+    .await;
+    assert_eq!(attributed, [child]);
+    release.notify_one();
+    let outcome = first_run(engine, child).await;
+    assert!(
+        final_text(&outcome).ends_with("error: False"),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        final_text(&finished(engine, session, run).await),
+        "subagent done"
+    );
+    assert_eq!(cookie_calls(engine, child), ["memory_search"]);
+    assert!(
+        !cookie_calls(engine, session).contains(&"memory_search".to_owned()),
+        "{:?}",
+        cookie_calls(engine, session)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_named_call_waits_for_its_report_not_its_runner() {
+    a_held_subagents_call_runs_in_its_own_session("subagent-mcp").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_unnamed_call_goes_by_its_report_not_its_runner() {
+    a_held_subagents_call_runs_in_its_own_session("subagent-mcp-unnamed").await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_subagents_call_its_rules_do_not_offer_runs_in_the_parent_and_shows_there_only() {
     // The document denies cron; the parent's session allows it, the

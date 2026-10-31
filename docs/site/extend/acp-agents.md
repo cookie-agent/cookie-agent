@@ -631,7 +631,12 @@ not in it.
   that context. An agent cookie does not know is taken to hand its system
   prompt on. A call of cookie's tools the subagent makes shows once, in
   the subagent's session, decided by its rules; one its rules do not offer
-  runs in the parent, and shows there.
+  runs in the parent, and shows there. Cookie tells whose call it is by the
+  agent's report of it in that session's stream, matched by the call's ID
+  when the agent names it in the call (Claude Code does), else by the tool;
+  a call it cannot tell is refused rather than run in another session, such
+  as one the agent never reports, or one that does not name its ID while
+  two of the agent's sessions are calling the same tool.
 - **Questions.** A question from the agent (see [Questions from the
   agent](#questions-from-the-agent)) docks a panel above the TUI's status
   bar, titled `<agent> asks · waiting on you`: Tab moves between the fields

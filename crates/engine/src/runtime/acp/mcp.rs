@@ -29,6 +29,8 @@ use cookie_agent_runtime_api::protocol::{AgentMcpClosedParams, AgentMcpParams, m
 use serde_json::{Value, json};
 
 use super::super::{Engine, Inner};
+use super::process::AgentProcess;
+use super::runner::LiveSession;
 use crate::runtime_snapshot::RuntimeAgent;
 use crate::runtimes::RuntimeClient;
 
@@ -40,26 +42,149 @@ pub(crate) const BRIDGE_SERVER: &str = "cookie";
 /// for another gets the first.
 const MCP_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// How long a bridge call waits for the agent's report of it, which names
-/// the session that made it, before it goes to the bridge's own session.
-const REPORT_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
+/// How long a bridge call waits for the agent's report that says which
+/// session made it, before it is refused. The report travels on the
+/// agent's ACP stream and is read as it is routed, never behind a runner's
+/// writes, so only the two streams' skew delays it; the bound is for an
+/// agent that does not report the call at all.
+const REPORT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// An agent's report of its call of cookie's tool `tool` (its tool call
-/// `call`) in `session`, which no bridge call has claimed yet.
+/// How often a bridge call waiting for a report looks again even without
+/// a new one: the session of a report can be routed later than it came.
+const REPORT_RECHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How deep the agent's subagents of a bridge's session are looked for.
+const MAX_SUBAGENT_DEPTH: usize = 16;
+
+/// The most reports a process keeps; the oldest go first.
+const MAX_SIGHTINGS: usize = 1024;
+
+/// The `_meta` keys of a `tools/call` that name the agent's ID of the
+/// call, as it reports the call in its ACP stream: Claude Code's.
+const CALL_ID_META: [&str; 1] = ["claudecode/toolUseId"];
+
+/// Where an agent's report of its call of a cookie tool stands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SightingState {
+    /// No bridge call stands for it yet.
+    Open,
+    /// The agent ended the call without a bridge call claiming it.
+    Ended,
+    /// A bridge call runs it in its own session.
+    Claimed,
+    /// A bridge call runs it in the bridge's session, since the subagent
+    /// that made it is not offered the tool: the subagent does not show it.
+    ClaimedElsewhere,
+}
+
+/// The agent's report of its call `call` of cookie's tool `tool` in its
+/// ACP session `acp_session`, read by the process as it routed it.
 #[derive(Clone, Debug)]
-pub(crate) struct BridgeReport {
-    pub session: SessionId,
-    /// The parent session, when `session` is the agent's own subagent,
-    /// whose calls reach cookie over its parent's bridge.
-    pub parent: Option<SessionId>,
+pub(crate) struct BridgeSighting {
+    pub acp_session: String,
     pub call: String,
     pub tool: String,
-    /// Whether `session`'s own rules offer the tool, so the call runs
-    /// there; else it runs in the parent.
-    pub offered: bool,
-    /// A bridge call ran it in the parent: the subagent does not show it
-    /// again.
-    pub claimed_elsewhere: bool,
+    pub state: SightingState,
+}
+
+/// What a `tool_call_update` says of a call of cookie's tools: its ID, the
+/// tool when it names one, and whether the call ended.
+pub(crate) struct Sighted {
+    call: String,
+    tool: Option<String>,
+    ended: bool,
+}
+
+/// The call of cookie's tools `update` reports or ends, if it is one.
+pub(crate) fn sighting_of(update: &Value) -> Option<Sighted> {
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("tool_call_update") {
+        return None;
+    }
+    let call = update
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())?
+        .to_owned();
+    let text = |key: &str| update.get(key).and_then(Value::as_str).map(str::to_owned);
+    let fields = super::wire::ToolCallFields {
+        tool_call_id: call.clone(),
+        name: text("name"),
+        title: text("title"),
+        raw_input: update.get("rawInput").cloned(),
+        meta: update.get("_meta").cloned(),
+        ..Default::default()
+    };
+    Some(Sighted {
+        call,
+        tool: super::permissions::bridge_tool_of(&fields),
+        ended: matches!(
+            update.get("status").and_then(Value::as_str),
+            Some("completed" | "failed")
+        ),
+    })
+}
+
+/// Records what the process routed of a call of cookie's tools in
+/// `acp_session`: a new report, or the end of one.
+pub(crate) fn sight(process: &AgentProcess, acp_session: &str, sighted: Sighted) {
+    let mut sightings = super::lock(&process.bridge_sightings);
+    if let Some(known) = sightings
+        .iter_mut()
+        .find(|known| known.acp_session == acp_session && known.call == sighted.call)
+    {
+        if sighted.ended && known.state == SightingState::Open {
+            known.state = SightingState::Ended;
+        }
+        return;
+    }
+    let Some(tool) = sighted.tool.filter(|_| !sighted.ended) else {
+        return;
+    };
+    if sightings.len() >= MAX_SIGHTINGS {
+        sightings.remove(0);
+    }
+    sightings.push(BridgeSighting {
+        acp_session: acp_session.to_owned(),
+        call: sighted.call,
+        tool,
+        state: SightingState::Open,
+    });
+    drop(sightings);
+    process.sighted.notify_waiters();
+}
+
+/// Forgets the report of call `call` in `acp_session`: how it stood, when
+/// there was one.
+pub(crate) fn forget_sighting(
+    process: &AgentProcess,
+    acp_session: &str,
+    call: &str,
+) -> Option<SightingState> {
+    let mut sightings = super::lock(&process.bridge_sightings);
+    let index = sightings
+        .iter()
+        .position(|known| known.acp_session == acp_session && known.call == call)?;
+    Some(sightings.remove(index).state)
+}
+
+/// The agent's ID of the call a `tools/call` with `params` stands for, when
+/// the agent names it.
+fn named_call(params: &Value) -> Option<&str> {
+    let meta = params.get("_meta")?;
+    CALL_ID_META
+        .iter()
+        .find_map(|key| meta.get(*key).and_then(Value::as_str))
+        .filter(|id| !id.is_empty())
+}
+
+/// Which session a bridge call runs in, and for whom.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Attribution {
+    pub session: SessionId,
+    /// The agent's ID of the call it stands for, when known.
+    pub call: Option<String>,
+    /// It runs in the bridge's session for a subagent not offered the tool.
+    pub for_subagent: bool,
 }
 
 /// The cookie session and agent a bridge serves.
@@ -426,40 +551,195 @@ impl Engine {
         }
     }
 
-    /// The session a call of `tool` over `bridge_session`'s bridge belongs
-    /// to: the one whose oldest unclaimed report of a call of the tool the
-    /// agent sent, the bridge's own or one of its subagents' (which share
-    /// the bridge), waited for a moment since the report and the call
-    /// travel apart; the bridge's own without one. A subagent whose rules
-    /// do not offer the tool has its call run in the parent, and does not
-    /// show it again; the second value says so.
+    /// The cookie session of the agent's ACP session `acp` when it is
+    /// `bridge`'s own or one of its subagents' (at any depth), which reach
+    /// cookie over its bridge.
+    fn bridge_member(&self, bridge: &LiveSession, acp: &str) -> Option<SessionId> {
+        if acp == bridge.acp_session_id {
+            return Some(bridge.session);
+        }
+        let child = super::lock(&self.inner.acp.subagents).get(acp).copied()?;
+        let live = self.live_session(child)?;
+        if !Arc::ptr_eq(&live.process, &bridge.process) {
+            return None;
+        }
+        let mut session = child;
+        for _ in 0..MAX_SUBAGENT_DEPTH {
+            let parent = self.acp_subagent_parent(session)?;
+            if parent == bridge.session {
+                return Some(child);
+            }
+            session = parent;
+        }
+        None
+    }
+
+    /// Whether another session than `bridge`'s may call over its bridge: a
+    /// subagent of it routed, or one the agent announced that is not.
+    fn bridge_shared(&self, bridge: &LiveSession) -> bool {
+        if bridge.process.expects_subagents() {
+            return true;
+        }
+        let others = super::lock(&self.inner.acp.processes.sessions)
+            .values()
+            .filter(|live| {
+                live.session != bridge.session && Arc::ptr_eq(&live.process, &bridge.process)
+            })
+            .map(|live| live.acp_session_id.clone())
+            .collect::<Vec<_>>();
+        others
+            .iter()
+            .any(|acp| self.bridge_member(bridge, acp).is_some())
+    }
+
+    /// The session a call of `tool` over `binding`'s bridge (`bridge`, its
+    /// live session) belongs to, by the agent's report of the call, which
+    /// names the session that made it: the bridge's own or one of its
+    /// subagents', which share the bridge. A call that names the agent's
+    /// ID for it (`named`) waits for that report; one that does not takes
+    /// the only session with a report of the tool no bridge call claimed,
+    /// and runs at once in the bridge's session when no other could have
+    /// made it. A subagent whose rules do not offer the tool has its call
+    /// run in the bridge's session, and does not show it again. A call
+    /// whose session cannot be told is refused, never run in another.
     async fn bridge_call_session(
         &self,
-        bridge_session: SessionId,
+        binding: &BridgeBinding,
+        bridge: &LiveSession,
         tool: &str,
-    ) -> (SessionId, bool) {
+        named: Option<&str>,
+    ) -> Result<Attribution, String> {
         let deadline = tokio::time::Instant::now() + REPORT_WAIT;
         loop {
-            {
-                let mut reports = super::lock(&self.inner.acp.bridge_reports);
-                if let Some(index) = reports.iter().position(|report| {
-                    report.tool == tool
-                        && !report.claimed_elsewhere
-                        && (report.session == bridge_session
-                            || report.parent == Some(bridge_session))
-                }) {
-                    let report = &mut reports[index];
-                    if report.session == bridge_session || report.offered {
-                        return (reports.remove(index).session, false);
-                    }
-                    report.claimed_elsewhere = true;
-                    return (bridge_session, true);
-                }
+            let sighted = bridge.process.sighted.notified();
+            tokio::pin!(sighted);
+            sighted.as_mut().enable();
+            if let Some(found) = self.claim_sighting(bridge, tool, named)? {
+                return Ok(self.offer_to_subagent(binding, bridge, tool, found));
+            }
+            if named.is_none() && !self.bridge_shared(bridge) {
+                return Ok(Attribution {
+                    session: bridge.session,
+                    call: None,
+                    for_subagent: false,
+                });
             }
             if tokio::time::Instant::now() >= deadline {
-                return (bridge_session, false);
+                return Err(format!(
+                    "cookie could not tell which of the agent's sessions called `{tool}`: the \
+                     agent did not report the call, so it did not run"
+                ));
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::select! {
+                () = &mut sighted => {}
+                () = tokio::time::sleep(REPORT_RECHECK) => {}
+                () = tokio::time::sleep_until(deadline) => {}
+            }
+        }
+    }
+
+    /// Claims the agent's report a call of `tool` over `bridge`'s bridge
+    /// stands for (the one `named`, else the oldest of the only session
+    /// with one open): the session that made it and the call's ID; `None`
+    /// while none fits yet.
+    fn claim_sighting(
+        &self,
+        bridge: &LiveSession,
+        tool: &str,
+        named: Option<&str>,
+    ) -> Result<Option<(SessionId, BridgeSighting)>, String> {
+        let candidates = super::lock(&bridge.process.bridge_sightings)
+            .iter()
+            .filter(|known| match named {
+                Some(call) => known.call == call,
+                None => known.tool == tool && known.state == SightingState::Open,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let members = candidates
+            .into_iter()
+            .filter_map(|known| Some((self.bridge_member(bridge, &known.acp_session)?, known)))
+            .collect::<Vec<_>>();
+        let Some((session, chosen)) = members.first().cloned() else {
+            return Ok(None);
+        };
+        if named.is_some() {
+            if chosen.tool != tool {
+                return Err(format!(
+                    "the agent's call `{}` is of `{}`, not `{tool}`, so it did not run",
+                    chosen.call, chosen.tool
+                ));
+            }
+            if chosen.state != SightingState::Open {
+                return Err(format!(
+                    "the agent's call `{}` already ran or ended, so it did not run again",
+                    chosen.call
+                ));
+            }
+        } else if members.iter().any(|(other, _)| *other != session) {
+            return Err(format!(
+                "more than one of the agent's sessions is calling `{tool}` and the call does \
+                 not say whose it is, so it did not run"
+            ));
+        }
+        let mut sightings = super::lock(&bridge.process.bridge_sightings);
+        match sightings.iter_mut().find(|known| {
+            known.acp_session == chosen.acp_session
+                && known.call == chosen.call
+                && known.state == SightingState::Open
+        }) {
+            Some(known) => {
+                known.state = SightingState::Claimed;
+                Ok(Some((session, chosen)))
+            }
+            // It changed meanwhile: looked at again.
+            None => Ok(None),
+        }
+    }
+
+    /// Where the call the agent's session `session` reported (`report`)
+    /// runs: there, unless it is a subagent whose rules do not offer
+    /// `tool`, whose call runs in the bridge's session.
+    fn offer_to_subagent(
+        &self,
+        binding: &BridgeBinding,
+        bridge: &LiveSession,
+        tool: &str,
+        (session, report): (SessionId, BridgeSighting),
+    ) -> Attribution {
+        if session == bridge.session {
+            return Attribution {
+                session,
+                call: Some(report.call),
+                for_subagent: false,
+            };
+        }
+        let subagent = BridgeBinding {
+            session,
+            agent: binding.agent.clone(),
+        };
+        let offered = self.bridge_tools(&subagent).is_ok_and(|tools| {
+            tools
+                .iter()
+                .any(|offered| offered.get("name").and_then(Value::as_str) == Some(tool))
+        });
+        if offered {
+            return Attribution {
+                session,
+                call: Some(report.call),
+                for_subagent: false,
+            };
+        }
+        if let Some(known) = super::lock(&bridge.process.bridge_sightings)
+            .iter_mut()
+            .find(|known| known.acp_session == report.acp_session && known.call == report.call)
+        {
+            known.state = SightingState::ClaimedElsewhere;
+        }
+        Attribution {
+            session: bridge.session,
+            call: None,
+            for_subagent: true,
         }
     }
 
@@ -474,9 +754,22 @@ impl Engine {
         if hidden(name, &self.hidden_tools(binding)) {
             return failed(format!("tool `{name}` is not offered to this agent"));
         }
-        let (session, for_subagent) = self.bridge_call_session(binding.session, name).await;
-        let Some(live) = self.live_session(session) else {
-            return failed("cookie's tools can be called only during the agent's turns".to_owned());
+        let outside_turns =
+            || failed("cookie's tools can be called only during the agent's turns".to_owned());
+        let Some(bridge) = self.live_session(binding.session) else {
+            return outside_turns();
+        };
+        let attribution = match self
+            .bridge_call_session(binding, &bridge, name, named_call(params))
+            .await
+        {
+            Ok(attribution) => attribution,
+            Err(refusal) => return failed(refusal),
+        };
+        #[cfg(test)]
+        self.inner.test_hooks.bridge_attributed(attribution.session);
+        let Some(live) = self.live_session(attribution.session) else {
+            return outside_turns();
         };
         let (reply, answer) = tokio::sync::oneshot::channel();
         let event = super::process::SessionEvent::BridgeCall {
@@ -485,11 +778,12 @@ impl Engine {
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({})),
-            for_subagent,
+            call: attribution.call,
+            for_subagent: attribution.for_subagent,
             reply,
         };
         if live.process.send_to(&live.acp_session_id, event).is_err() {
-            return failed("cookie's tools can be called only during the agent's turns".to_owned());
+            return outside_turns();
         }
         answer.await.unwrap_or_else(|_| {
             failed("the agent's turn ended before the call finished".to_owned())

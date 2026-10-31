@@ -64,6 +64,9 @@ pub(crate) enum SessionEvent {
     BridgeCall {
         name: String,
         arguments: Value,
+        /// The agent's ID of the call it stands for, when the bridge knows
+        /// which of the session's reported calls that is.
+        call: Option<String>,
         /// It stands for a call one of the agent's own subagents reported,
         /// which it runs here: no report of this session's will claim it.
         for_subagent: bool,
@@ -100,6 +103,12 @@ pub(crate) struct AgentProcess {
     /// are not routed yet: their requests wait for the route rather than
     /// being answered at once.
     expected: Mutex<HashSet<String>>,
+    /// The agent's reports of its calls of cookie's tools, read as they are
+    /// routed, ahead of any runner: which session a bridge call is
+    /// (`super::mcp`).
+    pub(crate) bridge_sightings: Mutex<Vec<super::mcp::BridgeSighting>>,
+    /// Signalled when a report joins `bridge_sightings`.
+    pub(crate) sighted: tokio::sync::Notify,
     /// Cancelled when the process is gone.
     pub exited: CancellationToken,
     exit_reason: Mutex<Option<String>>,
@@ -143,6 +152,12 @@ impl AgentProcess {
         lock(&self.sessions).clear();
         lock(&self.early).clear();
         lock(&self.expected).clear();
+        lock(&self.bridge_sightings).clear();
+    }
+
+    /// Whether the agent announced a subagent cookie has not routed yet.
+    pub(crate) fn expects_subagents(&self) -> bool {
+        !lock(&self.expected).is_empty()
     }
 
     /// Routes session `session`'s updates and permission requests to the
@@ -391,6 +406,8 @@ impl Processes {
             sessions: Mutex::default(),
             early: Mutex::default(),
             expected: Mutex::default(),
+            bridge_sightings: Mutex::default(),
+            sighted: tokio::sync::Notify::new(),
             exited: closed,
             exit_reason: Mutex::default(),
             url_completions: Default::default(),
@@ -622,8 +639,14 @@ async fn dispatch(
                     {
                         lock(&process.expected).insert(child.to_owned());
                     }
+                    // Sighted once routed: a bridge call it names reaches the
+                    // session's runner after it.
+                    let sighting = super::mcp::sighting_of(&update.update);
                     let _ =
                         process.deliver(&update.session_id, SessionEvent::Update(update.update));
+                    if let Some(sighting) = sighting {
+                        super::mcp::sight(&process, &update.session_id, sighting);
+                    }
                 }
             }
             Incoming::Request(request) => {

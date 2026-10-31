@@ -183,4 +183,66 @@ pub(crate) struct TestHooks {
     /// Counts the checks the waits on a subagent (a foreground delegation's,
     /// `get_subagent_result`'s) make of the child.
     pub(crate) subagent_wait_checks: AtomicU64,
+    /// Holds the runner of an ACP agent's own subagent as it reaches the
+    /// first tool call the agent reports in it, as a slow write before it
+    /// would.
+    pub(crate) acp_subagent_tool_call_hold: Mutex<Option<Arc<PagingRaceHook>>>,
+    /// The sessions bridge calls were given to, in order.
+    pub(crate) bridge_attributions: Mutex<Vec<cookie_agent_protocol::SessionId>>,
+}
+
+impl TestHooks {
+    /// Records that a bridge call goes to `session`.
+    pub(crate) fn bridge_attributed(&self, session: cookie_agent_protocol::SessionId) {
+        self.bridge_attributions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(session);
+    }
+
+    /// The sessions bridge calls went to so far.
+    pub(crate) fn bridge_attributions(&self) -> Vec<cookie_agent_protocol::SessionId> {
+        self.bridge_attributions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Holds the next ACP subagent runner to reach a tool call report:
+    /// `reached` fires there, and it goes on once `release` is notified.
+    pub(crate) fn hold_acp_subagent_tool_call(
+        &self,
+    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .acp_subagent_tool_call_hold
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(PagingRaceHook {
+            reached: Mutex::new(Some(reached)),
+            release: Arc::clone(&release),
+        }));
+        (receiver, release)
+    }
+
+    /// Waits at the hold [`Self::hold_acp_subagent_tool_call`] installed,
+    /// once.
+    pub(crate) async fn acp_subagent_tool_call_held(&self) {
+        let hook = self
+            .acp_subagent_tool_call_hold
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
+    }
 }
