@@ -465,7 +465,6 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "cargo clippy --locked --workspace --all-targets -- -D warnings",
         "cargo audit --file Cargo.lock --deny yanked",
         "cargo deny --locked check advisories licenses sources",
-        "cargo test --locked -p cookie_agent_models --test release_integrity",
         "crates/protocol/scripts/check-schema-additive.sh",
         "cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_client_state",
         "tool: trunk@0.21.14,wasm-bindgen@0.2.126",

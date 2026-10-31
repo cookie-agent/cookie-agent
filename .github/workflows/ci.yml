@@ -66,12 +66,17 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
       # Profiles in .config/nextest.toml; nextest does not run doctests.
+      # The tests' files go to tmpfs, so their many small writes and fsyncs
+      # never wait on the runner's disk. The run includes release_integrity,
+      # which enforces release metadata and provenance.
       - run: cargo nextest run --workspace --locked --no-fail-fast --profile ci
         env:
           RUSTFLAGS: -D warnings
+          TMPDIR: /dev/shm
       - run: cargo test --doc --workspace --locked
         env:
           RUSTFLAGS: -D warnings
+          TMPDIR: /dev/shm
       - run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
@@ -82,8 +87,6 @@ jobs:
       # The shipped binary's secret scan runs in release.yml, on the
       # x86_64 Linux archive the release publishes, before anything is
       # published.
-      - name: Enforce release metadata and provenance
-        run: cargo test --locked -p cookie_agent_models --test release_integrity
       - name: Install pinned supply-chain tools
         uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
@@ -215,13 +218,20 @@ jobs:
           "Git Bash ($bash): {0:N1}s" -f $time.TotalSeconds
           $time = Measure-Command { python -c "import base64, json, os, sys, threading, time" | Out-Host }
           "Python: {0:N1}s" -f $time.TotalSeconds
+      # The tests' files go to the runner's local temporary disk (D:, with
+      # the workspace), not to the profile's temporary folder on C:.
       - name: Run tests
         run: cargo nextest run --workspace --locked --no-fail-fast --profile ci
         timeout-minutes: 60
         env:
           RUST_BACKTRACE: 1
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
       - name: Run doctests
         run: cargo test --doc --workspace --locked
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
 
   # Pull requests only: on main the release's dist builds compile every
   # target, so a target that breaks fails the release before it publishes.
