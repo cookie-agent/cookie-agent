@@ -620,6 +620,7 @@ impl Engine {
         forget(&self.inner.skills_runtime.pending_child, deleted);
         forget(&self.inner.compaction.deferred, deleted);
         forget(&self.inner.compaction.context_token_estimators, deleted);
+        forget(&self.inner.deferral_views, deleted);
         forget(&self.inner.delegation.recovery_pending, deleted);
         self.inner
             .delegation

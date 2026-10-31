@@ -454,6 +454,11 @@ impl Engine {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&member);
+                    self.inner
+                        .deferral_views
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(&member);
                 } else {
                     self.clear_evicted_session_caches(member);
                 }
@@ -590,6 +595,11 @@ impl Engine {
         self.inner
             .compaction
             .deferred
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&session_id);
+        self.inner
+            .deferral_views
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session_id);

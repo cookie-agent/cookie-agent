@@ -64,10 +64,22 @@ async fn deleting_a_tree_removes_it_from_disk_and_tells_every_listener() {
     let before = workdir_entries(&fixture);
     let mut changes = engine.subscribe_session_changes();
     let (_, mut tail) = engine.subscribe(root, None).await.expect("root tail");
+    for session in [root, child] {
+        engine
+            .inner
+            .deferral_views
+            .lock()
+            .unwrap()
+            .insert(session, std::sync::Arc::default());
+    }
 
     let deleted = engine.delete_session(root, last).await.expect("delete");
 
     assert_eq!(deleted, vec![root, child]);
+    assert!(
+        engine.inner.deferral_views.lock().unwrap().is_empty(),
+        "the tree's deferral views went with it"
+    );
     assert!(!root_dir.exists(), "the tree's directory is gone");
     let after = workdir_entries(&fixture);
     assert_eq!(

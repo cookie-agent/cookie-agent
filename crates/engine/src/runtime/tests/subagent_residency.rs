@@ -1216,8 +1216,8 @@ async fn idle_root_trees_page_out_when_unwatched_and_reload_on_view() {
 }
 
 /// A tree paged out whole leaves nothing of its sessions behind: its
-/// delegation records and registry, what its sessions saw of memory, and its
-/// fork and steer bookkeeping. Using the tree again loads it again, which
+/// delegation records and registry, what its sessions saw of memory, its
+/// loader tools' deferral views, and its fork and steer bookkeeping. Using the tree again loads it again, which
 /// brings back its delegation records and registry.
 #[tokio::test]
 async fn an_evicted_tree_leaves_no_session_state_and_reloads_its_delegations() {
@@ -1314,6 +1314,12 @@ async fn an_evicted_tree_leaves_no_session_state_and_reloads_its_delegations() {
             .unwrap()
             .entry(session)
             .or_default();
+        engine
+            .inner
+            .deferral_views
+            .lock()
+            .unwrap()
+            .insert(session, Arc::default());
     }
     engine.inner.sessions.forks.lock().unwrap().insert(
         (
@@ -1336,6 +1342,14 @@ async fn an_evicted_tree_leaves_no_session_state_and_reloads_its_delegations() {
                 .inner
                 .sessions
                 .steer_order
+                .lock()
+                .unwrap()
+                .contains_key(&session)
+        );
+        assert!(
+            !engine
+                .inner
+                .deferral_views
                 .lock()
                 .unwrap()
                 .contains_key(&session)
