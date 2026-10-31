@@ -365,27 +365,6 @@ struct RunResult {
     stderr: String,
 }
 
-#[derive(Default)]
-struct SlowLineWriter {
-    bytes: Vec<u8>,
-    delayed: bool,
-}
-
-impl std::io::Write for SlowLineWriter {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        if buffer == b"\n" && !self.delayed {
-            self.delayed = true;
-            thread::sleep(Duration::from_secs(2));
-        }
-        self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 struct GatedLineWriter {
     bytes: Vec<u8>,
     start: Option<std_mpsc::SyncSender<()>>,
@@ -394,6 +373,17 @@ struct GatedLineWriter {
 }
 
 impl GatedLineWriter {
+    /// Holds its first line until `terminal` reports the run's terminal
+    /// event, without gating a response of the mock server.
+    fn held(terminal: std_mpsc::Receiver<Result<(), String>>, deadline: Instant) -> Self {
+        Self {
+            bytes: Vec::new(),
+            start: None,
+            terminal: Some(terminal),
+            deadline,
+        }
+    }
+
     fn new(
         start: std_mpsc::SyncSender<()>,
         terminal: std_mpsc::Receiver<Result<(), String>>,
@@ -411,15 +401,13 @@ impl GatedLineWriter {
 impl std::io::Write for GatedLineWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         if buffer == b"\n"
-            && let Some(start) = self.start.take()
+            && let Some(terminal) = self.terminal.take()
         {
-            start
-                .try_send(())
-                .expect("mock server dropped the output gate before it opened");
-            let terminal = self
-                .terminal
-                .take()
-                .expect("terminal monitor missing when output gate opened");
+            if let Some(start) = self.start.take() {
+                start
+                    .try_send(())
+                    .expect("mock server dropped the output gate before it opened");
+            }
             terminal
                 .recv_timeout(deadline_remaining(
                     self.deadline,
@@ -463,6 +451,18 @@ fn deadline_remaining(deadline: Instant, wait: &str) -> Duration {
     deadline
         .checked_duration_since(Instant::now())
         .unwrap_or_else(|| panic!("{wait} exceeded the coordination deadline"))
+}
+
+/// Waits until the fixture's plugin is connected.
+async fn wait_for_plugin(fixture: &Fixture) {
+    crate::eventually::eventually(HANG_WATCHDOG, "the plugin connected", || {
+        fixture
+            .engine
+            .plugin_statuses()
+            .iter()
+            .any(|plugin| plugin.state == cookie_agent_protocol::PluginState::Connected)
+    })
+    .await;
 }
 
 async fn wait_for_session_terminal(engine: &Engine, session_id: SessionId) -> Result<(), String> {
@@ -606,18 +606,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             }))
             .unwrap();
         let fixture = Fixture::with_plugins(vec![("opt_out_gate".into(), plugin)]).await;
-        tokio::time::timeout(HANG_WATCHDOG, async {
-            while !fixture
-                .engine
-                .plugin_statuses()
-                .iter()
-                .any(|plugin| plugin.state == cookie_agent_protocol::PluginState::Connected)
-            {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("plugin ready");
+        wait_for_plugin(&fixture).await;
 
         // Seed an artifact through the real Bash/runtime pipeline, then read it in
         // a later run of the same session: artifacts resolve only in their own
@@ -705,21 +694,18 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .await
             .unwrap()
             .run_id;
-        let hook = tokio::time::timeout(HANG_WATCHDOG, async {
-            loop {
-                if let Ok(text) = fs::read_to_string(&reached)
-                    && let Some(hook) = text
-                        .lines()
-                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                        .find(|hook| hook["params"]["tool"] == tool)
-                {
-                    break hook;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("finalized read reached after-result gate");
+        let hook = crate::eventually::eventually_some(
+            HANG_WATCHDOG,
+            "the finalized read at the after-result gate",
+            || {
+                fs::read_to_string(&reached)
+                    .ok()?
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .find(|hook| hook["params"]["tool"] == tool)
+            },
+        )
+        .await;
         assert_eq!(hook["params"]["is_error"], false);
         let page = hook["params"]["result_content"].as_str().unwrap();
         if artifact_read {
@@ -2022,18 +2008,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
         }
     })).unwrap();
     let fixture = Fixture::with_plugins(vec![("review_guard".into(), plugin)]).await;
-    tokio::time::timeout(HANG_WATCHDOG, async {
-        while !fixture
-            .engine
-            .plugin_statuses()
-            .iter()
-            .any(|plugin| plugin.state == cookie_agent_protocol::PluginState::Connected)
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_plugin(&fixture).await;
     let session = fixture
         .engine
         .create_session(RunSelection {
@@ -2372,11 +2347,29 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
     fixture
         .server
         .enqueue(MockResponse::Sse(final_response("terminal won race")));
+    // The client handles the turn that reaches `max_turns` only once the
+    // run has ended: its cancel comes too late to count.
+    let race_session = fixture
+        .engine
+        .create_session(RunSelection {
+            agent: "primary".parse().expect("agent"),
+            model: cookie_agent_protocol::ModelSelection {
+                model: "custom.local/test".parse().expect("model"),
+                variant: None,
+            },
+            preset: None,
+        })
+        .expect("race session");
+    let race_deadline = Instant::now() + HANG_WATCHDOG;
     let mut race_args = run_args("terminal race prompt");
     race_args.output = Some(OutputMode::Json);
     race_args.max_turns = 1;
+    race_args.resume_session = Some(race_session.session_id);
     let mut race_input = Cursor::new(Vec::<u8>::new());
-    let mut race_output = SlowLineWriter::default();
+    let mut race_output = GatedLineWriter::held(
+        terminal_signal(&fixture.engine, race_session.session_id, race_deadline),
+        race_deadline,
+    );
     let mut race_stderr = Vec::new();
     let race_code = execute_with_io(
         &fixture.engine,
