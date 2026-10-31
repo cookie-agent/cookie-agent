@@ -18,6 +18,7 @@ pub mod session;
 #[cfg(test)]
 #[path = "../../../test-support/model_fixtures.rs"]
 mod test_support;
+pub mod timing;
 pub mod usage;
 
 pub use session::TailOwner;

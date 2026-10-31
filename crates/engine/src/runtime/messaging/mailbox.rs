@@ -16,6 +16,23 @@ use crate::runtime::{
     Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS, PendingInput,
     SESSION_MAILBOX_CAPACITY, SessionCommand, ToolFailure, helpers::safe_error,
 };
+use crate::timing::{Meter, record};
+
+/// The residency lock, held; its hold is recorded when it drops.
+pub(in crate::runtime) struct HeldResidency<'a> {
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+    since: std::time::Instant,
+    purpose: &'static str,
+    session: SessionId,
+}
+
+impl Drop for HeldResidency<'_> {
+    fn drop(&mut self) {
+        record(Meter::ResidencyHold, self.since.elapsed(), || {
+            format!("{} session {}", self.purpose, self.session)
+        });
+    }
+}
 use crate::{actor::SessionActor, blocking::off_worker, events, session::SessionError};
 
 use super::producers;
@@ -802,12 +819,33 @@ impl Engine {
     /// Queues `command` on `session`'s actor, adopting the session and
     /// starting its actor first. Holds the residency lock only while queueing,
     /// never while the command runs.
+    /// Takes the residency lock for `purpose` on `session`, timing the wait
+    /// and, until the returned guard drops, the hold.
+    pub(in crate::runtime) async fn lock_residency(
+        &self,
+        purpose: &'static str,
+        session: SessionId,
+    ) -> HeldResidency<'_> {
+        let waited = std::time::Instant::now();
+        let guard = self.inner.sessions.residency_mutation.lock().await;
+        let since = std::time::Instant::now();
+        record(Meter::ResidencyWait, since - waited, || {
+            format!("{purpose} session {session}")
+        });
+        HeldResidency {
+            _guard: guard,
+            since,
+            purpose,
+            session,
+        }
+    }
+
     async fn send_command(
         &self,
         session: SessionId,
         command: SessionCommand,
     ) -> Result<(), EngineError> {
-        let _residency = self.inner.sessions.residency_mutation.lock().await;
+        let _residency = self.lock_residency("a command to", session).await;
         self.ensure_session_owned(session)?;
         self.spawn_actor(session)?;
         let actor = self

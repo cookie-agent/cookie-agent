@@ -44,7 +44,7 @@ pub use cookie_agent_engine_permissions as permissions;
 use cookie_agent_engine_memory as memory;
 #[cfg(test)]
 pub(crate) use cookie_agent_engine_store::{bindings, ownership};
-pub(crate) use cookie_agent_engine_store::{blocking, goal_projection, usage};
+pub(crate) use cookie_agent_engine_store::{blocking, goal_projection, timing, usage};
 
 pub use agents_tool::agents_tool_spec;
 pub use base_tools::{base_layer_tool_specs, builtin_tool_groups};

@@ -838,9 +838,12 @@ impl EventLogWriter {
         }
         #[cfg(any(test, feature = "test-support"))]
         EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
-        self.file
-            .sync_data()
-            .map_err(|source| self.io_error(source))?;
+        crate::timing::time(
+            crate::timing::Meter::LogSync,
+            || self.path.display().to_string(),
+            || self.file.sync_data(),
+        )
+        .map_err(|source| self.io_error(source))?;
         self.unsynced = false;
         if self.directory_sync_pending
             && let Some(parent) = self.path.parent()

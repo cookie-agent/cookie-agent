@@ -8,6 +8,11 @@ use crate::runtime::{Engine, EngineError, SessionCommand, delegation::Delegation
 
 const JANITOR_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Every this many janitor passes (ten minutes), the lock and sync timing
+/// of the passes between is logged in one line, when there was any
+/// (`docs/site/specs/store-locks-and-durability.md`, section 5).
+const TIMING_SUMMARY_PASSES: u32 = 10;
+
 impl Engine {
     pub(in crate::runtime) fn start_subagent_janitor(&self) {
         let Some(runtime) = self.inner.runtime.clone() else {
@@ -15,8 +20,15 @@ impl Engine {
         };
         let inner = std::sync::Arc::downgrade(&self.inner);
         let task = runtime.spawn(async move {
+            let mut passes = 0_u32;
             loop {
                 tokio::time::sleep(JANITOR_INTERVAL).await;
+                passes += 1;
+                if passes.is_multiple_of(TIMING_SUMMARY_PASSES)
+                    && let Some(summary) = crate::timing::take_summary()
+                {
+                    eprintln!("cookie-agent: lock and sync timing, last 10 min: {summary}");
+                }
                 let Some(inner) = inner.upgrade() else {
                     break;
                 };
@@ -134,7 +146,9 @@ impl Engine {
             {
                 continue;
             }
-            let _residency = self.inner.sessions.residency_mutation.lock().await;
+            let _residency = self
+                .lock_residency("evicting idle subagent", session_id)
+                .await;
             let Some(session) = self.inner.store.get_resident(session_id) else {
                 continue;
             };
@@ -299,7 +313,7 @@ impl Engine {
         let mut evicted = Vec::new();
         let mut closing = Vec::new();
         for root in candidates {
-            let _residency = self.inner.sessions.residency_mutation.lock().await;
+            let _residency = self.lock_residency("evicting the idle tree of", root).await;
             let still_idle = |engine: &Self| {
                 let resident = engine.inner.store.all();
                 resident.iter().any(|session| {

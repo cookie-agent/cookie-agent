@@ -3226,7 +3226,9 @@ impl Engine {
         if live {
             return;
         }
-        let _residency = self.inner.sessions.residency_mutation.lock().await;
+        let _residency = self
+            .lock_residency("recovering delegated", child_session_id)
+            .await;
         if let Err(error) = self.ensure_session_owned(child_session_id) {
             eprintln!("session {child_session_id} delegate recovery deferred: {error}");
         }

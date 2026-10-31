@@ -219,7 +219,15 @@ loginctl enable-linger "$USER"
 
 Read its output with `journalctl --user -u cookie-daemon`; follow it with
 `-f`. The journal keeps the daemon's ready line, token included, readable by
-whoever can read your user journal. `systemctl --user restart cookie-daemon`
+whoever can read your user journal.
+
+Among that output, the daemon reports how long sessions wait on its locks
+and its disk syncs. A wait or a sync of 250 ms or more is logged as it
+happens, naming the session or log file (`cookie-agent: slow log sync: 412
+ms (…/events.jsonl)`). Every ten minutes with any activity, one line sums
+up each lock and sync: how many, the time in all, and the longest
+(`cookie-agent: lock and sync timing, last 10 min: …`). Frequent slow lines
+point to a busy disk or a lock that holds sessions up. `systemctl --user restart cookie-daemon`
 restarts it, for example to upgrade it after installing a new version.
 [Remove it](#remove-the-linux-service) when you no longer want it.
 

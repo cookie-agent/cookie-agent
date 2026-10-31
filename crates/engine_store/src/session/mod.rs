@@ -1274,10 +1274,15 @@ impl SessionStore {
             ),
             None => {}
         }
-        let guard = self
-            .mutation
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = crate::timing::time(
+            crate::timing::Meter::MutationExclusiveWait,
+            || "a structural change of the session store".into(),
+            || {
+                self.mutation
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            },
+        );
         MUTATION_DEPTH.with(|depths| depths.borrow_mut().insert(store, HeldMutation::Exclusive));
         MutationGuard {
             store: self,
@@ -1305,10 +1310,15 @@ impl SessionStore {
             Some(true) => return self.noop_guard(),
             Some(false) => None,
             None => {
-                let shared = self
-                    .mutation
-                    .read()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let shared = crate::timing::time(
+                    crate::timing::Meter::MutationSharedWait,
+                    || format!("a write of session {id}"),
+                    || {
+                        self.mutation
+                            .read()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    },
+                );
                 MUTATION_DEPTH.with(|depths| {
                     depths
                         .borrow_mut()
@@ -1318,7 +1328,11 @@ impl SessionStore {
             }
         };
         let registered = shared.is_some();
-        self.acquire_session_slot(id);
+        crate::timing::time(
+            crate::timing::Meter::SessionSlotWait,
+            || format!("a write of session {id}"),
+            || self.acquire_session_slot(id),
+        );
         MUTATION_DEPTH.with(|depths| {
             if let Some(HeldMutation::Shared(sessions)) = depths.borrow_mut().get_mut(&store) {
                 sessions.push(id);
