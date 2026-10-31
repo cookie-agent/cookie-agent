@@ -958,3 +958,43 @@ async fn delegated_children_inherit_the_root_attachments() {
     assert_eq!(recorded, 3);
     fixture.engine.shutdown().await;
 }
+
+/// An admission abandoned after it published its child's run but before
+/// the run's `RunStarted` is appended leaves the cancellation to the
+/// admission's start, which sweeps again once the run is live: the sweep
+/// neither fails nor drops the admission.
+#[tokio::test]
+async fn a_sweep_before_the_published_run_starts_leaves_the_admission_to_its_start() {
+    use crate::runtime::admission::AdmissionGuard;
+    let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let parent = engine.create_session(selection.clone()).unwrap().session_id;
+    let child = engine.create_session(selection).unwrap().session_id;
+    let parent_run = cookie_agent_protocol::RunId::new_v7();
+    let call = cookie_agent_protocol::ToolCallId::new_v7();
+    let invocation = crate::runtime::helpers::invocation_id(parent, parent_run, call);
+    let mut guard = AdmissionGuard::begin(engine.inner.clone(), invocation, parent_run);
+    guard.set_parent(parent, call);
+    let generation = guard.generation;
+    let unstarted = cookie_agent_protocol::RunId::new_v7();
+    engine
+        .publish_admission_run(invocation, generation, child, unstarted)
+        .unwrap();
+    engine
+        .cancel_inflight_delegation_for_test(invocation)
+        .unwrap();
+
+    engine
+        .sweep_abandoned_admission(invocation, generation)
+        .await
+        .expect("the sweep leaves it");
+    assert!(
+        engine
+            .observe_abandoned_admission(invocation, generation)
+            .unwrap()
+            .is_some(),
+        "the admission waits for its start's sweep"
+    );
+    guard.handoff();
+}

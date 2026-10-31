@@ -826,15 +826,22 @@ impl Engine {
         {
             match self.cancel_run_durably(run_id, Some("delegate admission was abandoned".into())) {
                 Ok(_) => {}
-                Err(EngineError::MissingRun(_))
-                    if target.child_session_id.is_some_and(|child| {
-                        self.inner
-                            .store
-                            .get(child)
-                            .ok()
-                            .and_then(|projection| projection.runs.get(&run_id).cloned())
-                            .is_some_and(|run| run.status != SessionStatus::Running)
-                    }) => {}
+                Err(EngineError::MissingRun(missing)) => {
+                    let recorded = target.child_session_id.and_then(|child| {
+                        self.inner.store.get(child).ok().and_then(|projection| {
+                            projection.runs.get(&run_id).map(|run| run.status)
+                        })
+                    });
+                    match recorded {
+                        // The run ended: nothing is left to cancel.
+                        Some(status) if status != SessionStatus::Running => {}
+                        // Published before its `RunStarted` is appended: the
+                        // admission's start sees the cancellation once it
+                        // returns and sweeps again, the run then live.
+                        None => return Ok(None),
+                        Some(_) => return Err(EngineError::MissingRun(missing)),
+                    }
+                }
                 Err(error) => return Err(error),
             }
         }
