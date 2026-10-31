@@ -40,4 +40,7 @@ include = ["LICENSE", "THIRD-PARTY-NOTICES.txt"]
 "swatinem/rust-cache" = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6" # v2.9.2
 
 [dist.github-custom-runners]
+# cargo-dist 0.32 defaults Apple Silicon to macos-14, which GitHub retires on
+# 2026-11-02 (brownouts before that fail the job).
+"aarch64-apple-darwin" = "macos-15"
 "aarch64-pc-windows-msvc" = "windows-11-arm"
