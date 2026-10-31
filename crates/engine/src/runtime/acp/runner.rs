@@ -94,6 +94,14 @@ impl LiveSession {
     }
 }
 
+/// A live ACP session taken from its cookie session to close, holding the
+/// session's gate until it closed.
+pub(crate) struct ClosingAcpSession {
+    live: LiveSession,
+    gate: Arc<tokio::sync::Mutex<()>>,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
 /// How a prompt round ended.
 enum RoundEnd {
     Completed(Option<String>),
@@ -3384,6 +3392,7 @@ impl Engine {
         process: &Arc<AgentProcess>,
         policy: Option<&crate::policy::FrozenRunPolicy>,
     ) -> Result<LiveSession, EngineError> {
+        self.await_acp_session_close(session).await;
         let events = self.inner.store.get(session)?.log.event_snapshot();
         let plan = super::lifecycle::plan(&events, &agent.id);
         // The live session serves while the log still makes it the
@@ -4113,16 +4122,76 @@ impl Engine {
     /// Ends the ACP session of `session`, as the session is unloaded:
     /// `session/close` when the agent offers it, and its bridge closes.
     pub(crate) async fn close_acp_session(&self, session: SessionId) {
-        let live = self
-            .inner
-            .acp
-            .processes
+        if let Some(closing) = self.take_acp_session_to_close(session) {
+            self.finish_acp_session_close(closing).await;
+        }
+    }
+
+    /// Takes the live ACP session of `session` to close it later, with
+    /// [`Self::finish_acp_session_close`]: the session it serves no longer
+    /// finds it, and opens no other until it closed, so a close that comes
+    /// late never ends the one the session talks in by then.
+    pub(crate) fn take_acp_session_to_close(
+        &self,
+        session: SessionId,
+    ) -> Option<ClosingAcpSession> {
+        let processes = &self.inner.acp.processes;
+        let live = processes
             .sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&session);
-        if let Some(live) = live {
-            self.end_live_session(live, false).await;
+            .remove(&session)?;
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let held = Arc::clone(&gate)
+            .try_lock_owned()
+            .expect("a new gate is free");
+        processes
+            .closing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session, Arc::clone(&gate));
+        Some(ClosingAcpSession {
+            live,
+            gate,
+            _held: held,
+        })
+    }
+
+    /// Closes what [`Self::take_acp_session_to_close`] took, and lets its
+    /// session open another.
+    pub(crate) async fn finish_acp_session_close(&self, closing: ClosingAcpSession) {
+        let session = closing.live.session;
+        self.end_live_session(closing.live, false).await;
+        let mut gates = self
+            .inner
+            .acp
+            .processes
+            .closing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if gates
+            .get(&session)
+            .is_some_and(|gate| Arc::ptr_eq(gate, &closing.gate))
+        {
+            gates.remove(&session);
+        }
+    }
+
+    /// Waits until an ACP session of `session` taken to close has closed.
+    async fn await_acp_session_close(&self, session: SessionId) {
+        let gate = self
+            .inner
+            .acp
+            .processes
+            .closing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .cloned();
+        if let Some(gate) = gate {
+            #[cfg(test)]
+            self.inner.test_hooks.acp_close_waits.notify_one();
+            drop(gate.lock().await);
         }
     }
 

@@ -162,6 +162,11 @@ pub(crate) struct TestHooks {
     /// Holds a cron fire between its delivery and the write that records it
     /// delivered.
     pub(crate) cron_settle_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    /// Holds an eviction between paging its sessions out and closing their
+    /// ACP sessions.
+    pub(crate) acp_eviction_close_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    /// Signalled when opening an ACP session waits for one to close.
+    pub(crate) acp_close_waits: tokio::sync::Notify,
     pub(crate) resume_rollback_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
     pub(crate) admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
     pub(crate) abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,

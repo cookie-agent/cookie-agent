@@ -223,6 +223,7 @@ impl Engine {
         candidates.sort_by_key(|(ended_at, _, session_id)| (*ended_at, *session_id));
 
         let mut evicted = Vec::new();
+        let mut closing = Vec::new();
         for (_, root, session_id) in candidates {
             if self
                 .inner
@@ -286,12 +287,11 @@ impl Engine {
                     .notify_evicted_subscribers(session_id, last_event_seq);
                 self.clear_evicted_session_caches(session_id);
                 evicted.push(session_id);
+                closing.extend(self.take_acp_session_to_close(session_id));
             }
         }
         drop(delegation_admission);
-        for session in &evicted {
-            self.close_acp_session(*session).await;
-        }
+        self.finish_evicted_acp_sessions(closing).await;
         Ok(evicted)
     }
 
@@ -397,6 +397,7 @@ impl Engine {
             .map(|session| session.meta.session_id)
             .collect::<Vec<_>>();
         let mut evicted = Vec::new();
+        let mut closing = Vec::new();
         for root in candidates {
             let _residency = self.inner.sessions.residency_mutation.lock().await;
             let still_idle = |engine: &Self| {
@@ -463,6 +464,7 @@ impl Engine {
                     self.clear_evicted_session_caches(member);
                 }
                 evicted.push(member);
+                closing.extend(self.take_acp_session_to_close(member));
             }
             if members
                 .iter()
@@ -472,12 +474,63 @@ impl Engine {
             }
         }
         drop(delegation_admission);
-        // An evicted session's ACP session ends as a deleted one's does; its
-        // next turn resumes or loads it, or starts a new one.
-        for session in &evicted {
-            self.close_acp_session(*session).await;
-        }
+        self.finish_evicted_acp_sessions(closing).await;
         Ok(evicted)
+    }
+
+    /// Closes the ACP sessions of the sessions an eviction paged out, taken
+    /// as it paged them out. An evicted session's ACP session ends as a
+    /// deleted one's does; its next turn resumes or loads it, or starts a
+    /// new one, once this one closed.
+    async fn finish_evicted_acp_sessions(
+        &self,
+        closing: Vec<super::acp::runner::ClosingAcpSession>,
+    ) {
+        #[cfg(test)]
+        let hook = self
+            .inner
+            .test_hooks
+            .acp_eviction_close_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
+        for closing in closing {
+            self.finish_acp_session_close(closing).await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_acp_eviction_close_hook(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let (reached, receiver) = tokio::sync::oneshot::channel();
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .test_hooks
+            .acp_eviction_close_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(std::sync::Arc::new(PagingRaceHook {
+                reached: std::sync::Mutex::new(Some(reached)),
+                release: std::sync::Arc::clone(&release),
+            }));
+        (receiver, release)
     }
 
     /// Drops what the engine keeps for the sessions of a tree paged out

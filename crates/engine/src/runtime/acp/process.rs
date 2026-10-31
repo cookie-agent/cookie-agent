@@ -271,6 +271,9 @@ pub(crate) struct Processes {
     /// The ACP session each cookie session talks in, while its process
     /// lives.
     pub(crate) sessions: Mutex<HashMap<SessionId, super::runner::LiveSession>>,
+    /// The cookie sessions whose ACP session is closing, each with a gate
+    /// held until it closed: the session opens no other before.
+    pub(crate) closing: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
     /// Which cookie session each MCP bridge serves, and its open
     /// connections, by runtime and bridge.
     pub(crate) bridges: Mutex<HashMap<(String, String), super::mcp::Bridge>>,

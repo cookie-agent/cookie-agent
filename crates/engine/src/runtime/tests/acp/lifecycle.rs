@@ -573,3 +573,59 @@ async fn paging_a_session_out_closes_its_agents_session_without_deleting_it() {
     let outcome = turn(engine, session, "recall", "recall").await;
     assert_eq!(final_text(&outcome), "remembers: say one");
 }
+
+/// A session paged back in while the eviction that paged it out still
+/// closes its agent's session opens its own once that closed: the late
+/// close never ends the session it talks in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_paged_back_in_while_its_agents_session_closes_keeps_the_new_one() {
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_DELETE", "1"), ("ACP_FIXTURE_RESUME", "1")],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "one", "say one").await;
+    let (reached, release) = engine.install_acp_eviction_close_hook();
+    let evicting = engine.clone();
+    let evict = tokio::spawn(async move {
+        evicting
+            .evict_idle_roots_with(std::time::Duration::ZERO)
+            .await
+    });
+    with_watchdog("the eviction before its closes", reached)
+        .await
+        .expect("evicted");
+    let turning = engine.clone();
+    let mut recall = tokio::spawn(async move { turn(&turning, session, "recall", "recall").await });
+    // Either the turn waits for the close, or it ran without waiting and
+    // the close comes after it.
+    let finished = tokio::select! {
+        outcome = &mut recall => Some(outcome),
+        () = engine.inner.test_hooks.acp_close_waits.notified() => None,
+    };
+    release.notify_one();
+    let evicted = with_watchdog("the eviction", evict)
+        .await
+        .expect("eviction task")
+        .expect("idle janitor pass");
+    assert_eq!(evicted, vec![session]);
+    let outcome = match finished {
+        Some(outcome) => outcome,
+        None => with_watchdog("the recall", recall).await,
+    }
+    .expect("recall task");
+    assert_eq!(final_text(&outcome), "remembers: say one");
+    assert!(engine.live_session(session).is_some());
+    let methods = acp.received_methods();
+    let closed = methods
+        .iter()
+        .rposition(|method| method == "session/close")
+        .expect("closed");
+    let reopened = methods
+        .iter()
+        .rposition(|method| method == "session/resume" || method == "session/load")
+        .expect("reopened");
+    assert!(closed < reopened, "{methods:?}");
+}
