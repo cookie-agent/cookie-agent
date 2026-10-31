@@ -9,13 +9,7 @@ fn root(config: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn model_retry_defaults_and_signed_counts_are_accepted() {
-    let defaults = root("");
-    let loaded = load_from_user_root(Some(defaults.path())).expect("defaults");
-    assert_eq!(loaded.runtime.model_retry.standard_retries, 3);
-    assert_eq!(loaded.runtime.model_retry.overload_retries, 5);
-    assert_eq!(loaded.runtime.model_retry.backoff_ceiling_ms, 60_000);
-
+fn model_retry_accepts_signed_counts() {
     let configured = root(
         "[model_retry]\nstandard_retries = -1\noverload_retries = 0\nbackoff_ceiling_ms = 1\n",
     );

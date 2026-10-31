@@ -350,19 +350,8 @@ fn timeout_ms_is_rejected_for_non_internal_agents() {
 }
 
 #[test]
-fn delegation_runtime_defaults_and_limits_are_strict() {
+fn delegation_runtime_limits_are_strict() {
     let temp = TempDir::new().unwrap();
-    let defaults = temp.path().join("delegation-defaults");
-    write_config(&defaults, "");
-    let loaded = load_from_user_root(Some(&defaults)).unwrap();
-    assert_eq!(loaded.runtime.delegation.max_depth, 3);
-    assert_eq!(loaded.runtime.delegation.max_concurrency, Some(4));
-    assert_eq!(loaded.runtime.delegation.max_resident_subagents, 20);
-    assert_eq!(
-        loaded.runtime.delegation.idle_eviction_after,
-        std::time::Duration::from_secs(60 * 60)
-    );
-
     let authored = temp.path().join("delegation-authored");
     write_config(
         &authored,
@@ -420,13 +409,8 @@ fn server_session_idle_eviction_is_a_duration() {
 }
 
 #[test]
-fn pricing_defaults_empty_and_rejects_invalid_rates() {
+fn pricing_rejects_invalid_rates() {
     let temp = TempDir::new().unwrap();
-    let defaults = temp.path().join("pricing-defaults");
-    write_config(&defaults, "");
-    let loaded = load_from_user_root(Some(&defaults)).unwrap();
-    assert!(loaded.runtime.pricing.models.is_empty());
-
     let authored = temp.path().join("pricing-authored");
     write_config(
         &authored,

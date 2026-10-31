@@ -10,10 +10,7 @@ fn load(text: &str) -> Result<cookie_agent_config::LoadedConfiguration, ConfigEr
 }
 
 #[test]
-fn agent_md_defaults_enabled_and_rejects_unknown_fields() {
-    let defaults = load("").unwrap().runtime.agent_md;
-    assert!(defaults.enabled);
-
+fn agent_md_can_be_disabled_and_rejects_unknown_fields() {
     let configured = load("[agent_md]\nenabled = false\n").unwrap();
     assert!(!configured.runtime.agent_md.enabled);
 

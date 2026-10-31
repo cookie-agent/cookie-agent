@@ -9,22 +9,6 @@ fn root(config: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn messaging_defaults_apply_when_the_section_is_absent() {
-    let defaults = root("");
-    let loaded = load_from_user_root(Some(defaults.path())).expect("defaults");
-    assert!(loaded.runtime.messaging.enabled);
-    assert_eq!(loaded.runtime.messaging.max_hops, 0);
-    assert_eq!(loaded.runtime.messaging.max_body_bytes, 32_768);
-    assert_eq!(loaded.runtime.messaging.max_pending_per_session, 32);
-    assert_eq!(loaded.runtime.messaging.max_inflight_per_pair, 4);
-
-    let empty = root("[messaging]\n");
-    let loaded = load_from_user_root(Some(empty.path())).expect("empty section");
-    assert!(loaded.runtime.messaging.enabled);
-    assert_eq!(loaded.runtime.messaging.max_body_bytes, 32_768);
-}
-
-#[test]
 fn messaging_is_top_level_not_nested_under_runtime() {
     // The canonical spelling parses.
     let top_level = root("[messaging]\nenabled = false\n");

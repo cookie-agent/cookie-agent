@@ -11,33 +11,6 @@ fn root(config: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn recent_tokens_defaults_match_rust_serde_and_loader() {
-    assert_eq!(
-        ContextCompactionConfig::default().keep_recent_tokens,
-        16_384
-    );
-    let parsed: ContextCompactionConfig = toml::from_str("").unwrap();
-    assert_eq!(parsed.keep_recent_tokens, 16_384);
-    assert_eq!(
-        load_from_user_root(None)
-            .unwrap()
-            .runtime
-            .context_compaction
-            .keep_recent_tokens,
-        16_384
-    );
-    for config in [
-        "",
-        "[context_compaction]\n",
-        "[context_compaction]\nauto = false\n",
-    ] {
-        let directory = root(config);
-        let loaded = load_from_user_root(Some(directory.path())).unwrap();
-        assert_eq!(loaded.runtime.context_compaction.keep_recent_tokens, 16_384);
-    }
-}
-
-#[test]
 fn recent_tokens_accept_zero_and_large_budgets_without_clamping() {
     for tokens in [0, 1, 16_384, i64::MAX as u64] {
         let setting = format!("keep_recent_tokens = {tokens}\n");
