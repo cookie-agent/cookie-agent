@@ -998,3 +998,108 @@ async fn a_sweep_before_the_published_run_starts_leaves_the_admission_to_its_sta
     );
     guard.handoff();
 }
+
+/// A foreground call nothing waits on any more, as after a restart, whose
+/// result carries the child's once it ends: the child's turn reports
+/// through that result alone, not also as a `<subagent_report>`.
+#[tokio::test]
+async fn a_pending_foreground_call_without_its_waiter_reports_the_child_once() {
+    let (endpoint, responses, _server) = scripted_channel_server(3).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "start the call",
+            scripted_tool_body(
+                "delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "description": "Waiting child",
+                    "prompt": "child waits on its model"
+                }),
+            ),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent done"),
+        ))
+        .unwrap();
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: engine.clone(),
+        }),
+    );
+    let parent = engine.create_session(selection.clone()).unwrap().session_id;
+    let run = engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent,
+                client_run_id: ClientRunId::new("waiterless").unwrap(),
+                selection,
+                content: "start the call".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap()
+        .run_id;
+    let child = await_child(engine, parent, "the running child", |child| {
+        child.status == SessionStatus::Running
+    })
+    .await
+    .session_id;
+    // What a restart leaves: the call is pending and nothing waits on it.
+    engine
+        .inner
+        .delegation
+        .by_session
+        .lock()
+        .unwrap()
+        .get_mut(&child)
+        .expect("the child's record")
+        .foreground_waiting = false;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "child waits on its model",
+            scripted_text_body("child done"),
+        ))
+        .unwrap();
+    await_projection(engine, parent, "the parent's turn", |projection| {
+        projection
+            .runs
+            .get(&run)
+            .is_some_and(|run| run.status == SessionStatus::Completed)
+    })
+    .await;
+    with_watchdog("the reports' delivery", async {
+        while engine.wakes_once(parent, &std::collections::HashMap::new()) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let reports = engine
+        .inner
+        .store
+        .get(parent)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ProducerMessageAccepted {
+                    producer_owner: cookie_agent_protocol::ProducerOwner::Subagent { .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(reports, 0);
+    fixture.engine.shutdown().await;
+}

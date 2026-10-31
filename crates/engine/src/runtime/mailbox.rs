@@ -544,6 +544,11 @@ impl Engine {
                 self.observe_cron_run(session, run);
             }
         }
+        if let (Event::ToolCallTerminated { termination }, Some(run)) =
+            (&envelope.payload, envelope.run_id)
+        {
+            self.observe_delegate_call_ended(session, run, termination.tool_call_id);
+        }
         if !recovery {
             self.observe_push_event(session, &envelope.payload);
         }

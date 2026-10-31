@@ -188,21 +188,101 @@ impl Engine {
             return Ok(false);
         }
         // A foreground call that got the child's result reported it already.
+        let call = entry.reservation.parent_tool_call_id;
         let parent = self.inner.store.get(parent)?;
-        let reported = parent.log.event_snapshot().iter().rev().any(|event| {
-            matches!(
-                &event.payload,
-                Event::ToolCallTerminated { termination }
-                    if termination.tool_call_id == entry.reservation.parent_tool_call_id
-                        && termination.result.as_ref().is_some_and(|result| {
+        let ended =
+            parent
+                .log
+                .event_snapshot()
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    Event::ToolCallTerminated { termination }
+                        if termination.tool_call_id == call =>
+                    {
+                        Some(termination.result.as_ref().is_some_and(|result| {
                             result.background.is_none()
                                 && crate::delegation_api::delegate_result_matches_child(
                                     result, child,
                                 )
-                        })
-            )
+                        }))
+                    }
+                    _ => None,
+                });
+        match ended {
+            Some(reported) => Ok(!reported),
+            // Nothing waits on the call, which has not ended either, as after
+            // a restart: whether its result carries the child's comes out
+            // when it ends, which delivers the report then if it is owed
+            // ([`Self::observe_delegate_call_ended`]).
+            None if parent
+                .runs
+                .get(&entry.reservation.parent_run_id)
+                .is_some_and(|parent_run| parent_run.pending_calls.contains_key(&call)) =>
+            {
+                Ok(false)
+            }
+            None => Ok(true),
+        }
+    }
+
+    /// Called once `call` of `run` of `parent` ended: a foreground
+    /// delegation's report undecided while the call was pending is decided
+    /// now, and delivered if the call's result does not carry the child's.
+    pub(super) fn observe_delegate_call_ended(
+        &self,
+        parent: SessionId,
+        run: RunId,
+        call: cookie_agent_protocol::ToolCallId,
+    ) {
+        let Some(entry) = self
+            .inner
+            .delegation_events
+            .get(super::helpers::invocation_id(parent, run, call))
+        else {
+            return;
+        };
+        if entry.request.background {
+            return;
+        }
+        let (child, Some(child_run)) = (entry.reservation.child_session_id, entry.child_run_id)
+        else {
+            return;
+        };
+        // A run still going reports when it ends.
+        let ended = self.inner.store.get(child).is_ok_and(|projection| {
+            projection.runs.get(&child_run).is_some_and(|run| {
+                matches!(
+                    run.status,
+                    SessionStatus::Completed
+                        | SessionStatus::Failed
+                        | SessionStatus::Cancelled
+                        | SessionStatus::Interrupted
+                )
+            })
         });
-        Ok(!reported)
+        if !ended {
+            return;
+        }
+        let Some(runtime) = self
+            .inner
+            .runtime
+            .clone()
+            .or_else(|| tokio::runtime::Handle::try_current().ok())
+        else {
+            return;
+        };
+        self.report_in_flight(child, child_run, parent, true);
+        let engine = self.clone();
+        if !self.spawn_admission_task(&runtime, async move {
+            engine
+                .deliver_subagent_report_until_done(child, child_run)
+                .await;
+            engine.report_in_flight(child, child_run, parent, false);
+            engine.refresh_live_waiting(parent);
+        }) {
+            self.report_in_flight(child, child_run, parent, false);
+        }
     }
 }
 
