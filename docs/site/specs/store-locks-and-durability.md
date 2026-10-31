@@ -1,8 +1,7 @@
 # Session store locks and durability
 
-Status: **draft** (2026-10-31), with the user's decisions of 2026-10-31 in
-[section 8](#8-decisions) and the ones still open in
-[section 9](#9-open-decisions). Follows
+Status: **approved** (2026-10-31), with the user's decisions of 2026-10-31
+in [section 8](#8-decisions). Follows
 [responsive session loading](session-storage-v3.md), whose phase 1 removed
 the tree load from a replay's history pages but left the locks below in
 every session command's path.
@@ -203,12 +202,12 @@ in [session storage v3](session-storage-v3.md) (its section 4.2).
 
 | File | Today | Proposed |
 |---|---|---|
-| `crons.json` | synced with its directory on every write | synced for user changes (create, edit, delete); a fire's run state written atomically without sync (decision 9.2) |
-| `unread.json` | synced on every change | written atomically without sync: a crash may mark a session read again (decision 9.2) |
+| `crons.json` | synced with its directory on every write | unchanged: a fire's run state is what keeps a job from firing twice |
+| `unread.json` | synced on every change | written atomically without sync: a crash may mark a session read again |
 | memory's read bookkeeping (`..reads.json`) | synced on every turn that reads memory | atomic without sync |
 | model catalog metadata | synced | atomic without sync: a cache |
 | grant journal | synced per grant | unchanged: a commit point |
-| files the `write` and `edit` tools write | file and directory synced | decision 9.1 |
+| files the `write` and `edit` tools write | file and directory synced | unchanged: about 350 syncs in five weeks of the user's sessions, and none for Claude Code's own edits |
 
 ## 5. Measurement first
 
@@ -259,18 +258,11 @@ User decisions of 2026-10-31:
 3. ACP tool presentations and context use are live-only
    (`acp_live_update`); the final presentation is stored in
    `tool_call_terminated` and the context once per run.
-
-## 9. Open decisions
-
-1. **Files the agent writes.** Keep syncing each file the `write` and
-   `edit` tools write and its directory (today), or write them as editors
-   do: staged and renamed into place without a sync. A replacing rename
-   never leaves an empty file after a crash on ext4 and most filesystems,
-   but the newest content can be lost.
-2. **Cron and unread state without syncs (4.5).** A power loss could then
-   fire a cron job again whose last run it forgot, or mark a session read
-   again.
-3. **The measurement step.** Ship the lock and sync timing (section 5) on
-   its own first and run it on this machine for a few days before the
-   rest, or build everything and measure before and after on a scratch
-   daemon as for phase 1.
+4. `crons.json` keeps syncing every write, a fire's run state included, so
+   a job never fires twice after a power loss; `unread.json` stops syncing.
+5. The files the `write` and `edit` tools write keep their syncs: they are
+   rare (section 4.5).
+6. Measurement first: the lock and sync timing (section 5) ships alone and
+   runs on the user's machine for a few days before the rest is built.
+7. This spec comes before phase 2 of
+   [session storage v3](session-storage-v3.md).
