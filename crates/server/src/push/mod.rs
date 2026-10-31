@@ -82,6 +82,10 @@ pub(crate) struct PushService {
     engine: Engine,
     store: PushStore,
     subscriptions: Mutex<Subscriptions>,
+    /// Serializes the changes to the subscriptions and their writes, so the
+    /// file and [`Self::subscriptions`] change in the same order while
+    /// readers of the list never wait for a write.
+    subscription_writes: Mutex<()>,
     key: Mutex<Option<Arc<VapidKey>>>,
     tokens: Mutex<HashMap<(String, String), (String, i64)>>,
     /// The session each connection shows the user, by connection id.
@@ -106,6 +110,18 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Runs `work`, which reads or writes files, off the async worker when on
+/// a multi-threaded runtime.
+fn off_worker<T>(work: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|runtime| runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(work)
+    } else {
+        work()
+    }
+}
+
 impl PushService {
     pub(crate) fn new(engine: Engine) -> Arc<Self> {
         Self::with_options(engine, false)
@@ -123,6 +139,7 @@ impl PushService {
             engine,
             store,
             subscriptions: Mutex::new(Subscriptions { list }),
+            subscription_writes: Mutex::new(()),
             key: Mutex::new(None),
             tokens: Mutex::new(HashMap::new()),
             presence: Mutex::new(HashMap::new()),
@@ -340,7 +357,7 @@ impl PushService {
     /// Sends `message` to every subscription but `except`, together, and
     /// waits at most `wait` for them.
     async fn send_and_wait(&self, message: &Message, except: Option<&str>, wait: Duration) {
-        let Ok(subscriptions) = self.with_subscriptions(|list| Ok((list.clone(), false))) else {
+        let Ok(subscriptions) = self.read_subscriptions(|list| Ok(list.to_vec())) else {
             return;
         };
         let sends = subscriptions
@@ -365,6 +382,15 @@ impl PushService {
     /// The daemon's VAPID key, generated and stored on first use. A new key
     /// drops every subscription: they were bound to the one before.
     fn key(&self) -> Result<Arc<VapidKey>, PushError> {
+        if let Some(key) = lock(&self.key).as_ref() {
+            return Ok(Arc::clone(key));
+        }
+        // First use reads, and may write, files: off the worker, so the
+        // threads that wait for the key do not hold one up either.
+        off_worker(|| self.load_key())
+    }
+
+    fn load_key(&self) -> Result<Arc<VapidKey>, PushError> {
         let mut slot = lock(&self.key);
         if let Some(key) = slot.as_ref() {
             return Ok(Arc::clone(key));
@@ -377,17 +403,11 @@ impl PushService {
                 let (key, pkcs8) = VapidKey::generate()
                     .map_err(|error| PushError::Unavailable(error.to_string()))?;
                 self.store.write_key(&pkcs8).map_err(unavailable)?;
-                let mut subscriptions = lock(&self.subscriptions);
-                if subscriptions
-                    .list
-                    .as_ref()
-                    .is_ok_and(|list| !list.is_empty())
-                {
-                    self.store.write_subscriptions(&[]).map_err(unavailable)?;
-                    subscriptions.list = Ok(Vec::new());
-                    drop(subscriptions);
-                    self.changed();
-                }
+                self.change_subscriptions(|list| {
+                    let dropped = !list.is_empty();
+                    list.clear();
+                    Ok(((), dropped))
+                })?;
                 key
             }
         };
@@ -396,23 +416,38 @@ impl PushService {
         Ok(key)
     }
 
-    fn with_subscriptions<T>(
+    /// What `read` makes of the subscriptions as they are now.
+    fn read_subscriptions<T>(
+        &self,
+        read: impl FnOnce(&[StoredSubscription]) -> Result<T, PushError>,
+    ) -> Result<T, PushError> {
+        let subscriptions = lock(&self.subscriptions);
+        let list = subscriptions
+            .list
+            .as_ref()
+            .map_err(|error| PushError::Unavailable(error.clone()))?;
+        read(list)
+    }
+
+    /// Applies `change` to the subscriptions, and writes them when it says
+    /// to. The write happens off the worker and without the subscriptions'
+    /// lock: readers keep the list as it was until the file holds the new
+    /// one.
+    fn change_subscriptions<T>(
         &self,
         change: impl FnOnce(&mut Vec<StoredSubscription>) -> Result<(T, bool), PushError>,
     ) -> Result<T, PushError> {
-        let mut subscriptions = lock(&self.subscriptions);
-        let list = subscriptions
+        let _writes = lock(&self.subscription_writes);
+        let mut next = lock(&self.subscriptions)
             .list
-            .as_mut()
-            .map_err(|error| PushError::Unavailable(error.clone()))?;
-        let mut next = list.clone();
+            .as_ref()
+            .map_err(|error| PushError::Unavailable(error.clone()))?
+            .clone();
         let (value, write) = change(&mut next)?;
         if write {
-            self.store
-                .write_subscriptions(&next)
+            off_worker(|| self.store.write_subscriptions(&next))
                 .map_err(|error| PushError::Unavailable(error.to_string()))?;
-            *list = next;
-            drop(subscriptions);
+            lock(&self.subscriptions).list = Ok(next);
             self.changed();
         }
         Ok(value)
@@ -420,8 +455,8 @@ impl PushService {
 
     pub(crate) fn get(&self) -> Result<NotificationsGetResult, PushError> {
         let public_key = self.key()?.public_key();
-        let subscriptions = self
-            .with_subscriptions(|list| Ok((list.iter().map(visible).collect::<Vec<_>>(), false)))?;
+        let subscriptions =
+            self.read_subscriptions(|list| Ok(list.iter().map(visible).collect::<Vec<_>>()))?;
         Ok(NotificationsGetResult {
             public_key,
             enabled: self.config().enabled,
@@ -477,7 +512,7 @@ impl PushService {
         }
         use base64::Engine as _;
         let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-        self.with_subscriptions(|list| {
+        self.change_subscriptions(|list| {
             if let Some(existing) = list.iter_mut().find(|stored| stored.endpoint == endpoint) {
                 existing.p256dh = encode(&p256dh);
                 existing.auth = encode(&auth);
@@ -501,7 +536,7 @@ impl PushService {
     }
 
     pub(crate) fn unsubscribe(&self, id: &str) -> Result<(), PushError> {
-        self.with_subscriptions(|list| {
+        self.change_subscriptions(|list| {
             let before = list.len();
             list.retain(|stored| stored.id != id);
             if list.len() == before {
@@ -512,11 +547,10 @@ impl PushService {
     }
 
     pub(crate) async fn test(&self, id: &str) -> Result<NotificationsTestResult, PushError> {
-        let subscription = self.with_subscriptions(|list| {
+        let subscription = self.read_subscriptions(|list| {
             list.iter()
                 .find(|stored| stored.id == id)
                 .cloned()
-                .map(|stored| (stored, false))
                 .ok_or_else(|| PushError::NotFound(id.to_owned()))
         })?;
         let message = Message {
@@ -546,7 +580,7 @@ impl PushService {
 
     /// Sends `message` to every subscription, each on its own task.
     fn send_all(self: &Arc<Self>, message: Message) {
-        let Ok(subscriptions) = self.with_subscriptions(|list| Ok((list.clone(), false))) else {
+        let Ok(subscriptions) = self.read_subscriptions(|list| Ok(list.to_vec())) else {
             return;
         };
         let message = Arc::new(message);
@@ -563,7 +597,7 @@ impl PushService {
     /// Keeps what a send came to: when it was sent, why it failed, or, for
     /// a subscription that is gone, nothing.
     fn record(&self, id: &str, delivery: &Delivery) {
-        let result = self.with_subscriptions(|list| {
+        let result = self.change_subscriptions(|list| {
             let Some(index) = list.iter().position(|stored| stored.id == id) else {
                 return Ok(((), false));
             };
