@@ -2081,7 +2081,10 @@ pub async fn run_with_client(client: Client) -> anyhow::Result<()> {
 #[derive(Clone, Debug, Default)]
 pub struct SessionPlacement {
     /// The client's directory: new sessions record it and work in it, and
-    /// the session list shows its sessions.
+    /// the session list shows its sessions. Canonical
+    /// (`cookie_agent_protocol::paths::canonicalize`), as the daemon records
+    /// a session's directory: the list and `sessions.changed` compare the
+    /// two as they are.
     pub cwd: Option<String>,
     /// A runtime on this client's machine other than the daemon's `local`,
     /// such as one this client runs for its own machine when the daemon is
@@ -2373,8 +2376,9 @@ async fn event_loop(
             },
             delivery = deliveries.recv(), if !app.reconnecting => match delivery {
                 Some(delivery) => {
-                    app.handle_delivery(delivery).await;
-                    render.mark_stream();
+                    if app.handle_delivery(delivery).await {
+                        render.mark_stream();
+                    }
                 }
                 None => {
                     for session_id in app.store.abandon_replays() {

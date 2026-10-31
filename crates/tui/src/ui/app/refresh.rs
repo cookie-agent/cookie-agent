@@ -195,10 +195,13 @@ impl App {
     /// sessions this client does not watch: another client's new sessions,
     /// status and title changes, approvals anywhere in the viewed tree, and
     /// permission-mode changes.
+    /// Applies a `sessions.changed` notification: whether anything drawn
+    /// may have changed. A session neither listed nor this view's, and an
+    /// approvals change, whose read draws when it answers, change nothing.
     pub(in crate::ui) async fn apply_sessions_change(
         &mut self,
         change: cookie_agent_protocol::SessionsChangedNotification,
-    ) {
+    ) -> bool {
         use cookie_agent_protocol::SessionsChangedNotification as Change;
         match change {
             Change::Upserted { session } => {
@@ -230,7 +233,7 @@ impl App {
                     // when the Agents tree loads them.
                     self.sessions.push(session);
                 } else {
-                    return;
+                    return false;
                 }
                 self.note_sessions_changed();
             }
@@ -244,6 +247,7 @@ impl App {
                 {
                     self.refresh_approvals(selected);
                 }
+                return false;
             }
             Change::PermissionModeChanged {
                 root_session_id,
@@ -274,6 +278,7 @@ impl App {
                 }
             }
         }
+        true
     }
 
     pub(in crate::ui) fn request_runtime_resync(&mut self) {
@@ -1145,14 +1150,47 @@ impl App {
         }
     }
 
-    pub(in crate::ui) async fn handle_delivery(&mut self, delivery: ClientDelivery) {
+    /// Reduces `delivery` and follows it up: whether anything the TUI
+    /// draws may have changed, so the event loop redraws only then.
+    pub(in crate::ui) async fn handle_delivery(&mut self, delivery: ClientDelivery) -> bool {
+        // A notification that only starts a read changes nothing drawn
+        // until the read answers, which draws on its own; it may still push
+        // a failure notice into the viewed session or set the status line.
+        let quiet = matches!(
+            delivery,
+            ClientDelivery::McpChanged(_)
+                | ClientDelivery::RuntimesChanged(_)
+                | ClientDelivery::MachinesChanged(_)
+                | ClientDelivery::MemoryChanged(_)
+                | ClientDelivery::CronsChanged(_)
+                | ClientDelivery::PluginsChanged(_)
+                | ClientDelivery::ProjectsChanged(_)
+        ) && self.modal == Modal::None;
+        let before = quiet.then(|| self.drawn_stamp());
+        self.reduce_delivery(delivery).await
+            && before.is_none_or(|before| before != self.drawn_stamp())
+    }
+
+    /// What a quiet notification could change of the drawn view: the viewed
+    /// session's projection and the status line.
+    fn drawn_stamp(&self) -> (Option<(u64, u64)>, String) {
+        (
+            self.selected
+                .and_then(|session_id| self.store.sessions.get(&session_id))
+                .map(|state| (state.generation, state.version)),
+            self.status.clone(),
+        )
+    }
+
+    /// [`Self::handle_delivery`]'s work: whether it may have changed what
+    /// is drawn.
+    async fn reduce_delivery(&mut self, delivery: ClientDelivery) -> bool {
         if let ClientDelivery::Disconnected { error } = &delivery {
             self.status = format!("connection failed: {error}");
             self.reset_subscriptions();
         }
         if let ClientDelivery::SessionsChanged(change) = &delivery {
-            self.apply_sessions_change((**change).clone()).await;
-            return;
+            return self.apply_sessions_change((**change).clone()).await;
         }
         if matches!(delivery, ClientDelivery::McpChanged(_)) {
             // An open MCP panel refreshes now instead of at its next poll.
@@ -1189,7 +1227,7 @@ impl App {
         }
         if let ClientDelivery::DaemonRestarting(restarting) = &delivery {
             self.note_daemon_restarting(restarting.clone());
-            return;
+            return true;
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             // A new connection, or a configuration change: the banner's
@@ -1212,7 +1250,7 @@ impl App {
                 // would be rejected too, so fetch the current snapshot.
                 self.request_runtime_resync();
             }
-            return;
+            return true;
         }
         if let ClientDelivery::RecoveryFailed { session_id, error } = &delivery {
             self.note_recovery_failed(*session_id);
@@ -1221,13 +1259,15 @@ impl App {
                 Some(session_id) => format!("recovery for {session_id} failed: {error}"),
                 None => format!("recovery failed: {error}"),
             };
-            return;
+            return true;
         }
         if let ClientDelivery::PluginEvent(event) = &delivery {
-            if Some(event.session_id) == self.selected {
+            // Another session's plugin event shows nowhere.
+            let shown = Some(event.session_id) == self.selected;
+            if shown {
                 self.status = cookie_agent_client_state::plugins::plugin_event_status(event);
             }
-            return;
+            return shown;
         }
         let event = match &delivery {
             ClientDelivery::Live { message, .. } => match message.as_ref() {
@@ -1434,6 +1474,7 @@ impl App {
         if linked || terminalized || delegation_changed || replay_finished {
             self.refresh_tree_background();
         }
+        true
     }
 
     /// Apply a strictly-newer title event patch immediately: the Agents

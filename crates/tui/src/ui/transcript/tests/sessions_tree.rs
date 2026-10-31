@@ -1586,3 +1586,51 @@ async fn a_daemon_error_shows_message_and_hint_and_keeps_its_detail_collapsed() 
         1
     );
 }
+
+#[tokio::test]
+async fn only_a_delivery_that_changes_what_is_drawn_asks_for_a_frame() {
+    use cookie_agent_protocol::SessionsChangedNotification as Change;
+
+    let mut app = test_app().await;
+    app.cwd = Some("/workspace".into());
+    let viewed = SessionId::new_v7();
+    app.sessions = vec![session_meta(viewed)];
+    app.selected = Some(viewed);
+    // A root of another directory, which this view does not list.
+    let mut elsewhere = session_meta(SessionId::new_v7());
+    elsewhere.cwd_identity = cookie_agent_protocol::CwdIdentity::new("/elsewhere").expect("cwd");
+    assert!(
+        !app.handle_delivery(ClientDelivery::SessionsChanged(Box::new(
+            Change::Upserted {
+                session: Box::new(elsewhere),
+            }
+        )))
+        .await
+    );
+    // The listed session's change shows in the picker.
+    let mut running = session_meta(viewed);
+    running.status = cookie_agent_protocol::SessionStatus::Running;
+    running.last_event_seq += 1;
+    assert!(
+        app.handle_delivery(ClientDelivery::SessionsChanged(Box::new(
+            Change::Upserted {
+                session: Box::new(running),
+            }
+        )))
+        .await
+    );
+    // A change notice with no panel open only starts a read.
+    assert!(
+        !app.handle_delivery(ClientDelivery::CronsChanged(
+            cookie_agent_protocol::CronsChangedNotification {},
+        ))
+        .await
+    );
+    app.modal = Modal::Cron;
+    assert!(
+        app.handle_delivery(ClientDelivery::CronsChanged(
+            cookie_agent_protocol::CronsChangedNotification {},
+        ))
+        .await
+    );
+}
