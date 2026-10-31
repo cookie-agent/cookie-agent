@@ -738,6 +738,7 @@ impl Workspace {
                         .session_list
                         .try_update_value(|list| list.land(read, result.sessions))
                         .flatten()
+                        && self.sessions.with_untracked(|shown| *shown != sessions)
                     {
                         self.sessions.set(sessions);
                     }
@@ -979,11 +980,13 @@ impl Workspace {
             SessionsChangedNotification::Upserted { .. } => {
                 // A project's session count follows its sessions, which
                 // `projects.changed` does not announce.
-                let mut moved = false;
-                self.sessions.update(|sessions| {
-                    moved = crate::session_list::apply_change(sessions, &change);
+                // A session announced as the list holds it wakes no row.
+                let mut applied = crate::session_list::Applied::default();
+                self.sessions.maybe_update(|sessions| {
+                    applied = crate::session_list::apply_change(sessions, &change);
+                    applied.changed
                 });
-                if moved {
+                if applied.moved {
                     self.refresh_projects();
                 }
             }
@@ -1033,8 +1036,11 @@ impl Workspace {
     /// A session the daemon removed (deleted with its tree): out of the
     /// list and the store; a page viewing it starts a new session instead.
     fn forget_removed(self, session_id: SessionId) {
-        self.sessions
-            .update(|sessions| sessions.retain(|session| session.session_id != session_id));
+        self.sessions.maybe_update(|sessions| {
+            let before = sessions.len();
+            sessions.retain(|session| session.session_id != session_id);
+            sessions.len() != before
+        });
         let viewed = self.selected.get_untracked() == Some(session_id)
             || self.tree_root.get_untracked() == Some(session_id);
         if viewed && !self.new_session.get_untracked() {
@@ -1506,12 +1512,16 @@ impl Workspace {
             });
         let owned = match outcome {
             SessionOwnershipOutcome::Owned(session) => {
-                self.sessions.update(|sessions| {
-                    if let Some(existing) = sessions
+                self.sessions.maybe_update(|sessions| {
+                    match sessions
                         .iter_mut()
                         .find(|existing| existing.session_id == session_id)
                     {
-                        *existing = *session;
+                        Some(existing) if *existing != *session => {
+                            *existing = *session;
+                            true
+                        }
+                        _ => false,
                     }
                 });
                 true

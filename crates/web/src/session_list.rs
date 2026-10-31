@@ -7,32 +7,57 @@
 use cookie_agent_client_state::refresh::{Latest, Ticket};
 use cookie_agent_protocol::{SessionMeta, SessionOrigin, SessionsChangedNotification};
 
+/// What a change did to the session list.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Applied {
+    /// The list differs: its readers must look again.
+    pub changed: bool,
+    /// A session moved between projects.
+    pub moved: bool,
+}
+
 /// Applies an upsert or a removal to `sessions`: an upsert replaces a
 /// session the list holds and adds a new root, and leaves a subagent it
-/// does not hold out. Returns whether the change moved a session between
-/// projects.
-pub fn apply_change(sessions: &mut Vec<SessionMeta>, change: &SessionsChangedNotification) -> bool {
+/// does not hold out. An upsert of a session as the list holds it already
+/// changes nothing.
+pub fn apply_change(
+    sessions: &mut Vec<SessionMeta>,
+    change: &SessionsChangedNotification,
+) -> Applied {
     match change {
         SessionsChangedNotification::Upserted { session } => {
             if let Some(existing) = sessions
                 .iter_mut()
                 .find(|existing| existing.session_id == session.session_id)
             {
+                if *existing == **session {
+                    return Applied::default();
+                }
                 let moved = existing.project != session.project;
                 *existing = (**session).clone();
-                moved
+                Applied {
+                    changed: true,
+                    moved,
+                }
             } else if matches!(session.origin, SessionOrigin::Root) {
                 sessions.push((**session).clone());
-                session.project.is_some()
+                Applied {
+                    changed: true,
+                    moved: session.project.is_some(),
+                }
             } else {
-                false
+                Applied::default()
             }
         }
         SessionsChangedNotification::Removed { session_id } => {
+            let before = sessions.len();
             sessions.retain(|session| session.session_id != *session_id);
-            false
+            Applied {
+                changed: sessions.len() != before,
+                moved: false,
+            }
         }
-        _ => false,
+        _ => Applied::default(),
     }
 }
 
@@ -98,7 +123,7 @@ impl ListReads {
 mod tests {
     use cookie_agent_protocol::{SessionId, SessionMeta, SessionsChangedNotification};
 
-    use super::{ListReads, apply_change};
+    use super::{Applied, ListReads, apply_change};
 
     fn meta(title: &str, delegated: bool) -> SessionMeta {
         let origin = if delegated {
@@ -225,11 +250,38 @@ mod tests {
         let mut held = meta("before", false);
         let mut sessions = vec![held.clone()];
         held.title = Some(cookie_agent_protocol::SessionTitle::new("after").unwrap());
-        assert!(!apply_change(&mut sessions, &upserted(&held)));
-        assert!(!apply_change(
-            &mut sessions,
-            &upserted(&meta("child", true))
-        ));
+        assert_eq!(
+            apply_change(&mut sessions, &upserted(&held)),
+            Applied {
+                changed: true,
+                moved: false
+            }
+        );
+        assert_eq!(
+            apply_change(&mut sessions, &upserted(&meta("child", true))),
+            Applied::default()
+        );
         assert_eq!(titles(&sessions), ["after"]);
+    }
+
+    /// The daemon announces a session again as it was: the list's readers
+    /// are not woken for it.
+    #[test]
+    fn an_upsert_or_removal_that_changes_nothing_says_so() {
+        let held = meta("held", false);
+        let mut sessions = vec![held.clone()];
+        assert_eq!(
+            apply_change(&mut sessions, &upserted(&held)),
+            Applied::default()
+        );
+        let gone = SessionsChangedNotification::Removed {
+            session_id: SessionId::new_v7(),
+        };
+        assert_eq!(apply_change(&mut sessions, &gone), Applied::default());
+        let removed = SessionsChangedNotification::Removed {
+            session_id: held.session_id,
+        };
+        assert!(apply_change(&mut sessions, &removed).changed);
+        assert!(sessions.is_empty());
     }
 }
