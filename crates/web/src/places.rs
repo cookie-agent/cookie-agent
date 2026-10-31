@@ -89,9 +89,13 @@ pub fn directory_label(session: &SessionMeta, homes: &RuntimeHomes) -> String {
 
 /// The filter's choices: each session directory (`cwd_identity`) once, by
 /// label; a label naming a runtime wins over one that cannot.
-pub fn filter_options(sessions: &[SessionMeta], homes: &RuntimeHomes) -> Vec<(String, String)> {
+pub fn filter_options<S: std::borrow::Borrow<SessionMeta>>(
+    sessions: &[S],
+    homes: &RuntimeHomes,
+) -> Vec<(String, String)> {
     let mut options = Vec::<(String, String)>::new();
     for session in sessions {
+        let session = session.borrow();
         let value = session.cwd_identity.to_string();
         let label = directory_label(session, homes);
         match options.iter_mut().find(|(known, _)| *known == value) {

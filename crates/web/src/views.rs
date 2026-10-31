@@ -51,6 +51,7 @@ mod projects;
 mod questions;
 mod restart;
 mod row_menu;
+mod session_rows;
 mod shell;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
@@ -274,48 +275,55 @@ fn search_query(workspace: Workspace) -> Option<String> {
     })
 }
 
-/// Whether `session`'s row matches the search `query` (lowercased): the
-/// title the row shows holds it.
-fn search_matches(session: &SessionMeta, query: Option<&str>) -> bool {
-    query.is_none_or(|query| session_label(session).to_lowercase().contains(query))
-}
-
 #[component]
 fn SessionList(workspace: Workspace) -> impl IntoView {
     // Each runtime at each workspace sessions work in, under its home.
     let places = move || {
-        let homes = workspace.homes();
-        workspace.sessions.with(|sessions| {
-            let roots = sessions
-                .iter()
-                .filter(|session| {
-                    matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            crate::places::filter_options(&roots, &homes)
+        workspace.runtime_homes.with(|homes| {
+            workspace.sessions.with(|sessions| {
+                let roots = sessions
+                    .iter()
+                    .filter(|session| {
+                        matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
+                    })
+                    .collect::<Vec<_>>();
+                crate::places::filter_options(&roots, homes)
+            })
         })
     };
-    let shown = move || {
+    // Whether the search holds something, and the titles it looks in.
+    let searching = Memo::new(move |_| search_query(workspace).is_some());
+    let labels = session_rows::search_labels(workspace, searching);
+    // The root rows a list without projects shows, in order.
+    let shown = Memo::new(move |_| {
         let filter = workspace.directory_filter.get();
         let query = search_query(workspace);
-        let mut sessions = workspace.sessions.with(|sessions| {
-            sessions
-                .iter()
-                .filter(|session| {
-                    matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
-                        && filter
-                            .as_deref()
-                            .is_none_or(|filter| crate::places::matches(session, filter))
-                        && search_matches(session, query.as_deref())
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-        // Running sessions first, then the rest; newest first in each.
-        cookie_agent_client_state::rows::order_sessions(&mut sessions);
-        sessions
-    };
+        labels.with(|labels| {
+            workspace.sessions.with(|sessions| {
+                let mut shown = sessions
+                    .iter()
+                    .filter(|session| {
+                        matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
+                            && filter
+                                .as_deref()
+                                .is_none_or(|filter| crate::places::matches(session, filter))
+                            && session_rows::search_matches(
+                                labels,
+                                session.session_id,
+                                query.as_deref(),
+                            )
+                    })
+                    .collect::<Vec<_>>();
+                // Running sessions first, then the rest; newest first in each.
+                cookie_agent_client_state::rows::order_sessions(&mut shown);
+                shown
+                    .into_iter()
+                    .map(|session| session.session_id)
+                    .collect::<Vec<_>>()
+            })
+        })
+    });
+    let nothing_shown = Memo::new(move |_| shown.with(Vec::is_empty));
     // The rows' "5m ago" moves on while the list shows.
     let now = RwSignal::new(jiff::Timestamp::now());
     let ticker = set_interval_with_handle(
@@ -346,12 +354,21 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     drag.follow(workspace, actions);
     let headers = projects::HeaderActions::new();
     let list = drag.list;
+    let rows = session_rows::SessionRows {
+        workspace,
+        slots: session_rows::SessionSlots::new(workspace),
+        now,
+        actions,
+        drag,
+    };
+    // The project sections, worked out once for the list and Select all.
+    let sections = projects::listed_sections(workspace, searching, labels);
     // The root rows the list shows, in page order, for Select all.
     let listed = Memo::new(move |_| {
         if workspace.has_projects.get() {
-            projects::listed_rows(workspace)
+            projects::listed_rows(workspace, sections, searching)
         } else {
-            shown().iter().map(|session| session.session_id).collect()
+            shown.get()
         }
     });
     // A Shift+click ranges over these rows.
@@ -450,21 +467,16 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-x-hidden overflow-y-auto px-2 pb-3" aria-label="Sessions" node_ref=list>
             {move || {
                 if workspace.has_projects.get() {
-                    return projects::project_list(workspace, now, actions, drag, headers).into_any();
+                    return projects::project_list(rows, sections, searching, headers).into_any();
                 }
-                let sessions = shown();
-                if sessions.is_empty() {
-                    if search_query(workspace).is_some() {
+                if nothing_shown.get() {
+                    if searching.get() {
                         return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
                     }
                     return empty_state(icondata::FaFolderOpenSolid, "No sessions yet. Start one with New session.")
                         .into_any();
                 }
-                sessions
-                    .into_iter()
-                    .map(|session| session_row(workspace, session, now, actions, drag))
-                    .collect_view()
-                    .into_any()
+                session_rows::keyed_rows(rows, move || shown.get()).into_any()
             }}
         </nav>
     }

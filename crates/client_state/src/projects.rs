@@ -57,15 +57,16 @@ pub fn find_project<'a>(
 }
 
 /// One section of the session list: a project's root sessions, or (with no
-/// project) those of no project.
+/// project) those of no project. `S` is how it holds them: owned, or
+/// borrowed from the list ([`project_sections_borrowed`]).
 #[derive(Clone, Debug, PartialEq)]
-pub struct ProjectSection {
+pub struct ProjectSection<S = SessionMeta> {
     pub project: Option<ProjectInfo>,
     /// Active sessions first, then the rest, each newest first.
-    pub sessions: Vec<SessionMeta>,
+    pub sessions: Vec<S>,
 }
 
-impl ProjectSection {
+impl<S> ProjectSection<S> {
     /// The key a client remembers the section's folding under.
     #[must_use]
     pub fn key(&self) -> String {
@@ -87,6 +88,22 @@ pub fn section_key(project: Option<&ProjectId>) -> String {
 /// sessions by [`order_sessions`]. Delegated sessions are left out.
 #[must_use]
 pub fn project_sections(projects: &[ProjectInfo], sessions: &[SessionMeta]) -> Vec<ProjectSection> {
+    project_sections_borrowed(projects, sessions)
+        .into_iter()
+        .map(|section| ProjectSection {
+            project: section.project,
+            sessions: section.sessions.into_iter().cloned().collect(),
+        })
+        .collect()
+}
+
+/// [`project_sections`], each section borrowing its sessions from
+/// `sessions` rather than copying them.
+#[must_use]
+pub fn project_sections_borrowed<'a>(
+    projects: &[ProjectInfo],
+    sessions: &'a [SessionMeta],
+) -> Vec<ProjectSection<&'a SessionMeta>> {
     let mut sections = projects
         .iter()
         .map(|project| ProjectSection {
@@ -110,20 +127,16 @@ pub fn project_sections(projects: &[ProjectInfo], sessions: &[SessionMeta]) -> V
                     .is_some_and(|project| project.id == *id)
             })
         });
-        section.unwrap_or(&mut none).sessions.push(session.clone());
+        section.unwrap_or(&mut none).sessions.push(session);
     }
     for section in &mut sections {
         order_sessions(&mut section.sessions);
     }
     order_sessions(&mut none.sessions);
     sections.sort_by(|left, right| {
-        let id = |section: &ProjectSection| {
-            section
-                .project
-                .as_ref()
-                .map(|project| project.id.as_str().to_owned())
-        };
-        id(left).cmp(&id(right))
+        let left = left.project.as_ref().map(|project| project.id.as_str());
+        let right = right.project.as_ref().map(|project| project.id.as_str());
+        left.cmp(&right)
     });
     sections.push(none);
     sections

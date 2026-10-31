@@ -160,8 +160,11 @@ pub fn session_is_active(session: &SessionMeta) -> bool {
 /// group newest [`ordering_activity`] first; sessions that tie keep their
 /// order. It knows nothing of how a list is grouped, so a client orders each
 /// group (each project's sessions, say) on its own.
-pub fn order_sessions(sessions: &mut [SessionMeta]) {
+/// The sessions may be held or borrowed: a client orders references to the
+/// ones it lists without copying them.
+pub fn order_sessions<S: std::borrow::Borrow<SessionMeta>>(sessions: &mut [S]) {
     sessions.sort_by_key(|session| {
+        let session = session.borrow();
         (
             !session_is_active(session),
             std::cmp::Reverse(ordering_activity(session)),

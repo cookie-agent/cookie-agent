@@ -4,16 +4,19 @@
 //! press), "Move to project…", the project editor with its emoji picker,
 //! and the new session's project picker.
 
+use std::collections::HashMap;
+
 use cookie_agent_client_state::{
     badges::project_badges_tooltip,
-    projects::{ProjectSection, delete_question, project_label, project_sections, validate_emoji},
+    projects::{delete_question, project_label, project_sections_borrowed, validate_emoji},
 };
 use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId, SessionMeta};
 use leptos::{ev, html, prelude::*};
 
 use super::{
     BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, RowActions, choice_line, empty_state,
-    search_matches, search_query, session_row,
+    search_query,
+    session_rows::{SessionRows, keyed_rows, search_matches},
 };
 use crate::{
     browser,
@@ -279,64 +282,129 @@ impl HeaderActions {
     }
 }
 
-/// The session list as project sections, then "No project".
-pub(super) fn project_list(
-    workspace: Workspace,
-    now: RwSignal<jiff::Timestamp>,
-    actions: RowActions,
-    drag: SessionDrag,
-    headers: HeaderActions,
-) -> impl IntoView {
-    let sections = Memo::new(move |_| searched_sections(workspace));
-    move || {
-        let sections = sections.get();
-        if sections.is_empty() && search_query(workspace).is_some() {
-            return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
-        }
-        sections
-            .into_iter()
-            .map(|section| section_view(workspace, section, now, actions, drag, headers))
-            .collect_view()
-            .into_any()
+/// One project section as the list shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ListedSection {
+    /// What the browser remembers its folding under.
+    key: String,
+    project: Option<ProjectInfo>,
+    /// Its sessions, while the list's search holds something only those
+    /// that match it, in the list's order.
+    sessions: Vec<SessionId>,
+    /// Those of them a folded section still shows: at work (running, or
+    /// waiting on a producer) or unread.
+    folded: Vec<SessionId>,
+}
+
+impl ListedSection {
+    /// The rows it shows: all of its sessions while open, else
+    /// [`Self::folded`].
+    fn rows(&self, open: bool) -> &[SessionId] {
+        if open { &self.sessions } else { &self.folded }
     }
 }
 
-/// The project sections, while the list's search holds something only
-/// those with sessions that match it, and only those sessions.
-fn searched_sections(workspace: Workspace) -> Vec<ProjectSection> {
-    let query = search_query(workspace);
-    let mut sections = workspace.projects.with(|projects| {
-        workspace
-            .sessions
-            .with(|sessions| project_sections(projects, sessions))
-    });
-    if query.is_some() {
-        for section in &mut sections {
-            section
-                .sessions
-                .retain(|session| search_matches(session, query.as_deref()));
+/// The project sections, then "No project": while the list's search holds
+/// something only those with sessions that match it, and only those
+/// sessions. Worked out once for each change, for both the list and its
+/// Select all.
+pub(super) fn listed_sections(
+    workspace: Workspace,
+    searching: Memo<bool>,
+    labels: Memo<HashMap<SessionId, String>>,
+) -> Memo<Vec<ListedSection>> {
+    Memo::new(move |_| {
+        if !workspace.has_projects.get() {
+            return Vec::new();
         }
-        sections.retain(|section| !section.sessions.is_empty());
+        let query = search_query(workspace);
+        let searching = searching.get();
+        labels.with(|labels| {
+            workspace.projects.with(|projects| {
+                workspace.sessions.with(|sessions| {
+                    project_sections_borrowed(projects, sessions)
+                        .into_iter()
+                        .filter_map(|section| {
+                            let key = section.key();
+                            let shown = section
+                                .sessions
+                                .into_iter()
+                                .filter(|session| {
+                                    search_matches(labels, session.session_id, query.as_deref())
+                                })
+                                .collect::<Vec<_>>();
+                            if searching && shown.is_empty() {
+                                return None;
+                            }
+                            Some(ListedSection {
+                                key,
+                                project: section.project,
+                                folded: shown
+                                    .iter()
+                                    .filter(|session| row_shown(false, session))
+                                    .map(|session| session.session_id)
+                                    .collect(),
+                                sessions: shown.iter().map(|session| session.session_id).collect(),
+                            })
+                        })
+                        .collect()
+                })
+            })
+        })
+    })
+}
+
+/// The session list as project sections, then "No project".
+pub(super) fn project_list(
+    rows: SessionRows,
+    sections: Memo<Vec<ListedSection>>,
+    searching: Memo<bool>,
+    headers: HeaderActions,
+) -> impl IntoView {
+    let nothing_matches = Memo::new(move |_| searching.get() && sections.with(Vec::is_empty));
+    let keys = move || {
+        sections.with(|sections| {
+            sections
+                .iter()
+                .map(|section| section.key.clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    move || {
+        if nothing_matches.get() {
+            return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
+        }
+        view! {
+            <For
+                each=keys
+                key=String::clone
+                children=move |key| section_view(rows, sections, searching, key, headers)
+            />
+        }
+        .into_any()
     }
-    sections
 }
 
 /// The root rows the project sections show, in page order: an open
 /// section's sessions, and a folded one's at work or unread; a search's
 /// matches, folded or not.
-pub(super) fn listed_rows(workspace: Workspace) -> Vec<SessionId> {
-    let searching = search_query(workspace).is_some();
-    searched_sections(workspace)
-        .iter()
-        .flat_map(|section| {
-            let open = searching || workspace.section_open(&section.key());
-            section
-                .sessions
-                .iter()
-                .filter(move |session| row_shown(open, session))
-                .map(|session| session.session_id)
-        })
-        .collect()
+pub(super) fn listed_rows(
+    workspace: Workspace,
+    sections: Memo<Vec<ListedSection>>,
+    searching: Memo<bool>,
+) -> Vec<SessionId> {
+    let searching = searching.get();
+    sections.with(|sections| {
+        sections
+            .iter()
+            .flat_map(|section| {
+                section
+                    .rows(searching || workspace.section_open(&section.key))
+                    .iter()
+                    .copied()
+            })
+            .collect()
+    })
 }
 
 /// Whether a section shows `session`'s row: an open one all of them, a
@@ -348,55 +416,82 @@ fn row_shown(open: bool, session: &SessionMeta) -> bool {
 
 /// One section: its header, then its sessions while it is open, and its
 /// sessions at work (running, or waiting on a producer) and its unread ones
-/// while it is folded.
+/// while it is folded. The header draws again when the project or the
+/// section's sessions change; each row only when its own session does.
 fn section_view(
-    workspace: Workspace,
-    section: ProjectSection,
-    now: RwSignal<jiff::Timestamp>,
-    actions: RowActions,
-    drag: SessionDrag,
+    rows: SessionRows,
+    sections: Memo<Vec<ListedSection>>,
+    searching: Memo<bool>,
+    key: String,
     headers: HeaderActions,
 ) -> impl IntoView {
-    let key = section.key();
+    let workspace = rows.workspace;
+    let section = {
+        let key = key.clone();
+        Memo::new(move |_| {
+            sections.with(|sections| sections.iter().find(|section| section.key == key).cloned())
+        })
+    };
     let open = {
         let key = key.clone();
         Memo::new(move |_| workspace.section_open(&key))
     };
-    let sessions = section.sessions.clone();
-    let empty = sessions.is_empty();
+    // The header's project and members, in no particular order.
+    let header = Memo::new(move |_| {
+        section.with(|section| {
+            section.as_ref().map(|section| {
+                let mut members = section.sessions.clone();
+                members.sort_unstable();
+                (section.project.clone(), members)
+            })
+        })
+    });
+    let empty = Memo::new(move |_| {
+        section.with(|section| {
+            section
+                .as_ref()
+                .is_none_or(|section| section.sessions.is_empty())
+        })
+    });
+    // A search shows its matches in folded sections too.
+    let shown_open = Memo::new(move |_| open.get() || searching.get());
+    let shown = Memo::new(move |_| {
+        let open = shown_open.get();
+        section.with(|section| {
+            section
+                .as_ref()
+                .map(|section| section.rows(open).to_vec())
+                .unwrap_or_default()
+        })
+    });
+    let has_rows = Memo::new(move |_| shown.with(|shown| !shown.is_empty()));
+    let header_key = key.clone();
     view! {
         <section class="flex flex-col gap-1 pb-2" data-project-section=key.clone() data-open=move || open.get().to_string()>
-            {project_header(workspace, section.project.clone(), key.clone(), open, drag, headers, sessions.iter().map(|session| session.session_id).collect())}
-            {
-                let sessions = sessions.clone();
-                move || {
-                    // A search shows its matches in folded sections too.
-                    let open = open.get() || search_query(workspace).is_some();
-                    if empty {
-                        return open
-                            .then(|| view! { <p class=format!("px-3 pb-1 {NOTE}") data-section-empty>"No sessions yet."</p> })
-                            .into_any();
-                    }
-                    // Folded, the section still shows its sessions at work,
-                    // as a folded subagent tree shows its running agents.
-                    // Its rows sit indented under the header.
-                    let rows = sessions
-                        .iter()
-                        .filter(|session| row_shown(open, session))
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    (!rows.is_empty())
-                        .then(|| view! {
-                            <div class="ml-4 flex flex-col gap-1" data-section-rows>
-                                {rows
-                                    .into_iter()
-                                    .map(|session| session_row(workspace, session, now, actions, drag))
-                                    .collect_view()}
-                            </div>
-                        })
-                        .into_any()
+            {move || {
+                header.get().map(|(project, members)| {
+                    project_header(workspace, project, header_key.clone(), open, rows.drag, headers, members)
+                })
+            }}
+            {move || {
+                if empty.get() {
+                    return shown_open
+                        .get()
+                        .then(|| view! { <p class=format!("px-3 pb-1 {NOTE}") data-section-empty>"No sessions yet."</p> })
+                        .into_any();
                 }
-            }
+                // Folded, the section still shows its sessions at work,
+                // as a folded subagent tree shows its running agents.
+                // Its rows sit indented under the header.
+                has_rows
+                    .get()
+                    .then(|| view! {
+                        <div class="ml-4 flex flex-col gap-1" data-section-rows>
+                            {keyed_rows(rows, move || shown.get())}
+                        </div>
+                    })
+                    .into_any()
+            }}
         </section>
     }
 }
