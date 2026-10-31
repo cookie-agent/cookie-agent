@@ -2879,12 +2879,9 @@ async fn the_runtime_drops_a_cancelled_call_that_does_not_stop() {
         .await
         .expect("the call ends")
         .unwrap();
-    assert!(cancelled.elapsed() < Duration::from_secs(4));
+    assert!(cancelled.elapsed() < Duration::from_secs(5));
     let error = result.expect_err("a dropped call fails");
-    assert!(
-        error.to_string().contains("did not stop within 2 s"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("did not stop within"), "{error}");
 }
 
 /// The stdio fixture server as `[runtimes.local.mcp]` or `[mcp]` lists it,

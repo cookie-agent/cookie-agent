@@ -51,8 +51,10 @@ use crate::{
 
 const NOTIFICATION_CONTEXT_LIFETIME: Duration = Duration::from_secs(4);
 /// How long a cancelled tool handler may take to stop on its own before it
-/// is aborted, as long as the daemon waits for it.
-const CANCELLED_CALL_GRACE: Duration = Duration::from_secs(2);
+/// is aborted: a second past the 2 s the daemon waits for its reply, so the
+/// daemon's deadline always decides how the call ends, and this only frees
+/// what the handler still holds.
+pub(crate) const CANCELLED_CALL_GRACE: Duration = Duration::from_secs(3);
 
 type HandlerFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 type ToolHandler =

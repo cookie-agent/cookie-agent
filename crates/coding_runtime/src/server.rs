@@ -552,8 +552,11 @@ struct Execution {
 
 /// An execute request registered before its handler runs.
 /// How long a cancelled call may take to stop on its own before the
-/// runtime drops it, as long as the daemon waits for it.
-const CANCELLED_CALL_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+/// runtime drops it: a second past the 2 s the daemon waits for its reply
+/// (the engine's `TOOL_CANCELLATION_CLEANUP_TIMEOUT`), so the daemon's
+/// deadline always decides how the call ends, and this only frees what the
+/// call still holds.
+const CANCELLED_CALL_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 struct AdmittedExecution {
     params: ExecuteParams,

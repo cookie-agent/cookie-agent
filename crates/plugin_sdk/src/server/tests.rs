@@ -490,10 +490,14 @@ async fn a_tool_that_ignores_its_cancellation_is_aborted_after_the_grace() {
         .expect("the execution ends")
         .expect("execution task")
         .expect("execute");
-    assert!(cancelled.elapsed() < std::time::Duration::from_secs(4));
+    assert!(cancelled.elapsed() < super::CANCELLED_CALL_GRACE + std::time::Duration::from_secs(2));
+    let dropped_after = format!(
+        "did not stop within {} s",
+        super::CANCELLED_CALL_GRACE.as_secs()
+    );
     assert!(matches!(
         result.outcome,
-        ExecuteOutcome::Failed { error } if error.message.contains("did not stop within 2 s")
+        ExecuteOutcome::Failed { error } if error.message.contains(&dropped_after)
     ));
     tokio::time::timeout(WAIT, dropped.notified())
         .await

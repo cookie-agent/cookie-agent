@@ -109,7 +109,8 @@ has in the foreground at once, and each call ends as `cancelled`:
   250 ms, so a process that left the group and holds the pipes open does not
   hold the call.
 - **A runtime's or plugin's tool** gets `tool/cancel`. The coding runtime
-  and the plugin SDK drop a call that has not stopped 2 s later.
+  and the plugin SDK drop a call that has not stopped 3 s later, a second
+  after the engine stopped waiting for it (below).
 - **An MCP tool** stops waiting and sends the server
   `notifications/cancelled` for the request, as a call that reaches
   `timeout_ms` does.

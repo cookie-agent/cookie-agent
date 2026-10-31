@@ -701,8 +701,9 @@ runtime registers an execution as the request arrives, so a cancellation sent
 right after execute reaches it. A cancelled call should stop within 2 s: the
 daemon waits that long for the execute reply of a call its run cancelled,
 then ends the call as cancelled and drops the reply when it comes. The coding
-runtime and the plugin SDK drop a call that has not stopped by then and
-answer its execute request with a failure.
+runtime and the plugin SDK drop a call that has not stopped 3 s after
+`tool/cancel`, a second later, and answer its execute request with a failure,
+which the daemon drops as late.
 
 ### Display blocks
 

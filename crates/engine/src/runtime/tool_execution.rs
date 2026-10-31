@@ -31,6 +31,10 @@ use crate::{
     runtimes::{ComposedTool, Composition, SourcedProvider, compose},
 };
 
+/// How long a cancelled call gets to stop on its own before it ends as
+/// cancelled with its cleanup deadline elapsed. The coding runtime and the
+/// plugin SDK drop a cancelled call a second later, so their failure for it
+/// arrives after this deadline and is dropped as late.
 pub(crate) const TOOL_CANCELLATION_CLEANUP_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(2);
 
@@ -1107,6 +1111,14 @@ impl Engine {
                                         watch_detach = false;
                                     }
                                     result = &mut invoke => {
+                                        // A result at the deadline is as late
+                                        // as one after it, whichever of the two
+                                        // was polled first.
+                                        if tokio::time::Instant::now() >= cleanup_deadline {
+                                            cleanup_timed_out = true;
+                                            progress_rx.close();
+                                            break;
+                                        }
                                         delegate_result = result.ok().filter(|result| {
                                             engine.is_delegate_call_result(active.session, run, call.id, &result.result)
                                         });
