@@ -102,8 +102,16 @@ impl NativeCompactionRecord {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// The state the record holds for `binding`'s provider, now.
+    /// The state the record holds for `binding`'s provider, now. An
+    /// unmarked provider, the usual case, is answered without the digest
+    /// of its configuration.
     pub(crate) fn state(&self, binding: &FrozenModelBinding) -> Option<MarkState> {
+        if !self
+            .lock()
+            .contains_key(binding.selection.model.provider_id().as_str())
+        {
+            return None;
+        }
         self.state_at(
             binding.selection.model.provider_id().as_str(),
             &provider_config_digest(binding),

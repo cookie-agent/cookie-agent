@@ -76,8 +76,12 @@ impl DeferredToolsRecord {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Whether `binding`'s model is marked, now.
+    /// Whether `binding`'s model is marked, now. An unmarked model, the
+    /// usual case, is answered without the digest of its configuration.
     pub(crate) fn rejects(&self, binding: &FrozenModelBinding) -> bool {
+        if !self.lock().contains_key(binding.selection.model.as_str()) {
+            return false;
+        }
         self.rejects_at(
             binding.selection.model.as_str(),
             &model_config_digest(binding),
