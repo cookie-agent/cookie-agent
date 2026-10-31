@@ -1364,7 +1364,7 @@ fn resolved_model() -> ResolvedModelRef {
     .expect("resolved model")
 }
 
-fn committed_turn(input_through_seq: u64) -> EventPayload {
+pub(crate) fn committed_turn(input_through_seq: u64) -> EventPayload {
     EventPayload::ModelTurnCommitted {
         attempt_id: AttemptId::new_v7(),
         model_turn_seq: 1,

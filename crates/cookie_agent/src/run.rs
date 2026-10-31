@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     future::Future,
     io::{self, Read as IoRead, Write as IoWrite},
     path::{Path, PathBuf},
@@ -8,13 +8,14 @@ use std::{
 
 use anyhow::{Context as _, anyhow};
 use clap::{ArgGroup, Args, ValueEnum};
+use cookie_agent_client_state::run_watch::{RunEnd, RunEndStatus, RunNote, RunWatch};
 use cookie_agent_engine::{Engine, EngineError, events::OutputMessage};
 use cookie_agent_protocol::{
     AgentId, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision, AvailableModelDescriptor,
-    ClientResponseId, ClientRunId, EventPayload, EventSubscriptionMessage, ModelKey,
-    ModelSelection, OutputDelta, OutputGap, OutputStream, PermissionAction, PermissionEffect,
-    PermissionMode, RunId, RunSelection, RunStartParams, SessionId, SessionMeta, SessionOrigin,
-    StoredEvent, ToolCallId, UsageRollup, VariantId, WildcardPattern,
+    ClientResponseId, ClientRunId, EventSubscriptionMessage, ModelKey, ModelSelection, OutputDelta,
+    OutputGap, OutputStream, PermissionAction, PermissionEffect, PermissionMode, RunId,
+    RunSelection, RunStartParams, SessionId, SessionMeta, SessionOrigin, StoredEvent, ToolCallId,
+    UsageRollup, VariantId, WildcardPattern,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -193,6 +194,17 @@ enum TerminalStatus {
     Interrupted,
 }
 
+impl From<RunEndStatus> for TerminalStatus {
+    fn from(status: RunEndStatus) -> Self {
+        match status {
+            RunEndStatus::Completed => Self::Completed,
+            RunEndStatus::Failed => Self::Failed,
+            RunEndStatus::Cancelled => Self::Cancelled,
+            RunEndStatus::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CancellationCause {
@@ -239,47 +251,38 @@ struct JsonSummary {
     usage: UsageRollup,
 }
 
-struct TerminalOutcome {
-    status: TerminalStatus,
-    final_text: Option<String>,
-    error: Option<String>,
-}
-
 struct TerminalResult {
-    outcome: TerminalOutcome,
+    end: RunEnd,
     exit_code: i32,
 }
 
 struct RunDisplay<'a> {
     args: &'a RunArgs,
     mode: OutputMode,
-    session_id: SessionId,
 }
 
 struct DriverState {
     cursor: u64,
-    turns: u32,
+    /// What the run's events mean: whose they are, its turns, its end.
+    watch: RunWatch,
     approval_rejections: u32,
     event_recoveries: u32,
     rejected: HashSet<cookie_agent_protocol::ApprovalId>,
     cancellation_requested: bool,
     cancellation: Option<CancellationCause>,
     tool_outputs: Vec<mpsc::Receiver<OutputMessage>>,
-    /// Each started call's presentation title, for the verbose text lines.
-    tool_titles: HashMap<ToolCallId, String>,
 }
 
 impl DriverState {
-    fn new(cursor: u64) -> Self {
+    fn new(watch: RunWatch, cursor: u64) -> Self {
         Self {
             cursor,
-            turns: 0,
+            watch,
             approval_rejections: 0,
             event_recoveries: 0,
             rejected: HashSet::new(),
             cancellation_requested: false,
             cancellation: None,
-            tool_titles: HashMap::new(),
             tool_outputs: Vec::new(),
         }
     }
@@ -376,7 +379,7 @@ where
                 run_id,
                 &state,
                 TerminalResult {
-                    outcome: terminal,
+                    end: terminal,
                     exit_code,
                 },
             ) {
@@ -768,21 +771,20 @@ async fn drive_run<F>(
     stderr: &mut dyn IoWrite,
     mut prepared: PreparedRun,
     interrupt: F,
-) -> anyhow::Result<(SessionId, RunId, DriverState, TerminalOutcome)>
+) -> anyhow::Result<(SessionId, RunId, DriverState, RunEnd)>
 where
     F: Future<Output = ()>,
 {
-    let mut state = DriverState::new(prepared.cursor);
+    let mut state = DriverState::new(
+        RunWatch::new(prepared.session_id, prepared.run_id),
+        prepared.cursor,
+    );
     let mut approvals = tokio::time::interval(Duration::from_millis(25));
     approvals.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let timeout = tokio::time::sleep(Duration::from_secs(args.timeout));
     tokio::pin!(timeout);
     tokio::pin!(interrupt);
-    let display = RunDisplay {
-        args,
-        mode,
-        session_id: prepared.session_id,
-    };
+    let display = RunDisplay { args, mode };
 
     loop {
         drain_tool_output(&mut state, mode, args.verbose, output)?;
@@ -901,12 +903,6 @@ async fn recover_events(
     Ok(())
 }
 
-fn event_belongs_to_run(event: &StoredEvent, session_id: SessionId, run_id: RunId) -> bool {
-    let session_diagnostic =
-        event.run_id.is_none() && matches!(&event.payload, EventPayload::Diagnostic { .. });
-    event.session_id == session_id && (event.run_id == Some(run_id) || session_diagnostic)
-}
-
 async fn process_event(
     engine: &Engine,
     display: &RunDisplay<'_>,
@@ -915,8 +911,9 @@ async fn process_event(
     active_run_id: RunId,
     state: &mut DriverState,
     event: StoredEvent,
-) -> anyhow::Result<Option<TerminalOutcome>> {
-    if !event_belongs_to_run(&event, display.session_id, active_run_id) {
+) -> anyhow::Result<Option<RunEnd>> {
+    let note = state.watch.observe(&event);
+    if matches!(note, RunNote::Foreign) {
         return Ok(None);
     }
     if display.mode == OutputMode::Json {
@@ -928,33 +925,19 @@ async fn process_event(
             },
         )?;
     }
-    match event.payload {
-        EventPayload::ToolCallStarted { start } if display.args.verbose => {
+    match note {
+        RunNote::ToolStarted(start) if display.args.verbose => {
             if display.mode == OutputMode::Json {
                 subscribe_tool_output(engine, start.tool_call_id, state, output)?;
-            } else {
-                state
-                    .tool_titles
-                    .insert(start.tool_call_id, start.presentation.title.to_string());
             }
         }
-        EventPayload::ModelTurnCommitted { .. } => {
-            state.turns = state.turns.saturating_add(1);
-            if state.turns >= display.args.max_turns && !state.cancellation_requested {
+        RunNote::TurnCommitted => {
+            if state.watch.turns() >= display.args.max_turns && !state.cancellation_requested {
                 progress(display.args, stderr, "turn limit reached; cancelling run");
                 request_cancel(engine, active_run_id, CancellationCause::User, state).await?;
             }
         }
-        EventPayload::ApprovalFinalized {
-            outcome:
-                cookie_agent_protocol::Open::Known(
-                    cookie_agent_protocol::ApprovalFinalization::Decided { decision },
-                ),
-            ..
-        } if decision.reason_code
-            == cookie_agent_protocol::ApprovalReasonCode::AutoApproveNRejected
-            && !state.cancellation_requested =>
-        {
+        RunNote::AutoApproveRejected if !state.cancellation_requested => {
             state.approval_rejections = state.approval_rejections.saturating_add(1);
             progress(
                 display.args,
@@ -963,144 +946,72 @@ async fn process_event(
             );
             request_cancel(engine, active_run_id, CancellationCause::Permission, state).await?;
         }
-        EventPayload::RunFinished {
-            outcome:
-                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Completed {
-                    final_text,
-                }),
-        } => {
-            return Ok(Some(TerminalOutcome {
-                status: TerminalStatus::Completed,
-                final_text,
-                error: None,
-            }));
-        }
-        EventPayload::RunFinished {
-            outcome:
-                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Failed {
-                    error,
-                    model_error,
-                    resolved_model,
-                }),
-        } => {
-            let error = cookie_agent_protocol::diagnostics::run_error(
-                &error,
-                model_error.as_ref(),
-                resolved_model.as_ref(),
-            );
-            writeln!(stderr, "cookie run: {error}")?;
-            return Ok(Some(TerminalOutcome {
-                status: TerminalStatus::Failed,
-                final_text: None,
-                error: Some(error),
-            }));
-        }
-        EventPayload::RunFinished {
-            outcome:
-                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Cancelled {
-                    reason,
-                }),
-        } => {
-            let error = reason.map(|reason| reason.to_string());
-            if let Some(error) = &error {
-                writeln!(stderr, "cookie run cancelled: {error}")?;
+        RunNote::Finished(end) => {
+            let lead = match end.status {
+                RunEndStatus::Completed => None,
+                RunEndStatus::Failed => Some("cookie run"),
+                RunEndStatus::Cancelled => Some("cookie run cancelled"),
+                RunEndStatus::Interrupted => Some("cookie run interrupted"),
+            };
+            if let (Some(lead), Some(reason)) = (lead, &end.reason) {
+                writeln!(stderr, "{lead}: {reason}")?;
             }
-            return Ok(Some(TerminalOutcome {
-                status: TerminalStatus::Cancelled,
-                final_text: None,
-                error,
-            }));
+            return Ok(Some(end));
         }
-        // An outcome this build does not know reads as interrupted.
-        EventPayload::RunFinished {
-            outcome:
-                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Interrupted {
-                    reason,
-                }),
-        } => {
-            let error = reason.map(|reason| reason.to_string());
-            if let Some(error) = &error {
-                writeln!(stderr, "cookie run interrupted: {error}")?;
-            }
-            return Ok(Some(TerminalOutcome {
-                status: TerminalStatus::Interrupted,
-                final_text: None,
-                error,
-            }));
-        }
-        EventPayload::RunFinished {
-            outcome: cookie_agent_protocol::Open::Unknown { .. },
-        } => {
-            return Ok(Some(TerminalOutcome {
-                status: TerminalStatus::Interrupted,
-                final_text: None,
-                error: None,
-            }));
-        }
-        EventPayload::ToolCallTerminated { termination } => {
+        RunNote::ToolTerminated { termination, title } => {
             if termination.outcome == cookie_agent_protocol::ToolTerminationOutcome::Failed {
                 writeln!(
                     stderr,
                     "cookie tool {}: {}",
                     termination.tool_call_id,
-                    cookie_agent_protocol::diagnostics::tool(&termination)
+                    cookie_agent_protocol::diagnostics::tool(termination)
                 )?;
             }
             if display.args.verbose && display.mode != OutputMode::Json {
-                let title = state.tool_titles.remove(&termination.tool_call_id);
-                write_tool_summary(stderr, title, &termination)?;
+                write_tool_summary(stderr, title, termination)?;
             }
         }
-        EventPayload::InternalAgentFinished {
-            kind,
-            outcome:
-                cookie_agent_protocol::Open::Known(
-                    cookie_agent_protocol::InternalAgentOutcome::Failed { failure, .. },
-                ),
-            ..
-        } => {
+        RunNote::InternalAgentFailed { kind, failure } => {
             writeln!(
                 stderr,
                 "cookie internal agent {kind:?}: {}",
-                cookie_agent_protocol::diagnostics::internal(&failure)
+                cookie_agent_protocol::diagnostics::internal(failure)
             )?;
         }
-        EventPayload::InternalAgentFallback {
+        RunNote::InternalAgentFallback {
             kind,
             from,
             to,
             attempts,
             failure,
-            ..
         } => {
             writeln!(
                 stderr,
                 "cookie {}",
                 cookie_agent_protocol::diagnostics::internal_fallback(
-                    kind, &from, &to, attempts, &failure
+                    kind, from, to, attempts, failure
                 )
             )?;
         }
-        EventPayload::ModelFallback { from, error, .. } => {
+        RunNote::ModelFallback { from, error } => {
             writeln!(
                 stderr,
                 "cookie model {} fallback: {}",
                 from.selection.model,
-                cookie_agent_protocol::diagnostics::model(&error)
+                cookie_agent_protocol::diagnostics::model(error)
             )?;
         }
-        EventPayload::Diagnostic {
+        RunNote::Diagnostic {
             source,
             kind,
             message,
-            ..
         } => {
-            let subject = cookie_agent_protocol::diagnostic_subject(&source, &kind)
+            let subject = cookie_agent_protocol::diagnostic_subject(source, kind)
                 .map_or_else(String::new, |subject| format!(" {subject}"));
             writeln!(
                 stderr,
                 "cookie{subject}: {}",
-                cookie_agent_protocol::diagnostics::detail(&message)
+                cookie_agent_protocol::diagnostics::detail(message)
             )?;
         }
         _ => {}
@@ -1234,14 +1145,14 @@ fn write_tool_gap(output: &mut dyn IoWrite, gap: &OutputGap) -> anyhow::Result<(
     )
 }
 
-fn terminal_exit(terminal: &TerminalOutcome, cancellation: Option<CancellationCause>) -> i32 {
-    match terminal.status {
-        TerminalStatus::Completed => 0,
-        TerminalStatus::Failed => EXIT_FAILURE,
-        TerminalStatus::Cancelled if cancellation == Some(CancellationCause::Permission) => {
+fn terminal_exit(end: &RunEnd, cancellation: Option<CancellationCause>) -> i32 {
+    match end.status {
+        RunEndStatus::Completed => 0,
+        RunEndStatus::Failed => EXIT_FAILURE,
+        RunEndStatus::Cancelled if cancellation == Some(CancellationCause::Permission) => {
             EXIT_PERMISSION
         }
-        TerminalStatus::Cancelled | TerminalStatus::Interrupted => EXIT_CANCELLED,
+        RunEndStatus::Cancelled | RunEndStatus::Interrupted => EXIT_CANCELLED,
     }
 }
 
@@ -1255,7 +1166,7 @@ fn write_terminal(
     result: TerminalResult,
 ) -> anyhow::Result<()> {
     let TerminalResult {
-        outcome: terminal,
+        end: terminal,
         exit_code,
     } = result;
     if mode == OutputMode::Text
@@ -1275,14 +1186,14 @@ fn write_terminal(
                 r#type: "summary",
                 session_id,
                 run_id,
-                status: terminal.status,
+                status: terminal.status.into(),
                 exit_code,
-                turns: state.turns,
+                turns: state.watch.turns(),
                 approval_rejections: state.approval_rejections,
                 event_recoveries: state.event_recoveries,
                 cancellation: state.cancellation,
                 final_text: terminal.final_text,
-                error: terminal.error,
+                error: terminal.reason,
                 usage,
             },
         )?;
@@ -1352,6 +1263,8 @@ fn write_json_line(writer: &mut dyn IoWrite, value: &impl Serialize) -> anyhow::
 
 #[cfg(test)]
 mod tests {
+    use cookie_agent_protocol::EventPayload;
+
     use super::*;
 
     fn run_args(extra: &[&str]) -> RunArgs {
@@ -1409,38 +1322,6 @@ mod tests {
     }
 
     #[test]
-    fn session_diagnostics_do_not_admit_other_sessions_or_runs() {
-        let session_id = SessionId::new_v7();
-        let run_id = RunId::new_v7();
-        let mut event = StoredEvent {
-            engine_version: None,
-            origin: None,
-            session_id,
-            run_id: None,
-            seq: 1,
-            timestamp: "2026-01-01T00:00:00Z".parse().unwrap(),
-            payload: EventPayload::Diagnostic {
-                source: cookie_agent_protocol::DiagnosticSource::plugin("review").unwrap(),
-                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
-                message: "useful diagnostic".into(),
-                count: None,
-                detail: None,
-            },
-        };
-        assert!(event_belongs_to_run(&event, session_id, run_id));
-        assert!(!event_belongs_to_run(&event, SessionId::new_v7(), run_id));
-        event.run_id = Some(RunId::new_v7());
-        assert!(!event_belongs_to_run(&event, session_id, run_id));
-        event.run_id = Some(run_id);
-        assert!(event_belongs_to_run(&event, session_id, run_id));
-        event.run_id = None;
-        event.payload = EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
-            final_text: None,
-        });
-        assert!(!event_belongs_to_run(&event, session_id, run_id));
-    }
-
-    #[test]
     fn cursor_suppresses_duplicates_and_accepts_persisted_sequence_gaps() {
         let session_id = SessionId::new_v7();
         let event = |seq| StoredEvent {
@@ -1454,7 +1335,7 @@ mod tests {
                 content: "cursor test".into(),
             },
         };
-        let mut state = DriverState::new(2);
+        let mut state = DriverState::new(RunWatch::new(session_id, RunId::new_v7()), 2);
         assert!(matches!(
             accept_event(&mut state, event(2)),
             AcceptedEvent::Duplicate
@@ -1473,15 +1354,15 @@ mod tests {
 
     #[test]
     fn permission_exit_requires_a_confirmed_cancelled_terminal() {
-        let cancelled = TerminalOutcome {
-            status: TerminalStatus::Cancelled,
+        let cancelled = RunEnd {
+            status: RunEndStatus::Cancelled,
             final_text: None,
-            error: None,
+            reason: None,
         };
-        let interrupted = TerminalOutcome {
-            status: TerminalStatus::Interrupted,
+        let interrupted = RunEnd {
+            status: RunEndStatus::Interrupted,
             final_text: None,
-            error: None,
+            reason: None,
         };
         assert_eq!(
             terminal_exit(&cancelled, Some(CancellationCause::Permission)),

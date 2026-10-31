@@ -36,6 +36,7 @@ pub mod refresh;
 pub mod reply;
 pub mod restart;
 pub mod rows;
+pub mod run_watch;
 mod runtime;
 pub mod runtimes;
 pub mod session_actions;

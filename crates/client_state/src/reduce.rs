@@ -3555,40 +3555,19 @@ pub(super) fn render_title_commit(change: &SessionTitleChange) -> String {
 fn run_finished_message(
     outcome: &cookie_agent_protocol::Open<cookie_agent_protocol::RunOutcome>,
 ) -> (EventLevel, String) {
-    use cookie_agent_protocol::RunOutcome;
-    match outcome.known() {
-        Some(RunOutcome::Completed { .. }) => (EventLevel::Info, "run completed".into()),
-        Some(RunOutcome::Failed {
-            error,
-            model_error,
-            resolved_model,
-        }) => (
-            EventLevel::Error,
-            format!(
-                "run failed: {}",
-                cookie_agent_protocol::diagnostics::run_error(
-                    error,
-                    model_error.as_ref(),
-                    resolved_model.as_ref()
-                )
-            ),
-        ),
-        Some(RunOutcome::Cancelled { reason }) => (
-            EventLevel::Info,
-            reason.as_ref().map_or_else(
-                || "run cancelled".into(),
-                |reason| format!("run cancelled: {reason}"),
-            ),
-        ),
-        Some(RunOutcome::Interrupted { reason }) => (
-            EventLevel::Error,
-            reason.as_ref().map_or_else(
-                || "run interrupted".into(),
-                |reason| format!("run interrupted: {reason}"),
-            ),
-        ),
-        None => (EventLevel::Error, "run interrupted".into()),
-    }
+    use crate::run_watch::{RunEnd, RunEndStatus};
+    let end = RunEnd::of(outcome);
+    let (level, what) = match end.status {
+        RunEndStatus::Completed => return (EventLevel::Info, "run completed".into()),
+        RunEndStatus::Failed => (EventLevel::Error, "run failed"),
+        RunEndStatus::Cancelled => (EventLevel::Info, "run cancelled"),
+        RunEndStatus::Interrupted => (EventLevel::Error, "run interrupted"),
+    };
+    let message = match end.reason {
+        Some(reason) => format!("{what}: {reason}"),
+        None => what.to_owned(),
+    };
+    (level, message)
 }
 
 /// The event row an internal agent's end shows. An outcome this build does
