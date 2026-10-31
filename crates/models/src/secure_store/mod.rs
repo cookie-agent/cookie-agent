@@ -175,7 +175,8 @@ impl SecureDirectory {
             if !lock_within_file(&lock, budget).map_err(SecureStoreError::Io)? {
                 return Err(lock_contention(self.path.join(name), started.elapsed()));
             }
-            rustix::fs::fsync(&self.directory).map_err(io_error)?;
+            // No directory fsync: a lock file's durability does not matter,
+            // and one lost in a crash is created again on the next take.
             Ok(SecureDirectoryLock {
                 directory: self,
                 lock_name: name.to_owned(),
@@ -203,7 +204,7 @@ impl SecureDirectory {
             if !try_lock_once(&lock).map_err(SecureStoreError::Io)? {
                 return Ok(None);
             }
-            rustix::fs::fsync(&self.directory).map_err(io_error)?;
+            // As in `lock_within`, the lock file needs no directory fsync.
             Ok(Some(SecureDirectoryLock {
                 directory: self,
                 lock_name: name.to_owned(),
