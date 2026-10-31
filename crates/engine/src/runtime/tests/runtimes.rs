@@ -590,6 +590,82 @@ async fn a_run_attaches_and_detaches_a_machine() {
     fixture.engine.shutdown().await;
 }
 
+/// Two attaches of one machine under way at once: the overlap is checked
+/// where the attachment is recorded, so only one of them stands.
+#[tokio::test]
+async fn concurrent_overlapping_attaches_record_one() {
+    let (fixture, selection) = custom_fixture();
+    let root = fixture._directory.path();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session")
+        .session_id;
+    let labpc = FakeRuntimeTemplate::with_workspace("labpc", probe_tools(ToolCollision::Prefix));
+    fixture
+        .engine
+        .register_runtime_template(labpc)
+        .expect("register labpc");
+    let directories = [
+        workspace_dir(&workspace_dir(root, "one"), "api"),
+        workspace_dir(&workspace_dir(root, "two"), "api"),
+        workspace_dir(&workspace_dir(root, "three"), "api"),
+        workspace_dir(&workspace_dir(root, "four"), "api"),
+    ];
+    let engine = &fixture.engine;
+    let (first, second) = tokio::join!(
+        engine.attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(directories[0].clone()),
+            origin()
+        ),
+        engine.attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(directories[1].clone()),
+            origin()
+        ),
+    );
+    assert_eq!(
+        [first.is_ok(), second.is_ok()]
+            .iter()
+            .filter(|ok| **ok)
+            .count(),
+        1,
+        "{first:?} {second:?}"
+    );
+    // The same from a run, on a session without the first machine.
+    let other = engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let (first, second) = tokio::join!(
+        engine.attach_from_run(other, "labpc", "coding", Some(directories[2].clone()), None),
+        engine.attach_from_run(other, "labpc", "coding", Some(directories[3].clone()), None),
+    );
+    assert_eq!(
+        [first.is_ok(), second.is_ok()]
+            .iter()
+            .filter(|ok| **ok)
+            .count(),
+        1,
+        "{:?} {:?}",
+        first.err(),
+        second.err()
+    );
+    let labpc_attachments = engine
+        .session_runtimes(other)
+        .expect("attachments")
+        .into_iter()
+        .filter(|attachment| attachment.runtime_id.as_str() == "labpc")
+        .count();
+    assert_eq!(labpc_attachments, 1);
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn sessions_attach_runtimes_under_unique_names() {
     let (fixture, _selection) = custom_fixture();

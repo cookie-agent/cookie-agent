@@ -540,16 +540,24 @@ impl Engine {
         } else if let Some(connection) = instance.connection() {
             connection.retry_failed_mcp();
         }
-        if self.session_acp_offers(session)?.is_none() {
-            self.refuse_overlap(session, &instance)?;
-        }
+        let runtime_id_owned = runtime_id.to_owned();
         let attachment = self
             .on_actor(session, move |engine| {
                 let projection = engine.inner.store.get(session)?;
                 if projection.status == SessionStatus::Running {
                     return Err(EngineError::SessionRunning(session));
                 }
+                // Checked on the actor, so of two attaches under way only
+                // the first can pass.
+                engine.refuse_second_acp_runtime(session, runtime_id_owned.as_str())?;
                 let mut attachments = engine.attachments_of(&projection);
+                if engine.session_acp_offers(session)?.is_none() {
+                    engine.refuse_overlap_with(
+                        &attachments,
+                        &instance,
+                        &cookie_agent_runtime_api::SessionToolContext::new(session),
+                    )?;
+                }
                 let attachment = push_instance(&mut attachments, &instance)?;
                 engine.append_direct(session, None, origin, attached_event(&attachment))?;
                 Ok(attachment)

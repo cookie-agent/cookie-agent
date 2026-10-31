@@ -66,11 +66,19 @@ impl Engine {
         if let Some(connection) = instance.connection() {
             connection.retry_failed_mcp();
         }
-        self.refuse_overlap(session, &instance)?;
+        let runtime_id_owned = runtime_id.to_owned();
         let attachment = self
             .on_actor(session, move |engine| {
+                // Checked on the actor, so of two attaches under way only
+                // the first can pass.
+                engine.refuse_second_acp_runtime(session, runtime_id_owned.as_str())?;
                 let projection = engine.inner.store.get(session)?;
                 let mut attachments = engine.attachments_of(&projection);
+                engine.refuse_overlap_with(
+                    &attachments,
+                    &instance,
+                    &SessionToolContext::new(session),
+                )?;
                 let attachment = super::attachments::push_instance(&mut attachments, &instance)?;
                 engine.append_direct(
                     session,
@@ -347,25 +355,10 @@ impl Engine {
     }
 
     /// Refuses `instance` when one of its tools has the name of a tool that
-    /// another of `session`'s attachments on the same machine offers
-    /// (machines on demand, section 4). A runtime the daemon cannot place
-    /// is its own machine.
-    pub(crate) fn refuse_overlap(
-        &self,
-        session: SessionId,
-        instance: &Arc<RuntimeInstance>,
-    ) -> Result<(), EngineError> {
-        let projection = self.inner.store.get(session)?;
-        self.refuse_overlap_with(
-            &self.attachments_of(&projection),
-            instance,
-            &SessionToolContext::new(session),
-        )
-    }
-
-    /// [`Engine::refuse_overlap`] against the attachments `existing`, for a
-    /// session that may not exist yet (its creation, a subagent's
-    /// capabilities): tool lists are read with `context`.
+    /// another attachment among `existing` on the same machine offers
+    /// (machines on demand, section 4); a runtime the daemon cannot place is
+    /// its own machine. The session may not exist yet (its creation, a
+    /// subagent's capabilities): tool lists are read with `context`.
     pub(crate) fn refuse_overlap_with(
         &self,
         existing: &[RuntimeAttachment],
