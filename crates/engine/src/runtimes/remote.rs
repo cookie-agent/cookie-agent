@@ -107,6 +107,9 @@ pub(crate) struct ProtocolTemplate {
     connection: Mutex<Option<RuntimeClient>>,
     /// What the runtime offered when it last connected.
     offered: Mutex<RuntimeListingState>,
+    /// Counts [`RuntimeTemplate::disconnect`]s, so a connection that
+    /// finishes initializing after one is shut down instead of kept.
+    disconnects: std::sync::atomic::AtomicU64,
 }
 
 /// How long the daemon waits for the in-process `local` runtime to answer
@@ -137,6 +140,7 @@ impl ProtocolTemplate {
             connecting: tokio::sync::Mutex::new(()),
             connection: Mutex::new(None),
             offered: Mutex::default(),
+            disconnects: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -187,6 +191,7 @@ impl ProtocolTemplate {
         if let Some(client) = current() {
             return Ok(client);
         }
+        let disconnects = self.disconnects.load(std::sync::atomic::Ordering::SeqCst);
         let diagnostics = Mutex::new(None);
         let settings = lock(&self.settings).clone();
         let attempt = async {
@@ -218,10 +223,7 @@ impl ProtocolTemplate {
                 None => reason,
             })
             .inspect_err(|reason| lock(&self.offered).message = Some(reason.clone()))?;
-        if let Some(liveness) = self.liveness {
-            client.keep_alive(liveness);
-        }
-        *lock(&self.offered) = RuntimeListingState {
+        let listing = RuntimeListingState {
             connected: true,
             capabilities: client.capabilities(),
             platform: result.platform,
@@ -231,7 +233,26 @@ impl ProtocolTemplate {
             home: client.home(),
             message: None,
         };
-        *lock(&self.connection) = Some(client.clone());
+        {
+            // A disconnect counts itself under the connection lock: either it
+            // finds this connection installed and takes it, or this one is
+            // not installed.
+            let mut connection = lock(&self.connection);
+            if self.disconnects.load(std::sync::atomic::Ordering::SeqCst) != disconnects {
+                drop(connection);
+                let stale = client.clone();
+                tokio::spawn(async move { stale.shutdown().await });
+                return Err(format!(
+                    "runtime `{}` was disconnected while it connected",
+                    self.runtime_id
+                ));
+            }
+            *lock(&self.offered) = listing;
+            *connection = Some(client.clone());
+        }
+        if let Some(liveness) = self.liveness {
+            client.keep_alive(liveness);
+        }
         // Settings that changed while the runtime initialized reach it now.
         let latest = lock(&self.settings).clone();
         if latest != settings {
@@ -301,9 +322,10 @@ impl RuntimeTemplate for ProtocolTemplate {
     }
 
     fn disconnect(&self) -> Option<super::registry::RuntimeLink> {
-        lock(&self.connection)
-            .take()
-            .map(super::registry::RuntimeLink)
+        let mut connection = lock(&self.connection);
+        self.disconnects
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        connection.take().map(super::registry::RuntimeLink)
     }
 
     fn update_settings(&self, settings: &RuntimeSettings) {

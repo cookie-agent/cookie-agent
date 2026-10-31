@@ -470,6 +470,13 @@ fn start_failure(template: &dyn RuntimeTemplate, reason: &str) -> String {
     }
 }
 
+/// The error of a start a client's disconnect overtook.
+fn disconnected(runtime_id: &str) -> EngineError {
+    EngineError::Runtime(format!(
+        "runtime `{runtime_id}` was disconnected while it started"
+    ))
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct InstanceKey {
     runtime_id: String,
@@ -631,6 +638,10 @@ pub(crate) struct RuntimeRegistry {
     /// Runtimes a client disconnected ([`Self::disconnect`]): opening a
     /// session leaves them down until something uses them.
     parked: Mutex<std::collections::HashSet<String>>,
+    /// By runtime ID, cancelled when a client disconnects the runtime: a
+    /// start or reconnect begun before then neither installs an instance
+    /// nor keeps trying.
+    stops: Mutex<BTreeMap<String, CancellationToken>>,
 }
 
 impl RuntimeRegistry {
@@ -671,6 +682,7 @@ impl RuntimeRegistry {
             shutdown: CancellationToken::new(),
             reported: Mutex::default(),
             parked: Mutex::default(),
+            stops: Mutex::default(),
         }
     }
 
@@ -1145,13 +1157,22 @@ impl RuntimeRegistry {
             return self.reuse(template.as_ref(), instance).await;
         }
         let pending = self.resolve(&requested);
+        let stop = self.stop_token(runtime_id);
         let previous = self.begin_start(&pending);
-        match template.start(&offered.name, workspace).await {
+        let started = template.start(&offered.name, workspace).await;
+        if stop.is_cancelled() {
+            self.abandon_start(&pending, previous);
+            return Err(disconnected(runtime_id));
+        }
+        match started {
             Ok(started)
                 if started.info.id() == runtime_id
                     && started.info.capability() == &offered.name =>
             {
-                Ok(self.install(&requested, &pending, started, previous.instance))
+                match self.install(&requested, &pending, started, previous.instance, &stop) {
+                    Some(instance) => Ok(instance),
+                    None => Err(disconnected(runtime_id)),
+                }
             }
             Ok(started) => {
                 let message = format!(
@@ -1300,16 +1321,52 @@ impl RuntimeRegistry {
         previous
     }
 
+    /// The token [`Self::disconnect`] cancels for `runtime_id`.
+    fn stop_token(&self, runtime_id: &str) -> CancellationToken {
+        self.stops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(runtime_id.to_owned())
+            .or_insert_with(|| self.shutdown.child_token())
+            .clone()
+    }
+
+    /// Puts back what was recorded at `pending` before a start a client's
+    /// disconnect overtook: the instance that ran there, stopped, or
+    /// nothing.
+    fn abandon_start(&self, pending: &InstanceKey, previous: Previous) {
+        {
+            let mut slots = self
+                .slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(InstanceSlot::Starting) = slots.get(pending) {
+                match previous.instance {
+                    Some(instance) => {
+                        slots.insert(pending.clone(), InstanceSlot::Stopped(instance));
+                    }
+                    None => {
+                        slots.remove(pending);
+                    }
+                }
+            }
+        }
+        self.notify();
+    }
+
     /// Records a started instance under the canonical workspace it reported,
     /// or returns the running instance already there. An instance that ran
-    /// there before and failed is revived under a new generation.
+    /// there before and failed is revived under a new generation. Nothing is
+    /// recorded once `stop` is cancelled: a client disconnected the runtime
+    /// while it started.
     fn install(
         self: &Arc<Self>,
         requested: &InstanceKey,
         pending: &InstanceKey,
         started: StartedRuntime,
         previous: Option<Arc<RuntimeInstance>>,
-    ) -> Arc<RuntimeInstance> {
+        stop: &CancellationToken,
+    ) -> Option<Arc<RuntimeInstance>> {
         let key = InstanceKey::of(&started.info);
         if let (Some(_), Some(canonical)) = (&requested.workspace, &key.workspace)
             && &key != requested
@@ -1323,6 +1380,20 @@ impl RuntimeRegistry {
             .slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Checked under the slots lock, which a disconnect takes after
+        // cancelling: either the disconnect finds the instance installed and
+        // stops it, or the instance is not installed.
+        if stop.is_cancelled() {
+            drop(slots);
+            self.abandon_start(
+                pending,
+                Previous {
+                    recorded: true,
+                    instance: previous,
+                },
+            );
+            return None;
+        }
         let mut revive = None;
         if let Some(InstanceSlot::Starting) = slots.get(pending) {
             match previous {
@@ -1353,7 +1424,7 @@ impl RuntimeRegistry {
             let existing = Arc::clone(existing);
             drop(slots);
             self.notify();
-            return existing;
+            return Some(existing);
         }
         let failed = revive.or_else(|| match slots.get(&key) {
             Some(InstanceSlot::Failed {
@@ -1374,7 +1445,7 @@ impl RuntimeRegistry {
         drop(slots);
         self.watch(&instance);
         self.notify();
-        instance
+        Some(instance)
     }
 
     /// The instance a recorded attachment refers to, started when it is not
@@ -1438,6 +1509,9 @@ impl RuntimeRegistry {
         reason: String,
     ) {
         let key = InstanceKey::of(&instance.info);
+        // Taken before the slot says reconnecting, so a disconnect that
+        // stops the instance also ends these attempts.
+        let stop = self.stop_token(&key.runtime_id);
         {
             let mut slots = self
                 .slots
@@ -1475,7 +1549,7 @@ impl RuntimeRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         let outcome = policy
-            .run(&self.shutdown, |_| {
+            .run(&stop, |_| {
                 let template = Arc::clone(&template);
                 let workspace = workspace.clone();
                 let capability = capability.clone();
@@ -1773,6 +1847,16 @@ impl RuntimeRegistry {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(runtime_id.to_owned());
+        // Ends reconnect loops and keeps starts in flight from installing,
+        // before the slots are stopped (see `install`).
+        if let Some(stop) = self
+            .stops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(runtime_id)
+        {
+            stop.cancel();
+        }
         let mut connections = Vec::new();
         {
             let mut slots = self

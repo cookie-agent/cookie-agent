@@ -83,6 +83,14 @@ struct TestConnector {
     connects: std::sync::atomic::AtomicUsize,
     /// While set, connecting fails, as when a host is unreachable.
     refuse: std::sync::atomic::AtomicBool,
+    /// The next connect says it began on the first sender and waits for
+    /// the second to be dropped or fired.
+    hold: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 
 impl TestConnector {
@@ -98,7 +106,22 @@ impl TestConnector {
             silenced: Mutex::new(CancellationToken::new()),
             connects: std::sync::atomic::AtomicUsize::new(0),
             refuse: std::sync::atomic::AtomicBool::new(false),
+            hold: Mutex::new(None),
         })
+    }
+
+    /// Holds the next connect until the returned sender fires; the
+    /// receiver says it began.
+    fn hold_next(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (began, began_receiver) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *self.hold.lock().unwrap() = Some((began, released));
+        (began_receiver, release)
     }
 
     fn builtin() -> Arc<Self> {
@@ -141,6 +164,11 @@ impl RuntimeConnector for TestConnector {
     async fn connect(&self) -> Result<cookie_agent_runtime_api::RuntimeConnection, String> {
         if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("connection refused".into());
+        }
+        let hold = self.hold.lock().unwrap().take();
+        if let Some((began, released)) = hold {
+            let _ = began.send(());
+            let _ = released.await;
         }
         self.connects
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -757,6 +785,104 @@ async fn a_dropped_instance_reconnects_with_its_tools_published_meanwhile() {
     .await;
     wait_for_status(registry, "remote", crate::RuntimeInstanceStatus::Ready).await;
     assert_eq!(connector.connects(), 3);
+    fixture.engine.shutdown().await;
+}
+
+fn listing_connected(registry: &crate::runtimes::RuntimeRegistry, runtime_id: &str) -> bool {
+    registry
+        .templates()
+        .into_iter()
+        .find(|template| template.runtime_id == runtime_id)
+        .expect("template listed")
+        .listing
+        .connected
+}
+
+/// A disconnect while the instance reconnects ends the attempts: the
+/// runtime is not started again behind the client's back.
+#[tokio::test]
+async fn a_disconnect_ends_the_reconnect_of_a_dropped_instance() {
+    let (fixture, _) = custom_fixture();
+    let workspace = private_tempdir();
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let registry = &fixture.engine.inner.runtimes;
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(300);
+        3
+    ]));
+    registry
+        .ensure("remote", None, Some(workspace.path()))
+        .await
+        .unwrap();
+    connector.cut();
+    wait_for_status(
+        registry,
+        "remote",
+        crate::RuntimeInstanceStatus::Reconnecting,
+    )
+    .await;
+    for connection in registry.disconnect("remote").unwrap() {
+        connection.shutdown().await;
+    }
+    assert_eq!(
+        instance_status(registry, "remote"),
+        crate::RuntimeInstanceStatus::Stopped
+    );
+    // Past every attempt the policy would have made.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(connector.connects(), 1);
+    assert_eq!(
+        instance_status(registry, "remote"),
+        crate::RuntimeInstanceStatus::Stopped
+    );
+    assert!(!listing_connected(registry, "remote"));
+    fixture.engine.shutdown().await;
+}
+
+/// A disconnect while the runtime is still connecting for a start wins:
+/// the connection that arrives afterwards is shut down, and no instance
+/// is installed over it.
+#[tokio::test]
+async fn a_connection_that_arrives_after_a_disconnect_is_not_kept() {
+    let (fixture, _) = custom_fixture();
+    let workspace = private_tempdir();
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let registry = Arc::clone(&fixture.engine.inner.runtimes);
+    let (began, release) = connector.hold_next();
+    let starting = {
+        let registry = Arc::clone(&registry);
+        let workspace = workspace.path().to_owned();
+        tokio::spawn(async move { registry.ensure("remote", None, Some(&workspace)).await })
+    };
+    began.await.expect("the connect began");
+    for connection in registry.disconnect("remote").unwrap() {
+        connection.shutdown().await;
+    }
+    release.send(()).expect("the connect waits");
+    let error = tokio::time::timeout(WAIT, starting)
+        .await
+        .expect("the start ends")
+        .unwrap()
+        .err()
+        .expect("the start is refused");
+    assert!(error.to_string().contains("disconnected"), "{error}");
+    assert_eq!(connector.connects(), 1);
+    assert!(!listing_connected(&registry, "remote"));
+    assert!(
+        registry
+            .instances()
+            .iter()
+            .all(|instance| instance.runtime_id != "remote"
+                || instance.status != crate::RuntimeInstanceStatus::Ready)
+    );
+    // The next use starts it again.
+    registry
+        .ensure("remote", None, Some(workspace.path()))
+        .await
+        .expect("a later start");
+    assert!(listing_connected(&registry, "remote"));
     fixture.engine.shutdown().await;
 }
 
