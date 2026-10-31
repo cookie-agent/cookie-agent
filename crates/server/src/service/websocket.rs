@@ -36,6 +36,9 @@ struct WebSocketStream {
     ping_after: Option<Duration>,
     /// When a frame last went either way.
     active: tokio::time::Instant,
+    /// When the daemon pinged a quiet connection that has sent nothing
+    /// since.
+    pinged: Option<tokio::time::Instant>,
 }
 
 /// How long a closing stream waits for its handler to choose the close
@@ -48,6 +51,24 @@ const CLOSE_CHOICE_WAIT: Duration = Duration::from_secs(1);
 /// daemon ends an idle one (a Cloudflare tunnel after 100 s), which the
 /// page took for a lost daemon and reconnected.
 const CLIENT_PING_AFTER: Duration = Duration::from_secs(30);
+
+/// How long a pinged client has to send anything, a pong included, before
+/// the daemon takes the connection for half-open and closes it: a client
+/// that went away without a close (a laptop that slept, a dropped network)
+/// otherwise stays connected for good.
+const CLIENT_PONG_WAIT: Duration = Duration::from_secs(30);
+
+/// [`CLIENT_PONG_WAIT`], or in a test what it set in milliseconds.
+fn client_pong_wait() -> Duration {
+    #[cfg(test)]
+    {
+        let millis = tests::PONG_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if millis > 0 {
+            return Duration::from_millis(millis);
+        }
+    }
+    CLIENT_PONG_WAIT
+}
 
 /// [`CLIENT_PING_AFTER`], or in a test what it set in milliseconds.
 fn client_ping_after() -> Duration {
@@ -74,6 +95,7 @@ impl WebSocketStream {
             restarting: Some(restarting),
             ping_after: Some(client_ping_after()),
             active: tokio::time::Instant::now(),
+            pinged: None,
         }
     }
 
@@ -94,6 +116,7 @@ impl WebSocketStream {
                 restarting: None,
                 ping_after: None,
                 active: tokio::time::Instant::now(),
+                pinged: None,
             },
             choice,
         )
@@ -139,22 +162,34 @@ impl MessageStream for WebSocketStream {
         loop {
             let message = match self.ping_after {
                 Some(ping_after) => {
-                    let due = tokio::time::sleep_until(self.active + ping_after);
+                    let due = match self.pinged {
+                        Some(pinged) => pinged + client_pong_wait(),
+                        None => self.active + ping_after,
+                    };
                     tokio::select! {
                         message = self.socket.next() => Some(message),
-                        () = due => None,
+                        () = tokio::time::sleep_until(due) => None,
                     }
                 }
                 None => Some(self.socket.next().await),
             };
-            self.active = tokio::time::Instant::now();
+            let now = tokio::time::Instant::now();
+            self.active = now;
             let Some(message) = message else {
+                if self.pinged.is_some() {
+                    return Err(TransportError::Other(format!(
+                        "the client did not answer a ping within {}",
+                        cookie_agent_protocol::diagnostics::duration(client_pong_wait())
+                    )));
+                }
                 self.socket
                     .send(axum::extract::ws::Message::Ping(Default::default()))
                     .await
                     .map_err(|error| TransportError::Other(error.to_string()))?;
+                self.pinged = Some(now);
                 continue;
             };
+            self.pinged = None;
             match message {
                 Some(Ok(axum::extract::ws::Message::Text(text))) => {
                     return Ok(Some(MessageFrame::Bytes(text.into())));
@@ -550,6 +585,10 @@ mod tests {
     pub(super) static PING_AFTER_MS: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
 
+    /// A test's pong wait in milliseconds; zero keeps the daemon's.
+    pub(super) static PONG_WAIT_MS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
     fn bearer(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -834,6 +873,28 @@ mod authentication_tests {
         // It still answers.
         let reply = call(&mut socket, 2, "session.list", json!({})).await;
         assert!(reply["result"]["sessions"].is_array(), "{reply}");
+        daemon.stop().await;
+    }
+
+    /// A client that stops answering pings, as one whose connection went
+    /// half-open does, is closed once its pong is overdue.
+    #[tokio::test]
+    async fn the_daemon_closes_a_client_that_does_not_answer_its_ping() {
+        super::tests::PING_AFTER_MS.store(100, std::sync::atomic::Ordering::Relaxed);
+        super::tests::PONG_WAIT_MS.store(200, std::sync::atomic::Ordering::Relaxed);
+        let daemon = Daemon::start().await;
+        let mut socket = daemon
+            .connect("/ws", Some(daemon.token.as_str()), None)
+            .await
+            .expect("upgrade");
+        let reply = call(&mut socket, 1, "handshake", hello(None)).await;
+        assert!(reply["result"]["origin"].is_string(), "{reply}");
+        // Not reading sends no pong.
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        assert!(
+            closes(&mut socket).await,
+            "the daemon closed the connection"
+        );
         daemon.stop().await;
     }
 
