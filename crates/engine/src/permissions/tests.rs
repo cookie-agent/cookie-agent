@@ -1628,6 +1628,73 @@ fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
 }
 
 #[test]
+fn a_path_is_read_as_its_runtimes_platform_reads_it() {
+    let policy = policy(vec![
+        rule("all", PermissionAction::WRITE, "*", PermissionEffect::Allow),
+        rule(
+            "etc",
+            PermissionAction::WRITE,
+            "/etc/*",
+            PermissionEffect::Deny,
+        ),
+        rule(
+            "share",
+            PermissionAction::WRITE,
+            "//server/share/*",
+            PermissionEffect::Deny,
+        ),
+        rule(
+            "all",
+            PermissionAction::ATTACH,
+            "*",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "root",
+            PermissionAction::ATTACH,
+            "/root",
+            PermissionEffect::Deny,
+        ),
+    ]);
+    let decide = |action: &PermissionAction, resource: &str, platform: Option<&str>| {
+        super::effective_permission(
+            &policy,
+            action,
+            resource,
+            super::PermissionScope::runtime("labpc", None).with_platform(platform),
+        )
+        .0
+    };
+    let write = PermissionAction::WRITE;
+    let attach = PermissionAction::ATTACH;
+    use PermissionEffect::{Allow, Deny};
+    for (action, resource, platform, effect) in [
+        // A POSIX path has one root, and its names may hold a `\`.
+        (&write, "//etc/passwd", Some("linux"), Deny),
+        (&write, "//server/share/x", Some("linux"), Allow),
+        (&write, r"/etc/x\..\..\tmp\y", Some("macos"), Deny),
+        (&attach, "//root", Some("linux"), Deny),
+        // A Windows path may start at a share, and `\` separates names.
+        (&write, "//server/share/x", Some("windows"), Deny),
+        (&write, r"\\server\share\x", Some("windows"), Deny),
+        (&write, "//etc/passwd", Some("windows"), Allow),
+        (&write, r"/etc/x\..\..\tmp\y", Some("windows"), Allow),
+        // An unreported platform: a deny in either reading wins.
+        (&write, "//etc/passwd", None, Deny),
+        (&write, "//server/share/x", None, Deny),
+        (&write, r"/etc/x\..\..\tmp\y", None, Deny),
+        (&attach, "//root", None, Deny),
+        (&write, "/tmp/y", None, Allow),
+    ] {
+        assert_eq!(
+            decide(action, resource, platform),
+            effect,
+            "{action:?} {resource} on {platform:?}"
+        );
+    }
+}
+
+#[test]
 fn path_resources_are_matched_with_dots_collapsed() {
     // Paths must be absolute on the platform the test runs on.
     let root = if cfg!(windows) { "C:" } else { "" };
@@ -2977,6 +3044,7 @@ fn mcp_offered(
             runtime,
             workspace: None,
             home: None,
+            platform: None,
         },
     )
 }

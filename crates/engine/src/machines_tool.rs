@@ -25,6 +25,8 @@ use cookie_agent_runtime_api::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use cookie_agent_protocol::paths::PathStyle;
+
 use crate::{Engine, runtime::Inner};
 
 mod transfer;
@@ -124,12 +126,14 @@ fn wrong_tool(tool: &str) -> ToolError {
     ))
 }
 
-/// The `attach` resource of `workspace` on a runtime whose home is `home`:
-/// a leading `~` expanded against the home, as the runtime expands it, and
-/// the path labelled ([`cookie_agent_protocol::paths::path_label`]), `.`
-/// and `..` collapsed and a trailing `/` dropped, so a rule matches the
-/// directory the runtime opens.
-fn attach_label(workspace: &str, home: Option<&str>) -> String {
+/// The `attach` resource of `workspace` on a runtime whose home is `home`
+/// and whose platform reads paths in `style`: a leading `~` expanded against
+/// the home, as the runtime expands it, and the path labelled
+/// ([`cookie_agent_protocol::paths::path_label`]), `.` and `..` collapsed and
+/// a trailing `/` dropped, so a rule matches the directory the runtime opens.
+/// Without a style the path is left as it is, for the rules to read both
+/// ways.
+fn attach_label(workspace: &str, home: Option<&str>, style: Option<PathStyle>) -> String {
     let expanded = match home {
         Some(home) if workspace == "~" => home.to_owned(),
         Some(home) => match workspace.strip_prefix("~/") {
@@ -138,7 +142,18 @@ fn attach_label(workspace: &str, home: Option<&str>) -> String {
         },
         None => workspace.to_owned(),
     };
-    cookie_agent_protocol::paths::path_label(&expanded)
+    match style {
+        Some(style) => cookie_agent_protocol::paths::path_label(&expanded, style),
+        None => expanded,
+    }
+}
+
+/// The style the paths of the runtime with ID `runtime` are read in, when
+/// it reported its platform.
+fn runtime_style(engine: &Engine, runtime: &str) -> Option<PathStyle> {
+    engine
+        .runtime_platform(runtime)
+        .map(|platform| PathStyle::of_platform(&platform))
 }
 
 /// The capability and workspace a call names, checked.
@@ -190,10 +205,17 @@ impl ToolProvider for MachinesTool {
                 let args: AttachArgs = parse_args(ATTACH_MACHINE, arguments.clone())?;
                 match args.workspace {
                     Some(workspace) => {
-                        let home = target(&args.capability, None).ok().and_then(|target| {
-                            self.engine().ok()?.runtime_home(target.runtime_id.as_str())
-                        });
-                        attach_label(&workspace, home.as_deref())
+                        let engine = self.engine().ok();
+                        let runtime = target(&args.capability, None)
+                            .ok()
+                            .map(|target| target.runtime_id.to_string());
+                        let (home, style) = engine.as_ref().zip(runtime.as_deref()).map_or(
+                            (None, None),
+                            |(engine, runtime)| {
+                                (engine.runtime_home(runtime), runtime_style(engine, runtime))
+                            },
+                        );
+                        attach_label(&workspace, home.as_deref(), style)
                     }
                     None => String::new(),
                 }
@@ -281,10 +303,11 @@ impl ToolProvider for MachinesTool {
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let home = engine.runtime_home(target.runtime_id.as_str());
+                let style = runtime_style(&engine, target.runtime_id.as_str());
                 let label = args
                     .workspace
                     .as_deref()
-                    .map(|workspace| attach_label(workspace, home.as_deref()))
+                    .map(|workspace| attach_label(workspace, home.as_deref(), style))
                     .unwrap_or_default();
                 (
                     MachinesExecutor::Attach {
@@ -306,7 +329,13 @@ impl ToolProvider for MachinesTool {
                 let workspace = engine
                     .attachment_of_capability(ctx.session, &target)
                     .and_then(|attachment| attachment.workspace)
-                    .map(|workspace| cookie_agent_protocol::paths::path_label(&workspace))
+                    .map(|workspace| {
+                        attach_label(
+                            &workspace,
+                            None,
+                            runtime_style(&engine, target.runtime_id.as_str()),
+                        )
+                    })
                     .unwrap_or_default();
                 (
                     MachinesExecutor::Detach {
@@ -497,6 +526,8 @@ mod tests {
         AttachmentName, CapabilityName, MachineName, RuntimeAttachment, RuntimeId, RuntimeKind,
     };
 
+    use cookie_agent_protocol::paths::PathStyle;
+
     use super::{attach_label, attached_text};
     use crate::runtime::machine_attach::{AttachedMachine, AttachedTool};
 
@@ -549,19 +580,30 @@ mod tests {
 
     #[test]
     fn an_attach_resource_is_the_directory_the_runtime_opens() {
-        for (workspace, home, label) in [
-            ("/srv/projects/../../root", None, "/root"),
-            ("/srv/projects/api/", None, "/srv/projects/api"),
-            ("/srv/./projects/api", None, "/srv/projects/api"),
-            ("~/src/api", Some("/home/ada"), "/home/ada/src/api"),
-            ("~/src/../../bob", Some("/home/ada/"), "/home/bob"),
-            ("~", Some("/home/ada"), "/home/ada"),
-            ("~/src/api", Some(r"C:\Users\ada"), "C:/Users/ada/src/api"),
+        let posix = Some(PathStyle::Posix);
+        let windows = Some(PathStyle::Windows);
+        for (workspace, home, style, label) in [
+            ("/srv/projects/../../root", None, posix, "/root"),
+            ("/srv/projects/api/", None, posix, "/srv/projects/api"),
+            ("/srv/./projects/api", None, posix, "/srv/projects/api"),
+            ("//root", None, posix, "/root"),
+            ("~/src/api", Some("/home/ada"), posix, "/home/ada/src/api"),
+            ("~/src/../../bob", Some("/home/ada/"), posix, "/home/bob"),
+            ("~", Some("/home/ada"), posix, "/home/ada"),
+            (
+                "~/src/api",
+                Some(r"C:\Users\ada"),
+                windows,
+                "C:/Users/ada/src/api",
+            ),
+            (r"\\server\share\..\x", None, windows, "//server/share/x"),
             // Without a home `~` stays literal, as rule patterns do.
-            ("~/src/api", None, "~/src/api"),
-            ("~bob/src", Some("/home/ada"), "~bob/src"),
+            ("~/src/api", None, posix, "~/src/api"),
+            ("~bob/src", Some("/home/ada"), posix, "~bob/src"),
+            // Without a platform the rules read it both ways.
+            ("//root/../x", None, None, "//root/../x"),
         ] {
-            assert_eq!(attach_label(workspace, home), label, "{workspace}");
+            assert_eq!(attach_label(workspace, home, style), label, "{workspace}");
         }
     }
 

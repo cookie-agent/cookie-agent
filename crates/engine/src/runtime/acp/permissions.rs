@@ -11,6 +11,7 @@
 //! through the approval flow, as does an `ask`. The answer is the agent's
 //! allow-once or reject-once option, never an "always" one.
 
+use cookie_agent_protocol::paths::PathStyle;
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalEvaluation, ApprovalId, ApprovalRequest, ApprovalResourceSource,
     ApprovalTrigger, DecisionTrace, PermissionAction, PermissionEffect, PreparedBindingLifetime,
@@ -93,10 +94,12 @@ fn command_of(call: &ToolCallFields) -> Option<String> {
         .or_else(|| call.title.clone())
 }
 
-/// The paths a file call touches, as labels
-/// ([`cookie_agent_protocol::paths::path_label`]): its locations, else its
-/// raw input's path. None when it names neither: its title is no path.
-fn paths_of(call: &ToolCallFields) -> Vec<String> {
+/// The paths a file call touches: its locations, else its raw input's path.
+/// None when it names neither: its title is no path. Labelled
+/// ([`cookie_agent_protocol::paths::path_label`]) as `style` reads them,
+/// the platform of the agent's runtime; as they are when it reported none,
+/// for the rules to read both ways.
+fn paths_of(call: &ToolCallFields, style: Option<PathStyle>) -> Vec<String> {
     let locations = call
         .locations
         .iter()
@@ -116,14 +119,21 @@ fn paths_of(call: &ToolCallFields) -> Vec<String> {
     };
     paths
         .into_iter()
-        .map(cookie_agent_protocol::paths::path_label)
+        .map(|path| match style {
+            Some(style) => cookie_agent_protocol::paths::path_label(path, style),
+            None => path.to_owned(),
+        })
         .collect()
 }
 
 /// A file call of `action`: decided by the rules on the paths it names, or,
 /// naming none, through the approval flow.
-fn file_request(action: PermissionAction, call: &ToolCallFields) -> MappedRequest {
-    let resources = paths_of(call);
+fn file_request(
+    action: PermissionAction,
+    call: &ToolCallFields,
+    style: Option<PathStyle>,
+) -> MappedRequest {
+    let resources = paths_of(call, style);
     if resources.is_empty() {
         return MappedRequest::Ask {
             resource: call
@@ -204,13 +214,17 @@ fn mcp_name_part(value: &str) -> String {
 
 /// Maps the tool call a permission request names onto cookie's action
 /// and resources: `call` as the request carries it, merged over `known`,
-/// what the agent reported of the call before.
-pub(crate) fn map_request(call: &ToolCallFields, known: Option<&ToolCallFields>) -> MappedRequest {
+/// what the agent reported of the call before, its paths read in `style`.
+pub(crate) fn map_request(
+    call: &ToolCallFields,
+    known: Option<&ToolCallFields>,
+    style: Option<PathStyle>,
+) -> MappedRequest {
     let merged = merge(known, call);
     let kind = merged.kind.as_deref().unwrap_or("other");
     match kind {
-        "read" | "search" => file_request(PermissionAction::READ, &merged),
-        "edit" | "delete" | "move" => file_request(PermissionAction::WRITE, &merged),
+        "read" | "search" => file_request(PermissionAction::READ, &merged, style),
+        "edit" | "delete" | "move" => file_request(PermissionAction::WRITE, &merged, style),
         "execute" => MappedRequest::Rules {
             action: PermissionAction::BASH,
             resources: command_of(&merged).into_iter().collect(),
@@ -307,7 +321,7 @@ fn option_of<'a>(options: &'a [wire::PermissionOption], kind: &str) -> Option<&'
 impl Engine {
     /// Decides ACP permission request `request` of the run `active` of
     /// `agent`, whose session works in `cwd` on the agent's runtime, home
-    /// `home`: the answer to send the agent. An approval it asks for names
+    /// `home`, which runs `platform`: the answer to send the agent. An approval it asks for names
     /// `tool_call_id`, the cookie call the agent's call is shown as.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime) async fn decide_acp_permission(
@@ -317,12 +331,23 @@ impl Engine {
         agent: &RuntimeAgent,
         cwd: &str,
         home: Option<&str>,
+        platform: Option<&str>,
         request: &wire::PermissionRequest,
         known: Option<&ToolCallFields>,
         tool_call_id: Option<ToolCallId>,
     ) -> Value {
         let allowed = self
-            .acp_permission_allowed(active, run, agent, cwd, home, request, known, tool_call_id)
+            .acp_permission_allowed(
+                active,
+                run,
+                agent,
+                cwd,
+                home,
+                platform,
+                request,
+                known,
+                tool_call_id,
+            )
             .await;
         let option = if allowed {
             option_of(&request.options, "allow_once")
@@ -340,11 +365,13 @@ impl Engine {
         agent: &RuntimeAgent,
         cwd: &str,
         home: Option<&str>,
+        platform: Option<&str>,
         request: &wire::PermissionRequest,
         known: Option<&ToolCallFields>,
         tool_call_id: Option<ToolCallId>,
     ) -> bool {
-        let (action, resources, by_rules) = match map_request(&request.tool_call, known) {
+        let style = platform.map(PathStyle::of_platform);
+        let (action, resources, by_rules) = match map_request(&request.tool_call, known, style) {
             MappedRequest::Allow => return true,
             MappedRequest::Rules { action, resources } => (action, resources, true),
             MappedRequest::Ask { label, resource } => (label, vec![resource], false),
@@ -429,7 +456,8 @@ impl Engine {
                     agent.runtime.as_str(),
                     Some(workspace),
                 )
-                .with_home(home),
+                .with_home(home)
+                .with_platform(platform),
             );
             match decision.effect {
                 PermissionEffect::Allow => return true,
@@ -500,7 +528,7 @@ impl cookie_agent_runtime_api::PreparedExecutor for AnsweredExecutor {
 mod tests {
     use serde_json::json;
 
-    use super::{MappedRequest, map_request};
+    use super::{MappedRequest, PathStyle, map_request};
     use cookie_agent_protocol::PermissionAction;
 
     fn call(value: serde_json::Value) -> super::ToolCallFields {
@@ -545,7 +573,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                map_request(&call(fields.clone()), None),
+                map_request(&call(fields.clone()), None, None),
                 expected,
                 "{fields}"
             );
@@ -592,6 +620,7 @@ mod tests {
             let mapped = map_request(
                 &call(json!({"toolCallId": "a", "kind": "other", "title": title})),
                 None,
+                None,
             );
             assert!(
                 matches!(&mapped, MappedRequest::Ask { label, .. } if label.as_str() == "other"),
@@ -605,6 +634,7 @@ mod tests {
                     json!({"toolCallId": "a", "kind": "execute", "title": "mcp__cookie__memory_read"})
                 ),
                 None,
+                None,
             ),
             rules(PermissionAction::BASH, "mcp__cookie__memory_read")
         );
@@ -613,7 +643,11 @@ mod tests {
     #[test]
     fn think_allows_and_the_rest_asks() {
         assert_eq!(
-            map_request(&call(json!({"toolCallId": "a", "kind": "think"})), None),
+            map_request(
+                &call(json!({"toolCallId": "a", "kind": "think"})),
+                None,
+                None
+            ),
             MappedRequest::Allow
         );
         for (kind, label) in [
@@ -624,6 +658,7 @@ mod tests {
         ] {
             let mapped = map_request(
                 &call(json!({"toolCallId": "a", "kind": kind, "title": "Go to plan"})),
+                None,
                 None,
             );
             assert_eq!(
@@ -638,22 +673,32 @@ mod tests {
     }
 
     #[test]
-    fn file_paths_are_labels_with_dots_collapsed() {
-        assert_eq!(
-            map_request(
-                &call(json!({"toolCallId": "a", "kind": "edit", "title": "Edit x",
-                       "locations": [{"path": "/ws/../../etc/cron.d/x"}]})),
-                None,
+    fn file_paths_are_labels_as_the_runtimes_platform_reads_them() {
+        let edit = |path: &str| {
+            call(json!({"toolCallId": "a", "kind": "edit", "title": "Edit x",
+                        "locations": [{"path": path}]}))
+        };
+        for (path, style, label) in [
+            ("/ws/../../etc/cron.d/x", PathStyle::Posix, "/etc/cron.d/x"),
+            (
+                "/ws/../../etc/cron.d/x",
+                PathStyle::Windows,
+                "/etc/cron.d/x",
             ),
-            rules(PermissionAction::WRITE, "/etc/cron.d/x")
-        );
+            ("//etc/passwd", PathStyle::Posix, "/etc/passwd"),
+            ("//server/share/x", PathStyle::Windows, "//server/share/x"),
+            (r"C:\ws\.\src\..\.env", PathStyle::Windows, "C:/ws/.env"),
+        ] {
+            assert_eq!(
+                map_request(&edit(path), None, Some(style)),
+                rules(PermissionAction::WRITE, label),
+                "{path} {style:?}"
+            );
+        }
+        // A platform the runtime did not report: the rules read both ways.
         assert_eq!(
-            map_request(
-                &call(json!({"toolCallId": "a", "kind": "read",
-                       "rawInput": {"file_path": r"C:\ws\.\src\..\.env"}})),
-                None,
-            ),
-            rules(PermissionAction::READ, "C:/ws/.env")
+            map_request(&edit("//etc/passwd"), None, None),
+            rules(PermissionAction::WRITE, "//etc/passwd")
         );
     }
 
@@ -668,6 +713,7 @@ mod tests {
                 map_request(
                     &call(json!({"toolCallId": "a", "kind": kind, "title": "Edit /etc/hosts"})),
                     None,
+                    Some(PathStyle::Posix),
                 ),
                 MappedRequest::Ask {
                     label: action.clone(),
@@ -677,7 +723,11 @@ mod tests {
             );
         }
         assert_eq!(
-            map_request(&call(json!({"toolCallId": "a", "kind": "edit"})), None),
+            map_request(
+                &call(json!({"toolCallId": "a", "kind": "edit"})),
+                None,
+                None
+            ),
             MappedRequest::Ask {
                 label: PermissionAction::WRITE,
                 resource: "write".to_owned(),
@@ -689,7 +739,7 @@ mod tests {
     fn the_known_call_fills_what_the_request_leaves_out() {
         let known = call(json!({"toolCallId": "a", "kind": "other", "title": "mcp__exa__search"}));
         assert_eq!(
-            map_request(&call(json!({"toolCallId": "a"})), Some(&known)),
+            map_request(&call(json!({"toolCallId": "a"})), Some(&known), None),
             rules(PermissionAction::MCP, "exa_search")
         );
     }

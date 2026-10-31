@@ -174,7 +174,8 @@ impl Engine {
                 .map(|scope| {
                     decide(
                         PermissionScope::runtime(&scope.runtime, scope.workspace.as_deref())
-                            .with_home(scope.home.as_deref()),
+                            .with_home(scope.home.as_deref())
+                            .with_platform(scope.platform.as_deref()),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -192,7 +193,8 @@ impl Engine {
         // `action@runtime` under each; the strictest decision wins, per
         // resource.
         Ok(strictest_decision(runtimes.iter().map(|runtime| {
-            decide(PermissionScope::runtime(runtime, None))
+            let platform = self.runtime_platform(runtime);
+            decide(PermissionScope::runtime(runtime, None).with_platform(platform.as_deref()))
         })))
     }
 

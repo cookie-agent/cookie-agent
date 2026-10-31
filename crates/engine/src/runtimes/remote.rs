@@ -1375,7 +1375,9 @@ impl RuntimeClient {
     }
 
     /// The operating system the runtime reported.
-    fn platform(&self) -> Option<String> {
+    /// The operating system the runtime reported, as
+    /// `std::env::consts::OS` names it.
+    pub(crate) fn platform(&self) -> Option<String> {
         lock(&self.inner.platform).clone()
     }
 

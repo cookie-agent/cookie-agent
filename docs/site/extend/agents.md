@@ -965,9 +965,15 @@ process boundaries behind these tools.
 Path resource labels are normalized lexically from the single path requested by
 the caller: `/` separators on every platform, no Windows `\\?\` prefix, and
 `.` and `..` collapsed, so `/srv/ws/../../etc/hosts` is matched as
-`/etc/hosts`. The daemon reads every `read` and `write` resource so before
-matching, whoever labelled it, an ACP agent's request included. They are not
-canonicalized through symbolic links before permission matching. That one label authorizes the whole prepared `read`, `write`, or
+`/etc/hosts`. The daemon reads every `read` and `write` resource, and
+`attach`'s workspace, so before matching, whoever labelled it, an ACP agent's
+request included, and reads it as the platform the runtime reported does: on
+Linux or macOS `//etc/passwd` is `/etc/passwd` and a `\` is part of a name; on
+Windows `\` separates names too, and `//server/share` (or `\\server\share`) is a
+share that `..` never leaves. A runtime that reported no platform has a path
+the two read differently decided both ways, the strictest decision winning,
+so a `deny` holds under either reading. They are not canonicalized through
+symbolic links before permission matching. That one label authorizes the whole prepared `read`, `write`, or
 `edit` operation: if an allowed alias resolves outside the workspace, cookie
 agent does not perform a second permission check or require a rule for the
 resolved destination. Filesystem preparation resolves the route once and

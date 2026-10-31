@@ -180,14 +180,17 @@ pub struct PreparedTool {
 }
 
 /// Where one resource of a call is checked: as `action@runtime`, with a
-/// relative path resolving against `workspace` and a rule's `~` against
-/// `home`. A call that acts on several runtimes, one resource on each, such
-/// as `transfer`'s source and destination, uses it.
+/// relative path resolving against `workspace`, a rule's `~` against
+/// `home`, and a path read as `platform` (an operating system as
+/// `std::env::consts::OS` names it) reads it. A call that acts on several
+/// runtimes, one resource on each, such as `transfer`'s source and
+/// destination, uses it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResourceScope {
     pub runtime: String,
     pub workspace: Option<std::path::PathBuf>,
     pub home: Option<String>,
+    pub platform: Option<String>,
 }
 
 impl PreparedTool {

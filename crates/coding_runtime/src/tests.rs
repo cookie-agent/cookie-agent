@@ -327,7 +327,10 @@ fn permission_labels_collapse_dots_as_the_daemon_reads_them() {
     let outside = workspace.join("..").join("outside");
     assert_eq!(
         label(outside.clone()),
-        cookie_agent_protocol::paths::path_label(&outside.to_string_lossy())
+        cookie_agent_protocol::paths::path_label(
+            &outside.to_string_lossy(),
+            cookie_agent_protocol::paths::PathStyle::host(),
+        )
     );
     assert!(!label(outside).contains(".."));
     assert_eq!(

@@ -1071,6 +1071,9 @@ struct Turn<'a> {
     /// The context use the session last recorded in this run.
     context: Option<cookie_agent_protocol::AcpContextUsage>,
     home: Option<String>,
+    /// The operating system the agent's runtime reported, whose paths its
+    /// permission requests name.
+    platform: Option<String>,
     /// Calls through the bridge, and questions to the user, still running.
     bridged: Vec<tokio::task::JoinHandle<()>>,
     /// What the round has seen of the agent's work.
@@ -2596,6 +2599,7 @@ impl Turn<'_> {
         let agent = self.live.agent.clone();
         let cwd = self.live.cwd.clone();
         let home = self.home.clone();
+        let platform = self.platform.clone();
         let known = self.calls.get(&request.tool_call.tool_call_id);
         // A call of cookie's tools that is not shown is known all the same.
         let known_fields = known.map(|call| call.fields.clone()).or_else(|| {
@@ -2617,6 +2621,7 @@ impl Turn<'_> {
                     &agent,
                     &cwd,
                     home.as_deref(),
+                    platform.as_deref(),
                     &request,
                     known_fields.as_ref(),
                     tool_call_id,
@@ -2688,6 +2693,7 @@ impl Engine {
             )
             .await?;
         let home = process.client.home();
+        let platform = process.client.platform();
         let hide = document
             .frontmatter
             .acp
@@ -2728,6 +2734,7 @@ impl Engine {
             usage_update: None,
             context: None,
             home,
+            platform,
             bridged: Vec::new(),
             round: RoundState::default(),
             terminals: HashMap::new(),

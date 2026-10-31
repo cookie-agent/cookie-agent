@@ -4,10 +4,11 @@
 //!
 //! [`normalize_absolute`] is the host's: it works on a [`Path`] as the
 //! platform parses it, for opening files. [`path_label`] is the spelling
-//! rules match and results show, read alike on every platform, since the
-//! daemon decides for runtimes on other machines: `/` separators, no Windows
-//! verbatim prefix, and `.` and `..` collapsed. For an absolute path that
-//! stays below its root, the label of the one is the label of the other.
+//! rules match and results show, as the platform of the runtime the path
+//! lives on reads it ([`PathStyle`]), since the daemon decides for runtimes
+//! on other machines: `/` separators, no Windows verbatim prefix, and `.` and
+//! `..` collapsed. For an absolute path that stays below its root, the label
+//! of the one is the label of the other.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -54,21 +55,80 @@ pub fn normalize_absolute(path: &Path) -> Result<PathBuf, LexicalPathError> {
     Ok(normalized)
 }
 
-/// `path` as permission rules match it and results show it, on any
-/// platform: every `\` spelled `/`; the Windows verbatim prefix left out
-/// (`\\?\C:\x` reads `C:/x`, `\\?\UNC\server\share\x` reads
-/// `//server/share/x`); and every `.` removed and every `..` taking away the
-/// name before it, lexically, a `..` at the root staying there as the
-/// platforms resolve it. A path that starts with two separators names a
-/// Windows share, the root of its paths: `..` never climbs out of
-/// `//server/share`. A relative path stays relative, keeping the `..` that
-/// leave it (`a/../../b` reads `../b`), and reads `.` when nothing is left; a
-/// trailing `/` is dropped. A label is its own label.
+/// How a platform reads a path: which characters separate names and what
+/// a root is.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PathStyle {
+    /// Linux, macOS, and the other Unix systems: `/` alone separates names,
+    /// `\` is a character of a name, and every path that starts with `/`
+    /// starts at the one root (`//etc` is `/etc`).
+    Posix,
+    /// Windows: `\` and `/` both separate names, and a path starts at a
+    /// drive (`C:\`) or a share (`\\server\share`).
+    Windows,
+}
+
+impl PathStyle {
+    /// The style of the platform this process runs on.
+    #[must_use]
+    pub const fn host() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Posix
+        }
+    }
+
+    /// The style of `platform`, an operating system as
+    /// `std::env::consts::OS` names it: `windows` reads Windows paths, every
+    /// other system POSIX ones.
+    #[must_use]
+    pub fn of_platform(platform: &str) -> Self {
+        if platform.eq_ignore_ascii_case("windows") {
+            Self::Windows
+        } else {
+            Self::Posix
+        }
+    }
+
+    /// Whether `path` reads differently in the two styles: it holds a `\`,
+    /// which is a separator on Windows and a character of a name elsewhere,
+    /// or starts with two separators, a share on Windows and the root
+    /// elsewhere.
+    #[must_use]
+    pub fn ambiguous(path: &str) -> bool {
+        path.contains('\\') || path.starts_with("//")
+    }
+}
+
+/// `path` as permission rules match it and results show it, read in
+/// `style`: every separator spelled `/`; and every `.` removed and every `..`
+/// taking away the name before it, lexically, a `..` at the root staying
+/// there as the platforms resolve it. A relative path stays relative,
+/// keeping the `..` that leave it (`a/../../b` reads `../b`), and reads `.`
+/// when nothing is left; a trailing `/` is dropped. A label is its own label
+/// in the same style.
+///
+/// In [`PathStyle::Posix`] the root is `/`, however many `/` start the path,
+/// and a `\` is part of a name. In [`PathStyle::Windows`] `\` separates too;
+/// the verbatim prefix is left out (`\\?\C:\x` reads `C:/x`,
+/// `\\?\UNC\server\share\x` reads `//server/share/x`); a path that starts
+/// with two separators names a share, which `..` never climbs out of; and a
+/// drive (`C:/`, or `C:` alone, its working directory) is a root.
 #[must_use]
-pub fn path_label(path: &str) -> String {
-    let spelled = path.replace('\\', "/");
-    let spelled = without_verbatim_prefix(&spelled);
-    let (root, rest) = split_root(&spelled);
+pub fn path_label(path: &str, style: PathStyle) -> String {
+    let (root, rest): (std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>) = match style {
+        PathStyle::Posix => match path.strip_prefix('/') {
+            Some(rest) => ("/".into(), rest.into()),
+            None => ("".into(), path.into()),
+        },
+        PathStyle::Windows => {
+            let spelled = path.replace('\\', "/");
+            let spelled = without_verbatim_prefix(&spelled);
+            let (root, rest) = split_root(&spelled);
+            (root.to_owned().into(), rest.to_owned().into())
+        }
+    };
     let mut names: Vec<&str> = Vec::new();
     for name in rest.split('/') {
         match name {
@@ -88,19 +148,19 @@ pub fn path_label(path: &str) -> String {
     match (root.is_empty(), joined.is_empty()) {
         (true, true) => ".".to_owned(),
         (true, false) => joined,
-        (false, true) => root.to_owned(),
+        (false, true) => root.into_owned(),
         (false, false) if root.ends_with('/') || root.ends_with(':') => format!("{root}{joined}"),
         (false, false) => format!("{root}/{joined}"),
     }
 }
 
-/// Whether the label `label` ([`path_label`]) names a path from a root on
-/// some platform, so that it is never read against a workspace: `/…`
-/// (a POSIX root, or a Windows share `//server/share`), or a Windows drive
-/// `X:…`.
+/// Whether the label `label` ([`path_label`] in `style`) names a path from a
+/// root, so that it is never read against a workspace: `/…` in either
+/// style (a POSIX root, or a Windows share `//server/share`), and on Windows
+/// a drive `X:…` too.
 #[must_use]
-pub fn label_is_absolute(label: &str) -> bool {
-    label.starts_with('/') || drive_of(label).is_some()
+pub fn label_is_absolute(label: &str, style: PathStyle) -> bool {
+    label.starts_with('/') || (style == PathStyle::Windows && drive_of(label).is_some())
 }
 
 /// `spelled` (with `/` separators) without a Windows verbatim prefix before
@@ -153,68 +213,113 @@ fn split_root(spelled: &str) -> (&str, &str) {
 mod tests {
     use std::path::Path;
 
-    use super::{LexicalPathError, label_is_absolute, normalize_absolute, path_label};
+    use super::{LexicalPathError, PathStyle, label_is_absolute, normalize_absolute, path_label};
+
+    const BOTH: [PathStyle; 2] = [PathStyle::Posix, PathStyle::Windows];
 
     #[test]
     fn labels_collapse_dots_lexically() {
-        for (path, label) in [
-            ("/ws/src/lib.rs", "/ws/src/lib.rs"),
-            ("/ws/./src/../.env", "/ws/.env"),
-            ("/ws/../../etc/cron.d/x", "/etc/cron.d/x"),
-            ("/..", "/"),
-            ("/ws/", "/ws"),
-            ("/ws//src", "/ws/src"),
-            ("src/../.env", ".env"),
-            ("a/../../b", "../b"),
-            ("./a/..", "."),
-            ("", "."),
-            ("~/notes/../secret", "~/secret"),
-        ] {
-            assert_eq!(path_label(path), label, "{path}");
+        for style in BOTH {
+            for (path, label) in [
+                ("/ws/src/lib.rs", "/ws/src/lib.rs"),
+                ("/ws/./src/../.env", "/ws/.env"),
+                ("/ws/../../etc/cron.d/x", "/etc/cron.d/x"),
+                ("/..", "/"),
+                ("/ws/", "/ws"),
+                ("/ws//src", "/ws/src"),
+                ("src/../.env", ".env"),
+                ("a/../../b", "../b"),
+                ("./a/..", "."),
+                ("", "."),
+                ("~/notes/../secret", "~/secret"),
+            ] {
+                assert_eq!(path_label(path, style), label, "{path} {style:?}");
+            }
         }
     }
 
     #[test]
-    fn windows_spellings_read_alike_on_every_platform() {
+    fn a_posix_path_has_one_root_and_names_may_hold_a_backslash() {
+        for (path, label) in [
+            ("//etc/passwd", "/etc/passwd"),
+            ("///etc//passwd", "/etc/passwd"),
+            ("//ws/../etc", "/etc"),
+            ("//server/share/..", "/server"),
+            // A name, not separators: the file stays under /etc.
+            (r"/etc/x\..\..\ws\y", r"/etc/x\..\..\ws\y"),
+            (r"\\server\share", r"\\server\share"),
+            ("C:/ws/../x", "C:/x"),
+            (r"\\?\C:\x", r"\\?\C:\x"),
+        ] {
+            assert_eq!(path_label(path, PathStyle::Posix), label, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_windows_path_starts_at_a_drive_or_a_share() {
         for (path, label) in [
             (r"C:\ws\..\..\Windows\x", "C:/Windows/x"),
             (r"\\?\C:\ws\file.txt", "C:/ws/file.txt"),
             (r"\\?\UNC\server\share\ws\..\..\x", "//server/share/x"),
             (r"\\server\share\..", "//server/share"),
+            ("//server/share/../x", "//server/share/x"),
             (r"\\server", "//server"),
             ("C:", "C:"),
             ("C:a/../../b", "C:b"),
+            (r"/etc/x\..\..\ws\y", "/ws/y"),
             // Not a drive or a share after the prefix: kept.
             ("//?/etc/passwd", "//?/etc/passwd"),
         ] {
-            assert_eq!(path_label(path), label, "{path}");
+            assert_eq!(path_label(path, PathStyle::Windows), label, "{path}");
         }
     }
 
     #[test]
     fn a_label_is_its_own_label() {
-        for path in [
-            "/ws/../x",
-            r"\\server\share\ws\..\x",
-            r"\\?\C:\ws",
-            "C:a/..",
-            "../a/./b",
-            "/",
-            "///x",
-        ] {
-            let label = path_label(path);
-            assert_eq!(path_label(&label), label, "{path}");
+        for style in BOTH {
+            for path in [
+                "/ws/../x",
+                r"\\server\share\ws\..\x",
+                r"\\?\C:\ws",
+                "C:a/..",
+                "../a/./b",
+                "/",
+                "///x",
+                "//server/share/x",
+            ] {
+                let label = path_label(path, style);
+                assert_eq!(path_label(&label, style), label, "{path} {style:?}");
+            }
         }
     }
 
     #[test]
-    fn rooted_labels_are_absolute_everywhere() {
-        for label in ["/", "/etc/x", "//server/share/x", "C:/x", "c:", "C:x"] {
-            assert!(label_is_absolute(label), "{label}");
+    fn only_a_windows_label_may_start_at_a_drive() {
+        for label in ["/", "/etc/x", "//server/share/x"] {
+            assert!(label_is_absolute(label, PathStyle::Posix), "{label}");
+            assert!(label_is_absolute(label, PathStyle::Windows), "{label}");
+        }
+        for label in ["C:/x", "c:", "C:x"] {
+            assert!(!label_is_absolute(label, PathStyle::Posix), "{label}");
+            assert!(label_is_absolute(label, PathStyle::Windows), "{label}");
         }
         for label in [".", "src/lib.rs", "../x", "~/x", ":x"] {
-            assert!(!label_is_absolute(label), "{label}");
+            for style in BOTH {
+                assert!(!label_is_absolute(label, style), "{label}");
+            }
         }
+    }
+
+    #[test]
+    fn platforms_name_their_style() {
+        assert_eq!(PathStyle::of_platform("windows"), PathStyle::Windows);
+        for platform in ["linux", "macos", "freebsd"] {
+            assert_eq!(PathStyle::of_platform(platform), PathStyle::Posix);
+        }
+        assert!(PathStyle::ambiguous("//etc/passwd"));
+        assert!(PathStyle::ambiguous(r"C:\x"));
+        assert!(!PathStyle::ambiguous("/etc/passwd"));
+        assert!(!PathStyle::ambiguous("C:/x"));
     }
 
     #[test]
@@ -243,8 +348,8 @@ mod tests {
             let path = Path::new(root).join(rest);
             let host = normalize_absolute(&path).expect("normalizes");
             assert_eq!(
-                path_label(&host.to_string_lossy()),
-                path_label(&path.to_string_lossy()),
+                path_label(&host.to_string_lossy(), PathStyle::host()),
+                path_label(&path.to_string_lossy(), PathStyle::host()),
                 "{rest}"
             );
         }

@@ -159,7 +159,10 @@ pub(crate) fn tool_error(error: impl std::fmt::Display) -> ToolError {
 fn normalized_path(path: &Path) -> String {
     #[cfg(windows)]
     let path = fs_cap::lexical_path_spelling(path);
-    cookie_agent_protocol::paths::path_label(&path.to_string_lossy())
+    cookie_agent_protocol::paths::path_label(
+        &path.to_string_lossy(),
+        cookie_agent_protocol::paths::PathStyle::host(),
+    )
 }
 
 pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {

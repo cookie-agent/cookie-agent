@@ -77,6 +77,9 @@ impl Engine {
                         .workspace()
                         .map(|workspace| workspace.root().to_owned()),
                     home: info.home().map(str::to_owned),
+                    platform: info
+                        .workspace()
+                        .and_then(|workspace| workspace.platform().map(str::to_owned)),
                 },
                 connection,
                 machine: named,

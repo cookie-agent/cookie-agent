@@ -8,7 +8,7 @@ use std::{
 };
 
 use cookie_agent_config::simple_wildcard_match;
-use cookie_agent_protocol::paths;
+use cookie_agent_protocol::paths::{self, PathStyle};
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentSnapshot, ApprovalEvaluation, DecisionTrace,
     EffectivePermissionAction, EffectivePermissionRule, EventPayload, MatchedPermissionRule,
@@ -30,12 +30,15 @@ pub(crate) const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-
 /// rules. `${workspace_dir}` and relative resources resolve against
 /// `workspace`; without one they never match. A pattern `~` or `~/…`
 /// expands against `home`; without one it stays literal, so it matches no
-/// absolute path.
+/// absolute path. A path resource is read as `platform`, the operating
+/// system the runtime reported, reads it; without one, a path the platforms
+/// read differently is decided under both readings, the strictest winning.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PermissionScope<'a> {
     pub runtime: Option<&'a str>,
     pub workspace: Option<&'a Path>,
     pub home: Option<&'a str>,
+    pub platform: Option<&'a str>,
 }
 
 impl<'a> PermissionScope<'a> {
@@ -44,6 +47,7 @@ impl<'a> PermissionScope<'a> {
         runtime: None,
         workspace: None,
         home: None,
+        platform: None,
     };
 
     /// The scope of a tool from `origin`.
@@ -54,17 +58,21 @@ impl<'a> PermissionScope<'a> {
             runtime: runtime.map(cookie_agent_runtime_api::RuntimeInfo::id),
             workspace: origin.workspace_root(),
             home: runtime.and_then(cookie_agent_runtime_api::RuntimeInfo::home),
+            platform: runtime
+                .and_then(cookie_agent_runtime_api::RuntimeInfo::workspace)
+                .and_then(cookie_agent_runtime_api::WorkspaceContext::platform),
         }
     }
 
     /// The scope of the runtime with ID `runtime` working in `workspace`,
-    /// which reported no home.
+    /// which reported no home or platform.
     #[must_use]
     pub const fn runtime(runtime: &'a str, workspace: Option<&'a Path>) -> Self {
         Self {
             runtime: Some(runtime),
             workspace,
             home: None,
+            platform: None,
         }
     }
 
@@ -72,6 +80,27 @@ impl<'a> PermissionScope<'a> {
     #[must_use]
     pub const fn with_home(self, home: Option<&'a str>) -> Self {
         Self { home, ..self }
+    }
+
+    /// This scope on a runtime that reported `platform`.
+    #[must_use]
+    pub const fn with_platform(self, platform: Option<&'a str>) -> Self {
+        Self { platform, ..self }
+    }
+
+    /// The styles a path resource `resource` of `action` is read in: the
+    /// platform's; without one, both when they read it differently.
+    fn styles(self, action: &PermissionAction, resource: &str) -> &'static [PathStyle] {
+        const POSIX: &[PathStyle] = &[PathStyle::Posix];
+        const WINDOWS: &[PathStyle] = &[PathStyle::Windows];
+        const BOTH: &[PathStyle] = &[PathStyle::Posix, PathStyle::Windows];
+        match self.platform.map(PathStyle::of_platform) {
+            Some(PathStyle::Posix) => POSIX,
+            Some(PathStyle::Windows) => WINDOWS,
+            // Read alike in both, a drive or a POSIX root as one.
+            None if !path_resource(action) || !PathStyle::ambiguous(resource) => WINDOWS,
+            None => BOTH,
+        }
     }
 }
 
@@ -82,7 +111,26 @@ impl<'a> From<Option<&'a Path>> for PermissionScope<'a> {
             runtime: None,
             workspace,
             home: None,
+            platform: None,
         }
+    }
+}
+
+/// Whether the resources of `action` are paths, labelled before matching:
+/// `read` and `write`, and `attach`'s workspace.
+fn path_resource(action: &PermissionAction) -> bool {
+    action.is_path() || *action == PermissionAction::ATTACH
+}
+
+/// The stricter of two decisions: deny over ask over allow.
+fn strictest(
+    left: (PermissionEffect, String),
+    right: (PermissionEffect, String),
+) -> (PermissionEffect, String) {
+    if effect_rank(right.0) > effect_rank(left.0) {
+        right
+    } else {
+        left
     }
 }
 
@@ -252,10 +300,25 @@ impl<'a> MergedRules<'a> {
         resource: &str,
         scope: PermissionScope<'_>,
     ) -> (PermissionEffect, String) {
+        let mut styles = scope.styles(action, resource).iter();
+        let first = self.decide_in(action, resource, scope, *styles.next().expect("a style"));
+        styles.fold(first, |decided, style| {
+            strictest(decided, self.decide_in(action, resource, scope, *style))
+        })
+    }
+
+    /// [`Self::decide`] with path resources read in `style`.
+    fn decide_in(
+        &self,
+        action: &PermissionAction,
+        resource: &str,
+        scope: PermissionScope<'_>,
+        style: PathStyle,
+    ) -> (PermissionEffect, String) {
         self.rules
             .iter()
             .enumerate()
-            .filter(|(_, merged)| rule_matches(merged.rule, action, resource, scope))
+            .filter(|(_, merged)| rule_matches_in(merged.rule, action, resource, scope, style))
             .max_by_key(|(index, merged)| specificity(merged.rule, *index, scope.home))
             .map_or_else(
                 Self::unmatched,
@@ -612,12 +675,19 @@ impl PermissionPipeline {
                     && rule.action == resource.capability
                     && rule.applies_to(scope.runtime)
                     && normalized.as_ref().is_some_and(|normalized| {
-                        permission_pattern_matches(
-                            &expand_home_pattern(rule.resource.as_str(), scope.home),
-                            &resource.capability,
-                            normalized,
-                            scope.workspace,
-                        )
+                        // A grant allows only what it covers in every reading.
+                        scope
+                            .styles(&resource.capability, normalized)
+                            .iter()
+                            .all(|style| {
+                                permission_pattern_matches(
+                                    &expand_home_pattern(rule.resource.as_str(), scope.home),
+                                    &resource.capability,
+                                    normalized,
+                                    scope.workspace,
+                                    *style,
+                                )
+                            })
                     })
             });
             if granted {
@@ -657,6 +727,7 @@ impl PermissionPipeline {
                 runtime,
                 workspace: None,
                 home: None,
+                platform: None,
             },
         )
     }
@@ -799,12 +870,28 @@ pub(crate) fn effective_permission_with_overlay<'a>(
     MergedRules::of(policy, overlay, scope.home).decide(action, resource, scope)
 }
 
-/// Whether `rule` governs `resource` of `action` in `scope`.
+/// Whether `rule` governs `resource` of `action` in `scope`, in any of the
+/// readings the scope gives it.
 fn rule_matches(
     rule: &PermissionRule,
     action: &PermissionAction,
     resource: &str,
     scope: PermissionScope<'_>,
+) -> bool {
+    scope
+        .styles(action, resource)
+        .iter()
+        .any(|style| rule_matches_in(rule, action, resource, scope, *style))
+}
+
+/// Whether `rule` governs `resource` of `action` in `scope`, a path read in
+/// `style`.
+fn rule_matches_in(
+    rule: &PermissionRule,
+    action: &PermissionAction,
+    resource: &str,
+    scope: PermissionScope<'_>,
+    style: PathStyle,
 ) -> bool {
     rule.action == *action
         && rule.applies_to(scope.runtime)
@@ -813,6 +900,7 @@ fn rule_matches(
             action,
             resource,
             scope.workspace,
+            style,
         )
 }
 
@@ -1143,28 +1231,29 @@ pub(crate) fn agent_rules_with_sources(
 }
 
 /// Whether `pattern` matches `resource` for a tool whose runtime has
-/// `workspace`. The resource of a path action (`read`, `write`) is matched
-/// as its label ([`paths::path_label`]), `.` and `..` collapsed, and made
+/// `workspace`. A path resource ([`path_resource`]) is matched as its label
+/// in `style` ([`paths::path_label`]), `.` and `..` collapsed, and made
 /// absolute against the workspace when it leaves it. `${workspace_dir}`
-/// patterns match the resource made absolute against the workspace. Without a workspace (the base layer and the global
-/// runtime) nothing can be resolved: `${workspace_dir}` patterns never match,
-/// and neither does any pattern for a relative path resource of a path action
-/// (`read`, `write`).
+/// patterns match the resource made absolute against the workspace. Without
+/// a workspace (the base layer and the global runtime) nothing can be
+/// resolved: `${workspace_dir}` patterns never match, and neither does any
+/// pattern for a relative path resource of a path action (`read`, `write`).
 fn permission_pattern_matches(
     pattern: &str,
     action: &PermissionAction,
     resource: &str,
     workspace: Option<&Path>,
+    style: PathStyle,
 ) -> bool {
     let workspace_pattern =
         pattern.contains(cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION);
     // A path is matched as the runtime labels it: `.` and `..` collapsed,
     // relative inside the workspace and absolute outside it.
-    let resource = if action.is_path() {
-        let label = paths::path_label(resource);
+    let resource = if path_resource(action) {
+        let label = paths::path_label(resource, style);
         match workspace {
             Some(workspace) if label == ".." || label.starts_with("../") => {
-                Cow::Owned(absolute_resource(workspace, &label))
+                Cow::Owned(absolute_resource(workspace, &label, style))
             }
             _ => Cow::Owned(label),
         }
@@ -1173,18 +1262,18 @@ fn permission_pattern_matches(
     };
     match workspace {
         Some(workspace) if workspace_pattern => simple_wildcard_match(
-            &expand_workspace_pattern(pattern, workspace),
-            &absolute_resource(workspace, &resource),
+            &expand_workspace_pattern(pattern, workspace, style),
+            &absolute_resource(workspace, &resource, style),
         ),
         Some(_) => simple_wildcard_match(pattern, &resource),
         None if workspace_pattern => false,
-        None if action.is_path() && !paths::label_is_absolute(&resource) => false,
+        None if action.is_path() && !paths::label_is_absolute(&resource, style) => false,
         None => simple_wildcard_match(pattern, &resource),
     }
 }
 
-fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
-    let workspace = workspace_label(workspace);
+fn expand_workspace_pattern(pattern: &str, workspace: &Path, style: PathStyle) -> String {
+    let workspace = workspace_label(workspace, style);
     if workspace == "/" {
         pattern.replace("${workspace_dir}/", "/").replace(
             cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION,
@@ -1198,22 +1287,22 @@ fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
     }
 }
 
-/// `resource` as a label from a root ([`paths::path_label`]): as it is when
-/// it names one on some platform, else read against `workspace`.
-fn absolute_resource(workspace: &Path, resource: &str) -> String {
-    let label = paths::path_label(resource);
-    if paths::label_is_absolute(&label) {
+/// `resource` as a label from a root in `style` ([`paths::path_label`]): as
+/// it is when it names one, else read against `workspace`.
+fn absolute_resource(workspace: &Path, resource: &str, style: PathStyle) -> String {
+    let label = paths::path_label(resource, style);
+    if paths::label_is_absolute(&label, style) {
         return label;
     }
-    let workspace = workspace_label(workspace);
+    let workspace = workspace_label(workspace, style);
     let separator = if workspace.ends_with('/') { "" } else { "/" };
-    paths::path_label(&format!("{workspace}{separator}{label}"))
+    paths::path_label(&format!("{workspace}{separator}{label}"), style)
 }
 
-/// The label of `workspace`, canonicalized when it exists here.
-fn workspace_label(workspace: &Path) -> String {
+/// The label of `workspace` in `style`, canonicalized when it exists here.
+fn workspace_label(workspace: &Path, style: PathStyle) -> String {
     let workspace = paths::canonicalize(workspace).unwrap_or_else(|_| workspace.to_owned());
-    paths::path_label(&workspace.to_string_lossy())
+    paths::path_label(&workspace.to_string_lossy(), style)
 }
 
 /// Rule precedence among matching rules: more literal characters, then fewer
@@ -1447,6 +1536,7 @@ impl crate::Engine {
                     .as_deref()
                     .map(std::path::PathBuf::from),
                 home: self.attachment_home(attachment),
+                platform: self.attachment_platform(attachment),
             })
             .collect::<Vec<_>>();
         match runtime {
@@ -1456,6 +1546,7 @@ impl crate::Engine {
                     runtime: Some(runtime.as_str().to_owned()),
                     workspace: None,
                     home: self.runtime_home(runtime.as_str()),
+                    platform: self.runtime_platform(runtime.as_str()),
                 });
             }
             Some(_) => {}
@@ -1474,6 +1565,35 @@ impl crate::Engine {
             .instance(attachment)
             .and_then(|instance| instance.info().home().map(str::to_owned))
             .or_else(|| self.runtime_home(attachment.runtime_id.as_str()))
+    }
+
+    /// The platform the runtime of `attachment` reported: its running
+    /// instance's workspace's, else the one its runtime last reported.
+    fn attachment_platform(
+        &self,
+        attachment: &cookie_agent_protocol::RuntimeAttachment,
+    ) -> Option<String> {
+        self.inner
+            .runtimes
+            .instance(attachment)
+            .and_then(|instance| {
+                instance
+                    .info()
+                    .workspace()
+                    .and_then(|workspace| workspace.platform().map(str::to_owned))
+            })
+            .or_else(|| self.runtime_platform(attachment.runtime_id.as_str()))
+    }
+
+    /// The platform the runtime with ID `runtime_id` last reported, whose
+    /// paths its permission resources are.
+    pub(crate) fn runtime_platform(&self, runtime_id: &str) -> Option<String> {
+        self.inner
+            .runtimes
+            .templates()
+            .into_iter()
+            .find(|template| template.runtime_id == runtime_id)
+            .and_then(|template| template.listing.platform)
     }
 
     /// The home directory the runtime with ID `runtime_id` last reported.
@@ -1596,6 +1716,7 @@ struct OwnedScope {
     runtime: Option<String>,
     workspace: Option<std::path::PathBuf>,
     home: Option<String>,
+    platform: Option<String>,
 }
 
 /// The effect of `action` on `resource` in each of `scopes`. A `~` in
@@ -1615,6 +1736,7 @@ fn rule_effects(
                 runtime: owned.runtime.as_deref(),
                 workspace: owned.workspace.as_deref(),
                 home: owned.home.as_deref(),
+                platform: owned.platform.as_deref(),
             };
             let merged = MergedRules::of(policy, Some(overlay), scope.home);
             if resource == "*" {
