@@ -1264,6 +1264,7 @@ pub(in crate::ui) enum RpcUpdate {
         result: Result<cookie_agent_protocol::ConfigGetResult, String>,
     },
     MachinesRefreshed {
+        read: cookie_agent_client_state::refresh::Ticket,
         result: Result<cookie_agent_protocol::MachinesListResult, String>,
     },
     /// A `machines.*` change answered: what it did and the machines

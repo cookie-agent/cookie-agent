@@ -166,6 +166,7 @@ impl App {
         if self.modal != Modal::Runtimes || !self.runtime_panel.machines_refresh.start() {
             return;
         }
+        let read = self.runtime_panel.machine_reads.begin();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -173,7 +174,7 @@ impl App {
                 .list_machines()
                 .await
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::MachinesRefreshed { result });
+            let _ = updates.send(RpcUpdate::MachinesRefreshed { read, result });
         });
     }
 
@@ -181,10 +182,15 @@ impl App {
     /// announced while it was on its way.
     pub(super) fn install_machine_listing(
         &mut self,
+        read: cookie_agent_client_state::refresh::Ticket,
         result: Result<cookie_agent_protocol::MachinesListResult, String>,
     ) {
         let again = self.runtime_panel.machines_refresh.landed();
-        self.runtime_panel.install_machines(result);
+        // A change answered since this listing was asked for: its machines
+        // are newer than what the listing read.
+        if self.runtime_panel.machine_reads.is_current(read) {
+            self.runtime_panel.install_machines(result);
+        }
         if again {
             self.poll_machines();
         }
@@ -197,6 +203,7 @@ impl App {
         match result {
             Ok((done, machines)) => {
                 self.status = done;
+                self.runtime_panel.machine_reads.supersede();
                 self.runtime_panel.install_machines(Ok(machines));
             }
             Err(error) => self.status = error,

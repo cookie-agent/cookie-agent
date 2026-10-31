@@ -117,6 +117,9 @@ pub(in crate::ui) struct RuntimePanel {
     pub(in crate::ui) machine_selection: ListState,
     pub(in crate::ui) machine_form: Option<MachineForm>,
     pub(in crate::ui) machines_refresh: crate::ui::app::ListingRefresh,
+    /// The `machines.list` reads on their way: a change's answer, which
+    /// lists the machines after it, supersedes them.
+    pub(in crate::ui) machine_reads: cookie_agent_client_state::refresh::Latest,
     /// `mcp.server.list`, for the MCP servers each runtime hosts; `None`
     /// until it answers.
     pub(in crate::ui) mcp_servers: Option<Vec<McpServerInfo>>,

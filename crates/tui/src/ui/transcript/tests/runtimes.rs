@@ -486,3 +486,30 @@ async fn the_machines_view_manages_a_runtimes_servers_and_acp_agents() {
     let rendered = rendered_frame(&mut app, 120, 40);
     assert!(rendered.contains("MCP servers on local"), "{rendered}");
 }
+
+/// A change's answer lists the machines after it; a listing asked for
+/// before it may have read them before, so it is dropped when it lands.
+#[tokio::test]
+async fn a_listing_older_than_a_machine_change_is_dropped() {
+    let mut app = test_app().await;
+    app.modal = Modal::Runtimes;
+    let mut merged = crate::ui::management::sample_machines();
+    merged.machines.truncate(1);
+    let stale = app.runtime_panel.machine_reads.begin();
+    app.handle_rpc_update(RpcUpdate::MachineChanged {
+        result: Ok(("Merged laptop into labpc.".into(), merged)),
+    });
+    assert_eq!(machine_names(&app), ["labpc"]);
+    app.handle_rpc_update(RpcUpdate::MachinesRefreshed {
+        read: stale,
+        result: Ok(crate::ui::management::sample_machines()),
+    });
+    assert_eq!(machine_names(&app), ["labpc"]);
+    // A listing asked for after the change installs.
+    let fresh = app.runtime_panel.machine_reads.begin();
+    app.handle_rpc_update(RpcUpdate::MachinesRefreshed {
+        read: fresh,
+        result: Ok(crate::ui::management::sample_machines()),
+    });
+    assert_eq!(machine_names(&app), ["labpc", "laptop"]);
+}

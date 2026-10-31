@@ -732,7 +732,9 @@ impl App {
                 self.install_cron_save(*request, *result);
             }
             RpcUpdate::CronChanged { result } => self.install_cron_change(result),
-            RpcUpdate::MachinesRefreshed { result } => self.install_machine_listing(result),
+            RpcUpdate::MachinesRefreshed { read, result } => {
+                self.install_machine_listing(read, result);
+            }
             RpcUpdate::RuntimeAgents {
                 runtime,
                 result,
