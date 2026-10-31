@@ -9,7 +9,7 @@
 //!
 //! [spec]: https://cookie-agent.github.io/doc/dev/specs/web-mcp-oauth/
 
-use std::{cell::RefCell, collections::BTreeMap, collections::HashSet, time::Duration};
+use std::{cell::RefCell, collections::BTreeMap, collections::HashMap, time::Duration};
 
 use serde_json::{Value, json};
 use url::Url;
@@ -386,8 +386,9 @@ pub fn close_this_tab() {
 thread_local! {
     /// The page's one channel: its own messages never come back to it.
     static OPEN: RefCell<Option<web_sys::BroadcastChannel>> = const { RefCell::new(None) };
-    /// The callbacks another tab took.
-    static TAKEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// The callbacks this tab offers, by sign-in state, and whether another
+    /// tab took each. Only those are kept: every tab hears what each takes.
+    static OFFERED: RefCell<HashMap<String, bool>> = RefCell::new(HashMap::new());
 }
 
 /// Opens the page's channel and calls `heard` with every callback another
@@ -409,7 +410,11 @@ pub fn listen(heard: impl Fn(String, String) + 'static) {
             match message {
                 ChannelMessage::Callback { state, url } => heard(state, url),
                 ChannelMessage::Taken { state } => {
-                    TAKEN.with_borrow_mut(|taken| taken.insert(state));
+                    OFFERED.with_borrow_mut(|offered| {
+                        if let Some(taken) = offered.get_mut(&state) {
+                            *taken = true;
+                        }
+                    });
                 }
             }
         });
@@ -433,12 +438,15 @@ pub async fn hand_off(state: &str, url: &str) -> bool {
     if OPEN.with_borrow(Option::is_none) {
         return false;
     }
+    OFFERED.with_borrow_mut(|offered| offered.insert(state.to_owned(), false));
     post(&ChannelMessage::Callback {
         state: state.to_owned(),
         url: url.to_owned(),
     });
     gloo_timers::future::sleep(HANDOFF_WAIT).await;
-    TAKEN.with_borrow_mut(|taken| taken.remove(state))
+    OFFERED
+        .with_borrow_mut(|offered| offered.remove(state))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
