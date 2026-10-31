@@ -42,6 +42,16 @@ pub(super) struct Reads {
     pub costs: HashMap<SessionId, Latest>,
 }
 
+impl Reads {
+    /// Forgets the reads of a session the daemon removed. An answer still
+    /// on its way for it is dropped: its listing starts afresh.
+    pub(super) fn forget_session(&mut self, session_id: SessionId) {
+        self.approvals.remove(&session_id);
+        self.permission_modes.remove(&session_id);
+        self.costs.remove(&session_id);
+    }
+}
+
 impl Workspace {
     /// Starts a read of the listing `which` picks.
     pub(super) fn begin_read(self, which: impl FnOnce(&mut Reads) -> &mut Latest) -> Ticket {

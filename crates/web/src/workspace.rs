@@ -1041,6 +1041,7 @@ impl Workspace {
             self.start_new_session();
         }
         self.forget_composer_draft(session_id);
+        self.forget_session_state(session_id);
         self.unpick(session_id);
         // The daemon dropped its subscription already: nothing to send.
         self.subscriptions.update_value(|subscriptions| {
@@ -1053,6 +1054,41 @@ impl Workspace {
                 .is_some_and(|(failed, _)| *failed == session_id)
         }) {
             self.delete_error.set(None);
+        }
+    }
+
+    /// Drops what the page kept by `session_id`, removed: its reads, its
+    /// mode, cost, opened rows, and ownership. A map that holds nothing of
+    /// it is left alone, waking none of its readers.
+    fn forget_session_state(self, session_id: SessionId) {
+        fn forget<V: Send + Sync + 'static>(
+            map: RwSignal<HashMap<SessionId, V>>,
+            session_id: SessionId,
+        ) {
+            if map.with_untracked(|map| map.contains_key(&session_id)) {
+                map.update(|map| {
+                    map.remove(&session_id);
+                });
+            }
+        }
+        self.reads
+            .update_value(|reads| reads.forget_session(session_id));
+        self.cost_debounce.update_value(|debounce| {
+            debounce.remove(&session_id);
+        });
+        forget(self.permission_modes, session_id);
+        forget(self.costs, session_id);
+        forget(self.expanded, session_id);
+        self.owned.update_value(|owned| {
+            owned.remove(&session_id);
+        });
+        if self
+            .read_only
+            .with_untracked(|read_only| read_only.contains(&session_id))
+        {
+            self.read_only.update(|read_only| {
+                read_only.remove(&session_id);
+            });
         }
     }
 
