@@ -730,8 +730,12 @@ struct SessionSearchRowsCache {
     query: String,
     sessions_revision: u64,
     sessions_len: usize,
-    local_day: Option<jiff::civil::Date>,
+    /// When the local day the rows were dated in ends: their day headers
+    /// stand until then.
+    day_ends: Option<jiff::Timestamp>,
     rows: Vec<SessionSearchRow>,
+    /// The sessions among `rows`, in order.
+    ids: Vec<SessionId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

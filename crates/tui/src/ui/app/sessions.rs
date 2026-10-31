@@ -432,16 +432,25 @@ impl App {
 
     pub(super) fn refresh_session_search_rows_cache(&mut self) {
         let now = jiff::Timestamp::now();
-        let time_zone = jiff::tz::TimeZone::system();
-        let local_day = now.to_zoned(time_zone.clone()).date();
         let query = self.session_search.query();
         if self.session_search_rows_cache.query == query
             && self.session_search_rows_cache.sessions_revision == self.sessions_revision
             && self.session_search_rows_cache.sessions_len == self.sessions.len()
-            && self.session_search_rows_cache.local_day == Some(local_day)
+            && self
+                .session_search_rows_cache
+                .day_ends
+                .is_some_and(|ends| now < ends)
         {
             return;
         }
+        let time_zone = jiff::tz::TimeZone::system();
+        let day_ends = now
+            .to_zoned(time_zone.clone())
+            .date()
+            .tomorrow()
+            .and_then(|tomorrow| tomorrow.to_zoned(time_zone.clone()))
+            .map(|tomorrow| tomorrow.timestamp())
+            .ok();
         let rows = session_search_rows(
             self.picker_sessions()
                 .filter(|session| self.session_passes_project_filter(session)),
@@ -451,25 +460,29 @@ impl App {
             self.session_scope_all.then_some(&self.runtime_homes),
             &self.projects,
         );
+        let ids = rows
+            .iter()
+            .filter_map(SessionSearchRow::session_id)
+            .collect();
         self.session_search_rows_cache = SessionSearchRowsCache {
             query: query.to_owned(),
             sessions_revision: self.sessions_revision,
             sessions_len: self.sessions.len(),
-            local_day: Some(local_day),
+            day_ends,
             rows,
+            ids,
         };
     }
 
+    #[cfg(test)]
     pub(in crate::ui) fn current_session_search_rows(&mut self) -> &[SessionSearchRow] {
         self.refresh_session_search_rows_cache();
         &self.session_search_rows_cache.rows
     }
 
-    pub(in crate::ui) fn session_search_ids(&mut self) -> Vec<SessionId> {
-        self.current_session_search_rows()
-            .iter()
-            .filter_map(SessionSearchRow::session_id)
-            .collect()
+    pub(in crate::ui) fn session_search_ids(&mut self) -> &[SessionId] {
+        self.refresh_session_search_rows_cache();
+        &self.session_search_rows_cache.ids
     }
 
     /// Providers matching the current picker query by display name or ID.

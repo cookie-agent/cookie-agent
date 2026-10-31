@@ -663,3 +663,25 @@ async fn the_selection_follows_its_job_through_another_clients_changes() {
     app.install_cron_listing(Ok(reordered.clone()));
     assert!(selected(&app).is_some_and(|id| id != second));
 }
+
+/// A job's target is named once per listing and session list: renaming its
+/// session names it again.
+#[tokio::test]
+async fn a_renamed_target_session_is_named_again() {
+    let (mut app, viewed, _) = cron_app("1.15.0").await;
+    app.modal = Modal::Cron;
+    app.install_cron_listing(Ok(crate::ui::app::cron_panel::sample_crons()));
+    assert!(
+        frame_rows(&mut app, 160, 50)
+            .join("\n")
+            .contains("Build fixes")
+    );
+    app.apply_title_patch(
+        viewed,
+        Some(cookie_agent_protocol::SessionTitle::new("Release prep").expect("title")),
+        9,
+    );
+    let rows = frame_rows(&mut app, 160, 50).join("\n");
+    assert!(rows.contains("Release prep"), "{rows}");
+    assert!(!rows.contains("Build fixes"), "{rows}");
+}

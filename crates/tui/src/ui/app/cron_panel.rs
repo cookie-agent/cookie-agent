@@ -116,6 +116,20 @@ pub(in crate::ui) struct CronPanelState {
     pub(in crate::ui) pending: Option<(CronEditRequest, String)>,
     /// The job to select once the listing has it: one just created.
     pub(in crate::ui) focus: Option<CronJobId>,
+    /// Counts the listings installed, which [`Self::targets`] are of.
+    listing_revision: u64,
+    /// Each job's target as the panel names it, for the listing and the
+    /// session list they were named from.
+    targets: Option<(TargetsKey, Vec<String>)>,
+}
+
+/// What the cron panel's target labels are read from: the listing, and the
+/// session list that names their sessions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TargetsKey {
+    listing: u64,
+    sessions: u64,
+    sessions_len: usize,
 }
 
 impl CronPanelState {
@@ -162,6 +176,7 @@ impl CronPanelState {
         // add, delete, or reorder moves the job under it.
         let selected = self.selected_job().map(|job| job.id.clone());
         self.listing = Some(listing);
+        self.listing_revision = self.listing_revision.wrapping_add(1);
         let count = self.jobs().len();
         let index_of = |id: &CronJobId| self.jobs().iter().position(|job| job.id == *id);
         if let Some(index) = self.focus.as_ref().and_then(index_of) {
@@ -852,12 +867,22 @@ impl App {
     pub(super) fn render_cron_panel(&mut self, frame: &mut Frame) {
         let area = centered(frame.area(), 92, 80);
         paint_panel(frame, area, &self.theme);
-        let targets: Vec<String> = self
-            .cron_panel
-            .jobs()
-            .iter()
-            .map(|job| self.cron_target_label(job))
-            .collect();
+        // Naming a target looks its session up: named once per listing and
+        // session list, not at every frame.
+        let key = TargetsKey {
+            listing: self.cron_panel.listing_revision,
+            sessions: self.sessions_revision,
+            sessions_len: self.sessions.len(),
+        };
+        let targets = match self.cron_panel.targets.take() {
+            Some((cached, targets)) if cached == key => targets,
+            _ => self
+                .cron_panel
+                .jobs()
+                .iter()
+                .map(|job| self.cron_target_label(job))
+                .collect(),
+        };
         let details = self.cron_panel.selected_job().map_or_else(Vec::new, |job| {
             detail_lines(
                 job,
@@ -874,6 +899,7 @@ impl App {
             &details,
             &self.theme,
         );
+        self.cron_panel.targets = Some((key, targets));
     }
 }
 
