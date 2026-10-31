@@ -1,4 +1,4 @@
-//! Per-run localhost daemon bearer token and its stdout handoff frame.
+//! The daemon's bearer token and its stdout ready frame.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Serialize;
@@ -36,15 +36,17 @@ pub fn generate_token() -> Result<Zeroizing<String>, TokenError> {
 ///
 /// The daemon writes this as its first stdout line; every other stdout line is
 /// human logging that parsers must ignore. Parsers match [`READY_LINE_PREFIX`].
-pub fn ready_line(url: &str, token: &str) -> String {
+/// The frame carries only the URL: the token is `[server] token` in the
+/// daemon's `config.toml`, which a supervisor that needs it reads there, so
+/// it never reaches a supervisor's logs.
+pub fn ready_line(url: &str) -> String {
     #[derive(Serialize)]
     struct ReadyFrame<'a> {
         url: &'a str,
-        token: &'a str,
     }
 
-    let frame = serde_json::to_string(&ReadyFrame { url, token })
-        .expect("serializing a two-string ready frame cannot fail");
+    let frame = serde_json::to_string(&ReadyFrame { url })
+        .expect("serializing a one-string ready frame cannot fail");
     format!("{READY_LINE_PREFIX}{frame}")
 }
 
@@ -84,17 +86,11 @@ mod tests {
 
     #[test]
     fn ready_line_is_one_json_frame_with_the_documented_prefix() {
-        let token = "A".repeat(TOKEN_ENCODED_BYTES);
-        let line = ready_line("ws://127.0.0.1:7419/ws", &token);
+        let line = ready_line("ws://127.0.0.1:7419/ws");
         let payload = line
             .strip_prefix(READY_LINE_PREFIX)
             .expect("daemon-ready prefix");
         let value: serde_json::Value = serde_json::from_str(payload).expect("json frame");
-        assert_eq!(value["url"].as_str(), Some("ws://127.0.0.1:7419/ws"));
-        assert_eq!(value["token"].as_str(), Some(token.as_str()));
-        assert_eq!(
-            payload,
-            format!(r#"{{"url":"ws://127.0.0.1:7419/ws","token":"{token}"}}"#)
-        );
+        assert_eq!(value, serde_json::json!({"url": "ws://127.0.0.1:7419/ws"}));
     }
 }

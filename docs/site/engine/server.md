@@ -21,8 +21,8 @@ an available port, so clients must use the actual bound port. `cookie daemon
 By default the daemon binds IPv4 loopback at the configured port. Its bearer
 token is `[server] token`: when the configuration has none, the daemon
 generates one at its first start and writes it there, so it stays the same
-across restarts. It also prints it in its first stdout line
-(`daemon-ready {"url":...,"token":...}`). Clients and dial-in runtimes on this
+across restarts. Its first stdout line (`daemon-ready {"url":...}`) carries
+only the URL it listens at, not the token. Clients and dial-in runtimes on this
 machine read it from the same `config.toml`; elsewhere, pass `--token`, set
 `COOKIE_DAEMON_TOKEN`, or copy it into that machine's `[server] token`. See the
 [security contract](../daemon/security.md#daemon-authentication-token).

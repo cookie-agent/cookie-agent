@@ -68,6 +68,7 @@ fn free_port() -> u16 {
 struct Daemon {
     child: Child,
     stdout: BufReader<ChildStdout>,
+    home: PathBuf,
     /// The process now serving, which differs from the child's on Windows
     /// after a restart.
     pid: u32,
@@ -101,7 +102,24 @@ impl Daemon {
         let mut child = command.spawn().expect("spawn the daemon");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let pid = child.id();
-        Self { child, stdout, pid }
+        Self {
+            child,
+            stdout,
+            home: home.to_owned(),
+            pid,
+        }
+    }
+
+    /// `[server] token` of the daemon's configuration, which it wrote at
+    /// its first start.
+    fn token(&self) -> String {
+        let config = std::fs::read_to_string(self.home.join(".cookie-agent").join("config.toml"))
+            .expect("the daemon's config.toml");
+        let config: toml::Table = config.parse().expect("config.toml");
+        config["server"]["token"]
+            .as_str()
+            .expect("[server] token")
+            .to_owned()
     }
 
     /// Reads up to the next listening line.
@@ -114,10 +132,8 @@ impl Daemon {
             if let Some(frame) = line.strip_prefix("daemon-ready ") {
                 let frame: serde_json::Value =
                     serde_json::from_str(frame.trim()).expect("the ready frame");
-                endpoint = Some((
-                    frame["url"].as_str().expect("url").to_owned(),
-                    frame["token"].as_str().expect("token").to_owned(),
-                ));
+                assert!(frame.get("token").is_none(), "the ready line has no token");
+                endpoint = Some((frame["url"].as_str().expect("url").to_owned(), self.token()));
             } else if let Some(rest) = line.trim().strip_prefix("cookie daemon listening on ") {
                 let pid = rest
                     .rsplit_once("process ")

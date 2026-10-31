@@ -41,8 +41,8 @@ address bar.
   - `ws` is added to the page's directory.
 
   You can edit it; the page remembers the last URL it connected to.
-- **Token.** It comes from a `cookie web` link, or you paste it from the
-  daemon's ready line.
+- **Token.** It comes from a `cookie web` link, or you paste `[server] token`
+  from the daemon's `config.toml`.
 - **Connecting.** With both a URL and a token, the page connects without a
   click.
 - **Forget this daemon** deletes the stored token and stops the daemon's

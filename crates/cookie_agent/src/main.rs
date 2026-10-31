@@ -2606,7 +2606,7 @@ async fn run_daemon(
             .set_restart_hook(Box::new(move || restart.cancel()));
     }
     let url = format!("{scheme}://{}/ws", listener.address());
-    println!("{}", ready_line(&url, token.as_str()));
+    println!("{}", ready_line(&url));
     drop(token);
     println!(
         "cookie daemon listening on {url} (client protocol {}, process {})",

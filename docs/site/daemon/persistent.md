@@ -23,13 +23,14 @@ daemon prints afterward is human logging. A supervisor writes the daemon's
 stdout to a pipe, reads exactly that one line, and ignores the rest:
 
 ```text
-daemon-ready {"url":"ws://127.0.0.1:7419/ws","token":"<43-char base64url>"}
+daemon-ready {"url":"ws://127.0.0.1:7419/ws"}
 ```
 
-The token is `[server] token` in `config.toml`; the daemon writes a fresh one
-there at its first start when there is none, and keeps it across restarts.
-Treat it, and the ready line, as a secret: anyone who reads either can
-connect to the daemon.
+The line names no token, so the supervisor's logs hold no secret. The token
+is `[server] token` in `config.toml`, where a supervisor that connects reads
+it; the daemon writes a fresh one there at its first start when there is
+none, and keeps it across restarts. Treat it as a secret: anyone who reads
+it can connect to the daemon.
 Pass `--port 0` to let the OS pick an ephemeral port; the ready line then
 carries the real port, and clients must use that URL rather than guessing 7419.
 

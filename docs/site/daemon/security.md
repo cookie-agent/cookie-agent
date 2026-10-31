@@ -147,20 +147,21 @@ restart the daemon) if it leaks. Plain `cookie` sends the token to whatever
 listens at `[server] host` and `port` when it looks for a running daemon (see
 [A daemon already running](persistent.md#a-daemon-already-running)), as
 `cookie attach` with default settings does; it looks only when the token is
-set. The daemon also prints the token in its first stdout line:
+set. The daemon's first stdout line carries only its URL, never the token,
+so a supervisor that logs daemon stdout verbatim keeps no secret:
 
 ```text
-daemon-ready {"url":"ws://127.0.0.1:<port>/ws","token":"<43-char base64url>"}
+daemon-ready {"url":"ws://127.0.0.1:<port>/ws"}
 ```
 
-A supervisor that logs daemon stdout verbatim persists the token in its
-logs, and a token pasted on a shell command line is visible in shell history.
+A supervisor that needs the token reads `[server] token` from the same
+`config.toml`. A token pasted on a shell command line is visible in shell
+history.
 A `--token` argument is also visible in the process's command line, and a
 service definition that carries it holds it on disk. cookie removes
 `COOKIE_DAEMON_TOKEN` from its environment once it has read it, so neither
 form reaches the processes cookie starts: `bash` calls, MCP servers,
 plugins, runtime templates, or an editor.
-Treat the ready line as secret and do not archive it.
 
 ### AGENTS.md context files
 

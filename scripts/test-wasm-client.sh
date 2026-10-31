@@ -66,6 +66,12 @@ start_daemon() {
     exit 1
 }
 
+# `[server] token` of the home $1's config.toml, which its daemon wrote.
+server_token() {
+    python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["server"]["token"])' \
+        "$1/.cookie-agent/config.toml"
+}
+
 json_field() {
     python3 -I -c 'import json, sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"
 }
@@ -106,7 +112,7 @@ python3 -I -c 'import json, sys; json.dump({"goog:chromeOptions": {"binary": sys
 export WASM_BINDGEN_TEST_WEBDRIVER_JSON="$scratch/webdriver.json"
 
 COOKIE_WASM_TEST_URL="$(json_field "$ready" url)" \
-COOKIE_WASM_TEST_TOKEN="$(json_field "$ready" token)" \
+COOKIE_WASM_TEST_TOKEN="$(server_token "$home")" \
 COOKIE_WASM_TEST_WORKSPACE="$home/workspace" \
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
     cargo test --locked --target wasm32-unknown-unknown -p cookie_agent_protocol \
