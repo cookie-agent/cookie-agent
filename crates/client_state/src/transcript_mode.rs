@@ -3,7 +3,12 @@
 //! call, or each assistant block's work folded into one `Working…` /
 //! `Worked for` row above its reply.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use cookie_agent_protocol::{ProducerOwner, ToolCallId};
 
@@ -83,7 +88,7 @@ pub fn needs_user(state: &SessionState, call_id: &ToolCallId) -> bool {
 }
 
 /// What a block's work row says.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WorkSummary {
     /// The block still takes output: `Working…`, its time ticking.
     pub live: bool,
@@ -396,6 +401,23 @@ pub struct WorkRow {
     pub lines: Option<WorkLines>,
 }
 
+impl WorkRow {
+    /// Hashes what the row shows, for a client's row cache: a live row's
+    /// time as its label counts it, so the row draws again as its label
+    /// ticks and not at every frame.
+    pub fn hash_shown(&self, hasher: &mut impl Hasher) {
+        self.summary.live.hash(hasher);
+        if self.summary.live {
+            self.summary.label().hash(hasher);
+            self.summary.tool_calls.hash(hasher);
+            self.summary.failed.hash(hasher);
+        } else {
+            self.summary.hash(hasher);
+        }
+        self.lines.hash(hasher);
+    }
+}
+
 /// Whether `text`, written between calls, says nothing, so it folds into the
 /// work where any other text breaks it: blank, or only ellipses (`…`,
 /// `...`), which Kimi models write between calls.
@@ -415,22 +437,185 @@ pub fn filler(text: &str) -> bool {
 /// the reply does and splits the work around it into folds of their own,
 /// the one before it done. A fold with no thinking or tool call shows as in
 /// the full mode, and media always shows.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FoldPlan {
-    items: HashMap<u64, ItemFold>,
-    folds: HashMap<WorkKey, Fold>,
+    /// Where each item stands, and [`Self::placed`]'s hash of it.
+    items: Map<u64, (ItemFold, u64)>,
+    folds: Map<WorkKey, Fold>,
     /// Each block's position in the transcript.
-    positions: HashMap<u64, usize>,
+    positions: Map<u64, usize>,
+    /// The work rows of the folds whose work ended, which no clock moves.
+    settled: Map<WorkKey, WorkRow>,
+    /// The folds still working, whose rows count to the time they draw at.
+    live: Vec<WorkKey>,
+    /// The stretches planned, in transcript order.
+    stretches: Vec<Stretch>,
+}
+
+/// The plan's maps, under a fast fixed hash: their keys are IDs.
+type Map<K, V> = HashMap<K, V, foldhash::fast::FixedState>;
+
+/// The hash [`FoldPlan::placed`] gives `fold`: the place, and the settled
+/// row of each fold it starts.
+fn fold_hash(fold: &ItemFold, settled: &Map<WorkKey, WorkRow>) -> u64 {
+    use std::hash::BuildHasher as _;
+    let mut hasher = foldhash::fast::FixedState::default().build_hasher();
+    fold.hash(&mut hasher);
+    if let ItemFold::Block(block) = fold {
+        for child in &block.children {
+            if let ChildFold::Work { key, starts: true } = child
+                && let Some(row) = settled.get(key)
+            {
+                row.hash_shown(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
+/// One planned stretch: where it lies in the transcript, what it read
+/// there, and what it planned.
+#[derive(Clone, Debug, PartialEq)]
+struct Stretch {
+    /// The position of its first block.
+    start: usize,
+    /// The position of the item that ended it, or the transcript's length.
+    end: usize,
+    /// [`signature`] of what it read.
+    signature: u64,
+    blocks: Vec<u64>,
+    /// The rows it planned into its folds.
+    rows: Vec<u64>,
+    folds: Vec<WorkKey>,
+}
+
+/// What the plan of the stretch from `start` to `end` read: its items, its
+/// blocks' children, runs, times, and ends, whether its last block is live,
+/// and how the item at `end` ended it. A stretch whose signature still
+/// matches plans the same, so it stays.
+fn signature(state: &SessionState, start: usize, end: usize) -> u64 {
+    use std::hash::BuildHasher as _;
+    let mut hasher = foldhash::fast::FixedState::default().build_hasher();
+    let Some(items) = state.transcript.get(start..end) else {
+        // The transcript is shorter than it was.
+        return 0;
+    };
+    let mut last = None;
+    for item in items {
+        item.id().hash(&mut hasher);
+        std::mem::discriminant(item).hash(&mut hasher);
+        if let TranscriptItem::Assistant {
+            id,
+            version,
+            children,
+            child_times,
+            ..
+        } = item
+        {
+            last = Some(*id);
+            version.hash(&mut hasher);
+            child_times.hash(&mut hasher);
+            children.len().hash(&mut hasher);
+            for child in children {
+                std::mem::discriminant(child).hash(&mut hasher);
+                child.version().hash(&mut hasher);
+                match child {
+                    AssistantChild::Tool { call_id } => call_id.hash(&mut hasher),
+                    AssistantChild::CommittedTool {
+                        turn_seq,
+                        content_index,
+                        ..
+                    } => (turn_seq, content_index).hash(&mut hasher),
+                    _ => {}
+                }
+            }
+            state.assistant_runs.get(id).hash(&mut hasher);
+            state
+                .assistant_ends
+                .get(id)
+                .map(|end| (end.at, end.stopped))
+                .hash(&mut hasher);
+            state.item_time(*id).hash(&mut hasher);
+        } else {
+            background_row(item).hash(&mut hasher);
+        }
+    }
+    last.is_some_and(|last| state.assistant_live(last))
+        .hash(&mut hasher);
+    match state.transcript.get(end) {
+        None => 0u8.hash(&mut hasher),
+        Some(TranscriptItem::Assistant { id, .. }) => {
+            1u8.hash(&mut hasher);
+            state.assistant_runs.get(id).hash(&mut hasher);
+        }
+        Some(item) => {
+            2u8.hash(&mut hasher);
+            background_row(item).hash(&mut hasher);
+        }
+    }
+    hasher.finish().max(1)
+}
+
+/// A session's reduced-mode [`FoldPlan`], worked out once per
+/// [`SessionState::version`] however many frames and passes ask for it
+/// ([`SessionState::fold_plan`]).
+#[derive(Default)]
+pub struct FoldCache(Mutex<Option<(u64, Arc<FoldPlan>)>>);
+
+impl Clone for FoldCache {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(self.lock().clone()))
+    }
+}
+
+impl std::fmt::Debug for FoldCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("FoldCache")
+    }
+}
+
+impl FoldCache {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<(u64, Arc<FoldPlan>)>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl SessionState {
+    /// The reduced mode's folds of this projection: [`FoldPlan::of`],
+    /// built again only once [`Self::version`] moved.
+    #[must_use]
+    pub fn fold_plan(&self) -> Arc<FoldPlan> {
+        let mut cached = self.folds.lock();
+        if let Some((version, plan)) = cached.as_ref()
+            && *version == self.version
+        {
+            return Arc::clone(plan);
+        }
+        let plan = Arc::new(match cached.take() {
+            Some((_, plan)) => {
+                // The frames that drew it are done with it: refreshed in
+                // place, else copied.
+                let mut plan = Arc::try_unwrap(plan).unwrap_or_else(|plan| (*plan).clone());
+                plan.refresh(self);
+                plan
+            }
+            None => FoldPlan::of(self),
+        });
+        *cached = Some((self.version, Arc::clone(&plan)));
+        plan
+    }
 }
 
 /// One fold: its work's children in order, and where its work ends.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Fold {
     children: Vec<(u64, usize)>,
     end: FoldEnd,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum FoldEnd {
     /// A text broke the work: it ends where that child entered.
     Text { item: u64, child: usize },
@@ -450,10 +635,47 @@ impl FoldPlan {
     #[must_use]
     pub fn of(state: &SessionState) -> Self {
         let mut plan = Self::default();
+        plan.build_from(state, 0);
+        plan
+    }
+
+    /// Brings the plan of an earlier version of `state` up to date: the
+    /// stretches that read the same as when they were planned stay, and the
+    /// transcript is planned again from the first that does not. A run's
+    /// earlier stretches never change, so a delta plans only the last.
+    fn refresh(&mut self, state: &SessionState) {
+        let stale = self
+            .stretches
+            .iter()
+            .position(|stretch| stretch.signature != signature(state, stretch.start, stretch.end));
+        if let Some(index) = stale {
+            for stretch in self.stretches.drain(index..) {
+                for id in &stretch.blocks {
+                    self.positions.remove(id);
+                    self.items.remove(id);
+                }
+                for id in &stretch.rows {
+                    self.items.remove(id);
+                }
+                for key in &stretch.folds {
+                    self.folds.remove(key);
+                    self.settled.remove(key);
+                }
+            }
+        }
+        // Plan again from where the last stretch that stays ended, not from
+        // where the stale one began: a row removed before it moved it back.
+        let from = self.stretches.last().map_or(0, |stretch| stretch.end);
+        self.live.retain(|key| self.folds.contains_key(key));
+        self.build_from(state, from);
+    }
+
+    /// Plans the transcript from `from`, where no stretch is open.
+    fn build_from(&mut self, state: &SessionState, from: usize) {
         let mut stretch: Option<Building<'_>> = None;
-        for (position, item) in state.transcript.iter().enumerate() {
+        for (position, item) in state.transcript.iter().enumerate().skip(from) {
             if let TranscriptItem::Assistant { id, children, .. } = item {
-                plan.positions.insert(*id, position);
+                self.positions.insert(*id, position);
                 let run = state.assistant_runs.get(id).copied();
                 if let Some(building) = stretch
                     .as_mut()
@@ -464,9 +686,10 @@ impl FoldPlan {
                     continue;
                 }
                 if let Some(done) = stretch.take() {
-                    plan.add(state, done);
+                    self.add(state, done, position);
                 }
                 stretch = Some(Building {
+                    start: position,
                     run,
                     blocks: vec![(*id, children)],
                     rows: Vec::new(),
@@ -477,16 +700,48 @@ impl FoldPlan {
                     building.pending.push((item.id(), building.blocks.len()));
                 }
             } else if let Some(done) = stretch.take() {
-                plan.add(state, done);
+                self.add(state, done, position);
             }
         }
         if let Some(done) = stretch {
-            plan.add(state, done);
+            self.add(state, done, state.transcript.len());
         }
-        plan
+        self.live.sort_unstable();
     }
 
-    fn add(&mut self, state: &SessionState, stretch: Building<'_>) {
+    /// Plans the stretch `stretch`, which the item at `end` ended (or the
+    /// transcript's end).
+    fn add(&mut self, state: &SessionState, stretch: Building<'_>, end: usize) {
+        let mut planned = Stretch {
+            start: stretch.start,
+            end,
+            signature: signature(state, stretch.start, end),
+            blocks: stretch.blocks.iter().map(|(id, _)| *id).collect(),
+            rows: Vec::new(),
+            folds: Vec::new(),
+        };
+        self.plan(state, &stretch, &mut planned);
+        // A row whose work ended says the same at any time: worked out once
+        // here, not at every frame.
+        for key in &planned.folds {
+            match self.row(state, *key, jiff::Timestamp::UNIX_EPOCH, 0) {
+                Some(row) if !row.summary.live => {
+                    self.settled.insert(*key, row);
+                }
+                Some(_) => self.live.push(*key),
+                None => {}
+            }
+        }
+        let Self { items, settled, .. } = self;
+        for id in planned.blocks.iter().chain(&planned.rows) {
+            if let Some((fold, hash)) = items.get_mut(id) {
+                *hash = fold_hash(fold, settled);
+            }
+        }
+        self.stretches.push(planned);
+    }
+
+    fn plan(&mut self, state: &SessionState, stretch: &Building<'_>, planned: &mut Stretch) {
         // The stretch in order: each block's children, and the rows that
         // came before each block after the first.
         let mut units = Vec::new();
@@ -515,7 +770,7 @@ impl FoldPlan {
         } else {
             units.len() - (last_children.len() - reply_start(last_children).unwrap_or(0))
         };
-        let mut places: HashMap<(u64, usize), ChildFold> = HashMap::new();
+        let mut places: Map<(u64, usize), ChildFold> = Map::default();
         let mut rows = Vec::new();
         let mut start = 0;
         let mut folded = false;
@@ -532,7 +787,10 @@ impl FoldPlan {
                 },
                 _ => FoldEnd::Run { item: last },
             };
-            folded |= self.fold(&units[start..at], end, &mut places, &mut rows);
+            if let Some(key) = self.fold(&units[start..at], end, &mut places, &mut rows) {
+                planned.folds.push(key);
+                folded = true;
+            }
             start = at + 1;
         }
         if !folded {
@@ -550,27 +808,31 @@ impl FoldPlan {
                 .collect();
             self.items.insert(
                 *id,
-                ItemFold::Block(BlockFold {
-                    first: index == 0,
-                    last: index + 1 == count,
-                    children,
-                }),
+                (
+                    ItemFold::Block(BlockFold {
+                        first: index == 0,
+                        last: index + 1 == count,
+                        children,
+                    }),
+                    0,
+                ),
             );
         }
         for (row, key) in rows {
-            self.items.insert(row, ItemFold::Row { key });
+            self.items.insert(row, (ItemFold::Row { key }, 0));
+            planned.rows.push(row);
         }
     }
 
     /// Folds `units`, one stretch of work ending as `end`, when it holds a
-    /// thinking part or a tool call; whether it did.
+    /// thinking part or a tool call; its key when it did.
     fn fold(
         &mut self,
         units: &[Unit<'_>],
         end: FoldEnd,
-        places: &mut HashMap<(u64, usize), ChildFold>,
+        places: &mut Map<(u64, usize), ChildFold>,
         rows: &mut Vec<(u64, WorkKey)>,
-    ) -> bool {
+    ) -> Option<WorkKey> {
         let worked = units.iter().any(|unit| {
             matches!(
                 unit,
@@ -588,7 +850,7 @@ impl FoldPlan {
             Unit::Row(_) => None,
         });
         let (true, Some((item, child))) = (worked, first) else {
-            return false;
+            return None;
         };
         let key = WorkKey {
             item,
@@ -613,7 +875,7 @@ impl FoldPlan {
             }
         }
         self.folds.insert(key, Fold { children, end });
-        true
+        Some(key)
     }
 
     /// Every fold's key.
@@ -624,12 +886,45 @@ impl FoldPlan {
     /// Where the item `item_id` stands, when it is in a folded run.
     #[must_use]
     pub fn get(&self, item_id: u64) -> Option<&ItemFold> {
-        self.items.get(&item_id)
+        self.items.get(&item_id).map(|(fold, _)| fold)
+    }
+
+    /// Where the item `item_id` stands, with a hash of that place and of
+    /// the settled work rows it draws, which changes when either does. What
+    /// a client adds (which folds are open, the live rows) it hashes itself.
+    #[must_use]
+    pub fn placed(&self, item_id: u64) -> Option<(&ItemFold, u64)> {
+        self.items.get(&item_id).map(|(fold, hash)| (fold, *hash))
     }
 
     /// The work row of the fold `key` at `now`, its lines cut at `room`.
     #[must_use]
     pub fn work_row(
+        &self,
+        state: &SessionState,
+        key: WorkKey,
+        now: jiff::Timestamp,
+        room: usize,
+    ) -> Option<WorkRow> {
+        match self.settled.get(&key) {
+            Some(row) => Some(row.clone()),
+            None => self.row(state, key, now, room),
+        }
+    }
+
+    /// The work row of the fold `key` once its work ended; `None` while it
+    /// works, when [`Self::work_row`] counts it to a time.
+    #[must_use]
+    pub fn settled_row(&self, key: WorkKey) -> Option<&WorkRow> {
+        self.settled.get(&key)
+    }
+
+    /// The folds still working, in key order: those whose rows tick.
+    pub fn live_keys(&self) -> impl Iterator<Item = WorkKey> + '_ {
+        self.live.iter().copied()
+    }
+
+    fn row(
         &self,
         state: &SessionState,
         key: WorkKey,
@@ -694,6 +989,8 @@ impl FoldPlan {
 /// since its last block, which join it only if another of its blocks
 /// follows.
 struct Building<'a> {
+    /// The position of its first block.
+    start: usize,
     run: Option<cookie_agent_protocol::RunId>,
     blocks: Vec<(u64, &'a [AssistantChild])>,
     rows: Vec<(u64, usize)>,

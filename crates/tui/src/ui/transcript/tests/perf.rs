@@ -314,6 +314,30 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+/// Lays `root` out as the app's transcript mode shows it: whether the
+/// cached layout stood.
+fn layout_check(app: &mut App, root: SessionId, width: u16) -> bool {
+    let clock = app.clock_bucket();
+    let view = crate::ui::transcript::TranscriptView {
+        minimum_event_level: app.tui_config.minimum_event_level,
+        transcript: app.tui_config.transcript,
+        now: app.transcript_now(),
+    };
+    crate::ui::transcript::ensure_cached_transcript_layout_in(
+        &mut app.layout_cache,
+        root,
+        &app.store.sessions[&root],
+        None,
+        app.expanded_blocks.get(&root),
+        width,
+        &app.theme,
+        app.highlighter.as_ref(),
+        view,
+        clock,
+        app.runtime.model_names(),
+    )
+}
+
 async fn scenario(with_descendants: bool) {
     let runs: usize = env_or("PERF_RUNS", 150);
     let live_turns: usize = env_or("PERF_LIVE_TURNS", 30);
@@ -415,21 +439,8 @@ async fn scenario(with_descendants: bool) {
     let width = app.layout_cache.key.expect("laid out").width;
     let samples = (0..repeat)
         .map(|_| {
-            let clock = app.clock_bucket();
             let start = Instant::now();
-            assert!(crate::ui::transcript::ensure_cached_transcript_layout(
-                &mut app.layout_cache,
-                root,
-                &app.store.sessions[&root],
-                None,
-                app.expanded_blocks.get(&root),
-                width,
-                &app.theme,
-                app.highlighter.as_ref(),
-                app.tui_config.minimum_event_level,
-                clock,
-                app.runtime.model_names(),
-            ));
+            assert!(layout_check(&mut app, root, width));
             start.elapsed()
         })
         .collect();
@@ -678,12 +689,17 @@ async fn scenario(with_descendants: bool) {
 
 /// A session of many short tool calls: `PERF_TOOLS` (5000) of them, ten to
 /// a turn, one turn to a run, with a live run streaming at the end. Each
-/// frame's passes over every item and region show here.
+/// frame's passes over every item and region show here. `PERF_TRANSCRIPT`
+/// (`full`) names the transcript mode the redraws show.
 async fn tool_heavy_scenario() {
     let tools: usize = env_or("PERF_TOOLS", 5_000);
     let repeat: usize = env_or("PERF_REPEAT", 30);
     let root = SessionId::new_v7();
     let mut app = test_app().await;
+    app.tui_config.transcript = std::env::var("PERF_TRANSCRIPT")
+        .ok()
+        .and_then(|name| cookie_agent_client_state::transcript_mode::TranscriptMode::parse(&name))
+        .unwrap_or(cookie_agent_client_state::transcript_mode::TranscriptMode::Full);
     app.tree_root = Some(root);
     app.selected = Some(root);
     let mut seq = Seq(0);
@@ -802,21 +818,8 @@ async fn tool_heavy_scenario() {
     let before = passes(&app);
     let samples = (0..repeat)
         .map(|_| {
-            let clock = app.clock_bucket();
             let start = Instant::now();
-            assert!(crate::ui::transcript::ensure_cached_transcript_layout(
-                &mut app.layout_cache,
-                root,
-                &app.store.sessions[&root],
-                None,
-                app.expanded_blocks.get(&root),
-                width,
-                &app.theme,
-                app.highlighter.as_ref(),
-                app.tui_config.minimum_event_level,
-                clock,
-                app.runtime.model_names(),
-            ));
+            assert!(layout_check(&mut app, root, width));
             start.elapsed()
         })
         .collect();
@@ -835,21 +838,8 @@ async fn tool_heavy_scenario() {
     let before = passes(&app);
     let samples = (0..repeat)
         .map(|_| {
-            let clock = app.clock_bucket();
             let start = Instant::now();
-            assert!(crate::ui::transcript::ensure_cached_transcript_layout(
-                &mut app.layout_cache,
-                root,
-                &app.store.sessions[&root],
-                None,
-                app.expanded_blocks.get(&root),
-                width,
-                &app.theme,
-                app.highlighter.as_ref(),
-                app.tui_config.minimum_event_level,
-                clock,
-                app.runtime.model_names(),
-            ));
+            assert!(layout_check(&mut app, root, width));
             start.elapsed()
         })
         .collect();

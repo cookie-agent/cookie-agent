@@ -81,7 +81,7 @@ pub(super) fn assistant_item_layout(
             layout.push_layout(work_row_layout(
                 key,
                 row,
-                *fresh,
+                fresh,
                 open,
                 context.width,
                 context.theme,

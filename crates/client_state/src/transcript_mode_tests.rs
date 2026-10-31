@@ -568,3 +568,187 @@ fn a_stretch_without_thinking_or_tools_is_not_folded() {
     assert_eq!(at(&plan, 2), None);
     assert_eq!(at(&plan, 3), None);
 }
+
+#[test]
+fn a_sessions_fold_plan_is_built_again_once_its_version_moves() {
+    let mut state = transcript(
+        vec![block(1, vec![committed_tool("bash"), text("one")])],
+        &[(1, 0)],
+    );
+    let plan = state.fold_plan();
+    assert!(plan.get(1).is_some());
+    assert!(std::sync::Arc::ptr_eq(&plan, &state.fold_plan()));
+    state
+        .transcript
+        .push(block(2, vec![committed_tool("bash"), text("two")]));
+    state.assistant_runs.insert(2, state.assistant_runs[&1]);
+    state.version += 1;
+    let plan = state.fold_plan();
+    assert_eq!(
+        at(&plan, 2),
+        folded(false, true, vec![work(2, 0, true), ChildFold::Shown])
+    );
+    // A clone answers from the same plan until either moves on.
+    assert!(std::sync::Arc::ptr_eq(&plan, &state.clone().fold_plan()));
+}
+
+#[test]
+fn only_a_working_folds_row_is_counted_again_at_each_time() {
+    let mut live = transcript(
+        vec![
+            block(1, vec![committed_tool("read"), text("Now the tests.")]),
+            TranscriptItem::user("next"),
+            block(3, vec![committed_tool("bash")]),
+        ],
+        &[(1, 0), (3, 1)],
+    );
+    let Some(TranscriptItem::Assistant { attribution, .. }) = live.transcript.last() else {
+        unreachable!()
+    };
+    live.open_run_assistant = Some(crate::RunAssistantProjection {
+        run_id: live.assistant_runs[&3],
+        item_id: 3,
+        committed_prefix: 0,
+        current_model: attribution.resolved_model.clone(),
+        split_pending: false,
+        split_at: None,
+    });
+    let plan = FoldPlan::of(&live);
+    assert_eq!(plan.live_keys().collect::<Vec<_>>(), [key(3, 0)]);
+    assert_eq!(plan.settled_row(key(3, 0)), None);
+    let settled = plan.settled_row(key(1, 0)).expect("a settled row").clone();
+    assert!(!settled.summary.live);
+    assert_eq!(
+        plan.work_row(&live, key(1, 0), jiff::Timestamp::MAX, 80),
+        Some(settled)
+    );
+    let row = plan
+        .work_row(&live, key(3, 0), jiff::Timestamp::UNIX_EPOCH, 80)
+        .expect("a live row");
+    assert!(row.summary.live);
+}
+
+#[test]
+fn a_live_rows_shown_hash_moves_with_its_label_not_its_clock() {
+    let shown = |live: bool, millis: u64| {
+        let row = WorkRow {
+            summary: WorkSummary {
+                live,
+                stopped: false,
+                elapsed: Duration::from_millis(millis),
+                tool_calls: 2,
+                failed: 0,
+            },
+            lines: None,
+        };
+        let mut hasher = std::hash::DefaultHasher::new();
+        row.hash_shown(&mut hasher);
+        hasher.finish()
+    };
+    assert_eq!(shown(true, 5_100), shown(true, 5_900));
+    assert_ne!(shown(true, 5_900), shown(true, 6_100));
+    assert_ne!(shown(false, 5_100), shown(false, 5_900));
+    assert_ne!(shown(true, 5_100), shown(false, 5_100));
+}
+
+#[test]
+fn a_refreshed_fold_plan_matches_one_planned_afresh() {
+    let mut state = transcript(
+        vec![
+            block(1, vec![thinking("**Plan**"), committed_tool("read")]),
+            TranscriptItem::user("next"),
+        ],
+        &[(1, 0)],
+    );
+    let live = |state: &mut SessionState, item_id: u64| {
+        let Some(TranscriptItem::Assistant { attribution, .. }) =
+            state.transcript.iter().find(|item| item.id() == item_id)
+        else {
+            unreachable!()
+        };
+        state.open_run_assistant = Some(crate::RunAssistantProjection {
+            run_id: state.assistant_runs[&item_id],
+            item_id,
+            committed_prefix: 0,
+            current_model: attribution.resolved_model.clone(),
+            split_pending: false,
+            split_at: None,
+        });
+    };
+    let check = |state: &mut SessionState, step: &str| {
+        state.version += 1;
+        assert_eq!(*state.fold_plan(), FoldPlan::of(state), "{step}");
+    };
+    check(&mut state, "first plan");
+    // A second run streams at the end.
+    state
+        .transcript
+        .push(block(3, vec![committed_tool("bash")]));
+    state
+        .assistant_runs
+        .insert(3, cookie_agent_protocol::RunId::new_v7());
+    live(&mut state, 3);
+    check(&mut state, "a live block");
+    let Some(TranscriptItem::Assistant {
+        version, children, ..
+    }) = state.transcript.last_mut()
+    else {
+        unreachable!()
+    };
+    children.push(text("Now the tests."));
+    *version += 1;
+    check(&mut state, "text after its call");
+    // Its run goes on past a background row into another block.
+    state.transcript.push(event(4, EventLevel::Info));
+    state
+        .transcript
+        .push(block(5, vec![committed_tool("bash"), text("Done.")]));
+    state.assistant_runs.insert(5, state.assistant_runs[&3]);
+    live(&mut state, 5);
+    check(&mut state, "a block after a background row");
+    // The row turns into one that ends the stretch.
+    let Some(TranscriptItem::Event { level, .. }) = state.transcript.get_mut(3) else {
+        unreachable!()
+    };
+    *level = EventLevel::Warning;
+    check(&mut state, "a warning between the blocks");
+    // The run ends.
+    state.open_run_assistant = None;
+    state.assistant_ends.insert(
+        5,
+        crate::AssistantEnd {
+            at: jiff::Timestamp::UNIX_EPOCH,
+            stopped: true,
+        },
+    );
+    check(&mut state, "the run ended");
+    state.transcript.push(TranscriptItem::user("more"));
+    check(&mut state, "a row after the run");
+    // The transcript is cut back.
+    state.transcript.truncate(2);
+    check(&mut state, "a cut transcript");
+    state.transcript.clear();
+    check(&mut state, "an empty transcript");
+}
+
+#[test]
+fn a_refreshed_fold_plan_plans_a_stretch_a_removed_row_moved_back() {
+    // The first stretch still ends on a row that ends it, so it stays; the
+    // second moved back one place and is planned where it now lies.
+    let mut state = transcript(
+        vec![
+            block(1, vec![committed_tool("read"), text("one")]),
+            TranscriptItem::user("next"),
+            event(3, EventLevel::Warning),
+            block(4, vec![committed_tool("bash"), text("two")]),
+        ],
+        &[(1, 0), (4, 1)],
+    );
+    state.version += 1;
+    let _ = state.fold_plan();
+    state.transcript.remove(1);
+    state.version += 1;
+    let plan = state.fold_plan();
+    assert!(plan.get(4).is_some());
+    assert_eq!(*plan, FoldPlan::of(&state));
+}

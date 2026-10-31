@@ -3017,6 +3017,9 @@ pub(super) fn push_event(
     text: String,
     timestamp: jiff::Timestamp,
 ) {
+    // Rows pushed outside any event (connection failures, MCP and runtime
+    // notices) change what the transcript shows as well.
+    state.version = state.version.wrapping_add(1);
     // A warning-or-worse row injected while the run's block is open marks
     // it split-pending: the part streaming right now keeps streaming into
     // the existing block above the row, but the next new segment (part,

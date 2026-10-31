@@ -1589,8 +1589,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     // which spins in place of the trailing working row.
     let work_spins = Memo::new(move |_| {
         use cookie_agent_client_state::{
-            ProducerMessageStatus, TranscriptItem,
-            transcript_mode::{FoldPlan, TranscriptMode},
+            ProducerMessageStatus, TranscriptItem, transcript_mode::TranscriptMode,
         };
         store_frame.track();
         if workspace.transcript.get() != TranscriptMode::Reduced {
@@ -1614,13 +1613,9 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     _ => true,
                 })?;
                 // It is in a folded run whose last fold works.
-                let plan = FoldPlan::of(state);
+                let plan = state.fold_plan();
                 plan.get(last.id())?;
-                let now = jiff::Timestamp::now();
-                Some(plan.keys().any(|key| {
-                    plan.work_row(state, key, now, 0)
-                        .is_some_and(|row| row.summary.live)
-                }))
+                Some(plan.live_keys().next().is_some())
             })
         })
         .unwrap_or(false)

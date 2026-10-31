@@ -1183,6 +1183,9 @@ pub struct SessionState {
     /// `automatic_runs_held` with no resume or submitted user input since.
     pub held: Option<cookie_agent_protocol::Open<cookie_agent_protocol::HeldReason>>,
     pub transcript: Vec<TranscriptItem>,
+    /// The reduced mode's folds of the transcript at the latest version
+    /// asked for ([`SessionState::fold_plan`]).
+    pub folds: transcript_mode::FoldCache,
     /// Durable insertion time per transcript item id. Cross-session rows such
     /// as aggregated descendant warnings merge into a viewed transcript by
     /// this time, so mid-conversation breaks render at their chronological

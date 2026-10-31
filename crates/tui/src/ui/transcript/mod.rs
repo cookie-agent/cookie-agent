@@ -37,7 +37,35 @@ use cookie_agent_client_state::transcript_mode::{
 };
 
 /// Each fold's work row and which of its lines just changed, by its lead.
-type WorkRows = HashMap<WorkKey, (WorkRow, WorkLinesFresh)>;
+/// Each fold's work row and which of its lines just changed, by lead: the
+/// plan's settled rows as they are, and the live ones worked out for the
+/// frame.
+struct WorkRows<'a> {
+    folds: &'a FoldPlan,
+    live: HashMap<WorkKey, (WorkRow, WorkLinesFresh)>,
+}
+
+impl WorkRows<'_> {
+    /// Whether any fold still works.
+    fn any_live(&self) -> bool {
+        !self.live.is_empty()
+    }
+
+    /// The row of the fold `key` while it works.
+    fn live(&self, key: &WorkKey) -> Option<(&WorkRow, WorkLinesFresh)> {
+        self.live.get(key).map(|(row, fresh)| (row, *fresh))
+    }
+
+    fn get(&self, key: &WorkKey) -> Option<(&WorkRow, WorkLinesFresh)> {
+        match self.live.get(key) {
+            Some((row, fresh)) => Some((row, *fresh)),
+            None => self
+                .folds
+                .settled_row(*key)
+                .map(|row| (row, WorkLinesFresh::default())),
+        }
+    }
+}
 #[cfg(test)]
 use cookie_agent_protocol::GoalStatus;
 use cookie_agent_protocol::{
@@ -972,7 +1000,7 @@ struct TranscriptRenderContext<'a> {
     /// The reduced mode's folds; none in the full mode.
     folds: &'a FoldPlan,
     /// Each fold's work row and which of its lines just changed, by lead.
-    work_rows: &'a WorkRows,
+    work_rows: &'a WorkRows<'a>,
     /// Animation bucket (0–3) driving the streaming "thinking…" ellipsis.
     clock_bucket: u8,
     model_names: &'a ModelDisplayNames,
@@ -1096,10 +1124,10 @@ pub(super) struct TranscriptView {
 
 impl TranscriptView {
     /// The reduced mode's folds of `state`; none in the full mode.
-    pub(super) fn folds(&self, state: &SessionState) -> FoldPlan {
+    pub(super) fn folds(&self, state: &SessionState) -> std::sync::Arc<FoldPlan> {
         match self.transcript {
-            TranscriptMode::Reduced => FoldPlan::of(state),
-            TranscriptMode::Full => FoldPlan::default(),
+            TranscriptMode::Reduced => state.fold_plan(),
+            TranscriptMode::Full => std::sync::Arc::default(),
         }
     }
 
@@ -1136,14 +1164,23 @@ pub(super) fn ensure_cached_transcript_layout_in(
     } = view;
     let folds = view.folds(state);
     let room = work_line_room(width);
-    let work_rows = folds
-        .keys()
+    // Only the rows still working change with the clock; the plan holds
+    // the rest.
+    let live = folds
+        .live_keys()
         .filter_map(|lead| {
             let row = folds.work_row(state, lead, now, room)?;
             let fresh = cache.note_work_lines(lead, row.lines.as_ref(), now);
             Some((lead, (row, fresh)))
         })
-        .collect::<WorkRows>();
+        .collect::<HashMap<_, _>>();
+    cache
+        .work_lines
+        .retain(|(lead, _), _| live.contains_key(lead));
+    let work_rows = WorkRows {
+        folds: &folds,
+        live,
+    };
     let fold_key = |item: &TranscriptItem| item_fold_key(&folds, &work_rows, item, expanded);
     let key = LayoutCacheKey {
         session_id,
@@ -2598,13 +2635,16 @@ pub(super) fn transcript_layout_viewed(
 ) -> TranscriptLayout {
     let minimum_event_level = view.minimum_event_level;
     let folds = view.folds(state);
-    let work_rows = folds
-        .keys()
-        .filter_map(|lead| {
-            let row = folds.work_row(state, lead, view.now, work_line_room(width))?;
-            Some((lead, (row, WorkLinesFresh::default())))
-        })
-        .collect::<WorkRows>();
+    let work_rows = WorkRows {
+        folds: &folds,
+        live: folds
+            .live_keys()
+            .filter_map(|lead| {
+                let row = folds.work_row(state, lead, view.now, work_line_room(width))?;
+                Some((lead, (row, WorkLinesFresh::default())))
+            })
+            .collect(),
+    };
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut tool_rows = HashMap::new();

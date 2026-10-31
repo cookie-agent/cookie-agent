@@ -163,7 +163,7 @@ struct Pass<'a, 'v> {
     /// The calls waiting for the user's approval.
     waiting: FastSet<ToolCallId>,
     /// The reduced mode's folds; none in the full mode.
-    folds: FoldPlan,
+    folds: Arc<FoldPlan>,
 }
 
 impl<'a, 'v> Pass<'a, 'v> {
@@ -179,8 +179,8 @@ impl<'a, 'v> Pass<'a, 'v> {
                 .map(|approval| approval.tool_call_id)
                 .collect(),
             folds: match view.transcript {
-                TranscriptMode::Reduced => FoldPlan::of(view.state),
-                TranscriptMode::Full => FoldPlan::default(),
+                TranscriptMode::Reduced => view.state.fold_plan(),
+                TranscriptMode::Full => Arc::default(),
             },
         }
     }
@@ -216,13 +216,16 @@ impl<'a, 'v> Pass<'a, 'v> {
         }
     }
 
+    /// The work row of the fold `key`.
+    fn row(&self, key: WorkKey) -> Option<transcript_mode::WorkRow> {
+        let view = self.view;
+        self.folds
+            .work_row(view.state, key, view.now, WORK_LINE_ROOM)
+    }
+
     /// The HTML of the work row of the fold `key`.
     fn work_row(&self, key: WorkKey) -> Option<String> {
-        let view = self.view;
-        let row = self
-            .folds
-            .work_row(view.state, key, view.now, WORK_LINE_ROOM)?;
-        Some(work_row_html(key, &row, self.open(key)))
+        Some(work_row_html(key, &self.row(key)?, self.open(key)))
     }
 
     /// Hashes what a call's row shows besides the call's own revision.
@@ -304,8 +307,8 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
         };
         for (key, starts) in keys {
             pass.open(key).hash(&mut hasher);
-            if starts {
-                pass.work_row(key).hash(&mut hasher);
+            if starts && let Some(row) = pass.row(key) {
+                row.hash_shown(&mut hasher);
             }
         }
     }

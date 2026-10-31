@@ -63,35 +63,52 @@ pub(super) fn item_fold_key(
     expanded: Option<&HashSet<BlockId>>,
 ) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
-    let Some(fold) = folds.get(item.id()) else {
+    let Some((fold, placed)) = folds.placed(item.id()) else {
         return 0;
     };
+    // The plan hashed the place and its settled rows; what is left is
+    // which folds are open and the rows still working, mixed in only where
+    // there are any, so the key stands while there are none.
+    let expanded = expanded.filter(|blocks| !blocks.is_empty());
+    if expanded.is_none() && !work_rows.any_live() {
+        return placed;
+    }
     let mut hasher = std::hash::DefaultHasher::new();
-    fold.hash(&mut hasher);
-    let keys = match fold {
-        ItemFold::Row { key } => vec![(*key, false)],
-        ItemFold::Block(block) => block
-            .children
-            .iter()
-            .filter_map(|child| match child {
-                ChildFold::Work { key, starts } => Some((*key, *starts)),
-                ChildFold::Shown => None,
-            })
-            .collect(),
-    };
-    for (key, starts) in keys {
-        expanded
-            .is_some_and(|blocks| blocks.contains(&BlockId::work(key)))
-            .hash(&mut hasher);
-        if starts && let Some((row, fresh)) = work_rows.get(&key) {
-            row.summary.label().hash(&mut hasher);
-            row.summary.tool_calls.hash(&mut hasher);
-            row.summary.failed.hash(&mut hasher);
-            row.lines.hash(&mut hasher);
+    let mut mixed = false;
+    let mut hash_key = |key: WorkKey, starts: bool| {
+        let open = expanded.is_some_and(|blocks| blocks.contains(&BlockId::work(key)));
+        let live = starts.then(|| work_rows.live(&key)).flatten();
+        if !open && live.is_none() {
+            return;
+        }
+        mixed = true;
+        (key, open).hash(&mut hasher);
+        if let Some((row, fresh)) = live {
+            row.hash_shown(&mut hasher);
             fresh.hash(&mut hasher);
         }
+    };
+    match fold {
+        ItemFold::Row { key } => hash_key(*key, false),
+        ItemFold::Block(block) => {
+            // A fold's children follow one another: each fold once.
+            let mut last = None;
+            for child in &block.children {
+                if let ChildFold::Work { key, starts } = child
+                    && (*starts || last != Some(*key))
+                {
+                    last = Some(*key);
+                    hash_key(*key, *starts);
+                }
+            }
+        }
     }
-    hasher.finish()
+    if mixed {
+        placed.hash(&mut hasher);
+        hasher.finish()
+    } else {
+        placed
+    }
 }
 
 /// Only assistant items render model labels (their headers and "now using"
