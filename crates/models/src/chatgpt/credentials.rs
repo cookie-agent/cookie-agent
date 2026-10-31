@@ -2,7 +2,8 @@
 
 use std::{
     fmt,
-    sync::{Arc, Mutex, MutexGuard},
+    future::Future,
+    sync::{Arc, Mutex, MutexGuard, Weak},
 };
 
 use oven_sdk::{BoxFuture, ModelError, ModelErrorKind, SecretString};
@@ -115,6 +116,9 @@ pub struct ChatGptCredentials {
     pub(super) state: Mutex<State>,
     refresh: tokio::sync::Mutex<()>,
     changes: tokio::sync::watch::Sender<u64>,
+    /// Refreshes run as their own tasks through this handle, so a caller
+    /// that gives up cannot drop a rotated refresh token before it is saved.
+    me: Weak<Self>,
 }
 
 impl fmt::Debug for ChatGptCredentials {
@@ -135,7 +139,7 @@ impl ChatGptCredentials {
         http: reqwest::Client,
     ) -> Result<Arc<Self>, ChatGptError> {
         let file = read_file(&directory)?;
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|me| Self {
             directory,
             endpoints,
             http,
@@ -146,6 +150,7 @@ impl ChatGptCredentials {
             }),
             refresh: tokio::sync::Mutex::new(()),
             changes: tokio::sync::watch::channel(0).0,
+            me: Weak::clone(me),
         }))
     }
 
@@ -225,11 +230,14 @@ impl ChatGptCredentials {
         if let Some(token) = self.usable_token() {
             return Ok(token);
         }
-        let _refreshing = self.refresh.lock().await;
-        if let Some(token) = self.usable_token() {
-            return Ok(token);
-        }
-        self.refresh_locked(true).await
+        self.detached(|this| async move {
+            let _refreshing = this.refresh.lock().await;
+            if let Some(token) = this.usable_token() {
+                return Ok(token);
+            }
+            this.refresh_locked(true).await
+        })
+        .await
     }
 
     /// Refreshes a sign-in that has not refreshed for `max_age`, so the
@@ -239,10 +247,33 @@ impl ChatGptCredentials {
             !account.needs_sign_in && account.saved_at + max_age.as_secs() <= now_unix()
         });
         if due {
-            let _refreshing = self.refresh.lock().await;
-            self.refresh_locked(false).await?;
+            self.detached(|this| async move {
+                let _refreshing = this.refresh.lock().await;
+                this.refresh_locked(false).await
+            })
+            .await?;
         }
         Ok(())
+    }
+
+    /// Runs `work` as its own task and waits for it. OpenAI rotates the
+    /// refresh token when it answers, so a refresh must reach `persist` even
+    /// when the caller's future is dropped (a timeout, a cancelled run).
+    async fn detached<T, Work>(
+        &self,
+        work: impl FnOnce(Arc<Self>) -> Work,
+    ) -> Result<T, ChatGptError>
+    where
+        T: Send + 'static,
+        Work: Future<Output = Result<T, ChatGptError>> + Send + 'static,
+    {
+        let this = self
+            .me
+            .upgrade()
+            .ok_or_else(|| ChatGptError::Failed("the sign-in was closed".into()))?;
+        tokio::spawn(work(this))
+            .await
+            .map_err(|_| ChatGptError::Failed("the token refresh stopped".into()))?
     }
 
     fn usable_token(&self) -> Option<SecretString> {
@@ -307,7 +338,18 @@ impl ChatGptCredentials {
             let code = error_code(&response.body);
             if response.status == 401 || permanent_refresh_failure(code.as_deref()) {
                 let invalid_client = code.as_deref() == Some("invalid_client");
+                // The refresh lock is this process's; another process may
+                // have rotated the token while this request was refused.
+                // Only the refresh token that failed is flagged.
+                let mut still_current = false;
                 self.persist(|file| {
+                    still_current = file
+                        .account
+                        .as_ref()
+                        .is_some_and(|account| account.refresh_token == refresh_token);
+                    if !still_current {
+                        return;
+                    }
                     if let Some(account) = &mut file.account {
                         account.needs_sign_in = true;
                     }
@@ -315,6 +357,17 @@ impl ChatGptCredentials {
                         host.client_id = None;
                     }
                 })?;
+                if !still_current {
+                    if self.lock().file.account.is_none() {
+                        return Err(ChatGptError::SignInRequired);
+                    }
+                    return match self.usable_token() {
+                        Some(token) => Ok(token),
+                        None => fallback(ChatGptError::Failed(
+                            "another process refreshed the sign-in; try again".into(),
+                        )),
+                    };
+                }
                 self.notify();
                 return Err(ChatGptError::SignInRequired);
             }

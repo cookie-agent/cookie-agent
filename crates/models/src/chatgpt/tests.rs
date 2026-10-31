@@ -53,6 +53,8 @@ struct FakeOpenAi {
     base: String,
     received: Arc<Mutex<Vec<Received>>>,
     responder: Arc<Mutex<Arc<Responder>>>,
+    /// How long each answer waits after the request is read.
+    delay: Arc<Mutex<std::time::Duration>>,
 }
 
 impl FakeOpenAi {
@@ -62,13 +64,18 @@ impl FakeOpenAi {
         let received = Arc::new(Mutex::new(Vec::new()));
         let responder: Arc<Mutex<Arc<Responder>>> =
             Arc::new(Mutex::new(Arc::new(|_: &Received| (404, "{}".to_owned()))));
-        let (log, route) = (Arc::clone(&received), Arc::clone(&responder));
+        let delay = Arc::new(Mutex::new(std::time::Duration::ZERO));
+        let (log, route, wait) = (
+            Arc::clone(&received),
+            Arc::clone(&responder),
+            Arc::clone(&delay),
+        );
         tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     return;
                 };
-                let (log, route) = (Arc::clone(&log), Arc::clone(&route));
+                let (log, route, wait) = (Arc::clone(&log), Arc::clone(&route), Arc::clone(&wait));
                 tokio::spawn(async move {
                     let mut buffer = Vec::new();
                     let mut chunk = [0_u8; 4096];
@@ -108,6 +115,8 @@ impl FakeOpenAi {
                                 .to_string(),
                         };
                     };
+                    let pause = *wait.lock().unwrap();
+                    tokio::time::sleep(pause).await;
                     let respond = Arc::clone(&route.lock().unwrap());
                     let (status, body) = respond(&request);
                     log.lock().unwrap().push(request);
@@ -123,7 +132,12 @@ impl FakeOpenAi {
             base,
             received,
             responder,
+            delay,
         }
+    }
+
+    fn delay(&self, delay: std::time::Duration) {
+        *self.delay.lock().unwrap() = delay;
     }
 
     fn respond(&self, responder: impl Fn(&Received) -> (u16, String) + Send + Sync + 'static) {
@@ -460,6 +474,77 @@ async fn a_refused_refresh_token_needs_a_new_sign_in() {
     ));
     assert_eq!(server.received().len(), requests);
     assert!(open(&directory, &server).account().unwrap().needs_sign_in);
+}
+
+#[tokio::test]
+async fn a_refresh_whose_caller_gives_up_still_saves_the_rotated_token() {
+    let directory = tempfile::tempdir().unwrap();
+    let server = FakeOpenAi::start().await;
+    signed_in(&directory, &server).await;
+    expire(&directory);
+    let credentials = open(&directory, &server);
+    server.delay(std::time::Duration::from_millis(300));
+    server.respond(|_| {
+        (
+            200,
+            json!({"access_token": "access-2", "refresh_token": "refresh-2", "expires_in": 3600})
+                .to_string(),
+        )
+    });
+    // The caller's future is dropped while OpenAI is still answering.
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            credentials.access_token()
+        )
+        .await
+        .is_err()
+    );
+    let path = directory.path().join("chatgpt-sign-in.json");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("refresh-2")
+    {
+        assert!(tokio::time::Instant::now() < deadline, "never saved");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    server.delay(std::time::Duration::ZERO);
+    assert_eq!(
+        credentials.access_token().await.unwrap().expose_secret(),
+        "access-2"
+    );
+    assert_eq!(server.received().len(), 2);
+}
+
+#[tokio::test]
+async fn a_refresh_refused_after_another_process_rotated_keeps_the_sign_in() {
+    let directory = tempfile::tempdir().unwrap();
+    let server = FakeOpenAi::start().await;
+    signed_in(&directory, &server).await;
+    expire(&directory);
+    let credentials = open(&directory, &server);
+    let path = directory.path().join("chatgpt-sign-in.json");
+    let other = path.clone();
+    // Another process refreshes with the same token first and saves the
+    // rotated one while this process's request is refused as reused.
+    server.respond(move |request| {
+        assert_eq!(request.form()["refresh_token"], "refresh-1");
+        let mut file: Value = serde_json::from_slice(&std::fs::read(&other).unwrap()).unwrap();
+        file["account"]["access_token"] = json!("access-other");
+        file["account"]["refresh_token"] = json!("refresh-other");
+        file["account"]["expires_at"] = json!(now_unix() + 3600);
+        std::fs::write(&other, serde_json::to_vec(&file).unwrap()).unwrap();
+        (400, json!({"error": "refresh_token_reused"}).to_string())
+    });
+    assert_eq!(
+        credentials.access_token().await.unwrap().expose_secret(),
+        "access-other"
+    );
+    assert!(!credentials.account().unwrap().needs_sign_in);
+    let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored["account"]["needs_sign_in"], json!(false));
+    assert_eq!(stored["account"]["refresh_token"], json!("refresh-other"));
 }
 
 #[tokio::test]
