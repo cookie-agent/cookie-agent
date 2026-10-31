@@ -184,6 +184,34 @@ that can prepend.
 Client protocol: a minor bump (`view`, `from`, the header, `events.page`,
 `event.read`).
 
+### 3.3 Reducer audit (2026-10-31)
+
+What `client_state`'s reducer (`reduce.rs`) and the TUI and web
+transcripts read of each event the display view would drop or slim:
+
+| Event | Read by | Decision |
+|---|---|---|
+| `model_attempt_started` | Opens the reply block a commit fills, with its model attribution; a commit without it shows no reply | **Stays** |
+| `model_output_started` | The streamed thinking time a reply's thinking rows show | **Stays** (1–2.5% of a log) |
+| `model_usage_recorded` | Each reply's cost, and an ACP reply's rate and context, in its footer; the clients' cost refresh | **Stays** |
+| `model_replay_evaluated` | Rows: replayed and reconstructed entries are debug, an empty list info, a discard a warning | **Left out unless it discards** (a warning row, shown by default) |
+| `model_tools_published` | The latest one's tool lists (`model_tools`) | **Latest wins**: a page keeps its last; the header the last before it |
+| `model_request_prepared` | Nothing | **Left out** |
+| `acp_session_updated` | Latest wins: `commands`, `options`, `starting_options`, `context`. Per event: `plan`, `compaction`, `prompt_context`, `notice`, `session_message`, `background_ended`, `steered`, `tool_presentation` (rows), and `context` (a reply's footer reads the context use at its usage) | **Slimmed**: the header holds the latest of the four settings; in a page a command list or starting options a later update replaces, and a tool presentation a later one of the same call replaces, are dropped, and an update left empty goes |
+| `tool_call_terminated` | `display`, `output` (a failed call's partial output, the loop warning at its end), `additional_messages`, `background`, `retained_output`; never `metadata` | **Cut** above 4 KiB of output, display, and metadata together |
+
+Other events the reducer ignores entirely (`delegation_reserved`,
+`tool_round_started`, `prompt_blocks_recorded`, `tool_call_linked`, ...)
+stay: the spec drops only bookkeeping, and they are small in the logs
+measured. The latest-wins state the reducer folds from older events, which
+the header must carry for a window that starts later, is: the session's
+creation, the latest run (its agent and snapshot) and whether it ended,
+memory, published tools, the ACP session and its four settings, the model
+selection, the goal and its changes, runtime attachments still attached, a
+hold nothing cleared, tools announced since the latest compaction, and
+inputs still queued. Title, permission mode, and usage totals come from
+`session.list`/`session.get` and `session.usage`, not the reducer.
+
 ## 4. Phase 3: storage layout v3
 
 ### 4.1 Layout
