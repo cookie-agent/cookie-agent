@@ -284,6 +284,7 @@ impl Engine {
             turn_context,
             None,
             None,
+            None,
         )
         .await
     }
@@ -296,10 +297,11 @@ impl Engine {
         policy: &FrozenRunPolicy,
         turn_context: Arc<crate::TurnAgentContext>,
     ) -> Vec<PreparedToolCall> {
-        let composition = self.compose_for_policy(session_id, policy).ok();
+        let composition = self.compose_for_policy_with(session_id, policy, true).ok();
         // Calls grouped by the provider and attachment that answer them, each
-        // with the name its source knows the tool by.
-        let mut groups: Vec<(SourcedProvider, Vec<(usize, crate::ToolSpec)>)> = Vec::new();
+        // with the name its source knows the tool by. A loader call prepares
+        // on its own.
+        let mut groups: Vec<CallGroup> = Vec::new();
         for (index, (call, published)) in calls.iter().enumerate() {
             // A routed call finds its machine's tool by its composed name.
             let composed =
@@ -307,6 +309,9 @@ impl Engine {
             let Some(tool) = composition
                 .as_ref()
                 .and_then(|composition| composition.get(composed))
+                .filter(|tool| {
+                    tool.source.provider.provider_id() != crate::base_tools::LOADER_PROVIDER_ID
+                })
             else {
                 continue;
             };
@@ -348,6 +353,9 @@ impl Engine {
                 prepared[index] = Some(result);
             }
         }
+        // Each call's tool must still be what the model was offered: one
+        // composition after the preparations checks them all.
+        let current = self.compose_for_policy_with(session_id, policy, true).ok();
         let mut output = Vec::with_capacity(calls.len());
         for (index, (call, published)) in calls.into_iter().enumerate() {
             output.push(
@@ -359,6 +367,7 @@ impl Engine {
                     turn_context.clone(),
                     Some(published),
                     prepared[index].take(),
+                    current.as_ref(),
                 )
                 .await,
             );
@@ -376,6 +385,7 @@ impl Engine {
         turn_context: Arc<crate::TurnAgentContext>,
         published: Option<Option<&PublishedTool>>,
         prepared_override: Option<Result<PreparedTool, ToolError>>,
+        current: Option<&Composition>,
     ) -> PreparedToolCall {
         // A call that fails before it prepares shows the name the model
         // called, and the tool's source when its publication names it.
@@ -385,7 +395,7 @@ impl Engine {
                 &call.name,
                 published
                     .flatten()
-                    .map(|published| (&published.source, &published.spec)),
+                    .map(|published| (&published.source, &*published.spec)),
             ),
         );
         if call.arguments.is_null() {
@@ -435,10 +445,15 @@ impl Engine {
                 // attachment, same instance generation, same declaration.
                 // The loaders are published only where a request offered
                 // them, so the check keeps them.
-                let current = self
-                    .compose_for_policy_with(session_id, policy, true)
-                    .ok()
-                    .and_then(|composition| composition.get(&published.composed).cloned());
+                let composed;
+                let current = match current {
+                    Some(current) => Some(current),
+                    None => {
+                        composed = self.compose_for_policy_with(session_id, policy, true).ok();
+                        composed.as_ref()
+                    }
+                }
+                .and_then(|composition| composition.get(&published.composed));
                 if current.is_some_and(|current| {
                     current.source.attachment == published.source.attachment
                         && current.source.generation == published.source.generation
@@ -504,7 +519,7 @@ impl Engine {
                     .map(|permission_name| {
                         (
                             candidate.clone(),
-                            crate::ToolSpec {
+                            Arc::new(crate::ToolSpec {
                                 background: false,
                                 background_default: false,
                                 collision: Default::default(),
@@ -515,7 +530,7 @@ impl Engine {
                                 description: String::new(),
                                 parameters: serde_json::json!(true),
                                 result_truncation: Default::default(),
-                            },
+                            }),
                         )
                     })
             });
@@ -535,7 +550,7 @@ impl Engine {
                 background: None,
             };
         };
-        fallback_presentation.tool = tool_identity(&call.name, Some((&source, &tool_spec)));
+        fallback_presentation.tool = tool_identity(&call.name, Some((&source, &*tool_spec)));
         let tool = fallback_presentation.tool.clone();
         let SourcedProvider {
             attachment,
@@ -1424,7 +1439,7 @@ impl Engine {
         let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
         let mut candidates = Vec::new();
         let mut loaders = Vec::new();
-        let (entries, routed_names) = self.route_tools(session, composition.tools)?;
+        let (entries, routed_names) = self.route_tools(session, composition.tools.clone())?;
         for (ComposedTool { name, source, spec }, routes) in entries {
             spec.output.validate().map_err(EngineError::ToolFailed)?;
             let mut parameters = spec.parameters.clone();
@@ -1498,6 +1513,7 @@ impl Engine {
                 departed: plan.departed,
                 unloaded: HashSet::new(),
                 pending: plan.pending,
+                composition,
             });
         }
         let mut plan = crate::deferred_tools::plan(candidates, &loaders, &fold);
@@ -1548,32 +1564,45 @@ impl Engine {
             departed: plan.departed,
             unloaded,
             pending: plan.pending,
+            composition,
         })
     }
 
     /// The providers whose prompt sections the system prompt of a run of
     /// `policy` leaves out: those whose every tool is deferred.
+    ///
+    /// With `composition`, the tool set `policy` composes now, the caller
+    /// has composed it; loader tools in it are left out.
     pub(crate) fn deferred_prompt_providers(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
+        composition: Option<&Composition>,
     ) -> Result<HashSet<crate::deferred_tools::ProviderKey>, EngineError> {
         if !self.defers_tools(policy) {
             return Ok(HashSet::new());
         }
-        let composition = self.compose_for_policy(session, policy)?;
+        let owned;
+        let composition = match composition {
+            Some(composition) => composition,
+            None => {
+                owned = self.compose_for_policy(session, policy)?;
+                &owned
+            }
+        };
+        let tools = || {
+            composition.tools.iter().filter(|tool| {
+                tool.source.provider.provider_id() != crate::base_tools::LOADER_PROVIDER_ID
+            })
+        };
         let fold = self.inner.store.get(session)?.log.deferral();
         let config = self.inner.config.load();
-        let keys = composition
-            .tools
-            .iter()
+        let keys = tools()
             .map(|tool| (tool.name.as_str(), provider_key(&tool.source)))
             .collect::<Vec<_>>();
         let eager = match &fold.round {
             Some(round) => round.tools.iter().map(|tool| tool.name.clone()).collect(),
-            None => composition
-                .tools
-                .iter()
+            None => tools()
                 .filter(|tool| {
                     !crate::deferred_tools::policy_defers(
                         &tool.source,
@@ -1624,6 +1653,10 @@ impl Engine {
 
 /// A published tool and, when it is routed by `machine`, its routes.
 type RoutedEntry = (ComposedTool, Option<ToolRoutes>);
+
+/// The calls of a batch one source answers: each call's index in the batch
+/// and the tool it calls, as the source declares it.
+type CallGroup = (SourcedProvider, Vec<(usize, Arc<crate::ToolSpec>)>);
 
 /// Whether a run of `policy` defers tools. Deferral follows the run's
 /// model: one verified or attempted that has not rejected deferral
@@ -2269,6 +2302,7 @@ mod tests {
                 },
                 &policy,
                 turn_context,
+                None,
                 None,
                 None,
             )

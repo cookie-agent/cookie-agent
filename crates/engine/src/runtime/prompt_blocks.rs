@@ -96,12 +96,13 @@ impl Engine {
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
+        composition: Option<&crate::runtimes::Composition>,
     ) -> Result<Vec<(String, String)>, EngineError> {
         let mut blocks = Vec::new();
-        if let Some(block) = self.runtimes_block(session, None, Some(policy)) {
+        if let Some(block) = self.runtimes_block_with(session, None, Some(policy), composition) {
             blocks.push((RUNTIMES_BLOCK.to_owned(), block));
         }
-        if let Some(block) = self.live_tool_instructions_block(policy, session)? {
+        if let Some(block) = self.live_tool_instructions_block_with(policy, session, composition)? {
             blocks.push((TOOL_INSTRUCTIONS_BLOCK.to_owned(), block));
         }
         if let Some(block) = self.live_skills_block(session, policy, None)? {
@@ -111,16 +112,19 @@ impl Engine {
     }
 
     /// The announcement of the prompt blocks that changed since the model
-    /// last knew them, if any did (stable prefix spec, section 6.3).
+    /// last knew them, if any did (stable prefix spec, section 6.3). With
+    /// `composition`, the tool set `policy` composes now, the blocks are
+    /// worked out from it rather than composing it again.
     pub(crate) fn prompt_blocks_announcement(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
+        composition: Option<&crate::runtimes::Composition>,
     ) -> Result<Option<cookie_agent_protocol::EventPayload>, EngineError> {
         let Some(known) = self.inner.store.get(session)?.log.prompt_blocks().known else {
             return Ok(None);
         };
-        let live = self.live_prompt_blocks(session, policy)?;
+        let live = self.live_prompt_blocks(session, policy, composition)?;
         let mut blocks = live
             .iter()
             .filter(|(key, text)| known.get(key) != Some(text))

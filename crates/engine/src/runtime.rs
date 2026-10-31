@@ -619,7 +619,7 @@ struct ToolInterceptionContext {
     /// identity binds.
     tool: cookie_agent_protocol::ToolIdentity,
     provider: Arc<dyn ToolProvider>,
-    spec: ToolSpec,
+    spec: Arc<ToolSpec>,
     preparation: ToolPreparationContext,
     /// `None` for a tool that needs no permission.
     permission_name: Option<String>,
@@ -630,7 +630,7 @@ struct PublishedTool {
     /// The base layer or runtime attachment that offers the tool.
     source: crate::runtimes::SourcedProvider,
     /// The tool as its source declares it, under the name the source knows.
-    spec: ToolSpec,
+    spec: Arc<ToolSpec>,
     /// The name composition gave it, by which a call finds it again; the
     /// published name except for a routed tool's machines.
     composed: String,
@@ -705,6 +705,10 @@ struct PublishedToolSet {
     unloaded: HashSet<String>,
     /// Deferral records to append before the request.
     pending: Vec<Event>,
+    /// The tool set as composed for these definitions, the loader tools
+    /// included when the request defers; what else the step works out
+    /// from the tool set reads it rather than composing it again.
+    composition: crate::runtimes::Composition,
 }
 
 #[derive(Clone, Debug)]

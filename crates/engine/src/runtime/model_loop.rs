@@ -1192,9 +1192,14 @@ impl Engine {
             // The system prompt's blocks stay as the round froze them; what
             // changed since is told in place (stable prefix spec, section
             // 6.3). A block that cannot be composed now is not announced.
+            // The blocks are composed from the tools just published when
+            // they were published for this policy.
+            let composition = turn_policy
+                .is_none()
+                .then_some(&published_tools.composition);
             if self.defers_tools(policy)
                 && let Ok(Some(announcement)) =
-                    self.prompt_blocks_announcement(active.session, &active.policy)
+                    self.prompt_blocks_announcement(active.session, &active.policy, composition)
             {
                 self.append(
                     active.session,

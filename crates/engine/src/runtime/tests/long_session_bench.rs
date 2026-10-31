@@ -563,10 +563,18 @@ async fn bench(target: u64) {
     });
     let deferred_providers = time(50, || {
         engine
-            .deferred_prompt_providers(session, &policy)
+            .deferred_prompt_providers(session, &policy, None)
             .expect("deferred providers")
     });
     let runtimes_block = time(50, || engine.runtimes_block(session, None, Some(&policy)));
+    // As a step works the block out: from the tools it just published.
+    let step_composition = engine
+        .published_tool_definitions(session, &policy)
+        .expect("published tools")
+        .composition;
+    let runtimes_block_shared = time(50, || {
+        engine.runtimes_block_with(session, None, Some(&policy), Some(&step_composition))
+    });
     let tool_instructions = time(50, || {
         engine
             .live_tool_instructions_block(&policy, session)
@@ -587,7 +595,8 @@ async fn bench(target: u64) {
         "[{target}] per step besides the actor (defers: {}, {} tools): \
          published_tool_definitions {published:?} (composing {composition:?}); \
          deferred_prompt_providers \
-         {deferred_providers:?}; runtimes_block {runtimes_block:?}; tool_instructions \
+         {deferred_providers:?}; runtimes_block {runtimes_block:?} (from the step's \
+         composition {runtimes_block_shared:?}); tool_instructions \
          block {tool_instructions:?}; skills block {skills_block:?}; session_project_name \
          {project_lookup:?}",
         engine.defers_tools(&policy),

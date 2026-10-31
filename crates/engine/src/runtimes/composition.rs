@@ -17,7 +17,10 @@
 //! - a published name longer than [`MAX_TOOL_NAME_BYTES`] is dropped with a
 //!   diagnostic.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use cookie_agent_runtime_api::{ToolCollision, ToolSpec};
 
@@ -33,11 +36,13 @@ pub(crate) struct ComposedTool {
     pub(crate) name: String,
     pub(crate) source: SourcedProvider,
     /// The tool as its source declares it; `spec.name` is the name the
-    /// source knows it by.
-    pub(crate) spec: ToolSpec,
+    /// source knows it by. Shared, so a copy of the tool set copies no
+    /// description or schema.
+    pub(crate) spec: Arc<ToolSpec>,
 }
 
 /// The composed tool set and what composition had to drop.
+#[derive(Clone)]
 pub(crate) struct Composition {
     pub(crate) tools: Vec<ComposedTool>,
     pub(crate) diagnostics: Vec<String>,
@@ -158,7 +163,13 @@ pub(crate) fn compose(
     let mut tools = candidates
         .into_iter()
         .zip(names)
-        .filter_map(|((source, spec), name)| name.map(|name| ComposedTool { name, source, spec }))
+        .filter_map(|((source, spec), name)| {
+            name.map(|name| ComposedTool {
+                name,
+                source,
+                spec: Arc::new(spec),
+            })
+        })
         .collect::<Vec<_>>();
     let mut published = HashSet::new();
     tools.retain(|tool| {

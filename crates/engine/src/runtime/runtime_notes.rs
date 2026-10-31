@@ -176,6 +176,18 @@ impl Engine {
         builtin: Option<&BuiltinTools<'_>>,
         policy: Option<&FrozenRunPolicy>,
     ) -> Option<String> {
+        self.runtimes_block_with(session, builtin, policy, None)
+    }
+
+    /// [`Self::runtimes_block`] from `composition`, the tool set `policy`
+    /// composes now, when the caller has it.
+    pub(crate) fn runtimes_block_with(
+        &self,
+        session: SessionId,
+        builtin: Option<&BuiltinTools<'_>>,
+        policy: Option<&FrozenRunPolicy>,
+        composition: Option<&crate::runtimes::Composition>,
+    ) -> Option<String> {
         let project = self.session_project_name(session);
         let project = project.as_ref().map(|name| name.as_str());
         let facts = self.attachment_facts(session);
@@ -194,7 +206,7 @@ impl Engine {
             && let Ok(Some(machines)) = self.routing_machines(session)
             && !facts.is_empty()
         {
-            let tools = self.machine_tools(session, policy, &machines);
+            let tools = self.machine_tools(session, policy, &machines, composition);
             let reach = policy
                 .and_then(|policy| {
                     self.inner
@@ -224,16 +236,30 @@ impl Engine {
         session: SessionId,
         policy: Option<&FrozenRunPolicy>,
         machines: &HashMap<AttachmentName, String>,
+        composed: Option<&crate::runtimes::Composition>,
     ) -> HashMap<AttachmentName, Vec<(String, Vec<String>)>> {
-        let composition = match policy {
-            Some(policy) => self.compose_for_policy(session, policy),
-            None => self.compose_session_tools(session, |_, _| true),
-        };
         let mut tools = HashMap::<AttachmentName, Vec<(String, Vec<String>)>>::new();
-        let Ok(composition) = composition else {
-            return tools;
+        let owned;
+        let composition = match (composed.filter(|_| policy.is_some()), policy) {
+            (Some(composition), _) => composition,
+            (None, Some(policy)) => match self.compose_for_policy(session, policy) {
+                Ok(composition) => {
+                    owned = composition;
+                    &owned
+                }
+                Err(_) => return tools,
+            },
+            (None, None) => match self.compose_session_tools(session, |_, _| true) {
+                Ok(composition) => {
+                    owned = composition;
+                    &owned
+                }
+                Err(_) => return tools,
+            },
         };
-        for tool in composition.tools {
+        // Only an attachment's tools are listed: the loader tools a
+        // composition may hold are the base layer's.
+        for tool in &composition.tools {
             let Some(attachment) = tool
                 .source
                 .attachment

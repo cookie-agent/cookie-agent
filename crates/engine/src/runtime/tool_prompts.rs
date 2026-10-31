@@ -37,9 +37,20 @@ impl Engine {
         policy: &FrozenRunPolicy,
         session: SessionId,
     ) -> Result<Option<String>, EngineError> {
+        self.live_tool_instructions_block_with(policy, session, None)
+    }
+
+    /// [`Self::live_tool_instructions_block`] from `composition`, the tool
+    /// set `policy` composes now, when the caller has it.
+    pub(crate) fn live_tool_instructions_block_with(
+        &self,
+        policy: &FrozenRunPolicy,
+        session: SessionId,
+        composition: Option<&crate::runtimes::Composition>,
+    ) -> Result<Option<String>, EngineError> {
         // A provider whose tools are all deferred gives its sections with
         // its first load instead (deferred tools in cookie, section 7.3).
-        let deferred = self.deferred_prompt_providers(session, policy)?;
+        let deferred = self.deferred_prompt_providers(session, policy, composition)?;
         self.tool_prompt_block(policy, session, None, &|id, attachment| {
             !deferred.contains(&(id.to_owned(), attachment.map(str::to_owned)))
         })
