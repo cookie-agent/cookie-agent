@@ -3,7 +3,8 @@
 //! so the read runs once more when it lands, and an answer older than a
 //! value a notice carried is not installed over it.
 
-use cookie_agent_protocol::{ClientDelivery, MessageFrame, RuntimeChangeReason};
+use cookie_agent_protocol::{MessageFrame, RuntimeChangeReason};
+use cookie_agent_protocol_transport::ClientDelivery;
 use serde_json::{Value, json};
 
 use crate::ui::app::*;
@@ -16,7 +17,7 @@ async fn daemon_answering(
     method: &'static str,
     result: Value,
 ) -> (
-    cookie_agent_protocol::Client,
+    cookie_agent_protocol_transport::Client,
     std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
 ) {
     let (client, recorded) = answering_client(move |asked, _| match asked {

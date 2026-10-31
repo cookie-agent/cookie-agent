@@ -34,8 +34,8 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    Authentication, CLIENT_PROTOCOL_VERSION, CatalogRevision, Client, ClientDelivery,
-    ClientIdentity, ClientKind, RUNTIME_PROTOCOL_VERSION, SessionId,
+    CLIENT_PROTOCOL_VERSION, CatalogRevision, ClientIdentity, ClientKind, RUNTIME_PROTOCOL_VERSION,
+    SessionId,
     corpus::{self, Recorded, Recording},
     in_process_pair,
 };
@@ -44,6 +44,7 @@ use cookie_agent_protocol::{
     MessageFrame, MessageStream,
     corpus::{CorpusFile, Substitutions},
 };
+use cookie_agent_protocol_transport::{Authentication, Client, ClientDelivery};
 use cookie_agent_runtime_api::{RuntimeConnection, RuntimeConnector};
 use jiff::Timestamp;
 use serde_json::{Value, json};

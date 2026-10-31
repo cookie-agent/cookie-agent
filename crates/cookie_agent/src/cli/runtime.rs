@@ -89,7 +89,7 @@ pub(super) async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
         let DaemonTarget { url: daemon, token } = daemon_target(daemon, token)?;
         let id = id.unwrap_or_else(|| host_runtime_id("", &host_name()));
         dial_in_id(&id)?;
-        cookie_agent_protocol::runtime_dial_in_url(&daemon, &id)?;
+        cookie_agent_protocol_transport::runtime_dial_in_url(&daemon, &id)?;
         // A runtime that dials in hosts the MCP servers and ACP agents the
         // daemon's `[runtimes.<id>]` gives it, never this machine's own.
         warn_local_runtime_settings(&id);
@@ -214,7 +214,7 @@ pub(super) async fn dial_in(
     loop {
         let connected = tokio::select! {
             () = stop.cancelled() => return Ok(()),
-            connected = cookie_agent_protocol::WebSocketTransport::connect_runtime(daemon, token, id) => connected,
+            connected = cookie_agent_protocol_transport::WebSocketTransport::connect_runtime(daemon, token, id) => connected,
         };
         match connected {
             Ok(transport) => {

@@ -1191,13 +1191,15 @@ async fn out_of_chain_runtime_notification_refetches_the_current_snapshot() {
 
     // A duplicate of the installed revision is ignored without a refetch.
     let duplicate = app.runtime.snapshot().cloned().expect("installed snapshot");
-    app.handle_delivery(cookie_agent_protocol::ClientDelivery::RuntimeChanged(
-        Box::new(cookie_agent_protocol::RuntimeChangedNotification {
-            previous_revision: None,
-            snapshot: duplicate,
-            reasons: vec![cookie_agent_protocol::RuntimeChangeReason::Startup],
-        }),
-    ))
+    app.handle_delivery(
+        cookie_agent_protocol_transport::ClientDelivery::RuntimeChanged(Box::new(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: None,
+                snapshot: duplicate,
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::Startup],
+            },
+        )),
+    )
     .await;
     assert_eq!(
         recorded_method_count(
@@ -1211,13 +1213,15 @@ async fn out_of_chain_runtime_notification_refetches_the_current_snapshot() {
     // the client never saw, so it is rejected and the client refetches.
     let skipped = runtime_snapshot("3", Vec::new(), Vec::new(), Vec::new());
     let unseen = runtime_snapshot("2", Vec::new(), Vec::new(), Vec::new()).revision;
-    app.handle_delivery(cookie_agent_protocol::ClientDelivery::RuntimeChanged(
-        Box::new(cookie_agent_protocol::RuntimeChangedNotification {
-            previous_revision: Some(unseen),
-            snapshot: skipped,
-            reasons: vec![cookie_agent_protocol::RuntimeChangeReason::ConfigReloaded],
-        }),
-    ))
+    app.handle_delivery(
+        cookie_agent_protocol_transport::ClientDelivery::RuntimeChanged(Box::new(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: Some(unseen),
+                snapshot: skipped,
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::ConfigReloaded],
+            },
+        )),
+    )
     .await;
     assert_eq!(app.runtime.revision(), Some(&initial));
     let request = wait_for_recorded_request(

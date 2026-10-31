@@ -3,7 +3,8 @@
 //! other entries are shown with the reason, and a memory changed while it
 //! was open is reloaded or overwritten only when the user says so.
 
-use cookie_agent_protocol::{ClientDelivery, MemoryLayer};
+use cookie_agent_protocol::MemoryLayer;
+use cookie_agent_protocol_transport::ClientDelivery;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ui::app::memory_panel::{

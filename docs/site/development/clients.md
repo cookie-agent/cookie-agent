@@ -131,15 +131,17 @@ daemons. See [Published schemas](../reference/schemas.md#published-schemas).
 
 ## Rust
 
-The `cookie_agent_protocol` crate has the client the TUI and the web page
-use. With its `websocket` feature, `Client::connect_websocket_with_token`
+The `cookie_agent_protocol_transport` crate has the client the TUI and the
+web page use, over the wire types of `cookie_agent_protocol`. With its
+`websocket` feature, `Client::connect_websocket_with_token`
 connects natively, and on `wasm32` `Client::connect_browser_websocket` uses the
 browser's WebSocket (send the token with `handshake_with_token`). The client
 pairs replies with requests, reads events openly, and delivers events,
 replays, and notifications in order on one stream. A sketch:
 
 ```rust
-use cookie_agent_protocol::{Client, ClientIdentity, ClientKind, SessionListParams};
+use cookie_agent_protocol::{ClientIdentity, ClientKind, SessionListParams};
+use cookie_agent_protocol_transport::Client;
 
 let client = Client::connect_websocket_with_token(url, &token).await?;
 client

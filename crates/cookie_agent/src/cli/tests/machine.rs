@@ -70,7 +70,7 @@ async fn cookie_machine_lists_and_regroups_the_daemon_machines() {
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
-        cookie_agent_protocol::Authentication::Authenticated,
+        cookie_agent_protocol_transport::Authentication::Authenticated,
     ));
     let client = Client::connect_stream(client_stream);
     client.handshake().await.unwrap();
@@ -137,7 +137,7 @@ async fn cookie_machine_lists_and_regroups_the_daemon_machines() {
     assert!(
         refused
             .chain()
-            .filter_map(|cause| cause.downcast_ref::<cookie_agent_protocol::ClientError>())
+            .filter_map(|cause| cause.downcast_ref::<cookie_agent_protocol_transport::ClientError>())
             .any(|error| error.is(&cookie_agent_protocol::errors::MACHINE_IN_USE)),
         "{refused:#}"
     );

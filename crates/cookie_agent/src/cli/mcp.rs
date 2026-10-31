@@ -7,8 +7,9 @@ use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_protocol::oauth_callback::OAuthCallbackListener;
 use cookie_agent_protocol::{
-    Client, McpAuthBeginParams, McpAuthCancelParams, McpAuthCompleteParams, McpServerState,
+    McpAuthBeginParams, McpAuthCancelParams, McpAuthCompleteParams, McpServerState,
 };
+use cookie_agent_protocol_transport::Client;
 
 use super::client_identity;
 

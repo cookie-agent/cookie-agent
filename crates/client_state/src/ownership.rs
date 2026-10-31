@@ -3,9 +3,8 @@
 //! `session_owned_elsewhere`; such a session is shown as a read-only
 //! snapshot, which no live tail keeps current.
 
-use cookie_agent_protocol::{
-    Client, ClientError, SessionId, SessionMeta, SessionResumeParams, SessionResumeResult,
-};
+use cookie_agent_protocol::{SessionId, SessionMeta, SessionResumeParams, SessionResumeResult};
+use cookie_agent_protocol_transport::{Client, ClientError};
 
 /// What resuming a session said about who owns it.
 pub enum SessionOwnershipOutcome {

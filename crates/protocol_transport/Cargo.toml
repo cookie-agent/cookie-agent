@@ -1,0 +1,66 @@
+[package]
+name = "cookie_agent_protocol_transport"
+version = "0.4.0"
+description = "Protocol client, server loop, and WebSocket transports for Cookie Agent"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+homepage = "https://cookie-agent.github.io/cookie-agent/"
+
+[features]
+test-support = ["cookie_agent_protocol/test-support"]
+# Client-side WebSocket transport for reaching a cookie daemon: tungstenite
+# natively, the browser's `WebSocket` on wasm32.
+websocket = [
+    "dep:tokio-tungstenite",
+    "dep:url",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cookie_agent_identity = { version = "=0.4.0", path = "../identity" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+futures-util.workspace = true
+jiff.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+thiserror.workspace = true
+tokio-util.workspace = true
+url = { workspace = true, optional = true }
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+tokio-tungstenite = { workspace = true, optional = true }
+
+# On wasm32 the crate is the client: tokio only for its channels and
+# `select!`, the browser for randomness, the clock, timers, and the WebSocket.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+jiff = { workspace = true, features = ["js"] }
+tokio = { version = "1.53.1", default-features = false, features = ["sync", "macros"] }
+uuid = { workspace = true, features = ["js"] }
+wasm-bindgen = { version = "0.2.126", optional = true }
+wasm-bindgen-futures = "0.4.76"
+web-sys = { version = "0.3.103", optional = true, features = [
+    "BinaryType",
+    "CloseEvent",
+    "MessageEvent",
+    "WebSocket",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support"] }
+# Paused time, for the WebSocket transport's liveness tests.
+tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.76"

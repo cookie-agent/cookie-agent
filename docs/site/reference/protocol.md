@@ -163,17 +163,20 @@ Attachments in compacted history are not recoverable from the checkpoint.
 
 ## Session mechanics
 
-The JSON-RPC session layer lives in the `protocol` crate so the server, the TUI,
-and the CLI share one implementation of the protocol mechanics.
+The JSON-RPC session layer lives in the `protocol_transport` crate, over the
+`protocol` crate's wire types, so the server, the TUI, and the CLI share one
+implementation of the protocol mechanics.
 
 - **Transport.** `protocol::Transport` is a frame-level channel:
   `send(MessageFrame)` / `recv() -> Option<MessageFrame>`, with `MessageFrame`
   either a `Text` string or a `Value`. It carries no JSON-RPC semantics. The
-  `protocol` crate provides the `InProcessStream` pair and, behind its
-  `websocket` feature, the client `WebSocketTransport`; the daemon's axum
+  `protocol` crate provides the `InProcessStream` pair and the
+  `protocol_transport` crate, behind its `websocket` feature, the client
+  `WebSocketTransport`; the daemon's axum
   accept path in the `server` crate implements the same trait server-side.
 - **ServerProtocol.** The server contract is one async method per RPC plus
-  `connected`. The `server` crate implements it over `Engine`. `protocol::serve`
+  `connected`. The `server` crate implements it over `Engine`.
+  `protocol_transport::serve`
   drives one complete session over a transport: it authenticates the
   connection (by the transport, or by the handshake's token), rejects every
   method before the handshake with `-32003` or `-32001`, correlates requests by
@@ -185,7 +188,7 @@ and the CLI share one implementation of the protocol mechanics.
   only after that request's response. A connection holds one live tail per
   session: subscribing again replaces it, and the replaced tail's queued
   notifications are written before the new tail's.
-- **Client.** The client side is the concrete `protocol::Client`. Its connection task correlates requests by id, demuxes
+- **Client.** The client side is the concrete `protocol_transport::Client`. Its connection task correlates requests by id, demuxes
   notifications into an ordered `ClientDelivery` stream, injects cursor replays
   and gap recovery before buffered live notifications, fetches replays in pages
   of 2,000 events and delivers each replay whole once its final page arrives,

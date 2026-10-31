@@ -3,7 +3,7 @@
 //! [`Client`] without a diagnostic, as recorded (`corpus/client/<version>/`),
 //! with a member no build knows added to every object of them, and as a
 //! newer daemon may send them (`corpus/future/client.json`). The module
-//! [`crate::corpus`] describes the corpora and their rules.
+//! [`cookie_agent_protocol::corpus`] describes the corpora and their rules.
 
 use std::collections::BTreeMap;
 
@@ -11,10 +11,12 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::{
-    Client, ClientDelivery, ClientEvent, MessageFrame, SessionId, Transport, TransportError,
+use cookie_agent_protocol::{
+    ClientEvent, MessageFrame, SessionId, Transport, TransportError,
     corpus::{self, CorpusFile},
 };
+
+use crate::{Client, ClientDelivery};
 
 /// Members of client messages whose contents are data, not types: tool
 /// arguments, inputs, and metadata, frozen model bindings, JSON values,
@@ -64,9 +66,9 @@ macro_rules! decoders {
                         "stale_cursor": value["stale_cursor"]});
                     Ok(page)
                 }
-                "EventSubscriptionMessage" => read::<crate::Open<crate::ClientSubscriptionMessage>>(value),
-                "SessionsChangedNotification" => read::<crate::Open<crate::SessionsChangedNotification>>(value),
-                $(stringify!($root) => read::<crate::$root>(value),)*
+                "EventSubscriptionMessage" => read::<cookie_agent_protocol::Open<cookie_agent_protocol::ClientSubscriptionMessage>>(value),
+                "SessionsChangedNotification" => read::<cookie_agent_protocol::Open<cookie_agent_protocol::SessionsChangedNotification>>(value),
+                $(stringify!($root) => read::<cookie_agent_protocol::$root>(value),)*
                 other => Err(format!("no decoder for `{other}`")),
             }
         }
@@ -472,7 +474,7 @@ fn delivery_kind(delivery: &ClientDelivery) -> Option<&'static str> {
         ClientDelivery::Live { .. } => "live",
         ClientDelivery::UnknownEvent { .. } => "unknown_event",
         ClientDelivery::SessionsChanged(changed) => match changed.as_ref() {
-            crate::SessionsChangedNotification::Resync => "sessions_resync",
+            cookie_agent_protocol::SessionsChangedNotification::Resync => "sessions_resync",
             _ => "sessions_changed",
         },
         ClientDelivery::RuntimeChanged(_) => "runtime_changed",

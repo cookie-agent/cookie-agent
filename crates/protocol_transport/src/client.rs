@@ -12,8 +12,8 @@ use std::{
     time::Duration,
 };
 
-use super::rt;
-use crate::{
+use crate::rt;
+use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientEvent, ClientHello, ClientIdentity, ClientKind, ClientSubscriptionMessage, EventOrigin,
     EventsSubscribeParams, HandshakeToken, JsonRpcError, JsonRpcId, JsonRpcVersion,
@@ -69,7 +69,7 @@ const REPLAY_PAGE_EVENTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(2_000
 #[derive(Clone, Debug)]
 pub enum ClientDelivery {
     Live {
-        message: Box<crate::EventSubscriptionMessage>,
+        message: Box<cookie_agent_protocol::EventSubscriptionMessage>,
         generation: u64,
     },
     ReplayStart {
@@ -82,13 +82,13 @@ pub enum ClientDelivery {
         session_id: SessionId,
         generation: u64,
         final_seq: u64,
-        event: Box<crate::StoredEvent>,
+        event: Box<cookie_agent_protocol::StoredEvent>,
     },
     /// A durable event this build could not read, live or in a replay (with
     /// the replay's `final_seq`). It advances the session's sequence and
     /// changes nothing else.
     UnknownEvent {
-        event: Box<crate::UnknownEvent>,
+        event: Box<cookie_agent_protocol::UnknownEvent>,
         generation: u64,
         replay_final_seq: Option<u64>,
     },
@@ -97,7 +97,7 @@ pub enum ClientDelivery {
         generation: u64,
         final_seq: u64,
     },
-    PluginEvent(crate::ExtensionBusEventParams),
+    PluginEvent(cookie_agent_protocol::ExtensionBusEventParams),
     RecoveryFailed {
         session_id: Option<SessionId>,
         error: String,
@@ -105,38 +105,38 @@ pub enum ClientDelivery {
     Disconnected {
         error: String,
     },
-    RuntimeChanged(Box<crate::RuntimeChangedNotification>),
-    SessionsChanged(Box<crate::SessionsChangedNotification>),
+    RuntimeChanged(Box<cookie_agent_protocol::RuntimeChangedNotification>),
+    SessionsChanged(Box<cookie_agent_protocol::SessionsChangedNotification>),
     /// MCP server configuration or status changed; refetch
     /// `mcp.server.list`. Carries connection failures for subscribed
     /// sessions.
-    McpChanged(crate::McpChangedNotification),
+    McpChanged(cookie_agent_protocol::McpChangedNotification),
     /// A runtime template or instance status changed; refetch
     /// `runtimes.list`. Carries instance failures for subscribed sessions.
-    RuntimesChanged(crate::RuntimesChangedNotification),
+    RuntimesChanged(cookie_agent_protocol::RuntimesChangedNotification),
     /// A subscribed session's background calls changed.
-    BackgroundChanged(crate::BackgroundChangedNotification),
+    BackgroundChanged(cookie_agent_protocol::BackgroundChangedNotification),
     /// A plugin's status changed; refetch `plugins.list`.
-    PluginsChanged(crate::PluginsChangedNotification),
+    PluginsChanged(cookie_agent_protocol::PluginsChangedNotification),
     /// The machine registry changed, or a runtime joined a new machine;
     /// refetch `machines.list` and `runtimes.list`.
-    MachinesChanged(crate::MachinesChangedNotification),
+    MachinesChanged(cookie_agent_protocol::MachinesChangedNotification),
     /// A memory file changed through the daemon; refetch `memory.list`.
-    MemoryChanged(crate::MemoryChangedNotification),
+    MemoryChanged(cookie_agent_protocol::MemoryChangedNotification),
     /// A project was created, changed, or deleted; refetch
     /// `projects.list`.
-    ProjectsChanged(crate::ProjectsChangedNotification),
+    ProjectsChanged(cookie_agent_protocol::ProjectsChangedNotification),
     /// A cron job was created, changed, fired, or deleted; refetch
     /// `crons.list`.
-    CronsChanged(crate::CronsChangedNotification),
+    CronsChanged(cookie_agent_protocol::CronsChangedNotification),
     /// The push subscriptions changed; refetch `notifications.get`.
-    NotificationsChanged(crate::NotificationsChangedNotification),
+    NotificationsChanged(cookie_agent_protocol::NotificationsChangedNotification),
     /// The daemon will restart: when, and how many runs it still waits
     /// for. The connection then closes and the client reconnects.
-    DaemonRestarting(crate::DaemonRestartingNotification),
+    DaemonRestarting(cookie_agent_protocol::DaemonRestartingNotification),
     /// Whether the daemon is set up changed: the new `onboarding.get`
     /// answer.
-    OnboardingChanged(crate::OnboardingStatus),
+    OnboardingChanged(cookie_agent_protocol::OnboardingStatus),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -155,7 +155,7 @@ pub enum ClientError {
     Transport(String),
     #[error("invalid JSON-RPC frame: {0}")]
     InvalidFrame(#[from] serde_json::Error),
-    #[error("{}", crate::diagnostics::rpc(.0))]
+    #[error("{}", cookie_agent_protocol::diagnostics::rpc(.0))]
     Rpc(JsonRpcError),
     #[error("websocket error: {0}")]
     WebSocket(String),
@@ -187,9 +187,9 @@ fn refused_before_handshake(code: u16, reason: &str) -> String {
 impl ClientError {
     /// What the daemon's error says beyond its message, read per code.
     #[must_use]
-    pub fn error_data(&self) -> Option<crate::errors::ErrorData> {
+    pub fn error_data(&self) -> Option<cookie_agent_protocol::errors::ErrorData> {
         match self {
-            Self::Rpc(rpc) => Some(crate::errors::ErrorData::of(rpc)),
+            Self::Rpc(rpc) => Some(cookie_agent_protocol::errors::ErrorData::of(rpc)),
             _ => None,
         }
     }
@@ -210,7 +210,7 @@ impl ClientError {
 
     /// Whether the daemon answered with the registry's `code`.
     #[must_use]
-    pub fn is(&self, code: &crate::errors::ErrorCode) -> bool {
+    pub fn is(&self, code: &cookie_agent_protocol::errors::ErrorCode) -> bool {
         self.error_code() == Some(code.code)
     }
 
@@ -259,14 +259,14 @@ impl Drop for SerializedParams {
     }
 }
 
-pub(in crate::session::client) struct SensitiveJson(Value);
+pub(in crate::client) struct SensitiveJson(Value);
 
 impl SensitiveJson {
-    pub(in crate::session::client) fn object() -> Self {
+    pub(in crate::client) fn object() -> Self {
         Self(Value::Object(serde_json::Map::new()))
     }
 
-    pub(in crate::session::client) fn object_mut(&mut self) -> &mut serde_json::Map<String, Value> {
+    pub(in crate::client) fn object_mut(&mut self) -> &mut serde_json::Map<String, Value> {
         self.0
             .as_object_mut()
             .expect("sensitive JSON owner was created as an object")
@@ -406,7 +406,7 @@ pub struct Client {
     /// handshake response.
     origin: Arc<StdMutex<Option<EventOrigin>>>,
     /// The daemon's client protocol version, from the handshake response.
-    daemon_version: Arc<StdMutex<Option<crate::SemVer>>>,
+    daemon_version: Arc<StdMutex<Option<cookie_agent_protocol::SemVer>>>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pending_command_count: Arc<AtomicUsize>,
 }
@@ -515,8 +515,11 @@ impl Client {
         } else {
             self.call("handshake", &hello).await?
         };
-        crate::negotiate_version(crate::CLIENT_PROTOCOL_VERSION, &raw)
-            .map_err(|refusal| ClientError::Rpc(refusal.to_rpc_error()))?;
+        cookie_agent_protocol::negotiate_version(
+            cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
+            &raw,
+        )
+        .map_err(|refusal| ClientError::Rpc(refusal.to_rpc_error()))?;
         let hello: ServerHello = serde_json::from_value(raw)?;
         *self.origin.lock().expect("client origin lock") = Some(hello.origin.clone());
         *self.daemon_version.lock().expect("daemon version lock") = Some(hello.protocol_version);
@@ -526,7 +529,7 @@ impl Client {
     /// The daemon's client protocol version, once the handshake has
     /// completed.
     #[must_use]
-    pub fn daemon_version(&self) -> Option<crate::SemVer> {
+    pub fn daemon_version(&self) -> Option<cookie_agent_protocol::SemVer> {
         *self.daemon_version.lock().expect("daemon version lock")
     }
 
@@ -577,29 +580,35 @@ impl Client {
         &self,
         params: SessionGoalGetParams,
     ) -> Result<SessionGoalGetResult, ClientError> {
-        self.call(crate::SESSION_GOAL_GET_METHOD, &params).await
+        self.call(cookie_agent_protocol::SESSION_GOAL_GET_METHOD, &params)
+            .await
     }
 
     pub async fn set_session_goal(
         &self,
         params: SessionGoalSetParams,
     ) -> Result<SessionGoalSetResult, ClientError> {
-        self.call(crate::SESSION_GOAL_SET_METHOD, &params).await
+        self.call(cookie_agent_protocol::SESSION_GOAL_SET_METHOD, &params)
+            .await
     }
 
     pub async fn change_session_goal_lifecycle(
         &self,
         params: SessionGoalLifecycleParams,
     ) -> Result<SessionGoalLifecycleResult, ClientError> {
-        self.call(crate::SESSION_GOAL_LIFECYCLE_METHOD, &params)
-            .await
+        self.call(
+            cookie_agent_protocol::SESSION_GOAL_LIFECYCLE_METHOD,
+            &params,
+        )
+        .await
     }
 
     pub async fn session_producers(
         &self,
         params: SessionProducersParams,
     ) -> Result<SessionProducersResult, ClientError> {
-        self.call(crate::SESSION_PRODUCERS_METHOD, &params).await
+        self.call(cookie_agent_protocol::SESSION_PRODUCERS_METHOD, &params)
+            .await
     }
 
     pub async fn session_usage(
@@ -691,15 +700,25 @@ impl Client {
     }
 
     /// Refreshes the daemon's official skills now.
-    pub async fn update_skills(&self) -> Result<crate::SkillsUpdateResult, ClientError> {
-        self.call(crate::SKILLS_UPDATE_METHOD, &crate::SkillsUpdateParams {})
-            .await
+    pub async fn update_skills(
+        &self,
+    ) -> Result<cookie_agent_protocol::SkillsUpdateResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SKILLS_UPDATE_METHOD,
+            &cookie_agent_protocol::SkillsUpdateParams {},
+        )
+        .await
     }
 
     /// Refreshes the daemon's official agents now.
-    pub async fn update_agents(&self) -> Result<crate::AgentsUpdateResult, ClientError> {
-        self.call(crate::AGENTS_UPDATE_METHOD, &crate::AgentsUpdateParams {})
-            .await
+    pub async fn update_agents(
+        &self,
+    ) -> Result<cookie_agent_protocol::AgentsUpdateResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::AGENTS_UPDATE_METHOD,
+            &cookie_agent_protocol::AgentsUpdateParams {},
+        )
+        .await
     }
 
     pub async fn compact_session(
@@ -720,9 +739,10 @@ impl Client {
     /// older than 1.5 answers [`ClientError::DaemonTooOld`].
     pub async fn delete_session(
         &self,
-        params: crate::SessionDeleteParams,
-    ) -> Result<crate::SessionDeleteResult, ClientError> {
-        self.call(crate::SESSION_DELETE_METHOD, &params).await
+        params: cookie_agent_protocol::SessionDeleteParams,
+    ) -> Result<cookie_agent_protocol::SessionDeleteResult, ClientError> {
+        self.call(cookie_agent_protocol::SESSION_DELETE_METHOD, &params)
+            .await
     }
 
     pub async fn fork_session(
@@ -744,39 +764,44 @@ impl Client {
     /// (`session.select_model`).
     pub async fn select_model(
         &self,
-        params: crate::SessionSelectModelParams,
-    ) -> Result<crate::SessionSelectModelResult, ClientError> {
-        self.call(crate::SESSION_SELECT_MODEL_METHOD, &params).await
+        params: cookie_agent_protocol::SessionSelectModelParams,
+    ) -> Result<cookie_agent_protocol::SessionSelectModelResult, ClientError> {
+        self.call(cookie_agent_protocol::SESSION_SELECT_MODEL_METHOD, &params)
+            .await
     }
 
     /// Clear this held session's hold and send its pending producer
     /// messages (`session.held.resume`, client protocol 1.34.0).
     pub async fn resume_held_session(
         &self,
-        params: crate::SessionHeldResumeParams,
-    ) -> Result<crate::SessionHeldResumeResult, ClientError> {
-        self.call(crate::SESSION_HELD_RESUME_METHOD, &params).await
+        params: cookie_agent_protocol::SessionHeldResumeParams,
+    ) -> Result<cookie_agent_protocol::SessionHeldResumeResult, ClientError> {
+        self.call(cookie_agent_protocol::SESSION_HELD_RESUME_METHOD, &params)
+            .await
     }
 
     /// Cancel this session's running manual compaction
     /// (`session.compact.cancel`).
     pub async fn cancel_compaction(
         &self,
-        params: crate::SessionCompactCancelParams,
-    ) -> Result<crate::SessionCompactCancelResult, ClientError> {
-        self.call(crate::SESSION_COMPACT_CANCEL_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::SessionCompactCancelParams,
+    ) -> Result<cookie_agent_protocol::SessionCompactCancelResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SESSION_COMPACT_CANCEL_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Start a run, steer the running one, or queue behind it, decided
     /// atomically by the daemon (`session.submit_input`).
     pub async fn submit_input(
         &self,
-        params: crate::SessionSubmitInputParams,
-    ) -> Result<crate::SessionSubmitInputResult, ClientError> {
+        params: cookie_agent_protocol::SessionSubmitInputParams,
+    ) -> Result<cookie_agent_protocol::SessionSubmitInputResult, ClientError> {
         known_outcome(
-            crate::SESSION_SUBMIT_INPUT_METHOD,
-            self.call(crate::SESSION_SUBMIT_INPUT_METHOD, &params)
+            cookie_agent_protocol::SESSION_SUBMIT_INPUT_METHOD,
+            self.call(cookie_agent_protocol::SESSION_SUBMIT_INPUT_METHOD, &params)
                 .await?,
         )
     }
@@ -785,11 +810,11 @@ impl Client {
     /// (`session.recall_input`).
     pub async fn recall_input(
         &self,
-        params: crate::SessionRecallInputParams,
-    ) -> Result<crate::SessionRecallInputResult, ClientError> {
+        params: cookie_agent_protocol::SessionRecallInputParams,
+    ) -> Result<cookie_agent_protocol::SessionRecallInputResult, ClientError> {
         known_outcome(
-            crate::SESSION_RECALL_INPUT_METHOD,
-            self.call(crate::SESSION_RECALL_INPUT_METHOD, &params)
+            cookie_agent_protocol::SESSION_RECALL_INPUT_METHOD,
+            self.call(cookie_agent_protocol::SESSION_RECALL_INPUT_METHOD, &params)
                 .await?,
         )
     }
@@ -797,45 +822,52 @@ impl Client {
     /// Start an upload into a session tree's store (`artifact.upload.begin`).
     pub async fn begin_upload(
         &self,
-        params: crate::ArtifactUploadBeginParams,
-    ) -> Result<crate::ArtifactUploadBeginResult, ClientError> {
-        self.call(crate::ARTIFACT_UPLOAD_BEGIN_METHOD, &params)
+        params: cookie_agent_protocol::ArtifactUploadBeginParams,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadBeginResult, ClientError> {
+        self.call(cookie_agent_protocol::ARTIFACT_UPLOAD_BEGIN_METHOD, &params)
             .await
     }
 
     /// Send an upload's next chunk (`artifact.upload.chunk`).
     pub async fn upload_chunk(
         &self,
-        params: crate::ArtifactUploadChunkParams,
-    ) -> Result<crate::ArtifactUploadChunkResult, ClientError> {
-        self.call(crate::ARTIFACT_UPLOAD_CHUNK_METHOD, &params)
+        params: cookie_agent_protocol::ArtifactUploadChunkParams,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadChunkResult, ClientError> {
+        self.call(cookie_agent_protocol::ARTIFACT_UPLOAD_CHUNK_METHOD, &params)
             .await
     }
 
     /// Store a complete upload (`artifact.upload.finish`).
     pub async fn finish_upload(
         &self,
-        params: crate::ArtifactUploadFinishParams,
-    ) -> Result<crate::ArtifactUploadFinishResult, ClientError> {
-        self.call(crate::ARTIFACT_UPLOAD_FINISH_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::ArtifactUploadFinishParams,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadFinishResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::ARTIFACT_UPLOAD_FINISH_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Drop an upload in progress (`artifact.upload.cancel`).
     pub async fn cancel_upload(
         &self,
-        params: crate::ArtifactUploadCancelParams,
-    ) -> Result<crate::ArtifactUploadCancelResult, ClientError> {
-        self.call(crate::ARTIFACT_UPLOAD_CANCEL_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::ArtifactUploadCancelParams,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadCancelResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::ARTIFACT_UPLOAD_CANCEL_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Read a range of an artifact of a session's tree (`artifact.read`).
     pub async fn read_artifact(
         &self,
-        params: crate::ArtifactReadParams,
-    ) -> Result<crate::ArtifactReadResult, ClientError> {
-        self.call(crate::ARTIFACT_READ_METHOD, &params).await
+        params: cookie_agent_protocol::ArtifactReadParams,
+    ) -> Result<cookie_agent_protocol::ArtifactReadResult, ClientError> {
+        self.call(cookie_agent_protocol::ARTIFACT_READ_METHOD, &params)
+            .await
     }
 
     pub async fn cancel_run(
@@ -862,9 +894,10 @@ impl Client {
     /// Answers question `params.elicitation_id` an agent asked the user.
     pub async fn respond_elicitation(
         &self,
-        params: crate::ElicitationRespondParams,
-    ) -> Result<crate::ElicitationRespondResult, ClientError> {
-        self.call(crate::ELICITATION_RESPOND_METHOD, &params).await
+        params: cookie_agent_protocol::ElicitationRespondParams,
+    ) -> Result<cookie_agent_protocol::ElicitationRespondResult, ClientError> {
+        self.call(cookie_agent_protocol::ELICITATION_RESPOND_METHOD, &params)
+            .await
     }
 
     pub async fn begin_mcp_auth(
@@ -891,62 +924,74 @@ impl Client {
     /// Starts a provider's interactive sign-in (client protocol 1.49.0).
     pub async fn begin_provider_auth(
         &self,
-        params: crate::ProviderAuthBeginParams,
-    ) -> Result<crate::ProviderAuthBeginResult, ClientError> {
-        self.call(crate::PROVIDER_AUTH_BEGIN_METHOD, &params).await
+        params: cookie_agent_protocol::ProviderAuthBeginParams,
+    ) -> Result<cookie_agent_protocol::ProviderAuthBeginResult, ClientError> {
+        self.call(cookie_agent_protocol::PROVIDER_AUTH_BEGIN_METHOD, &params)
+            .await
     }
 
     /// Finishes a provider's sign-in with the address the browser landed on.
     pub async fn complete_provider_auth(
         &self,
-        params: crate::ProviderAuthCompleteParams,
-    ) -> Result<crate::ProviderAuthCompleteResult, ClientError> {
-        self.call(crate::PROVIDER_AUTH_COMPLETE_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::ProviderAuthCompleteParams,
+    ) -> Result<cookie_agent_protocol::ProviderAuthCompleteResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::PROVIDER_AUTH_COMPLETE_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Drops a provider's sign-in in progress.
     pub async fn cancel_provider_auth(
         &self,
-        params: crate::ProviderAuthCancelParams,
-    ) -> Result<crate::ProviderAuthCancelResult, ClientError> {
-        self.call(crate::PROVIDER_AUTH_CANCEL_METHOD, &params).await
+        params: cookie_agent_protocol::ProviderAuthCancelParams,
+    ) -> Result<cookie_agent_protocol::ProviderAuthCancelResult, ClientError> {
+        self.call(cookie_agent_protocol::PROVIDER_AUTH_CANCEL_METHOD, &params)
+            .await
     }
 
     /// Attaches a runtime to a session with no active run.
     pub async fn attach_runtime(
         &self,
-        params: crate::SessionRuntimeAttachParams,
-    ) -> Result<crate::SessionRuntimeAttachResult, ClientError> {
-        self.call(crate::SESSION_RUNTIME_ATTACH_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::SessionRuntimeAttachParams,
+    ) -> Result<cookie_agent_protocol::SessionRuntimeAttachResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SESSION_RUNTIME_ATTACH_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Detaches a runtime from a session with no active run.
     pub async fn detach_runtime(
         &self,
-        params: crate::SessionRuntimeDetachParams,
-    ) -> Result<crate::SessionRuntimeDetachResult, ClientError> {
-        self.call(crate::SESSION_RUNTIME_DETACH_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::SessionRuntimeDetachParams,
+    ) -> Result<cookie_agent_protocol::SessionRuntimeDetachResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SESSION_RUNTIME_DETACH_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Lists runtime templates and the instances the daemon started.
     /// Moves an executing call to the background.
     pub async fn background_tool(
         &self,
-        params: crate::RunToolBackgroundParams,
-    ) -> Result<crate::RunToolBackgroundResult, ClientError> {
-        self.call(crate::RUN_TOOL_BACKGROUND_METHOD, &params).await
+        params: cookie_agent_protocol::RunToolBackgroundParams,
+    ) -> Result<cookie_agent_protocol::RunToolBackgroundResult, ClientError> {
+        self.call(cookie_agent_protocol::RUN_TOOL_BACKGROUND_METHOD, &params)
+            .await
     }
 
     pub async fn list_background(
         &self,
         session_id: SessionId,
-    ) -> Result<crate::SessionBackgroundListResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::SessionBackgroundListResult, ClientError> {
         self.call(
-            crate::SESSION_BACKGROUND_LIST_METHOD,
-            &crate::SessionBackgroundListParams { session_id },
+            cookie_agent_protocol::SESSION_BACKGROUND_LIST_METHOD,
+            &cookie_agent_protocol::SessionBackgroundListParams { session_id },
         )
         .await
     }
@@ -956,94 +1001,115 @@ impl Client {
         &self,
         session_id: SessionId,
         job: String,
-    ) -> Result<crate::SessionBackgroundStopResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::SessionBackgroundStopResult, ClientError> {
         self.call(
-            crate::SESSION_BACKGROUND_STOP_METHOD,
-            &crate::SessionBackgroundStopParams { session_id, job },
+            cookie_agent_protocol::SESSION_BACKGROUND_STOP_METHOD,
+            &cookie_agent_protocol::SessionBackgroundStopParams { session_id, job },
         )
         .await
     }
 
-    pub async fn list_runtimes(&self) -> Result<crate::RuntimesListResult, ClientError> {
-        self.call(crate::RUNTIMES_LIST_METHOD, &crate::RuntimesListParams {})
-            .await
+    pub async fn list_runtimes(
+        &self,
+    ) -> Result<cookie_agent_protocol::RuntimesListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::RUNTIMES_LIST_METHOD,
+            &cookie_agent_protocol::RuntimesListParams {},
+        )
+        .await
     }
 
     /// Retries a runtime instance now, such as one that failed.
     pub async fn reconnect_runtime(
         &self,
-        params: crate::RuntimesReconnectParams,
-    ) -> Result<crate::RuntimesReconnectResult, ClientError> {
-        self.call(crate::RUNTIMES_RECONNECT_METHOD, &params).await
+        params: cookie_agent_protocol::RuntimesReconnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesReconnectResult, ClientError> {
+        self.call(cookie_agent_protocol::RUNTIMES_RECONNECT_METHOD, &params)
+            .await
     }
 
     /// Connects a runtime the daemon starts, to try that it starts (client
     /// protocol 1.55.0).
     pub async fn connect_runtime(
         &self,
-        params: crate::RuntimesConnectParams,
-    ) -> Result<crate::RuntimesConnectResult, ClientError> {
-        self.call(crate::RUNTIMES_CONNECT_METHOD, &params).await
+        params: cookie_agent_protocol::RuntimesConnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesConnectResult, ClientError> {
+        self.call(cookie_agent_protocol::RUNTIMES_CONNECT_METHOD, &params)
+            .await
     }
 
     /// Disconnects a runtime the daemon starts; refused while a run or
     /// background call uses it (client protocol 1.55.0).
     pub async fn disconnect_runtime(
         &self,
-        params: crate::RuntimesConnectParams,
-    ) -> Result<crate::RuntimesConnectResult, ClientError> {
-        self.call(crate::RUNTIMES_DISCONNECT_METHOD, &params).await
+        params: cookie_agent_protocol::RuntimesConnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesConnectResult, ClientError> {
+        self.call(cookie_agent_protocol::RUNTIMES_DISCONNECT_METHOD, &params)
+            .await
     }
 
     /// A runtime's ACP agent declarations (client protocol 1.37.0).
     pub async fn list_runtime_agents(
         &self,
-        params: crate::RuntimesAgentsListParams,
-    ) -> Result<crate::RuntimesAgentsResult, ClientError> {
-        self.call(crate::RUNTIMES_AGENTS_LIST_METHOD, &params).await
+        params: cookie_agent_protocol::RuntimesAgentsListParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsResult, ClientError> {
+        self.call(cookie_agent_protocol::RUNTIMES_AGENTS_LIST_METHOD, &params)
+            .await
     }
 
     /// Adds or replaces one of a runtime's ACP agent declarations.
     pub async fn set_runtime_agent(
         &self,
-        params: crate::RuntimesAgentsSetParams,
-    ) -> Result<crate::RuntimesAgentsResult, ClientError> {
-        self.call(crate::RUNTIMES_AGENTS_SET_METHOD, &params).await
+        params: cookie_agent_protocol::RuntimesAgentsSetParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsResult, ClientError> {
+        self.call(cookie_agent_protocol::RUNTIMES_AGENTS_SET_METHOD, &params)
+            .await
     }
 
     /// Removes one of a runtime's ACP agent declarations.
     pub async fn remove_runtime_agent(
         &self,
-        params: crate::RuntimesAgentsRemoveParams,
-    ) -> Result<crate::RuntimesAgentsResult, ClientError> {
-        self.call(crate::RUNTIMES_AGENTS_REMOVE_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::RuntimesAgentsRemoveParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::RUNTIMES_AGENTS_REMOVE_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Renames one of a runtime's ACP agent declarations.
     pub async fn rename_runtime_agent(
         &self,
-        params: crate::RuntimesAgentsRenameParams,
-    ) -> Result<crate::RuntimesAgentsRenameResult, ClientError> {
-        self.call(crate::RUNTIMES_AGENTS_RENAME_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::RuntimesAgentsRenameParams,
+    ) -> Result<cookie_agent_protocol::RuntimesAgentsRenameResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::RUNTIMES_AGENTS_RENAME_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Every machine of the daemon's machine registry.
-    pub async fn list_machines(&self) -> Result<crate::MachinesListResult, ClientError> {
-        self.call(crate::MACHINES_LIST_METHOD, &crate::MachinesListParams {})
-            .await
+    pub async fn list_machines(
+        &self,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::MACHINES_LIST_METHOD,
+            &cookie_agent_protocol::MachinesListParams {},
+        )
+        .await
     }
 
     /// Renames `machine` to `name`; its memory folder moves with it.
     pub async fn rename_machine(
         &self,
-        machine: crate::MachineName,
-        name: crate::MachineName,
-    ) -> Result<crate::MachinesListResult, ClientError> {
+        machine: cookie_agent_protocol::MachineName,
+        name: cookie_agent_protocol::MachineName,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ClientError> {
         self.call(
-            crate::MACHINES_RENAME_METHOD,
-            &crate::MachinesRenameParams { machine, name },
+            cookie_agent_protocol::MACHINES_RENAME_METHOD,
+            &cookie_agent_protocol::MachinesRenameParams { machine, name },
         )
         .await
     }
@@ -1051,12 +1117,12 @@ impl Client {
     /// Pins `runtime` to `machine`, created when the name is new.
     pub async fn assign_machine(
         &self,
-        runtime: crate::RuntimeId,
-        machine: crate::MachineName,
-    ) -> Result<crate::MachinesListResult, ClientError> {
+        runtime: cookie_agent_protocol::RuntimeId,
+        machine: cookie_agent_protocol::MachineName,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ClientError> {
         self.call(
-            crate::MACHINES_ASSIGN_METHOD,
-            &crate::MachinesAssignParams { runtime, machine },
+            cookie_agent_protocol::MACHINES_ASSIGN_METHOD,
+            &cookie_agent_protocol::MachinesAssignParams { runtime, machine },
         )
         .await
     }
@@ -1064,11 +1130,11 @@ impl Client {
     /// Removes `runtime`'s pin.
     pub async fn unassign_machine(
         &self,
-        runtime: crate::RuntimeId,
-    ) -> Result<crate::MachinesListResult, ClientError> {
+        runtime: cookie_agent_protocol::RuntimeId,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ClientError> {
         self.call(
-            crate::MACHINES_UNASSIGN_METHOD,
-            &crate::MachinesUnassignParams { runtime },
+            cookie_agent_protocol::MACHINES_UNASSIGN_METHOD,
+            &cookie_agent_protocol::MachinesUnassignParams { runtime },
         )
         .await
     }
@@ -1076,12 +1142,12 @@ impl Client {
     /// Merges `from` into `into`, memories included.
     pub async fn merge_machines(
         &self,
-        from: crate::MachineName,
-        into: crate::MachineName,
-    ) -> Result<crate::MachinesListResult, ClientError> {
+        from: cookie_agent_protocol::MachineName,
+        into: cookie_agent_protocol::MachineName,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ClientError> {
         self.call(
-            crate::MACHINES_MERGE_METHOD,
-            &crate::MachinesMergeParams { from, into },
+            cookie_agent_protocol::MACHINES_MERGE_METHOD,
+            &cookie_agent_protocol::MachinesMergeParams { from, into },
         )
         .await
     }
@@ -1089,11 +1155,11 @@ impl Client {
     /// Removes `machine`, which has no connected runtimes and no memories.
     pub async fn forget_machine(
         &self,
-        machine: crate::MachineName,
-    ) -> Result<crate::MachinesListResult, ClientError> {
+        machine: cookie_agent_protocol::MachineName,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ClientError> {
         self.call(
-            crate::MACHINES_FORGET_METHOD,
-            &crate::MachinesForgetParams { machine },
+            cookie_agent_protocol::MACHINES_FORGET_METHOD,
+            &cookie_agent_protocol::MachinesForgetParams { machine },
         )
         .await
     }
@@ -1101,11 +1167,11 @@ impl Client {
     /// Drops the record of `runtime`, which is not connected.
     pub async fn forget_machine_runtime(
         &self,
-        runtime: crate::RuntimeId,
-    ) -> Result<crate::MachinesListResult, ClientError> {
+        runtime: cookie_agent_protocol::RuntimeId,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ClientError> {
         self.call(
-            crate::MACHINES_FORGET_RUNTIME_METHOD,
-            &crate::MachinesForgetRuntimeParams { runtime },
+            cookie_agent_protocol::MACHINES_FORGET_RUNTIME_METHOD,
+            &cookie_agent_protocol::MachinesForgetRuntimeParams { runtime },
         )
         .await
     }
@@ -1113,19 +1179,20 @@ impl Client {
     /// The memory files `params` asks for, valid or not.
     pub async fn list_memory(
         &self,
-        params: crate::MemoryListParams,
-    ) -> Result<crate::MemoryListResult, ClientError> {
-        self.call(crate::MEMORY_LIST_METHOD, &params).await
+        params: cookie_agent_protocol::MemoryListParams,
+    ) -> Result<cookie_agent_protocol::MemoryListResult, ClientError> {
+        self.call(cookie_agent_protocol::MEMORY_LIST_METHOD, &params)
+            .await
     }
 
     /// One memory's whole text and revision.
     pub async fn read_memory(
         &self,
         url: impl Into<String>,
-    ) -> Result<crate::MemoryReadResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::MemoryReadResult, ClientError> {
         self.call(
-            crate::MEMORY_READ_METHOD,
-            &crate::MemoryReadParams { url: url.into() },
+            cookie_agent_protocol::MEMORY_READ_METHOD,
+            &cookie_agent_protocol::MemoryReadParams { url: url.into() },
         )
         .await
     }
@@ -1137,10 +1204,10 @@ impl Client {
         url: impl Into<String>,
         text: impl Into<String>,
         revision: Option<String>,
-    ) -> Result<crate::MemoryWriteResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::MemoryWriteResult, ClientError> {
         self.call(
-            crate::MEMORY_WRITE_METHOD,
-            &crate::MemoryWriteParams {
+            cookie_agent_protocol::MEMORY_WRITE_METHOD,
+            &cookie_agent_protocol::MemoryWriteParams {
                 url: url.into(),
                 text: text.into(),
                 revision,
@@ -1154,10 +1221,10 @@ impl Client {
         &self,
         url: impl Into<String>,
         revision: impl Into<String>,
-    ) -> Result<crate::MemoryDeleteResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::MemoryDeleteResult, ClientError> {
         self.call(
-            crate::MEMORY_DELETE_METHOD,
-            &crate::MemoryDeleteParams {
+            cookie_agent_protocol::MEMORY_DELETE_METHOD,
+            &cookie_agent_protocol::MemoryDeleteParams {
                 url: url.into(),
                 revision: revision.into(),
             },
@@ -1166,19 +1233,24 @@ impl Client {
     }
 
     /// Every project, in name order.
-    pub async fn list_projects(&self) -> Result<crate::ProjectsListResult, ClientError> {
-        self.call(crate::PROJECTS_LIST_METHOD, &crate::ProjectsListParams {})
-            .await
+    pub async fn list_projects(
+        &self,
+    ) -> Result<cookie_agent_protocol::ProjectsListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::PROJECTS_LIST_METHOD,
+            &cookie_agent_protocol::ProjectsListParams {},
+        )
+        .await
     }
 
     /// One project with its `AGENTS.md`.
     pub async fn get_project(
         &self,
-        project: crate::ProjectId,
-    ) -> Result<crate::ProjectGetResult, ClientError> {
+        project: cookie_agent_protocol::ProjectId,
+    ) -> Result<cookie_agent_protocol::ProjectGetResult, ClientError> {
         self.call(
-            crate::PROJECT_GET_METHOD,
-            &crate::ProjectGetParams { project },
+            cookie_agent_protocol::PROJECT_GET_METHOD,
+            &cookie_agent_protocol::ProjectGetParams { project },
         )
         .await
     }
@@ -1186,28 +1258,30 @@ impl Client {
     /// Creates a project.
     pub async fn create_project(
         &self,
-        params: crate::ProjectCreateParams,
-    ) -> Result<crate::ProjectResult, ClientError> {
-        self.call(crate::PROJECT_CREATE_METHOD, &params).await
+        params: cookie_agent_protocol::ProjectCreateParams,
+    ) -> Result<cookie_agent_protocol::ProjectResult, ClientError> {
+        self.call(cookie_agent_protocol::PROJECT_CREATE_METHOD, &params)
+            .await
     }
 
     /// Changes a project at the revision last read.
     pub async fn update_project(
         &self,
-        params: crate::ProjectUpdateParams,
-    ) -> Result<crate::ProjectResult, ClientError> {
-        self.call(crate::PROJECT_UPDATE_METHOD, &params).await
+        params: cookie_agent_protocol::ProjectUpdateParams,
+    ) -> Result<cookie_agent_protocol::ProjectResult, ClientError> {
+        self.call(cookie_agent_protocol::PROJECT_UPDATE_METHOD, &params)
+            .await
     }
 
     /// Deletes a project at `revision`, with its sessions and memories.
     pub async fn delete_project(
         &self,
-        project: crate::ProjectId,
+        project: cookie_agent_protocol::ProjectId,
         revision: impl Into<String>,
-    ) -> Result<crate::ProjectDeleteResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::ProjectDeleteResult, ClientError> {
         self.call(
-            crate::PROJECT_DELETE_METHOD,
-            &crate::ProjectDeleteParams {
+            cookie_agent_protocol::PROJECT_DELETE_METHOD,
+            &cookie_agent_protocol::ProjectDeleteParams {
                 project,
                 revision: revision.into(),
             },
@@ -1220,11 +1294,11 @@ impl Client {
     pub async fn set_session_project(
         &self,
         session_id: SessionId,
-        project: Option<crate::ProjectId>,
-    ) -> Result<crate::SessionProjectSetResult, ClientError> {
+        project: Option<cookie_agent_protocol::ProjectId>,
+    ) -> Result<cookie_agent_protocol::SessionProjectSetResult, ClientError> {
         self.call(
-            crate::SESSION_PROJECT_SET_METHOD,
-            &crate::SessionProjectSetParams {
+            cookie_agent_protocol::SESSION_PROJECT_SET_METHOD,
+            &cookie_agent_protocol::SessionProjectSetParams {
                 session_id,
                 project,
             },
@@ -1239,10 +1313,10 @@ impl Client {
         session_id: SessionId,
         option_id: String,
         value: String,
-    ) -> Result<crate::SessionAgentOptionSetResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::SessionAgentOptionSetResult, ClientError> {
         self.call(
-            crate::SESSION_AGENT_OPTION_SET_METHOD,
-            &crate::SessionAgentOptionSetParams {
+            cookie_agent_protocol::SESSION_AGENT_OPTION_SET_METHOD,
+            &cookie_agent_protocol::SessionAgentOptionSetParams {
                 session_id,
                 option_id,
                 value,
@@ -1252,50 +1326,63 @@ impl Client {
     }
 
     /// Every cron job with its state and history.
-    pub async fn list_crons(&self) -> Result<crate::CronsListResult, ClientError> {
-        self.call(crate::CRONS_LIST_METHOD, &crate::CronsListParams {})
-            .await
+    pub async fn list_crons(&self) -> Result<cookie_agent_protocol::CronsListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::CRONS_LIST_METHOD,
+            &cookie_agent_protocol::CronsListParams {},
+        )
+        .await
     }
 
     /// Creates a cron job.
     pub async fn create_cron(
         &self,
-        params: crate::CronCreateParams,
-    ) -> Result<crate::CronJobResult, ClientError> {
-        self.call(crate::CRONS_CREATE_METHOD, &params).await
+        params: cookie_agent_protocol::CronCreateParams,
+    ) -> Result<cookie_agent_protocol::CronJobResult, ClientError> {
+        self.call(cookie_agent_protocol::CRONS_CREATE_METHOD, &params)
+            .await
     }
 
     /// Changes a cron job.
     pub async fn update_cron(
         &self,
-        params: crate::CronUpdateParams,
-    ) -> Result<crate::CronJobResult, ClientError> {
-        self.call(crate::CRONS_UPDATE_METHOD, &params).await
+        params: cookie_agent_protocol::CronUpdateParams,
+    ) -> Result<cookie_agent_protocol::CronJobResult, ClientError> {
+        self.call(cookie_agent_protocol::CRONS_UPDATE_METHOD, &params)
+            .await
     }
 
     /// Deletes a cron job; its run sessions stay.
     pub async fn delete_cron(
         &self,
-        id: crate::CronJobId,
-    ) -> Result<crate::CronDeleteResult, ClientError> {
-        self.call(crate::CRONS_DELETE_METHOD, &crate::CronDeleteParams { id })
-            .await
+        id: cookie_agent_protocol::CronJobId,
+    ) -> Result<cookie_agent_protocol::CronDeleteResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::CRONS_DELETE_METHOD,
+            &cookie_agent_protocol::CronDeleteParams { id },
+        )
+        .await
     }
 
     /// Fires a cron job now.
     pub async fn run_cron(
         &self,
-        id: crate::CronJobId,
-    ) -> Result<crate::CronRunResult, ClientError> {
-        self.call(crate::CRONS_RUN_METHOD, &crate::CronRunParams { id })
-            .await
+        id: cookie_agent_protocol::CronJobId,
+    ) -> Result<cookie_agent_protocol::CronRunResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::CRONS_RUN_METHOD,
+            &cookie_agent_protocol::CronRunParams { id },
+        )
+        .await
     }
 
     /// The daemon's push key and the browsers it pushes to.
-    pub async fn get_notifications(&self) -> Result<crate::NotificationsGetResult, ClientError> {
+    pub async fn get_notifications(
+        &self,
+    ) -> Result<cookie_agent_protocol::NotificationsGetResult, ClientError> {
         self.call(
-            crate::NOTIFICATIONS_GET_METHOD,
-            &crate::NotificationsGetParams {},
+            cookie_agent_protocol::NOTIFICATIONS_GET_METHOD,
+            &cookie_agent_protocol::NotificationsGetParams {},
         )
         .await
     }
@@ -1303,20 +1390,23 @@ impl Client {
     /// Registers a browser's push subscription.
     pub async fn subscribe_notifications(
         &self,
-        params: crate::NotificationsSubscribeParams,
-    ) -> Result<crate::NotificationsSubscribeResult, ClientError> {
-        self.call(crate::NOTIFICATIONS_SUBSCRIBE_METHOD, &params)
-            .await
+        params: cookie_agent_protocol::NotificationsSubscribeParams,
+    ) -> Result<cookie_agent_protocol::NotificationsSubscribeResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::NOTIFICATIONS_SUBSCRIBE_METHOD,
+            &params,
+        )
+        .await
     }
 
     /// Removes a push subscription.
     pub async fn unsubscribe_notifications(
         &self,
         id: String,
-    ) -> Result<crate::NotificationsUnsubscribeResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::NotificationsUnsubscribeResult, ClientError> {
         self.call(
-            crate::NOTIFICATIONS_UNSUBSCRIBE_METHOD,
-            &crate::NotificationsUnsubscribeParams { id },
+            cookie_agent_protocol::NOTIFICATIONS_UNSUBSCRIBE_METHOD,
+            &cookie_agent_protocol::NotificationsUnsubscribeParams { id },
         )
         .await
     }
@@ -1325,10 +1415,10 @@ impl Client {
     pub async fn test_notifications(
         &self,
         id: String,
-    ) -> Result<crate::NotificationsTestResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::NotificationsTestResult, ClientError> {
         self.call(
-            crate::NOTIFICATIONS_TEST_METHOD,
-            &crate::NotificationsTestParams { id },
+            cookie_agent_protocol::NOTIFICATIONS_TEST_METHOD,
+            &cookie_agent_protocol::NotificationsTestParams { id },
         )
         .await
     }
@@ -1337,11 +1427,11 @@ impl Client {
     /// user looks at, or `None` when the user is not there.
     pub async fn set_presence(
         &self,
-        session: Option<crate::SessionId>,
-    ) -> Result<crate::ClientPresenceResult, ClientError> {
+        session: Option<cookie_agent_protocol::SessionId>,
+    ) -> Result<cookie_agent_protocol::ClientPresenceResult, ClientError> {
         self.call(
-            crate::CLIENT_PRESENCE_METHOD,
-            &crate::ClientPresenceParams { session },
+            cookie_agent_protocol::CLIENT_PRESENCE_METHOD,
+            &cookie_agent_protocol::ClientPresenceParams { session },
         )
         .await
     }
@@ -1350,12 +1440,12 @@ impl Client {
     /// protocol 1.51.0).
     pub async fn set_session_unread(
         &self,
-        session_ids: Vec<crate::SessionId>,
+        session_ids: Vec<cookie_agent_protocol::SessionId>,
         unread: bool,
-    ) -> Result<crate::SessionUnreadSetResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::SessionUnreadSetResult, ClientError> {
         self.call(
-            crate::SESSION_UNREAD_SET_METHOD,
-            &crate::SessionUnreadSetParams {
+            cookie_agent_protocol::SESSION_UNREAD_SET_METHOD,
+            &cookie_agent_protocol::SessionUnreadSetParams {
                 session_ids,
                 unread,
             },
@@ -1364,82 +1454,102 @@ impl Client {
     }
 
     /// The configured plugins, in the order their hooks run.
-    pub async fn list_plugins(&self) -> Result<crate::PluginsListResult, ClientError> {
-        self.call(crate::PLUGINS_LIST_METHOD, &crate::PluginsListParams {})
-            .await
+    pub async fn list_plugins(
+        &self,
+    ) -> Result<cookie_agent_protocol::PluginsListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::PLUGINS_LIST_METHOD,
+            &cookie_agent_protocol::PluginsListParams {},
+        )
+        .await
     }
 
     /// Starts plugin `name` again now.
     pub async fn restart_plugin(
         &self,
         name: String,
-    ) -> Result<crate::PluginsRestartResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::PluginsRestartResult, ClientError> {
         self.call(
-            crate::PLUGINS_RESTART_METHOD,
-            &crate::PluginsRestartParams { name },
+            cookie_agent_protocol::PLUGINS_RESTART_METHOD,
+            &cookie_agent_protocol::PluginsRestartParams { name },
         )
         .await
     }
 
     /// The daemon's configuration documents on disk.
-    pub async fn get_config(&self) -> Result<crate::ConfigGetResult, ClientError> {
-        self.call(crate::CONFIG_GET_METHOD, &crate::ConfigGetParams {})
-            .await
+    pub async fn get_config(&self) -> Result<cookie_agent_protocol::ConfigGetResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::CONFIG_GET_METHOD,
+            &cookie_agent_protocol::ConfigGetParams {},
+        )
+        .await
     }
 
-    /// Changes the daemon's configuration; see [`crate::ConfigApplyParams`].
+    /// Changes the daemon's configuration; see [`cookie_agent_protocol::ConfigApplyParams`].
     pub async fn apply_config(
         &self,
-        params: crate::ConfigApplyParams,
-    ) -> Result<crate::ConfigApplyResult, ClientError> {
-        self.call(crate::CONFIG_APPLY_METHOD, &params).await
+        params: cookie_agent_protocol::ConfigApplyParams,
+    ) -> Result<cookie_agent_protocol::ConfigApplyResult, ClientError> {
+        self.call(cookie_agent_protocol::CONFIG_APPLY_METHOD, &params)
+            .await
     }
 
     /// Re-reads the daemon's configuration from disk and applies it.
-    pub async fn reload_config(&self) -> Result<crate::ConfigReloadResult, ClientError> {
-        self.call(crate::CONFIG_RELOAD_METHOD, &crate::ConfigReloadParams {})
-            .await
+    pub async fn reload_config(
+        &self,
+    ) -> Result<cookie_agent_protocol::ConfigReloadResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::CONFIG_RELOAD_METHOD,
+            &cookie_agent_protocol::ConfigReloadParams {},
+        )
+        .await
     }
 
     /// Asks the daemon to restart `when` it says; see
-    /// [`crate::DaemonRestartParams`].
+    /// [`cookie_agent_protocol::DaemonRestartParams`].
     pub async fn restart_daemon(
         &self,
-        when: crate::RestartWhen,
-    ) -> Result<crate::DaemonRestartResult, ClientError> {
+        when: cookie_agent_protocol::RestartWhen,
+    ) -> Result<cookie_agent_protocol::DaemonRestartResult, ClientError> {
         self.call(
-            crate::DAEMON_RESTART_METHOD,
-            &crate::DaemonRestartParams { when },
+            cookie_agent_protocol::DAEMON_RESTART_METHOD,
+            &cookie_agent_protocol::DaemonRestartParams { when },
         )
         .await
     }
 
     /// Whether the daemon is set up.
-    pub async fn get_onboarding(&self) -> Result<crate::OnboardingStatus, ClientError> {
-        self.call(crate::ONBOARDING_GET_METHOD, &crate::OnboardingGetParams {})
-            .await
+    pub async fn get_onboarding(
+        &self,
+    ) -> Result<cookie_agent_protocol::OnboardingStatus, ClientError> {
+        self.call(
+            cookie_agent_protocol::ONBOARDING_GET_METHOD,
+            &cookie_agent_protocol::OnboardingGetParams {},
+        )
+        .await
     }
 
     /// What installing the starter kit from `source` would do; writes
     /// nothing.
     pub async fn preview_onboarding(
         &self,
-        source: Option<crate::OnboardingKitSource>,
-    ) -> Result<crate::OnboardingPreviewResult, ClientError> {
+        source: Option<cookie_agent_protocol::OnboardingKitSource>,
+    ) -> Result<cookie_agent_protocol::OnboardingPreviewResult, ClientError> {
         self.call(
-            crate::ONBOARDING_PREVIEW_METHOD,
-            &crate::OnboardingPreviewParams { source },
+            cookie_agent_protocol::ONBOARDING_PREVIEW_METHOD,
+            &cookie_agent_protocol::OnboardingPreviewParams { source },
         )
         .await
     }
 
     /// Sets the models and installs the starter kit; see
-    /// [`crate::OnboardingRunParams`].
+    /// [`cookie_agent_protocol::OnboardingRunParams`].
     pub async fn run_onboarding(
         &self,
-        params: crate::OnboardingRunParams,
-    ) -> Result<crate::OnboardingRunResult, ClientError> {
-        self.call(crate::ONBOARDING_RUN_METHOD, &params).await
+        params: cookie_agent_protocol::OnboardingRunParams,
+    ) -> Result<cookie_agent_protocol::OnboardingRunResult, ClientError> {
+        self.call(cookie_agent_protocol::ONBOARDING_RUN_METHOD, &params)
+            .await
     }
 
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
@@ -1470,9 +1580,10 @@ impl Client {
     /// Renames a server (client protocol 1.37.0).
     pub async fn rename_mcp_server(
         &self,
-        params: crate::McpServerRenameParams,
+        params: cookie_agent_protocol::McpServerRenameParams,
     ) -> Result<McpServerMutationResult, ClientError> {
-        self.call(crate::MCP_SERVER_RENAME_METHOD, &params).await
+        self.call(cookie_agent_protocol::MCP_SERVER_RENAME_METHOD, &params)
+            .await
     }
 
     pub async fn set_mcp_server_enabled(
@@ -1532,13 +1643,13 @@ impl Client {
     pub async fn unsubscribe_events(
         &self,
         session_id: SessionId,
-    ) -> Result<crate::EventsUnsubscribeResult, ClientError> {
+    ) -> Result<cookie_agent_protocol::EventsUnsubscribeResult, ClientError> {
         if let Some(subscription) = self.subscriptions.lock().await.get_mut(&session_id) {
             subscription.closed = true;
         }
         self.call(
-            crate::EVENTS_UNSUBSCRIBE_METHOD,
-            &crate::EventsUnsubscribeParams { session_id },
+            cookie_agent_protocol::EVENTS_UNSUBSCRIBE_METHOD,
+            &cookie_agent_protocol::EventsUnsubscribeParams { session_id },
         )
         .await
     }
@@ -1624,7 +1735,7 @@ impl Client {
 /// version that added it.
 fn too_old(method: &str, error: ClientError) -> ClientError {
     match error {
-        ClientError::Rpc(rpc) if rpc.code == crate::errors::METHOD_NOT_FOUND => {
+        ClientError::Rpc(rpc) if rpc.code == cookie_agent_protocol::errors::METHOD_NOT_FOUND => {
             ClientError::DaemonTooOld {
                 method: method.to_owned(),
             }
@@ -1634,13 +1745,13 @@ fn too_old(method: &str, error: ClientError) -> ClientError {
 }
 
 /// The outcome of an open result, or [`ClientError::UnknownOutcome`].
-fn known_outcome<T: crate::OpenTagged>(
+fn known_outcome<T: cookie_agent_protocol::OpenTagged>(
     method: &str,
-    result: crate::Open<T>,
+    result: cookie_agent_protocol::Open<T>,
 ) -> Result<T, ClientError> {
     match result {
-        crate::Open::Known(result) => Ok(result),
-        crate::Open::Unknown { tag, .. } => Err(ClientError::UnknownOutcome {
+        cookie_agent_protocol::Open::Known(result) => Ok(result),
+        cookie_agent_protocol::Open::Unknown { tag, .. } => Err(ClientError::UnknownOutcome {
             method: method.to_owned(),
             outcome: tag,
         }),
@@ -1791,7 +1902,7 @@ async fn send_command(
     receiver.await.map_err(|_| ClientError::Closed)?
 }
 
-pub(in crate::session::client) async fn send_sensitive_command(
+pub(in crate::client) async fn send_sensitive_command(
     commands: &mpsc::Sender<Command>,
     method: &str,
     mut params: SensitiveJson,
@@ -1992,7 +2103,7 @@ where
                                 pending.insert(command.id, PendingCommand { replay: command.replay, response: command.response });
                             }
                             Err(error) => {
-                                let message = format!("sending {}: {}", command.method, crate::diagnostics::error_chain(&error));
+                                let message = format!("sending {}: {}", command.method, cookie_agent_protocol::diagnostics::error_chain(&error));
                                 let _ = command.response.send(Err(ClientError::Transport(message.clone())));
                                 failure = Some(message);
                                 break;
@@ -2015,7 +2126,7 @@ where
                     Ok(Some(frame)) => frame,
                     Ok(None) => break,
                     Err(error) => {
-                        failure = Some(format!("receiving response: {}", crate::diagnostics::error_chain(&error)));
+                        failure = Some(format!("receiving response: {}", cookie_agent_protocol::diagnostics::error_chain(&error)));
                         break;
                     }
                 };
@@ -2031,7 +2142,7 @@ where
                     // connection; an unreadable notification never gets here.
                     failure = Some(format!(
                         "the daemon sent a frame that is not JSON-RPC: {}",
-                        crate::diagnostics::error_chain(&error)
+                        cookie_agent_protocol::diagnostics::error_chain(&error)
                     ));
                     break;
                 }
@@ -2276,8 +2387,9 @@ async fn route_notification(
     let params = params.map_or("null", RawValue::get);
     match method {
         "events.subscription" => {
-            if let crate::Open::Known(message) =
-                serde_json::from_str::<crate::Open<ClientSubscriptionMessage>>(params)?
+            if let cookie_agent_protocol::Open::Known(message) = serde_json::from_str::<
+                cookie_agent_protocol::Open<ClientSubscriptionMessage>,
+            >(params)?
             {
                 route_live(message, deliveries, subscriptions, recovery).await;
             }
@@ -2286,61 +2398,72 @@ async fn route_notification(
             let event = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::PluginEvent(event));
         }
-        crate::RUNTIME_CHANGED_METHOD => {
+        cookie_agent_protocol::RUNTIME_CHANGED_METHOD => {
             let changed = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::RuntimeChanged(Box::new(changed)));
         }
-        crate::SESSIONS_CHANGED_METHOD => {
+        cookie_agent_protocol::SESSIONS_CHANGED_METHOD => {
             // A change this build does not know may have changed anything
             // the list shows, so it is read as `resync`.
-            let changed =
-                serde_json::from_str::<crate::Open<crate::SessionsChangedNotification>>(params)?
-                    .into_known()
-                    .unwrap_or(crate::SessionsChangedNotification::Resync);
+            let changed = serde_json::from_str::<
+                cookie_agent_protocol::Open<cookie_agent_protocol::SessionsChangedNotification>,
+            >(params)?
+            .into_known()
+            .unwrap_or(cookie_agent_protocol::SessionsChangedNotification::Resync);
             let _ = deliveries.send(ClientDelivery::SessionsChanged(Box::new(changed)));
         }
-        crate::MCP_CHANGED_METHOD => {
-            let changed: crate::McpChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::MCP_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::McpChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::McpChanged(changed));
         }
-        crate::RUNTIMES_CHANGED_METHOD => {
-            let changed: crate::RuntimesChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::RUNTIMES_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::RuntimesChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::RuntimesChanged(changed));
         }
-        crate::BACKGROUND_CHANGED_METHOD => {
-            let changed: crate::BackgroundChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::BACKGROUND_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::BackgroundChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::BackgroundChanged(changed));
         }
-        crate::PLUGINS_CHANGED_METHOD => {
-            let changed: crate::PluginsChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::PLUGINS_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::PluginsChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::PluginsChanged(changed));
         }
-        crate::MACHINES_CHANGED_METHOD => {
-            let changed: crate::MachinesChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::MACHINES_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::MachinesChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::MachinesChanged(changed));
         }
-        crate::MEMORY_CHANGED_METHOD => {
-            let changed: crate::MemoryChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::MEMORY_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::MemoryChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::MemoryChanged(changed));
         }
-        crate::PROJECTS_CHANGED_METHOD => {
-            let changed: crate::ProjectsChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::PROJECTS_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::ProjectsChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::ProjectsChanged(changed));
         }
-        crate::CRONS_CHANGED_METHOD => {
-            let changed: crate::CronsChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::CRONS_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::CronsChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::CronsChanged(changed));
         }
-        crate::NOTIFICATIONS_CHANGED_METHOD => {
-            let changed: crate::NotificationsChangedNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::NOTIFICATIONS_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::NotificationsChangedNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::NotificationsChanged(changed));
         }
-        crate::DAEMON_RESTARTING_METHOD => {
-            let restarting: crate::DaemonRestartingNotification = serde_json::from_str(params)?;
+        cookie_agent_protocol::DAEMON_RESTARTING_METHOD => {
+            let restarting: cookie_agent_protocol::DaemonRestartingNotification =
+                serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::DaemonRestarting(restarting));
         }
-        crate::ONBOARDING_CHANGED_METHOD => {
-            let changed: crate::OnboardingStatus = serde_json::from_str(params)?;
+        cookie_agent_protocol::ONBOARDING_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::OnboardingStatus = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::OnboardingChanged(changed));
         }
         _ => {}
@@ -2566,7 +2689,7 @@ fn deliver_live(deliveries: &Deliveries, message: ClientSubscriptionMessage, gen
     let message = match message {
         ClientSubscriptionMessage::Event { event } => {
             match std::sync::Arc::unwrap_or_clone(event).into_known() {
-                Ok(event) => crate::EventSubscriptionMessage::Event {
+                Ok(event) => cookie_agent_protocol::EventSubscriptionMessage::Event {
                     event: std::sync::Arc::new(event),
                 },
                 Err(event) => {
@@ -2581,11 +2704,11 @@ fn deliver_live(deliveries: &Deliveries, message: ClientSubscriptionMessage, gen
         }
         ClientSubscriptionMessage::Transient { event } => {
             let event = std::sync::Arc::unwrap_or_clone(event);
-            let crate::Open::Known(payload) = event.payload else {
+            let cookie_agent_protocol::Open::Known(payload) = event.payload else {
                 return;
             };
-            crate::EventSubscriptionMessage::Transient {
-                event: std::sync::Arc::new(crate::TransientEvent {
+            cookie_agent_protocol::EventSubscriptionMessage::Transient {
+                event: std::sync::Arc::new(cookie_agent_protocol::TransientEvent {
                     session_id: event.session_id,
                     run_id: event.run_id,
                     after_seq: event.after_seq,
@@ -2597,14 +2720,14 @@ fn deliver_live(deliveries: &Deliveries, message: ClientSubscriptionMessage, gen
         ClientSubscriptionMessage::Gap {
             session_id,
             last_delivered_seq,
-        } => crate::EventSubscriptionMessage::Gap {
+        } => cookie_agent_protocol::EventSubscriptionMessage::Gap {
             session_id,
             last_delivered_seq,
         },
         ClientSubscriptionMessage::Rewound {
             session_id,
             through_seq,
-        } => crate::EventSubscriptionMessage::Rewound {
+        } => cookie_agent_protocol::EventSubscriptionMessage::Rewound {
             session_id,
             through_seq,
         },

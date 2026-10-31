@@ -10,9 +10,8 @@
 
 use std::time::Duration;
 
-use cookie_agent_protocol::{
-    ClientDelivery, EventOrigin, EventPayload, EventSubscriptionMessage, SessionId,
-};
+use cookie_agent_protocol::{EventOrigin, EventPayload, EventSubscriptionMessage, SessionId};
+use cookie_agent_protocol_transport::ClientDelivery;
 
 /// How long a draft must stay unchanged before it is published.
 pub const DRAFT_PUBLISH_DELAY: Duration = Duration::from_millis(300);

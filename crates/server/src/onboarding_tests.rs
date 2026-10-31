@@ -12,9 +12,9 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    CatalogRevision, ClientDelivery, OnboardingModelInput, OnboardingRequirement,
-    OnboardingRunParams,
+    CatalogRevision, OnboardingModelInput, OnboardingRequirement, OnboardingRunParams,
 };
+use cookie_agent_protocol_transport::ClientDelivery;
 use jiff::Timestamp;
 
 use crate::{

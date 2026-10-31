@@ -31,9 +31,9 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use cookie_agent_protocol::{
-    Authentication, CLIENT_PROTOCOL_VERSION, ClientDelivery, InProcessStream, MessageFrame,
-    MessageStream, in_process_pair,
+    CLIENT_PROTOCOL_VERSION, InProcessStream, MessageFrame, MessageStream, in_process_pair,
 };
+use cookie_agent_protocol_transport::{Authentication, ClientDelivery};
 
 use crate::Server;
 
@@ -81,8 +81,8 @@ async fn plugin_events_are_filtered_by_connection_session_subscription() {
     let harness = harness();
     let session_a = cookie_agent_protocol::SessionId::new_v7();
     let session_b = cookie_agent_protocol::SessionId::new_v7();
-    let (context_a, mut notifications_a) = cookie_agent_protocol::test_server_context();
-    let (context_b, mut notifications_b) = cookie_agent_protocol::test_server_context();
+    let (context_a, mut notifications_a) = cookie_agent_protocol_transport::test_server_context();
+    let (context_b, mut notifications_b) = cookie_agent_protocol_transport::test_server_context();
     context_a.register_session_subscription(session_a);
     context_b.register_session_subscription(session_b);
     harness.server.start_engine_event_notifications(context_a);
@@ -2509,9 +2509,10 @@ async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
         .await
         .expect("serve");
     let url = format!("ws://{}/ws", running.address());
-    let client = cookie_agent_protocol::Client::connect_websocket_with_token(&url, &token)
-        .await
-        .expect("connect");
+    let client =
+        cookie_agent_protocol_transport::Client::connect_websocket_with_token(&url, &token)
+            .await
+            .expect("connect");
     let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
     client.handshake().await.expect("handshake");
 

@@ -2,9 +2,8 @@
 //! the daemon can, the call from the session the user confirmed, and what a
 //! client shows for its outcome. Every client asks the user first.
 
-use cookie_agent_protocol::{
-    Client, ClientError, SemVer, SessionDeleteParams, SessionId, SessionMeta,
-};
+use cookie_agent_protocol::{SemVer, SessionDeleteParams, SessionId, SessionMeta};
+use cookie_agent_protocol_transport::{Client, ClientError};
 
 use crate::StateStore;
 

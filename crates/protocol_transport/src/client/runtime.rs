@@ -1,6 +1,6 @@
 //! Protocol-10 coherent runtime and provider mutation RPCs.
 
-use crate::{
+use cookie_agent_protocol::{
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
     ProviderDisconnectResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult,
 };
@@ -21,7 +21,7 @@ impl Drop for ProviderConnectGuard {
 impl Client {
     pub async fn runtime_snapshot(&self) -> Result<RuntimeSnapshotResult, ClientError> {
         self.call(
-            crate::RUNTIME_SNAPSHOT_GET_METHOD,
+            cookie_agent_protocol::RUNTIME_SNAPSHOT_GET_METHOD,
             &RuntimeSnapshotGetParams {},
         )
         .await
@@ -34,9 +34,12 @@ impl Client {
         let params = ProviderConnectGuard(params);
         async move {
             let value = provider_connect_value(&params.0)?;
-            let result =
-                send_sensitive_command(&self.commands, crate::PROVIDER_CONNECT_METHOD, value)
-                    .await?;
+            let result = send_sensitive_command(
+                &self.commands,
+                cookie_agent_protocol::PROVIDER_CONNECT_METHOD,
+                value,
+            )
+            .await?;
             Ok(serde_json::from_str(result.get())?)
         }
     }
@@ -49,7 +52,7 @@ impl Client {
     pub async fn connect_provider_retrying(
         &self,
         mut params: ProviderConnectParams,
-        provider: &crate::ProviderDescriptor,
+        provider: &cookie_agent_protocol::ProviderDescriptor,
     ) -> Result<ProviderConnectResult, ClientError> {
         let (mut contention_retried, mut catalog_retried) = (false, false);
         loop {
@@ -71,9 +74,10 @@ impl Client {
                         return Err(error);
                     }
                     params.expected_revision = snapshot.revision;
-                    params.client_connect_id =
-                        crate::ClientConnectId::new(uuid::Uuid::now_v7().to_string())
-                            .expect("uuid-derived client connect id");
+                    params.client_connect_id = cookie_agent_protocol::ClientConnectId::new(
+                        uuid::Uuid::now_v7().to_string(),
+                    )
+                    .expect("uuid-derived client connect id");
                 }
                 _ => return Err(error),
             }
@@ -84,7 +88,8 @@ impl Client {
         &self,
         params: ProviderDisconnectParams,
     ) -> Result<ProviderDisconnectResult, ClientError> {
-        self.call(crate::PROVIDER_DISCONNECT_METHOD, &params).await
+        self.call(cookie_agent_protocol::PROVIDER_DISCONNECT_METHOD, &params)
+            .await
     }
 }
 
@@ -107,7 +112,7 @@ fn provider_connect_value(params: &ProviderConnectParams) -> Result<SensitiveJso
         .and_then(Value::as_object_mut)
         .expect("auth values were initialized as an object");
     for field in params.auth_values.field_names() {
-        let id = crate::AuthFieldName::new(field.to_owned())
+        let id = cookie_agent_protocol::AuthFieldName::new(field.to_owned())
             .expect("protocol credential field names are validated");
         if let Some(secret) = params.auth_values.get(&id) {
             auth_values.insert(field.to_owned(), Value::String(secret.to_owned()));

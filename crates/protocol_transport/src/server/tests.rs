@@ -38,30 +38,30 @@ struct StubServer {
 impl ServerProtocol for StubServer {
     async fn list_sessions(
         &self,
-        _: crate::SessionListParams,
-    ) -> Result<crate::SessionListResult, ServerFault> {
-        Ok(crate::SessionListResult {
+        _: cookie_agent_protocol::SessionListParams,
+    ) -> Result<cookie_agent_protocol::SessionListResult, ServerFault> {
+        Ok(cookie_agent_protocol::SessionListResult {
             sessions: Vec::new(),
         })
     }
     async fn get_session(
         &self,
-        _: crate::SessionGetParams,
-    ) -> Result<crate::SessionGetResult, ServerFault> {
+        _: cookie_agent_protocol::SessionGetParams,
+    ) -> Result<cookie_agent_protocol::SessionGetResult, ServerFault> {
         self.release_get.notified().await;
         Err(ServerFault::internal())
     }
     async fn subscribe_events(
         &self,
-        _: crate::EventsSubscribeParams,
+        _: cookie_agent_protocol::EventsSubscribeParams,
         context: &ServerContext,
-    ) -> Result<crate::EventsSubscribeResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::EventsSubscribeResult, ServerFault> {
         let context = context.clone();
         tokio::spawn(async move {
             let _ = context.notify("stub.tail", &json!({})).await;
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(crate::EventsSubscribeResult {
+        Ok(cookie_agent_protocol::EventsSubscribeResult {
             events: Vec::new(),
             has_more: false,
             stale_cursor: false,
@@ -69,629 +69,632 @@ impl ServerProtocol for StubServer {
     }
     async fn create_session(
         &self,
-        _: crate::SessionCreateParams,
-    ) -> Result<crate::SessionCreateResult, ServerFault> {
+        _: cookie_agent_protocol::SessionCreateParams,
+    ) -> Result<cookie_agent_protocol::SessionCreateResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn get_session_goal(
         &self,
-        _: crate::SessionGoalGetParams,
-    ) -> Result<crate::SessionGoalGetResult, ServerFault> {
+        _: cookie_agent_protocol::SessionGoalGetParams,
+    ) -> Result<cookie_agent_protocol::SessionGoalGetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_session_goal(
         &self,
-        _: crate::SessionGoalSetParams,
+        _: cookie_agent_protocol::SessionGoalSetParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionGoalSetResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionGoalSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn change_session_goal_lifecycle(
         &self,
-        _: crate::SessionGoalLifecycleParams,
+        _: cookie_agent_protocol::SessionGoalLifecycleParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionGoalLifecycleResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionGoalLifecycleResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn session_producers(
         &self,
-        _: crate::SessionProducersParams,
-    ) -> Result<crate::SessionProducersResult, ServerFault> {
+        _: cookie_agent_protocol::SessionProducersParams,
+    ) -> Result<cookie_agent_protocol::SessionProducersResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn session_usage(
         &self,
-        _: crate::SessionUsageParams,
-    ) -> Result<crate::SessionUsageResult, ServerFault> {
+        _: cookie_agent_protocol::SessionUsageParams,
+    ) -> Result<cookie_agent_protocol::SessionUsageResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn session_tree_usage(
         &self,
-        _: crate::SessionUsageParams,
-    ) -> Result<crate::SessionTreeUsageResult, ServerFault> {
+        _: cookie_agent_protocol::SessionUsageParams,
+    ) -> Result<cookie_agent_protocol::SessionTreeUsageResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn session_children(
         &self,
-        _: crate::SessionChildrenParams,
-    ) -> Result<crate::SessionChildrenResult, ServerFault> {
+        _: cookie_agent_protocol::SessionChildrenParams,
+    ) -> Result<cookie_agent_protocol::SessionChildrenResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn session_tree(
         &self,
-        _: crate::SessionTreeParams,
-    ) -> Result<crate::SessionTreeResult, ServerFault> {
+        _: cookie_agent_protocol::SessionTreeParams,
+    ) -> Result<cookie_agent_protocol::SessionTreeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn resume_session(
         &self,
-        _: crate::SessionResumeParams,
-    ) -> Result<crate::SessionResumeResult, ServerFault> {
+        _: cookie_agent_protocol::SessionResumeParams,
+    ) -> Result<cookie_agent_protocol::SessionResumeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn rename_session(
         &self,
-        _: crate::SessionRenameParams,
+        _: cookie_agent_protocol::SessionRenameParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionRenameResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionRenameResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_permission_mode(
         &self,
-        _: crate::SessionSetPermissionModeParams,
+        _: cookie_agent_protocol::SessionSetPermissionModeParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionSetPermissionModeResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionSetPermissionModeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn get_session_permissions(
         &self,
-        _: crate::SessionPermissionGetParams,
-    ) -> Result<crate::SessionPermissionGetResult, ServerFault> {
+        _: cookie_agent_protocol::SessionPermissionGetParams,
+    ) -> Result<cookie_agent_protocol::SessionPermissionGetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_session_permission(
         &self,
-        _: crate::SessionPermissionSetParams,
+        _: cookie_agent_protocol::SessionPermissionSetParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionPermissionMutationResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionPermissionMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn clear_session_permission(
         &self,
-        _: crate::SessionPermissionClearParams,
+        _: cookie_agent_protocol::SessionPermissionClearParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionPermissionMutationResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionPermissionMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn preview_session_permissions(
         &self,
-        _: crate::SessionPermissionPreviewParams,
-    ) -> Result<crate::SessionPermissionPreviewResult, ServerFault> {
+        _: cookie_agent_protocol::SessionPermissionPreviewParams,
+    ) -> Result<cookie_agent_protocol::SessionPermissionPreviewResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_skills(
         &self,
-        _: crate::SkillsListParams,
-    ) -> Result<crate::SkillsListResult, ServerFault> {
+        _: cookie_agent_protocol::SkillsListParams,
+    ) -> Result<cookie_agent_protocol::SkillsListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn get_skill(
         &self,
-        _: crate::SkillsGetParams,
-    ) -> Result<crate::SkillsGetResult, ServerFault> {
+        _: cookie_agent_protocol::SkillsGetParams,
+    ) -> Result<cookie_agent_protocol::SkillsGetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn update_skills(
         &self,
-        _: crate::SkillsUpdateParams,
-    ) -> Result<crate::SkillsUpdateResult, ServerFault> {
+        _: cookie_agent_protocol::SkillsUpdateParams,
+    ) -> Result<cookie_agent_protocol::SkillsUpdateResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn update_agents(
         &self,
-        _: crate::AgentsUpdateParams,
-    ) -> Result<crate::AgentsUpdateResult, ServerFault> {
+        _: cookie_agent_protocol::AgentsUpdateParams,
+    ) -> Result<cookie_agent_protocol::AgentsUpdateResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn compact_session(
         &self,
-        _: crate::SessionCompactParams,
+        _: cookie_agent_protocol::SessionCompactParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionCompactResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionCompactResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn cancel_compaction(
         &self,
-        _: crate::SessionCompactCancelParams,
+        _: cookie_agent_protocol::SessionCompactCancelParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionCompactCancelResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionCompactCancelResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn resume_held_session(
         &self,
-        _: crate::SessionHeldResumeParams,
+        _: cookie_agent_protocol::SessionHeldResumeParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionHeldResumeResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionHeldResumeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn revert_session(
         &self,
-        _: crate::SessionRevertParams,
+        _: cookie_agent_protocol::SessionRevertParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionRevertResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionRevertResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn delete_session(
         &self,
-        _: crate::SessionDeleteParams,
+        _: cookie_agent_protocol::SessionDeleteParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionDeleteResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionDeleteResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn fork_session(
         &self,
-        _: crate::SessionForkParams,
+        _: cookie_agent_protocol::SessionForkParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionForkResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionForkResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn start_run(
         &self,
-        _: crate::RunStartParams,
+        _: cookie_agent_protocol::RunStartParams,
         _context: &ServerContext,
-    ) -> Result<crate::RunStartResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::RunStartResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn steer_run(
         &self,
-        _: crate::RunSteerParams,
+        _: cookie_agent_protocol::RunSteerParams,
         _context: &ServerContext,
-    ) -> Result<crate::RunSteerResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::RunSteerResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn select_model(
         &self,
-        _: crate::SessionSelectModelParams,
+        _: cookie_agent_protocol::SessionSelectModelParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionSelectModelResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionSelectModelResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn unsubscribe_events(
         &self,
-        _: crate::EventsUnsubscribeParams,
+        _: cookie_agent_protocol::EventsUnsubscribeParams,
         _context: &ServerContext,
-    ) -> Result<crate::EventsUnsubscribeResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::EventsUnsubscribeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn submit_input(
         &self,
-        _: crate::SessionSubmitInputParams,
+        _: cookie_agent_protocol::SessionSubmitInputParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionSubmitInputResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionSubmitInputResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn recall_input(
         &self,
-        _: crate::SessionRecallInputParams,
+        _: cookie_agent_protocol::SessionRecallInputParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionRecallInputResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionRecallInputResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn cancel_run(
         &self,
-        _: crate::RunCancelParams,
+        _: cookie_agent_protocol::RunCancelParams,
         _context: &ServerContext,
-    ) -> Result<crate::RunCancelResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::RunCancelResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn respond_approval(
         &self,
-        _: crate::ApprovalRespondParams,
+        _: cookie_agent_protocol::ApprovalRespondParams,
         _context: &ServerContext,
-    ) -> Result<crate::ApprovalRespondResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::ApprovalRespondResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_approvals(
         &self,
-        _: crate::ApprovalListParams,
-    ) -> Result<crate::ApprovalListResult, ServerFault> {
+        _: cookie_agent_protocol::ApprovalListParams,
+    ) -> Result<cookie_agent_protocol::ApprovalListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn begin_mcp_auth(
         &self,
-        _: crate::McpAuthBeginParams,
-    ) -> Result<crate::McpAuthBeginResult, ServerFault> {
+        _: cookie_agent_protocol::McpAuthBeginParams,
+    ) -> Result<cookie_agent_protocol::McpAuthBeginResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn complete_mcp_auth(
         &self,
-        _: crate::McpAuthCompleteParams,
-    ) -> Result<crate::McpAuthCompleteResult, ServerFault> {
+        _: cookie_agent_protocol::McpAuthCompleteParams,
+    ) -> Result<cookie_agent_protocol::McpAuthCompleteResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn cancel_mcp_auth(
         &self,
-        _: crate::McpAuthCancelParams,
-    ) -> Result<crate::McpAuthCancelResult, ServerFault> {
+        _: cookie_agent_protocol::McpAuthCancelParams,
+    ) -> Result<cookie_agent_protocol::McpAuthCancelResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn attach_runtime(
         &self,
-        _: crate::SessionRuntimeAttachParams,
+        _: cookie_agent_protocol::SessionRuntimeAttachParams,
         _: &ServerContext,
-    ) -> Result<crate::SessionRuntimeAttachResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionRuntimeAttachResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn detach_runtime(
         &self,
-        _: crate::SessionRuntimeDetachParams,
+        _: cookie_agent_protocol::SessionRuntimeDetachParams,
         _: &ServerContext,
-    ) -> Result<crate::SessionRuntimeDetachResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionRuntimeDetachResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_runtimes(
         &self,
-        _: crate::RuntimesListParams,
-    ) -> Result<crate::RuntimesListResult, ServerFault> {
+        _: cookie_agent_protocol::RuntimesListParams,
+    ) -> Result<cookie_agent_protocol::RuntimesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn reconnect_runtime(
         &self,
-        _: crate::RuntimesReconnectParams,
-    ) -> Result<crate::RuntimesReconnectResult, ServerFault> {
+        _: cookie_agent_protocol::RuntimesReconnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesReconnectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn connect_runtime(
         &self,
-        _: crate::RuntimesConnectParams,
-    ) -> Result<crate::RuntimesConnectResult, ServerFault> {
+        _: cookie_agent_protocol::RuntimesConnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesConnectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn disconnect_runtime(
         &self,
-        _: crate::RuntimesConnectParams,
-    ) -> Result<crate::RuntimesConnectResult, ServerFault> {
+        _: cookie_agent_protocol::RuntimesConnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesConnectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_machines(
         &self,
-        _: crate::MachinesListParams,
-    ) -> Result<crate::MachinesListResult, ServerFault> {
+        _: cookie_agent_protocol::MachinesListParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn rename_machine(
         &self,
-        _: crate::MachinesRenameParams,
-    ) -> Result<crate::MachinesListResult, ServerFault> {
+        _: cookie_agent_protocol::MachinesRenameParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn assign_machine(
         &self,
-        _: crate::MachinesAssignParams,
-    ) -> Result<crate::MachinesListResult, ServerFault> {
+        _: cookie_agent_protocol::MachinesAssignParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn unassign_machine(
         &self,
-        _: crate::MachinesUnassignParams,
-    ) -> Result<crate::MachinesListResult, ServerFault> {
+        _: cookie_agent_protocol::MachinesUnassignParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn merge_machines(
         &self,
-        _: crate::MachinesMergeParams,
-    ) -> Result<crate::MachinesListResult, ServerFault> {
+        _: cookie_agent_protocol::MachinesMergeParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn forget_machine(
         &self,
-        _: crate::MachinesForgetParams,
-    ) -> Result<crate::MachinesListResult, ServerFault> {
+        _: cookie_agent_protocol::MachinesForgetParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn forget_machine_runtime(
         &self,
-        _: crate::MachinesForgetRuntimeParams,
-    ) -> Result<crate::MachinesListResult, ServerFault> {
+        _: cookie_agent_protocol::MachinesForgetRuntimeParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_memory(
         &self,
-        _: crate::MemoryListParams,
-    ) -> Result<crate::MemoryListResult, ServerFault> {
+        _: cookie_agent_protocol::MemoryListParams,
+    ) -> Result<cookie_agent_protocol::MemoryListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn read_memory(
         &self,
-        _: crate::MemoryReadParams,
-    ) -> Result<crate::MemoryReadResult, ServerFault> {
+        _: cookie_agent_protocol::MemoryReadParams,
+    ) -> Result<cookie_agent_protocol::MemoryReadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn write_memory(
         &self,
-        _: crate::MemoryWriteParams,
-    ) -> Result<crate::MemoryWriteResult, ServerFault> {
+        _: cookie_agent_protocol::MemoryWriteParams,
+    ) -> Result<cookie_agent_protocol::MemoryWriteResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn delete_memory(
         &self,
-        _: crate::MemoryDeleteParams,
-    ) -> Result<crate::MemoryDeleteResult, ServerFault> {
+        _: cookie_agent_protocol::MemoryDeleteParams,
+    ) -> Result<cookie_agent_protocol::MemoryDeleteResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_projects(
         &self,
-        _: crate::ProjectsListParams,
-    ) -> Result<crate::ProjectsListResult, ServerFault> {
+        _: cookie_agent_protocol::ProjectsListParams,
+    ) -> Result<cookie_agent_protocol::ProjectsListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn get_project(
         &self,
-        _: crate::ProjectGetParams,
-    ) -> Result<crate::ProjectGetResult, ServerFault> {
+        _: cookie_agent_protocol::ProjectGetParams,
+    ) -> Result<cookie_agent_protocol::ProjectGetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn create_project(
         &self,
-        _: crate::ProjectCreateParams,
-    ) -> Result<crate::ProjectResult, ServerFault> {
+        _: cookie_agent_protocol::ProjectCreateParams,
+    ) -> Result<cookie_agent_protocol::ProjectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn update_project(
         &self,
-        _: crate::ProjectUpdateParams,
-    ) -> Result<crate::ProjectResult, ServerFault> {
+        _: cookie_agent_protocol::ProjectUpdateParams,
+    ) -> Result<cookie_agent_protocol::ProjectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn delete_project(
         &self,
-        _: crate::ProjectDeleteParams,
-    ) -> Result<crate::ProjectDeleteResult, ServerFault> {
+        _: cookie_agent_protocol::ProjectDeleteParams,
+    ) -> Result<cookie_agent_protocol::ProjectDeleteResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_session_project(
         &self,
-        _: crate::SessionProjectSetParams,
-    ) -> Result<crate::SessionProjectSetResult, ServerFault> {
+        _: cookie_agent_protocol::SessionProjectSetParams,
+    ) -> Result<cookie_agent_protocol::SessionProjectSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_session_agent_option(
         &self,
-        _: crate::SessionAgentOptionSetParams,
-    ) -> Result<crate::SessionAgentOptionSetResult, ServerFault> {
+        _: cookie_agent_protocol::SessionAgentOptionSetParams,
+    ) -> Result<cookie_agent_protocol::SessionAgentOptionSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn respond_elicitation(
         &self,
-        _: crate::ElicitationRespondParams,
-    ) -> Result<crate::ElicitationRespondResult, ServerFault> {
+        _: cookie_agent_protocol::ElicitationRespondParams,
+    ) -> Result<cookie_agent_protocol::ElicitationRespondResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_crons(
         &self,
-        _: crate::CronsListParams,
-    ) -> Result<crate::CronsListResult, ServerFault> {
+        _: cookie_agent_protocol::CronsListParams,
+    ) -> Result<cookie_agent_protocol::CronsListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn create_cron(
         &self,
-        _: crate::CronCreateParams,
-    ) -> Result<crate::CronJobResult, ServerFault> {
+        _: cookie_agent_protocol::CronCreateParams,
+    ) -> Result<cookie_agent_protocol::CronJobResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn update_cron(
         &self,
-        _: crate::CronUpdateParams,
-    ) -> Result<crate::CronJobResult, ServerFault> {
+        _: cookie_agent_protocol::CronUpdateParams,
+    ) -> Result<cookie_agent_protocol::CronJobResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn delete_cron(
         &self,
-        _: crate::CronDeleteParams,
-    ) -> Result<crate::CronDeleteResult, ServerFault> {
+        _: cookie_agent_protocol::CronDeleteParams,
+    ) -> Result<cookie_agent_protocol::CronDeleteResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
-    async fn run_cron(&self, _: crate::CronRunParams) -> Result<crate::CronRunResult, ServerFault> {
+    async fn run_cron(
+        &self,
+        _: cookie_agent_protocol::CronRunParams,
+    ) -> Result<cookie_agent_protocol::CronRunResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn get_notifications(
         &self,
-        _: crate::NotificationsGetParams,
-    ) -> Result<crate::NotificationsGetResult, ServerFault> {
+        _: cookie_agent_protocol::NotificationsGetParams,
+    ) -> Result<cookie_agent_protocol::NotificationsGetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn subscribe_notifications(
         &self,
-        _: crate::NotificationsSubscribeParams,
+        _: cookie_agent_protocol::NotificationsSubscribeParams,
         _: &ServerContext,
-    ) -> Result<crate::NotificationsSubscribeResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::NotificationsSubscribeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn unsubscribe_notifications(
         &self,
-        _: crate::NotificationsUnsubscribeParams,
-    ) -> Result<crate::NotificationsUnsubscribeResult, ServerFault> {
+        _: cookie_agent_protocol::NotificationsUnsubscribeParams,
+    ) -> Result<cookie_agent_protocol::NotificationsUnsubscribeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn test_notifications(
         &self,
-        _: crate::NotificationsTestParams,
-    ) -> Result<crate::NotificationsTestResult, ServerFault> {
+        _: cookie_agent_protocol::NotificationsTestParams,
+    ) -> Result<cookie_agent_protocol::NotificationsTestResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_client_presence(
         &self,
-        _: crate::ClientPresenceParams,
+        _: cookie_agent_protocol::ClientPresenceParams,
         _: &ServerContext,
-    ) -> Result<crate::ClientPresenceResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::ClientPresenceResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_session_unread(
         &self,
-        _: crate::SessionUnreadSetParams,
-    ) -> Result<crate::SessionUnreadSetResult, ServerFault> {
+        _: cookie_agent_protocol::SessionUnreadSetParams,
+    ) -> Result<cookie_agent_protocol::SessionUnreadSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_plugins(
         &self,
-        _: crate::PluginsListParams,
-    ) -> Result<crate::PluginsListResult, ServerFault> {
+        _: cookie_agent_protocol::PluginsListParams,
+    ) -> Result<cookie_agent_protocol::PluginsListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn restart_plugin(
         &self,
-        _: crate::PluginsRestartParams,
-    ) -> Result<crate::PluginsRestartResult, ServerFault> {
+        _: cookie_agent_protocol::PluginsRestartParams,
+    ) -> Result<cookie_agent_protocol::PluginsRestartResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn get_config(
         &self,
-        _: crate::ConfigGetParams,
-    ) -> Result<crate::ConfigGetResult, ServerFault> {
+        _: cookie_agent_protocol::ConfigGetParams,
+    ) -> Result<cookie_agent_protocol::ConfigGetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn apply_config(
         &self,
-        _: crate::ConfigApplyParams,
-    ) -> Result<crate::ConfigApplyResult, ServerFault> {
+        _: cookie_agent_protocol::ConfigApplyParams,
+    ) -> Result<cookie_agent_protocol::ConfigApplyResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn reload_config(
         &self,
-        _: crate::ConfigReloadParams,
-    ) -> Result<crate::ConfigReloadResult, ServerFault> {
+        _: cookie_agent_protocol::ConfigReloadParams,
+    ) -> Result<cookie_agent_protocol::ConfigReloadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn get_onboarding(
         &self,
-        _: crate::OnboardingGetParams,
-    ) -> Result<crate::OnboardingStatus, ServerFault> {
+        _: cookie_agent_protocol::OnboardingGetParams,
+    ) -> Result<cookie_agent_protocol::OnboardingStatus, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn preview_onboarding(
         &self,
-        _: crate::OnboardingPreviewParams,
-    ) -> Result<crate::OnboardingPreviewResult, ServerFault> {
+        _: cookie_agent_protocol::OnboardingPreviewParams,
+    ) -> Result<cookie_agent_protocol::OnboardingPreviewResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn run_onboarding(
         &self,
-        _: crate::OnboardingRunParams,
-    ) -> Result<crate::OnboardingRunResult, ServerFault> {
+        _: cookie_agent_protocol::OnboardingRunParams,
+    ) -> Result<cookie_agent_protocol::OnboardingRunResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn background_tool(
         &self,
-        _: crate::RunToolBackgroundParams,
+        _: cookie_agent_protocol::RunToolBackgroundParams,
         _context: &ServerContext,
-    ) -> Result<crate::RunToolBackgroundResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::RunToolBackgroundResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_background(
         &self,
-        _: crate::SessionBackgroundListParams,
-    ) -> Result<crate::SessionBackgroundListResult, ServerFault> {
+        _: cookie_agent_protocol::SessionBackgroundListParams,
+    ) -> Result<cookie_agent_protocol::SessionBackgroundListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn stop_background(
         &self,
-        _: crate::SessionBackgroundStopParams,
+        _: cookie_agent_protocol::SessionBackgroundStopParams,
         _context: &ServerContext,
-    ) -> Result<crate::SessionBackgroundStopResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::SessionBackgroundStopResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn list_mcp_servers(
         &self,
-        _: crate::McpServerListParams,
-    ) -> Result<crate::McpServerListResult, ServerFault> {
+        _: cookie_agent_protocol::McpServerListParams,
+    ) -> Result<cookie_agent_protocol::McpServerListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn add_mcp_server(
         &self,
-        _: crate::McpServerAddParams,
-    ) -> Result<crate::McpServerMutationResult, ServerFault> {
+        _: cookie_agent_protocol::McpServerAddParams,
+    ) -> Result<cookie_agent_protocol::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn edit_mcp_server(
         &self,
-        _: crate::McpServerEditParams,
-    ) -> Result<crate::McpServerMutationResult, ServerFault> {
+        _: cookie_agent_protocol::McpServerEditParams,
+    ) -> Result<cookie_agent_protocol::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn remove_mcp_server(
         &self,
-        _: crate::McpServerNameParams,
-    ) -> Result<crate::McpServerMutationResult, ServerFault> {
+        _: cookie_agent_protocol::McpServerNameParams,
+    ) -> Result<cookie_agent_protocol::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn set_mcp_server_enabled(
         &self,
-        _: crate::McpServerSetEnabledParams,
-    ) -> Result<crate::McpServerMutationResult, ServerFault> {
+        _: cookie_agent_protocol::McpServerSetEnabledParams,
+    ) -> Result<cookie_agent_protocol::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn reconnect_mcp_server(
         &self,
-        _: crate::McpServerReconnectParams,
-    ) -> Result<crate::McpServerMutationResult, ServerFault> {
+        _: cookie_agent_protocol::McpServerReconnectParams,
+    ) -> Result<cookie_agent_protocol::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn persist_mcp_server(
         &self,
-        _: crate::McpServerPersistParams,
-    ) -> Result<crate::McpServerMutationResult, ServerFault> {
+        _: cookie_agent_protocol::McpServerPersistParams,
+    ) -> Result<cookie_agent_protocol::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn begin_upload(
         &self,
-        _: crate::ArtifactUploadBeginParams,
+        _: cookie_agent_protocol::ArtifactUploadBeginParams,
         _: &ServerContext,
-    ) -> Result<crate::ArtifactUploadBeginResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::ArtifactUploadBeginResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn upload_chunk(
         &self,
-        _: crate::ArtifactUploadChunkParams,
+        _: cookie_agent_protocol::ArtifactUploadChunkParams,
         _: &ServerContext,
-    ) -> Result<crate::ArtifactUploadChunkResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::ArtifactUploadChunkResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn finish_upload(
         &self,
-        _: crate::ArtifactUploadFinishParams,
+        _: cookie_agent_protocol::ArtifactUploadFinishParams,
         _: &ServerContext,
-    ) -> Result<crate::ArtifactUploadFinishResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::ArtifactUploadFinishResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn cancel_upload(
         &self,
-        _: crate::ArtifactUploadCancelParams,
+        _: cookie_agent_protocol::ArtifactUploadCancelParams,
         _: &ServerContext,
-    ) -> Result<crate::ArtifactUploadCancelResult, ServerFault> {
+    ) -> Result<cookie_agent_protocol::ArtifactUploadCancelResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn read_artifact(
         &self,
-        _: crate::ArtifactReadParams,
-    ) -> Result<crate::ArtifactReadResult, ServerFault> {
+        _: cookie_agent_protocol::ArtifactReadParams,
+    ) -> Result<cookie_agent_protocol::ArtifactReadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn runtime_snapshot(
         &self,
-        _: crate::RuntimeSnapshotGetParams,
-    ) -> Result<crate::RuntimeSnapshotResult, ServerFault> {
+        _: cookie_agent_protocol::RuntimeSnapshotGetParams,
+    ) -> Result<cookie_agent_protocol::RuntimeSnapshotResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn connect_provider(
         &self,
-        _: crate::ProviderConnectParams,
-    ) -> Result<crate::ProviderConnectResult, ServerFault> {
+        _: cookie_agent_protocol::ProviderConnectParams,
+    ) -> Result<cookie_agent_protocol::ProviderConnectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn disconnect_provider(
         &self,
-        _: crate::ProviderDisconnectParams,
-    ) -> Result<crate::ProviderDisconnectResult, ServerFault> {
+        _: cookie_agent_protocol::ProviderDisconnectParams,
+    ) -> Result<cookie_agent_protocol::ProviderDisconnectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
 }
@@ -764,8 +767,8 @@ const TOKEN: &str = "the-daemon-token";
 
 fn hello(token: Option<&str>) -> Value {
     let mut hello = json!({
-        "protocol_version": crate::CLIENT_PROTOCOL_VERSION,
-        "client": {"kind": "test", "instance_id": crate::ClientInstanceId::new_v7()},
+        "protocol_version": cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
+        "client": {"kind": "test", "instance_id": cookie_agent_protocol::ClientInstanceId::new_v7()},
     });
     if let Some(token) = token {
         hello["token"] = json!(token);
@@ -779,24 +782,27 @@ async fn an_unauthenticated_connection_may_only_handshake_with_the_token() {
         Connection::unauthenticated(Arc::new(StubServer::default()), Duration::from_secs(60));
     connection.send(1, "session.list", json!({}));
     let reply = connection.next().await;
-    assert_eq!(reply["error"]["code"], crate::errors::UNAUTHENTICATED);
+    assert_eq!(
+        reply["error"]["code"],
+        cookie_agent_protocol::errors::UNAUTHENTICATED
+    );
     assert_eq!(reply["error"]["data"]["code"], "unauthenticated");
     // A handshake of another version is refused before the token is read,
     // and the connection stays open.
     connection.send(
         2,
         "handshake",
-        json!({"protocol_version": "0.0.1", "client": {"kind": "test", "instance_id": crate::ClientInstanceId::new_v7()}}),
+        json!({"protocol_version": "0.0.1", "client": {"kind": "test", "instance_id": cookie_agent_protocol::ClientInstanceId::new_v7()}}),
     );
     assert_eq!(
         connection.next().await["error"]["code"],
-        crate::errors::UNSUPPORTED_PROTOCOL
+        cookie_agent_protocol::errors::UNSUPPORTED_PROTOCOL
     );
     connection.send(3, "handshake", hello(Some(TOKEN)));
     let reply = connection.next().await;
     assert_eq!(
         reply["result"]["protocol_version"],
-        crate::CLIENT_PROTOCOL_VERSION.to_string(),
+        cookie_agent_protocol::CLIENT_PROTOCOL_VERSION.to_string(),
         "{reply}"
     );
     connection.send(4, "session.list", json!({}));
@@ -812,7 +818,7 @@ async fn a_wrong_or_missing_token_is_refused_and_closes_the_connection() {
         let reply = connection.next().await;
         assert_eq!(
             reply["error"]["code"],
-            crate::errors::UNAUTHENTICATED,
+            cookie_agent_protocol::errors::UNAUTHENTICATED,
             "{token:?}"
         );
         assert!(connection.closed().await, "{token:?}");
@@ -827,7 +833,7 @@ async fn a_connection_that_does_not_authenticate_in_time_is_closed() {
     connection.send(1, "session.list", json!({}));
     assert_eq!(
         connection.next().await["error"]["code"],
-        crate::errors::UNAUTHENTICATED
+        cookie_agent_protocol::errors::UNAUTHENTICATED
     );
     assert!(connection.closed().await);
 
@@ -854,7 +860,10 @@ async fn an_authenticated_connection_must_still_handshake_first() {
     let mut connection = Connection { requests, frames };
     connection.send(1, "session.list", json!({}));
     let reply = connection.next().await;
-    assert_eq!(reply["error"]["code"], crate::errors::HANDSHAKE_REQUIRED);
+    assert_eq!(
+        reply["error"]["code"],
+        cookie_agent_protocol::errors::HANDSHAKE_REQUIRED
+    );
     assert_eq!(reply["error"]["data"]["code"], "handshake_required");
     connection.send(2, "handshake", hello(None));
     assert!(connection.next().await["result"].is_object());
@@ -864,7 +873,7 @@ async fn an_authenticated_connection_must_still_handshake_first() {
 async fn a_slow_request_does_not_hold_up_later_ones() {
     let server = Arc::new(StubServer::default());
     let mut connection = Connection::open(Arc::clone(&server)).await;
-    let session_id = crate::SessionId::new_v7();
+    let session_id = cookie_agent_protocol::SessionId::new_v7();
     connection.send(1, "session.get", json!({ "session_id": session_id }));
     connection.send(2, "session.list", json!({}));
     assert_eq!(
@@ -879,7 +888,7 @@ async fn a_slow_request_does_not_hold_up_later_ones() {
 #[tokio::test]
 async fn a_request_s_notifications_follow_its_response() {
     let mut connection = Connection::open(Arc::new(StubServer::default())).await;
-    let session_id = crate::SessionId::new_v7();
+    let session_id = cookie_agent_protocol::SessionId::new_v7();
     connection.send(1, "events.subscribe", json!({ "session_id": session_id }));
     let first = connection.next().await;
     assert_eq!(first["id"], 1, "the response precedes its tail: {first}");
@@ -902,7 +911,7 @@ async fn a_replacement_session_tail_forwards_after_the_tail_it_replaces() {
 
     let (notifications, mut outbound) = mpsc::channel(16);
     let context = ServerContext::new(notifications, CancellationToken::new());
-    let session_id = crate::SessionId::new_v7();
+    let session_id = cookie_agent_protocol::SessionId::new_v7();
     let gap = |seq| EventSubscriptionMessage::Gap {
         session_id,
         last_delivered_seq: seq,
@@ -925,7 +934,7 @@ async fn a_replacement_session_tail_forwards_after_the_tail_it_replaces() {
 #[tokio::test]
 async fn params_refuse_unknown_members_inside_types_history_reads_tolerantly() {
     let mut connection = Connection::open(Arc::new(StubServer::default())).await;
-    let session_id = crate::SessionId::new_v7();
+    let session_id = cookie_agent_protocol::SessionId::new_v7();
     let selection = json!({
         "agent": "build",
         "model": {"model": "openai/gpt-5", "variant": null},
@@ -962,7 +971,7 @@ async fn params_refuse_unknown_members_inside_types_history_reads_tolerantly() {
             "approval.respond",
             json!({
                 "session_id": session_id,
-                "approval_id": crate::ApprovalId::new_v7(),
+                "approval_id": cookie_agent_protocol::ApprovalId::new_v7(),
                 "request_revision": 1,
                 "operation_fingerprint": {"digest": "a".repeat(64), "extra": 1},
                 "client_response_id": "response-1",
@@ -1000,7 +1009,7 @@ async fn params_refuse_unknown_members_inside_types_history_reads_tolerantly() {
 #[tokio::test]
 async fn a_client_authenticates_with_the_token_in_its_handshake() {
     let connect = || {
-        let (client, server) = crate::in_process_pair(8);
+        let (client, server) = cookie_agent_protocol::in_process_pair(8);
         tokio::spawn(serve(
             Arc::new(StubServer::default()),
             server,
@@ -1009,16 +1018,23 @@ async fn a_client_authenticates_with_the_token_in_its_handshake() {
         ));
         crate::Client::connect_stream(client)
     };
-    let identity =
-        crate::ClientIdentity::generate(crate::ClientKind::new("web").expect("client kind"));
+    let identity = cookie_agent_protocol::ClientIdentity::generate(
+        cookie_agent_protocol::ClientKind::new("web").expect("client kind"),
+    );
     let client = connect();
     let hello = client
-        .handshake_with_token(identity.clone(), crate::HandshakeToken::new(TOKEN))
+        .handshake_with_token(
+            identity.clone(),
+            cookie_agent_protocol::HandshakeToken::new(TOKEN),
+        )
         .await
         .expect("handshake with the token");
     assert_eq!(hello.origin, identity.origin());
     let refused = connect()
-        .handshake_with_token(identity, crate::HandshakeToken::new("wrong"))
+        .handshake_with_token(
+            identity,
+            cookie_agent_protocol::HandshakeToken::new("wrong"),
+        )
         .await
         .expect_err("a wrong token is refused");
     assert_eq!(refused.error_code(), Some("unauthenticated"), "{refused}");
@@ -1041,7 +1057,7 @@ async fn a_client_gone_before_its_answer_ends_the_connection_cleanly() {
     // The client asks, then goes away while the answer is still being built:
     // sending it meets a closed transport, which is the client's end, not a
     // failure of the connection.
-    let session_id = crate::SessionId::new_v7();
+    let session_id = cookie_agent_protocol::SessionId::new_v7();
     connection.send(1, "session.get", json!({ "session_id": session_id }));
     let Connection { requests, frames } = connection;
     drop(frames);
@@ -1060,18 +1076,22 @@ async fn a_client_gone_before_its_answer_ends_the_connection_cleanly() {
 #[tokio::test]
 async fn a_daemon_without_a_restart_refuses_it() {
     let mut connection = Connection::open(Arc::new(StubServer::default())).await;
-    connection.send(1, crate::DAEMON_RESTART_METHOD, json!({}));
+    connection.send(1, cookie_agent_protocol::DAEMON_RESTART_METHOD, json!({}));
     let reply = connection.next().await;
     assert_eq!(
         reply["error"]["data"]["code"], "restart_unsupported",
         "{reply}"
     );
-    connection.send(2, crate::DAEMON_RESTART_METHOD, json!({ "when": "later" }));
+    connection.send(
+        2,
+        cookie_agent_protocol::DAEMON_RESTART_METHOD,
+        json!({ "when": "later" }),
+    );
     let reply = connection.next().await;
     assert_eq!(reply["error"]["data"]["code"], "unknown_variant", "{reply}");
-    let params: crate::DaemonRestartParams =
+    let params: cookie_agent_protocol::DaemonRestartParams =
         serde_json::from_value(json!({})).expect("empty params");
-    assert_eq!(params.when, crate::RestartWhen::Idle);
+    assert_eq!(params.when, cookie_agent_protocol::RestartWhen::Idle);
 }
 
 /// A connection the server shuts down still gets the frames already queued

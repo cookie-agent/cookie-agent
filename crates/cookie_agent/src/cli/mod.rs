@@ -10,7 +10,8 @@ use std::{
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use cookie_agent::run;
-use cookie_agent_protocol::{paths, validate_websocket_url};
+use cookie_agent_protocol::paths;
+use cookie_agent_protocol_transport::validate_websocket_url;
 use zeroize::Zeroizing;
 
 use crate::{Launch, daemon_restart};

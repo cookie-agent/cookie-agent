@@ -26,15 +26,16 @@ use cookie_agent_client_state::{
     },
 };
 use cookie_agent_protocol::{
-    AgentId, AttachmentName, CapabilityName, ClientConnectId, ClientDelivery, ClientRequestId,
-    ConfigApplyParams, ConfigChange, ConfigRevision, McpServerAddParams, McpServerEditParams,
-    McpServerInfo, McpServerNameParams, McpServerPersistParams, McpServerReconnectParams,
-    McpServerRenameParams, McpServerScope, McpServerSetEnabledParams, MemoryListParams,
-    ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams, RuntimeAgentDeclaration,
-    RuntimeId, RuntimesAgentsListParams, RuntimesAgentsRemoveParams, RuntimesAgentsRenameParams,
+    AgentId, AttachmentName, CapabilityName, ClientConnectId, ClientRequestId, ConfigApplyParams,
+    ConfigChange, ConfigRevision, McpServerAddParams, McpServerEditParams, McpServerInfo,
+    McpServerNameParams, McpServerPersistParams, McpServerReconnectParams, McpServerRenameParams,
+    McpServerScope, McpServerSetEnabledParams, MemoryListParams, ProviderConnectParams,
+    ProviderDescriptor, ProviderDisconnectParams, RuntimeAgentDeclaration, RuntimeId,
+    RuntimesAgentsListParams, RuntimesAgentsRemoveParams, RuntimesAgentsRenameParams,
     RuntimesAgentsRenameResult, RuntimesAgentsSetParams, RuntimesConnectParams,
     RuntimesReconnectParams, SessionRuntimeAttachParams, SessionRuntimeDetachParams, errors,
 };
+use cookie_agent_protocol_transport::ClientDelivery;
 use leptos::{prelude::*, task::spawn_local};
 
 use super::{Panel, Workspace};
@@ -946,7 +947,7 @@ impl Workspace {
         self,
         provider_id: cookie_agent_protocol::ProviderId,
         action: ProviderAction,
-        result: Result<(), cookie_agent_protocol::ClientError>,
+        result: Result<(), cookie_agent_protocol_transport::ClientError>,
     ) {
         match result {
             Ok(()) => {
@@ -1257,7 +1258,7 @@ impl Workspace {
     /// save's refresh may not have landed yet.
     async fn listed_parts(
         self,
-        client: &cookie_agent_protocol::Client,
+        client: &cookie_agent_protocol_transport::Client,
         url: &str,
         revision: &str,
         text: &str,

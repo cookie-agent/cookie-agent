@@ -16,9 +16,8 @@ use std::{
 };
 
 use cookie_agent_engine::Engine;
-use cookie_agent_protocol::{
-    Authentication, Client, MessageStream, TransportError, in_process_pair,
-};
+use cookie_agent_protocol::{MessageStream, TransportError, in_process_pair};
+use cookie_agent_protocol_transport::{Authentication, Client};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -99,7 +98,8 @@ impl Server {
         S: MessageStream,
     {
         let connection_shutdown = self.shutdown.child_token();
-        cookie_agent_protocol::serve(self, stream, connection_shutdown, authentication).await
+        cookie_agent_protocol_transport::serve(self, stream, connection_shutdown, authentication)
+            .await
     }
 
     /// Serves one in-process connection on a spawned task and returns the

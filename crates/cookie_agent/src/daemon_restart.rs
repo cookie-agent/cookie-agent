@@ -28,7 +28,8 @@ use std::{
 use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_client_state::restart::waiting_for;
-use cookie_agent_protocol::{Client, ClientDelivery, DaemonRestartResult, RestartWhen};
+use cookie_agent_protocol::{DaemonRestartResult, RestartWhen};
+use cookie_agent_protocol_transport::{Client, ClientDelivery};
 
 /// Set in the environment of the process a restart starts, which removes it
 /// at once: the daemon then retries binding its port while the process it

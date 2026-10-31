@@ -17,7 +17,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use cookie_agent_protocol::{Client, ClientDelivery, ClientIdentity, ClientKind, RestartWhen};
+use cookie_agent_protocol::{ClientIdentity, ClientKind, RestartWhen};
+use cookie_agent_protocol_transport::{Client, ClientDelivery};
 
 /// A private scratch home in the system temporary directory.
 struct ScratchHome(PathBuf);

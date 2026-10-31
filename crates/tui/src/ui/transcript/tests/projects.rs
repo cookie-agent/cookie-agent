@@ -70,7 +70,10 @@ pub(super) async fn project_app() -> (App, SessionId, SessionId, Arc<Mutex<Vec<V
 
 /// A daemon of client protocol 1.8 that moves sessions and creates
 /// projects, handshaken.
-pub(super) async fn projects_client() -> (cookie_agent_protocol::Client, Arc<Mutex<Vec<Value>>>) {
+pub(super) async fn projects_client() -> (
+    cookie_agent_protocol_transport::Client,
+    Arc<Mutex<Vec<Value>>>,
+) {
     let (client, recorded) = answering_client(move |method, params| match method {
         "handshake" => Ok(json!({
             "protocol_version": "1.8.0",

@@ -20,8 +20,9 @@ use zeroize::Zeroizing;
 
 use super::{RunningServer, Server, ServerError};
 use cookie_agent_protocol::{
-    Authentication, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, TransportError,
+    MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, TransportError,
 };
+use cookie_agent_protocol_transport::Authentication;
 
 struct WebSocketStream {
     socket: axum::extract::ws::WebSocket,

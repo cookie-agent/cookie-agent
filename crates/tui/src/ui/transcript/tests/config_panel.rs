@@ -189,14 +189,16 @@ async fn the_config_panel_restarts_the_daemon_and_returns_to_the_panel() {
     app.handle_key(key(KeyCode::Esc)).await;
     assert_eq!(app.modal, Modal::None);
 
-    app.handle_delivery(cookie_agent_protocol::ClientDelivery::DaemonRestarting(
-        cookie_agent_protocol::DaemonRestartingNotification {
-            when: cookie_agent_protocol::RestartWhen::Idle,
-            active_runs: 2,
-            background_calls: 0,
-            reason: None,
-        },
-    ))
+    app.handle_delivery(
+        cookie_agent_protocol_transport::ClientDelivery::DaemonRestarting(
+            cookie_agent_protocol::DaemonRestartingNotification {
+                when: cookie_agent_protocol::RestartWhen::Idle,
+                active_runs: 2,
+                background_calls: 0,
+                reason: None,
+            },
+        ),
+    )
     .await;
     let frame = rendered_frame(&mut app, 120, 40);
     assert!(

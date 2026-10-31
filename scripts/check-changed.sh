@@ -6,8 +6,9 @@
 #   - formatting, always;
 #   - Clippy with warnings denied and the tests of every changed crate and
 #     every workspace crate that depends on it;
-#   - Clippy for wasm32 when the protocol, client state, or web crates
-#     changed, and the protocol client's browser tests when the protocol did;
+#   - Clippy for wasm32 when the protocol, protocol transport, client state,
+#     or web crates changed, and the protocol client's browser tests when
+#     either protocol crate did;
 #   - the protocol compatibility check when crates/protocol changed;
 #   - the web bundle (the quick --fast one) and the browser scenarios when
 #     the web client or its scenarios changed;
@@ -56,6 +57,7 @@ workspace=false wasm=false wasm_client=false schema=false web=false docs=false w
 for path in "${changed[@]}"; do
     case "$path" in
         crates/protocol/*) crate_dirs+=(protocol) wasm=true wasm_client=true schema=true ;;
+        crates/protocol_transport/*) crate_dirs+=(protocol_transport) wasm=true wasm_client=true ;;
         crates/client_state/*) crate_dirs+=(client_state) wasm=true ;;
         crates/web/*) crate_dirs+=(web) wasm=true web=true ;;
         crates/web_assets/*) crate_dirs+=(web_assets) web=true ;;
@@ -151,7 +153,8 @@ if ((${#extra_tests[@]})); then
     tests "$(printf -- '-p %s ' "${extra_tests[@]}")"
 fi
 if $wasm; then
-    step cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol --features websocket \
+    step cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol \
+        -p cookie_agent_protocol_transport --features cookie_agent_protocol_transport/websocket \
         -p cookie_agent_client_state -p cookie_agent_web --all-targets -- -D warnings
 fi
 $schema && step crates/protocol/scripts/check-schema-additive.sh

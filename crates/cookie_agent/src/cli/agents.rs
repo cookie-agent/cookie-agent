@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use clap::Subcommand;
-use cookie_agent_protocol::Client;
+use cookie_agent_protocol_transport::Client;
 use sha2::{Digest as _, Sha256};
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]

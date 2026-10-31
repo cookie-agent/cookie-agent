@@ -82,9 +82,10 @@ removed afterwards). The local tier is:
   (`RUSTDOCFLAGS='-D warnings' cargo doc --no-deps`), as CI builds it on
   every push: a public doc linking a private item fails there;
 - the `wasm32-unknown-unknown` Clippy command only when `crates/protocol`,
-  `crates/client_state`, or `crates/web` changed;
-- `check-schema-additive.sh` and `scripts/test-wasm-client.sh` only when
-  `crates/protocol` changed;
+  `crates/protocol_transport`, `crates/client_state`, or `crates/web`
+  changed;
+- `check-schema-additive.sh` only when `crates/protocol` changed, and
+  `scripts/test-wasm-client.sh` when it or `crates/protocol_transport` did;
 - `scripts/build-web.sh --fast` and `scripts/test-web-page.sh` only when
   `crates/web`, `crates/web_assets`, or `scripts/web-e2e` changed;
 - `./scripts/build-docs.sh` only when `docs/` or `mkdocs.yml` changed, with
@@ -152,7 +153,7 @@ bundle (`scripts/build-web.sh` needs trunk 0.21.14). `scripts/build-web.sh
 browser runs; CI and releases build the real one:
 
 ```sh
-cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol --features websocket -p cookie_agent_client_state -p cookie_agent_web --all-targets -- -D warnings
+cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_protocol_transport --features cookie_agent_protocol_transport/websocket -p cookie_agent_client_state -p cookie_agent_web --all-targets -- -D warnings
 scripts/build-web.sh
 ```
 

@@ -21,13 +21,13 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    AuthCredentialDescriptor, AuthFieldName, AuthMethodDescriptor, Client, ClientConnectId,
+    AuthCredentialDescriptor, AuthFieldName, AuthMethodDescriptor, ClientConnectId,
     ClientRequestId, CredentialFieldType, EffectiveAuthState, ProviderConfigurationState,
     ProviderDescriptor, ProviderDisconnectParams, ProviderId, ProviderPresence, ProviderSupport,
     ProviderSupportState, SafeCode, SafeDisplayText, SafeSetupValue, SetupFieldDescriptor,
     SetupFieldId, SetupFieldType, SetupFieldValidation, paths, setup_value_text,
-    validate_websocket_url,
 };
+use cookie_agent_protocol_transport::{Client, validate_websocket_url};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -521,7 +521,7 @@ async fn onboard_daemon(temporary: &std::path::Path) -> (Client, std::path::Path
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
     tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
-        cookie_agent_protocol::Authentication::Authenticated,
+        cookie_agent_protocol_transport::Authentication::Authenticated,
     ));
     let client = Client::connect_stream(client_stream);
     client.handshake().await.unwrap();

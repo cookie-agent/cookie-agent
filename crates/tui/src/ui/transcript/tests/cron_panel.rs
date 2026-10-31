@@ -6,7 +6,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use cookie_agent_protocol::{ClientDelivery, SessionId, SessionOrigin};
+use cookie_agent_protocol::{SessionId, SessionOrigin};
+use cookie_agent_protocol_transport::ClientDelivery;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 
@@ -67,7 +68,12 @@ fn with_prompt(form: &str, prompt: &str) -> String {
 /// A daemon of client protocol `version` that lists `sample_crons`,
 /// echoes what it is asked to create or change as a job, and runs a job
 /// now into its session.
-async fn crons_client(version: &str) -> (cookie_agent_protocol::Client, Arc<Mutex<Vec<Value>>>) {
+async fn crons_client(
+    version: &str,
+) -> (
+    cookie_agent_protocol_transport::Client,
+    Arc<Mutex<Vec<Value>>>,
+) {
     let version = version.to_owned();
     let (client, recorded) = answering_client(move |method, params| {
         let sample = serde_json::to_value(sample_crons()).unwrap();

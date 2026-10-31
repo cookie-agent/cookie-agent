@@ -20,6 +20,7 @@ cookie_agent_engine = { version = "=0.4.0", path = "../engine" }
 cookie_agent_identity = { version = "=0.4.0", path = "../identity" }
 cookie_agent_models = { version = "=0.4.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+cookie_agent_protocol_transport = { version = "=0.4.0", path = "../protocol_transport" }
 cookie_agent_web_assets = { version = "=0.4.0", path = "../web_assets" }
 futures-util.workspace = true
 getrandom.workspace = true
@@ -39,7 +40,8 @@ zeroize.workspace = true
 [dev-dependencies]
 cookie_agent_coding_runtime = { version = "=0.4.0", path = "../coding_runtime" }
 cookie_agent_engine = { version = "=0.4.0", path = "../engine", features = ["test-support"] }
-cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support", "websocket"] }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support"] }
+cookie_agent_protocol_transport = { version = "=0.4.0", path = "../protocol_transport", features = ["test-support", "websocket"] }
 cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api" }
 jiff.workspace = true
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

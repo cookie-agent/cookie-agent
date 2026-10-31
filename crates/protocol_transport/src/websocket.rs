@@ -9,11 +9,14 @@ use tokio_tungstenite::{
 };
 use zeroize::Zeroizing;
 
-use super::{
-    Client, ClientError, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, Transport, TransportError,
+use cookie_agent_protocol::{
+    MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, Transport, TransportError, diagnostics,
+};
+
+use crate::{
+    Client, ClientError,
     daemon_url::{parse_daemon_url, runtime_dial_in_url, validate_websocket_url},
 };
-use crate::diagnostics;
 
 /// Length of the base64url encoding of the daemon's 32-byte bearer token.
 const TOKEN_ENCODED_BYTES: usize = 43;
@@ -111,7 +114,7 @@ impl DialInError {
     /// Whether dialing in again cannot succeed until the runtime's ID, its
     /// token, or the daemon's configuration changes: a malformed URL or
     /// token, or a refusal the runtime protocol calls permanent
-    /// ([`crate::runtime_protocol::dial_in::is_permanent_status`]). An
+    /// ([`cookie_agent_protocol::runtime_protocol::dial_in::is_permanent_status`]). An
     /// unreachable daemon and an ID that is still connected are not.
     #[must_use]
     pub fn is_permanent(&self) -> bool {
@@ -235,9 +238,10 @@ impl WebSocketTransport {
                         "the daemon refused the runtime (HTTP {}): {body}",
                         status.as_u16()
                     ),
-                    permanent: crate::runtime_protocol::dial_in::is_permanent_status(
-                        status.as_u16(),
-                    ),
+                    permanent:
+                        cookie_agent_protocol::runtime_protocol::dial_in::is_permanent_status(
+                            status.as_u16(),
+                        ),
                 })
             }
             Err(error) => Err(DialInError {
@@ -327,7 +331,7 @@ impl WebSocketTransport {
                     KeepaliveDue::Dead => {
                         return Err(TransportError::Other(format!(
                             "nothing arrived from the daemon for {}",
-                            crate::diagnostics::duration(keepalive.dead_after)
+                            cookie_agent_protocol::diagnostics::duration(keepalive.dead_after)
                         )));
                     }
                     KeepaliveDue::Nothing => {}
@@ -413,7 +417,7 @@ fn closed(
     match frame {
         None => Ok(None),
         Some(frame) if matches!(frame.code, CloseCode::Normal | CloseCode::Away) => Ok(None),
-        Some(frame) if u16::from(frame.code) == crate::RESTART_CLOSE_CODE => {
+        Some(frame) if u16::from(frame.code) == cookie_agent_protocol::RESTART_CLOSE_CODE => {
             Err(TransportError::Other("the daemon is restarting".into()))
         }
         Some(frame) => {
@@ -481,8 +485,8 @@ mod tests {
             })
         };
         let restart = super::closed(frame(
-            crate::RESTART_CLOSE_CODE,
-            crate::RESTART_CLOSE_REASON,
+            cookie_agent_protocol::RESTART_CLOSE_CODE,
+            cookie_agent_protocol::RESTART_CLOSE_REASON,
         ))
         .expect_err("a restart is not a clean end");
         assert_eq!(
@@ -539,7 +543,7 @@ mod tests {
     /// as a daemon whose connection died without a close looks.
     #[tokio::test]
     async fn a_keepalive_pings_a_quiet_daemon_and_ends_a_silent_one() {
-        use crate::Transport as _;
+        use cookie_agent_protocol::Transport as _;
         const PING_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
         const DEAD_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -34,8 +34,8 @@ const RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// daemon drops the subscription when its next push finds it gone.
 async fn unregister(
     daemon_url: &str,
-    client: Option<cookie_agent_protocol::Client>,
-) -> Result<(), cookie_agent_protocol::ClientError> {
+    client: Option<cookie_agent_protocol_transport::Client>,
+) -> Result<(), cookie_agent_protocol_transport::ClientError> {
     let subscription = browser::push_subscription().await;
     let mut outcome = Ok(());
     let mut theirs = browser::load(PUSH_DAEMON_URL_KEY).as_deref() == Some(daemon_url);
@@ -83,7 +83,7 @@ async fn unregister(
 /// ([`unregister`]), waiting at most [`RELEASE_TIMEOUT`] for the daemon.
 pub(crate) async fn release_push(
     daemon_url: String,
-    client: Option<cookie_agent_protocol::Client>,
+    client: Option<cookie_agent_protocol_transport::Client>,
 ) {
     let release = std::pin::pin!(unregister(&daemon_url, client));
     let timeout = std::pin::pin!(gloo_timers::future::sleep(RELEASE_TIMEOUT));

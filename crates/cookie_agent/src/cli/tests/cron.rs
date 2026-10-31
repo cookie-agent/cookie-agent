@@ -135,7 +135,7 @@ async fn cookie_cron_manages_the_daemon_jobs() {
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
-        cookie_agent_protocol::Authentication::Authenticated,
+        cookie_agent_protocol_transport::Authentication::Authenticated,
     ));
     let client = Client::connect_stream(client_stream);
     client.handshake().await.unwrap();

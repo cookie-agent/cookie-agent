@@ -1875,7 +1875,8 @@ pub struct SessionSubmitInputParams {
     pub reset_fallback: bool,
 }
 /// What `session.submit_input` did. A client reads it open: an outcome it
-/// does not know fails the call with [`crate::ClientError::UnknownOutcome`].
+/// does not know fails the call with
+/// `cookie_agent_protocol_transport::ClientError::UnknownOutcome`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 #[schemars(extend("x-open" = true))]
@@ -1906,7 +1907,8 @@ pub struct SessionRecallInputParams {
     pub seq: u64,
 }
 /// What `session.recall_input` did. A client reads it open: an outcome it
-/// does not know fails the call with [`crate::ClientError::UnknownOutcome`].
+/// does not know fails the call with
+/// `cookie_agent_protocol_transport::ClientError::UnknownOutcome`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 #[schemars(extend("x-open" = true))]

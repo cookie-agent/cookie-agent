@@ -9,9 +9,9 @@
 use std::time::Duration;
 
 use cookie_agent_protocol::{
-    CapabilityName, Client, ClientError, ClientIdentity, MachinesListResult, RuntimeId,
-    RuntimesListResult, ServerHello,
+    CapabilityName, ClientIdentity, MachinesListResult, RuntimeId, RuntimesListResult, ServerHello,
 };
+use cookie_agent_protocol_transport::{Client, ClientError};
 use zeroize::Zeroizing;
 
 /// How long the TCP connect to the probed address may take.

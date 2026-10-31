@@ -6,9 +6,10 @@
 //! (memory spec sections 16.9.6 and 16.9.7).
 
 use cookie_agent_protocol::{
-    ClientError, MemoryIgnoredEntry, MemoryInfo, MemoryLayer, MemoryListResult, MemoryReadResult,
+    MemoryIgnoredEntry, MemoryInfo, MemoryLayer, MemoryListResult, MemoryReadResult,
     MemoryWriteResult, SemVer, errors, memory_age, memory_size,
 };
+use cookie_agent_protocol_transport::ClientError;
 use jiff::Timestamp;
 
 /// The text a new memory starts from.

@@ -32,7 +32,8 @@ branches only.
 
 The workflow publishes crates in dependency order:
 `cookie_agent_identity`, `cookie_agent_protocol`,
-`cookie_agent_client_state`, `cookie_agent_web_assets`, then
+`cookie_agent_protocol_transport`, `cookie_agent_client_state`,
+`cookie_agent_web_assets`, then
 `cookie_agent_plugin_sdk`. `cookie_agent_web_assets` carries the web client's
 bundle: the workflow builds it once (`build-web`), every release binary embeds
 it, and the release attaches it as `cookie-agent-web.tar.gz`. There is no

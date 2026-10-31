@@ -459,7 +459,7 @@ async fn connect_retries_a_catalog_conflict_when_the_provider_form_is_unchanged(
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
-        cookie_agent_protocol::Authentication::Authenticated,
+        cookie_agent_protocol_transport::Authentication::Authenticated,
     ));
     let client = Client::connect_stream(client_stream);
     client.handshake().await.unwrap();
@@ -559,7 +559,7 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
-        cookie_agent_protocol::Authentication::Authenticated,
+        cookie_agent_protocol_transport::Authentication::Authenticated,
     ));
     let client = Client::connect_stream(client_stream);
     let mut io = ScriptedConnectIo {
@@ -619,7 +619,7 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
         let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
         let server_task = tokio::spawn(runtime.server.clone().serve_stream(
             server_stream,
-            cookie_agent_protocol::Authentication::Authenticated,
+            cookie_agent_protocol_transport::Authentication::Authenticated,
         ));
         let client = Client::connect_stream(client_stream);
         let mut io = ScriptedConnectIo::default();

@@ -4,10 +4,11 @@
 //! draft: its default attachments and its default agent and preset.
 
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentMode, ClientError, ModelSelection, ProjectDefaults, ProjectId,
-    ProjectInfo, ProjectRuntime, RunSelection, RuntimeAttachRequest, RuntimeId, SessionId,
-    SessionMeta, SessionOrigin,
+    AgentDescriptor, AgentMode, ModelSelection, ProjectDefaults, ProjectId, ProjectInfo,
+    ProjectRuntime, RunSelection, RuntimeAttachRequest, RuntimeId, SessionId, SessionMeta,
+    SessionOrigin,
 };
+use cookie_agent_protocol_transport::ClientError;
 
 use crate::rows::order_sessions;
 

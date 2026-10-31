@@ -5,9 +5,10 @@
 //! them the same way.
 
 use cookie_agent_protocol::{
-    ClientError, ConfigRestartPart, ConfigStatus, DaemonRestartResult,
-    DaemonRestartingNotification, RestartWhen, SemVer, SessionMeta, SessionStatus,
+    ConfigRestartPart, ConfigStatus, DaemonRestartResult, DaemonRestartingNotification,
+    RestartWhen, SemVer, SessionMeta, SessionStatus,
 };
+use cookie_agent_protocol_transport::ClientError;
 
 /// The first client protocol whose daemons answer `daemon.restart`.
 pub const DAEMON_RESTART_SINCE: SemVer = SemVer::new(1, 19, 0);

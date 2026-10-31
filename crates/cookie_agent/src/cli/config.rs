@@ -5,9 +5,9 @@
 use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_protocol::{
-    Client, ClientError, ConfigApplyErrorCode, ConfigApplyParams, ConfigChange, ConfigGetResult,
-    ConfigStatus,
+    ConfigApplyErrorCode, ConfigApplyParams, ConfigChange, ConfigGetResult, ConfigStatus,
 };
+use cookie_agent_protocol_transport::{Client, ClientError};
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum ConfigCommand {

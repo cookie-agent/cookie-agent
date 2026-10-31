@@ -12,7 +12,9 @@ fn key(code: KeyCode) -> KeyEvent {
 /// Handles RPC updates and deliveries until `done` holds.
 async fn pump_until(
     app: &mut App,
-    deliveries: &mut tokio::sync::mpsc::UnboundedReceiver<cookie_agent_protocol::ClientDelivery>,
+    deliveries: &mut tokio::sync::mpsc::UnboundedReceiver<
+        cookie_agent_protocol_transport::ClientDelivery,
+    >,
     done: impl Fn(&App) -> bool,
 ) {
     for _ in 0..200 {
@@ -378,9 +380,11 @@ async fn a_machine_change_announced_during_a_listing_lists_again() {
     app.modal = Modal::Runtimes;
     app.poll_runtimes();
     assert!(app.runtime_panel.machines_refresh.in_flight());
-    app.handle_delivery(cookie_agent_protocol::ClientDelivery::MachinesChanged(
-        cookie_agent_protocol::MachinesChangedNotification {},
-    ))
+    app.handle_delivery(
+        cookie_agent_protocol_transport::ClientDelivery::MachinesChanged(
+            cookie_agent_protocol::MachinesChangedNotification {},
+        ),
+    )
     .await;
     updates_until(&mut app, |app| {
         matches!(app.runtime_panel.machines, Some(Ok(_)))

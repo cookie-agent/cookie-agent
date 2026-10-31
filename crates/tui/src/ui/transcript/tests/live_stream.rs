@@ -13,9 +13,10 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ClientDelivery, ClientRunId, EventSubscriptionMessage, RunStartParams, RunSteerParams,
-    SessionCreateParams, SessionId,
+    ClientRunId, EventSubscriptionMessage, RunStartParams, RunSteerParams, SessionCreateParams,
+    SessionId,
 };
+use cookie_agent_protocol_transport::ClientDelivery;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     sync::mpsc,

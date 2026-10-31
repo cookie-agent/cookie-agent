@@ -98,7 +98,8 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | Crate | Responsibility |
 |---|---|
 | `identity` | Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no `cookie_agent_*` dependencies. |
-| `protocol` | The versioned wire contracts (semver per protocol, see [Compatibility](reference/compatibility.md)) **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the in-memory `InProcessStream` pair, the `ServerProtocol` trait, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. The opt-in `websocket` feature adds the daemon client transport (`WebSocketTransport`, `Client::connect_websocket_with_token`, `validate_websocket_url`). The client side also builds for `wasm32-unknown-unknown`: there the server, the stdio peer, `paths`, `StopSignals`, and the OAuth callback are left out, tasks and timers run on the browser's event loop, and `websocket` is the browser's `WebSocket` (`Client::connect_browser_websocket`, with the token in the handshake). Re-exports `identity` and hosts the unified wire types. |
+| `protocol` | The versioned wire contracts (semver per protocol, see [Compatibility](reference/compatibility.md)): RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the in-memory `InProcessStream` pair, the runtime and plugin protocols' JSON-RPC `peer`, and shared setup-value parsing. It also builds for `wasm32-unknown-unknown`, where the stdio peer, `paths`, `StopSignals`, and the OAuth callback are left out. Re-exports `identity` and hosts the unified wire types. |
+| `protocol_transport` | The client protocol's session layer over `protocol`'s wire types: the `ServerProtocol` trait, `ServerContext`, the `serve` loop, and the shared `Client`. The opt-in `websocket` feature adds the daemon client transport (`WebSocketTransport`, `Client::connect_websocket_with_token`, `validate_websocket_url`). The client side also builds for `wasm32-unknown-unknown`: there the server is left out, tasks and timers run on the browser's event loop, and `websocket` is the browser's `WebSocket` (`Client::connect_browser_websocket`, with the token in the handshake). A change here rebuilds only the crates that connect: `client_state`, `server`, `tui`, `web`, and `cookie_agent`. |
 | `client_state` | The client state every client shares: `StateStore` and `SessionState`, reduced from stored and transient events (attribution, pending and queued lanes, approvals, goal, live tool display deltas), the runtime snapshot revision chain, model display names, and markdown kept renderer-neutral as source plus pulldown-cmark events per top-level block, parsed incrementally while text streams; a client keeps its own rendering of a block in that block's `RendererCache`. Also the client policy that is not rendering: the session subscription state machine (which returns the `events.subscribe` requests to send and takes their outcomes back), which trees stay subscribed, session ownership from `session.resume`, the debounced model-selection draft, the approval list, the permission-mode cycle, the complete content of cut blocks, the retry and redial waits, and the chunked upload. It also holds the rules both clients' panels share, which render nothing: permission, runtime and machine, MCP, provider, configuration, memory, and plugin rows and their requests, the credential projection a provider connect sends, tool header text, and producer and goal row labels. The client drives every timer. Depends only on `protocol` and plain crates, nothing renders, and it builds for `wasm32-unknown-unknown`. |
 | `plugin_sdk` | Official Rust SDK for out-of-process plugins, on the protocol crate's JSON-RPC peer: handler registration, tools over the runtime protocol's tool messages, interception hooks, event and bus handlers, and producers. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
@@ -129,16 +130,16 @@ The refactor consolidated shared wire types in `protocol`:
 
 ## Client/server protocol flow
 
-The session layer lives in the `protocol` crate so every frontend shares one
-implementation of the protocol mechanics.
+The session layer lives in the `protocol_transport` crate so every frontend
+shares one implementation of the protocol mechanics.
 
 ### Transport
 
 `protocol::Transport` is a frame-level channel: `send(MessageFrame)` /
 `recv() -> Option<MessageFrame>`, with `MessageFrame` a `Text` string, the
-`Bytes` of received JSON text, or a `Value`. It has no JSON-RPC semantics. The `protocol` crate also provides the
-concrete client transports: `InProcessStream` (an in-memory mpsc pair used by
-the local frontend and tests) and, behind the `websocket` feature,
+`Bytes` of received JSON text, or a `Value`. It has no JSON-RPC semantics. The `protocol` crate also provides
+`InProcessStream` (an in-memory mpsc pair used by the local frontend and
+tests), and `protocol_transport`, behind its `websocket` feature,
 `WebSocketTransport` (tokio-tungstenite, used by the TUI, the CLI, and dial-in
 runtimes to reach a daemon) natively and `BrowserWebSocketTransport` (the
 browser's `WebSocket`, used by the web page) on `wasm32`. The `server` crate's axum WebSocket accept path implements
@@ -146,12 +147,12 @@ browser's `WebSocket`, used by the web page) on `wasm32`. The `server` crate's a
 
 ### Server side
 
-`protocol::ServerProtocol` is the server contract: one async method per RPC
+`protocol_transport::ServerProtocol` is the server contract: one async method per RPC
 method plus `connected` and `subscribe_events` (which receives a
 `ServerContext`). The `server` crate implements it in `service/routes.rs`,
 delegating every call to `Engine`.
 
-`protocol::serve` drives one complete server-side session over a `Transport`:
+`protocol_transport::serve` drives one complete server-side session over a `Transport`:
 
 - **Handshake gating.** Every request before a valid `handshake` is rejected with
   `-32003` (a connection that has not authenticated) or `-32001`; a handshake
@@ -171,7 +172,7 @@ delegating every call to `Engine`.
 
 ### Client side
 
-The shared concrete `protocol::Client` runs over any `Transport`. A connection task owns the stream and
+The shared concrete `protocol_transport::Client` runs over any `Transport`. A connection task owns the stream and
 handles:
 
 - **Request/response correlation** by id, with a bounded command queue and a
@@ -633,7 +634,7 @@ terminal events, and retained output is read back through artifacts.
 
 What moved is where the mechanics live: handshake, request/response
 correlation, notification demux, replay/gap recovery, and shutdown are now
-implemented once in the `protocol` crate and shared by the server, the TUI, and
+implemented once in the `protocol_transport` crate and shared by the server, the TUI, and
 the CLI.
 
 See [Protocol](reference/protocol.md), [Events](reference/events.md), and

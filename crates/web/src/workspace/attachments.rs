@@ -9,9 +9,8 @@
 //! canvas; video never is.
 
 use cookie_agent_client_state::uploads::{AcceptedMedia, UploadFailure, attached_as_file, upload};
-use cookie_agent_protocol::{
-    ArtifactRef, Client, SessionId, UploadKind, media_sniff::validate_upload,
-};
+use cookie_agent_protocol::{ArtifactRef, SessionId, UploadKind, media_sniff::validate_upload};
+use cookie_agent_protocol_transport::Client;
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;

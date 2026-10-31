@@ -107,8 +107,8 @@ fn main() {
         // detail only on request.
         if let Some(detail) = error
             .chain()
-            .find_map(|cause| cause.downcast_ref::<cookie_agent_protocol::ClientError>())
-            .and_then(cookie_agent_protocol::ClientError::detail)
+            .find_map(|cause| cause.downcast_ref::<cookie_agent_protocol_transport::ClientError>())
+            .and_then(cookie_agent_protocol_transport::ClientError::detail)
         {
             if error_details {
                 eprintln!(

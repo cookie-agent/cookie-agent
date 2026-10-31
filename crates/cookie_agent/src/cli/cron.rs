@@ -10,9 +10,10 @@ use cookie_agent_client_state::cron::{
     update_changes_anything,
 };
 use cookie_agent_protocol::{
-    Client, CronActor, CronJob, CronJobId, CronTarget, CronUpdateParams, ProducerDeliveryMode,
-    ProjectName, SessionGetParams, SessionId, SessionOrigin,
+    CronActor, CronJob, CronJobId, CronTarget, CronUpdateParams, ProducerDeliveryMode, ProjectName,
+    SessionGetParams, SessionId, SessionOrigin,
 };
+use cookie_agent_protocol_transport::Client;
 use jiff::{Timestamp, tz::TimeZone};
 
 use super::memory::MemoryIo;

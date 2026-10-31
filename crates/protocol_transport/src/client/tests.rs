@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use jiff::Timestamp;
 
 use super::*;
-use crate as cookie_agent_protocol;
-use crate::{ClientSubscriptionMessage as EventSubscriptionMessage, EventPayload, MessageStream};
+use cookie_agent_protocol::{
+    ClientSubscriptionMessage as EventSubscriptionMessage, EventPayload, MessageStream,
+};
 
 fn delivery_channel() -> (
     mpsc::UnboundedSender<ClientDelivery>,
@@ -43,17 +44,17 @@ fn runtime_snapshot_json(digit: &str) -> Value {
     })
 }
 
-fn credential_values(secret: &str) -> crate::ProviderCredentialValues {
+fn credential_values(secret: &str) -> cookie_agent_protocol::ProviderCredentialValues {
     let serialized = Zeroizing::new(format!(r#"{{"api_key":"{secret}"}}"#).into_bytes());
     serde_json::from_slice(&serialized).expect("credential values")
 }
 
 fn event(session_id: SessionId, seq: u64) -> ClientEvent {
-    crate::StoredEvent {
+    cookie_agent_protocol::StoredEvent {
         engine_version: None,
         origin: None,
         session_id,
-        run_id: Some(crate::RunId::new_v7()),
+        run_id: Some(cookie_agent_protocol::RunId::new_v7()),
         seq,
         timestamp: Timestamp::now(),
         payload: EventPayload::UserInputAdmitted {
@@ -151,7 +152,7 @@ impl MessageStream for ScriptedStream {
 #[tokio::test]
 async fn goal_and_producer_calls_use_the_public_wire_contracts() {
     let session_id = SessionId::new_v7();
-    let goal_id = crate::GoalId::new_v7();
+    let goal_id = cookie_agent_protocol::GoalId::new_v7();
     let (incoming, incoming_rx) = mpsc::unbounded_channel();
     let (sent, mut sent_rx) = mpsc::unbounded_channel();
     let client = Client::connect_stream(ScriptedStream {
@@ -168,7 +169,10 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
         }
     });
     let request = request_json(sent_rx.recv().await.expect("goal get request"));
-    assert_eq!(request["method"], crate::SESSION_GOAL_GET_METHOD);
+    assert_eq!(
+        request["method"],
+        cookie_agent_protocol::SESSION_GOAL_GET_METHOD
+    );
     assert_eq!(
         request["params"],
         serde_json::json!({ "session_id": session_id })
@@ -198,7 +202,10 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
         }
     });
     let request = request_json(sent_rx.recv().await.expect("goal set request"));
-    assert_eq!(request["method"], crate::SESSION_GOAL_SET_METHOD);
+    assert_eq!(
+        request["method"],
+        cookie_agent_protocol::SESSION_GOAL_SET_METHOD
+    );
     assert_eq!(
         request["params"],
         serde_json::json!({
@@ -238,14 +245,17 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
                     session_id,
                     goal_id,
                     expected_revision: 7,
-                    action: crate::GoalLifecycleAction::Pause,
+                    action: cookie_agent_protocol::GoalLifecycleAction::Pause,
                     selection: None,
                 })
                 .await
         }
     });
     let request = request_json(sent_rx.recv().await.expect("goal lifecycle request"));
-    assert_eq!(request["method"], crate::SESSION_GOAL_LIFECYCLE_METHOD);
+    assert_eq!(
+        request["method"],
+        cookie_agent_protocol::SESSION_GOAL_LIFECYCLE_METHOD
+    );
     assert_eq!(
         request["params"],
         serde_json::json!({
@@ -289,7 +299,10 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
         }
     });
     let request = request_json(sent_rx.recv().await.expect("session producers request"));
-    assert_eq!(request["method"], crate::SESSION_PRODUCERS_METHOD);
+    assert_eq!(
+        request["method"],
+        cookie_agent_protocol::SESSION_PRODUCERS_METHOD
+    );
     assert_eq!(
         request["params"],
         serde_json::json!({ "session_id": session_id })
@@ -349,7 +362,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         Some(ClientDelivery::ReplayEnd { .. })
     ));
     assert!(
-        matches!(receiver.recv().await, Some(ClientDelivery::Live { message, .. }) if matches!(message.as_ref(), crate::EventSubscriptionMessage::Event { event } if event.seq == 2))
+        matches!(receiver.recv().await, Some(ClientDelivery::Live { message, .. }) if matches!(message.as_ref(), cookie_agent_protocol::EventSubscriptionMessage::Event { event } if event.seq == 2))
     );
     route_live(
         EventSubscriptionMessage::Event {
@@ -363,7 +376,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
     assert!(matches!(
         receiver.recv().await,
         Some(ClientDelivery::Live { message, .. })
-            if matches!(message.as_ref(), crate::EventSubscriptionMessage::Event { event } if event.seq == 3)
+            if matches!(message.as_ref(), cookie_agent_protocol::EventSubscriptionMessage::Event { event } if event.seq == 3)
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(10), recovery_receiver.recv())
@@ -374,13 +387,13 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
 
 fn transient(session_id: SessionId, after_seq: u64, text: &str) -> EventSubscriptionMessage {
     EventSubscriptionMessage::Transient {
-        event: std::sync::Arc::new(crate::TransientEvent {
+        event: std::sync::Arc::new(cookie_agent_protocol::TransientEvent {
             session_id,
-            run_id: Some(crate::RunId::new_v7()),
+            run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             after_seq,
             timestamp: Timestamp::now(),
             payload: EventPayload::TextDelta {
-                attempt_id: crate::AttemptId::new_v7(),
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
                 text: text.into(),
             }
             .into(),
@@ -391,17 +404,17 @@ fn transient(session_id: SessionId, after_seq: u64, text: &str) -> EventSubscrip
 fn delivered_text(delivery: Option<ClientDelivery>) -> Option<String> {
     match delivery? {
         ClientDelivery::Live { message, .. } => match *message {
-            crate::EventSubscriptionMessage::Transient { event } => {
+            cookie_agent_protocol::EventSubscriptionMessage::Transient { event } => {
                 match std::sync::Arc::unwrap_or_clone(event).payload {
                     EventPayload::TextDelta { text, .. } => Some(text),
                     _ => None,
                 }
             }
-            crate::EventSubscriptionMessage::Event { event } => {
+            cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
                 Some(format!("event {}", event.seq))
             }
-            crate::EventSubscriptionMessage::Gap { .. }
-            | crate::EventSubscriptionMessage::Rewound { .. } => None,
+            cookie_agent_protocol::EventSubscriptionMessage::Gap { .. }
+            | cookie_agent_protocol::EventSubscriptionMessage::Rewound { .. } => None,
         },
         _ => None,
     }
@@ -948,7 +961,7 @@ async fn rewound_pulls_the_cursor_back_and_queues_one_full_replay() {
     assert!(matches!(
         last,
         Some(ClientDelivery::Live { message, .. })
-            if matches!(*message, crate::EventSubscriptionMessage::Rewound { through_seq: 3, .. })
+            if matches!(*message, cookie_agent_protocol::EventSubscriptionMessage::Rewound { through_seq: 3, .. })
     ));
     // Appends after the cut reuse its sequences and follow on from it.
     route_live(
@@ -1346,7 +1359,7 @@ async fn a_malformed_response_fails_only_the_call_it_answers() {
         Err(ClientError::InvalidFrame(_))
     ));
 
-    let plugin_event = crate::ExtensionBusEventParams {
+    let plugin_event = cookie_agent_protocol::ExtensionBusEventParams {
         session_id,
         context_id: None,
         plugin: "fixture".into(),
@@ -1467,7 +1480,7 @@ async fn an_unreadable_notification_is_reported_and_fails_no_call() {
     assert!(matches!(
         next_delivery(&mut deliveries).await,
         ClientDelivery::SessionsChanged(changed)
-            if *changed == crate::SessionsChangedNotification::Resync
+            if *changed == cookie_agent_protocol::SessionsChangedNotification::Resync
     ));
     assert!(deliveries.try_recv().is_err());
 }
@@ -1603,7 +1616,7 @@ async fn events_this_build_cannot_read_take_their_place_in_the_replay() {
     assert!(matches!(
         next_delivery(&mut deliveries).await,
         ClientDelivery::Live { message, .. }
-            if matches!(message.as_ref(), crate::EventSubscriptionMessage::Event { event } if event.seq == 6)
+            if matches!(message.as_ref(), cookie_agent_protocol::EventSubscriptionMessage::Event { event } if event.seq == 6)
     ));
 }
 
@@ -1622,7 +1635,10 @@ async fn unknown_outcomes_and_methods_fail_only_their_call() {
         let client = client.clone();
         async move {
             client
-                .recall_input(crate::SessionRecallInputParams { session_id, seq: 3 })
+                .recall_input(cookie_agent_protocol::SessionRecallInputParams {
+                    session_id,
+                    seq: 3,
+                })
                 .await
         }
     });
@@ -1678,7 +1694,7 @@ fn a_replay_page_drops_an_event_it_cannot_read_and_resumes_after_it() {
     assert_eq!(seqs, [1, 2]);
     assert!(matches!(
         &read.events[1].payload,
-        crate::Open::Unknown { tag, .. } if tag == "from_a_newer_build"
+        cookie_agent_protocol::Open::Unknown { tag, .. } if tag == "from_a_newer_build"
     ));
     // The next page starts after the dropped event.
     assert_eq!(read.last_seq, Some(3));

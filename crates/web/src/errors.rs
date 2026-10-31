@@ -4,7 +4,8 @@
 //! a page that showed that text and then the hint said the hint twice.
 //! Each part is sanitized as the protocol's own display text is.
 
-use cookie_agent_protocol::{ClientError, diagnostics};
+use cookie_agent_protocol::diagnostics;
+use cookie_agent_protocol_transport::ClientError;
 
 /// A failure in parts, for a status line or an error box.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,7 +76,8 @@ pub fn describe_full(error: &ClientError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::{ClientError, JsonRpcError};
+    use cookie_agent_protocol::JsonRpcError;
+    use cookie_agent_protocol_transport::ClientError;
     use serde_json::json;
 
     use super::{ErrorText, describe, describe_full};

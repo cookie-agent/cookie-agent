@@ -509,6 +509,7 @@ jobs:
 
           publish_if_missing cookie_agent_identity
           publish_if_missing cookie_agent_protocol
+          publish_if_missing cookie_agent_protocol_transport
           publish_if_missing cookie_agent_client_state
           # The bundle build-web made is ignored by git, which cargo counts
           # as uncommitted.

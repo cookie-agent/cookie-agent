@@ -11,11 +11,11 @@ use tokio::sync::mpsc;
 use wasm_bindgen::{JsCast as _, closure::Closure};
 use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
-use super::{
-    Client, ClientError, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, Transport, TransportError,
-    daemon_url::validate_page_websocket_url,
+use cookie_agent_protocol::{
+    MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, Transport, TransportError, diagnostics,
 };
-use crate::diagnostics;
+
+use crate::{Client, ClientError, daemon_url::validate_page_websocket_url};
 
 impl Client {
     /// Connect to the daemon endpoint `url` from a browser page: `ws://` or
@@ -197,7 +197,7 @@ impl Transport for BrowserWebSocketTransport {
                     clean,
                 }) => {
                     self.ended = true;
-                    if code == crate::RESTART_CLOSE_CODE {
+                    if code == cookie_agent_protocol::RESTART_CLOSE_CODE {
                         return Err(TransportError::Other(RESTARTING.into()));
                     }
                     if clean {

@@ -117,7 +117,7 @@ impl Workspace {
 /// Pauses, resumes, or cancels the session's goal at the revision the
 /// daemon has now.
 async fn lifecycle(
-    client: &cookie_agent_protocol::Client,
+    client: &cookie_agent_protocol_transport::Client,
     session_id: cookie_agent_protocol::SessionId,
     action: GoalLifecycleAction,
     selection: Option<cookie_agent_protocol::RunSelection>,

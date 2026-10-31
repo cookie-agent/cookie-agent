@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use cookie_agent_engine::Engine;
-use cookie_agent_protocol::{RuntimeId, ServerContext, SessionId};
+use cookie_agent_protocol::{RuntimeId, SessionId};
+use cookie_agent_protocol_transport::ServerContext;
 
 use super::Server;
 

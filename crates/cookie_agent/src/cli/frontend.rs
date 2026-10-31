@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use cookie_agent_protocol::{Client, validate_websocket_url};
+use cookie_agent_protocol_transport::{Client, validate_websocket_url};
 
 use super::compose::{Runtime, compose, compose_loaded};
 use super::runtime::{dial_in, host_runtime_id};
@@ -76,7 +76,7 @@ pub(super) async fn run_local_frontend(
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(128);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
-        cookie_agent_protocol::Authentication::Authenticated,
+        cookie_agent_protocol_transport::Authentication::Authenticated,
     ));
     let result = async {
         let client = Client::connect_stream(client_stream);

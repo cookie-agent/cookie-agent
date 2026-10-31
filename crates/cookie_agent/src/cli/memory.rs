@@ -7,9 +7,8 @@
 use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_client_state::memory::{MemoryStamps, OVER_LIMIT_NOTE, editor_text};
-use cookie_agent_protocol::{
-    Client, ClientError, MemoryInfo, MemoryLayer, MemoryListParams, MemoryListResult, errors,
-};
+use cookie_agent_protocol::{MemoryInfo, MemoryLayer, MemoryListParams, MemoryListResult, errors};
+use cookie_agent_protocol_transport::{Client, ClientError};
 use jiff::Timestamp;
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]

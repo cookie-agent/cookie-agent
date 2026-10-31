@@ -16,11 +16,12 @@ use anyhow::Context as _;
 use cookie_agent::availability;
 use cookie_agent_protocol::oauth_callback::OAuthCallbackListener;
 use cookie_agent_protocol::{
-    AuthMethodDescriptor, Client, ClientConnectId, ClientRequestId, EffectiveAuthState,
+    AuthMethodDescriptor, ClientConnectId, ClientRequestId, EffectiveAuthState,
     ProviderConfigurationState, ProviderConnectResult, ProviderDescriptor,
     ProviderDisconnectParams, ProviderDisconnectResult, ProviderSupportState,
     RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, setup_value_text,
 };
+use cookie_agent_protocol_transport::Client;
 use serde::Serialize;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};

@@ -4,11 +4,12 @@
 //! This crate intentionally contains no compatibility aliases or decoders, except
 //! the few that keep versionless session event history readable.
 //!
-//! It also builds for `wasm32-unknown-unknown`, as the wire types and the
-//! [`Client`] only: the server, the stdio peer, [`paths`], and the other
-//! native-only parts are left out there. With the `websocket` feature a page
-//! connects with `Client::connect_browser_websocket` and authenticates with
-//! [`Client::handshake_with_token`].
+//! It holds the wire types and the frame [`Transport`] both ends of a
+//! connection share. The client protocol's connection client, its server
+//! loop, and the WebSocket transports are in `cookie_agent_protocol_transport`.
+//!
+//! It also builds for `wasm32-unknown-unknown`, as the wire types only: the
+//! stdio peer, [`paths`], and the other native-only parts are left out there.
 
 use std::borrow::Cow;
 
@@ -217,13 +218,13 @@ mod rpc;
 mod runtime;
 pub mod runtime_protocol;
 mod semver;
-mod session;
 mod session_model;
 mod setup_value;
 #[cfg(not(target_arch = "wasm32"))]
 mod stop;
 mod stored_display;
 pub mod strict;
+mod transport;
 mod uploads;
 
 pub use acp::*;
@@ -265,17 +266,17 @@ pub use rpc::*;
 pub use runtime::*;
 pub use runtime_protocol::{McpServerScope, McpServerTool};
 pub use semver::*;
-pub use session::*;
 pub use session_model::*;
 pub use setup_value::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use stop::StopSignals;
+pub use transport::{
+    InProcessStream, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, Transport,
+    TransportError, in_process_pair,
+};
 pub use uploads::*;
 
-// The crate's own tests run natively; on wasm32 the browser tests in
-// `tests/browser.rs` cover the client.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod corpus_tests;
+// The crate's own tests run natively.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod goal_producer_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]

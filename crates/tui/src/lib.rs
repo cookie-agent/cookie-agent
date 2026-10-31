@@ -7,7 +7,7 @@ pub mod terminal_detect;
 pub mod theme;
 pub mod ui;
 
-pub use cookie_agent_protocol::{Client, ClientDelivery, ClientError};
+pub use cookie_agent_protocol_transport::{Client, ClientDelivery, ClientError};
 pub use ui::{
     ConnectionView, Reconnector, SessionPlacement, run_attached, run_with_client,
     run_with_new_session,

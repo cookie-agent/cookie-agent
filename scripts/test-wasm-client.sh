@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the protocol client's browser tests (crates/protocol/tests/browser.rs)
+# Runs the protocol client's browser tests (crates/protocol_transport/tests/browser.rs)
 # in headless Chrome against a real `cookie daemon` in a scratch home. The
 # test page's origin is foreign to the daemon, which takes it like any other.
 #
@@ -115,5 +115,5 @@ COOKIE_WASM_TEST_URL="$(json_field "$ready" url)" \
 COOKIE_WASM_TEST_TOKEN="$(server_token "$home")" \
 COOKIE_WASM_TEST_WORKSPACE="$home/workspace" \
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-    cargo test --locked --target wasm32-unknown-unknown -p cookie_agent_protocol \
+    cargo test --locked --target wasm32-unknown-unknown -p cookie_agent_protocol_transport \
     --features websocket --test browser "$@"

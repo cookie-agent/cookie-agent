@@ -8,11 +8,12 @@ use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
     AuthCredentialDescriptor, AuthMethodDescriptor, AvailableModelDescriptor, CatalogAge,
-    CatalogSource, ClientError, EffectiveAuthState, ModelCatalogView, ModelUnavailableKind,
+    CatalogSource, EffectiveAuthState, ModelCatalogView, ModelUnavailableKind,
     ProviderConfigurationState, ProviderCredentialValues, ProviderDescriptor, ProviderPresence,
     ProviderSupportState, SafeSetupValue, SetupFieldDescriptor, SetupFieldId,
     UnavailableModelDescriptor, parse_setup_value, setup_value_text,
 };
+use cookie_agent_protocol_transport::ClientError;
 use serde::{Serialize, ser::SerializeMap as _};
 use zeroize::Zeroizing;
 

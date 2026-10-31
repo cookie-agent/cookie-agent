@@ -124,8 +124,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_client_state
-      - run: cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol --features websocket -p cookie_agent_client_state --all-targets -- -D warnings
+      - run: cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_protocol_transport -p cookie_agent_client_state
+      - run: cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_protocol_transport --features cookie_agent_protocol_transport/websocket -p cookie_agent_client_state --all-targets -- -D warnings
 
   web:
     name: Web client bundle and browser tests

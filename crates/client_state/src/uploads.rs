@@ -2,7 +2,8 @@
 //! and the chunked `artifact.upload.*` exchange. A client reads the file and
 //! sniffs its content itself; this checks and sends the bytes.
 
-use cookie_agent_protocol::{ArtifactRef, Client, ClientError, InputMedia, SessionId};
+use cookie_agent_protocol::{ArtifactRef, InputMedia, SessionId};
+use cookie_agent_protocol_transport::{Client, ClientError};
 
 /// What the model a message goes to accepts: its name and its input media.
 #[derive(Clone, Debug)]

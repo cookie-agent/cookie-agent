@@ -75,11 +75,11 @@
 //! - `cookie_agent_server` (`corpus_tests`): the recorded client requests,
 //!   replayed against a fresh daemon in the recorded order, are answered
 //!   as they were (no `-32602` or `-32601`).
-//! - `cookie_agent_protocol` (`corpus_tests`): every corpus directory is
-//!   pinned and unchanged; the recorded replies read as their method's
-//!   result and the recorded notifications as their params, and the
-//!   notifications reach a real [`crate::Client`] without a diagnostic or
-//!   an unknown event.
+//! - `cookie_agent_protocol_transport` (`corpus_tests`): every corpus
+//!   directory is pinned and unchanged; the recorded replies read as their
+//!   method's result and the recorded notifications as their params, and
+//!   the notifications reach a real `Client` without a diagnostic or an
+//!   unknown event.
 //! - `cookie_agent_plugin_sdk` (`tests/corpus.rs`): the daemon's recorded
 //!   plugin messages drive a plugin built with the SDK.
 //! - `cookie_agent_coding_runtime` (`server::corpus_tests`): the daemon's

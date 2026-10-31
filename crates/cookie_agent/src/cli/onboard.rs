@@ -13,9 +13,10 @@ use cookie_agent_client_state::onboarding::{
     parse_model_flag, small_model_variant, utility_model_variant,
 };
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, Client, OnboardingModelInput, OnboardingRequirement,
-    OnboardingRunParams, OnboardingStatus, VariantId,
+    AvailableModelDescriptor, OnboardingModelInput, OnboardingRequirement, OnboardingRunParams,
+    OnboardingStatus, VariantId,
 };
+use cookie_agent_protocol_transport::Client;
 
 use super::connect::ConnectIo;
 

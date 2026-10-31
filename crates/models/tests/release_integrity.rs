@@ -38,6 +38,7 @@ const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/models/Cargo.toml",
     "crates/plugin_sdk/Cargo.toml",
     "crates/protocol/Cargo.toml",
+    "crates/protocol_transport/Cargo.toml",
     "crates/runtime_api/Cargo.toml",
     "crates/server/Cargo.toml",
     "crates/tui/Cargo.toml",
@@ -52,6 +53,7 @@ const PUBLISHED_CRATES: &[&str] = &[
     "cookie_agent_identity",
     "cookie_agent_plugin_sdk",
     "cookie_agent_protocol",
+    "cookie_agent_protocol_transport",
     "cookie_agent_web_assets",
 ];
 
@@ -466,7 +468,7 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "cargo audit --file Cargo.lock --deny yanked",
         "cargo deny --locked check advisories licenses sources",
         "crates/protocol/scripts/check-schema-additive.sh",
-        "cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_client_state",
+        "cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_protocol_transport -p cookie_agent_client_state",
         "tool: trunk@0.21.14,wasm-bindgen@0.2.126",
         "scripts/test-wasm-client.sh",
         "scripts/test-web-page.sh",

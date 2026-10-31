@@ -1,8 +1,7 @@
 //! Opening the daemon connection from the page, with the tab's identity.
 
-use cookie_agent_protocol::{
-    Client, ClientError, ClientIdentity, ClientKind, HandshakeToken, ServerHello,
-};
+use cookie_agent_protocol::{ClientIdentity, ClientKind, HandshakeToken, ServerHello};
+use cookie_agent_protocol_transport::{Client, ClientError};
 
 use crate::{browser, connect::IDENTITY_KEY};
 

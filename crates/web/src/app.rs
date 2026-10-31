@@ -4,7 +4,8 @@
 //! as an app, the connect screen and a phone's banner offer it (spec 9).
 
 use cookie_agent_client_state::subscriptions::RECONNECT_BACKOFF;
-use cookie_agent_protocol::{Client, ClientDelivery, ClientError, ClientIdentity, ServerHello};
+use cookie_agent_protocol::{ClientIdentity, ServerHello};
+use cookie_agent_protocol_transport::{Client, ClientDelivery, ClientError};
 use leptos::{prelude::*, task::spawn_local};
 
 use crate::{

@@ -5,9 +5,10 @@
 use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_protocol::{
-    Client, ClientError, ProjectCreateParams, ProjectDefaults, ProjectInfo, ProjectName,
-    ProjectRuntime, ProjectUpdateParams, RuntimeId, SessionId, errors,
+    ProjectCreateParams, ProjectDefaults, ProjectInfo, ProjectName, ProjectRuntime,
+    ProjectUpdateParams, RuntimeId, SessionId, errors,
 };
+use cookie_agent_protocol_transport::{Client, ClientError};
 
 use super::memory::MemoryIo;
 

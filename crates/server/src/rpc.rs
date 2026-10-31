@@ -270,7 +270,7 @@ impl RpcFault {
     }
 }
 
-impl From<RpcFault> for cookie_agent_protocol::ServerFault {
+impl From<RpcFault> for cookie_agent_protocol_transport::ServerFault {
     fn from(fault: RpcFault) -> Self {
         Self::from_error(fault.0)
     }
@@ -616,7 +616,8 @@ fn machine_error(error: &cookie_agent_engine::MachineError) -> errors::ErrorBuil
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::{InvocationId, ServerFault, SessionId};
+    use cookie_agent_protocol::{InvocationId, SessionId};
+    use cookie_agent_protocol_transport::ServerFault;
     use serde_json::{Value, json};
 
     use super::*;
@@ -814,7 +815,7 @@ mod tests {
             },
         )))
         .into();
-        let client = cookie_agent_protocol::ClientError::Rpc(JsonRpcError {
+        let client = cookie_agent_protocol_transport::ClientError::Rpc(JsonRpcError {
             code: fault.code,
             message: fault.message.into_owned(),
             data: fault.data,

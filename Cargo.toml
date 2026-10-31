@@ -2,6 +2,7 @@
 members = [
     "crates/identity",
     "crates/protocol",
+    "crates/protocol_transport",
     "crates/client_state",
     "crates/plugin_sdk",
     "crates/runtime_api",

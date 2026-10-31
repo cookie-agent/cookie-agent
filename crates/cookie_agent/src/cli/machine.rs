@@ -4,8 +4,9 @@
 use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_protocol::{
-    Client, MachineAssignment, MachineInfo, MachineName, MachinesListResult, RuntimeId,
+    MachineAssignment, MachineInfo, MachineName, MachinesListResult, RuntimeId,
 };
+use cookie_agent_protocol_transport::Client;
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum MachineCommand {

@@ -3,9 +3,9 @@
 //! `config.reload` answered, and what the panel says about it.
 
 use cookie_agent_protocol::{
-    ClientError, ConfigApplyErrorCode, ConfigApplyResult, ConfigGetResult, ConfigStatus,
-    NativeCompactionState,
+    ConfigApplyErrorCode, ConfigApplyResult, ConfigGetResult, ConfigStatus, NativeCompactionState,
 };
+use cookie_agent_protocol_transport::ClientError;
 
 /// The text a new agent document starts from.
 pub const NEW_AGENT: &str = "---\ndescription: \nmode: subagent\nenabled: true\nmodels: [{ model: \"\" }]\npermissions: {}\n---\n";

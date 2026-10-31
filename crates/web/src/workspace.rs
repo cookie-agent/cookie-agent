@@ -20,14 +20,15 @@ use cookie_agent_client_state::{
 };
 use cookie_agent_protocol::{
     AgentDescriptor, AgentMode, ApprovalListParams, ApprovalRespondParams, ApprovalStatus,
-    ApprovalUserDecision, ArtifactReadParams, AvailableModelDescriptor, Client, ClientDelivery,
-    ClientError, ClientResponseId, ClientRunId, EventPayload, InputDelivery, ModelSelection,
-    PermissionMode, RunCancelParams, RunSelection, SessionCreateParams, SessionId,
-    SessionListParams, SessionMeta, SessionPermissionGetParams, SessionRecallInputParams,
-    SessionRecallInputResult, SessionSelectModelParams, SessionSetPermissionModeParams,
-    SessionSubmitInputParams, SessionSubmitInputResult, SessionUsageParams,
-    SessionsChangedNotification, ToolCallId, UsageRollup,
+    ApprovalUserDecision, ArtifactReadParams, AvailableModelDescriptor, ClientResponseId,
+    ClientRunId, EventPayload, InputDelivery, ModelSelection, PermissionMode, RunCancelParams,
+    RunSelection, SessionCreateParams, SessionId, SessionListParams, SessionMeta,
+    SessionPermissionGetParams, SessionRecallInputParams, SessionRecallInputResult,
+    SessionSelectModelParams, SessionSetPermissionModeParams, SessionSubmitInputParams,
+    SessionSubmitInputResult, SessionUsageParams, SessionsChangedNotification, ToolCallId,
+    UsageRollup,
 };
+use cookie_agent_protocol_transport::{Client, ClientDelivery, ClientError};
 use leptos::{prelude::*, task::spawn_local};
 
 use crate::{browser, connect::EVENT_LEVEL_KEY};

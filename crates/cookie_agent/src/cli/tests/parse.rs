@@ -539,8 +539,11 @@ fn websocket_endpoints_name_the_exact_client_path() {
         assert!(validate_websocket_url(url).is_err(), "{url}");
     }
     assert_eq!(
-        cookie_agent_protocol::runtime_dial_in_url("wss://daemon.example.com:7419/ws", "labpc")
-            .unwrap(),
+        cookie_agent_protocol_transport::runtime_dial_in_url(
+            "wss://daemon.example.com:7419/ws",
+            "labpc"
+        )
+        .unwrap(),
         "wss://daemon.example.com:7419/runtime?id=labpc"
     );
 }

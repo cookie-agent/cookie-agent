@@ -9,7 +9,8 @@ use std::{
 
 use anyhow::Context as _;
 use clap::{CommandFactory as _, Subcommand};
-use cookie_agent_protocol::{Client, SkillSource, SkillsListParams};
+use cookie_agent_protocol::{SkillSource, SkillsListParams};
+use cookie_agent_protocol_transport::Client;
 use sha2::{Digest as _, Sha256};
 
 /// The published documentation every skill links to.

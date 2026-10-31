@@ -12,7 +12,8 @@ workspace = true
 [dependencies]
 base64 = "0.22"
 cookie_agent_client_state = { version = "=0.4.0", path = "../client_state" }
-cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["websocket"] }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+cookie_agent_protocol_transport = { version = "=0.4.0", path = "../protocol_transport", features = ["websocket"] }
 foldhash.workspace = true
 futures-util.workspace = true
 gloo-timers = { version = "0.3.0", features = ["futures"] }

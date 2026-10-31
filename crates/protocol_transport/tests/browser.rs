@@ -13,10 +13,10 @@
 use std::time::Duration;
 
 use cookie_agent_protocol::{
-    Client, ClientDelivery, ClientError, ClientIdentity, ClientKind, ClientRenameId,
-    HandshakeToken, ModelSelection, RunSelection, SessionCreateParams, SessionId,
-    SessionRenameChange, SessionRenameParams, SessionTitle,
+    ClientIdentity, ClientKind, ClientRenameId, HandshakeToken, ModelSelection, RunSelection,
+    SessionCreateParams, SessionId, SessionRenameChange, SessionRenameParams, SessionTitle,
 };
+use cookie_agent_protocol_transport::{Client, ClientDelivery, ClientError};
 use tokio::sync::mpsc::UnboundedReceiver;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 

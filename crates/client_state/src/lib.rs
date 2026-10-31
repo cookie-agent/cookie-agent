@@ -74,7 +74,7 @@ use cookie_agent_protocol::{
     StreamedOutputKind, ToolCallId, ToolTerminationOutcome, TransientEvent, Usage, VariantId,
 };
 
-use cookie_agent_protocol::ClientDelivery;
+use cookie_agent_protocol_transport::ClientDelivery;
 
 use crate::markdown::MarkdownDocument;
 

@@ -87,9 +87,9 @@ const SUBAGENT_INDEX_VERSION: u32 = 1;
 const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
 
 /// Who holds a live event tail, such as one protocol connection
-/// ([`cookie_agent_protocol::ServerContext::connection_id`]). A session keeps
-/// at most one tail per owner: registering another replaces the first in the
-/// same step, so no message reaches both.
+/// (`cookie_agent_protocol_transport::ServerContext::connection_id`). A
+/// session keeps at most one tail per owner: registering another replaces the
+/// first in the same step, so no message reaches both.
 ///
 /// Durable events carry a sequence that lets a reader drop a copy, but
 /// live-only output does not, so two tails feeding one reader would show

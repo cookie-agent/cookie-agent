@@ -253,7 +253,7 @@ pub(crate) fn connect_counting(server: &Arc<Server>) -> (crate::Client, Subscrib
     let (client, service) = cookie_agent_protocol::in_process_pair(128);
     tokio::spawn(Arc::clone(server).serve_stream(
         service,
-        cookie_agent_protocol::Authentication::Authenticated,
+        cookie_agent_protocol_transport::Authentication::Authenticated,
     ));
     let log = SubscribeLog::default();
     let (sever, severed) = tokio::sync::watch::channel(false);

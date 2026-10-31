@@ -8,9 +8,10 @@
 use std::fmt;
 
 use cookie_agent_protocol::{
-    Client, ClientError, ClientRenameId, EventSchemaError, SessionId, SessionMeta,
-    SessionRenameChange, SessionRenameParams, SessionTitle,
+    ClientRenameId, EventSchemaError, SessionId, SessionMeta, SessionRenameChange,
+    SessionRenameParams, SessionTitle,
 };
+use cookie_agent_protocol_transport::{Client, ClientError};
 
 /// Why typed text is not a title.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

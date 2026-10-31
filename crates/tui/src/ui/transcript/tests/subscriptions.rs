@@ -7,9 +7,10 @@
 use std::sync::Arc;
 
 use cookie_agent_protocol::{
-    ClientDelivery, ClientRenameId, SessionCreateParams, SessionId, SessionRenameChange,
-    SessionRenameParams, SessionTitle,
+    ClientRenameId, SessionCreateParams, SessionId, SessionRenameChange, SessionRenameParams,
+    SessionTitle,
 };
+use cookie_agent_protocol_transport::ClientDelivery;
 use tokio::sync::mpsc;
 
 use super::live_stream::{attached_app, settle};
