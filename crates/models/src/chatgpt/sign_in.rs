@@ -99,6 +99,24 @@ impl ChatGptCredentials {
         self.lock().pending = None;
     }
 
+    /// Whether `callback_url` is the redirect of the sign-in in progress,
+    /// with its `state`. Anything else, such as a forged or stale request to
+    /// the daemon's listener, leaves the sign-in waiting.
+    #[must_use]
+    pub fn callback_belongs_to_sign_in(&self, callback_url: &str) -> bool {
+        let Ok(callback) = url::Url::parse(callback_url.trim()) else {
+            return false;
+        };
+        let query = callback
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        self.lock()
+            .pending
+            .as_ref()
+            .is_some_and(|pending| belongs_to(pending, &callback, &query).is_ok())
+    }
+
     /// Finishes the sign-in with the address the browser landed on.
     pub async fn complete_sign_in(&self, callback_url: &str) -> Result<SignedIn, ChatGptError> {
         let callback = url::Url::parse(callback_url.trim())
@@ -114,20 +132,7 @@ impl ChatGptCredentials {
                 state.pending = None;
                 return Err(ChatGptError::Expired);
             }
-            let expected = url::Url::parse(&pending.redirect_uri)
-                .map_err(|_| ChatGptError::InvalidRedirectUri)?;
-            if callback.scheme() != expected.scheme()
-                || callback.host_str() != expected.host_str()
-                || callback.port() != expected.port()
-                || callback.path() != expected.path()
-            {
-                return Err(ChatGptError::InvalidCallback(
-                    "the address is not this sign-in's redirect",
-                ));
-            }
-            if query.get("state") != Some(&pending.state) {
-                return Err(ChatGptError::StateMismatch);
-            }
+            belongs_to(pending, &callback, &query)?;
             state.pending.take().expect("checked above")
         };
         if let Some(error) = query.get("error") {
@@ -321,4 +326,37 @@ fn id_token_claims(token: &str) -> Option<serde_json::Map<String, Value>> {
         Value::Object(claims) => Some(claims),
         _ => None,
     }
+}
+
+/// Checks that `callback` is `pending`'s redirect and carries its `state`.
+fn belongs_to(
+    pending: &PendingSignIn,
+    callback: &url::Url,
+    query: &std::collections::BTreeMap<String, String>,
+) -> Result<(), ChatGptError> {
+    let expected =
+        url::Url::parse(&pending.redirect_uri).map_err(|_| ChatGptError::InvalidRedirectUri)?;
+    if callback.scheme() != expected.scheme()
+        || callback.host_str() != expected.host_str()
+        || callback.port() != expected.port()
+        || callback.path() != expected.path()
+    {
+        return Err(ChatGptError::InvalidCallback(
+            "the address is not this sign-in's redirect",
+        ));
+    }
+    match query.get("state") {
+        Some(state) if same_secret(state, &pending.state) => Ok(()),
+        _ => Err(ChatGptError::StateMismatch),
+    }
+}
+
+/// Compares two secrets in time that depends only on their lengths.
+fn same_secret(left: &str, right: &str) -> bool {
+    left.len() == right.len()
+        && std::hint::black_box(
+            left.bytes()
+                .zip(right.bytes())
+                .fold(0_u8, |difference, (a, b)| difference | (a ^ b)),
+        ) == 0
 }

@@ -27,6 +27,8 @@ pub const CHATGPT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const LISTENER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// The most of a callback request the listener reads.
 const CALLBACK_REQUEST_LIMIT: usize = 16 * 1024;
+/// The most connections the listener reads at once.
+const CALLBACK_READS_LIMIT: usize = 64;
 
 fn sign_in_error(provider_id: &ProviderId, reason: impl std::fmt::Display) -> EngineError {
     EngineError::ProviderSignIn {
@@ -374,7 +376,10 @@ impl Engine {
     }
 
     /// Waits for the browser's redirect, finishes the sign-in with it, and
-    /// announces the outcome.
+    /// announces the outcome. Connections are read side by side, so one
+    /// that sends nothing cannot hold up the browser's; a request that is
+    /// not this sign-in's redirect with its `state` is answered 400 and the
+    /// listener keeps waiting.
     async fn serve_sign_in_callback(
         &self,
         listener: tokio::net::TcpListener,
@@ -383,25 +388,48 @@ impl Engine {
     ) {
         let deadline = tokio::time::sleep(LISTENER_TIMEOUT);
         tokio::pin!(deadline);
+        let mut reading = tokio::task::JoinSet::new();
         loop {
-            let mut stream = tokio::select! {
+            let (mut stream, path) = tokio::select! {
                 () = &mut deadline => return,
-                accepted = listener.accept() => match accepted {
-                    Ok((stream, _)) => stream,
-                    Err(_) => continue,
+                accepted = listener.accept() => {
+                    // A flood of idle connections is shed, not queued.
+                    if let Ok((mut stream, _)) = accepted
+                        && reading.len() < CALLBACK_READS_LIMIT
+                    {
+                        reading.spawn(async move {
+                            let path = read_request_path(&mut stream).await;
+                            (stream, path)
+                        });
+                    }
+                    continue;
+                }
+                Some(read) = reading.join_next() => match read {
+                    Ok((stream, Some(path))) => (stream, path),
+                    Ok((_, None)) | Err(_) => continue,
                 },
-            };
-            let Some(path) = read_request_path(&mut stream).await else {
-                continue;
             };
             if !path.starts_with(REDIRECT_PATH) {
                 let _ = respond(&mut stream, 404, "Not found.").await;
                 continue;
             }
+            let callback_url = format!("http://127.0.0.1:{port}{path}");
+            let belongs = self
+                .chatgpt_for(&provider_id)
+                .is_ok_and(|credentials| credentials.callback_belongs_to_sign_in(&callback_url));
+            if !belongs {
+                let _ = respond(
+                    &mut stream,
+                    400,
+                    "This is not the ChatGPT sign-in's redirect.",
+                )
+                .await;
+                continue;
+            }
             let outcome = self
                 .complete_provider_auth(ProviderAuthCompleteParams {
                     provider_id: provider_id.clone(),
-                    callback_url: format!("http://127.0.0.1:{port}{path}"),
+                    callback_url,
                 })
                 .await;
             let (page, notification) = match outcome {
@@ -481,7 +509,11 @@ async fn respond(
 ) -> std::io::Result<()> {
     let response = format!(
         "HTTP/1.1 {status} {}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
-        if status == 200 { "OK" } else { "Not Found" },
+        match status {
+            200 => "OK",
+            400 => "Bad Request",
+            _ => "Not Found",
+        },
         text.len()
     );
     stream.write_all(response.as_bytes()).await?;

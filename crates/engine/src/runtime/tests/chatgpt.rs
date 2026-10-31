@@ -376,19 +376,45 @@ async fn the_daemon_catches_the_redirect_itself_and_announces_the_outcome() {
         .next()
         .unwrap()
         .to_owned();
-    let mut browser = tokio::net::TcpStream::connect(&address).await.unwrap();
-    browser
-        .write_all(
-            format!(
-                "GET /auth/callback?code=c&state={state}&client_id=oaiapp_issued HTTP/1.1\r\nhost: {address}\r\n\r\n"
-            )
-            .as_bytes(),
-        )
-        .await
-        .unwrap();
-    let mut page = String::new();
-    browser.read_to_string(&mut page).await.unwrap();
-    assert!(page.contains("Signed in to ChatGPT"), "{page}");
+    // A browser's preconnect that never sends a request holds nothing up.
+    let _preconnect = tokio::net::TcpStream::connect(&address).await.unwrap();
+    let get = |path: String| {
+        let address = address.clone();
+        async move {
+            let mut browser = tokio::net::TcpStream::connect(&address).await.unwrap();
+            browser
+                .write_all(format!("GET {path} HTTP/1.1\r\nhost: {address}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut page = String::new();
+            browser.read_to_string(&mut page).await.unwrap();
+            page
+        }
+    };
+    // Requests that are not the sign-in's redirect with its state are
+    // refused, and the listener keeps waiting for the real one.
+    for forged in [
+        "/auth/callback?code=c&state=forged".to_owned(),
+        "/auth/callback?code=c".to_owned(),
+    ] {
+        let page = tokio::time::timeout(Duration::from_secs(5), get(forged))
+            .await
+            .expect("answered while a preconnect is open");
+        assert!(page.starts_with("HTTP/1.1 400 "), "{page}");
+    }
+    assert!(
+        completed.try_recv().is_err(),
+        "a forged request ends nothing"
+    );
+    let page = tokio::time::timeout(
+        Duration::from_secs(5),
+        get(format!(
+            "/auth/callback?code=c&state={state}&client_id=oaiapp_issued"
+        )),
+    )
+    .await
+    .expect("the redirect is answered");
+    assert!(page.starts_with("HTTP/1.1 200 "), "{page}");
     let announced = tokio::time::timeout(Duration::from_secs(5), completed.recv())
         .await
         .unwrap()

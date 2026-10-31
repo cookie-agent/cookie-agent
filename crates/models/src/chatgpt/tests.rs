@@ -317,7 +317,26 @@ async fn callbacks_that_do_not_belong_to_the_sign_in_are_refused() {
         credentials.begin_sign_in("http://localhost:1455/auth/callback"),
         Err(ChatGptError::InvalidRedirectUri)
     ));
+    assert!(!credentials.callback_belongs_to_sign_in(&format!("{REDIRECT}?code=c&state=s")));
     let params = query(&credentials.begin_sign_in(REDIRECT).unwrap());
+    let state = &params["state"];
+    assert!(credentials.callback_belongs_to_sign_in(&format!("{REDIRECT}?code=c&state={state}")));
+    for forged in [
+        format!("{REDIRECT}?code=c"),
+        format!("{REDIRECT}?code=c&state=forged"),
+        // One character off, at the same length.
+        format!(
+            "{REDIRECT}?code=c&state={}{}",
+            &state[..state.len() - 1],
+            if state.ends_with('x') { 'y' } else { 'x' }
+        ),
+        format!("http://127.0.0.1:9999/auth/callback?code=c&state={state}"),
+    ] {
+        assert!(
+            !credentials.callback_belongs_to_sign_in(&forged),
+            "{forged}"
+        );
+    }
     assert!(matches!(
         credentials
             .complete_sign_in(&format!("{REDIRECT}?code=c&state=forged"))
