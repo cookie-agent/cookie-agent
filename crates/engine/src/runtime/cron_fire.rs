@@ -206,6 +206,22 @@ fn settle_fire(
     }
 }
 
+/// How long the scheduler sleeps at `now` before the earliest fire `next`:
+/// until it is due, but at least `retry_after` while the store fails, and
+/// at most [`SCHEDULER_MAX_SLEEP`]. With no fire ahead it waits for a change.
+pub(crate) fn scheduler_sleep(
+    next: Option<Timestamp>,
+    now: Timestamp,
+    retry_after: Option<Duration>,
+) -> Option<Duration> {
+    next.map(|next| {
+        let millis = next.as_millisecond().saturating_sub(now.as_millisecond());
+        Duration::from_millis(u64::try_from(millis).unwrap_or(0))
+            .max(retry_after.unwrap_or_default())
+            .min(SCHEDULER_MAX_SLEEP)
+    })
+}
+
 /// Records `end`, the end of `run` of `session`, on every fire awaiting
 /// its run there whose prompt `landed` in it: a failed run counts a
 /// failure, a completed one resets the count, any other end changes
@@ -261,6 +277,10 @@ impl Engine {
                 let engine = Engine { inner };
                 engine.reconcile_crons_at_start().await;
             }
+            // While the store fails, a due fire stays due: the scheduler
+            // waits a growing delay before it tries again.
+            let mut backoff = super::helpers::RetryBackoff::new();
+            let mut retry_after = None;
             loop {
                 let Some(inner) = weak.upgrade() else {
                     break;
@@ -269,12 +289,11 @@ impl Engine {
                 if engine.admission_tasks_closing() {
                     break;
                 }
-                let now = Timestamp::now();
-                let sleep = engine.inner.crons.earliest_fire().map(|next| {
-                    let millis = next.as_millisecond().saturating_sub(now.as_millisecond());
-                    Duration::from_millis(u64::try_from(millis).unwrap_or(0))
-                        .min(SCHEDULER_MAX_SLEEP)
-                });
+                let sleep = scheduler_sleep(
+                    engine.inner.crons.earliest_fire(),
+                    Timestamp::now(),
+                    retry_after,
+                );
                 let wake = std::sync::Arc::clone(&engine.inner.cron_scheduler.wake);
                 drop(engine);
                 // A change between reading the earliest fire and waiting is
@@ -295,7 +314,12 @@ impl Engine {
                 if engine.admission_tasks_closing() || engine.restart_due() {
                     break;
                 }
-                engine.cron_tick(Timestamp::now()).await;
+                if engine.cron_tick(Timestamp::now()).await {
+                    retry_after = Some(backoff.next_delay());
+                } else {
+                    backoff = super::helpers::RetryBackoff::new();
+                    retry_after = None;
+                }
             }
         });
         *self
@@ -481,13 +505,17 @@ impl Engine {
         }
     }
 
-    /// Fires every enabled job due at `now`.
-    pub(crate) async fn cron_tick(&self, now: Timestamp) {
+    /// Fires every enabled job due at `now`. Whether the store failed to
+    /// claim a fire, which leaves it due.
+    pub(crate) async fn cron_tick(&self, now: Timestamp) -> bool {
         let due = self.inner.crons.due(now);
         let fires = due
             .into_iter()
             .map(|(id, scheduled)| self.fire_scheduled(id, scheduled, now));
-        futures_util::future::join_all(fires).await;
+        futures_util::future::join_all(fires)
+            .await
+            .into_iter()
+            .any(|failed| failed)
     }
 
     /// Why a fire of `job` is skipped now (sections 4.2 and 4.3): its
@@ -534,16 +562,16 @@ impl Engine {
 
     /// Fires `id`'s fire scheduled at `scheduled`: claims it in the
     /// history, as skipped or pending, moves the job to its next fire, and
-    /// delivers a pending fire.
-    async fn fire_scheduled(&self, id: CronJobId, scheduled: Timestamp, now: Timestamp) {
+    /// delivers a pending fire. Whether the store failed to claim it.
+    async fn fire_scheduled(&self, id: CronJobId, scheduled: Timestamp, now: Timestamp) -> bool {
         let Some(job) = self.inner.crons.job(&id) else {
-            return;
+            return false;
         };
         // A restart that is due would refuse the fire's run: leave it
         // unclaimed for the restarted daemon, which catches it up within
         // `[cron] missed_grace`.
         if self.restart_due() {
-            return;
+            return false;
         }
         let skip = if self.inner.config.load().runtime.cron.enabled {
             self.skip_reason(&job)
@@ -592,9 +620,13 @@ impl Engine {
         match claimed {
             Ok(Some(claim)) => {
                 let _ = self.deliver_claim(claim).await;
+                false
             }
-            Ok(None) => {}
-            Err(error) => eprintln!("cookie-agent: cron job: {error}"),
+            Ok(None) => false,
+            Err(error) => {
+                eprintln!("cookie-agent: cron job: {error}");
+                true
+            }
         }
     }
 

@@ -265,6 +265,59 @@ async fn a_run_that_ends_before_its_fire_is_recorded_delivered_is_counted() {
     assert_eq!(settled.consecutive_failures, 0);
 }
 
+/// A store that fails leaves a due fire due, so the scheduler waits before
+/// it tries again instead of trying at once.
+#[tokio::test]
+async fn a_failing_store_backs_the_scheduler_off() {
+    use crate::runtime::cron_fire::scheduler_sleep;
+    let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection).unwrap().session_id;
+    let job = engine
+        .create_cron(params(
+            "Never fires.",
+            daily(),
+            CronTarget::Session(session),
+        ))
+        .await
+        .expect("created");
+    let target = job.id.clone();
+    let now = Timestamp::now();
+    engine
+        .crons_now(move |_, jobs| {
+            jobs.iter_mut()
+                .find(|job| job.id == target)
+                .unwrap()
+                .next_fire = Some(now);
+            Ok(())
+        })
+        .unwrap();
+    let path = engine.data_root().join(crate::crons::CRONS_FILE);
+    let saved = std::fs::read(&path).expect("the store's file");
+    std::fs::write(&path, b"not json").unwrap();
+    assert!(engine.cron_tick(Timestamp::now()).await, "the claim fails");
+    assert_eq!(
+        engine.cron_store().job(&job.id).unwrap().next_fire,
+        Some(now)
+    );
+    std::fs::write(&path, saved).unwrap();
+
+    let second = Duration::from_secs(1);
+    let past = Some(now);
+    assert_eq!(scheduler_sleep(past, now, None), Some(Duration::ZERO));
+    assert_eq!(
+        scheduler_sleep(past, now, Some(2 * second)),
+        Some(2 * second)
+    );
+    let ahead = Some(now + jiff::SignedDuration::from_secs(10));
+    assert_eq!(
+        scheduler_sleep(ahead, now, Some(2 * second)),
+        Some(10 * second)
+    );
+    assert_eq!(scheduler_sleep(None, now, Some(2 * second)), None);
+}
+
 /// A fire into a held session is skipped, not a failure
 /// (`docs/site/specs/held-sessions.md`).
 #[tokio::test]

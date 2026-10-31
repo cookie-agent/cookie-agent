@@ -242,7 +242,13 @@ impl RetryBackoff {
 
     /// Sleeps the current delay and doubles the next one.
     pub(super) async fn wait(&mut self) {
-        tokio::time::sleep(self.next).await;
+        tokio::time::sleep(self.next_delay()).await;
+    }
+
+    /// The current delay, doubling the next one.
+    pub(super) fn next_delay(&mut self) -> std::time::Duration {
+        let delay = self.next;
         self.next = (self.next * 2).min(Self::LONGEST);
+        delay
     }
 }
