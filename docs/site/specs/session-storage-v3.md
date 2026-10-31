@@ -58,7 +58,8 @@ axum's WebSocket support is built on it, so `/ws` moves to a library that
 has it. Measured on 2026-10-31 with a scratch `yawc` 0.5 server
 (`with_balanced_compression`): Node 22 and Chrome 156 both negotiated
 `permessage-deflate`, and a 4.13 MB page of real events crossed the
-connection as 512 KB (8.1×).
+connection as 512 KB (8.1×). The daemon compresses at deflate's fastest
+level instead (2.6): the default level cost too much CPU on a busy machine.
 
 The Cloudflare tunnel is not tested (waived on 2026-10-31). If a tunnel
 drops the extension, the browser and daemon fall back to uncompressed
@@ -85,19 +86,30 @@ TUI's About views show cookie's license and these notices.
 
 ### 2.3 Pages and the timeout
 
-- `REPLAY_PAGE_MAX_BYTES` drops from 4 MiB to 512 KiB, measured before
+- `REPLAY_PAGE_MAX_BYTES` drops from 4 MiB to 1 MiB, measured before
   compression.
-- `REPLAY_RESPONSE_TIMEOUT` becomes 15 s per page. With 512 KiB pages that
-  fails only below ~35 KB/s, against ~840 KB/s needed today.
+- `REPLAY_RESPONSE_TIMEOUT` becomes 15 s per page. With 1 MiB pages that
+  fails only below ~70 KB/s before compression, against ~840 KB/s needed
+  today.
+
+Measured on 2026-10-31 (implementation notes, 2.6): 512 KiB pages made a
+long replay mostly round trips on a busy machine, and 2 MiB pages gained
+little over 1 MiB.
 
 ### 2.4 The first page without the tree
 
-`events.subscribe` on a root answers from the root's own log
-(`get_log_only`). The tree load starts in the background, and anything
-that needs the tree (`session.tree`, `session.children`, approvals of the
-tree, a run) still waits for it as today. Implementation must check that
-nothing the transcript shows depends on tree-load products (review L5 in
-`SessionStore::get`).
+`events.subscribe` answers every page but the final one from the
+session's own log (`SessionStore::history_page`): the resident log, or the
+parsed read-only log, which a later open for writing takes over while the
+file is unchanged. Such a page completes no tree and opens nothing for
+writing, so it never waits on the session's actor either. The tree load
+starts on a blocking thread from a replay's first page, and the final
+page, which registers the live tail and so opens the session as before,
+waits for it there, off the async workers. Anything else that needs the
+tree (`session.tree`, `session.children`, approvals of the tree, a run)
+waits for it as today. History pages are the session's own events, so no
+tree-load product can be missing from them (review L5 in
+`SessionStore::get` concerns cached summaries, not logs).
 
 ### 2.5 Rendering as pages arrive
 
@@ -106,6 +118,26 @@ names the replay's final sequence in `ReplayStart` and rebuilds the view
 at `ReplayEnd`, so rendering forward pages as they arrive would rework it
 only for 3.2's newest-first loading to replace it. With 2.1, 2.3, and 2.4,
 a replay no longer times out; 3.2 makes it show at once.
+
+### 2.6 Implementation notes (2026-10-31)
+
+Measured with a scratch daemon on copies of three real sessions, pinned to
+two cores shared with eight busy loops, paging as the protocol client does.
+Single runs on starved cores, so the times are rough:
+
+| Build | Bytes sent | 16.9 MB log, whole replay | 12-subagent tree, first page | 20-subagent tree, first page |
+|---|---|---|---|---|
+| Before (main) | 26.8 MB | 1.6 s, 6 pages | 971 ms | 1,398 ms |
+| 512 KiB pages, deflate level 6 | 5.96 MB | 3.9 s, 37 pages | 334 ms | 193 ms |
+| 1 MiB pages, level 6 | 5.95 MB | 3.3 s, 19 pages | 441 ms | 210 ms |
+| 2 MiB pages, level 6 | 5.95 MB | 3.4 s, 10 pages | 622 ms | 363 ms |
+| **1 MiB pages, level 1 (shipped)** | **7.8 MB** | **2.0 s, 19 pages** | **339 ms** | **139 ms** |
+
+Compression at the default level was most of the extra time on a local
+connection; at the fastest level it still sends 3.4 times fewer bytes,
+which is what a tunnel or a phone link pays for. The first page of a log
+without subagents still parses that whole log (about 1 s here); phase 3's
+`view.json` removes that.
 
 ## 3. Phase 2: a display view
 

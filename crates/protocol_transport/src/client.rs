@@ -50,8 +50,9 @@ const RECOVERY_BACKOFF: cookie_agent_identity::Backoff =
     cookie_agent_identity::Backoff::new(Duration::from_millis(50), Duration::from_secs(5));
 /// How long the daemon may take to answer one replay page once its request
 /// has been written, the page's transfer included. It bounds the daemon's
-/// work, not this client's queue. A page holds at most 512 KiB, so this
-/// fails only on links slower than about 35 KB/s.
+/// work, not this client's queue. A page holds at most 1 MiB before the
+/// daemon compresses it, so this fails only on links slower than about
+/// 70 KB/s, or a few times slower with compression.
 const REPLAY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long one replay page may wait in this client's own queue to be written.
 const REPLAY_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
