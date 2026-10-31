@@ -288,6 +288,10 @@ each (its own output does not move it; one with none goes by its last
 event); type to filter them by title, and press
 Enter or click a row to open one.
 
+- The picker lists the sessions active in the last 30 days, and every
+  unread or busy one whatever its age. **Ctrl+O**, or the **Older**
+  button that leads the row while there are older sessions, adds a month
+  at a time ([where sessions are stored](../sessions/index.md#where-sessions-are-stored)).
 - **Ctrl+A**, or the **All directories** button, lists every directory's
   sessions instead, each row naming its directory; press it again (the
   button now reads **This directory**) to go back. In the search field,

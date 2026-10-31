@@ -1,6 +1,6 @@
 //! `/sessions`: deleting the highlighted session behind a confirmation,
-//! marking it read or unread, and Ctrl+A between this directory's sessions
-//! and every directory's.
+//! marking it read or unread, Ctrl+A between this directory's sessions
+//! and every directory's, and Ctrl+O for older sessions.
 
 use std::sync::{Arc, Mutex};
 
@@ -326,4 +326,73 @@ async fn an_older_daemon_offers_no_read_toggle() {
         app.status
     );
     assert!(requests(&recorded, "session.unread.set").is_empty());
+}
+
+/// The list asks for the last 30 days, offers older sessions while the
+/// daemon has any, and adds them a page at a time
+/// (`docs/site/specs/session-storage-v3.md` section 4.3).
+#[tokio::test]
+async fn ctrl_o_adds_older_sessions_while_the_daemon_has_any() {
+    let mut app = test_app().await;
+    let recent = titled_meta(SessionId::new_v7(), "recent", 1);
+    let older = titled_meta(SessionId::new_v7(), "older", 1);
+    let answers = (recent.clone(), older.clone());
+    let (client, recorded) = answering_client(move |method, params| match method {
+        "handshake" => Ok(json!({
+            "protocol_version": "1.57.0",
+            "engine_version": "0.4.0",
+            "origin": "client:tui-0192f3a45b6c7d8e9f00112233445566",
+            "features": []
+        })),
+        "session.list" if params.get("before").is_some() => Ok(json!({
+            "sessions": [answers.1.clone()],
+        })),
+        "session.list" if params.get("active_since").is_some() => Ok(json!({
+            "sessions": [answers.0.clone()],
+            "older": "2026-09-01T00:00:00Z",
+        })),
+        "session.list" => Ok(json!({ "sessions": [answers.0.clone(), answers.1.clone()] })),
+        _ => Err(json!({"code": -32601, "message": "not scripted"})),
+    });
+    client.handshake().await.expect("handshake");
+    app.client = client;
+    app.modal = Modal::Sessions;
+    app.session_scope_all = true;
+
+    app.refresh_session_list().await;
+    let first = requests(&recorded, "session.list");
+    assert!(first[0]["active_since"].is_string(), "{first:?}");
+    assert!(first[0].get("before").is_none());
+    assert_eq!(app.session_search_ids(), vec![recent.session_id]);
+    frame_rows(&mut app, 100, 30);
+    assert!(
+        app.hit_map
+            .session_picker_actions
+            .iter()
+            .any(|(_, action)| *action == SessionPickerAction::ShowOlder)
+    );
+
+    app.handle_key(ctrl('o')).await;
+    let page = requests(&recorded, "session.list");
+    assert_eq!(
+        page.last(),
+        Some(&json!({ "before": "2026-09-01T00:00:00Z" }))
+    );
+    let mut shown = app.session_search_ids().to_vec();
+    shown.sort();
+    let mut expected = vec![recent.session_id, older.session_id];
+    expected.sort();
+    assert_eq!(shown, expected);
+    frame_rows(&mut app, 100, 30);
+    assert!(
+        app.hit_map
+            .session_picker_actions
+            .iter()
+            .all(|(_, action)| *action != SessionPickerAction::ShowOlder),
+        "nothing is older"
+    );
+
+    // Every session is shown now, so the next read asks for every one.
+    app.refresh_session_list().await;
+    assert_eq!(requests(&recorded, "session.list").last(), Some(&json!({})));
 }

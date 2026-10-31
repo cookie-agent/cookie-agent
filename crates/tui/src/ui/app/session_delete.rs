@@ -23,6 +23,9 @@ pub(in crate::ui) enum SessionPickerAction {
     ToggleScope,
     /// Cycles the project filter: all, each project, no project (Ctrl+P).
     CycleProject,
+    /// Adds the next older month of sessions, while the daemon has any
+    /// (Ctrl+O; `docs/site/specs/session-storage-v3.md` section 4.3).
+    ShowOlder,
 }
 
 impl SessionPickerAction {
@@ -35,6 +38,7 @@ impl SessionPickerAction {
             Self::ToggleScope if all_directories => " This directory (ctrl+a) ".to_owned(),
             Self::ToggleScope => " All directories (ctrl+a) ".to_owned(),
             Self::CycleProject => format!(" {project} (ctrl+p) "),
+            Self::ShowOlder => " Older (ctrl+o) ".to_owned(),
         }
     }
 }
@@ -266,7 +270,10 @@ impl App {
         let keeps_unread =
             cookie_agent_client_state::unread::daemon_keeps_unread(self.client.daemon_version());
         let has_projects = self.daemon_has_projects();
+        // Older sessions lead while there are any: the row is cut at the
+        // picker's width, and they are what the list is missing.
         let shown = [
+            SessionPickerAction::ShowOlder,
             SessionPickerAction::Rename,
             SessionPickerAction::Delete,
             SessionPickerAction::ToggleRead,
@@ -277,6 +284,7 @@ impl App {
         .filter(|action| match action {
             SessionPickerAction::ToggleRead => keeps_unread,
             SessionPickerAction::CycleProject => has_projects,
+            SessionPickerAction::ShowOlder => self.session_window.has_older(),
             _ => true,
         });
         for action in shown {
@@ -362,6 +370,7 @@ impl App {
             SessionPickerAction::ToggleRead => self.toggle_session_read(),
             SessionPickerAction::ToggleScope => self.toggle_session_scope().await,
             SessionPickerAction::CycleProject => self.cycle_session_project_filter(),
+            SessionPickerAction::ShowOlder => self.show_older_sessions().await,
         }
     }
 }

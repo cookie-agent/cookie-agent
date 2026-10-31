@@ -126,9 +126,9 @@ impl App {
         }
     }
 
-    /// Lists this directory's root sessions, or every directory's when the
-    /// picker shows all of them.
-    pub(in crate::ui) async fn refresh_session_list(&mut self) {
+    /// The list's filter: this directory's root sessions, or every
+    /// directory's when the picker shows all of them.
+    fn session_list_filter(&self) -> SessionListParams {
         let cwd_identity = if self.session_scope_all {
             None
         } else {
@@ -136,21 +136,51 @@ impl App {
                 .as_deref()
                 .and_then(|cwd| cookie_agent_protocol::CwdIdentity::new(cwd).ok())
         };
-        match self
-            .client
-            .list_sessions(SessionListParams {
-                cwd_identity,
-                ..SessionListParams::default()
-            })
-            .await
-        {
+        SessionListParams {
+            cwd_identity,
+            ..SessionListParams::default()
+        }
+    }
+
+    /// Lists the root sessions of the picker's scope as far back as its
+    /// window reaches, with the unread and busy ones whatever their age.
+    pub(in crate::ui) async fn refresh_session_list(&mut self) {
+        let params = self.session_window.read_params(
+            self.session_list_filter(),
+            self.client.daemon_version(),
+            jiff::Timestamp::now(),
+        );
+        match self.client.list_sessions(params).await {
             Ok(result) => {
+                self.session_window.read(result.older);
                 self.sessions = result
                     .sessions
                     .into_iter()
                     .map(|session| self.merge_session_meta(session))
                     .collect();
                 self.note_sessions_changed();
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    /// Ctrl+O in the picker: adds the next older month of sessions.
+    pub(in crate::ui) async fn show_older_sessions(&mut self) {
+        let Some(params) = self.session_window.older_params(self.session_list_filter()) else {
+            self.status = "There are no older sessions.".into();
+            return;
+        };
+        match self.client.list_sessions(params).await {
+            Ok(result) => {
+                self.session_window.paged(result.older);
+                let page = result
+                    .sessions
+                    .into_iter()
+                    .map(|session| self.merge_session_meta(session))
+                    .collect();
+                cookie_agent_client_state::session_window::merge_older(&mut self.sessions, page);
+                self.note_sessions_changed();
+                self.session_search_changed();
             }
             Err(error) => self.status = error.to_string(),
         }

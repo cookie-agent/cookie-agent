@@ -637,6 +637,7 @@ impl App {
                 KeyCode::Char('d') => return self.begin_session_delete(),
                 KeyCode::Char('r') => return self.begin_session_rename(),
                 KeyCode::Char('k') => return self.toggle_session_read(),
+                KeyCode::Char('o') => return self.show_older_sessions().await,
                 _ => {}
             }
         }

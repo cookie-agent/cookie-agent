@@ -376,7 +376,11 @@ async fn every_clickable_element_hovers_visibly() {
     let listed = app.sessions.clone();
     app.sessions = vec![titled_meta(session, "root", 1)];
     app.modal = Modal::Sessions;
+    // With older sessions to show, so their button is swept too.
+    app.session_window
+        .read(Some("2026-09-01T00:00:00Z".parse().expect("cursor")));
     seen.extend(sweep(&mut app, "session picker"));
+    app.session_window.reset();
     app.session_delete = Some(SessionDeletePrompt {
         session: titled_meta(session, "root", 1),
         subagents: Some(2),

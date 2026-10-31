@@ -43,6 +43,7 @@ pub mod send;
 pub mod session_actions;
 pub mod session_delete;
 pub mod session_rename;
+pub mod session_window;
 pub mod subscriptions;
 pub mod tool_header;
 pub mod transcript_mode;

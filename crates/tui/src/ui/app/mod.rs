@@ -947,6 +947,9 @@ pub struct App {
     /// Whether `/sessions` lists every directory's sessions rather than
     /// this directory's (Ctrl+A).
     pub(super) session_scope_all: bool,
+    /// How far back `/sessions` reaches: the last 30 days, and a month more
+    /// for each Ctrl+O.
+    pub(super) session_window: cookie_agent_client_state::session_window::SessionWindow,
     /// The session delete waiting for the user to confirm it.
     pub(super) session_delete: Option<session_delete::SessionDeletePrompt>,
     /// The picker's title field for the highlighted session (Ctrl+R).
@@ -1728,6 +1731,7 @@ impl App {
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),
             session_scope_all: false,
+            session_window: Default::default(),
             session_delete: None,
             session_rename: None,
             projects: Vec::new(),
