@@ -2,6 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "active_since": {
+      "description": "Only the root sessions last active at or after this time, and every\nunread or busy one (a run, an approval or question, a background\ncall, or a subagent that can wake it) whatever its age (client\nprotocol 1.57.0). Absent: every session, with `before` absent too.",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "before": {
+      "description": "The `older` cursor of a previous answer: only the root sessions\nlast active before it, reaching back, without `active_since`, to the\nstart of the newest month that holds any (client protocol 1.57.0).",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "cwd_identity": {
       "description": "Opaque canonical workspace identity.",
       "maxLength": 4096,

@@ -209,6 +209,39 @@ impl Engine {
         Ok(evicted)
     }
 
+    /// The roots of the resident trees the idle janitor keeps whatever their
+    /// age: a session of the tree has pending work (a run, an approval or
+    /// question, a background call), or a subagent that can still wake it.
+    /// A session list shows them whatever its window
+    /// (`docs/site/specs/session-storage-v3.md` section 4.3).
+    pub(crate) fn busy_roots(&self) -> HashSet<SessionId> {
+        self.inner
+            .store
+            .all()
+            .iter()
+            .filter(|session| {
+                self.session_has_pending_work(session)
+                    || self.delegation_can_wake(session.meta.session_id)
+            })
+            .map(|session| root_id(&session.meta.origin, session.meta.session_id))
+            .collect()
+    }
+
+    /// Whether the delegation that runs `session` has not finished, or owes
+    /// its parent a background report.
+    fn delegation_can_wake(&self, session: SessionId) -> bool {
+        self.inner
+            .delegation
+            .by_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .is_some_and(|record| {
+                !matches!(record.state, DelegationState::Finished(_))
+                    || record.background && !record.notification_sent
+            })
+    }
+
     pub(in crate::runtime) fn subagent_eviction_ended_at(
         &self,
         session: &crate::session::SessionProjection,
@@ -218,19 +251,7 @@ impl Engine {
         if !matches!(session.meta.origin, SessionOrigin::Delegated { .. })
             || session.runs.is_empty()
             || self.session_has_pending_work(session)
-        {
-            return None;
-        }
-        if let Some(record) = self
-            .inner
-            .delegation
-            .by_session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&session.meta.session_id)
-            .copied()
-            && (!matches!(record.state, DelegationState::Finished(_))
-                || record.background && !record.notification_sent)
+            || self.delegation_can_wake(session.meta.session_id)
         {
             return None;
         }

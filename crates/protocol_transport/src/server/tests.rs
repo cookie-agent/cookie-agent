@@ -40,9 +40,7 @@ impl ServerProtocol for StubServer {
         &self,
         _: cookie_agent_protocol::SessionListParams,
     ) -> Result<cookie_agent_protocol::SessionListResult, ServerFault> {
-        Ok(cookie_agent_protocol::SessionListResult {
-            sessions: Vec::new(),
-        })
+        Ok(cookie_agent_protocol::SessionListResult::default())
     }
     async fn get_session(
         &self,

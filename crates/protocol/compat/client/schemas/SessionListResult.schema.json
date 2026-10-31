@@ -477,6 +477,14 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "older": {
+      "description": "The cursor that asks for the next older sessions as `before`, or\nabsent once nothing is older; always absent for a request without\n`active_since` or `before`, and from an older daemon (client\nprotocol 1.57.0).",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "sessions": {
       "items": {
         "$ref": "#/$defs/SessionMeta"

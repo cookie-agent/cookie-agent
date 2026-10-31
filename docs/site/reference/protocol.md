@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.56.0",
+    "protocol_version": "1.57.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.56.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.57.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -231,7 +231,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `onboarding.preview` | Optional `source` (since 1.22.0) | Since 1.56.0 always `onboarding_kit_unavailable`: there is no starter kit, the daemon keeps the [official agents](../extend/agents.md#official-agents) itself. An older daemon previews its starter kit |
 | `onboarding.run` | `install_kit`, optional `source`, optional `default_model`, `small_model`, and `utility_model` (since 1.56.0) (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0) | The configuration `settings` set and the new `status`; `written`, `skipped`, and `written_new` are empty since 1.56.0, which ignores `install_kit` and `source`. When the default agent is missing it fetches the official agents first. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)), optional `agent_options` (since 1.26.0; see [ACP agents](#acp-agents)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
-| `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0) | Root session metadata list with skipped-event diagnostics |
+| `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0), optional `active_since` and `before` timestamps (since 1.57.0; see [Listing recent sessions](#listing-recent-sessions)) | Root session metadata list with skipped-event diagnostics, and since 1.57.0 the `older` cursor |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
 | `session.goal.set` | Session ID, objective, optional `selection: RunSelection` | Activated `goal: GoalState` |
@@ -437,6 +437,24 @@ on the governing run policy and session overlay. `session.list` returns root
 sessions only: a delegated child is selected as part of its root's tree, not as
 a top-level entry, and stays reachable via `session.tree`, `session.children`,
 `session.get`, and `session.resume`.
+
+### Listing recent sessions
+
+Since 1.57.0 `session.list` takes a window. With `active_since`, it returns
+the root sessions last active at or after that time, and with them every
+root that is unread or busy whatever its age: its tree has a run going, an
+approval or a question waiting, a background call running, or a subagent
+that can still wake it. The answer's `older` is the cursor for what is
+older, or absent once nothing is; passing it back as `before` (without
+`active_since`) returns the sessions last active before it, back to the
+start of the newest month that holds any, with a new `older`. So a client
+lists the last 30 days and offers "Show older", one month at a time.
+Without `active_since` and `before` the answer holds every root session, as
+before 1.57.0, and no `older`. The daemon answers from its
+[activity journals](../sessions/index.md#where-sessions-are-stored), which
+are written when a session's title, project, or status changes, so a
+listed `last_activity` can trail a session that is not open by its last
+few events.
 
 ### Runtimes
 
@@ -1353,11 +1371,13 @@ listed `last_event_seq`; `session_changed` means the tree is idle and moved.
 A tree this daemon does not hold is deleted under its lock without being
 opened, so nothing is appended to it first. The tree's background calls are
 stopped without a report and its uploads in progress are dropped. The daemon
-moves the tree's directory aside to a `.deleted-<root>-<id>` tombstone in the
-work directory, which commits the delete, forgets the tree, sends
+moves the tree's directory aside to a `.deleted-<root>-<id>` tombstone in
+`sessions/`, which commits the delete, forgets the tree, journals the
+deletion so listings drop the root, sends
 `sessions.changed` `removed` for each deleted session (the root first) to
 every connection, and removes the tombstone; a daemon that stopped in between
-removes the tombstone when it next opens the directory. Each connection's
+removes the tombstone, and drops the root from its listings, when it next
+starts. Each connection's
 subscriptions to the deleted sessions end with them: no further
 `events.subscription` arrives for them and `events.unsubscribe` answers
 `false`. The result is `{ "deleted": [<root>, <descendants>…] }`.

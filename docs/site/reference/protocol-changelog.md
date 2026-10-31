@@ -5,6 +5,16 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.57.0
+
+- `session.list` takes `active_since` and `before` and answers `older`
+  ([session storage v3](../specs/session-storage-v3.md) section 4.3): with
+  `active_since`, the root sessions last active since then and every unread
+  or busy one whatever its age; with `before`, the cursor a previous answer
+  returned as `older`, the sessions last active before it, back to the start
+  of the newest month that holds any. `older` is absent once nothing is
+  older. Without either, every root session, as before.
+
 ## 1.56.0
 
 - Official agents and model tiers

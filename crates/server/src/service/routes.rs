@@ -92,9 +92,13 @@ impl ServerProtocol for Server {
     }
 
     async fn list_sessions(&self, params: SessionListParams) -> Result<SessionListResult> {
-        let sessions = self
-            .engine
-            .list_sessions()
+        let (sessions, older) =
+            self.engine
+                .list_sessions_in(cookie_agent_engine::session::ListWindow {
+                    active_since: params.active_since,
+                    before: params.before,
+                });
+        let sessions = sessions
             .into_iter()
             .filter(|session| {
                 params
@@ -109,7 +113,7 @@ impl ServerProtocol for Server {
                     .is_none_or(|filter| filter.admits(session.project.as_ref()))
             })
             .collect();
-        Ok(SessionListResult { sessions })
+        Ok(SessionListResult { sessions, older })
     }
 
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult> {

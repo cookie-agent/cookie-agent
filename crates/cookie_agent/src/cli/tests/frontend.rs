@@ -60,10 +60,7 @@ async fn plain_cookie_connects_to_the_daemon_server_describes_and_creates_its_se
         .unwrap();
     let listed = found
         .client
-        .list_sessions(cookie_agent_protocol::SessionListParams {
-            project: None,
-            cwd_identity: None,
-        })
+        .list_sessions(cookie_agent_protocol::SessionListParams::default())
         .await
         .unwrap();
     assert!(

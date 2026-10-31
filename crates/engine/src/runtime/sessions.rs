@@ -317,14 +317,32 @@ impl Engine {
     /// A session whose project no longer exists lists as having none.
     #[must_use]
     pub fn list_sessions(&self) -> Vec<SessionMeta> {
+        self.list_sessions_in(crate::session::ListWindow::default())
+            .0
+    }
+
+    /// [`Self::list_sessions`] for the roots last active within `window`,
+    /// with every unread or busy root whatever its age, and the cursor of
+    /// the next older page (`session.list`'s `active_since` and `before`).
+    #[must_use]
+    pub fn list_sessions_in(
+        &self,
+        window: crate::session::ListWindow,
+    ) -> (Vec<SessionMeta>, Option<jiff::Timestamp>) {
         let known = self.project_ids();
-        self.inner
-            .store
-            .list_roots()
+        let busy = if window == crate::session::ListWindow::default() {
+            std::collections::HashSet::new()
+        } else {
+            self.busy_roots()
+        };
+        let list = self.inner.store.list_roots_in(window, &busy);
+        let sessions = list
+            .sessions
             .into_iter()
             .filter(|meta| matches!(meta.origin, SessionOrigin::Root))
             .map(|meta| self.client_session_meta(meta, |project| known.contains(project)))
-            .collect()
+            .collect();
+        (sessions, list.older)
     }
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
         let session = self.inner.store.get(id)?;

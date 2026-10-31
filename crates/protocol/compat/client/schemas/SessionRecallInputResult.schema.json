@@ -86,7 +86,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "What `session.recall_input` did. A client reads it open: an outcome it\ndoes not know fails the call with [`crate::ClientError::UnknownOutcome`].",
+  "description": "What `session.recall_input` did. A client reads it open: an outcome it\ndoes not know fails the call with\n`cookie_agent_protocol_transport::ClientError::UnknownOutcome`.",
   "oneOf": [
     {
       "description": "The input was withdrawn; its content is returned for editing.",

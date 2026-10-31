@@ -1116,10 +1116,27 @@ pub struct SessionListParams {
     /// project (client protocol 1.8.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectFilter>,
+    /// Only the root sessions last active at or after this time, and every
+    /// unread or busy one (a run, an approval or question, a background
+    /// call, or a subagent that can wake it) whatever its age (client
+    /// protocol 1.57.0). Absent: every session, with `before` absent too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_since: Option<jiff::Timestamp>,
+    /// The `older` cursor of a previous answer: only the root sessions
+    /// last active before it, reaching back, without `active_since`, to the
+    /// start of the newest month that holds any (client protocol 1.57.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<jiff::Timestamp>,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct SessionListResult {
     pub sessions: Vec<SessionMeta>,
+    /// The cursor that asks for the next older sessions as `before`, or
+    /// absent once nothing is older; always absent for a request without
+    /// `active_since` or `before`, and from an older daemon (client
+    /// protocol 1.57.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub older: Option<jiff::Timestamp>,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
