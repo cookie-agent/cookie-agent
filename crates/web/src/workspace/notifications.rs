@@ -129,13 +129,18 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        // A change's read and an older one overlap: only the newest lands.
+        let read = self.begin_read(|reads| &mut reads.notifications);
         spawn_local(async move {
             let result = client
                 .get_notifications()
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
-            self.notifications.set(Some(result));
-            self.push_context.set(read_push_context().await);
+            let context = read_push_context().await;
+            if self.read_is_current(|reads| &mut reads.notifications, read) {
+                self.notifications.set(Some(result));
+                self.push_context.set(context);
+            }
         });
     }
 

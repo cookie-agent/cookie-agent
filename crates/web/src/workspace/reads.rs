@@ -28,6 +28,8 @@ pub(super) struct Reads {
     pub config_status: Latest,
     pub runtime: Latest,
     pub onboarding: Latest,
+    /// `notifications.get` with what the browser says of push.
+    pub notifications: Latest,
     /// The escalated approvals, by root session.
     pub approvals: HashMap<SessionId, Latest>,
     /// The permission modes, by session.
