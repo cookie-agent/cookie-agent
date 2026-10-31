@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+mod lexical;
+
+pub use lexical::{LexicalPathError, label_is_absolute, normalize_absolute, path_label};
+
 /// Errors returned while resolving per-user paths.
 #[derive(Debug, Error)]
 pub enum PathError {

@@ -92,8 +92,9 @@ fn command_of(call: &ToolCallFields) -> Option<String> {
         .or_else(|| call.title.clone())
 }
 
-/// The paths a file call touches: its locations, else its raw input's path,
-/// else its title.
+/// The paths a file call touches, as labels
+/// ([`cookie_agent_protocol::paths::path_label`]): its locations, else its
+/// raw input's path, else its title.
 fn paths_of(call: &ToolCallFields) -> Vec<String> {
     let locations = call
         .locations
@@ -102,17 +103,22 @@ fn paths_of(call: &ToolCallFields) -> Vec<String> {
         .map(|location| location.path.clone())
         .filter(|path| !path.is_empty())
         .collect::<Vec<_>>();
-    if !locations.is_empty() {
-        return locations;
-    }
-    input_string(
-        call.raw_input.as_ref(),
-        &["path", "file_path", "filePath", "abs_path", "absPath"],
-    )
-    .map(str::to_owned)
-    .or_else(|| call.title.clone())
-    .into_iter()
-    .collect()
+    let paths = if locations.is_empty() {
+        input_string(
+            call.raw_input.as_ref(),
+            &["path", "file_path", "filePath", "abs_path", "absPath"],
+        )
+        .map(str::to_owned)
+        .or_else(|| call.title.clone())
+        .into_iter()
+        .collect()
+    } else {
+        locations
+    };
+    paths
+        .iter()
+        .map(|path| cookie_agent_protocol::paths::path_label(path))
+        .collect()
 }
 
 /// The MCP server and tool a call of kind `other` (or of a kind ACP v1
@@ -609,6 +615,26 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    #[test]
+    fn file_paths_are_labels_with_dots_collapsed() {
+        assert_eq!(
+            map_request(
+                &call(json!({"toolCallId": "a", "kind": "edit", "title": "Edit x",
+                       "locations": [{"path": "/ws/../../etc/cron.d/x"}]})),
+                None,
+            ),
+            rules(PermissionAction::WRITE, "/etc/cron.d/x")
+        );
+        assert_eq!(
+            map_request(
+                &call(json!({"toolCallId": "a", "kind": "read",
+                       "rawInput": {"file_path": r"C:\ws\.\src\..\.env"}})),
+                None,
+            ),
+            rules(PermissionAction::READ, "C:/ws/.env")
+        );
     }
 
     #[test]

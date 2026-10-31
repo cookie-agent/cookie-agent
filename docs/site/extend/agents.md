@@ -960,8 +960,11 @@ as `git *` also matches a longer command beginning with `git`. See
 process boundaries behind these tools.
 
 Path resource labels are normalized lexically from the single path requested by
-the caller. They are not canonicalized through symbolic links before permission
-matching. That one label authorizes the whole prepared `read`, `write`, or
+the caller: `/` separators on every platform, no Windows `\\?\` prefix, and
+`.` and `..` collapsed, so `/srv/ws/../../etc/hosts` is matched as
+`/etc/hosts`. The daemon reads every `read` and `write` resource so before
+matching, whoever labelled it, an ACP agent's request included. They are not
+canonicalized through symbolic links before permission matching. That one label authorizes the whole prepared `read`, `write`, or
 `edit` operation: if an allowed alias resolves outside the workspace, cookie
 agent does not perform a second permission check or require a rule for the
 resolved destination. Filesystem preparation resolves the route once and
@@ -993,7 +996,8 @@ is `ask`.
 against the workspace of the runtime that prepared the call; relative path
 labels resolve against it too. Base-layer and global-runtime tools have no
 workspace, so `${workspace_dir}` and relative-path patterns never match them. Ordinary absolute patterns
-such as `/etc/*` control outside-workspace paths. Permission patterns do not
+such as `/etc/*` control outside-workspace paths, a relative label that
+leaves the workspace (`../x`) included. Permission patterns do not
 expand environment variables; only a leading `~` expands (see
 [Paths under the home directory](#paths-under-the-home-directory)). A `*` matches across directory separators, so
 `"${workspace_dir}/*"` already covers nested paths such as

@@ -3,11 +3,12 @@
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
 };
 
 use cookie_agent_config::simple_wildcard_match;
+use cookie_agent_protocol::paths;
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentSnapshot, ApprovalEvaluation, DecisionTrace,
     EffectivePermissionAction, EffectivePermissionRule, EventPayload, MatchedPermissionRule,
@@ -1142,8 +1143,10 @@ pub(crate) fn agent_rules_with_sources(
 }
 
 /// Whether `pattern` matches `resource` for a tool whose runtime has
-/// `workspace`. `${workspace_dir}` patterns match the resource made absolute
-/// against the workspace. Without a workspace (the base layer and the global
+/// `workspace`. The resource of a path action (`read`, `write`) is matched
+/// as its label ([`paths::path_label`]), `.` and `..` collapsed, and made
+/// absolute against the workspace when it leaves it. `${workspace_dir}`
+/// patterns match the resource made absolute against the workspace. Without a workspace (the base layer and the global
 /// runtime) nothing can be resolved: `${workspace_dir}` patterns never match,
 /// and neither does any pattern for a relative path resource of a path action
 /// (`read`, `write`).
@@ -1155,20 +1158,33 @@ fn permission_pattern_matches(
 ) -> bool {
     let workspace_pattern =
         pattern.contains(cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION);
+    // A path is matched as the runtime labels it: `.` and `..` collapsed,
+    // relative inside the workspace and absolute outside it.
+    let resource = if action.is_path() {
+        let label = paths::path_label(resource);
+        match workspace {
+            Some(workspace) if label == ".." || label.starts_with("../") => {
+                Cow::Owned(absolute_resource(workspace, &label))
+            }
+            _ => Cow::Owned(label),
+        }
+    } else {
+        Cow::Borrowed(resource)
+    };
     match workspace {
         Some(workspace) if workspace_pattern => simple_wildcard_match(
             &expand_workspace_pattern(pattern, workspace),
-            &absolute_resource(workspace, resource),
+            &absolute_resource(workspace, &resource),
         ),
-        Some(_) => simple_wildcard_match(pattern, resource),
+        Some(_) => simple_wildcard_match(pattern, &resource),
         None if workspace_pattern => false,
-        None if action.is_path() && !Path::new(resource).is_absolute() => false,
-        None => simple_wildcard_match(pattern, resource),
+        None if action.is_path() && !paths::label_is_absolute(&resource) => false,
+        None => simple_wildcard_match(pattern, &resource),
     }
 }
 
 fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
-    let workspace = normalized_path(&canonical_workspace(workspace));
+    let workspace = workspace_label(workspace);
     if workspace == "/" {
         pattern.replace("${workspace_dir}/", "/").replace(
             cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION,
@@ -1182,23 +1198,22 @@ fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
     }
 }
 
+/// `resource` as a label from a root ([`paths::path_label`]): as it is when
+/// it names one on some platform, else read against `workspace`.
 fn absolute_resource(workspace: &Path, resource: &str) -> String {
-    let resource_path = Path::new(resource);
-    if resource_path.is_absolute() {
-        normalized_path(resource_path)
-    } else if resource_path == Path::new(".") {
-        normalized_path(&canonical_workspace(workspace))
-    } else {
-        normalized_path(&canonical_workspace(workspace).join(resource_path))
+    let label = paths::path_label(resource);
+    if paths::label_is_absolute(&label) {
+        return label;
     }
+    let workspace = workspace_label(workspace);
+    let separator = if workspace.ends_with('/') { "" } else { "/" };
+    paths::path_label(&format!("{workspace}{separator}{label}"))
 }
 
-fn canonical_workspace(workspace: &Path) -> PathBuf {
-    cookie_agent_protocol::paths::canonicalize(workspace).unwrap_or_else(|_| workspace.to_owned())
-}
-
-fn normalized_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+/// The label of `workspace`, canonicalized when it exists here.
+fn workspace_label(workspace: &Path) -> String {
+    let workspace = paths::canonicalize(workspace).unwrap_or_else(|_| workspace.to_owned());
+    paths::path_label(&workspace.to_string_lossy())
 }
 
 /// Rule precedence among matching rules: more literal characters, then fewer

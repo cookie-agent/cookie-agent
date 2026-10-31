@@ -15,7 +15,7 @@ mod unix {
         io::Write,
         os::fd::AsRawFd,
         os::unix::{ffi::OsStrExt, fs::MetadataExt},
-        path::{Component, Path, PathBuf},
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     };
 
@@ -393,31 +393,8 @@ mod unix {
     }
 
     fn normalize_absolute(path: PathBuf) -> Result<PathBuf, ToolError> {
-        if !path.is_absolute() {
-            return Err(ToolError::unsupported_security(
-                "filesystem path is not absolute",
-            ));
-        }
-        let mut normalized = PathBuf::from("/");
-        for component in path.components() {
-            match component {
-                Component::RootDir | Component::CurDir => {}
-                Component::Normal(name) => normalized.push(name),
-                Component::ParentDir => {
-                    if !normalized.pop() {
-                        return Err(ToolError::unsupported_security(
-                            "filesystem path traverses above its root",
-                        ));
-                    }
-                }
-                Component::Prefix(_) => {
-                    return Err(ToolError::unsupported_security(
-                        "filesystem path has an unsupported prefix",
-                    ));
-                }
-            }
-        }
-        Ok(normalized)
+        cookie_agent_protocol::paths::normalize_absolute(&path)
+            .map_err(|error| ToolError::unsupported_security(error.to_string()))
     }
 
     struct ResolvedPath {
@@ -1114,28 +1091,11 @@ mod windows {
     }
 
     fn normalize_absolute(path: &Path) -> Result<PathBuf, ToolError> {
-        if !path.is_absolute() {
-            return Err(ToolError::unsupported_security(
-                "filesystem path is not absolute",
-            ));
-        }
-        let mut normalized = PathBuf::new();
-        for component in path.components() {
-            match component {
-                Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-                Component::RootDir => normalized.push(Path::new("\\")),
-                Component::CurDir => {}
-                Component::Normal(name) => {
-                    validate_windows_component(name)?;
-                    normalized.push(name);
-                }
-                Component::ParentDir => {
-                    if normalized.file_name().is_none() || !normalized.pop() {
-                        return Err(ToolError::unsupported_security(
-                            "filesystem path traverses above its root",
-                        ));
-                    }
-                }
+        let normalized = cookie_agent_protocol::paths::normalize_absolute(path)
+            .map_err(|error| ToolError::unsupported_security(error.to_string()))?;
+        for component in normalized.components() {
+            if let Component::Normal(name) = component {
+                validate_windows_component(name)?;
             }
         }
         Ok(normalized)

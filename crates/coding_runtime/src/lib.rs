@@ -153,25 +153,13 @@ pub(crate) fn tool_error(error: impl std::fmt::Display) -> ToolError {
     ToolError::execution(error.to_string())
 }
 
+/// `path` as permission labels and results spell it
+/// ([`cookie_agent_protocol::paths::path_label`]), which the daemon's rules
+/// read the same way; on Windows with the long name of each `~` short one.
 fn normalized_path(path: &Path) -> String {
     #[cfg(windows)]
     let path = fs_cap::lexical_path_spelling(path);
-    let value = readable_path(path.to_string_lossy().replace('\\', "/"));
-    if value.is_empty() { ".".into() } else { value }
-}
-
-#[cfg(windows)]
-fn readable_path(value: String) -> String {
-    if let Some(path) = value.strip_prefix("//?/UNC/") {
-        format!("//{path}")
-    } else {
-        value.strip_prefix("//?/").unwrap_or(&value).to_owned()
-    }
-}
-
-#[cfg(not(windows))]
-fn readable_path(value: String) -> String {
-    value
+    cookie_agent_protocol::paths::path_label(&path.to_string_lossy())
 }
 
 pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {

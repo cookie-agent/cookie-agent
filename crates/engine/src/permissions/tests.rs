@@ -1628,6 +1628,46 @@ fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
 }
 
 #[test]
+fn path_resources_are_matched_with_dots_collapsed() {
+    // Paths must be absolute on the platform the test runs on.
+    let root = if cfg!(windows) { "C:" } else { "" };
+    let path = |rest: &str| format!("{root}{rest}");
+    let policy = policy(vec![
+        rule(
+            "workspace-write",
+            PermissionAction::WRITE,
+            "${workspace_dir}/*",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "secrets",
+            PermissionAction::WRITE,
+            &path("/etc/*"),
+            PermissionEffect::Deny,
+        ),
+    ]);
+    let workspace = path("/srv/ws");
+    let workspace = Some(std::path::Path::new(&workspace));
+    let decide = |resource: &str| {
+        super::effective_permission(&policy, &PermissionAction::WRITE, resource, workspace).0
+    };
+    for (resource, effect) in [
+        (path("/srv/ws/src/lib.rs"), PermissionEffect::Allow),
+        (path("/srv/ws/src/../.env"), PermissionEffect::Allow),
+        ("src/./../.env".to_owned(), PermissionEffect::Allow),
+        // Out of the workspace, however it is spelled.
+        (path("/srv/ws/../../etc/cron.d/x"), PermissionEffect::Deny),
+        ("../../etc/cron.d/x".to_owned(), PermissionEffect::Deny),
+        (path("/srv/ws/../other/x"), PermissionEffect::Ask),
+        ("src/../../other/x".to_owned(), PermissionEffect::Ask),
+        // A Windows path is read as one wherever the daemon runs.
+        (r"D:\srv\ws\x".to_owned(), PermissionEffect::Ask),
+    ] {
+        assert_eq!(decide(&resource), effect, "{resource}");
+    }
+}
+
+#[test]
 fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
     let policy = policy(vec![
         rule(

@@ -315,6 +315,28 @@ fn unix_display_path_comparison_remains_lexical_for_symlinked_workspaces() {
 }
 
 #[test]
+fn permission_labels_collapse_dots_as_the_daemon_reads_them() {
+    let directory = tempfile::tempdir().expect("temporary root");
+    let workspace =
+        cookie_agent_protocol::paths::canonicalize(directory.path()).expect("workspace");
+    let label = |path: std::path::PathBuf| {
+        super::permission_path_label(&path.to_string_lossy(), &workspace)
+    };
+    assert_eq!(label(workspace.join("src").join("..").join(".env")), ".env");
+    assert_eq!(label(workspace.join(".").join("src")), "src");
+    let outside = workspace.join("..").join("outside");
+    assert_eq!(
+        label(outside.clone()),
+        cookie_agent_protocol::paths::path_label(&outside.to_string_lossy())
+    );
+    assert!(!label(outside).contains(".."));
+    assert_eq!(
+        super::permission_path_label("src/../../x", &workspace),
+        "../x"
+    );
+}
+
+#[test]
 fn relative_display_path_is_returned_before_workspace_comparison() {
     assert_eq!(
         super::abbreviated_display_path("workspace/src/lib.rs", std::path::Path::new("workspace"),),
