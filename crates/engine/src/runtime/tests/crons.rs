@@ -222,6 +222,15 @@ async fn a_run_that_ends_before_its_fire_is_recorded_delivered_is_counted() {
     let mut create = params("Tidy the notes.", daily(), CronTarget::Session(session));
     create.max_runs = Some(CronMaxRuns::Unlimited);
     let job = engine.create_cron(create).await.expect("created");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "Tidy the notes.",
+            scripted_text_body("tidied"),
+        ))
+        .unwrap();
+    // Installed before the job is due: the engine's own scheduler may claim
+    // the fire before this test's tick does, and its delivery is held too.
+    let (reached, release) = engine.install_cron_settle_hook();
     let target = job.id.clone();
     engine
         .crons_now(move |_, jobs| {
@@ -231,14 +240,6 @@ async fn a_run_that_ends_before_its_fire_is_recorded_delivered_is_counted() {
             Ok(())
         })
         .unwrap();
-    responses
-        .send(MatchedScriptedResponse::last_message_contains(
-            "Tidy the notes.",
-            scripted_text_body("tidied"),
-        ))
-        .unwrap();
-
-    let (reached, release) = engine.install_cron_settle_hook();
     let ticking = engine.clone();
     let tick = tokio::spawn(async move { ticking.cron_tick(Timestamp::now()).await });
     with_watchdog("the fire's delivery", reached)
@@ -255,7 +256,13 @@ async fn a_run_that_ends_before_its_fire_is_recorded_delivered_is_counted() {
     release.notify_one();
     with_watchdog("the tick", tick).await.expect("ticked");
 
-    let settled = engine.cron_store().job(&job.id).unwrap();
+    // Whichever tick claimed it, the fire settles once its delivery does.
+    let settled = await_job(engine, &job.id, "the fire's settling", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.outcome != StoredOutcome::Pending && fire.run_end.is_some())
+    })
+    .await;
     let fire = settled.history.last().unwrap();
     assert_eq!(fire.outcome, StoredOutcome::Delivered);
     assert_eq!(
@@ -263,6 +270,7 @@ async fn a_run_that_ends_before_its_fire_is_recorded_delivered_is_counted() {
         Some(SessionStatus::Completed)
     );
     assert_eq!(settled.consecutive_failures, 0);
+    assert_eq!(settled.history.len(), 1);
 }
 
 /// A store that fails leaves a due fire due, so the scheduler waits before
