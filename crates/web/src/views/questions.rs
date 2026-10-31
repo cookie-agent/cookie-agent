@@ -6,13 +6,13 @@
 //! choosing. The card leaves once the daemon records the answer.
 
 use cookie_agent_client_state::elicitation::{
-    DraftValue, FieldProblem, FormDraft, QuestionKind, QuestionState, field_hint, url_host,
-    url_warnings,
+    DraftValue, FieldProblem, FormDraft, QuestionKind, QuestionState, field_hint, is_other_field,
+    other_field, url_host, url_warnings,
 };
 use cookie_agent_protocol::{
     ElicitationAction, ElicitationContent, ElicitationField, ElicitationForm, ElicitationInput,
 };
-use leptos::prelude::*;
+use leptos::{html, prelude::*};
 
 use super::{BUTTON, ERROR, NOTE, PRIMARY};
 use crate::{icons::Glyph, workspace::Workspace};
@@ -242,11 +242,97 @@ fn form_view(
         {form.title.clone().map(|title| view! { <p class="text-sm font-bold">{title}</p> })}
         {form.description.clone().map(|description| view! { <p class=NOTE>{description}</p> })}
         <div class="flex flex-col gap-3">
-            {form.fields.iter().enumerate().map(|(index, field)| {
-                let control = field_control(id, index, field, current(index), set);
-                field_view(index, field, control, problem)
+            {form.fields.iter().enumerate().filter(|(index, _)| !is_other_field(form, *index)).map(|(index, field)| {
+                // A choice's "Other" text shows as its last option.
+                let other = other_field(form, index).map(|other_index| {
+                    let text = match current(other_index) {
+                        Some(DraftValue::Text(text)) => text,
+                        _ => String::new(),
+                    };
+                    Other {
+                        index: other_index,
+                        chosen: RwSignal::new(!text.is_empty()),
+                        text: RwSignal::new(text),
+                    }
+                });
+                let control = field_control(id, index, field, current(index), other, set);
+                field_view(index, field, control, other.map(|other| other.index), problem)
             }).collect_view()}
         </div>
+    }
+}
+
+/// A choice's "Other" text field: its index, whether "Other" is chosen,
+/// and what its box holds.
+#[derive(Clone, Copy)]
+struct Other {
+    index: usize,
+    chosen: RwSignal<bool>,
+    text: RwSignal<String>,
+}
+
+impl Other {
+    /// Chooses "Other" or lets go of it: the draft holds the box's text
+    /// only while it is chosen.
+    fn choose(self, on: bool, set: impl Fn(usize, DraftValue)) {
+        self.chosen.set(on);
+        let text = if on {
+            self.text.get_untracked()
+        } else {
+            String::new()
+        };
+        set(self.index, DraftValue::Text(text));
+    }
+}
+
+/// "Other" as a choice's last option (a radio, or a checkbox for a
+/// multi-choice), then a text box while it is chosen.
+fn other_option(
+    group: String,
+    multiple: bool,
+    other: Other,
+    choose: impl Fn(bool) + Copy + Send + Sync + 'static,
+    set: impl Fn(usize, DraftValue) + Copy + Send + Sync + 'static,
+) -> impl IntoView {
+    let field = NodeRef::<html::Input>::new();
+    // The box takes the focus as it shows.
+    Effect::new(move |_| {
+        if let Some(input) = field.get() {
+            request_animation_frame(move || {
+                let _ = input.focus();
+            });
+        }
+    });
+    view! {
+        <label class=OPTION>
+            <input
+                type=if multiple { "checkbox" } else { "radio" }
+                class="mt-0.5 h-5 w-5 shrink-0"
+                name=(!multiple).then_some(group)
+                data-choice-other
+                prop:checked=other.chosen.get_untracked()
+                on:change=move |event| choose(event_target_checked(&event))
+            />
+            <span class="text-sm">"Other"</span>
+        </label>
+        <Show when=move || other.chosen.get()>
+            <div class="pr-2 pb-1 pl-9">
+                <input
+                    type="text"
+                    class=FIELD
+                    aria-label="Your answer"
+                    placeholder="Your answer"
+                    data-other-text
+                    node_ref=field
+                    prop:value=move || other.text.get_untracked()
+                    on:input=move |event| {
+                        let text = event_target_value(&event);
+                        other.text.set(text.clone());
+                        set(other.index, DraftValue::Text(text));
+                    }
+                />
+            </div>
+        </Show>
     }
 }
 
@@ -254,6 +340,7 @@ fn field_view(
     index: usize,
     field: &ElicitationField,
     control: AnyView,
+    other: Option<usize>,
     problem: RwSignal<Option<FieldProblem>>,
 ) -> impl IntoView {
     let hint = field_hint(field);
@@ -266,22 +353,28 @@ fn field_view(
             {field.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
             {(!hint.is_empty()).then(|| view! { <span class=NOTE data-field-hint>{hint}</span> })}
             {control}
-            {move || problem.get().filter(|problem| problem.index == index).map(|problem| view! {
+            {move || problem.get().filter(|problem| problem.index == index || Some(problem.index) == other).map(|problem| view! {
                 <p class=ERROR role="alert" data-field-problem>{problem.message}</p>
             })}
         </div>
     }
 }
 
-/// The input of field `index`, starting at `value`; `set` records each
-/// change in the draft.
+/// The input of field `index`, starting at `value`, with a choice's
+/// "Other" as its last option; `set` records each change in the draft.
 fn field_control(
     id: &str,
     index: usize,
     field: &ElicitationField,
     value: Option<DraftValue>,
+    other: Option<Other>,
     set: impl Fn(usize, DraftValue) + Copy + Send + Sync + 'static,
 ) -> AnyView {
+    let let_go_of_other = move || {
+        if let Some(other) = other {
+            other.choose(false, set);
+        }
+    };
     let label = field.label().to_owned();
     let group = format!("question-{id}-{index}");
     match (field.input.known(), value) {
@@ -327,8 +420,11 @@ fn field_control(
                             type="radio"
                             class="mt-0.5 h-5 w-5 shrink-0"
                             name=group
-                            prop:checked=chosen.is_none()
-                            on:change=move |_| set(index, DraftValue::Choice(None))
+                            prop:checked=chosen.is_none() && !other.is_some_and(|other| other.chosen.get_untracked())
+                            on:change=move |_| {
+                                let_go_of_other();
+                                set(index, DraftValue::Choice(None));
+                            }
                         />
                         <span class="text-sm opacity-70">"No choice"</span>
                     </label>
@@ -346,7 +442,10 @@ fn field_control(
                                     name=group
                                     data-choice=choice.value.clone()
                                     prop:checked=chosen == Some(choice_index)
-                                    on:change=move |_| set(index, DraftValue::Choice(Some(choice_index)))
+                                    on:change=move |_| {
+                                        let_go_of_other();
+                                        set(index, DraftValue::Choice(Some(choice_index)));
+                                    }
                                 />
                                 <span class="flex min-w-0 flex-col">
                                     <span class="text-sm break-words">{choice.title.clone()}</span>
@@ -355,6 +454,10 @@ fn field_control(
                             </label>
                         }
                     }).collect_view()}
+                    {other.map(|other| other_option(group.clone(), false, other, move |_| {
+                        set(index, DraftValue::Choice(None));
+                        other.choose(true, set);
+                    }, set))}
                     {none}
                 </fieldset>
             }
@@ -390,6 +493,7 @@ fn field_control(
                             </span>
                         </label>
                     }).collect_view()}
+                    {other.map(|other| other_option(group.clone(), true, other, move |on| other.choose(on, set), set))}
                 </fieldset>
             }
             .into_any()

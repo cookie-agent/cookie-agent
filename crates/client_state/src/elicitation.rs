@@ -155,6 +155,31 @@ impl FormDraft {
     }
 }
 
+/// The free-text "Other" field of the choice field `index`: a text field
+/// named `<name>_custom`, as Claude Code's adapter sends one beside each
+/// AskUserQuestion question. Clients show it as the choices' last option,
+/// with a text box while it is chosen, not as a field of its own.
+#[must_use]
+pub fn other_field(form: &ElicitationForm, index: usize) -> Option<usize> {
+    let field = form.fields.get(index)?;
+    if !matches!(
+        field.input.known(),
+        Some(ElicitationInput::Choice { .. } | ElicitationInput::MultiChoice { .. })
+    ) {
+        return None;
+    }
+    let name = format!("{}_custom", field.name);
+    form.fields.iter().position(|other| {
+        other.name == name && matches!(other.input.known(), Some(ElicitationInput::Text { .. }))
+    })
+}
+
+/// Whether field `index` is a choice's "Other" text (see [`other_field`]).
+#[must_use]
+pub fn is_other_field(form: &ElicitationForm, index: usize) -> bool {
+    (0..form.fields.len()).any(|owner| other_field(form, owner) == Some(index))
+}
+
 fn default_value(field: &ElicitationField) -> DraftValue {
     match field.input.known() {
         None => DraftValue::Unsupported,
@@ -429,6 +454,34 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn a_choices_other_text_is_its_custom_field() {
+        let form: ElicitationForm = serde_json::from_value(json!({"fields": [
+            {"name": "question_0", "input": {"type": "choice",
+                "choices": [{"value": "a", "title": "A"}]}},
+            {"name": "question_0_custom", "title": "Other", "input": {"type": "text"}},
+            {"name": "question_1", "input": {"type": "multi_choice",
+                "choices": [{"value": "x", "title": "X"}]}},
+            {"name": "question_1_custom", "input": {"type": "text"}},
+            {"name": "note", "input": {"type": "text"}},
+            {"name": "note_custom", "input": {"type": "text"}},
+            {"name": "plan", "input": {"type": "choice", "choices": []}},
+            {"name": "plan_custom", "input": {"type": "integer"}}
+        ]}))
+        .unwrap();
+        let others = (0..form.fields.len())
+            .map(|index| other_field(&form, index))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            others,
+            [Some(1), None, Some(3), None, None, None, None, None]
+        );
+        let hidden = (0..form.fields.len())
+            .filter(|index| is_other_field(&form, *index))
+            .collect::<Vec<_>>();
+        assert_eq!(hidden, [1, 3]);
     }
 
     #[test]

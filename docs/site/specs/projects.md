@@ -298,9 +298,10 @@ these rules:
     active goal or background calls. Every other session follows. Each
     group is ordered by last activity, newest first.
   - Each header shows the project's emoji (a folder icon when it has
-    none) and its name, with no count. When the project has default
-    attachments, a second line shows them as badges, by the session-row
-    rules of [section 9](#9-session-badges) (added 2026-10-21). The header
+    none) and its name, with no count. Its default attachments show only
+    in its tooltip; the web client dropped their badge line on
+    2026-10-30, leaving badges to session rows. The section's rows sit
+    indented under the header. The header
     also has:
     - `+` for a new session in the project, always visible;
     - a pencil, then a delete button, shown like the session rows' buttons

@@ -139,8 +139,13 @@ and this writes none.
   click toggles it instead of opening the session; Shift+click selects the
   range from the last toggled row; a phone's long press on a row starts
   select mode with that row. **Select all** selects every root row the list
-  shows (a folded section's shown rows included, the rest not). Escape or
-  **Done** leaves select mode and clears the selection.
+  shows (a folded section's shown rows included, the rest not), and reads
+  **Unselect all**, which clears the selection, while every one of them is
+  selected. Each project section's header shows a checkbox too: a click
+  selects all of the section's sessions (folded ones included), or clears
+  them when all are selected, and it shows none, some (a dash), or all of
+  them selected. Escape or **Done** leaves select mode and clears the
+  selection.
 - **The selection bar** replaces the list's header while anything is
   selected: the count, **Mark read**, **Mark unread**, **Delete**, and
   **Done**.

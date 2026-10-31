@@ -215,6 +215,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     and the composer under them (below); the first message creates the
     session with the selected cards and the agent, model, and permission
     mode in the bottom bar.
+  - **Searching.** The magnifier beside **New session** opens a search
+    box: the list shows only the sessions whose title holds what you type
+    (any case), in folded project sections too, and hides projects with
+    none. **Escape** or **×** closes it.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
   - **Renaming.** Click the title in the title bar, or choose ⋮ ›
@@ -239,7 +243,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     session**) turns its header into a selection bar: a click on a root
     session's row selects it or lets it go, **Shift**+click selects the
     rows from the last one clicked, and **Select all** selects every root
-    row the list shows. **Mark read** and **Mark unread** mark the
+    row the list shows (it reads **Unselect all** once they all are). Each
+    project's header shows a checkbox that selects all of the project's
+    sessions, folded ones included, or clears them; it shows a dash when
+    only some are selected. **Mark read** and **Mark unread** mark the
     selection and keep it; **Delete** asks once, naming up to five, then
     deletes each tree as its row showed it. A tree that cannot go (it
     runs, changed since you selected it, or another cookie process holds
@@ -249,8 +256,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   oldest project first, so a new one goes last and the others keep their
   places, then **No project** last.
   - **Headers.** A project's header shows its emoji (a folder when it has
-    none) and its name; when its defaults attach runtimes, a second line
-    shows them as badges, by the session rows' rules. Click a header to
+    none) and its name; its tooltip names the runtimes its defaults
+    attach. The section's sessions sit indented under it, and a little
+    space parts one section from the next.
+    Click a header to
     fold or unfold its section; the browser remembers it. A folded section
     still shows its sessions at work: running, or waiting on a producer
     (a goal, a background call, a subagent) to start their next run, but
@@ -540,7 +549,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   subagent's delegate row says the same. A form lists its fields in order:
   radios for a choice (*No choice* for an optional one), checkboxes for a
   multiple choice and for yes or no, and text, email, URL, date, or number
-  boxes, each with its hint and a `*` when required. **Submit** names the
+  boxes, each with its hint and a `*` when required. A choice's free-text
+  companion (Claude Code's per-question "Other") is the choice's last
+  option, **Other**, with a box for your own answer while it is chosen. **Submit** names the
   first field that does not fit under it and sends nothing until it does;
   **Decline** and **Cancel** answer at once. A page to open shows the whole
   URL with its host in bold and any warning, an **Open** link that only your

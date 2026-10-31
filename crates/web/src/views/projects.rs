@@ -5,19 +5,22 @@
 //! and the new session's project picker.
 
 use cookie_agent_client_state::{
-    badges::{project_badges, project_badges_tooltip},
+    badges::project_badges_tooltip,
     projects::{ProjectSection, delete_question, project_label, project_sections, validate_emoji},
 };
-use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId};
+use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId, SessionMeta};
 use leptos::{ev, html, prelude::*};
 
-use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, RowActions, choice_line, session_row};
+use super::{
+    BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, RowActions, choice_line, empty_state,
+    search_matches, search_query, session_row,
+};
 use crate::{
     browser,
     icons::Glyph,
     layout::{Press, View},
     machines::{Drag, DragEnd, DragStep},
-    workspace::{CardSet, Workspace},
+    workspace::{CardSet, PickState, Workspace},
 };
 
 /// How long a finger holds a session row before it lifts to be dragged,
@@ -284,20 +287,63 @@ pub(super) fn project_list(
     drag: SessionDrag,
     headers: HeaderActions,
 ) -> impl IntoView {
-    let sections = Memo::new(move |_| {
-        workspace.projects.with(|projects| {
-            workspace
-                .sessions
-                .with(|sessions| project_sections(projects, sessions))
-        })
-    });
+    let sections = Memo::new(move |_| searched_sections(workspace));
     move || {
+        let sections = sections.get();
+        if sections.is_empty() && search_query(workspace).is_some() {
+            return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
+        }
         sections
-            .get()
             .into_iter()
             .map(|section| section_view(workspace, section, now, actions, drag, headers))
             .collect_view()
+            .into_any()
     }
+}
+
+/// The project sections, while the list's search holds something only
+/// those with sessions that match it, and only those sessions.
+fn searched_sections(workspace: Workspace) -> Vec<ProjectSection> {
+    let query = search_query(workspace);
+    let mut sections = workspace.projects.with(|projects| {
+        workspace
+            .sessions
+            .with(|sessions| project_sections(projects, sessions))
+    });
+    if query.is_some() {
+        for section in &mut sections {
+            section
+                .sessions
+                .retain(|session| search_matches(session, query.as_deref()));
+        }
+        sections.retain(|section| !section.sessions.is_empty());
+    }
+    sections
+}
+
+/// The root rows the project sections show, in page order: an open
+/// section's sessions, and a folded one's at work or unread; a search's
+/// matches, folded or not.
+pub(super) fn listed_rows(workspace: Workspace) -> Vec<SessionId> {
+    let searching = search_query(workspace).is_some();
+    searched_sections(workspace)
+        .iter()
+        .flat_map(|section| {
+            let open = searching || workspace.section_open(&section.key());
+            section
+                .sessions
+                .iter()
+                .filter(move |session| row_shown(open, session))
+                .map(|session| session.session_id)
+        })
+        .collect()
+}
+
+/// Whether a section shows `session`'s row: an open one all of them, a
+/// folded one its sessions at work (running, or waiting on a producer)
+/// and its unread ones.
+fn row_shown(open: bool, session: &SessionMeta) -> bool {
+    open || session.unread || cookie_agent_client_state::activity::session_at_work(session)
 }
 
 /// One section: its header, then its sessions while it is open, and its
@@ -319,12 +365,13 @@ fn section_view(
     let sessions = section.sessions.clone();
     let empty = sessions.is_empty();
     view! {
-        <section class="flex flex-col gap-1" data-project-section=key.clone() data-open=move || open.get().to_string()>
+        <section class="flex flex-col gap-1 pb-2" data-project-section=key.clone() data-open=move || open.get().to_string()>
             {project_header(workspace, section.project.clone(), key.clone(), open, drag, headers, sessions.iter().map(|session| session.session_id).collect())}
             {
                 let sessions = sessions.clone();
                 move || {
-                    let open = open.get();
+                    // A search shows its matches in folded sections too.
+                    let open = open.get() || search_query(workspace).is_some();
                     if empty {
                         return open
                             .then(|| view! { <p class=format!("px-3 pb-1 {NOTE}") data-section-empty>"No sessions yet."</p> })
@@ -332,16 +379,21 @@ fn section_view(
                     }
                     // Folded, the section still shows its sessions at work,
                     // as a folded subagent tree shows its running agents.
-                    sessions
+                    // Its rows sit indented under the header.
+                    let rows = sessions
                         .iter()
-                        .filter(|session| {
-                            open
-                                || session.unread
-                                || cookie_agent_client_state::activity::session_at_work(session)
-                        })
+                        .filter(|session| row_shown(open, session))
                         .cloned()
-                        .map(|session| session_row(workspace, session, now, actions, drag))
-                        .collect_view()
+                        .collect::<Vec<_>>();
+                    (!rows.is_empty())
+                        .then(|| view! {
+                            <div class="ml-4 flex flex-col gap-1" data-section-rows>
+                                {rows
+                                    .into_iter()
+                                    .map(|session| session_row(workspace, session, now, actions, drag))
+                                    .collect_view()}
+                            </div>
+                        })
                         .into_any()
                 }
             }
@@ -350,8 +402,8 @@ fn section_view(
 }
 
 /// A section's header: a click folds or opens it. It shows the project's
-/// emoji (a folder without one) and its name, then its default
-/// attachments as badges. `+` starts a session in it; a project's pencil
+/// emoji (a folder without one) and its name; its tooltip names its
+/// default attachments. `+` starts a session in it; a project's pencil
 /// and delete show on hover, or after a long press on a touch screen.
 /// Sessions dropped on it move into it.
 fn project_header(
@@ -373,28 +425,6 @@ fn project_header(
     let defaults = project
         .as_ref()
         .and_then(|project| project.defaults.clone());
-    let badge_line = NodeRef::<html::Span>::new();
-    crate::badges::keep_fitted(badge_line);
-    let badges = {
-        let defaults = defaults.clone();
-        move || {
-            let homes = workspace.homes();
-            let shown = workspace
-                .runtimes
-                .with(|listing| project_badges(defaults.as_ref(), listing.as_ref(), &homes));
-            crate::badges::fit_soon(badge_line);
-            crate::badges::badge_line(shown)
-        }
-    };
-    let has_badges = {
-        let defaults = defaults.clone();
-        move || {
-            let homes = workspace.homes();
-            workspace.runtimes.with(|listing| {
-                !project_badges(defaults.as_ref(), listing.as_ref(), &homes).is_empty()
-            })
-        }
-    };
     let tooltip = {
         let defaults = defaults.clone();
         let label = label.clone();
@@ -431,6 +461,17 @@ fn project_header(
                 && (hovered.get().as_deref() == Some(key.as_str())
                     || revealed.get().as_deref() == Some(key.as_str()))
         }
+    };
+    // In select mode, a checkbox for all of the section's sessions.
+    let picks = members.clone();
+    let pick_state = {
+        let picks = picks.clone();
+        Memo::new(move |_| workspace.pick_state(&picks))
+    };
+    let pick_label = format!("Select the sessions in {label}");
+    let picking = {
+        let empty = members.is_empty();
+        move || workspace.picking.active.get() && !empty
     };
     // A dragged session from another section can land here.
     let target = {
@@ -492,7 +533,7 @@ fn project_header(
     view! {
         <div
             class=move || format!(
-                "project-header group relative rounded-md {}",
+                "project-header group relative flex rounded-md {}",
                 if ring() { "bg-toasted ring-2 ring-caramel dark:bg-ember dark:ring-maple" } else { "" },
             )
             data-project-drop=key.clone()
@@ -509,9 +550,30 @@ fn project_header(
                 }
             }
         >
+            <Show when=picking>
+                <button
+                    type="button"
+                    class="inline-flex min-h-11 w-9 shrink-0 items-center justify-center self-start rounded-md text-caramel hover:bg-crust active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:text-maple dark:hover:bg-smoke dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]"
+                    role="checkbox"
+                    aria-checked=move || pick_state.get().aria_checked()
+                    aria-label=pick_label.clone()
+                    title=pick_label.clone()
+                    data-section-pick=move || pick_state.get().aria_checked()
+                    on:click={
+                        let picks = picks.clone();
+                        move |_| workspace.toggle_picks(&picks)
+                    }
+                >
+                    <Glyph icon=Signal::derive(move || match pick_state.get() {
+                        PickState::None => icondata::FaSquareRegular,
+                        PickState::Some => icondata::FaSquareMinusSolid,
+                        PickState::All => icondata::FaSquareCheckSolid,
+                    }) />
+                </button>
+            </Show>
             <button
                 type="button"
-                class="no-callout flex w-full flex-col items-stretch rounded-md text-left select-none hover:bg-toasted active:bg-crust group-hover:bg-toasted dark:hover:bg-ember dark:active:bg-smoke dark:group-hover:bg-ember"
+                class="no-callout flex min-w-0 flex-1 flex-col items-stretch rounded-md text-left select-none hover:bg-toasted active:bg-crust group-hover:bg-toasted dark:hover:bg-ember dark:active:bg-smoke dark:group-hover:bg-ember"
                 aria-expanded=move || open.get().to_string()
                 title=tooltip
                 data-section-toggle
@@ -540,8 +602,7 @@ fn project_header(
                 }
             >
                 // The name's line keeps clear of `+`; the pencil and trash
-                // lie over it when they show, without moving it. The
-                // badges' line below has the width to itself.
+                // lie over it when they show, without moving it.
                 <span class="flex min-h-11 w-full items-center gap-2 pr-12 pl-2">
                     <span class="inline-flex shrink-0 opacity-70 transition-transform" class:rotate-90=move || open.get()>
                         <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
@@ -555,11 +616,6 @@ fn project_header(
                         {label.clone()}
                     </span>
                 </span>
-                <Show when=has_badges.clone()>
-                    <span class="flex min-w-0 items-center gap-1 overflow-hidden pb-1.5 pr-2 pl-9 text-xs" node_ref=badge_line data-project-badges>
-                        {badges.clone()}
-                    </span>
-                </Show>
             </button>
             // Level with the name's line: the pencil and delete (on hover,
             // or after a long press), then `+`, always there.

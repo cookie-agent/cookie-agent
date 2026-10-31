@@ -1164,7 +1164,10 @@ elicitations. Before, cookie advertised neither mode and these degraded.
   subagent's delegate row (`tree::Activity::WaitingForAnswer`, ahead of a
   waiting approval). Both show who asks, the message, a form's fields with their
   hints and the first field that does not fit, or a URL with its host and
-  warnings, and Submit/Done, Decline, and Cancel.
+  warnings, and Submit/Done, Decline, and Cancel. The web client shows a
+  choice's `<name>_custom` text field (`elicitation::other_field`) as the
+  choice's last option, **Other**, with a text box while it is chosen; the
+  text is sent only while **Other** is chosen.
 
 **Tests** (elicitation): the fixture's `elicit form|url|url-complete` and
 `elicit-wait`; an AskUserQuestion-shaped form answered (fields, the call it

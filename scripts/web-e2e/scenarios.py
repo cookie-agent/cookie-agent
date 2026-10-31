@@ -522,6 +522,15 @@ def tool_rows(browser):
     browser.wait("the open row", lambda: expanded(browser, row) == "true")
     browser.wait("the budget", lambda: "36 more lines (click to expand)" in browser.text(row))
     assert "\n70\n" not in browser.text(row), "output past the budget shows"
+    # Its one-line header, open, keeps its icons and title level in the
+    # middle of the row, as when folded.
+    centers = browser.script(
+        "const b = document.querySelector(arguments[0] + ' [data-action=toggle-tool]');"
+        "const mid = (e) => { const r = e.getBoundingClientRect(); return r.top + r.height / 2; };"
+        "return [mid(b), mid(b.querySelector('[data-header]')), mid(b.querySelector('svg'))]",
+        row,
+    )
+    assert max(centers) - min(centers) < 2, centers
     browser.shot("tool-budget")
     browser.click(row + " [data-more-lines]")
     browser.wait("every line", lambda: "100" in browser.text(row) and "click to collapse" in browser.text(row))
@@ -2887,10 +2896,13 @@ def session_drafts(browser):
 
 
 def unread_and_select(browser):
-    """Select mode in the session list: rows toggle, Shift extends a range,
-    the selection is marked unread (a dot on each row and on the rail's
-    Chat button) and read again, and a batch delete skips the running
-    session, deletes the rest, and keeps the skipped one selected."""
+    """Select mode in the session list: a project section's checkbox
+    selects all of its sessions and shows none, some, or all, Select all
+    turns into Unselect all, rows toggle, Shift extends a range, the
+    selection is marked unread (a dot on each row and on the rail's Chat
+    button) and read again, and a batch delete skips the running session,
+    deletes the rest, and keeps the skipped one selected. The list's
+    search shows only the sessions whose title matches."""
     made = []
     for text in ("select one", "select two"):
         new_session(browser)
@@ -2905,10 +2917,30 @@ def unread_and_select(browser):
     dot = lambda session: count(browser, row(session) + " [data-unread]") == 1
     picked = lambda: browser.text("#selection-bar [data-picked-count]")
 
+    section_pick = (
+        "return document.querySelector(arguments[0]).closest('[data-project-section]')"
+        ".querySelector('[data-section-pick]')"
+    )
+    section_state = lambda: browser.script(section_pick + ".getAttribute('aria-checked')", row(made[0]))
+    click_section = lambda: browser.script(section_pick + ".click()", row(made[0]))
+    select_all = lambda: browser.text("#select-all")
+
     browser.click("#select-sessions")
     browser.wait("select mode", lambda: picked() == "Select sessions")
+    assert section_state() == "false", section_state()
+    click_section()
+    browser.wait("the whole section", lambda: section_state() == "true" and picked() != "Select sessions")
+    click_section()
+    browser.wait("none of the section", lambda: section_state() == "false" and picked() == "Select sessions")
+    browser.click("#select-all")
+    browser.wait("every row", lambda: select_all() == "Unselect all" and section_state() == "true")
+    browser.click("#select-all")
+    browser.wait("no row", lambda: select_all() == "Select all" and picked() == "Select sessions")
+    print("a section's checkbox and Select all select, and clear, every row")
     click_row(browser, row(made[0]))
     browser.wait("one selected", lambda: picked() == "1 selected")
+    assert section_state() == "mixed", section_state()
+    browser.shot("select-section-some")
     # Shift extends from the last row toggled.
     browser.script(
         "document.querySelector(arguments[0]).dispatchEvent("
@@ -2944,6 +2976,23 @@ def unread_and_select(browser):
     click_row(browser, row(running))
     browser.type("#composer", ESCAPE)
     idle(browser, "the cancelled run's end")
+
+    titles = lambda: browser.script(
+        "return [...document.querySelectorAll('aside nav[aria-label=Sessions] [data-session-title]')]"
+        ".map((t) => t.textContent)"
+    )
+    shown = len(titles())
+    title = browser.text(row(running) + " [data-session-title]")
+    browser.click("#search-sessions")
+    browser.type("#session-search", title.upper())
+    browser.wait(
+        "the matches",
+        lambda: count(browser, row(running)) == 1 and all(title.lower() in t.lower() for t in titles()),
+    )
+    browser.shot("session-search")
+    browser.click("#search-sessions-close")
+    browser.wait("every session again", lambda: len(titles()) == shown and count(browser, "#session-search") == 0)
+    print("the search showed only the sessions titled", repr(title))
 
 
 def rows_stay_put(browser):
@@ -4482,14 +4531,14 @@ def projects(browser):
     assert 'emoji = "🍪"' in toml and 'agent = "builder"' in toml and 'preset = "review"' in toml, toml
     assert "~/workspace" in toml or "workspace" in toml, toml
     assert agents == "Answer in one line.\n", agents
-    # Its header shows where it runs, as the rows do.
-    header_badges = browser.script(
-        "return [...document.querySelectorAll(arguments[0] + ' [data-badge]')]"
-        ".filter((b) => !b.hidden).map((b) => b.textContent.trim())",
-        header(project),
+    # Its header names where it runs in its tooltip only: the badges are
+    # the rows'.
+    assert count(browser, header(project) + " [data-badge]") == 0
+    tooltip = browser.script(
+        "return document.querySelector(arguments[0] + ' [data-section-toggle]').title", header(project)
     )
-    assert len(header_badges) == 2 and header_badges[1] == "~/workspace", header_badges
-    print("made project e2e-web with an emoji, defaults, and AGENTS.md; its header shows", header_badges)
+    assert "~/workspace" in tooltip, tooltip
+    print("made project e2e-web with an emoji, defaults, and AGENTS.md; its header's tooltip:", repr(tooltip))
 
     # A new session in it from its +: the cards and the agent prefilled.
     browser.click(header(project) + " [data-header-new]")
@@ -5465,7 +5514,19 @@ def acp_questions(browser):
     fields = browser.script(
         "return [...document.querySelectorAll('#question [data-field]')].map(e => e.dataset.field)"
     )
-    assert fields == ["count", "ok", "question_0", "question_0_custom", "tags"], fields
+    # The choice's free-text companion is its last option, "Other".
+    assert fields == ["count", "ok", "question_0", "tags"], fields
+    other = '#question [data-field="question_0"] [data-choice-other]'
+    other_text = '#question [data-field="question_0"] [data-other-text]'
+    assert count(browser, other_text) == 0
+    browser.click(other)
+    browser.wait("the box for another answer", lambda: count(browser, other_text) == 1)
+    browser.type(other_text, "my own way")
+    browser.click('#question [data-field="question_0"] [data-choice="safe"]')
+    browser.wait("the box gone", lambda: count(browser, other_text) == 0)
+    browser.click(other)
+    browser.wait("the box again", lambda: count(browser, other_text) == 1)
+    browser.shot("acp-question-other")
     browser.click('#question [data-answer="accept"]')
     browser.wait(
         "the missing choice",
@@ -5483,6 +5544,8 @@ def acp_questions(browser):
         and '"tags":["y"]' in browser.text("#transcript"),
         timeout=60,
     )
+    # Another choice let go of "Other", and its text.
+    assert "question_0_custom" not in browser.text("#transcript"), browser.text("#transcript")
     browser.wait("the answered card gone", lambda: count(browser, "#question") == 0)
     print("a form question is checked, answered, and reaches the agent")
 

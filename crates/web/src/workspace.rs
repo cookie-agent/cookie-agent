@@ -68,6 +68,7 @@ pub use onboarding::Onboarding;
 pub use permissions::RuleRef;
 pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
+pub use selection::PickState;
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -170,6 +171,9 @@ pub struct Workspace {
     /// The session list shows only sessions of this directory
     /// (`cwd_identity`); `None` for all.
     pub directory_filter: RwSignal<Option<String>>,
+    /// The session list's search: `None` while its box is closed, else
+    /// what the box holds.
+    pub session_search: RwSignal<Option<String>>,
     owned: StoredValue<HashSet<SessionId>>,
     pub read_only: RwSignal<HashSet<SessionId>>,
     ownership_classifications: StoredValue<HashMap<SessionId, u64>>,
@@ -440,6 +444,7 @@ impl Workspace {
             draft_error: RwSignal::new(None),
             group_open: RwSignal::new(HashMap::new()),
             directory_filter: RwSignal::new(None),
+            session_search: RwSignal::new(None),
             owned: StoredValue::new(HashSet::new()),
             read_only: RwSignal::new(HashSet::new()),
             ownership_classifications: StoredValue::new(HashMap::new()),

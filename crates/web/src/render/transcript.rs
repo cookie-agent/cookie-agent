@@ -1556,7 +1556,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         _ => "",
     };
     let status = format!(
-        "<span class=\"inline-flex shrink-0 items-center gap-1 text-xs {}\" title=\"{}\">{}<span class=\"{label_class}\">{}</span></span>",
+        "<span class=\"inline-flex h-5 shrink-0 items-center gap-1 text-xs {}\" title=\"{}\">{}<span class=\"{label_class}\">{}</span></span>",
         mark.tone,
         mark.label,
         svg(mark.icon, if mark.spins { "animate-spin" } else { "" }),
@@ -1596,26 +1596,32 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     } else {
         String::new()
     };
-    let chevron = svg(
+    // The chevron and icon sit in a box a line of the title tall, level
+    // with its first line when it wraps.
+    let line_box = |icon: String| {
+        format!("<span class=\"inline-flex h-5 shrink-0 items-center\">{icon}</span>")
+    };
+    let chevron = line_box(svg(
         if expanded {
             icondata::FaChevronDownSolid
         } else {
             icondata::FaChevronRightSolid
         },
         "text-[0.625rem] opacity-60",
-    );
-    let icon = svg(
+    ));
+    let icon = line_box(svg(
         icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
         "text-caramel dark:text-maple",
-    );
+    ));
     let header = tool_header_text(view, tool);
     // An open call's header wraps to show its whole title and argument, its
-    // chevron, icon, and status on the first line; a folded one is one line,
-    // cut to fit.
-    let (align, fit) = if expanded {
-        ("items-start", "whitespace-normal wrap-anywhere")
+    // chevron, icon, and status on the first line, padded so that a single
+    // line sits in the middle of the row's height; a folded one is one
+    // line, cut to fit.
+    let (align, fit, pad) = if expanded {
+        ("items-start", "whitespace-normal wrap-anywhere", "py-3")
     } else {
-        ("items-center", "truncate")
+        ("items-center", "truncate", "py-1")
     };
     // A memory the call names is a link to the Memory view inside the
     // header, a click target of its own between the two halves that toggle.
@@ -1624,7 +1630,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         .and_then(|url| header.find(url).map(|at| (at, url)));
     let toggle = match link {
         None => format!(
-            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
+            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
             escape(&id),
             escape(&header),
         ),
@@ -1639,7 +1645,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
                 )
             };
             format!(
-                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-toasted dark:hover:bg-ember\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg py-1 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg py-1 pr-2 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
+                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-toasted dark:hover:bg-ember\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg {pad} pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg {pad} pr-2 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
                 escape(header[..at].trim_end()),
                 id = escape(&id),
                 url = escape(url),

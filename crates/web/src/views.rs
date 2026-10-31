@@ -263,6 +263,23 @@ pub(crate) fn session_label(session: &SessionMeta) -> String {
         .unwrap_or_else(|| session.session_id.to_string())
 }
 
+/// The session list's search, lowercased, while its box holds something.
+fn search_query(workspace: Workspace) -> Option<String> {
+    workspace.session_search.with(|search| {
+        search
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(str::to_lowercase)
+    })
+}
+
+/// Whether `session`'s row matches the search `query` (lowercased): the
+/// title the row shows holds it.
+fn search_matches(session: &SessionMeta, query: Option<&str>) -> bool {
+    query.is_none_or(|query| session_label(session).to_lowercase().contains(query))
+}
+
 #[component]
 fn SessionList(workspace: Workspace) -> impl IntoView {
     // Each runtime at each workspace sessions work in, under its home.
@@ -281,6 +298,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     };
     let shown = move || {
         let filter = workspace.directory_filter.get();
+        let query = search_query(workspace);
         let mut sessions = workspace.sessions.with(|sessions| {
             sessions
                 .iter()
@@ -289,6 +307,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                         && filter
                             .as_deref()
                             .is_none_or(|filter| crate::places::matches(session, filter))
+                        && search_matches(session, query.as_deref())
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -327,13 +346,22 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     drag.follow(workspace, actions);
     let headers = projects::HeaderActions::new();
     let list = drag.list;
+    // The root rows the list shows, in page order, for Select all.
+    let listed = Memo::new(move |_| {
+        if workspace.has_projects.get() {
+            projects::listed_rows(workspace)
+        } else {
+            shown().iter().map(|session| session.session_id).collect()
+        }
+    });
     view! {
         <div class="flex flex-col gap-2 p-3">
-            <Show when=move || !workspace.picking.active.get() fallback=move || selection_bar(workspace)>
-            <div class="flex gap-2">
-                <button type="button" class=format!("{PRIMARY} flex-1") data-new-session on:click=move |_| workspace.start_new_session()>
-                    <Glyph icon=icondata::FaPlusSolid />
-                    "New session"
+            <Show when=move || !workspace.picking.active.get() fallback=move || selection_bar(workspace, listed)>
+            <div class="flex gap-1.5">
+                // No `+` here: beside the list's three buttons the label
+                // needs the room.
+                <button type="button" class=format!("{PRIMARY} min-w-0 flex-1 whitespace-nowrap") data-new-session on:click=move |_| workspace.start_new_session()>
+                    <span class="truncate">"New session"</span>
                 </button>
                 // Several sessions at once: mark them read or unread, or
                 // delete them.
@@ -349,6 +377,24 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                         <Glyph icon=icondata::FaListCheckSolid />
                     </button>
                 </Show>
+                <button
+                    type="button"
+                    class=BUTTON
+                    id="search-sessions"
+                    aria-label="Search sessions"
+                    title="Search sessions"
+                    aria-expanded=move || workspace.session_search.with(Option::is_some).to_string()
+                    on:click=move |_| {
+                        workspace.session_search.update(|search| {
+                            *search = match search {
+                                Some(_) => None,
+                                None => Some(String::new()),
+                            };
+                        });
+                    }
+                >
+                    <Glyph icon=icondata::FaMagnifyingGlassSolid />
+                </button>
                 <Show when=move || workspace.has_projects.get()>
                     <button
                         type="button"
@@ -362,6 +408,9 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                     </button>
                 </Show>
             </div>
+            </Show>
+            <Show when=move || workspace.session_search.with(Option::is_some)>
+                <SessionSearch workspace=workspace />
             </Show>
             // A daemon without projects: the workspace filter instead of
             // project sections.
@@ -402,6 +451,9 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 }
                 let sessions = shown();
                 if sessions.is_empty() {
+                    if search_query(workspace).is_some() {
+                        return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
+                    }
                     return empty_state(icondata::FaFolderOpenSolid, "No sessions yet. Start one with New session.")
                         .into_any();
                 }
@@ -415,12 +467,64 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// The session list's search box: it takes the focus as it opens, and
+/// Escape or its × closes it and shows every session again.
+#[component]
+fn SessionSearch(workspace: Workspace) -> impl IntoView {
+    let field = NodeRef::<html::Input>::new();
+    Effect::new(move |_| {
+        if let Some(input) = field.get() {
+            request_animation_frame(move || {
+                let _ = input.focus();
+            });
+        }
+    });
+    view! {
+        <div class="flex items-center gap-2">
+            <input
+                // Text, not `search`: the browser's own clear button would
+                // sit beside the ×.
+                type="text"
+                role="searchbox"
+                enterkeyhint="search"
+                id="session-search"
+                class="min-h-11 min-w-0 flex-1 rounded-md border border-crust bg-cream px-3 text-sm text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
+                aria-label="Search sessions by title"
+                placeholder="Search by title"
+                node_ref=field
+                prop:value=move || workspace.session_search.get_untracked().unwrap_or_default()
+                on:input=move |event| workspace.session_search.set(Some(event_target_value(&event)))
+                on:keydown=move |event: ev::KeyboardEvent| {
+                    if event.key() == "Escape" {
+                        event.prevent_default();
+                        event.stop_propagation();
+                        workspace.session_search.set(None);
+                    }
+                }
+            />
+            <button
+                type="button"
+                class=BUTTON
+                id="search-sessions-close"
+                aria-label="Close the search"
+                title="Close the search"
+                on:click=move |_| workspace.session_search.set(None)
+            >
+                <Glyph icon=icondata::FaXmarkSolid />
+            </button>
+        </div>
+    }
+}
+
 /// The session list's header in select mode: how many are selected,
-/// Select all and Done, and what the selection can do: mark read, mark
-/// unread, delete (behind a confirmation naming them).
-fn selection_bar(workspace: Workspace) -> impl IntoView {
+/// Select all (Unselect all once every row the list shows is selected)
+/// and Done, and what the selection can do: mark read, mark unread,
+/// delete (behind a confirmation naming them).
+fn selection_bar(workspace: Workspace, listed: Memo<Vec<SessionId>>) -> impl IntoView {
     let picking = workspace.picking;
     let count = move || picking.picked.with(Vec::len);
+    let all_picked =
+        move || listed.with(|rows| workspace.pick_state(rows)) == crate::workspace::PickState::All;
     let idle = move || count() == 0 || picking.deleting.get();
     let actions = move || {
         view! {
@@ -454,8 +558,19 @@ fn selection_bar(workspace: Workspace) -> impl IntoView {
                         count => format!("{count} selected"),
                     }}
                 </span>
-                <button type="button" class=BUTTON id="select-all" on:click=move |_| workspace.pick_all()>
-                    "Select all"
+                <button
+                    type="button"
+                    class=BUTTON
+                    id="select-all"
+                    on:click=move |_| {
+                        if all_picked() {
+                            workspace.unpick_all();
+                        } else {
+                            workspace.pick_all(listed.get_untracked());
+                        }
+                    }
+                >
+                    {move || if all_picked() { "Unselect all" } else { "Select all" }}
                 </button>
                 <button type="button" class=BUTTON id="select-done" on:click=move |_| workspace.stop_selecting()>
                     "Done"
