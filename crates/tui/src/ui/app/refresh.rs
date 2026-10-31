@@ -486,6 +486,8 @@ impl App {
                                 format!("run failed to start ({error}); restored to the composer");
                         } else {
                             self.store.park_voided_input(session_id, input);
+                            self.status =
+                                format!("a message failed to send ({error}); kept for its session");
                         }
                     }
                 }

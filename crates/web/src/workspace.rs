@@ -1768,10 +1768,26 @@ impl Workspace {
         text: String,
         files: Vec<cookie_agent_protocol::ArtifactRef>,
     ) {
+        let new_session = self.new_session.get_untracked();
+        let slot = if new_session {
+            Some(ComposerSlot::NewSession)
+        } else {
+            self.selected.get_untracked().map(ComposerSlot::Session)
+        };
+        // With no connection (the daemon restarting, say) the message stays:
+        // back in its draft, with why, never dropped.
         let Some(client) = self.client() else {
+            self.return_to_draft(slot.unwrap_or(ComposerSlot::NewSession), text, files);
+            self.status.set(
+                cookie_agent_client_state::send::Unsent::NotConnected.describe(|_| String::new()),
+            );
             return;
         };
-        let new_session = self.new_session.get_untracked();
+        let Some(slot) = slot else {
+            self.return_to_draft(ComposerSlot::NewSession, text, files);
+            self.status.set("no session to send the message to".into());
+            return;
+        };
         if new_session && !self.may_create() {
             self.return_to_draft(ComposerSlot::NewSession, text, files);
             return;
@@ -1819,29 +1835,31 @@ impl Workspace {
                 }
                 session_id
             } else {
-                match self.selected.get_untracked() {
-                    Some(session_id) => session_id,
-                    None => return,
-                }
+                let ComposerSlot::Session(session_id) = slot else {
+                    unreachable!("an existing session's slot names it");
+                };
+                session_id
             };
-            let result = client
-                .submit_input(SessionSubmitInputParams {
+            let result = cookie_agent_client_state::send::submit_input(
+                Some(&client),
+                SessionSubmitInputParams {
                     session_id,
                     content,
                     delivery,
                     selection,
                     client_run_id: client_run_id(),
                     reset_fallback: false,
-                })
-                .await;
+                },
+            )
+            .await;
             match result {
                 Ok(SessionSubmitInputResult::Handled { reason }) => self.status.set(reason),
                 Ok(_) => {}
-                Err(error) => {
+                Err(unsent) => {
                     // The text goes back to the session's draft, as in the
-                    // TUI.
+                    // TUI: refused, or its answer lost with the connection.
                     self.return_to_draft(ComposerSlot::Session(session_id), text, files);
-                    self.status.set(crate::errors::describe(&error));
+                    self.status.set(unsent.describe(crate::errors::describe));
                 }
             }
         });

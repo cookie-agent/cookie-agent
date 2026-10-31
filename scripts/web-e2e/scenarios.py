@@ -294,6 +294,33 @@ def send(browser, text, keys=ENTER):
     browser.type("#composer", keys)
 
 
+def composer_text(browser):
+    return browser.script("const e = document.querySelector('#composer'); return e ? e.value : ''")
+
+
+def send_after_reconnect(browser, text, timeout=60):
+    """Sends `text` once the page has reconnected and waits until the
+    transcript shows it. A send whose connection ended under it (a restart
+    can end the one just made) is never lost: its text comes back to the
+    composer with why, and goes again once the page is connected."""
+    send(browser, text)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if text in browser.text("#transcript"):
+            return
+        held = browser.script("const e = document.querySelector('#composer'); return e ? [e.value, e.disabled] : null")
+        connected = browser.text("#connected") != "" and count(browser, "#reconnecting") == 0
+        if held and held[0].strip() == text and not held[1] and connected:
+            status = browser.script("const e = document.querySelector('#status'); return e ? e.textContent : ''")
+            print("the message came back to the composer (%s); sending it again" % status.strip())
+            try:
+                browser.type("#composer", ENTER)
+            except RuntimeError:
+                pass
+        time.sleep(0.5)
+    browser.wait("the message %r in the transcript" % text, lambda: text in browser.text("#transcript"), timeout=1)
+
+
 def png(path, width, height, noisy=False):
     """Writes a `width`×`height` RGB PNG; a noisy one does not compress."""
     rows = bytearray()
@@ -5263,13 +5290,26 @@ def acp_reconnect(browser):
         browser.script(visibility, "hidden")
         browser.script(visibility, "visible")
         browser.wait("the reconnect", lambda: "stopped answering" in browser.text("#reconnecting"), timeout=20)
+        # A message sent with no connection is not lost: it stays in the
+        # composer, and the status line says it was not sent.
+        send(browser, "say meanwhile")
+        browser.wait(
+            "the message kept while reconnecting",
+            lambda: composer_text(browser) == "say meanwhile"
+            and browser.script("return document.querySelector('#status').textContent").strip() != "",
+        )
     finally:
         os.kill(daemon, signal.SIGCONT)
     browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    browser.type("#composer", ENTER)
+    browser.wait("the kept message after the reconnect", lambda: "say meanwhile" in browser.text("#transcript"), timeout=30)
+    browser.wait("the agent's reply to it", lambda: "meanwhile" in browser.text("#transcript").replace("say meanwhile", ""), timeout=60)
+    idle(browser, "the agent's turn on the kept message")
     send(browser, "say afterwards")
     browser.wait("the message after the reconnect", lambda: "say afterwards" in browser.text("#transcript"), timeout=30)
     browser.wait("the agent's reply after the reconnect", lambda: "afterwards" in browser.text("#transcript").replace("say afterwards", ""), timeout=60)
     idle(browser, "the agent's turn after the reconnect")
+    print("a message sent while reconnecting stays in the composer and goes once the page is back")
     print("after the reconnect, an ACP agent's open session shows a new message and the agent's reply")
 
 
@@ -5293,8 +5333,7 @@ def acp_restart(browser):
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
     browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=RESTART_TIMEOUT)
-    send(browser, "say afterwards")
-    browser.wait("the message after the restart", lambda: "say afterwards" in browser.text("#transcript"), timeout=30)
+    send_after_reconnect(browser, "say afterwards")
     browser.wait("the agent's reply after the restart", lambda: "afterwards" in browser.text("#transcript").replace("say afterwards", ""), timeout=60)
     idle(browser, "the agent's turn after the restart")
     print("after a daemon restart, an ACP agent's open session shows a new message and the agent's reply")
@@ -5316,8 +5355,7 @@ def session_restart(browser):
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
     browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=RESTART_TIMEOUT)
-    send(browser, "after the restart")
-    browser.wait("the message after the restart", lambda: "after the restart" in browser.text("#transcript"), timeout=30)
+    send_after_reconnect(browser, "after the restart")
     browser.wait("the reply after the restart", lambda: answers(browser) > before, timeout=60)
     idle(browser, "the turn after the restart")
     print("after a daemon restart, the open session shows a new message and its reply")

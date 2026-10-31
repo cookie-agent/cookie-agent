@@ -39,6 +39,7 @@ pub mod rows;
 pub mod run_watch;
 mod runtime;
 pub mod runtimes;
+pub mod send;
 pub mod session_actions;
 pub mod session_delete;
 pub mod session_rename;
