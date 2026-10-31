@@ -2007,18 +2007,23 @@ fn compacting_text_mut(
     state: &mut SessionState,
     invocation: cookie_agent_protocol::InternalAgentInvocationId,
 ) -> Option<(&mut u64, &mut String)> {
-    state.transcript.iter_mut().find_map(|item| match item {
-        TranscriptItem::Compacting {
-            version,
-            source:
-                CompactingSource::Summary {
-                    invocation_id,
-                    text,
-                },
-            ..
-        } if *invocation_id == invocation => Some((version, text)),
-        _ => None,
-    })
+    // The compaction row is pushed when it starts, so it lies near the end.
+    state
+        .transcript
+        .iter_mut()
+        .rev()
+        .find_map(|item| match item {
+            TranscriptItem::Compacting {
+                version,
+                source:
+                    CompactingSource::Summary {
+                        invocation_id,
+                        text,
+                    },
+                ..
+            } if *invocation_id == invocation => Some((version, text)),
+            _ => None,
+        })
 }
 
 /// Appends streamed summary text to its compaction row. Returns whether the
