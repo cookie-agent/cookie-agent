@@ -747,6 +747,62 @@ async fn a_call_that_times_out_tells_the_server() {
     registry.shutdown().await;
 }
 
+/// Calls of one server share its connection: a call that hangs holds up
+/// no other.
+#[tokio::test]
+async fn a_hanging_call_holds_up_no_other_call() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let call_file = directory.path().join("call.json");
+    let mut config = fixture_config();
+    // Far longer than the test waits for the second call.
+    config.timeout_ms = Some(300_000);
+    config.env.insert(
+        "MCP_FIXTURE_CALL_FILE".into(),
+        call_file.to_string_lossy().into_owned(),
+    );
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "fixture".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        McpRegistryOptions::default(),
+    )
+    .expect("MCP registry");
+    registry
+        .server("fixture")
+        .expect("fixture server")
+        .connect()
+        .await
+        .expect("connect fixture");
+    let hanging = try_execute(&registry, "fixture_echo_text", json!({"text":"hang"}));
+    let meanwhile = async {
+        // The server has the hanging call before the second one starts.
+        tokio::time::timeout(WAIT, async {
+            while !std::fs::read_to_string(&call_file).is_ok_and(|text| text.contains("hang")) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the server receives the hanging call");
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            execute(&registry, "fixture_echo_text", json!({"text":"meanwhile"})),
+        )
+        .await
+        .expect("the second call is answered while the first hangs")
+    };
+    let result = tokio::select! {
+        biased;
+        ended = hanging => panic!("the hanging call ended: {ended:?}"),
+        result = meanwhile => result,
+    };
+    assert_eq!(result.output, "meanwhile");
+    registry.shutdown().await;
+}
+
 #[test]
 fn an_mcp_call_shows_its_arguments_as_json() {
     let registry = registry(McpServerSource::UserFile);

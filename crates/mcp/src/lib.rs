@@ -2012,14 +2012,22 @@ impl PreparedExecutor for McpExecutor {
                     self.server.name
                 )));
             }
-            // Another call may hold the connection; cancelling stops the wait.
-            let service = tokio::select! {
-                service = self.server.service.lock() => service,
+            let deadline = tokio::time::Instant::now() + timeout;
+            // A connect or a reconnect may hold the connection a moment; the
+            // call's timeout and its cancellation cover that wait. The lock is
+            // held only to copy the peer: calls share the connection.
+            let peer = tokio::select! {
+                service = self.server.service.lock() => {
+                    service.as_ref().map(|service| service.peer().clone())
+                }
                 () = context.cancellation.cancelled() => {
                     return Err(ToolError::execution("MCP tool call cancelled"));
                 }
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err(ToolError::execution("MCP tool call timed out"));
+                }
             };
-            let Some(service) = service.as_ref() else {
+            let Some(peer) = peer else {
                 return Err(ToolError::runtime_unavailable(format!(
                     "MCP server `{}` is not connected",
                     self.server.name
@@ -2031,7 +2039,7 @@ impl PreparedExecutor for McpExecutor {
                 .await
                 .insert(self.call_id, context.progress.clone());
             let result = self
-                .call(service, params, timeout, &context.cancellation)
+                .call(&peer, params, deadline, &context.cancellation)
                 .await;
             self.server.progress.lock().await.remove(&self.call_id);
             map_tool_result(&context, &self.generated_name, result?)
@@ -2047,21 +2055,21 @@ impl PreparedExecutor for McpExecutor {
 }
 
 impl McpExecutor {
-    /// Sends the `tools/call` request and waits for its result. A call that
-    /// is cancelled or times out tells the server with
+    /// Sends the `tools/call` request over `peer` and waits for its result
+    /// until `deadline`. A call that is cancelled or times out tells the server with
     /// `notifications/cancelled` and stops waiting at once.
     async fn call(
         &self,
-        service: &ClientService,
+        peer: &Peer<RoleClient>,
         params: CallToolRequestParams,
-        timeout: Duration,
+        deadline: tokio::time::Instant,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<CallToolResult, ToolError> {
         let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
-        let deadline = tokio::time::sleep(timeout);
+        let deadline = tokio::time::sleep_until(deadline);
         tokio::pin!(deadline);
         let sent = tokio::select! {
-            sent = service.send_cancellable_request(request, PeerRequestOptions::no_options()) => sent,
+            sent = peer.send_cancellable_request(request, PeerRequestOptions::no_options()) => sent,
             () = cancellation.cancelled() => return Err(ToolError::execution("MCP tool call cancelled")),
             () = &mut deadline => return Err(ToolError::execution("MCP tool call timed out")),
         };
