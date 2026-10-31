@@ -251,9 +251,12 @@ impl Engine {
         }
     }
 
-    /// Forgets deleted sessions.
+    /// Forgets deleted sessions: their armed settles, and the reports on
+    /// their way from or to them.
     pub(super) fn forget_push_state(&self, deleted: &HashSet<SessionId>) {
         lock(&self.inner.push.armed).retain(|session, _| !deleted.contains(session));
+        lock(&self.inner.push.reports)
+            .retain(|(child, _), parent| !deleted.contains(child) && !deleted.contains(parent));
     }
 
     /// Checks a root armed by a run's end on its actor once the actor is

@@ -243,3 +243,25 @@ async fn questions_anywhere_in_a_tree_name_their_root_and_subagent() {
             if agent == "claude-code" && message == "Which branch?"
     ));
 }
+
+/// A report on its way keeps its parent waking until its child is deleted.
+#[tokio::test]
+async fn deleting_a_child_forgets_the_report_on_its_way() {
+    let (fixture, selection) = quiet_fixture().await;
+    let engine = &fixture.engine;
+    let parent = engine.create_session(selection.clone()).unwrap().session_id;
+    let other = engine.create_session(selection).unwrap().session_id;
+    let (child, sibling) = (SessionId::new_v7(), SessionId::new_v7());
+    let run = cookie_agent_protocol::RunId::new_v7();
+    engine.report_in_flight(child, run, parent, true);
+    engine.report_in_flight(sibling, run, other, true);
+    let wakes = |session| engine.wakes_once(session, &std::collections::HashMap::new());
+    assert!(wakes(parent));
+    assert!(wakes(other));
+
+    engine.forget_push_state(&std::collections::HashSet::from([child]));
+    assert!(!wakes(parent));
+    assert!(wakes(other));
+    engine.forget_push_state(&std::collections::HashSet::from([other]));
+    assert!(!wakes(other));
+}
