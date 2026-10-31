@@ -359,7 +359,7 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                                         {(model.display_name.as_str() != model.key.to_string()).then(|| view! {
                                             <span class=format!("font-mono break-all {NOTE}") data-doc-id>{model.key.to_string()}</span>
                                         })}
-                                        <span class=NOTE>{format!("{} tokens of context", crate::format::compact_count(model.capabilities.context_tokens))}</span>
+                                        <span class=NOTE>{format!("{} tokens of context", cookie_agent_client_state::format::compact_count(model.capabilities.context_tokens))}</span>
                                     </button>
                                     {chips.map(|chips| view! { <div class="flex flex-wrap gap-2 px-3 pb-1">{chips}</div> })}
                                 </div>

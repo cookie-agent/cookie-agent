@@ -3,6 +3,7 @@
 //! above the composer while the session has background calls, and the panel
 //! that lists them and stops one.
 
+use cookie_agent_client_state::format::format_clock_elapsed;
 use cookie_agent_protocol::{BackgroundActor, BackgroundCall, ToolCallId};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -147,7 +148,8 @@ impl App {
             .enumerate()
             .take(usize::from(area.height.saturating_sub(2)))
             .map(|(index, call)| {
-                let elapsed = now.duration_since(call.started_at).as_secs().max(0);
+                let elapsed =
+                    u64::try_from(now.duration_since(call.started_at).as_secs()).unwrap_or(0);
                 let by = match call.by {
                     BackgroundActor::Model => "by the model",
                     BackgroundActor::User => "by you",
@@ -160,7 +162,7 @@ impl App {
                         .as_deref()
                         .map(|display| format!(": {}", single_line(display)))
                         .unwrap_or_default(),
-                    elapsed_label(elapsed),
+                    format_clock_elapsed(elapsed),
                 );
                 let mut row = truncate_with_ellipsis(&row, row_width);
                 row.push_str(
@@ -263,14 +265,6 @@ impl App {
 
 fn single_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn elapsed_label(seconds: i64) -> String {
-    match seconds {
-        0..60 => format!("{seconds}s"),
-        60..3600 => format!("{}m{:02}s", seconds / 60, seconds % 60),
-        _ => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
-    }
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use cookie_agent_client_state::{
     attachment_chip,
+    format::format_clock_elapsed,
     permissions::{PermissionRow, parse_rule_key, rule_runtimes, takes_runtime},
     rows::goal_bar_shows,
 };
@@ -428,15 +429,6 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// How long ago a background call was detached, as the TUI says it.
-fn elapsed_label(seconds: i64) -> String {
-    match seconds {
-        ..60 => format!("{}s", seconds.max(0)),
-        60..3600 => format!("{}m{:02}s", seconds / 60, seconds % 60),
-        _ => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
-    }
-}
-
 pub fn background_sheet(workspace: Workspace) -> impl IntoView {
     // The elapsed times tick while the sheet is open.
     let now = RwSignal::new(jiff::Timestamp::now());
@@ -463,14 +455,14 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
             .into_iter()
             .map(|call| {
                 let job = call.job.clone();
-                let elapsed = now.get().duration_since(call.detached_at).as_secs();
+                let elapsed = u64::try_from(now.get().duration_since(call.detached_at).as_secs()).unwrap_or(0);
                 view! {
                     <div class="background-call flex items-center gap-2 border-b border-toasted py-2 dark:border-ember">
                         <div class="min-w-0 flex-1">
                             <p class="truncate font-mono text-sm">{format!("{} · {}", call.job, call.tool)}</p>
                             <p class=format!("truncate {NOTE}")>
                                 {call.display.clone().unwrap_or_default()}
-                                {format!(" · {}", elapsed_label(elapsed))}
+                                {format!(" · {}", format_clock_elapsed(elapsed))}
                             </p>
                         </div>
                         // An ACP agent's own command: the agent runs it, and

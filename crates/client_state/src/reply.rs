@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::{
     SessionState,
-    usage::{format_cost_usd, format_token_count},
+    format::{format_cost_usd, format_elapsed, format_token_count},
 };
 
 /// The text of the footer that closes the assistant block `item_id`:
@@ -45,18 +45,6 @@ pub fn thought_label(duration: Option<Duration>) -> String {
     match duration.filter(|duration| duration.as_secs() >= 1) {
         Some(duration) => format!("thought for {}", format_elapsed(duration)),
         None => "thought".to_owned(),
-    }
-}
-
-/// An elapsed time as compact text: `42s` under a minute, `1m 23s` under
-/// an hour, then `1h 4m`.
-#[must_use]
-pub fn format_elapsed(duration: Duration) -> String {
-    let seconds = duration.as_secs();
-    match seconds {
-        0..60 => format!("{seconds}s"),
-        60..3600 => format!("{}m {}s", seconds / 60, seconds % 60),
-        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
     }
 }
 
@@ -135,16 +123,6 @@ mod tests {
             assistant_footer(&state_with(timed(50, 2_000, Some(1_000))), 8),
             None
         );
-    }
-
-    #[test]
-    fn elapsed_times_turn_over_at_the_minute_and_the_hour() {
-        let at = |seconds| super::format_elapsed(Duration::from_secs(seconds));
-        assert_eq!(at(59), "59s");
-        assert_eq!(at(60), "1m 0s");
-        assert_eq!(at(3599), "59m 59s");
-        assert_eq!(at(3600), "1h 0m");
-        assert_eq!(at(3840), "1h 4m");
     }
 
     #[test]

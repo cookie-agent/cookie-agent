@@ -15,6 +15,7 @@ pub mod badges;
 pub mod config;
 pub mod cron;
 pub mod elicitation;
+pub mod format;
 pub mod held;
 pub mod markdown;
 pub mod mcp;

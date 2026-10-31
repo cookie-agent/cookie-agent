@@ -2,13 +2,12 @@
 //! turning push notifications on in this browser, a test, and every device
 //! the daemon pushes to.
 
+use cookie_agent_client_state::format::relative_time;
 use cookie_agent_protocol::PushSubscription;
 use leptos::prelude::*;
 
 use super::{BUTTON, ERROR, NOTE, PRIMARY};
-use crate::{
-    app::Connection, format::relative_time, icons::Glyph, push::PushOffer, workspace::Workspace,
-};
+use crate::{app::Connection, icons::Glyph, push::PushOffer, workspace::Workspace};
 
 /// The section: what this browser offers, then the devices. Opening it
 /// reads `notifications.get` ([`Workspace::open_section`]).

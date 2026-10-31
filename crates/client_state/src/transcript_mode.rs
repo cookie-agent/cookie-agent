@@ -14,7 +14,7 @@ use cookie_agent_protocol::{ProducerOwner, ToolCallId};
 
 use crate::{
     AssistantChild, EventLevel, ProducerMessageStatus, SessionState, ToolStatus, TranscriptItem,
-    reply::format_elapsed,
+    format::format_elapsed,
 };
 
 /// How the transcript shows agent work.

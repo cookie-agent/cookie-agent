@@ -1,4 +1,7 @@
-use cookie_agent_client_state::usage::{CacheHit, format_cost, format_count, models_by_cost};
+use cookie_agent_client_state::{
+    format::{format_cost, format_count},
+    usage::{CacheHit, models_by_cost},
+};
 use cookie_agent_protocol::{
     McpServerDefinition, McpServerInfo, McpServerScope, McpServerState, ModelUsageRollup,
     PermissionAction, RuntimeId, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
@@ -912,7 +915,7 @@ fn stats_values(usage: &UsageRollup) -> [String; 8] {
         format_count(usage.reasoning_tokens),
         format_count(usage.cache_read_tokens),
         format_count(usage.cache_write_tokens),
-        format_hit_rate(CacheHit::of(usage)),
+        CacheHit::of(usage).label_or(HIT_RATE_NA),
         format_cost(usage.estimated_cost_usd),
     ]
 }
@@ -967,7 +970,7 @@ impl TableWidths {
                     .max(format_count(model.reasoning_tokens).len());
                 widths.hit = widths
                     .hit
-                    .max(format_hit_rate(CacheHit::of_model(model)).len());
+                    .max(CacheHit::of_model(model).label_or(HIT_RATE_NA).len());
                 widths.cost = widths.cost.max(format_cost(model.estimated_cost_usd).len());
             }
         }
@@ -1035,7 +1038,7 @@ impl TableWidths {
             format_count(model.input_tokens),
             format_count(model.output_tokens),
             format_count(model.reasoning_tokens),
-            format_hit_rate(CacheHit::of_model(model)),
+            CacheHit::of_model(model).label_or(HIT_RATE_NA),
         ];
         let mut spans = vec![
             Span::raw("  "),
@@ -1088,14 +1091,13 @@ impl TableWidths {
     }
 }
 
+/// What the table's hit-rate column shows where it has no room to
+/// explain why there is no rate.
+const HIT_RATE_NA: &str = "n/a";
+
 struct TableColumns {
     visible: [bool; 5],
     model: usize,
-}
-
-/// A hit rate, or `n/a` where the column has no room to explain why.
-fn format_hit_rate(hit: CacheHit) -> String {
-    hit.percent().unwrap_or_else(|| "n/a".to_owned())
 }
 
 pub(super) fn action_label(action: &PermissionAction) -> &str {

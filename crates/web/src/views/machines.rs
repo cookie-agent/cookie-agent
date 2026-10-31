@@ -1185,7 +1185,10 @@ fn runtime_row(
         remembered.as_ref().map(|remembered| {
             format!(
                 "last seen {}",
-                crate::format::relative_time(jiff::Timestamp::now(), remembered.last_seen)
+                cookie_agent_client_state::format::relative_time(
+                    jiff::Timestamp::now(),
+                    remembered.last_seen
+                )
             )
         }),
         lifetime.map(|lifetime| lifetime_label(lifetime).to_owned()),

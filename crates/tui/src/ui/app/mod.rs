@@ -2020,7 +2020,7 @@ fn latest_resolved_model_key(state: &crate::state::SessionState) -> Option<&Mode
     })
 }
 
-pub(super) use cookie_agent_client_state::usage::{format_cost_usd, format_token_count};
+pub(super) use cookie_agent_client_state::format::{format_cost_usd, format_token_count};
 
 pub(in crate::ui) use cookie_agent_client_state::session_actions::permission_mode_label;
 

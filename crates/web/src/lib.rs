@@ -20,7 +20,6 @@ pub mod emoji;
 pub mod errors;
 mod files;
 pub mod follow;
-pub mod format;
 pub mod goal;
 mod highlight;
 pub mod icons;

@@ -1,7 +1,7 @@
-//! Usage figures every client shows the same way: token counts with
-//! thousands separators or in short form, costs, and the prompt-cache hit
+//! Usage figures every client shows the same way: the prompt-cache hit
 //! rate of a session, a session tree, or one model of either
-//! (`session.usage`, `session.tree_usage`).
+//! (`session.usage`, `session.tree_usage`), and the order a breakdown lists
+//! models in. [`crate::format`] writes the counts and costs.
 //!
 //! The hit rate is the share of the prompt the provider read from its
 //! cache:
@@ -20,6 +20,8 @@
 //! and never recomputes it from the totals, which include such requests.
 
 use cookie_agent_protocol::{ModelKey, ModelUsageRollup, UsageRollup};
+
+use crate::format::{format_count, format_percent};
 
 /// What a client shows for an unavailable hit rate, where it has room for
 /// a dash: no input yet, or no request reported cache use.
@@ -80,12 +82,17 @@ impl CacheHit {
 
     /// The rate as a percentage with one decimal, as `82.5%`.
     pub fn percent(&self) -> Option<String> {
-        self.rate.map(|rate| format!("{:.1}%", rate * 100.0))
+        self.rate.map(format_percent)
     }
 
     /// The rate, or [`NO_HIT_RATE`].
     pub fn label(&self) -> String {
-        self.percent().unwrap_or_else(|| NO_HIT_RATE.to_owned())
+        self.label_or(NO_HIT_RATE)
+    }
+
+    /// The rate, or `unavailable` where there is no room to say why.
+    pub fn label_or(&self, unavailable: &str) -> String {
+        self.percent().unwrap_or_else(|| unavailable.to_owned())
     }
 
     /// The figures behind the rate, in a sentence for a tooltip or a note.
@@ -112,46 +119,6 @@ impl CacheHit {
         }
         detail
     }
-}
-
-/// `count` with a comma between each group of three digits, as `12,345`.
-pub fn format_count(count: u64) -> String {
-    let digits = count.to_string();
-    let first = digits.len() % 3;
-    let mut output = String::with_capacity(digits.len() + digits.len() / 3);
-    output.push_str(&digits[..first]);
-    for chunk in digits.as_bytes()[first..].chunks(3) {
-        if !output.is_empty() {
-            output.push(',');
-        }
-        output.push_str(std::str::from_utf8(chunk).expect("decimal digits are UTF-8"));
-    }
-    output
-}
-
-/// `tokens` in short form: as it is below a thousand, else in thousands
-/// with one decimal, as `12.5K`.
-pub fn format_token_count(tokens: u64) -> String {
-    if tokens < 1_000 {
-        tokens.to_string()
-    } else {
-        format!("{:.1}K", tokens as f64 / 1_000.0)
-    }
-}
-
-/// A cost in US dollars: to the cent from a cent up, else to four decimals,
-/// as `$0.0040`.
-pub fn format_cost_usd(cost: f64) -> String {
-    if cost >= 0.01 {
-        format!("${cost:.2}")
-    } else {
-        format!("${cost:.4}")
-    }
-}
-
-/// A cost, or `unpriced` for a model without known prices.
-pub fn format_cost(cost: Option<f64>) -> String {
-    cost.map_or_else(|| "unpriced".to_owned(), format_cost_usd)
 }
 
 /// A rollup's models in the order a breakdown lists them: the costliest
@@ -248,13 +215,5 @@ mod tests {
         let expected = CacheHit::new(Some(0.25), 4_000, 1_000, 3_000);
         assert_eq!(CacheHit::of_model(&model), expected);
         assert_eq!(CacheHit::of(&usage), expected);
-    }
-
-    #[test]
-    fn counts_group_their_digits_by_three() {
-        assert_eq!(format_count(0), "0");
-        assert_eq!(format_count(999), "999");
-        assert_eq!(format_count(1_000), "1,000");
-        assert_eq!(format_count(12_345_678), "12,345,678");
     }
 }

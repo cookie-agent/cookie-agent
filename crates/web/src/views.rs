@@ -9,8 +9,9 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use cookie_agent_client_state::{
     EventLevel, ToolStatus,
     badges::{badges_tooltip, session_badges},
+    format::{compact_cost, compact_count, format_cost, format_count, relative_time},
     permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
-    usage::{CacheHit, format_cost, format_count, models_by_cost},
+    usage::{CacheHit, models_by_cost},
 };
 use cookie_agent_protocol::{
     ApprovalUserDecision, InputDelivery, ModelSelection, PermissionEffect, PermissionRuleSource,
@@ -22,7 +23,6 @@ use wasm_bindgen::{JsCast as _, closure::Closure};
 use crate::{
     commands::{Command, MENU},
     follow::{Follow, Metrics},
-    format::{compact_cost, compact_count, relative_time},
     goal::{GoalCommand, action_label, goal_actions, status_name},
     icons::{self, Glyph},
     keys::{ComposerAction, ComposerButtons, KeyPress, composer_action, composer_buttons},
