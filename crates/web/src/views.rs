@@ -354,6 +354,9 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
             shown().iter().map(|session| session.session_id).collect()
         }
     });
+    // A Shift+click ranges over these rows.
+    workspace.picking.shown.set_value(Some(listed));
+    on_cleanup(move || workspace.picking.shown.set_value(None));
     view! {
         <div class="flex flex-col gap-2 p-3">
             <Show when=move || !workspace.picking.active.get() fallback=move || selection_bar(workspace, listed)>
@@ -522,7 +525,7 @@ fn SessionSearch(workspace: Workspace) -> impl IntoView {
 /// delete (behind a confirmation naming them).
 fn selection_bar(workspace: Workspace, listed: Memo<Vec<SessionId>>) -> impl IntoView {
     let picking = workspace.picking;
-    let count = move || picking.picked.with(Vec::len);
+    let count = move || picking.picked.with(crate::workspace::Picked::len);
     let all_picked =
         move || listed.with(|rows| workspace.pick_state(rows)) == crate::workspace::PickState::All;
     let idle = move || count() == 0 || picking.deleting.get();
