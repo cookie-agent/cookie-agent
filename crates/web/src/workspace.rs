@@ -983,7 +983,13 @@ impl Workspace {
             SessionsChangedNotification::ApprovalsChanged {
                 root_session_id, ..
             } => {
-                if self.selected.get_untracked() == Some(root_session_id) {
+                // The daemon names the tree by its root; a subagent of it
+                // may be the one open.
+                if self
+                    .selected
+                    .get_untracked()
+                    .is_some_and(|selected| self.root_of(selected) == root_session_id)
+                {
                     self.refresh_approvals(root_session_id);
                 }
             }
@@ -2164,11 +2170,13 @@ impl Workspace {
         });
     }
 
-    /// Reads the escalated approvals of `root_session_id`'s tree.
-    pub fn refresh_approvals(self, root_session_id: SessionId) {
+    /// Reads the escalated approvals of `session_id`'s tree, which the
+    /// daemon lists by the tree's root.
+    pub fn refresh_approvals(self, session_id: SessionId) {
         let Some(client) = self.client() else {
             return;
         };
+        let root_session_id = self.root_of(session_id);
         let read = self.begin_read(|reads| reads.approvals.entry(root_session_id).or_default());
         spawn_local(async move {
             let result = client
@@ -2185,9 +2193,19 @@ impl Workspace {
             }
             match result {
                 Ok(result) => {
-                    self.update_store(|store| {
-                        store.apply_approval_list(&[root_session_id], result)
-                    });
+                    // The tree's sessions as shown: an approval answered
+                    // elsewhere leaves a subagent's list too.
+                    let mut tree_sessions = vec![root_session_id];
+                    if self.tree_root.get_untracked() == Some(root_session_id) {
+                        self.tree.with_untracked(|tree| {
+                            if let Some(tree) = tree {
+                                crate::tree::collect_session_ids(tree, &mut tree_sessions);
+                            }
+                        });
+                    }
+                    tree_sessions.sort_unstable();
+                    tree_sessions.dedup();
+                    self.update_store(|store| store.apply_approval_list(&tree_sessions, result));
                 }
                 Err(error) => self.status.set(format!(
                     "approval list refresh failed: {}",
@@ -2301,10 +2319,13 @@ impl Workspace {
         });
     }
 
-    fn load_permission_mode(self, session_id: SessionId) {
+    /// Reads the permission mode of `session_id`'s tree, which the daemon
+    /// keeps, and announces, by the tree's root.
+    pub(super) fn load_permission_mode(self, session_id: SessionId) {
         let Some(client) = self.client() else {
             return;
         };
+        let session_id = self.root_of(session_id);
         let read = self.begin_read(|reads| reads.permission_modes.entry(session_id).or_default());
         spawn_local(async move {
             if let Ok(result) = client
@@ -2324,17 +2345,20 @@ impl Workspace {
     }
 
     /// The mode the status bar shows: the new session's while one is being
-    /// composed, else the viewed session's.
+    /// composed, else the viewed session's tree's.
     pub fn permission_mode(self) -> PermissionMode {
         if self.new_session.get() {
             return self.new_session_mode.get().unwrap_or_default();
         }
-        self.selected
-            .get()
-            .and_then(|session_id| {
-                self.permission_modes
-                    .with(|modes| modes.get(&session_id).copied())
-            })
+        let Some(session_id) = self.selected.get() else {
+            return PermissionMode::default();
+        };
+        // Its root may come to be known as the tree or the list is read.
+        self.tree.track();
+        self.sessions.track();
+        let root = self.root_of(session_id);
+        self.permission_modes
+            .with(|modes| modes.get(&root).copied())
             .unwrap_or_default()
     }
 
@@ -2345,10 +2369,11 @@ impl Workspace {
             self.new_session_mode.set(Some(mode));
             return;
         }
-        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
-        else {
+        let (Some(client), Some(selected)) = (self.client(), self.selected.get_untracked()) else {
             return;
         };
+        // The mode is the tree's, kept by its root.
+        let session_id = self.root_of(selected);
         let previous = self
             .permission_modes
             .with_untracked(|modes| modes.get(&session_id).copied());

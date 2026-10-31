@@ -238,6 +238,14 @@ pub fn contains(tree: &SessionTree, session_id: SessionId) -> bool {
             .any(|child| contains(child, session_id))
 }
 
+/// Pushes the ID of `tree`'s root and of every descendant onto `ids`.
+pub fn collect_session_ids(tree: &SessionTree, ids: &mut Vec<SessionId>) {
+    ids.push(tree.session.session_id);
+    for child in &tree.children {
+        collect_session_ids(child, ids);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

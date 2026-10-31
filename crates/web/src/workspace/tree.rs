@@ -104,6 +104,12 @@ impl Workspace {
                     if self.selected.get_untracked() == Some(session_id) {
                         self.reroot_tree(root);
                         self.note_viewed(root);
+                        // Read for the session itself while its root was
+                        // unknown: the tree's are its root's.
+                        if root != session_id {
+                            self.refresh_approvals(root);
+                            self.load_permission_mode(root);
+                        }
                     }
                 });
                 None
