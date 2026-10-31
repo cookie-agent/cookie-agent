@@ -936,10 +936,16 @@ over the Agent Client Protocol (see the
   between runs too, before the run the end may wake, and clients show it
   as they show a background call's report.
 - Since 1.52.0, `acp_session_updated` may carry `prompt_context`: the text
-  blocks the session's first prompt to the agent carried ahead of the
-  input (the tool instructions, the skill listing, the attachments, the
-  memory snapshot turn, and the agent document's body), recorded as the
-  prompt is sent. Clients show it as a collapsed row.
+  blocks cookie gave the agent's session, as its system prompt or ahead of
+  its first prompt's input, recorded as they are sent. Since 1.58.0 they
+  are, in a model's system prompt order, the agent document's body, the
+  attachments, the tool instructions, and the skill listing, then the
+  memory snapshot turn (before, the tool instructions, the skill listing,
+  the attachments, the memory snapshot turn, and the body), and
+  `prompt_context_system_prompt` says whether they went as the agent's
+  system prompt (`true`) or ahead of its first prompt (`false`). Clients
+  show them as the session's system prompt row, less the memory snapshot
+  turn the memory row shows.
 - Since 1.23.0, `acp_session_updated` may carry `context` (`used`, and
   `size` when the agent reports its window): the agent's context use from
   its latest `usage_update`, recorded as it changes. The agent's turns

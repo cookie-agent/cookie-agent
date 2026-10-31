@@ -973,27 +973,69 @@ fn a_changed_instructions_announcement_is_a_row_with_the_models_text() {
 }
 
 #[test]
-fn an_acp_agents_first_prompt_context_is_a_row() {
+fn an_acp_agents_context_shows_as_its_system_prompt_and_its_memory_once() {
     let session = SessionId::new_v7();
-    let events = vec![stored_event(
-        session,
-        Some(RunId::new_v7()),
-        1,
-        EventPayload::AcpSessionUpdated {
-            update: cookie_agent_protocol::AcpSessionUpdate {
-                prompt_context: Some(vec!["<tool_instructions>".into(), "You review.".into()]),
-                ..cookie_agent_protocol::AcpSessionUpdate::default()
-            },
+    let run = Some(RunId::new_v7());
+    let claude = AgentId::new("claude").unwrap();
+    let snapshot = cookie_agent_protocol::MemorySnapshot {
+        agent: Some(cookie_agent_protocol::MemorySnapshotAgent {
+            agent: claude.clone(),
+            memory: Some(cookie_agent_protocol::MemorySnapshotMemory {
+                description: "Reviews".into(),
+                keywords: Vec::new(),
+                body: "Prefers small diffs.".into(),
+                status: cookie_agent_protocol::MemoryDocumentStatus::default(),
+            }),
+            omitted: false,
+            listed: None,
+        }),
+        ..cookie_agent_protocol::MemorySnapshot::default()
+    };
+    let memory = cookie_agent_protocol::model_text::memory_snapshot_turn(&snapshot).unwrap();
+    let started = EventPayload::AcpSessionStarted {
+        record: cookie_agent_protocol::AcpSessionRecord {
+            agent: claude.clone(),
+            runtime_id: cookie_agent_protocol::RuntimeId::new("local").unwrap(),
+            runtime_agent: claude,
+            acp_session_id: "s-1".into(),
+            cwd: "/work".into(),
+            protocol_version: 2,
+            agent_info: serde_json::Value::Null,
+            how: cookie_agent_protocol::AcpSessionStart::New,
+            steering: true,
+            forked_from: None,
+            fork: None,
+            fork_point: None,
         },
-    )];
+    };
+    let given = EventPayload::AcpSessionUpdated {
+        update: cookie_agent_protocol::AcpSessionUpdate {
+            prompt_context: Some(vec![
+                "You review.".into(),
+                "<tool_instructions>".into(),
+                memory.clone(),
+            ]),
+            prompt_context_system_prompt: Some(true),
+            ..cookie_agent_protocol::AcpSessionUpdate::default()
+        },
+    };
+    let events = vec![
+        stored_event(session, run, 1, EventPayload::MemoryLoaded { snapshot }),
+        stored_event(session, run, 2, started),
+        stored_event(session, run, 3, given),
+    ];
     let replayed = reduce_session_events(session, 0, &events);
+    // Memory is the memory row's alone; the rest is the system prompt.
+    let rows = model_inputs(&replayed);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, crate::model_input::ModelInputKind::Memory);
+    assert_eq!(rows[0].2, memory);
     assert_eq!(
-        model_inputs(&replayed),
-        [(
-            crate::model_input::ModelInputKind::AgentContext,
-            "context sent to the agent · 3 lines",
-            "<tool_instructions>\n\nYou review."
-        )]
+        replayed.acp.system_prompt,
+        Some(crate::AcpSystemPrompt {
+            text: "You review.\n\n<tool_instructions>".into(),
+            appended: Some(true),
+        })
     );
 }
 

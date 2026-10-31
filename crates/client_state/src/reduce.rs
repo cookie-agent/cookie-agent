@@ -1505,25 +1505,32 @@ pub(super) fn reduce_event_from(
                 agent_compaction(state, timestamp, sequence, compaction);
             }
             if let Some(parts) = update.prompt_context.filter(|parts| !parts.is_empty()) {
-                let text = parts.join("\n\n");
-                // The agent's own subagent's is what it inherited.
-                let (kind, header) = if state.acp.subagent {
-                    (
+                if state.acp.subagent {
+                    // The agent's own subagent's is what it inherited.
+                    let text = parts.join("\n\n");
+                    push_model_input(
+                        state,
+                        timestamp,
+                        sequence,
                         crate::model_input::ModelInputKind::InheritedContext,
                         crate::model_input::inherited_system_prompt_header(&text),
-                    )
+                        text,
+                    );
                 } else {
-                    let agent = state
-                        .acp
-                        .agent
-                        .as_ref()
-                        .map_or("the agent", |agent| agent.as_str());
-                    (
-                        crate::model_input::ModelInputKind::AgentContext,
-                        crate::model_input::agent_context_header(agent, &text),
-                    )
-                };
-                push_model_input(state, timestamp, sequence, kind, header, text);
+                    // The memory it carries is the snapshot the memory row
+                    // already shows.
+                    let memory = state.memory_turn.as_deref();
+                    let text = parts
+                        .iter()
+                        .filter(|part| Some(part.as_str()) != memory)
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    state.acp.system_prompt = Some(crate::AcpSystemPrompt {
+                        text,
+                        appended: update.prompt_context_system_prompt,
+                    });
+                }
             }
             if let Some(notice) = update.notice {
                 push_split_item(state, timestamp, |id| TranscriptItem::AcpNotice {

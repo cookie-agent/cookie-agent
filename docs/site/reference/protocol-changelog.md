@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.58.0
+
+- `acp_session_updated` has an optional `prompt_context_system_prompt`
+  beside `prompt_context`: whether cookie gave the agent its context as
+  its system prompt (`true`) or ahead of its first prompt (`false`).
+  `prompt_context` now holds the parts in a model's system prompt order:
+  the agent document's body, the attachments, the tool instructions, the
+  skill listing, then the memory snapshot turn. Clients show it as the
+  system prompt row, no longer as a row of its own. Plugin protocol 1.31.0
+  carries it in events the same way.
+
 ## 1.57.0
 
 - `session.list` takes `active_since` and `before` and answers `older`

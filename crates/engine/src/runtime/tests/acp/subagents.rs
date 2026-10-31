@@ -291,7 +291,7 @@ async fn a_subagent_of_an_agent_that_takes_a_system_prompt_inherits_it() {
     };
     let parent = context(session).expect("the parent's system prompt");
     assert_eq!(
-        parent.last().map(String::as_str),
+        parent.first().map(String::as_str),
         Some("You review changes.\n")
     );
     assert_eq!(

@@ -1,10 +1,11 @@
 //! What the engine adds to a model's input beyond the conversation, as the
 //! transcript shows it, so nothing reaches the model unseen: the memory
-//! snapshot turn, a changed instructions announcement, the context a subagent
-//! inherits from its parent, and the context an ACP agent's first prompt
-//! carries, each a row whose body is the text the model reads; and the
-//! notes a tool row gets for what its result sent beyond the tool's own
-//! output (a loop warning, tool-emitted messages, an elision marker).
+//! snapshot turn, a changed instructions announcement, and the context a
+//! subagent inherits from its parent, each a row whose body is the text the
+//! model reads; and the notes a tool row gets for what its result sent
+//! beyond the tool's own output (a loop warning, tool-emitted messages, an
+//! elision marker). What an ACP agent's session is given shows as its
+//! system prompt ([`crate::rows::system_prompt_summary`]).
 
 use cookie_agent_protocol::{
     AnnouncedPromptBlock, DelegatedContextRole, DelegatedContextTurn, DisplayBlock, Open,
@@ -20,8 +21,6 @@ pub enum ModelInputKind {
     PromptBlocks,
     /// The parent's conversation a subagent starts from.
     InheritedContext,
-    /// What an ACP agent's first prompt carries before the input.
-    AgentContext,
 }
 
 impl ModelInputKind {
@@ -31,7 +30,6 @@ impl ModelInputKind {
             Self::Memory => "memory",
             Self::PromptBlocks => "prompt-blocks",
             Self::InheritedContext => "inherited-context",
-            Self::AgentContext => "agent-context",
         }
     }
 }
@@ -128,11 +126,6 @@ pub fn interrupted_note(marked: bool) -> String {
     } else {
         "model interrupted".to_owned()
     }
-}
-
-/// The ACP context row's heading: `context sent to claude · 120 lines`.
-pub fn agent_context_header(agent: &str, text: &str) -> String {
-    format!("context sent to {agent} · {}", lines(text))
 }
 
 fn lines(text: &str) -> String {

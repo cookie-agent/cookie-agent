@@ -216,6 +216,7 @@ pub(super) fn discarded_producer_message_layout(
 }
 
 pub(super) fn system_prompt_layout(
+    state: &cookie_agent_client_state::SessionState,
     snapshot: &cookie_agent_protocol::AgentSnapshot,
     draft_agent: Option<&AgentId>,
     expanded: Option<&HashSet<BlockId>>,
@@ -228,13 +229,18 @@ pub(super) fn system_prompt_layout(
     let mut body = vec![Line::styled(
         format!(
             "📜 {chevron} {}",
-            cookie_agent_client_state::rows::system_prompt_summary(snapshot, true, draft_agent)
+            cookie_agent_client_state::rows::system_prompt_summary(
+                state,
+                snapshot,
+                true,
+                draft_agent
+            )
         ),
         theme.internal(),
     )];
     if is_expanded {
         body.extend(bounded_safe_display_text(
-            &snapshot.composed_prompt,
+            cookie_agent_client_state::rows::system_prompt_text(state, snapshot),
             theme.internal(),
             MAX_SYSTEM_PROMPT_BODY_LINES,
             MAX_SYSTEM_PROMPT_BODY_BYTES,
@@ -774,7 +780,6 @@ pub(super) fn model_input_layout(
         ModelInputKind::Memory => "🧠",
         ModelInputKind::PromptBlocks => "📝",
         ModelInputKind::InheritedContext => "↘",
-        ModelInputKind::AgentContext => "📜",
     };
     let chevron = if text.is_empty() {
         ' '

@@ -827,6 +827,9 @@ struct SystemPromptLayoutKey {
     model_tools_expanded: bool,
     /// Whose bridge the tools are, which the block's title names.
     acp_agent: Option<AgentId>,
+    /// What the ACP agent's session was given, which the system prompt
+    /// block shows in place of the snapshot's prompt.
+    acp_system_prompt: Option<cookie_agent_client_state::AcpSystemPrompt>,
 }
 
 struct CachedSystemPromptLayout {
@@ -1215,6 +1218,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
             model_tools_expanded: expanded
                 .is_some_and(|blocks| blocks.contains(&BlockId::ModelTools)),
             acp_agent: state.acp.agent.clone(),
+            acp_system_prompt: state.acp.system_prompt.clone(),
         });
     let system_prompt_changed =
         cache.system_prompt.as_ref().map(|cached| &cached.key) != prompt_key.as_ref();
@@ -1225,7 +1229,8 @@ pub(super) fn ensure_cached_transcript_layout_in(
             (state.run_snapshot.as_deref(), prompt_key)
         {
             if cookie_agent_client_state::rows::shows_system_prompt(state) {
-                let layout = system_prompt_layout(snapshot, draft_agent, expanded, width, theme);
+                let layout =
+                    system_prompt_layout(state, snapshot, draft_agent, expanded, width, theme);
                 append_chunked_item(&mut cache.layout, &layout.into());
             }
             if let Some(tools) = state.model_tools.as_deref() {
@@ -2654,7 +2659,14 @@ pub(super) fn transcript_layout_viewed(
         if cookie_agent_client_state::rows::shows_system_prompt(state) {
             append_item_layout(
                 &mut layout,
-                system_prompt_layout(snapshot, Some(&snapshot.agent), expanded, width, theme),
+                system_prompt_layout(
+                    state,
+                    snapshot,
+                    Some(&snapshot.agent),
+                    expanded,
+                    width,
+                    theme,
+                ),
             );
         }
         if let Some(tools) = state.model_tools.as_deref() {

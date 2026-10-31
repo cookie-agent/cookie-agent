@@ -761,9 +761,12 @@ impl Engine {
                 }
             }
         }
-        if let Err(error) = self
-            .refresh_memory_snapshot(params.session_id, run_id, &active.policy)
-            .await
+        // An ACP agent reads memory only with the context of a session it
+        // starts, which takes its snapshot then.
+        if !acp
+            && let Err(error) = self
+                .refresh_memory_snapshot(params.session_id, run_id, &active.policy)
+                .await
         {
             return Err(self
                 .terminalize_run_setup_failure(&active, run_id, error)

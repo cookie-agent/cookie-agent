@@ -2775,19 +2775,20 @@ impl Engine {
                 self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
-            let claim = self.prompt_events(active.session, run_id).await?;
             let context = if turn.live.first_prompt {
-                self.acp_first_prompt_context(
+                self.acp_prompt_context(
                     active.session,
+                    run_id,
                     &active.policy,
-                    &claim.events,
                     &document,
                     turn.live.agent.runtime.as_str(),
                     &turn.live.cwd,
-                )?
+                )
+                .await?
             } else {
                 Vec::new()
             };
+            let claim = self.prompt_events(active.session, run_id).await?;
             // What the agent reads beyond the conversation is on the record,
             // so the user sees it.
             if !context.is_empty() {
@@ -2798,6 +2799,7 @@ impl Engine {
                     Event::AcpSessionUpdated {
                         update: AcpSessionUpdate {
                             prompt_context: Some(context.clone()),
+                            prompt_context_system_prompt: Some(false),
                             ..AcpSessionUpdate::default()
                         },
                     },
@@ -3134,25 +3136,28 @@ impl Engine {
         .await
     }
 
-    /// What the first prompt of an ACP session carries before the input
-    /// (`docs/site/specs/acp-agents.md` section 15, 2026-10-23), each part
-    /// left out when empty: the tool instruction sections cookie would
-    /// compose for a model run, for exactly the tools the agent is offered
-    /// over the bridge; the listing of the skills a model run would see,
-    /// when the `skill` tool is offered; the block on the session's
-    /// attachments a model run's system prompt carries, which with several
-    /// also says where the harness's built-in tools run (2026-10-25); the
-    /// session's memory snapshot as a model run sees it; and the agent
-    /// document's body.
-    fn acp_first_prompt_context(
+    /// The context cookie gives an ACP session, as its system prompt or
+    /// ahead of its first prompt (`docs/site/specs/acp-agents.md` section
+    /// 15), in a model run's order, each part left out when empty: the
+    /// agent document's body; the block on the session's attachments a
+    /// model run's system prompt carries, which with several also says
+    /// where the harness's built-in tools run (2026-10-25); the tool
+    /// instruction sections cookie would compose for a model run, for
+    /// exactly the tools the agent is offered over the bridge; the listing
+    /// of the skills a model run would see, when the `skill` tool is
+    /// offered; and last the session's memory snapshot as a model run sees
+    /// it, taken now: the agent reads no later one (2026-10-31).
+    async fn acp_prompt_context(
         &self,
         session: SessionId,
+        run: RunId,
         policy: &crate::policy::FrozenRunPolicy,
-        events: &crate::events::EventSnapshot,
         document: &cookie_agent_config::AgentDocument,
         runtime: &str,
         cwd: &str,
     ) -> Result<Vec<String>, EngineError> {
+        self.refresh_memory_snapshot(session, run, policy).await?;
+        let events = self.inner.store.log(session)?.event_snapshot();
         let hide = document
             .frontmatter
             .acp
@@ -3161,6 +3166,14 @@ impl Engine {
             .hidden_tools();
         let offered = self.offered_tools(session, policy, &hide)?;
         let mut context = Vec::new();
+        if !document.body.trim().is_empty() {
+            context.push(document.body.clone());
+        }
+        context.extend(self.runtimes_block(
+            session,
+            Some(&super::super::runtime_notes::BuiltinTools { runtime, cwd }),
+            None,
+        ));
         context.extend(self.tool_prompt_block(policy, session, Some(&offered), &|_, _| true)?);
         if offered.skill {
             context.extend(self.skill_listing(
@@ -3170,11 +3183,6 @@ impl Engine {
                 super::prompt::SKILL_LISTING_CONTEXT_TOKENS,
             )?);
         }
-        context.extend(self.runtimes_block(
-            session,
-            Some(&super::super::runtime_notes::BuiltinTools { runtime, cwd }),
-            None,
-        ));
         context.extend(
             events
                 .iter()
@@ -3185,9 +3193,6 @@ impl Engine {
                 })
                 .and_then(crate::memory::render::snapshot_turn),
         );
-        if !document.body.trim().is_empty() {
-            context.push(document.body.clone());
-        }
         Ok(context)
     }
 
@@ -3622,15 +3627,17 @@ impl Engine {
         let (acp_session_id, response, how, receiver) = match opened {
             Some(opened) => opened,
             None => {
-                if takes_system_prompt && let Some(policy) = policy {
-                    system_context = self.acp_first_prompt_context(
-                        session,
-                        policy,
-                        &events,
-                        document,
-                        agent.runtime.as_str(),
-                        &cwd,
-                    )?;
+                if takes_system_prompt && let (Some(run), Some(policy)) = (run, policy) {
+                    system_context = self
+                        .acp_prompt_context(
+                            session,
+                            run,
+                            policy,
+                            document,
+                            agent.runtime.as_str(),
+                            &cwd,
+                        )
+                        .await?;
                 }
                 let response = tokio::time::timeout(
                     SESSION_TIMEOUT,
@@ -3715,6 +3722,7 @@ impl Engine {
                 Event::AcpSessionUpdated {
                     update: AcpSessionUpdate {
                         prompt_context: Some(system_context.clone()),
+                        prompt_context_system_prompt: Some(true),
                         ..AcpSessionUpdate::default()
                     },
                 },

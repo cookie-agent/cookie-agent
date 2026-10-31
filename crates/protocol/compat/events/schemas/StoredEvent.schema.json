@@ -5068,12 +5068,19 @@
               "description": "The agent's plan, a `plan` display block."
             },
             "prompt_context": {
-              "description": "What the session's first prompt to the agent carried ahead of the\ninput, each part a text block as sent: the tool instructions, the\nskill listing, the attachments, the memory snapshot turn, and the\nagent document's body (client protocol 1.52.0).",
+              "description": "The context cookie gave the agent's session, each part a text block\nas sent (client protocol 1.52.0): from 1.58.0 the agent document's\nbody, the attachments, the tool instructions, the skill listing, and\nthe memory snapshot turn; before it, the tool instructions, the skill\nlisting, the attachments, the memory snapshot turn, and the body.",
               "items": {
                 "type": "string"
               },
               "type": [
                 "array",
+                "null"
+              ]
+            },
+            "prompt_context_system_prompt": {
+              "description": "With `prompt_context`: whether it went as the agent's system prompt,\nappended to its own instructions, rather than ahead of its first\nprompt (client protocol 1.58.0); absent in a record an older build\nwrote.",
+              "type": [
+                "boolean",
                 "null"
               ]
             },

@@ -828,7 +828,7 @@ async fn an_agent_that_takes_a_system_prompt_gets_the_context_there_and_again_on
     assert_eq!(sent["mode"], "append");
     let parts = sent["content"].as_array().expect("text blocks");
     assert!(parts.iter().all(|part| part["type"] == "text"));
-    assert_eq!(parts.last().unwrap()["text"], "You review changes.\n");
+    assert_eq!(parts[0]["text"], "You review changes.\n", "the body leads");
     assert!(parts.iter().any(|part| {
         part["text"]
             .as_str()
@@ -840,6 +840,7 @@ async fn an_agent_that_takes_a_system_prompt_gets_the_context_there_and_again_on
         &event.payload,
         EventPayload::AcpSessionUpdated { update }
             if update.prompt_context.as_ref().is_some_and(|context| context.len() == parts.len())
+                && update.prompt_context_system_prompt == Some(true)
     )));
     stop_process(engine).await;
     let again = turn(engine, session, "again", "echo").await;
@@ -896,7 +897,7 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let first = turn(engine, session, "first", "echo").await;
-    assert!(final_text(&first).ends_with(" | You review changes.\n | echo"));
+    assert!(final_text(&first).starts_with("You review changes.\n | "));
     let second = turn(engine, session, "second", "echo").await;
     assert_eq!(
         final_text(&second),
@@ -906,7 +907,7 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
     stop_process(engine).await;
     let third = turn(engine, session, "third", "echo").await;
     assert!(
-        final_text(&third).ends_with(" | You review changes.\n | echo"),
+        final_text(&third).starts_with("You review changes.\n | "),
         "a new ACP session gets the body again"
     );
     assert!(
@@ -1647,7 +1648,7 @@ pub(super) fn prompts(acp: &AcpFixture) -> Vec<Vec<String>> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments_the_memory_and_the_body()
+async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_instructions_and_the_memory()
  {
     // The memory write tools are hidden: part A of the memory section, not
     // its rubric.
@@ -1684,10 +1685,9 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments
     assert_eq!(received.len(), 2);
     let first = &received[0];
     assert_eq!(first.len(), 5, "{first:#?}");
-    assert_eq!(
-        first[0],
-        "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
-    );
+    // A model run's order: the body, the attachments, the tool
+    // instructions, then the memory.
+    assert_eq!(first[0], "You review changes.\n");
     // One attachment: where it works, as a model run's system prompt says,
     // with nothing on the harness's built-in tools.
     let workspace = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
@@ -1702,13 +1702,16 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments
             std::env::consts::OS
         )
     );
-    assert!(
-        first[2].starts_with("<system-reminder>\n# Memory\n"),
-        "{}",
-        first[2]
+    assert_eq!(
+        first[2],
+        "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
     );
-    assert!(first[2].contains("Ada drinks tea."), "{}", first[2]);
-    assert_eq!(first[3], "You review changes.\n");
+    assert!(
+        first[3].starts_with("<system-reminder>\n# Memory\n"),
+        "{}",
+        first[3]
+    );
+    assert!(first[3].contains("Ada drinks tea."), "{}", first[3]);
     assert_eq!(first[4], "say one");
     assert_eq!(
         received[1],
@@ -1716,16 +1719,30 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments
         "later prompts carry the input only"
     );
     // The session records the context as sent, once, so clients show it.
-    let recorded = events(engine, session)
-        .into_iter()
-        .filter_map(|event| match event.payload {
-            cookie_agent_protocol::EventPayload::AcpSessionUpdated { update } => {
-                update.prompt_context
-            }
+    let events = events(engine, session);
+    let recorded = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            cookie_agent_protocol::EventPayload::AcpSessionUpdated { update } => update
+                .prompt_context
+                .clone()
+                .map(|context| (context, update.prompt_context_system_prompt)),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(recorded, [first[..4].to_vec()]);
+    assert_eq!(recorded, [(first[..4].to_vec(), Some(false))]);
+    // The agent reads memory only with its session's context: the second
+    // run takes no snapshot of its own.
+    let snapshots = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                cookie_agent_protocol::EventPayload::MemoryLoaded { .. }
+            )
+        })
+        .count();
+    assert_eq!(snapshots, 1);
 
     // With the write tools offered, the rubric comes too; with no memory
     // tool offered, no memory section.
@@ -1736,12 +1753,12 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments
     turn(engine, session, "first", "say one").await;
     let first = &prompts(&acp)[0];
     assert_eq!(first.len(), 4, "no body: {first:#?}");
+    assert!(first[0].starts_with("Working directory: "), "{}", first[0]);
     assert!(
-        first[0].contains("You manage your own memory."),
+        first[1].contains("You manage your own memory."),
         "{}",
-        first[0]
+        first[1]
     );
-    assert!(first[1].starts_with("Working directory: "), "{}", first[1]);
     assert!(
         first[2].starts_with("<system-reminder>\n# Memory\n"),
         "{}",
@@ -1754,13 +1771,14 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments
     turn(engine, session, "first", "say one").await;
     let first = &prompts(&acp)[0];
     assert_eq!(first.len(), 4, "{first:#?}");
-    assert!(first[0].starts_with("Working directory: "), "{}", first[0]);
+    assert_eq!(first[0], "Body.\n");
+    assert!(first[1].starts_with("Working directory: "), "{}", first[1]);
     assert!(
-        first[1].starts_with("<system-reminder>\n# Memory\n"),
+        first[2].starts_with("<system-reminder>\n# Memory\n"),
         "{}",
-        first[1]
+        first[2]
     );
-    assert_eq!(first[2..], ["Body.\n", "say one"]);
+    assert_eq!(first[3], "say one");
 }
 
 #[tokio::test(flavor = "multi_thread")]

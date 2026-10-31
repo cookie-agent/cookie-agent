@@ -249,8 +249,8 @@ You review changes for this project before they are committed.
   still loads.
 - The document names no `agent_md` (the agent reads its own context
   files), nor `limits`, nor mode `internal`. Its body may be empty; a nonempty body is sent with the
-  session's first prompt to the agent, after the tool instructions and the
-  memory snapshot ([What the first prompt carries](acp-agents.md#what-the-first-prompt-carries)).
+  session's first prompt to the agent, ahead of the attachments, the tool
+  instructions, and the memory snapshot ([What the first prompt carries](acp-agents.md#what-the-first-prompt-carries)).
 - `permissions` decide the calls the agent makes of cookie's tools, as for a
   model, and the agent's own permission requests, whose ACP tool kind maps
   to an action:

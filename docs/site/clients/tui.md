@@ -426,9 +426,11 @@ before it finished]`.
 Everything else the engine adds to the model's input has a collapsed row too,
 whose body is the exact text the model reads: the memory snapshot (`🧠 memory ·
 42 lines`, again whenever the snapshot changes, and a row saying so when memory
-leaves the model's context), the parent's conversation a subagent starts from (`context from the
-parent · 4 turns`), and the context an ACP agent's first prompt carries
-(`context sent to claude · 120 lines`). The deferred tools announcements are
+leaves the model's context), and the parent's conversation a subagent starts from (`context from the
+parent · 4 turns`). What cookie gives an ACP agent's session shows as its
+system prompt row, `appended system prompt · claude`, or `system prompt
+(sent as user message) · claude` for an agent that takes no system prompt,
+with its memory in the memory row. The deferred tools announcements are
 the exception: the expanded tools row lists the searchable tools after
 `Searchable [see full prompt]:`, each coloured by its group, and a click on
 `[see full prompt]` opens them in a panel, every announcement since the last

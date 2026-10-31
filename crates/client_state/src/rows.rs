@@ -219,24 +219,60 @@ pub fn shows_system_prompt(state: &SessionState) -> bool {
     !state.acp.subagent
 }
 
+/// What cookie gave `snapshot`'s ACP agent when it started the agent's
+/// latest session, which its system prompt row shows: its document's body
+/// is only part of it. `None` for a model's snapshot, and before cookie has
+/// given the agent any.
+pub fn acp_system_prompt<'a>(
+    state: &'a SessionState,
+    snapshot: &AgentSnapshot,
+) -> Option<&'a crate::AcpSystemPrompt> {
+    state
+        .acp
+        .system_prompt
+        .as_ref()
+        .filter(|_| state.acp.agent.as_ref() == Some(&snapshot.agent))
+}
+
+/// The text the system prompt row shows for `snapshot`.
+pub fn system_prompt_text<'a>(state: &'a SessionState, snapshot: &'a AgentSnapshot) -> &'a str {
+    acp_system_prompt(state, snapshot).map_or(&snapshot.composed_prompt, |prompt| &prompt.text)
+}
+
 /// The system prompt row's title, after its icon and chevron:
-/// `system prompt · primary (last run) · next: fast (42 lines)`. The next
-/// agent shows only when the draft's differs from the snapshot's.
+/// `system prompt · primary (last run) · next: fast (42 lines)`, or for an
+/// ACP agent `appended system prompt · claude (42 lines)`, or `system
+/// prompt (sent as user message)` for one given its context ahead of its
+/// first prompt. The next agent shows only when the draft's differs from
+/// the snapshot's.
 pub fn system_prompt_summary(
+    state: &SessionState,
     snapshot: &AgentSnapshot,
     from_run: bool,
     draft_agent: Option<&AgentId>,
 ) -> String {
-    let when = if from_run { "last run" } else { "at creation" };
     let next = draft_agent
         .filter(|draft_agent| **draft_agent != snapshot.agent)
         .map(|draft_agent| format!(" · next: {draft_agent}"))
         .unwrap_or_default();
-    format!(
-        "system prompt · {} ({when}){next} ({} lines)",
-        snapshot.agent,
-        display_line_count(&snapshot.composed_prompt)
-    )
+    let lines = display_line_count(system_prompt_text(state, snapshot));
+    match acp_system_prompt(state, snapshot) {
+        Some(prompt) => {
+            let label = match prompt.appended {
+                Some(true) => "appended system prompt",
+                Some(false) => "system prompt (sent as user message)",
+                None => "system prompt",
+            };
+            format!("{label} · {}{next} ({lines} lines)", snapshot.agent)
+        }
+        None => {
+            let when = if from_run { "last run" } else { "at creation" };
+            format!(
+                "system prompt · {} ({when}){next} ({lines} lines)",
+                snapshot.agent
+            )
+        }
+    }
 }
 
 /// The tools row's title, after its icon and chevron: the tools of the
@@ -485,16 +521,39 @@ mod tests {
 
     #[test]
     fn the_system_prompt_row_names_its_agent_and_the_next() {
+        let state = SessionState::default();
         let snapshot = snapshot_of(AgentId::new("primary").unwrap());
         let fast = AgentId::new("fast").unwrap();
         assert_eq!(
-            system_prompt_summary(&snapshot, true, Some(&snapshot.agent)),
+            system_prompt_summary(&state, &snapshot, true, Some(&snapshot.agent)),
             "system prompt · primary (last run) (2 lines)"
         );
         assert_eq!(
-            system_prompt_summary(&snapshot, false, Some(&fast)),
+            system_prompt_summary(&state, &snapshot, false, Some(&fast)),
             "system prompt · primary (at creation) · next: fast (2 lines)"
         );
+    }
+
+    #[test]
+    fn an_acp_agents_system_prompt_row_shows_what_its_session_was_given() {
+        let claude = AgentId::new("claude").unwrap();
+        let snapshot = snapshot_of(claude.clone());
+        let mut state = SessionState::default();
+        // Before cookie gives the agent anything, its document's body.
+        assert_eq!(system_prompt_text(&state, &snapshot), "one\ntwo");
+        state.acp.agent = Some(claude);
+        state.acp.system_prompt = Some(crate::AcpSystemPrompt {
+            text: "body\n\n<tool_instructions>\n\n<available_skills>".into(),
+            appended: Some(true),
+        });
+        assert_eq!(
+            system_prompt_text(&state, &snapshot),
+            "body\n\n<tool_instructions>\n\n<available_skills>"
+        );
+        assert!(system_prompt_summary(&state, &snapshot, true, None).ends_with("(5 lines)"));
+        // Another agent's snapshot is not what the ACP session was given.
+        let primary = snapshot_of(AgentId::new("primary").unwrap());
+        assert_eq!(system_prompt_text(&state, &primary), "one\ntwo");
     }
 
     fn session(name: &str, status: &str, at: &str) -> SessionMeta {

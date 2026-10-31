@@ -540,11 +540,21 @@ async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
         tools.is_none_or(|tools| Some(tools) < skills),
         "{prompts:?}"
     );
-    // The attachments come next.
+    // The attachments come before both, the memory after.
     let attachments = prompts[0]
         .iter()
         .position(|part| part.starts_with("Working directory: "));
-    assert_eq!(attachments, skills.map(|skills| skills + 1), "{prompts:?}");
+    assert!(
+        attachments < tools.or(skills) && attachments.is_some(),
+        "{prompts:?}"
+    );
+    let memory = prompts[0]
+        .iter()
+        .position(|part| part.starts_with("<system-reminder>\n# Memory"));
+    assert!(
+        memory.is_none_or(|memory| skills < Some(memory)),
+        "{prompts:?}"
+    );
     assert!(
         !prompts[1]
             .iter()

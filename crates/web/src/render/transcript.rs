@@ -570,7 +570,6 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 ModelInputKind::Memory => icondata::FaBrainSolid,
                 ModelInputKind::PromptBlocks => icondata::FaPenToSquareSolid,
                 ModelInputKind::InheritedContext => icondata::FaTurnDownSolid,
-                ModelInputKind::AgentContext => icondata::FaScrollSolid,
             };
             let row = collapsible(view.expanded.block(&key), &key, icon, header, None, text);
             format!("<div data-model-input=\"{}\">{row}</div>", kind.as_str())
@@ -1297,11 +1296,11 @@ pub fn pinned_rows(
         rows.push(pinned_row(
         SYSTEM_PROMPT_KEY,
         icondata::FaScrollSolid,
-        &system_prompt_summary(snapshot, from_run, draft_agent),
+        &system_prompt_summary(state, snapshot, from_run, draft_agent),
         expanded,
         || {
             let body = bounded_text(
-                &snapshot.composed_prompt,
+                cookie_agent_client_state::rows::system_prompt_text(state, snapshot),
                 MAX_SYSTEM_PROMPT_BODY_LINES,
                 MAX_SYSTEM_PROMPT_BODY_BYTES,
             );

@@ -337,18 +337,11 @@ Save it as `~/.cookie-agent/agents/claude.md`: every runtime that offers
 ## What the first prompt carries
 
 The first prompt of each of the agent's ACP sessions carries, before your
-message and in this order, each part left out when it is empty:
+message and in the order a model's system prompt has them, each part left
+out when it is empty:
 
-1. the tool instructions cookie would give a model for the tools the agent
-   is offered over the [bridge](#cookies-tools-for-the-agent-the-mcp-bridge),
-   after `hide_tools` and the rules (`<tool_instructions provider=...>`
-   sections, such as memory's: how memory is included, and the rubric for
-   writing it when a write tool is offered);
-2. the skills a model would see (`<available_skills>`: each skill's name,
-   description, and file), when the agent is offered cookie's `skill` tool
-   over the bridge, with the same rules a model's listing follows (a
-   denied skill, or one that opts out of model invocation, is left out);
-3. where the session's attachments work, as a model's system prompt says
+1. the agent document's body;
+2. where the session's attachments work, as a model's system prompt says
    it, even for an attachment whose tools `hide_tools` hides: with one
    attachment, its working directory and machine; with several, a
    `<machines>` listing of every attachment by machine and runtime, which
@@ -359,15 +352,26 @@ message and in this order, each part left out when it is empty:
    only, while cookie's tools act on the attachment their description or
    `<attachment>_` prefix names. A session in a
    [project](../concepts/projects.md) also names the project here;
-4. the session's memory as a model would see it at the start of a session
-   (the `# Memory` reminder);
-5. the agent document's body.
+3. the tool instructions cookie would give a model for the tools the agent
+   is offered over the [bridge](#cookies-tools-for-the-agent-the-mcp-bridge),
+   after `hide_tools` and the rules (`<tool_instructions provider=...>`
+   sections, such as memory's: how memory is included, and the rubric for
+   writing it when a write tool is offered);
+4. the skills a model would see (`<available_skills>`: each skill's name,
+   description, and file), when the agent is offered cookie's `skill` tool
+   over the bridge, with the same rules a model's listing follows (a
+   denied skill, or one that opts out of model invocation, is left out);
+5. the session's memory as a model would see it at the start of a session
+   (the `# Memory` reminder), as it is when cookie starts the agent's
+   session.
 
 `AGENTS.md` is not sent: the agents read it themselves. The prompt carries
 these again when cookie has to start a new ACP session because the agent
 lost the one it had (or a fork or revert before its first reply starts
 over), and not when it resumes, loads, or forks one, since the agent
-remembers them there. Later prompts carry only the input.
+remembers them there. Later prompts carry only the input, so a change to
+the agent's skills, tool instructions, or memory reaches it with its next
+new ACP session (its memory tools read memory as it is now).
 
 An agent that takes a system prompt (`sessionCapabilities.systemPrompt`;
 Claude Code and Codex do) gets these as one instead, appended to its own
@@ -375,7 +379,11 @@ instructions when cookie opens its session, and the first prompt carries
 only your message, so an agent that names its session after its first
 message (Codex) names it after yours. Its system prompt is not part of its
 conversation, so cookie sends the same one again whenever it resumes or
-forks the agent's session. The transcript shows what was sent either way.
+forks the agent's session. The transcript shows what was sent either
+way: its pinned system prompt row shows the parts before the memory
+(`appended system prompt · claude`, or `system prompt (sent as user
+message) · claude` for an agent without one), and the memory row shows
+the memory.
 An agent's title that only repeats the start of what cookie put ahead of
 your first message names nothing: the session keeps cookie's title.
 

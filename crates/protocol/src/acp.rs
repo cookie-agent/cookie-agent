@@ -419,12 +419,19 @@ pub struct AcpSessionUpdate {
     /// protocol 1.50.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_ended: Option<AcpBackgroundEnded>,
-    /// What the session's first prompt to the agent carried ahead of the
-    /// input, each part a text block as sent: the tool instructions, the
-    /// skill listing, the attachments, the memory snapshot turn, and the
-    /// agent document's body (client protocol 1.52.0).
+    /// The context cookie gave the agent's session, each part a text block
+    /// as sent (client protocol 1.52.0): from 1.58.0 the agent document's
+    /// body, the attachments, the tool instructions, the skill listing, and
+    /// the memory snapshot turn; before it, the tool instructions, the skill
+    /// listing, the attachments, the memory snapshot turn, and the body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_context: Option<Vec<String>>,
+    /// With `prompt_context`: whether it went as the agent's system prompt,
+    /// appended to its own instructions, rather than ahead of its first
+    /// prompt (client protocol 1.58.0); absent in a record an older build
+    /// wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_context_system_prompt: Option<bool>,
 }
 
 impl AcpSessionUpdate {
@@ -445,6 +452,7 @@ impl AcpSessionUpdate {
             && self.session_message.is_none()
             && self.background_ended.is_none()
             && self.prompt_context.is_none()
+            && self.prompt_context_system_prompt.is_none()
     }
 }
 

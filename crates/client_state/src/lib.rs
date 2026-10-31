@@ -1076,6 +1076,22 @@ pub struct AcpSessionView {
     /// The session is the ACP agent's own subagent (`how: subagent`,
     /// client protocol 1.39.0): it takes no messages.
     pub subagent: bool,
+    /// What cookie gave the agent's latest ACP session beyond the
+    /// conversation, less the memory the memory row shows: the system
+    /// prompt row shows it in place of the agent document's body.
+    pub system_prompt: Option<AcpSystemPrompt>,
+}
+
+/// The context cookie gave an ACP session, as the system prompt row shows
+/// it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AcpSystemPrompt {
+    /// Its parts as sent, less the memory snapshot turn.
+    pub text: String,
+    /// Whether it was appended to the agent's own system prompt (`true`)
+    /// or sent ahead of its first prompt (`false`); `None` in a record an
+    /// older daemon wrote.
+    pub appended: Option<bool>,
 }
 
 impl AcpSessionView {

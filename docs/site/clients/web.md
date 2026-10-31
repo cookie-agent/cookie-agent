@@ -391,7 +391,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   - **Pinned at the top**, folded side by side on one line, as in the
     TUI: the system prompt of the session's last run (`system prompt ·
     primary (last run) (42 lines)`; before its first run, the one it was
-    created with), with
+    created with; for an ACP agent, what cookie gave its session, as
+    `appended system prompt · claude` or `system prompt (sent as user
+    message) · claude`), with
     `· next: <agent>` when the bottom bar's agent differs, and the tools
     the last model request offered (`tools · 12 available (last
     request)`, or `tools · 12 provided, 40 searchable (last request)` when
