@@ -1040,6 +1040,43 @@ async fn a_client_authenticates_with_the_token_in_its_handshake() {
     assert_eq!(refused.error_code(), Some("unauthenticated"), "{refused}");
 }
 
+/// A connection that reaches the server as it shuts down (as a restart
+/// begins) gets no handshake: its client never takes it for one that works.
+#[tokio::test]
+async fn a_connection_the_server_is_shutting_down_completes_no_handshake() {
+    let shutdown = CancellationToken::new();
+    shutdown.cancel();
+    let (requests, incoming) = mpsc::unbounded_channel();
+    let (outgoing, mut frames) = mpsc::unbounded_channel();
+    // The handshake is already waiting when the connection is served, so
+    // reading it and seeing the shutdown are both ready at once.
+    let connection_requests = requests;
+    connection_requests
+        .send(MessageFrame::Text(
+            serde_json::json!({"jsonrpc": "2.0", "id": 0, "method": "handshake", "params": hello(None)})
+                .to_string(),
+        ))
+        .unwrap();
+    serve(
+        Arc::new(StubServer::default()),
+        ChannelTransport { incoming, outgoing },
+        shutdown,
+        Authentication::Authenticated,
+    )
+    .await
+    .expect("the connection ends cleanly");
+    while let Ok(frame) = frames.try_recv() {
+        let MessageFrame::Text(text) = frame else {
+            continue;
+        };
+        let reply: Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            reply.get("result").is_none(),
+            "a handshake answered: {reply}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_client_gone_before_its_answer_ends_the_connection_cleanly() {
     let server = Arc::new(StubServer::default());

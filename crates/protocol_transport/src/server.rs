@@ -1068,6 +1068,14 @@ where
                     }
                 };
                 if !handshaken {
+                    // A connection the server is already shutting down (one
+                    // accepted as a restart began) never completes its
+                    // handshake: its client would take it for a connection
+                    // that works, then lose what it sends at once.
+                    if context.shutdown.is_cancelled() {
+                        finish_and_close(&mut transport, &mut outbound_rx).await;
+                        return Ok(());
+                    }
                     let Incoming::Request { id, method, params } = incoming else {
                         continue;
                     };
