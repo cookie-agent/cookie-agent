@@ -414,6 +414,11 @@ impl Engine {
     /// in cookie, section 11), so a loaded tool does not leave the request
     /// for a server that would come back. Servers nobody loaded from are
     /// left to the session's own retries.
+    ///
+    /// The attempts run together, and each server's go through
+    /// [`LoadedMcpRetries`]: one at a time whoever asks, and at most one per
+    /// [`LOADED_MCP_RETRY_INTERVAL`], so a dead server costs a step one
+    /// attempt now and then rather than one on every step of every session.
     pub(crate) async fn reconnect_loaded_mcp(&self, session: SessionId) {
         let Ok(stored) = self.inner.store.get(session) else {
             return;
@@ -430,13 +435,21 @@ impl Engine {
         if servers.is_empty() {
             return;
         }
+        let retries = &self.inner.loaded_mcp_retries;
+        let mut attempts = Vec::<futures_util::future::BoxFuture<'_, ()>>::new();
         for attachment in self.session_runtimes(session).unwrap_or_default() {
             if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
                 for status in self.inner.mcp.statuses() {
                     if status.state == crate::McpServerState::Failed
                         && servers.contains(status.server.as_str())
                     {
-                        let _ = self.inner.mcp.reconnect_server(&status.server).await;
+                        let key = LoadedMcpKey {
+                            instance: None,
+                            server: status.server.clone(),
+                        };
+                        attempts.push(Box::pin(retries.attempt(key, async move {
+                            let _ = self.inner.mcp.reconnect_server(&status.server).await;
+                        })));
                     }
                 }
             } else if let Some(connection) = self
@@ -450,11 +463,23 @@ impl Engine {
                         == cookie_agent_runtime_api::protocol::McpServerState::Failed
                         && servers.contains(server.report.name.as_str())
                     {
-                        let _ = connection.reconnect_mcp(&server.report.name).await;
+                        let key = LoadedMcpKey {
+                            instance: Some((
+                                attachment.runtime_id.to_string(),
+                                attachment.capability.to_string(),
+                                attachment.workspace.clone(),
+                            )),
+                            server: server.report.name.clone(),
+                        };
+                        let connection = connection.clone();
+                        attempts.push(Box::pin(retries.attempt(key, async move {
+                            let _ = connection.reconnect_mcp(&server.report.name).await;
+                        })));
                     }
                 }
             }
         }
+        futures_util::future::join_all(attempts).await;
     }
 
     /// Retries the global runtime's failed MCP servers (see
@@ -769,6 +794,59 @@ impl Engine {
     }
 }
 
+/// The least time between two reconnects of one failed MCP server that
+/// [`Engine::reconnect_loaded_mcp`] makes.
+pub(crate) const LOADED_MCP_RETRY_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// A server [`LoadedMcpRetries`] reconnects: the global runtime's, or one
+/// of a runtime instance's, by its runtime, capability, and workspace,
+/// whichever sessions attach it.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct LoadedMcpKey {
+    pub(crate) instance: Option<(String, String, Option<String>)>,
+    pub(crate) server: String,
+}
+
+/// The reconnects of failed MCP servers that loaded tools come from, by
+/// server: one in flight at a time, the callers that come while it is
+/// sharing it, and none sooner than [`LOADED_MCP_RETRY_INTERVAL`] after the
+/// one before.
+#[derive(Default)]
+pub(crate) struct LoadedMcpRetries {
+    /// When each server's latest attempt started.
+    servers: std::sync::Mutex<
+        std::collections::HashMap<
+            LoadedMcpKey,
+            Arc<tokio::sync::Mutex<Option<tokio::time::Instant>>>,
+        >,
+    >,
+}
+
+impl LoadedMcpRetries {
+    /// Runs `attempt` for `key` unless one started within the interval; a
+    /// caller that comes while one runs waits for it and makes none.
+    pub(crate) async fn attempt(
+        &self,
+        key: LoadedMcpKey,
+        attempt: impl std::future::Future<Output = ()>,
+    ) {
+        let slot = Arc::clone(
+            self.servers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(key)
+                .or_default(),
+        );
+        let mut started = slot.lock().await;
+        if started.is_some_and(|started| started.elapsed() < LOADED_MCP_RETRY_INTERVAL) {
+            return;
+        }
+        *started = Some(tokio::time::Instant::now());
+        attempt.await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{AttachmentName, RuntimeAttachment, RuntimeId, RuntimeKind};
@@ -812,5 +890,55 @@ mod tests {
                 .as_str(),
             "labpc_api"
         );
+    }
+}
+
+#[cfg(test)]
+mod loaded_mcp_tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+
+    fn key(server: &str) -> LoadedMcpKey {
+        LoadedMcpKey {
+            instance: None,
+            server: server.to_owned(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_servers_reconnect_is_shared_and_spaced_out() {
+        let retries = LoadedMcpRetries::default();
+        let attempts = AtomicU32::new(0);
+        let attempt = || async {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        };
+
+        // Callers that come together share one attempt, and wait for it.
+        let started = tokio::time::Instant::now();
+        futures_util::future::join3(
+            retries.attempt(key("docs"), attempt()),
+            retries.attempt(key("docs"), attempt()),
+            retries.attempt(key("docs"), attempt()),
+        )
+        .await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(4));
+
+        // Another server is its own.
+        retries.attempt(key("search"), attempt()).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        // Within the interval nothing is tried, and nothing waits.
+        let started = tokio::time::Instant::now();
+        retries.attempt(key("docs"), attempt()).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+
+        // After it, the server is tried again.
+        tokio::time::advance(LOADED_MCP_RETRY_INTERVAL).await;
+        retries.attempt(key("docs"), attempt()).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 }

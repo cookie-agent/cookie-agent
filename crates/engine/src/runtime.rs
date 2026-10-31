@@ -1075,6 +1075,8 @@ pub(crate) struct Inner {
     pub(crate) deferred_tools_record: crate::deferred_tools::record::DeferredToolsRecord,
     /// What each session's loader tools see: its latest request's deferral.
     pub(crate) deferral_views: Mutex<HashMap<SessionId, Arc<crate::deferred_tools::DeferralView>>>,
+    /// The reconnects of failed MCP servers that loaded tools come from.
+    pub(crate) loaded_mcp_retries: attachments::LoadedMcpRetries,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     permissions: PermissionPipeline,
@@ -1364,6 +1366,7 @@ impl Engine {
                     &options.data_dir,
                 ),
                 deferral_views: Mutex::new(HashMap::new()),
+                loaded_mcp_retries: attachments::LoadedMcpRetries::default(),
                 plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 permissions: PermissionPipeline::default(),
