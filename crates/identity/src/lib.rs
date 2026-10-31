@@ -1,10 +1,14 @@
-//! Strict shared identities for agents, providers, models, and variants.
+//! Strict shared identities for agents, providers, models, and variants,
+//! and the [`Backoff`] every retry loop waits by.
 
 use std::{borrow::Cow, fmt, str::FromStr};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
+
+pub mod backoff;
+pub use backoff::{Backoff, Jitter};
 
 /// Identity parsing failure.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]

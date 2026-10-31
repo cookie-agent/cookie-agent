@@ -188,12 +188,13 @@ where
     Fut: std::future::Future<Output = Result<T, cookie_agent_server::ServerError>>,
 {
     let deadline = Instant::now() + wait;
+    let mut pauses = cookie_agent_identity::Backoff::fixed(Duration::from_millis(100)).delays();
     loop {
         match bind().await {
             Err(cookie_agent_server::ServerError::Listen(error))
                 if error.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline =>
             {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(pauses.next_delay()).await;
             }
             result => return result,
         }

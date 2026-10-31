@@ -266,10 +266,11 @@ pub(super) fn while_replacing<T>(
     mut read: impl FnMut() -> io::Result<T>,
 ) -> io::Result<T> {
     const PATIENCE: Duration = Duration::from_secs(2);
-    const LONGEST_PAUSE: Duration = Duration::from_millis(16);
+    const PAUSES: cookie_agent_identity::Backoff =
+        cookie_agent_identity::Backoff::new(Duration::from_millis(1), Duration::from_millis(16));
 
     let deadline = Instant::now() + PATIENCE;
-    let mut pause = Duration::from_millis(1);
+    let mut pauses = PAUSES.delays();
     let mut read_again = true;
     loop {
         let error = match read() {
@@ -295,8 +296,7 @@ pub(super) fn while_replacing<T>(
             // the two apart.
             return read();
         }
-        std::thread::sleep(pause);
-        pause = (pause * 2).min(LONGEST_PAUSE);
+        std::thread::sleep(pauses.next_delay());
     }
 }
 

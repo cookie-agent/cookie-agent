@@ -173,13 +173,15 @@ pub(super) fn write_cache(
 #[cfg(windows)]
 pub(crate) fn replace_windows_path_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
     const ATTEMPTS: usize = 50;
-    const BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+    const BACKOFF: cookie_agent_identity::Backoff =
+        cookie_agent_identity::Backoff::fixed(std::time::Duration::from_millis(25));
 
+    let mut pauses = BACKOFF.delays();
     for attempt in 0..ATTEMPTS {
         match cookie_agent_models::secure_store::replace_windows_path(source, target) {
             Ok(()) => return Ok(()),
             Err(error) if attempt + 1 < ATTEMPTS && windows_replace_is_contended(&error) => {
-                std::thread::sleep(BACKOFF);
+                std::thread::sleep(pauses.next_delay());
             }
             Err(error) => return Err(error),
         }

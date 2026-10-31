@@ -3,7 +3,7 @@
 //! whose rail carries both instead. Where the browser can install the page
 //! as an app, the connect screen and a phone's banner offer it (spec 9).
 
-use cookie_agent_client_state::subscriptions::{RECONNECT_FIRST_DELAY, next_reconnect_delay};
+use cookie_agent_client_state::subscriptions::RECONNECT_BACKOFF;
 use cookie_agent_protocol::{Client, ClientDelivery, ClientError, ClientIdentity, ServerHello};
 use leptos::{prelude::*, task::spawn_local};
 
@@ -270,9 +270,9 @@ impl Connection {
         let url = self.url.get_untracked();
         let token = self.token.get_untracked();
         spawn_local(async move {
-            let mut delay = RECONNECT_FIRST_DELAY;
+            let mut delays = RECONNECT_BACKOFF.delays();
             loop {
-                gloo_timers::future::sleep(delay).await;
+                gloo_timers::future::sleep(delays.next_delay()).await;
                 if !self.is_current(generation) {
                     return;
                 }
@@ -292,7 +292,6 @@ impl Connection {
                         self.phase.set(Phase::Reconnecting {
                             reason: crate::errors::describe(&error),
                         });
-                        delay = next_reconnect_delay(delay);
                     }
                 }
             }

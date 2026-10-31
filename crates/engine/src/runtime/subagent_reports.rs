@@ -17,7 +17,7 @@ use cookie_agent_protocol::{
 
 use super::{
     Engine, EngineError, Event,
-    helpers::{RetryBackoff, retry_is_futile},
+    helpers::{RETRY_BACKOFF, retry_is_futile},
     producers::ProducerAuthority,
 };
 
@@ -75,12 +75,12 @@ impl Engine {
     /// delay until it is delivered, not owed, can no longer be delivered
     /// (the child or its parent is gone), or the engine shuts down.
     pub(super) async fn deliver_subagent_report_until_done(&self, child: SessionId, run: RunId) {
-        let mut backoff = RetryBackoff::new();
+        let mut backoff = RETRY_BACKOFF.delays();
         loop {
             match self.deliver_subagent_report(child, run).await {
                 Ok(()) => return,
                 Err(error) if retry_is_futile(&error) || self.admission_tasks_closing() => return,
-                Err(_) => backoff.wait().await,
+                Err(_) => tokio::time::sleep(backoff.next_delay()).await,
             }
         }
     }

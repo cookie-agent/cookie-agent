@@ -2458,7 +2458,9 @@ async fn dial_in(
 ) -> anyhow::Result<()> {
     const LONGEST_WAIT: Duration = Duration::from_secs(30);
     let stop = options.stop.clone();
-    let mut wait = Duration::from_secs(1);
+    let mut waits =
+        cookie_agent_identity::Backoff::new(Duration::from_secs(1), LONGEST_WAIT).delays();
+    let mut wait = waits.next_delay();
     loop {
         let connected = tokio::select! {
             () = stop.cancelled() => return Ok(()),
@@ -2478,7 +2480,8 @@ async fn dial_in(
                 }
                 eprintln!("cookie runtime: disconnected from {daemon}: {reason}");
                 if started.elapsed() > LONGEST_WAIT {
-                    wait = Duration::from_secs(1);
+                    waits.reset();
+                    wait = waits.next_delay();
                 }
             }
             Err(error) if error.is_permanent() => {
@@ -2493,7 +2496,7 @@ async fn dial_in(
             () = tokio::time::sleep(wait) => {}
             () = stop.cancelled() => return Ok(()),
         }
-        wait = (wait * 2).min(LONGEST_WAIT);
+        wait = waits.next_delay();
     }
 }
 

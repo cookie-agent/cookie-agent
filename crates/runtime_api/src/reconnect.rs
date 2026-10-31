@@ -26,7 +26,9 @@ pub struct ReconnectPolicy {
 impl Default for ReconnectPolicy {
     /// Three attempts after 1 s, 2 s, and 4 s.
     fn default() -> Self {
-        Self::with_delays([1, 2, 4].map(Duration::from_secs))
+        let backoff =
+            cookie_agent_identity::Backoff::new(Duration::from_secs(1), Duration::from_secs(4));
+        Self::with_delays(backoff.delays().take(3).collect::<Vec<_>>())
     }
 }
 

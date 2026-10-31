@@ -226,29 +226,10 @@ pub(super) fn retry_is_futile(error: &EngineError) -> bool {
     )
 }
 
-/// Delays between retries of a failed background delivery, doubling from
-/// [`Self::FIRST`] up to [`Self::LONGEST`].
-pub(super) struct RetryBackoff {
-    next: std::time::Duration,
-}
-
-impl RetryBackoff {
-    const FIRST: std::time::Duration = std::time::Duration::from_millis(100);
-    const LONGEST: std::time::Duration = std::time::Duration::from_secs(5);
-
-    pub(super) const fn new() -> Self {
-        Self { next: Self::FIRST }
-    }
-
-    /// Sleeps the current delay and doubles the next one.
-    pub(super) async fn wait(&mut self) {
-        tokio::time::sleep(self.next_delay()).await;
-    }
-
-    /// The current delay, doubling the next one.
-    pub(super) fn next_delay(&mut self) -> std::time::Duration {
-        let delay = self.next;
-        self.next = (self.next * 2).min(Self::LONGEST);
-        delay
-    }
-}
+/// Delays between retries of a failed background delivery or cron fire:
+/// 100 ms, doubling up to 5 s.
+pub(super) const RETRY_BACKOFF: cookie_agent_identity::Backoff =
+    cookie_agent_identity::Backoff::new(
+        std::time::Duration::from_millis(100),
+        std::time::Duration::from_secs(5),
+    );

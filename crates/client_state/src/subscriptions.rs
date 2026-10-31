@@ -33,17 +33,10 @@ pub const RECENT_SUBSCRIBED_TREES: usize = 8;
 /// Wait before resubscribing a viewed session whose recovery gave up.
 pub const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 
-/// First wait before redialing a dropped daemon; doubles per failure up to
-/// [`RECONNECT_MAX_DELAY`].
-pub const RECONNECT_FIRST_DELAY: Duration = Duration::from_millis(500);
-
-/// The longest wait between redials of a dropped daemon.
-pub const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(10);
-
-/// The wait before the redial after one that waited `delay` and failed.
-pub fn next_reconnect_delay(delay: Duration) -> Duration {
-    (delay * 2).min(RECONNECT_MAX_DELAY)
-}
+/// The waits before each redial of a dropped daemon: 500 ms, doubling per
+/// failure up to 10 s.
+pub const RECONNECT_BACKOFF: cookie_agent_identity::Backoff =
+    cookie_agent_identity::Backoff::new(Duration::from_millis(500), Duration::from_secs(10));
 
 /// The roots of the trees viewed most recently, newest first.
 #[derive(Clone, Debug, Default)]
@@ -407,13 +400,11 @@ impl SessionState {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use cookie_agent_protocol::SessionId;
 
     use super::{
-        RECENT_SUBSCRIBED_TREES, RECONNECT_MAX_DELAY, RecentTrees, Subscribe, SubscribeIntent,
-        SubscriptionOutcome, SubscriptionState, Subscriptions, next_reconnect_delay,
+        RECENT_SUBSCRIBED_TREES, RecentTrees, Subscribe, SubscribeIntent, SubscriptionOutcome,
+        SubscriptionState, Subscriptions,
     };
 
     fn subscribe(session_id: SessionId, attempt: u64, from_scratch: bool) -> Option<Subscribe> {
@@ -650,17 +641,5 @@ mod tests {
         );
         assert!(!recent.contains(roots[1]));
         assert!(recent.contains(roots[0]));
-    }
-
-    #[test]
-    fn redials_back_off_up_to_the_longest_wait() {
-        assert_eq!(
-            next_reconnect_delay(Duration::from_millis(700)),
-            Duration::from_millis(1400)
-        );
-        assert_eq!(
-            next_reconnect_delay(RECONNECT_MAX_DELAY),
-            RECONNECT_MAX_DELAY
-        );
     }
 }

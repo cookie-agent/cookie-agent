@@ -3107,27 +3107,25 @@ fn model_retry_delay(
     jitter_basis: u64,
     backoff_ceiling: std::time::Duration,
 ) -> std::time::Duration {
-    let backoff = exponential_retry_delay(retry_ordinal, backoff_ceiling);
-    let jitter_per_mille = 750 + jitter_basis % 501;
-    let jittered_millis = backoff
-        .as_millis()
-        .saturating_mul(u128::from(jitter_per_mille))
-        / 1000;
-    let jittered_millis = jittered_millis.clamp(1, backoff_ceiling.as_millis());
-    let jittered =
-        std::time::Duration::from_millis(u64::try_from(jittered_millis).unwrap_or(u64::MAX));
-    jittered.max(retry_after.unwrap_or_default())
+    model_retry_backoff(backoff_ceiling)
+        .with_jitter(cookie_agent_identity::Jitter::Scale {
+            low: 750,
+            high: 1_250,
+        })
+        .jittered(retry_ordinal, jitter_basis)
+        .max(retry_after.unwrap_or_default())
+}
+
+/// Model retries wait 1 s, doubling per retry, up to the configured ceiling.
+fn model_retry_backoff(ceiling: std::time::Duration) -> cookie_agent_identity::Backoff {
+    cookie_agent_identity::Backoff::new(std::time::Duration::from_secs(1), ceiling)
 }
 
 pub(super) fn exponential_retry_delay(
     retry_ordinal: u32,
     ceiling: std::time::Duration,
 ) -> std::time::Duration {
-    let multiplier = 1_u64.checked_shl(retry_ordinal).unwrap_or(u64::MAX);
-    let milliseconds = 1_000_u64
-        .saturating_mul(multiplier)
-        .min(u64::try_from(ceiling.as_millis()).unwrap_or(u64::MAX));
-    std::time::Duration::from_millis(milliseconds)
+    model_retry_backoff(ceiling).delay(retry_ordinal)
 }
 
 /// SHA-256 of the request's JSON form, streamed into the hasher without

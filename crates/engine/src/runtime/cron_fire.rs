@@ -279,7 +279,7 @@ impl Engine {
             }
             // While the store fails, a due fire stays due: the scheduler
             // waits a growing delay before it tries again.
-            let mut backoff = super::helpers::RetryBackoff::new();
+            let mut backoff = super::helpers::RETRY_BACKOFF.delays();
             let mut retry_after = None;
             loop {
                 let Some(inner) = weak.upgrade() else {
@@ -317,7 +317,7 @@ impl Engine {
                 if engine.cron_tick(Timestamp::now()).await {
                     retry_after = Some(backoff.next_delay());
                 } else {
-                    backoff = super::helpers::RetryBackoff::new();
+                    backoff.reset();
                     retry_after = None;
                 }
             }

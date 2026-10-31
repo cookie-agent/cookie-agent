@@ -325,7 +325,7 @@ impl Engine {
                 return;
             }
         }
-        let mut backoff = super::helpers::RetryBackoff::new();
+        let mut backoff = super::helpers::RETRY_BACKOFF.delays();
         loop {
             let (summary, body, retained) = (summary.clone(), body.clone(), retained.clone());
             let committed = self
@@ -351,7 +351,7 @@ impl Engine {
                 break;
             }
             tokio::select! {
-                () = backoff.wait() => {}
+                () = tokio::time::sleep(backoff.next_delay()) => {}
                 () = signals.kill.cancelled() => break,
             }
         }

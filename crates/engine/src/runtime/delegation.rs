@@ -1908,6 +1908,8 @@ impl Engine {
         child_session_id: SessionId,
         invocation_id: InvocationId,
     ) {
+        let mut pauses =
+            cookie_agent_identity::Backoff::fixed(std::time::Duration::from_millis(100)).delays();
         while let Err(error) = self
             .finish_background_delegate(child_session_id, invocation_id)
             .await
@@ -1921,7 +1923,7 @@ impl Engine {
                 break;
             }
             eprintln!("background delegate completion retrying: {error}");
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(pauses.next_delay()).await;
         }
     }
 

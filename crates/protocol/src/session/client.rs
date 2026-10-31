@@ -45,6 +45,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 const COMMAND_QUEUE_CAPACITY: usize = 128;
 const RECOVERY_ATTEMPTS: usize = 6;
+/// The waits between recovery attempts: 50 ms, doubling up to 5 s.
+const RECOVERY_BACKOFF: cookie_agent_identity::Backoff =
+    cookie_agent_identity::Backoff::new(Duration::from_millis(50), Duration::from_secs(5));
 /// How long the daemon may take to answer one replay page once its request
 /// has been written. It bounds the daemon's work, not this client's queue.
 const REPLAY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1834,6 +1837,7 @@ fn spawn_recovery_worker(
     rt::spawn(async move {
         while let Some((mut full_replay, mut only_session)) = receiver.recv().await {
             loop {
+                let mut pauses = RECOVERY_BACKOFF.delays();
                 for attempt in 0..RECOVERY_ATTEMPTS {
                     if weak_recovery.upgrade().is_none() {
                         return;
@@ -1856,8 +1860,7 @@ fn spawn_recovery_worker(
                                 });
                                 break;
                             }
-                            let delay = 50_u64.saturating_mul(1_u64 << attempt).min(5_000);
-                            rt::sleep(Duration::from_millis(delay)).await;
+                            rt::sleep(pauses.next_delay()).await;
                         }
                     }
                 }

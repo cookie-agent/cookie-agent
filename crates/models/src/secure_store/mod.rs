@@ -24,6 +24,7 @@ use std::{
 #[cfg(unix)]
 use std::path::Component;
 
+use cookie_agent_identity::{Backoff, Jitter};
 use cookie_agent_protocol::paths;
 use thiserror::Error;
 #[cfg(unix)]
@@ -394,13 +395,17 @@ pub fn lock_within_file(file: &fs::File, budget: Duration) -> io::Result<bool> {
     }
 }
 
+/// 2 ms doubling up to 40 ms, plus up to 10 ms of jitter.
+const CONTENDED_BACKOFF: Backoff =
+    Backoff::new(Duration::from_millis(2), Duration::from_millis(40))
+        .with_jitter(Jitter::Add(Duration::from_millis(10)));
+
 fn contended_backoff(attempt: u32) -> Duration {
-    let base_ms = 2_u64.saturating_mul(1_u64 << attempt.min(5)).min(40);
-    // No RNG dependency: derive a small jitter from the wall clock.
-    let jitter_ms = std::time::SystemTime::now()
+    // No RNG dependency: derive the jitter from the wall clock.
+    let entropy = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| u64::from(elapsed.subsec_nanos()) % 11);
-    Duration::from_millis((base_ms + jitter_ms).min(50))
+        .map_or(0, |elapsed| u64::from(elapsed.subsec_nanos()));
+    CONTENDED_BACKOFF.jittered(attempt, entropy)
 }
 
 fn lock_contention(path: PathBuf, waited: Duration) -> SecureStoreError {

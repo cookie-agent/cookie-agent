@@ -39,6 +39,9 @@ const DEFAULT_TTL_SECONDS: u64 = 86_400;
 const RETRIES: u32 = 3;
 /// How long one send keeps retrying.
 const RETRY_BUDGET: Duration = Duration::from_secs(60);
+/// The wait before retry `n` (from 1) without a `Retry-After`: 2^n s.
+const RETRY_BACKOFF: cookie_agent_identity::Backoff =
+    cookie_agent_identity::Backoff::new(Duration::from_secs(1), RETRY_BUDGET);
 /// The VAPID token's lifetime; it is reused until an hour before it ends.
 const TOKEN_LIFETIME_SECONDS: i64 = 12 * 3600;
 const TOKEN_REFRESH_MARGIN_SECONDS: i64 = 3600;
@@ -709,7 +712,7 @@ impl PushService {
                 }
             };
             attempt += 1;
-            let wait = retry_after.unwrap_or_else(|| Duration::from_secs(1 << attempt));
+            let wait = retry_after.unwrap_or_else(|| RETRY_BACKOFF.delay(attempt));
             let past_deadline = message.deadline.is_some_and(|deadline| {
                 Timestamp::now()
                     .checked_add(wait)

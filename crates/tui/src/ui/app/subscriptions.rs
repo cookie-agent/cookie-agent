@@ -15,8 +15,7 @@
 use super::*;
 
 use cookie_agent_client_state::subscriptions::{
-    RECONNECT_FIRST_DELAY, SUBSCRIPTION_RETRY_DELAY, Subscribe, SubscriptionState,
-    next_reconnect_delay,
+    RECONNECT_BACKOFF, SUBSCRIPTION_RETRY_DELAY, Subscribe, SubscriptionState,
 };
 
 impl App {
@@ -234,9 +233,9 @@ impl App {
         self.reset_subscriptions();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let mut delay = RECONNECT_FIRST_DELAY;
+            let mut delays = RECONNECT_BACKOFF.delays();
             loop {
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(delays.next_delay()).await;
                 if updates.is_closed() {
                     return;
                 }
@@ -247,7 +246,6 @@ impl App {
                     }
                     Err(error) => {
                         let _ = updates.send(RpcUpdate::ReconnectFailed(error.to_string()));
-                        delay = next_reconnect_delay(delay);
                     }
                 }
             }
