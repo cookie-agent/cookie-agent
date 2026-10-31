@@ -4046,8 +4046,11 @@ fn an_evicted_session_drops_what_still_arrives_until_it_is_replayed_again() {
     let session_id = SessionId::new_v7();
     let mut store = StateStore::default();
     assert!(store.apply_event(submitted(session_id, 1, "first")));
+    assert!(store.can_evict(session_id));
     assert!(store.evict_session(session_id));
     assert!(!store.sessions.contains_key(&session_id));
+    // Nothing is left to keep.
+    assert!(store.can_evict(session_id));
     // A message in flight when the subscription was released does not
     // bring back a projection missing the start of the log.
     assert_eq!(
@@ -4087,6 +4090,7 @@ fn a_session_still_owed_to_its_view_is_not_evicted() {
         .get_mut(&session_id)
         .expect("session")
         .active_run = Some(RunId::new_v7());
+    assert!(!store.can_evict(session_id));
     assert!(!store.evict_session(session_id));
     assert!(store.sessions.contains_key(&session_id));
 }

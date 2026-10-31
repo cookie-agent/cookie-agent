@@ -2133,6 +2133,18 @@ impl StateStore {
         }
     }
 
+    /// Whether [`Self::evict_session`] would let `session_id` go: no
+    /// replay staged, and no run or input still owed to its view. A session
+    /// with no projection can always go.
+    #[must_use]
+    pub fn can_evict(&self, session_id: SessionId) -> bool {
+        !self.replays.contains_key(&session_id)
+            && self
+                .sessions
+                .get(&session_id)
+                .is_none_or(SessionState::is_settled)
+    }
+
     /// Drops `session_id`'s projection once nothing shows it and its
     /// subscription is released, so a client that browses many sessions
     /// does not keep every one it opened. Opening it again replays it from
@@ -2140,12 +2152,7 @@ impl StateStore {
     /// session with a replay staged, or with a run or input still owed to
     /// its view, is kept. Returns whether it was dropped.
     pub fn evict_session(&mut self, session_id: SessionId) -> bool {
-        if self.replays.contains_key(&session_id)
-            || self
-                .sessions
-                .get(&session_id)
-                .is_some_and(|state| !state.is_settled())
-        {
+        if !self.can_evict(session_id) {
             return false;
         }
         self.quarantined_sessions.remove(&session_id);

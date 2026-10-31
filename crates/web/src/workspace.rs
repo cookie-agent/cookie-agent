@@ -907,17 +907,14 @@ impl Workspace {
             self.status
                 .set("the model was picked by another client".into());
         }
-        if let Some(session_id) = run_ended
-            && !self.is_recent(session_id)
-            && self.is_settled(session_id)
-            && self
-                .subscriptions
-                .try_update_value(|subscriptions| subscriptions.release(session_id))
-                .unwrap_or(false)
-        {
-            self.release(session_id);
+        if let Some(session_id) = run_ended {
+            self.release_if_left(session_id);
         }
-        if let Some(session_id) = replay_ended {
+        // A session whose tree left the recent set during its replay, which
+        // kept it then, goes once the replay ends.
+        if let Some(session_id) = replay_ended
+            && !self.release_if_left(session_id)
+        {
             let owned = self.owned(session_id);
             if let Some(subscribe) = self
                 .subscriptions
@@ -1582,13 +1579,36 @@ impl Workspace {
         });
     }
 
+    /// Releases `session_id` once its tree is no longer recent and the
+    /// store may let it go ([`Self::is_settled`]). Returns whether it did.
+    fn release_if_left(self, session_id: SessionId) -> bool {
+        let released = !self.is_recent(session_id)
+            && self.is_settled(session_id)
+            && self
+                .subscriptions
+                .try_update_value(|subscriptions| subscriptions.release(session_id))
+                .unwrap_or(false);
+        if released {
+            self.release(session_id);
+        }
+        released
+    }
+
     /// Ends the live tail of a session whose subscription was released,
     /// and drops its projection: nothing shows it, and opening it again
-    /// replays it from the start.
+    /// replays it from the start. A projection the store keeps (a replay
+    /// staged, a run or input still owed to its view) keeps its tail: the
+    /// events it waits for still come.
     fn release(self, session_id: SessionId) {
-        self.store.update_value(|store| {
-            store.evict_session(session_id);
-        });
+        let refused = self
+            .store
+            .try_update_value(|store| {
+                !store.evict_session(session_id) && !store.can_evict(session_id)
+            })
+            .unwrap_or(true);
+        if refused {
+            return;
+        }
         if let Some(client) = self.client() {
             spawn_local(async move {
                 let _ = client.unsubscribe_events(session_id).await;
@@ -1635,13 +1655,11 @@ impl Workspace {
                 .with_value(|subscriptions| subscriptions.is_recent_tree(root))
     }
 
+    /// Whether the store would let `session_id` go: nothing in it is still
+    /// owed to its view (no run, no pending or queued input) and no replay
+    /// of it is staged.
     fn is_settled(self, session_id: SessionId) -> bool {
-        self.store.with_value(|store| {
-            store
-                .sessions
-                .get(&session_id)
-                .is_none_or(cookie_agent_client_state::SessionState::is_settled)
-        })
+        self.store.with_value(|store| store.can_evict(session_id))
     }
 
     /// Whether the composer may submit to the viewed session.
