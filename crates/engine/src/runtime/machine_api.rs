@@ -61,15 +61,13 @@ impl Engine {
     #[must_use]
     pub fn runtime_machine(&self, runtime_id: &str) -> Option<MachineName> {
         let runtime = RuntimeId::new(runtime_id).ok()?;
-        let template = self
+        let (connected, reported) = self
             .inner
             .runtimes
-            .templates()
-            .into_iter()
-            .find(|template| template.runtime_id == runtime_id);
-        let (connected, reported) = template.map_or((false, None), |template| {
-            (template.listing.connected, template.listing.machine)
-        });
+            .template_listing(runtime_id)
+            .map_or((false, None), |listing| {
+                (listing.connected, listing.machine)
+            });
         let found = if connected {
             self.resolve_machine(&runtime, reported.as_ref())
         } else {

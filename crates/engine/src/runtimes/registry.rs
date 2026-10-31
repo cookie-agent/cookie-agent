@@ -1717,6 +1717,18 @@ impl RuntimeRegistry {
             .collect()
     }
 
+    /// The listing of the registered runtime `runtime_id`, without the
+    /// others'.
+    pub(crate) fn template_listing(&self, runtime_id: &str) -> Option<RuntimeListingState> {
+        let template = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(runtime_id)
+            .cloned()?;
+        Some(template.listing())
+    }
+
     /// Gives every runtime its settings from `config`, as applied now: a
     /// connected runtime that takes them gets the ones that changed.
     pub(crate) fn update_settings(&self, config: &cookie_agent_config::LoadedConfiguration) {
