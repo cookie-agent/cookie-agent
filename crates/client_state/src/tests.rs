@@ -5862,3 +5862,169 @@ fn an_agents_question_splits_its_work_and_its_row_says_the_answer() {
         .collect::<Vec<_>>();
     assert_eq!(rows, ["assistant", "question", "assistant"]);
 }
+
+/// What the busy counts stand for, scanned from the projection.
+fn busy_scanned(state: &SessionState) -> (bool, bool, usize) {
+    (
+        state
+            .tools
+            .values()
+            .any(|tool| tool.status == ToolStatus::Running),
+        state
+            .transcript
+            .iter()
+            .any(|item| matches!(item, TranscriptItem::Compacting { .. })),
+        state
+            .transcript
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    TranscriptItem::ProducerMessage {
+                        status: ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted,
+                        ..
+                    }
+                )
+            })
+            .count(),
+    )
+}
+
+fn busy_counted(state: &SessionState) -> (bool, bool, usize) {
+    (
+        state.has_running_tool(),
+        state.is_compacting(),
+        state.waiting_producers(),
+    )
+}
+
+#[test]
+fn a_sessions_busy_counts_follow_its_calls_compactions_and_producer_messages() {
+    let session = SessionId::new_v7();
+    let call = ToolCallId::new_v7();
+    let owner = AssistantToolCallRef {
+        model_turn_seq: 1,
+        content_index: 0,
+        model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
+        provider_item_id: None,
+    };
+    let message_id = ProducerMessageId::new_v7();
+    let producer = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("ci").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
+    let mut state = SessionState::default();
+    let mut seq = 0;
+    let mut durable = |state: &mut SessionState, payload: EventPayload| {
+        seq += 1;
+        let event = stored_event(session, None, seq, payload);
+        reduce_event(
+            state,
+            session,
+            event.run_id,
+            event.seq,
+            event.timestamp,
+            event.payload,
+        );
+    };
+    durable(
+        &mut state,
+        EventPayload::ToolCallStarted {
+            start: cookie_agent_protocol::ToolCallStart {
+                background: false,
+                tool_call_id: call,
+                owner: owner.clone(),
+                output: Default::default(),
+                presentation: base_presentation(cookie_agent_protocol::PreparedPresentation::new(
+                    cookie_agent_protocol::SafeDisplayText::new("bash").unwrap(),
+                    None,
+                )),
+                operation_fingerprint: serde_json::from_value(
+                    serde_json::json!({"digest": "1".repeat(64)}),
+                )
+                .unwrap(),
+            },
+        },
+    );
+    assert_eq!(busy_counted(&state), (true, false, 0));
+    reduce_transient(
+        &mut state,
+        jiff::Timestamp::now(),
+        EventPayload::NativeCompactionStarted {
+            resolved_model: resolved_model(),
+        },
+    );
+    assert_eq!(busy_counted(&state), (true, true, 0));
+    durable(
+        &mut state,
+        accepted_message(message_id, producer.clone(), "build-1", None),
+    );
+    assert_eq!(busy_counted(&state), (true, true, 1));
+    durable(
+        &mut state,
+        EventPayload::ToolCallTerminated {
+            termination: cookie_agent_protocol::ToolCallTermination {
+                tool_call_id: call,
+                owner,
+                outcome: ToolTerminationOutcome::Completed,
+                result: None,
+                error: None,
+            },
+        },
+    );
+    assert_eq!(busy_counted(&state), (false, true, 1));
+    reduce_transient(
+        &mut state,
+        jiff::Timestamp::now(),
+        EventPayload::NativeCompactionFinished {
+            resolved_model: resolved_model(),
+        },
+    );
+    assert_eq!(busy_counted(&state), (false, false, 1));
+    durable(&mut state, discarded_message(message_id, producer, None));
+    assert_eq!(busy_counted(&state), busy_scanned(&state));
+    assert_eq!(busy_counted(&state), (false, false, 0));
+}
+
+#[test]
+fn a_replayed_sessions_busy_counts_match_its_projection() {
+    // The producer queue's own scenario, replayed whole: the counts a
+    // rebuild ends with are the projection's.
+    let session_id = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("build-monitor").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
+    let first = ProducerMessageId::new_v7();
+    let second = ProducerMessageId::new_v7();
+    let events = [
+        stored_event(
+            session_id,
+            None,
+            1,
+            accepted_message(first, owner.clone(), "one", None),
+        ),
+        stored_event(
+            session_id,
+            None,
+            2,
+            accepted_message(second, owner.clone(), "two", None),
+        ),
+        stored_event(
+            session_id,
+            Some(run),
+            3,
+            EventPayload::ProducerMessageAdmitted { message_id: first },
+        ),
+    ];
+    let state = reduce_session_events(session_id, 0, &events);
+    assert_eq!(busy_counted(&state), busy_scanned(&state));
+    assert_eq!(state.waiting_producers(), 2);
+    // A projection edited by hand is counted again on request.
+    let mut edited = state.clone();
+    edited.transcript.truncate(1);
+    edited.recount_busy();
+    assert_eq!(busy_counted(&edited), busy_scanned(&edited));
+    assert_eq!(edited.waiting_producers(), 1);
+}

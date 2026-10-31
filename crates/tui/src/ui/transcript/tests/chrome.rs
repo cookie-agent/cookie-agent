@@ -274,11 +274,13 @@ async fn bottom_bar_working_indicator_tracks_running_queued_and_idle_states() {
         .unwrap()
         .pending_inputs
         .clear();
-    for item in &mut app.store.sessions.get_mut(&session).unwrap().transcript {
+    let state = app.store.sessions.get_mut(&session).unwrap();
+    for item in &mut state.transcript {
         if let TranscriptItem::ProducerMessage { status, .. } = item {
             *status = ProducerMessageStatus::Consumed;
         }
     }
+    state.recount_busy();
     assert_eq!(rendered_row(&mut app, 100, 24, 23), idle);
 }
 

@@ -2413,6 +2413,11 @@ pub(crate) fn set_producer_status(
         unreachable!("matched producer transcript item")
     };
     *status = next;
+    app.store
+        .sessions
+        .get_mut(&session)
+        .expect("session")
+        .recount_busy();
 }
 
 pub(crate) fn pending_texts(app: &App, session: SessionId) -> Vec<&str> {

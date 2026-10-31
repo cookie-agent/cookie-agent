@@ -1124,6 +1124,68 @@ impl AcpSessionView {
 /// The agent's `compact` runs as cookie's compaction, which waits for it.
 pub const AGENT_REPLACED_COMMANDS: [&str; 2] = ["compact", "goal"];
 
+/// How many of a session's calls run, compactions summarize, and producer
+/// messages wait for a run, kept by the reducer as it changes each, so a
+/// client asks at every frame without scanning the session.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BusyCounts {
+    running_tools: usize,
+    compacting: usize,
+    waiting_producers: usize,
+}
+
+impl BusyCounts {
+    /// A call went from `before` to `after` (`None` when it was or is not
+    /// known).
+    pub(crate) fn tool(&mut self, before: Option<&ToolStatus>, after: Option<&ToolStatus>) {
+        let running = |status: Option<&ToolStatus>| status == Some(&ToolStatus::Running);
+        match (running(before), running(after)) {
+            (false, true) => self.running_tools += 1,
+            (true, false) => self.running_tools = self.running_tools.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    /// `item` joined the transcript.
+    pub(crate) fn pushed(&mut self, item: &TranscriptItem) {
+        match item {
+            TranscriptItem::Compacting { .. } => self.compacting += 1,
+            TranscriptItem::ProducerMessage { status, .. } => self.producer(None, Some(*status)),
+            _ => {}
+        }
+    }
+
+    /// `item` left the transcript.
+    pub(crate) fn removed(&mut self, item: &TranscriptItem) {
+        match item {
+            TranscriptItem::Compacting { .. } => {
+                self.compacting = self.compacting.saturating_sub(1);
+            }
+            TranscriptItem::ProducerMessage { status, .. } => self.producer(Some(*status), None),
+            _ => {}
+        }
+    }
+
+    /// A producer message's row went from `before` to `after`.
+    pub(crate) fn producer(
+        &mut self,
+        before: Option<ProducerMessageStatus>,
+        after: Option<ProducerMessageStatus>,
+    ) {
+        let waiting = |status: Option<ProducerMessageStatus>| {
+            matches!(
+                status,
+                Some(ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted)
+            )
+        };
+        match (waiting(before), waiting(after)) {
+            (false, true) => self.waiting_producers += 1,
+            (true, false) => self.waiting_producers = self.waiting_producers.saturating_sub(1),
+            _ => {}
+        }
+    }
+}
+
 /// Per-session projection of persisted events and live output.
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
@@ -1186,6 +1248,8 @@ pub struct SessionState {
     /// The reduced mode's folds of the transcript at the latest version
     /// asked for ([`SessionState::fold_plan`]).
     pub folds: transcript_mode::FoldCache,
+    /// What the session is busy with, counted as the reducer changes it.
+    pub busy: BusyCounts,
     /// Durable insertion time per transcript item id. Cross-session rows such
     /// as aggregated descendant warnings merge into a viewed transcript by
     /// this time, so mid-conversation breaks render at their chronological
@@ -1326,7 +1390,9 @@ impl SessionState {
         let Some(tool) = self.tools.get_mut(&call_id) else {
             return false;
         };
+        let before = tool.status.clone();
         update(tool);
+        self.busy.tool(Some(&before), Some(&tool.status));
         tool.revision = next_tool_revision();
         bump_tool_item(self, call_id);
         true
@@ -1363,29 +1429,36 @@ impl SessionState {
 
     /// Whether any tool call in this session is still running.
     pub fn has_running_tool(&self) -> bool {
-        self.tools
-            .values()
-            .any(|tool| tool.status == ToolStatus::Running)
+        self.busy.running_tools > 0
     }
 
     /// Whether a context compaction is still producing its summary.
     pub fn is_compacting(&self) -> bool {
-        self.transcript
-            .iter()
-            .any(|item| matches!(item, TranscriptItem::Compacting { .. }))
+        self.busy.compacting > 0
     }
 
     /// Whether any producer message is waiting for a model run to claim it.
     pub fn has_pending_producers(&self) -> bool {
-        self.transcript.iter().any(|item| {
-            matches!(
-                item,
-                TranscriptItem::ProducerMessage {
-                    status: ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted,
-                    ..
-                }
-            )
-        })
+        self.busy.waiting_producers > 0
+    }
+
+    /// How many producer messages wait for a model run to claim them.
+    pub fn waiting_producers(&self) -> usize {
+        self.busy.waiting_producers
+    }
+
+    /// Counts [`Self::busy`] again from the projection, for one whose
+    /// calls or rows were changed outside the reducer, as a test builds
+    /// one by hand.
+    pub fn recount_busy(&mut self) {
+        let mut busy = BusyCounts::default();
+        for tool in self.tools.values() {
+            busy.tool(None, Some(&tool.status));
+        }
+        for item in &self.transcript {
+            busy.pushed(item);
+        }
+        self.busy = busy;
     }
 
     /// The sealed elapsed thinking duration for one part, when known.

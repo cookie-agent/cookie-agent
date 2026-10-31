@@ -927,7 +927,12 @@ pub(super) fn reduce_event_from(
                 arguments,
             );
             tool.backgroundable = start.background;
-            state.tools.insert(start.tool_call_id, tool);
+            let running = tool.status == ToolStatus::Running;
+            let before = state.tools.insert(start.tool_call_id, tool);
+            state.busy.tool(
+                before.as_ref().map(|before| &before.status),
+                running.then_some(&ToolStatus::Running),
+            );
             place_tool_rows(state);
         }
         EventPayload::ToolCallTerminated { termination } => {
@@ -1008,6 +1013,7 @@ pub(super) fn reduce_event_from(
                 failure_message.clone()
             };
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
+                state.busy.tool(Some(&tool.status), Some(&status));
                 tool.status = status;
                 tool.display = display;
                 tool.failure = failure;
@@ -2129,7 +2135,8 @@ fn remove_empty_assistant(state: &mut SessionState, item_id: u64) {
     }) else {
         return;
     };
-    state.transcript.remove(index);
+    let removed = state.transcript.remove(index);
+    state.busy.removed(&removed);
     for message in state.producer_messages.values_mut() {
         if message.transcript_index > index {
             message.transcript_index -= 1;
@@ -2154,7 +2161,8 @@ fn remove_compacting_where(
     ) else {
         return false;
     };
-    state.transcript.remove(index);
+    let removed = state.transcript.remove(index);
+    state.busy.removed(&removed);
     for message in state.producer_messages.values_mut() {
         if message.transcript_index > index {
             message.transcript_index -= 1;
@@ -2211,6 +2219,7 @@ pub(super) fn update_producer_message_status(
     if *row_message_id != message_id {
         return;
     }
+    state.busy.producer(Some(*row_status), Some(status));
     projection.status = status;
     *row_status = status;
 }
@@ -2986,7 +2995,9 @@ pub(super) fn push_item(
     state.next_transcript_id = state.next_transcript_id.wrapping_add(1).max(1);
     let id = state.next_transcript_id;
     state.item_times.insert(id, timestamp);
-    state.transcript.push(item(id));
+    let item = item(id);
+    state.busy.pushed(&item);
+    state.transcript.push(item);
 }
 
 /// Adds a row for input the engine gives the model beyond the

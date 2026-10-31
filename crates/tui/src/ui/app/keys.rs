@@ -1526,6 +1526,8 @@ impl App {
     }
 
     /// Animate live runs, streaming parts, tools, and waiting producers.
+    /// Every check is a field or a count the reducer keeps: the event loop
+    /// asks at every pass.
     pub(in crate::ui) fn animation_active(&self) -> bool {
         self.selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
@@ -1546,21 +1548,7 @@ impl App {
         if state.active_run.is_some() {
             return Some(WorkingState::Working);
         }
-        let count = state.pending_inputs.len()
-            + state
-                .transcript
-                .iter()
-                .filter(|item| {
-                    matches!(
-                        item,
-                        TranscriptItem::ProducerMessage {
-                            status: crate::state::ProducerMessageStatus::Pending
-                                | crate::state::ProducerMessageStatus::Admitted,
-                            ..
-                        }
-                    )
-                })
-                .count();
+        let count = state.pending_inputs.len() + state.waiting_producers();
         (count > 0).then_some(WorkingState::Queued(count))
     }
 
