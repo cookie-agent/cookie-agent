@@ -1143,7 +1143,10 @@ impl NotificationsConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ShellEnvironmentConfig {
-    #[serde(default = "default_shell_capture")]
+    #[serde(
+        default = "default_shell_capture",
+        deserialize_with = "strict_shell_capture"
+    )]
     pub capture: ShellCapture,
     /// How long a capture may take; 0 or less waits indefinitely.
     #[serde(default = "default_shell_capture_timeout_ms")]
@@ -1189,6 +1192,29 @@ const fn default_shell_capture() -> ShellCapture {
     ShellCapture::Interactive
 }
 
+/// `capture` as configuration takes it: only the values this build knows.
+/// The protocol's `ShellCapture` is open and reads an unknown value as
+/// `off`, which configuration must refuse instead.
+fn strict_shell_capture<'de, D>(deserializer: D) -> Result<ShellCapture, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    const VALUES: &[&str] = &["interactive", "login", "off"];
+    match String::deserialize(deserializer)?.as_str() {
+        "interactive" => Ok(ShellCapture::Interactive),
+        "login" => Ok(ShellCapture::Login),
+        "off" => Ok(ShellCapture::Off),
+        other => Err(serde::de::Error::unknown_variant(other, VALUES)),
+    }
+}
+
+fn strict_optional_shell_capture<'de, D>(deserializer: D) -> Result<Option<ShellCapture>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    strict_shell_capture(deserializer).map(Some)
+}
+
 const fn default_shell_capture_timeout_ms() -> i64 {
     10_000
 }
@@ -1198,7 +1224,11 @@ const fn default_shell_capture_timeout_ms() -> i64 {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellEnvironmentOverride {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "strict_optional_shell_capture"
+    )]
     pub capture: Option<ShellCapture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<i64>,

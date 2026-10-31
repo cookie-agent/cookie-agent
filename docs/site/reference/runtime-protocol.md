@@ -120,6 +120,7 @@ fallbacks are chosen so that an older reader stays safe:
 | media `delivery` | `tool/prepare` and `tool/execute` turns | `unknown`: the tool does not attach that kind |
 | display block `type` | prepare presentations, execute results, `tool/progress` replacements | dropped, with a diagnostic (see [Display blocks](#display-blocks)) |
 | media `kind` | `tool/prepare` and `tool/execute` turns | a label: a tool does not attach a kind it does not know |
+| shell environment `capture` | the settings of `runtime/initialize` and `runtime/settings_changed` | `off`: the runtime keeps its own environment (since 1.14.0) |
 
 These are closed by design, since every reader must understand each value: a
 prepare result's and an execute outcome's `status`, an output's and an
@@ -130,7 +131,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.13.0**
+The protocol version is a semver string, currently **1.14.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -221,6 +222,8 @@ and `runtime/shell_environment`.
 1.13.0 added [transfers](#transfers): the optional `files` of
 `runtime/initialize`'s result and the `fs/*` requests, with which the
 daemon copies files and folders between machines without storing them.
+1.14.0 made the shell environment's `capture` open: a value the runtime
+does not know reads as `off`.
 
 ## Capabilities and instances
 

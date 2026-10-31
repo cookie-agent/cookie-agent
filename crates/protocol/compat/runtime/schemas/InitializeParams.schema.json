@@ -112,7 +112,7 @@
       "type": "object"
     },
     "ShellCapture": {
-      "description": "How a runtime starts the shell it captures the environment of.",
+      "description": "How a runtime starts the shell it captures the environment of. Open\n(runtime protocol 1.14.0): a value this build does not know reads as\n`off`, so a runtime keeps its own environment rather than start a shell\nin a way it does not understand.",
       "oneOf": [
         {
           "const": "interactive",
@@ -129,7 +129,8 @@
           "description": "No capture: the runtime's own environment.",
           "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     },
     "ShellEnvironmentSettings": {
       "description": "`[shell_environment]` as it applies to one runtime\n(`docs/site/specs/shell-environment.md`; runtime protocol 1.12.0).",

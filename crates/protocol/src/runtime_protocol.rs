@@ -270,9 +270,13 @@ pub struct ShellEnvironmentSettings {
     pub shell: String,
 }
 
-/// How a runtime starts the shell it captures the environment of.
+/// How a runtime starts the shell it captures the environment of. Open
+/// (runtime protocol 1.14.0): a value this build does not know reads as
+/// `off`, so a runtime keeps its own environment rather than start a shell
+/// in a way it does not understand.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ShellCapture {
     /// An interactive login shell (`-l -i`): the environment of a new
     /// terminal.
@@ -281,6 +285,7 @@ pub enum ShellCapture {
     /// not interactive.
     Login,
     /// No capture: the runtime's own environment.
+    #[serde(other)]
     Off,
 }
 
@@ -1282,6 +1287,28 @@ mod tests {
         RuntimeMachine {
             id: id.to_owned(),
             host_name: host_name.map(str::to_owned),
+        }
+    }
+
+    /// A capture mode from a newer daemon leaves the runtime's own
+    /// environment; the known ones keep their meaning.
+    #[test]
+    fn an_unknown_shell_capture_reads_as_off() {
+        use super::{ShellCapture, ShellEnvironmentSettings};
+        let settings: ShellEnvironmentSettings =
+            serde_json::from_value(serde_json::json!({"capture": "on_demand", "timeout_ms": 5}))
+                .expect("settings");
+        assert_eq!(settings.capture, ShellCapture::Off);
+        for (value, capture) in [
+            ("interactive", ShellCapture::Interactive),
+            ("login", ShellCapture::Login),
+            ("off", ShellCapture::Off),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<ShellCapture>(serde_json::json!(value)).expect("capture"),
+                capture
+            );
+            assert_eq!(serde_json::to_value(capture).expect("capture"), value);
         }
     }
 
