@@ -75,7 +75,7 @@ impl Engine {
                 engine.append_direct(
                     session,
                     None,
-                    super::event_origin("tool:attach_machine"),
+                    super::event_origin("engine:machines"),
                     attached_event(&attachment),
                 )?;
                 Ok(attachment)
@@ -245,7 +245,7 @@ impl Engine {
             engine.append_direct(
                 session,
                 None,
-                super::event_origin("tool:detach_machine"),
+                super::event_origin("engine:machines"),
                 super::Event::RuntimeDetached { name },
             )
         })

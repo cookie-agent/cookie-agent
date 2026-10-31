@@ -548,6 +548,48 @@ async fn a_runtime_tool_with_a_base_name_is_prefixed_and_the_base_tool_keeps_it(
     fixture.engine.shutdown().await;
 }
 
+/// `attach_machine` and `detach_machine` record their events from the
+/// session's run.
+#[tokio::test]
+async fn a_run_attaches_and_detaches_a_machine() {
+    let (fixture, selection) = custom_fixture();
+    let root = fixture._directory.path();
+    let engine = &fixture.engine;
+    let session = engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let labpc = FakeRuntimeTemplate::with_workspace("labpc", probe_tools(ToolCollision::Prefix));
+    engine
+        .register_runtime_template(labpc)
+        .expect("register labpc");
+    let workspace = workspace_dir(root, "api");
+    let attached = engine
+        .attach_from_run(session, "labpc", "coding", Some(workspace), None)
+        .await
+        .expect("attach from the run");
+    let labpc_attachments = || {
+        engine
+            .session_runtimes(session)
+            .expect("attachments")
+            .into_iter()
+            .filter(|attachment| attachment.runtime_id.as_str() == "labpc")
+            .map(|attachment| attachment.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        labpc_attachments(),
+        std::slice::from_ref(&attached.attachment.name)
+    );
+    let detached = engine
+        .detach_from_run(session, "labpc", "coding")
+        .await
+        .expect("detach from the run");
+    assert_eq!(detached.name, attached.attachment.name);
+    assert!(labpc_attachments().is_empty());
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn sessions_attach_runtimes_under_unique_names() {
     let (fixture, _selection) = custom_fixture();
