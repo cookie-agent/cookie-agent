@@ -660,7 +660,7 @@ impl PushService {
                         .and_then(|value| value.trim().parse::<u64>().ok())
                         .map(Duration::from_secs);
                     let retryable = status.as_u16() == 429 || status.is_server_error();
-                    let text = response.text().await.unwrap_or_default();
+                    let text = error_text(response).await;
                     let detail =
                         format!("{status}: {}", text.chars().take(200).collect::<String>());
                     if !retryable {
@@ -729,6 +729,24 @@ fn new_id(list: &[StoredSubscription]) -> String {
             return id;
         }
     }
+}
+
+/// The most of a push service's error body the daemon reads.
+const ERROR_BODY_LIMIT: usize = 4 * 1024;
+
+/// The start of an error answer's body, for its detail: at most
+/// [`ERROR_BODY_LIMIT`] bytes, so a push service that answers with a huge or
+/// endless body cannot hold the delivery or its memory.
+async fn error_text(mut response: reqwest::Response) -> String {
+    let mut body = Vec::new();
+    while body.len() < ERROR_BODY_LIMIT {
+        match response.chunk().await {
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    body.truncate(ERROR_BODY_LIMIT);
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 #[cfg(test)]

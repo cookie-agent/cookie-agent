@@ -624,3 +624,36 @@ async fn a_signal_nobody_watched_marks_its_root_unread_and_presence_reads_it() {
     assert!(file.contains(&asked_away.to_string()), "{file}");
     fixture.shutdown().await;
 }
+
+/// A push service's error body is read only as far as its detail needs: one
+/// that sends a body without end still yields a bounded detail at once.
+#[tokio::test]
+async fn an_error_body_is_read_only_up_to_its_limit() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        // Announces a gigabyte, sends 64 KiB, and then holds the connection.
+        stream
+            .write_all(
+                b"HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\ncontent-length: 1000000000\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        stream.write_all(&vec![b'x'; 64 * 1024]).await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/"))
+        .send()
+        .await
+        .unwrap();
+    let text = tokio::time::timeout(Duration::from_secs(5), super::error_text(response))
+        .await
+        .expect("the read stops at the limit");
+    assert_eq!(text.len(), super::ERROR_BODY_LIMIT);
+    server.abort();
+}
