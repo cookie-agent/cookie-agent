@@ -15,8 +15,10 @@
 //! - **Long tool results are cut**: a result whose output, display, and
 //!   metadata take more than [`CUT_ABOVE_BYTES`] keeps the first
 //!   [`CUT_KEEP_BYTES`] of its output, a display fit to the same budget,
-//!   and no metadata, which no client reads; a [`CutOutput`] names it, and
-//!   `event.read` returns it whole.
+//!   and no metadata; a [`CutOutput`] names it and the whole result's size,
+//!   and `event.read` returns it whole.
+//! - **A tool result's metadata is left out**: no transcript reads it, and
+//!   an ACP agent's results repeat their whole output there.
 //!
 //! Every other event is sent as stored. `model_attempt_started`,
 //! `model_output_started`, and `model_usage_recorded` stay: a transcript
@@ -77,8 +79,33 @@ pub fn shown(event: &Arc<StoredEvent>) -> Option<(Arc<StoredEvent>, Option<CutOu
     }
     Some(match cut_result(event) {
         Some((event, cut)) => (Arc::new(event), Some(cut)),
-        None => (Arc::clone(event), None),
+        None => match without_metadata(event) {
+            Some(event) => (Arc::new(event), None),
+            None => (Arc::clone(event), None),
+        },
     })
+}
+
+/// A tool result's event without its `metadata`; `None` when it has none.
+fn without_metadata(event: &StoredEvent) -> Option<StoredEvent> {
+    let EventPayload::ToolCallTerminated { termination } = &event.payload else {
+        return None;
+    };
+    if termination
+        .result
+        .as_ref()
+        .is_none_or(|result| result.metadata.is_null())
+    {
+        return None;
+    }
+    let mut termination = termination.clone();
+    if let Some(result) = termination.result.as_mut() {
+        result.metadata = serde_json::Value::Null;
+    }
+    Some(with_payload(
+        event,
+        EventPayload::ToolCallTerminated { termination },
+    ))
 }
 
 /// A `tool_call_terminated` event whose result is long, cut as the display

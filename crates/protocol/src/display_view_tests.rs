@@ -151,9 +151,33 @@ fn a_long_tool_result_is_cut_to_its_first_bytes_and_its_length() {
     let text = serde_json::to_string(&*cut_event).unwrap();
     let _: StoredEvent = serde_json::from_str(&text).unwrap();
     let short = event_at(&events, 18).unwrap();
-    let (same, none) = shown(short).unwrap();
-    assert!(Arc::ptr_eq(&same, short));
+    let (kept, none) = shown(short).unwrap();
     assert_eq!(none, None);
+    let (
+        EventPayload::ToolCallTerminated {
+            termination: stored,
+        },
+        EventPayload::ToolCallTerminated { termination: kept },
+    ) = (&short.payload, &kept.payload)
+    else {
+        panic!("seq 18 is a tool result");
+    };
+    let (stored, kept) = (
+        stored.result.as_ref().unwrap(),
+        kept.result.as_ref().unwrap(),
+    );
+    assert_ne!(stored.metadata, serde_json::Value::Null);
+    assert_eq!(kept.metadata, serde_json::Value::Null);
+    assert_eq!(
+        (&kept.output, &kept.display),
+        (&stored.output, &stored.display)
+    );
+    // Any other event is sent as stored.
+    let user = events
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+        .unwrap();
+    assert!(Arc::ptr_eq(&shown(user).unwrap().0, user));
 }
 
 #[test]

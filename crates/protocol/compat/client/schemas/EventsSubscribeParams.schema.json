@@ -20,7 +20,7 @@
         },
         {
           "const": "display",
-          "description": "What a transcript shows: bookkeeping left out, a superseded ACP\ncommand list or tool presentation dropped, and a tool result over\n[`crate::display_view::CUT_ABOVE_BYTES`] cut to its first bytes.",
+          "description": "What a transcript shows: bookkeeping left out, a superseded ACP\ncommand list or tool presentation dropped, tool results without\ntheir metadata, and a tool result over\n[`crate::display_view::CUT_ABOVE_BYTES`] cut to its first bytes.",
           "type": "string"
         }
       ]

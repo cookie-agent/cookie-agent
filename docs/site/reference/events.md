@@ -933,10 +933,10 @@ the events: `model_request_prepared` and a `model_replay_evaluated` that
 discards nothing are left out; in a page, a `model_tools_published`, an
 `acp_session_updated` command list or starting options, or an ACP tool
 presentation that a later event of the page replaces is left out (an
-update left with nothing goes); and a tool result whose output, display,
-and metadata take more than 4 KiB is cut: its `output` keeps its first
-2 KiB, its `display` fits 2 KiB with the usual `omitted_*` counts, and its
-`metadata` is `null`. The result's `cut` lists each cut result's `seq` and
+update left with nothing goes); a tool result's `metadata`, which no
+transcript reads, is `null`; and a tool result whose output, display, and
+metadata take more than 4 KiB is cut: its `output` keeps its first 2 KiB
+and its `display` fits 2 KiB with the usual `omitted_*` counts. The result's `cut` lists each cut result's `seq` and
 the whole result's `bytes`; `event.read` returns the stored event. A
 forward page in the display view always ends with the last event it covers,
 so the next page and the live tail follow on from it. Live notifications

@@ -2043,7 +2043,8 @@ pub enum EventsView {
     #[default]
     Full,
     /// What a transcript shows: bookkeeping left out, a superseded ACP
-    /// command list or tool presentation dropped, and a tool result over
+    /// command list or tool presentation dropped, tool results without
+    /// their metadata, and a tool result over
     /// [`crate::display_view::CUT_ABOVE_BYTES`] cut to its first bytes.
     Display,
 }
