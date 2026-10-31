@@ -531,6 +531,73 @@ async fn bench(target: u64) {
         mean(&promote_or_complete),
     );
 
+    // What the engine works out for every model step besides the actor:
+    // the tool set it publishes and the prompt blocks it compares, here in
+    // a session that belongs to a project.
+    let project = engine
+        .create_project(cookie_agent_protocol::ProjectCreateParams {
+            name: cookie_agent_protocol::ProjectName::new("bench").expect("project name"),
+            emoji: None,
+            defaults: None,
+        })
+        .await
+        .expect("project");
+    engine
+        .set_session_project(session, Some(project.id))
+        .await
+        .expect("session project");
+    let policy = engine
+        .inner
+        .sessions
+        .active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&run)
+        .expect("active run")
+        .policy
+        .clone();
+    let published = time(50, || {
+        engine
+            .published_tool_definitions(session, &policy)
+            .expect("published tools")
+    });
+    let deferred_providers = time(50, || {
+        engine
+            .deferred_prompt_providers(session, &policy)
+            .expect("deferred providers")
+    });
+    let runtimes_block = time(50, || engine.runtimes_block(session, None, Some(&policy)));
+    let tool_instructions = time(50, || {
+        engine
+            .live_tool_instructions_block(&policy, session)
+            .expect("tool instructions")
+    });
+    let skills_block = time(50, || {
+        engine
+            .live_skills_block(session, &policy, None)
+            .expect("skills block")
+    });
+    let project_lookup = time(50, || engine.session_project_name(session));
+    let composition = time(50, || {
+        engine
+            .compose_for_policy(session, &policy)
+            .expect("composition")
+    });
+    println!(
+        "[{target}] per step besides the actor (defers: {}, {} tools): \
+         published_tool_definitions {published:?} (composing {composition:?}); \
+         deferred_prompt_providers \
+         {deferred_providers:?}; runtimes_block {runtimes_block:?}; tool_instructions \
+         block {tool_instructions:?}; skills block {skills_block:?}; session_project_name \
+         {project_lookup:?}",
+        engine.defers_tools(&policy),
+        engine
+            .published_tool_definitions(session, &policy)
+            .expect("published tools")
+            .definitions
+            .len(),
+    );
+
     // The whole-log passes one by one.
     let snapshot = engine
         .inner
@@ -548,6 +615,9 @@ async fn bench(target: u64) {
     let runless = time(20, || {
         super::super::residency::has_runless_pending_inputs(&snapshot)
     });
+    let log = engine.inner.store.log(session).expect("log");
+    let acp_subagent = time(20, || log.is_acp_subagent());
+    let memory_loaded = time(20, || log.last_memory_loaded());
     let parent_reconcile = time(20, || {
         engine.inner.delegation_events.reconcile_parent(session)
     });
@@ -561,7 +631,9 @@ async fn bench(target: u64) {
     println!(
         "[{target}] passes over {} events: goal/producer fold {goal_fold:?}; \
          SessionModelState fold {model_state:?}; pending_inputs {pending:?}; \
-         has_runless_pending_inputs {runless:?}; delegation reconcile_parent \
+         has_runless_pending_inputs {runless:?}; is_acp_subagent {acp_subagent:?}; \
+         last_memory_loaded {memory_loaded:?}; \
+         delegation reconcile_parent \
          {parent_reconcile:?}; bare match scan {scan:?}; deep copy (events()) {deep_copy:?}",
         snapshot.len(),
     );
