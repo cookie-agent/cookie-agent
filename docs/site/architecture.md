@@ -630,8 +630,9 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, client protocol 1.37 (a client of another
-major is refused), `handshake` first.
+an authenticated WebSocket at `/ws`, client protocol 1 (a client of another
+major is refused; the exact version is in
+[Protocol](reference/protocol.md)), `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 catalog view with one opaque revision. Session events stream through `events.subscribe`
 and plugin bus events through `events.plugin`. Raw tool output is not streamed

@@ -194,11 +194,8 @@ The three protocol versions are the semver constants
 `RUNTIME_PROTOCOL_VERSION` in `crates/protocol/src/semver.rs`. Bumping one
 regenerates its baseline and, in the same commit, updates every
 human-readable reference to it. For the client version: a new entry in
-`docs/site/reference/protocol-changelog.md`, the version in
-`docs/site/reference/protocol.md` and `docs/site/architecture.md`, and the
-crate-level doc strings in `crates/protocol/src/lib.rs`,
-`crates/coding_runtime/src/lib.rs`, `crates/server/src/lib.rs`, and
-`crates/cookie_agent/src/main.rs`. For the plugin and runtime versions:
+`docs/site/reference/protocol-changelog.md` and the version in
+`docs/site/reference/protocol.md`. For the plugin and runtime versions:
 `docs/site/reference/runtime-protocol.md` and
 `docs/site/development/plugins.md`. Search for the old version string;
 `docs/site/api/**` is generated and excluded.
