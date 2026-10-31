@@ -98,8 +98,13 @@ fn shown_args(arguments: &serde_json::Value) -> Result<(String, String), ToolErr
     Ok((from, format!("{}:{}", args.to.machine, args.to.path)))
 }
 
+/// The first 12 characters of `digest`, which the model wrote and nothing
+/// has checked yet.
 fn short(digest: &str) -> &str {
-    &digest[..digest.len().min(12)]
+    digest
+        .char_indices()
+        .nth(12)
+        .map_or(digest, |(end, _)| &digest[..end])
 }
 
 pub(super) fn display_argument(arguments: &serde_json::Value) -> Result<String, ToolError> {
@@ -605,5 +610,25 @@ impl PreparedExecutor for TransferExecutor {
             additional_messages: Vec::new(),
             loaded_tools: Vec::new(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod short_tests {
+    #[test]
+    fn a_model_written_artifact_id_is_shortened_by_characters() {
+        // Byte 12 falls inside a two-byte character.
+        let id = format!("a{}", "é".repeat(14));
+        assert_eq!(super::short(&id), format!("a{}", "é".repeat(11)));
+        assert_eq!(super::short("0123456789abcdef"), "0123456789ab");
+        assert_eq!(super::short("abc"), "abc");
+        // Shown before the id is checked, so it must not panic.
+        let shown = super::display_argument(&serde_json::json!({
+            "from": {"artifact": id},
+            "to": {"machine": "labpc", "path": "/tmp/x"},
+        }))
+        .expect("shown");
+        assert!(shown.contains(&format!("a{}", "é".repeat(11))));
+        assert!(!shown.contains(&"é".repeat(12)));
     }
 }
