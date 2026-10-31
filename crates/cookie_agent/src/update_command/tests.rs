@@ -589,3 +589,26 @@ async fn an_unknown_tag_is_reported() {
     .to_string();
     assert!(error.contains("no release is tagged v9.9.9"), "{error}");
 }
+
+#[test]
+fn the_smoke_test_matches_the_version_as_a_whole() {
+    for printed in [
+        "cookie 1.2.3\n",
+        "cookie 1.2.3 (stable, 0123abcde)\n",
+        "cookie 1.2.3-alpha.1793047587 (nightly, 0123abcde)\n",
+        "cookie 1.2.3+build.7\n",
+    ] {
+        assert!(prints_version(printed, "1.2.3"), "{printed}");
+    }
+    for printed in [
+        "cookie 1.2.30 (stable)\n",
+        "cookie 11.2.3\n",
+        "cookie 1.2.3.4\n",
+        "cookie 1.2\n",
+        "cookie-agent 1.2.3\n",
+        "other 1.2.3\n",
+        "",
+    ] {
+        assert!(!prints_version(printed, "1.2.3"), "{printed}");
+    }
+}

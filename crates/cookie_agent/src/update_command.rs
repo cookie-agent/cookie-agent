@@ -658,7 +658,7 @@ async fn smoke_test(binary: &Path, version: &ReleaseVersion) -> anyhow::Result<(
     })?
     .with_context(|| "run the downloaded binary; nothing was replaced")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !output.status.success() || !stdout.starts_with("cookie ") || !stdout.contains(&core) {
+    if !output.status.success() || !prints_version(&stdout, &core) {
         bail!(
             "the downloaded binary does not run here ({}{}); nothing was replaced",
             output.status,
@@ -670,6 +670,22 @@ async fn smoke_test(binary: &Path, version: &ReleaseVersion) -> anyhow::Result<(
         );
     }
     Ok(())
+}
+
+/// Whether `stdout` of `cookie --version` names release `core`
+/// (major.minor.patch) as its version: `cookie <version> (...)`, where the
+/// version is `core` itself or `core` with a prerelease or build suffix.
+/// `1.2.3` does not match `1.2.30` or `11.2.3`.
+fn prints_version(stdout: &str, core: &str) -> bool {
+    let Some(version) = stdout
+        .strip_prefix("cookie ")
+        .and_then(|rest| rest.split_whitespace().next())
+    else {
+        return false;
+    };
+    version
+        .strip_prefix(core)
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(['-', '+']))
 }
 
 /// Moves `binary` over `executable` in one rename. Processes running the
