@@ -2667,6 +2667,64 @@ async fn a_boolean_option_is_a_toggle_set_with_a_boolean() {
     assert!(refused.to_string().contains("no value `on`"), "{refused}");
 }
 
+/// A wake to steer with nothing to steer, such as the one each round
+/// starts with, taken between two chunks of one message of the agent's,
+/// leaves the message one turn: text, image, and text.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wake_with_nothing_to_steer_does_not_split_the_agents_message() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let markers = tempfile::tempdir().unwrap();
+    let go = markers.path().join("go");
+    let run = start(
+        engine,
+        session,
+        "picture",
+        &format!("picture-after {}", go.display()),
+    )
+    .await;
+    await_event(engine, session, "the text before the image", |event| {
+        matches!(
+            event.payload,
+            EventPayload::ModelOutputStarted {
+                kind: cookie_agent_protocol::StreamedOutputKind::Text,
+                ..
+            }
+        )
+    })
+    .await;
+    // Its runner holds the text and waits on the agent: the wake comes now.
+    let wakes = &engine.inner.test_hooks.acp_steer_wakes;
+    let before = wakes.load(std::sync::atomic::Ordering::Acquire);
+    engine.inner.acp.processes.steering_input(session);
+    crate::eventually::eventually(std::time::Duration::from_secs(30), "the wake taken", || {
+        wakes.load(std::sync::atomic::Ordering::Acquire) > before
+    })
+    .await;
+    std::fs::write(&go, "").unwrap();
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "Here it is:A picture.");
+    let turns = events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ModelTurnCommitted { turn, .. } => Some(turn.content),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(
+            turns.iter().map(Vec::as_slice).collect::<Vec<_>>()[..],
+            [[
+                PersistedAssistantPart::Text { .. },
+                PersistedAssistantPart::File { .. },
+                PersistedAssistantPart::Text { .. },
+            ]]
+        ),
+        "{turns:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_image_in_the_agents_message_is_media_of_its_turn() {
     let acp = acp_fixture(&[], &[]).await;

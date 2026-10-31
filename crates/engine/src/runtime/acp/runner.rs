@@ -1318,19 +1318,21 @@ impl Turn<'_> {
 
     /// Takes the session's input to steer and sends it into the agent's
     /// running work: the turn so far commits, so the input stands after it.
+    /// With no input to steer, nothing commits: a wake with nothing to send
+    /// (the one each round starts with, say) between two chunks of one
+    /// message of the agent's must not split it into two turns.
     /// The user's inputs stay waiting, held so no client takes them back,
     /// until the agent answers ([`Self::end_steer`] promotes them once it
     /// took them in); producer messages are promoted and claimed like a
     /// round's. A `session/prompt` during the work carries both: v2 answers
     /// it once the agent inserts it. `None` when there was none.
     async fn begin_steer(&mut self) -> Result<Option<PendingSteer>, EngineError> {
-        if self
-            .step
-            .as_ref()
-            .is_some_and(|step| !step.parts.is_empty())
-        {
-            self.commit(ModelFinishReason::Stop).await?;
-        }
+        #[cfg(test)]
+        self.engine
+            .inner
+            .test_hooks
+            .acp_steer_wakes
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let (session, run, engine) = (self.session(), self.run, self.engine);
         let declined = self.declined_steers.clone();
         let inputs = engine
@@ -1338,6 +1340,21 @@ impl Turn<'_> {
                 Ok(engine.hold_inputs_to_steer(session, run, &declined))
             })
             .await?;
+        let caps = self.live.process.init().capabilities.prompt();
+        if inputs.is_empty()
+            && !engine.producer_input_waiting(session, self.input_through_seq, &caps)
+        {
+            return Ok(None);
+        }
+        if self
+            .step
+            .as_ref()
+            .is_some_and(|step| !step.parts.is_empty())
+            && let Err(error) = self.commit(ModelFinishReason::Stop).await
+        {
+            engine.release_steered_inputs(session);
+            return Err(error);
+        }
         let claim = match engine.prompt_events(session, run).await {
             Ok(claim) => claim,
             Err(error) => {
@@ -1351,7 +1368,6 @@ impl Turn<'_> {
             engine.release_steered_inputs(session);
             return Ok(None);
         }
-        let caps = self.live.process.init().capabilities.prompt();
         let mut prompt = Vec::new();
         for input in &inputs {
             engine.push_content(&mut prompt, session, &input.content, &caps);
@@ -3310,6 +3326,30 @@ impl Engine {
     /// The prompt blocks of the input the session took after `boundary`
     /// (user input applied, producer messages admitted), and which input
     /// that was.
+    /// Whether a producer message of `session` waits to go to its agent:
+    /// one not admitted yet, or one admitted after `boundary` that no
+    /// prompt carried. Unsure, it says yes.
+    fn producer_input_waiting(
+        &self,
+        session: SessionId,
+        boundary: u64,
+        caps: &wire::PromptCapabilities,
+    ) -> bool {
+        let Ok(log) = self.inner.store.log(session) else {
+            return true;
+        };
+        let events = log.event_snapshot();
+        let producers = crate::goal_projection::GoalProducerProjection::from_events(&events);
+        if producers
+            .messages
+            .iter()
+            .any(|message| !message.discarded && message.admission.is_none())
+        {
+            return true;
+        }
+        !self.input_since(&events, boundary, caps).0.is_empty()
+    }
+
     fn input_since(
         &self,
         events: &crate::events::EventSnapshot,

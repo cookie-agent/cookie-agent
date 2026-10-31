@@ -187,6 +187,9 @@ pub(crate) struct TestHooks {
     /// first tool call the agent reports in it, as a slow write before it
     /// would.
     pub(crate) acp_subagent_tool_call_hold: Mutex<Option<Arc<PagingRaceHook>>>,
+    /// Counts the ACP runners' wakes to steer, whether or not there was
+    /// input to steer.
+    pub(crate) acp_steer_wakes: AtomicU64,
     /// The sessions bridge calls were given to, in order.
     pub(crate) bridge_attributions: Mutex<Vec<cookie_agent_protocol::SessionId>>,
 }

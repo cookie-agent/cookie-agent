@@ -44,6 +44,8 @@ Each prompt's last text block is a command:
                          output in chunks, then exit 3, failed; one with the
                          whole output as a snapshot with exit 0, completed
   picture                answers text, an image, and more text
+  picture-after <w>      the same, waiting for <w> (see "Waits" below) after the
+                         first text
   mode-switch <mode>     switches its own mode option to <mode>
                          (config_option_update), as Claude Code does when it
                          leaves plan mode
@@ -854,8 +856,10 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     elif word == "terminal":
         terminal_calls(session_id)
         say(session_id, "ran")
-    elif word == "picture":
+    elif word in ("picture", "picture-after"):
         say(session_id, "Here it is:")
+        if word == "picture-after":
+            wait_out(session_id, rest)
         update(session_id, {"sessionUpdate": "agent_message_chunk", "messageId": next_message_id(),
                             "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}})
         say(session_id, "A picture.")
