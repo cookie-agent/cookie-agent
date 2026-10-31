@@ -18,7 +18,7 @@ use cookie_agent_identity::AgentId;
 use super::{
     AGENTS_DIR, MEMORY_EXTENSION, MemoryError, MemoryRoot,
     file::{InvalidMemory, MAX_DESCRIPTION_CHARS, MAX_KEYWORDS, MemoryDocument},
-    store::{read_bytes, read_dir_sorted, write_file},
+    store::{read_bytes, read_dir_sorted, write_file_unsynced_folder},
     url::MemoryUrl,
 };
 
@@ -227,7 +227,7 @@ impl MemoryRoot {
             });
             let Some((bytes, metadata)) = read_bytes(&path)? else {
                 if let Ok(text) = spec.new_file(agent) {
-                    write_file(&path, text.as_bytes())?;
+                    write_file_unsynced_folder(&path, text.as_bytes())?;
                     sync.created.push(agent.clone());
                 }
                 continue;
@@ -255,7 +255,7 @@ impl MemoryRoot {
             if text.len() > agent_max_bytes {
                 continue;
             }
-            write_file(&path, text.as_bytes())?;
+            write_file_unsynced_folder(&path, text.as_bytes())?;
             sync.updated.push(agent.clone());
         }
         let dir = self.root.join(AGENTS_DIR);
@@ -278,6 +278,13 @@ impl MemoryRoot {
                 std::fs::remove_file(&path).map_err(super::store::io_error(&path))?;
                 sync.removed.push(agent);
             }
+        }
+        // One folder fsync for every file written or removed above.
+        #[cfg(unix)]
+        if !sync.is_empty() {
+            std::fs::File::open(&dir)
+                .and_then(|folder| folder.sync_all())
+                .map_err(super::store::io_error(&dir))?;
         }
         drop(lock);
         if !sync.is_empty() {

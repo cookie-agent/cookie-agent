@@ -90,11 +90,13 @@ pub(super) fn write_layout_marker_if_absent(workdir_dir: &Path) -> Result<(), Se
                 source,
             })?;
             drop(file);
+            // No directory fsync: nothing depends on the marker's name
+            // lasting a crash, and a marker the crash lost is written again
+            // on the next open.
             fs::rename(&temporary, &path).map_err(|source| SessionError::Io {
                 path: path.clone(),
                 source,
             })?;
-            fsync_directory(workdir_dir)?;
         }
         #[cfg(windows)]
         {
@@ -150,10 +152,10 @@ pub(super) fn write_workdir_cwd(workdir_dir: &Path, cwd: &Path) -> Result<(), Se
             .open(&temporary)?;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
         file.write_all(bytes)?;
-        file.sync_all()?;
         drop(file);
-        fs::rename(&temporary, &path)?;
-        fs::File::open(workdir_dir)?.sync_all()
+        // A hint, not a record: it is not synced, since a crash that loses
+        // or empties it only has the next open write it again.
+        fs::rename(&temporary, &path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);

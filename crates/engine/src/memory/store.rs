@@ -971,6 +971,23 @@ fn check_size(
 /// folder renamed over it, creating the folder first. Returns the new
 /// revision.
 pub(super) fn write_file(path: &Path, bytes: &[u8]) -> Result<MemoryRevision, MemoryError> {
+    let revision = write_file_unsynced_folder(path, bytes)?;
+    #[cfg(unix)]
+    {
+        let directory = path.parent().expect("memory files have a folder");
+        fs::File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(io_error(path))?;
+    }
+    Ok(revision)
+}
+
+/// [`write_file`] without the fsync of the file's folder, for a caller that
+/// writes several files of one folder and syncs it once after them.
+pub(super) fn write_file_unsynced_folder(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<MemoryRevision, MemoryError> {
     let directory = path.parent().expect("memory files have a folder");
     fs::create_dir_all(directory).map_err(io_error(directory))?;
     let file_name = path
@@ -983,10 +1000,7 @@ pub(super) fn write_file(path: &Path, bytes: &[u8]) -> Result<MemoryRevision, Me
         io::Write::write_all(&mut output, bytes)?;
         output.sync_all()?;
         drop(output);
-        fs::rename(&temporary, path)?;
-        #[cfg(unix)]
-        fs::File::open(directory)?.sync_all()?;
-        Ok(())
+        fs::rename(&temporary, path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
