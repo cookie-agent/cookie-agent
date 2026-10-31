@@ -1,9 +1,10 @@
 # Responsive session loading and session storage v3
 
 Status: **approved** (2026-10-31), with the user's decisions of
-2026-10-31 in [section 7](#7-decisions); phase 1 in progress; phase 3's
-layout, listing, and migration (4.1, 4.3, 4.4, 5) implemented with history
-format 1 ([section 5.1](#51-implementation-notes-2026-10-31)).
+2026-10-31 in [section 7](#7-decisions); phases 1 and 2 implemented
+(phase 2: client protocol 1.58.0, [3.4](#34-implementation-notes-2026-10-31));
+phase 3's layout, listing, and migration (4.1, 4.3, 4.4, 5) implemented with
+history format 1 ([section 5.1](#51-implementation-notes-2026-10-31)).
 
 ## 1. Problem
 
@@ -211,6 +212,78 @@ selection, the goal and its changes, runtime attachments still attached, a
 hold nothing cleared, tools announced since the latest compaction, and
 inputs still queued. Title, permission mode, and usage totals come from
 `session.list`/`session.get` and `session.usage`, not the reducer.
+
+### 3.4 Implementation notes (2026-10-31)
+
+Shipped as client protocol 1.57.0: `view`, `from: "tail"`, `max_bytes`,
+the result's `window` and `cut`, `events.page`, and `event.read`
+([events reference](../reference/events.md#newest-first)). The view and
+window logic is `cookie_agent_protocol::display_view`, shared by the
+daemon and the clients. Deviations from 3.1 and 3.2, and why:
+
+- **What the view drops** follows the audit (3.3), not the list in 3.1:
+  `model_attempt_started`, `model_output_started`, and
+  `model_usage_recorded` stay; `model_replay_evaluated` goes unless it
+  discards something; `model_tools_published` keeps the last of a page.
+  Tool results also lose their `metadata`, which no client reads and an
+  ACP agent fills with the whole output again.
+- **The cut** applies when output, display, and metadata together pass
+  4 KiB, not output alone: a result in the golden history has a 1.3 KB
+  output and a 64 KB display. The display is fit to 2 KiB with
+  `fit_display_budget`, so it keeps its `omitted_*` counts. The cut is
+  named in a `cut` list beside the events (`seq`, the whole result's
+  `bytes`) instead of a member of the stored event: the stored types, the
+  history format, and the plugin protocol stay as they were.
+- **The header is events, folded first**, not a state applied after the
+  page: the latest event of each setting before the window, an
+  `acp_session_updated` stripped to the settings it is the latest for. A
+  client folds them into a scratch projection and seeds the transcript's
+  projection with its latest-wins state, so no row of an old event shows
+  and no older setting overrides a newer one; one reducer serves both, and
+  live events and later folds stay in sequence order. An older page
+  carries the header for its own start.
+- **`older_cursor` is the first held sequence** (what `events.page` takes
+  as `before`), `null` when the window starts the log.
+- **The gap** keeps, besides the run's start through its first input and
+  its newest model attempts, the settings and what still waits among the
+  events it skips: approvals and questions not answered, inputs admitted
+  but not applied, and tool calls still running. Older pages have no gap:
+  each starts at the earliest run or model attempt that fits.
+- **The tail** is cut from the whole log an unlimited final page returns,
+  so its registration, its in-flight output, and its race with appends
+  are the final page's; no store code changed. `events.page` and
+  `event.read` read the resident or the parsed read-only log, without the
+  tree.
+- **Clients** hold the window's events, older pages, the live events
+  after them (whole but for a cut result), and live-only output still in
+  flight, and fold them again when a page or a whole result arrives. A
+  fold after a page numbers its rows so the rows already shown keep their
+  ids, and with them what the user expanded and where the TUI's view is
+  anchored. A row of history not loaded loads when it scrolls into view
+  or is clicked; the web keeps the rows the user reads in place itself,
+  as the browser's scroll anchoring does not act at the view's top.
+
+Measured on 2026-10-31 with a debug build of a scratch daemon on copies of
+two real sessions, over a local WebSocket (sizes before compression):
+
+| Session | Whole replay | Newest first | All older pages |
+|---|---|---|---|
+| ACP, 16.9 MB log, 9,813 events | 18.8 MB, 19 pages, 4.5 s | 249 KB of events + 49 KB header, 1 answer, 0.13 s | 47 pages, 11.6 MB, 6.1 s |
+| Native, 5.3 MB log, 2,037 events | 5.5 MB, 6 pages, 1.3 s | 187 KB + 39 KB header, 0.09 s | 21 pages, 5.6 MB, 1.9 s |
+
+`event.read` of a cut result took 3–5 ms.
+
+Left for later:
+
+- An older page repeats its header (47 KB in the ACP session, 2.3 MB over
+  all its pages); `view.json` (phase 3) or a header the client already
+  holds could spare it.
+- A tool result's `display` repeats its output on the wire (the stored
+  encoding's spans do not reach clients), so results under the cut still
+  take about twice their output.
+- A window may start at an input steered into a running run, whose run
+  started before it: the reply rows before it are older history.
+- Live events are sent whole; only what a client holds is cut.
 
 ## 4. Phase 3: storage layout v3
 
