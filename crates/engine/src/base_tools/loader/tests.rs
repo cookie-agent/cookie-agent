@@ -5,8 +5,8 @@ use cookie_agent_protocol::ToolGroupSource;
 use super::{load_result, search_result};
 use crate::deferred_tools::{DeferralView, DeferredEntry, Group};
 
-fn entry(name: &str, group: &str, description: &str) -> DeferredEntry {
-    DeferredEntry {
+fn entry(name: &str, group: &str, description: &str) -> std::sync::Arc<DeferredEntry> {
+    std::sync::Arc::new(DeferredEntry {
         name: name.into(),
         description: description.into(),
         parameters: serde_json::json!({
@@ -20,7 +20,7 @@ fn entry(name: &str, group: &str, description: &str) -> DeferredEntry {
             untrusted: true,
         },
         provider: (format!("mcp.{group}"), None),
-    }
+    })
 }
 
 fn view() -> DeferralView {

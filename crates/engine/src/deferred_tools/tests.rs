@@ -369,3 +369,36 @@ fn without_deferral_departures_stay_declared_and_arrivals_join_up_front() {
     // The loader of a deferring model's round is not declared.
     assert_eq!(plan.departed, HashSet::from(["edit".to_owned()]));
 }
+
+#[test]
+fn a_tool_that_stays_deferred_keeps_its_entry_until_it_changes() {
+    let candidates = || {
+        vec![
+            eager("read"),
+            mcp("chrome_click", "chrome"),
+            mcp("chrome_type", "chrome"),
+        ]
+    };
+    let first = plan(candidates(), &loaders(), &DeferralFold::default());
+    let mut changed = candidates();
+    changed[2].definition.description = "Types into an element.".into();
+    let next = plan_reusing(changed, &loaders(), &DeferralFold::default(), &first.view);
+    let entry = |view: &DeferralView, name: &str| {
+        std::sync::Arc::clone(
+            view.deferred
+                .iter()
+                .find(|entry| entry.name == name)
+                .expect("deferred entry"),
+        )
+    };
+    assert!(std::sync::Arc::ptr_eq(
+        &entry(&first.view, "chrome_click"),
+        &entry(&next.view, "chrome_click")
+    ));
+    let typed = entry(&next.view, "chrome_type");
+    assert!(!std::sync::Arc::ptr_eq(
+        &entry(&first.view, "chrome_type"),
+        &typed
+    ));
+    assert_eq!(typed.description, "Types into an element.");
+}

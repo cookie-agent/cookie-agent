@@ -1516,7 +1516,8 @@ impl Engine {
                 composition,
             });
         }
-        let mut plan = crate::deferred_tools::plan(candidates, &loaders, &fold);
+        let previous = self.deferral_view(session);
+        let mut plan = crate::deferred_tools::plan_reusing(candidates, &loaders, &fold, &previous);
         let unloaded = plan
             .view
             .deferred

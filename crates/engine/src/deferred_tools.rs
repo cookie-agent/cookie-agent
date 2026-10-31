@@ -5,7 +5,10 @@
 //! Deferral is generic: [`policy_defers`] alone decides which composed tools
 //! are deferred. Everything else here asks only whether a tool is deferred.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashSet},
+};
 
 use cookie_agent_config::{DEFERRED_BUILTIN_GROUPS, DeferredToolsConfig};
 use cookie_agent_protocol::{
@@ -156,7 +159,9 @@ pub(crate) struct DeferredEntry {
 /// its latest request, and the tools its results loaded.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeferralView {
-    pub(crate) deferred: Vec<DeferredEntry>,
+    /// Shared with the view of the request before, while an entry stays
+    /// the same.
+    pub(crate) deferred: Vec<std::sync::Arc<DeferredEntry>>,
     pub(crate) eager: BTreeSet<String>,
     pub(crate) loaded: BTreeSet<String>,
     /// The rendered prompt sections of each deferred provider none of whose
@@ -201,19 +206,34 @@ fn declared(definition: &RoundToolDefinition) -> Option<ToolDefinition> {
     Some(declared)
 }
 
+/// [`plan_reusing`] with no request before.
+#[cfg(test)]
+pub(crate) fn plan(
+    candidates: Vec<Candidate>,
+    loaders: &[ToolDefinition],
+    fold: &DeferralFold,
+) -> DeferralPlan {
+    plan_reusing(candidates, loaders, fold, &DeferralView::default())
+}
+
 /// Plans a request's tools on a model that defers (sections 4, 7 and 8).
 ///
 /// `candidates` are the composed tools, the loader tools excluded;
 /// `loaders` are the loader tools' definitions. The tool round comes from
-/// `fold`, or starts here when the log has none since its checkpoint.
-pub(crate) fn plan(
+/// `fold`, or starts here when the log has none since its checkpoint. The
+/// view takes each deferred tool's entry from `previous`, the view of the
+/// request before, while the tool is unchanged: a step copies no
+/// description or schema of a tool that stayed deferred.
+pub(crate) fn plan_reusing(
     mut candidates: Vec<Candidate>,
     loaders: &[ToolDefinition],
     fold: &DeferralFold,
+    previous: &DeferralView,
 ) -> DeferralPlan {
     let mut pending = Vec::new();
-    let mut round = match &fold.round {
-        Some(round) => round.tools.clone(),
+    // The round's record is borrowed, not copied, unless it changes here.
+    let mut round: Cow<'_, [RoundToolDefinition]> = match &fold.round {
+        Some(round) => Cow::Borrowed(&round.tools),
         None => {
             // A round after a checkpoint declares the tools it folded.
             for candidate in candidates.iter_mut() {
@@ -239,7 +259,7 @@ pub(crate) fn plan(
                 tools: tools.clone(),
                 prompt_groups,
             });
-            tools
+            Cow::Owned(tools)
         }
     };
     let eager_names = round
@@ -268,10 +288,11 @@ pub(crate) fn plan(
         && !eager_names.contains(TOOL_SEARCH)
     {
         // The loader tool joins mid-round, once.
-        round.extend(loaders.iter().map(|loader| round_definition(loader, None)));
-        round.sort_by(|left, right| left.name.cmp(&right.name));
+        let tools = round.to_mut();
+        tools.extend(loaders.iter().map(|loader| round_definition(loader, None)));
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
         pending.push(EventPayload::ToolRoundStarted {
-            tools: round.clone(),
+            tools: round.to_vec(),
             prompt_groups: fold
                 .round
                 .as_ref()
@@ -282,7 +303,7 @@ pub(crate) fn plan(
     let mut definitions = Vec::with_capacity(round.len() + deferred.len());
     let mut departed = HashSet::new();
     let mut eager = BTreeSet::new();
-    for tool in &round {
+    for tool in round.iter() {
         if let Some(definition) = declared(tool) {
             eager.insert(tool.name.clone());
             definitions.push(definition);
@@ -291,15 +312,32 @@ pub(crate) fn plan(
             departed.insert(tool.name.clone());
         }
     }
+    let previous = previous
+        .deferred
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry))
+        .collect::<std::collections::HashMap<_, _>>();
     let mut entries = Vec::with_capacity(deferred.len());
     for candidate in deferred {
-        entries.push(DeferredEntry {
-            name: candidate.definition.name.clone(),
-            description: candidate.definition.description.clone(),
-            parameters: candidate.definition.input_schema.as_value().clone(),
-            group: candidate.group,
-            provider: candidate.provider,
-        });
+        let definition = &candidate.definition;
+        let reused = previous
+            .get(definition.name.as_str())
+            .filter(|entry| {
+                entry.description == definition.description
+                    && entry.parameters == *definition.input_schema.as_value()
+                    && entry.group == candidate.group
+                    && entry.provider == candidate.provider
+            })
+            .map(|entry| std::sync::Arc::clone(entry));
+        entries.push(reused.unwrap_or_else(|| {
+            std::sync::Arc::new(DeferredEntry {
+                name: definition.name.clone(),
+                description: definition.description.clone(),
+                parameters: definition.input_schema.as_value().clone(),
+                group: candidate.group,
+                provider: candidate.provider,
+            })
+        }));
         definitions.push(candidate.definition.deferred());
     }
     definitions.sort_by(|left, right| left.name.cmp(&right.name));
@@ -339,8 +377,9 @@ pub(crate) struct EagerPlan {
 /// round declared is left out: nothing is loadable here.
 pub(crate) fn plan_eager(candidates: Vec<EagerCandidate>, fold: &DeferralFold) -> EagerPlan {
     let mut pending = Vec::new();
-    let round = match &fold.round {
-        Some(round) => round.tools.clone(),
+    // The round's record is borrowed, not copied.
+    let round: Cow<'_, [RoundToolDefinition]> = match &fold.round {
+        Some(round) => Cow::Borrowed(&round.tools),
         None => {
             let mut tools = candidates
                 .iter()
@@ -357,7 +396,7 @@ pub(crate) fn plan_eager(candidates: Vec<EagerCandidate>, fold: &DeferralFold) -
                 tools: tools.clone(),
                 prompt_groups,
             });
-            tools
+            Cow::Owned(tools)
         }
     };
     let present = candidates
@@ -367,7 +406,7 @@ pub(crate) fn plan_eager(candidates: Vec<EagerCandidate>, fold: &DeferralFold) -
     let mut in_round = HashSet::with_capacity(round.len());
     let mut definitions = Vec::with_capacity(round.len() + candidates.len());
     let mut departed = HashSet::new();
-    for tool in &round {
+    for tool in round.iter() {
         in_round.insert(tool.name.clone());
         if is_loader(&tool.name) {
             continue;
@@ -395,7 +434,10 @@ pub(crate) fn plan_eager(candidates: Vec<EagerCandidate>, fold: &DeferralFold) -
 
 /// The announcement of what became loadable and what left since the
 /// announcements `fold` adds up to; `None` when nothing changed (section 7.2).
-fn announcement(entries: &[DeferredEntry], fold: &DeferralFold) -> Option<EventPayload> {
+fn announcement(
+    entries: &[std::sync::Arc<DeferredEntry>],
+    fold: &DeferralFold,
+) -> Option<EventPayload> {
     let mut loadable = BTreeMap::<&str, (&Group, BTreeSet<&str>)>::new();
     for entry in entries {
         if !fold.loaded.contains(&entry.name) {
