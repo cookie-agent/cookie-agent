@@ -1904,16 +1904,15 @@ fn a_home_pattern_expands_against_the_home_its_runtime_reported() {
         decide_read(&policy, "/home/ada/secret/key", local.with_home(home)),
         PermissionEffect::Deny
     );
-    // Without a home the patterns stay literal.
+    // Without a home the patterns stay literal. The base scope has no
+    // workspace, so only an absolute path matches there, and on Windows that
+    // needs a drive.
+    let root = if cfg!(windows) { "C:" } else { "" };
+    let notes = format!("{root}/home/ada/notes/todo.md");
+    let secret = format!("{root}/home/ada/secret/key");
     for scope in [local, labpc, super::PermissionScope::BASE] {
-        assert_eq!(
-            decide_read(&policy, "/home/ada/notes/todo.md", scope),
-            PermissionEffect::Deny
-        );
-        assert_eq!(
-            decide_read(&policy, "/home/ada/secret/key", scope),
-            PermissionEffect::Deny
-        );
+        assert_eq!(decide_read(&policy, &notes, scope), PermissionEffect::Deny);
+        assert_eq!(decide_read(&policy, &secret, scope), PermissionEffect::Deny);
     }
     // A Windows home is spelled with `/`, as path labels are.
     assert_eq!(
