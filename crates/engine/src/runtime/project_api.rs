@@ -322,9 +322,10 @@ impl Engine {
         meta
     }
 
-    /// The IDs of the projects there are.
-    pub(crate) fn project_ids(&self) -> Vec<ProjectId> {
-        self.inner.projects.ids()
+    /// The IDs of the projects there are. Blocking: it reads the projects
+    /// folder, off the async worker.
+    pub(crate) fn project_ids(&self) -> std::collections::HashSet<ProjectId> {
+        crate::blocking::off_worker(|| self.inner.projects.ids().into_iter().collect())
     }
 
     /// Whether project `project` exists.
