@@ -3,7 +3,6 @@
 //! agents and skills kept up to date.
 
 use std::{
-    env,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -53,7 +52,7 @@ impl CatalogTransport for RunCatalogTransport {
 pub(super) fn run_catalog_transport() -> anyhow::Result<RunCatalogTransport> {
     #[cfg(debug_assertions)]
     if matches!(
-        env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
+        std::env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
         Ok("1")
     ) {
         return Ok(RunCatalogTransport::Bundled);
@@ -101,10 +100,10 @@ impl Runtime {
         // its own source.
         #[cfg(debug_assertions)]
         {
-            if let Ok(url) = env::var("COOKIE_AGENT_TEST_OFFICIAL_AGENTS_URL") {
+            if let Ok(url) = std::env::var("COOKIE_AGENT_TEST_OFFICIAL_AGENTS_URL") {
                 self.engine.set_official_agents_url(url);
             } else if matches!(
-                env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
+                std::env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
                 Ok("1")
             ) {
                 return;
@@ -140,10 +139,10 @@ impl Runtime {
         // its own source.
         #[cfg(debug_assertions)]
         {
-            if let Ok(url) = env::var("COOKIE_AGENT_TEST_OFFICIAL_SKILLS_URL") {
+            if let Ok(url) = std::env::var("COOKIE_AGENT_TEST_OFFICIAL_SKILLS_URL") {
                 self.engine.set_official_skills_url(url);
             } else if matches!(
-                env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
+                std::env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
                 Ok("1")
             ) {
                 return;
