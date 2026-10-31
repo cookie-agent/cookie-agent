@@ -470,12 +470,12 @@ pub trait ServerProtocol: Send + Sync + 'static {
         context: &ServerContext,
     ) -> Result<EventsSubscribeResult, ServerFault>;
     /// Older history of a session without a live tail (client protocol
-    /// 1.57.0).
+    /// 1.59.0).
     async fn events_page(
         &self,
         params: cookie_agent_protocol::EventsPageParams,
     ) -> Result<cookie_agent_protocol::EventsPageResult, ServerFault>;
-    /// One stored event, whole (client protocol 1.57.0).
+    /// One stored event, whole (client protocol 1.59.0).
     async fn read_event(
         &self,
         params: cookie_agent_protocol::EventReadParams,

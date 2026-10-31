@@ -2,7 +2,7 @@
 
 Status: **approved** (2026-10-31), with the user's decisions of
 2026-10-31 in [section 7](#7-decisions); phases 1 and 2 implemented
-(phase 2: client protocol 1.58.0, [3.4](#34-implementation-notes-2026-10-31));
+(phase 2: client protocol 1.59.0, [3.4](#34-implementation-notes-2026-10-31));
 phase 3's layout, listing, and migration (4.1, 4.3, 4.4, 5) implemented with
 history format 1 ([section 5.1](#51-implementation-notes-2026-10-31)).
 
@@ -215,7 +215,7 @@ inputs still queued. Title, permission mode, and usage totals come from
 
 ### 3.4 Implementation notes (2026-10-31)
 
-Shipped as client protocol 1.57.0: `view`, `from: "tail"`, `max_bytes`,
+Shipped as client protocol 1.59.0: `view`, `from: "tail"`, `max_bytes`,
 the result's `window` and `cut`, `events.page`, and `event.read`
 ([events reference](../reference/events.md#newest-first)). The view and
 window logic is `cookie_agent_protocol::display_view`, shared by the

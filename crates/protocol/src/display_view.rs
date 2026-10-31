@@ -1,6 +1,6 @@
 //! The display view of a session's history and its newest-first windows
 //! (`docs/site/specs/session-storage-v3.md` section 3, client protocol
-//! 1.57.0).
+//! 1.59.0).
 //!
 //! The display view is what a transcript shows of a session's events:
 //!

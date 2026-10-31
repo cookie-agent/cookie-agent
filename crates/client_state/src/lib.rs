@@ -132,7 +132,7 @@ pub struct ToolCallState {
     pub live_display: cookie_agent_protocol::LiveDisplay,
     /// The complete content of cut display blocks, loaded on request.
     pub full: Vec<FullContent>,
-    /// The display view cut the call's result (client protocol 1.57.0):
+    /// The display view cut the call's result (client protocol 1.59.0):
     /// what it shows is the result's first bytes until it is read whole.
     pub cut: Option<history::CutResult>,
     /// The call's tool supports the background, so a running call can be
@@ -737,7 +737,7 @@ pub enum TranscriptItem {
         reminder: Option<GoalReminderIdentity>,
         status: ProducerMessageStatus,
     },
-    /// History the display view has not loaded (client protocol 1.57.0):
+    /// History the display view has not loaded (client protocol 1.59.0):
     /// older history at the top of the transcript, or the middle of a run
     /// larger than the first answer. Reading it is
     /// [`StateStore::request_history`] with `before`.

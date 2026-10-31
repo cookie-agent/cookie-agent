@@ -1437,7 +1437,7 @@
       "type": "object"
     },
     "CutOutput": {
-      "description": "A tool result the display view cut (client protocol 1.57.0): its\n`output` is the first bytes of the stored one, its `display` fits the\nsame budget, and its `metadata` is `null`. `event.read` of `seq` returns\nthe whole event.",
+      "description": "A tool result the display view cut (client protocol 1.59.0): its\n`output` is the first bytes of the stored one, its `display` fits the\nsame budget, and its `metadata` is `null`. `event.read` of `seq` returns\nthe whole event.",
       "properties": {
         "bytes": {
           "description": "The whole result's length in bytes as JSON: what reading it costs.",
@@ -5757,7 +5757,7 @@
       "type": "object"
     },
     "HistoryWindow": {
-      "description": "What precedes the events of a newest-first answer (client protocol\n1.57.0). A client folds `header` first, then the events, in sequence\norder; it shows a way to load what `older_cursor` and `gap` leave out.",
+      "description": "What precedes the events of a newest-first answer (client protocol\n1.59.0). A client folds `header` first, then the events, in sequence\norder; it shows a way to load what `older_cursor` and `gap` leave out.",
       "properties": {
         "gap": {
           "anyOf": [
@@ -9521,7 +9521,7 @@
           "type": "null"
         }
       ],
-      "description": "The answer to `from: \"tail\"` (client protocol 1.57.0): what comes\nbefore its events."
+      "description": "The answer to `from: \"tail\"` (client protocol 1.59.0): what comes\nbefore its events."
     }
   },
   "required": [

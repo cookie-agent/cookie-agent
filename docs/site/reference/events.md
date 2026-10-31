@@ -924,7 +924,7 @@ memory while the file is unchanged.
 
 ### Newest first
 
-Since 1.57.0 a client can open a session at its newest messages instead of
+Since 1.59.0 a client can open a session at its newest messages instead of
 replaying it from the start (`docs/site/specs/session-storage-v3.md`
 section 3).
 

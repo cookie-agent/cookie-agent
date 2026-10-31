@@ -1,7 +1,7 @@
 {
   "$defs": {
     "EventsView": {
-      "description": "Which of a session's events a history request returns (client protocol\n1.57.0; see [`crate::display_view`]).",
+      "description": "Which of a session's events a history request returns (client protocol\n1.59.0; see [`crate::display_view`]).",
       "oneOf": [
         {
           "const": "full",
@@ -18,7 +18,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Older history of a session, newest first, without a live tail (client\nprotocol 1.57.0).",
+  "description": "Older history of a session, newest first, without a live tail (client\nprotocol 1.59.0).",
   "properties": {
     "before": {
       "description": "The page holds events before this sequence.",

@@ -1,5 +1,5 @@
 //! A session's history as the display view holds it (client protocol
-//! 1.57.0, `docs/site/specs/session-storage-v3.md` section 3).
+//! 1.59.0, `docs/site/specs/session-storage-v3.md` section 3).
 //!
 //! A client that asks for the display view opens a session at its newest
 //! messages: the daemon answers with the newest runs, the header events the

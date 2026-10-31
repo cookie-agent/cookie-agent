@@ -63,10 +63,10 @@ const REPLAY_PAGE_EVENTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(2_000
 /// The first client protocol whose daemons answer the display view, a
 /// newest-first `events.subscribe`, `events.page`, and `event.read`.
 pub const DISPLAY_VIEW_SINCE: cookie_agent_protocol::SemVer =
-    cookie_agent_protocol::SemVer::new(1, 57, 0);
+    cookie_agent_protocol::SemVer::new(1, 59, 0);
 
 /// What a replay in the display view adds to its events (client protocol
-/// 1.57.0): a replay without it holds every stored event, whole.
+/// 1.59.0): a replay without it holds every stored event, whole.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReplayHistory {
     /// A newest-first replay's window: what to fold before its events and
@@ -946,7 +946,7 @@ impl Client {
     }
 
     /// Older history of a session, newest first (`events.page`, client
-    /// protocol 1.57.0).
+    /// protocol 1.59.0).
     pub async fn events_page(
         &self,
         params: cookie_agent_protocol::EventsPageParams,
@@ -976,7 +976,7 @@ impl Client {
         })
     }
 
-    /// One stored event, whole (`event.read`, client protocol 1.57.0): what
+    /// One stored event, whole (`event.read`, client protocol 1.59.0): what
     /// a cut tool result holds. `None` when the log holds no event at `seq`
     /// or this build cannot read it.
     pub async fn read_event(

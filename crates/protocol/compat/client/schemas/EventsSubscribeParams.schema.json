@@ -11,7 +11,7 @@
       ]
     },
     "EventsView": {
-      "description": "Which of a session's events a history request returns (client protocol\n1.57.0; see [`crate::display_view`]).",
+      "description": "Which of a session's events a history request returns (client protocol\n1.59.0; see [`crate::display_view`]).",
       "oneOf": [
         {
           "const": "full",
@@ -54,7 +54,7 @@
           "type": "null"
         }
       ],
-      "description": "`tail` (client protocol 1.57.0): answer with the newest events within\n`max_bytes`, a [`HistoryWindow`], and the live tail, instead of\npaging forward from `cursor`. It takes no `cursor`,\n`cursor_timestamp`, or `limit`."
+      "description": "`tail` (client protocol 1.59.0): answer with the newest events within\n`max_bytes`, a [`HistoryWindow`], and the live tail, instead of\npaging forward from `cursor`. It takes no `cursor`,\n`cursor_timestamp`, or `limit`."
     },
     "limit": {
       "description": "Most events to return. The server may end a page sooner to bound its\nsize, but a page always holds at least one event while any remain.\nWhen more remain after them, the result sets `has_more` and registers\nno live tail; the client asks again from the last returned sequence.\nOnly the final page subscribes.",
@@ -80,7 +80,7 @@
     },
     "view": {
       "$ref": "#/$defs/EventsView",
-      "description": "Which events the history holds (client protocol 1.57.0): every\nstored event, or the display view, which leaves out what no client\nshows and cuts long tool results. Live events are sent whole either\nway."
+      "description": "Which events the history holds (client protocol 1.59.0): every\nstored event, or the display view, which leaves out what no client\nshows and cuts long tool results. Live events are sent whole either\nway."
     }
   },
   "required": [
