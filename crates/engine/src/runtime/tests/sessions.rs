@@ -1318,11 +1318,12 @@ async fn a_paged_subscription_goes_live_only_on_its_final_page() {
 
 #[tokio::test]
 async fn replay_pages_stop_at_their_byte_budget_but_always_make_progress() {
-    const MIB: usize = 1024 * 1024;
+    // Sizes in eighths of the page budget.
+    let unit = crate::events::REPLAY_PAGE_MAX_BYTES / 8;
     let (fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");
     let session_id = session.session_id;
-    for size in [MIB + MIB / 2, MIB + MIB / 2, MIB + MIB / 2, 5 * MIB, MIB] {
+    for size in [3 * unit, 3 * unit, 3 * unit, 10 * unit, 2 * unit] {
         fixture
             .engine
             .inner
@@ -1378,15 +1379,15 @@ async fn replay_pages_stop_at_their_byte_budget_but_always_make_progress() {
             page.iter()
                 .filter_map(|event| match &event.payload {
                     EventPayload::UserInputAdmitted { content: input } => {
-                        Some(input.as_plain_text().len() / (MIB / 2))
+                        Some(input.as_plain_text().len() / unit)
                     }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    // In half-MiB units: two 1.5 MiB inputs fit a page, a third does not,
-    // and the 5 MiB input travels alone.
+    // Two inputs of three eighths fit a page, a third does not, and the one
+    // over the budget travels alone.
     assert_eq!(sizes, [vec![3, 3], vec![3], vec![10], vec![2]]);
     assert_eq!(seqs(&pages.concat()), seqs(&full.events));
 }

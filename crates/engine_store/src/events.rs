@@ -1501,7 +1501,7 @@ impl EventLog {
     /// shares the log's events rather than copying them, and is cut from a
     /// shared view without holding the log's lock.
     ///
-    /// A limited page also stops before `REPLAY_PAGE_MAX_BYTES` (4 MiB) of
+    /// A limited page also stops before `REPLAY_PAGE_MAX_BYTES` (512 KiB) of
     /// serialized events, since it goes out as one WebSocket frame; it always
     /// holds at least one event, so paging makes progress.
     #[must_use]
@@ -4774,8 +4774,10 @@ impl OutputHub {
     }
 }
 
-/// The serialized size past which a limited replay page ends.
-pub const REPLAY_PAGE_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// The serialized size past which a limited replay page ends. Small
+/// enough that a page crosses a slow link (a tunnel, a phone) well inside
+/// the client's page timeout, and that a client hears back often.
+pub const REPLAY_PAGE_MAX_BYTES: usize = 512 * 1024;
 
 /// An event's serialized size, counted without building its JSON.
 fn serialized_len(event: &StoredEvent) -> usize {
