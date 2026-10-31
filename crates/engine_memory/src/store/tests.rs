@@ -1,7 +1,7 @@
 use std::fs;
 
 use super::*;
-use crate::memory::agents::AgentMemory;
+use crate::agents::AgentMemory;
 
 const LIMIT: usize = 4096;
 

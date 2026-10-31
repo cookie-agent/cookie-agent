@@ -19,21 +19,21 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 /// Longest description, in characters.
-pub(crate) const MAX_DESCRIPTION_CHARS: usize = 200;
+pub const MAX_DESCRIPTION_CHARS: usize = 200;
 /// Most keywords one memory may declare.
-pub(crate) const MAX_KEYWORDS: usize = 32;
+pub const MAX_KEYWORDS: usize = 32;
 /// Longest keyword, in characters.
-pub(crate) const MAX_KEYWORD_CHARS: usize = 64;
+pub const MAX_KEYWORD_CHARS: usize = 64;
 
 /// The largest memory file the daemon reads, in bytes: the most any
 /// `[memory]` document limit may be. A larger file is invalid.
-pub(crate) const MAX_FILE_BYTES: usize = cookie_agent_config::MemoryConfig::MAX_LIMITS_SUM;
+pub const MAX_FILE_BYTES: usize = cookie_agent_config::MemoryConfig::MAX_LIMITS_SUM;
 
 const FENCE: &str = "---";
 
 /// A memory file's content: its frontmatter and its body.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MemoryDocument {
+pub struct MemoryDocument {
     description: String,
     keywords: Vec<String>,
     /// When the memory was created and last modified, as the daemon
@@ -69,14 +69,14 @@ fn parse_stamp(key: &str, value: Option<String>) -> Result<Option<Timestamp>, In
 }
 
 /// `time` to the second, as stamps hold it.
-pub(crate) fn to_second(time: Timestamp) -> Timestamp {
+pub fn to_second(time: Timestamp) -> Timestamp {
     Timestamp::from_second(time.as_second()).unwrap_or(time)
 }
 
 /// Why a memory file or a memory to write is not valid.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("{0}")]
-pub(crate) struct InvalidMemory(pub(crate) String);
+pub struct InvalidMemory(pub String);
 
 fn invalid(reason: impl Into<String>) -> InvalidMemory {
     InvalidMemory(reason.into())
@@ -100,7 +100,7 @@ fn check_text(what: &str, text: &str) -> Result<(), InvalidMemory> {
 
 impl MemoryDocument {
     /// A memory from its parts, checked against the rules of section 4.3.
-    pub(crate) fn new(
+    pub fn new(
         description: impl Into<String>,
         keywords: Vec<String>,
         body: impl Into<String>,
@@ -117,39 +117,35 @@ impl MemoryDocument {
     }
 
     /// This memory with the stamps `created` and `modified`.
-    pub(crate) fn with_stamps(
-        mut self,
-        created: Option<Timestamp>,
-        modified: Option<Timestamp>,
-    ) -> Self {
+    pub fn with_stamps(mut self, created: Option<Timestamp>, modified: Option<Timestamp>) -> Self {
         self.created = created.map(to_second);
         self.modified = modified.map(to_second);
         self
     }
 
-    pub(crate) const fn created(&self) -> Option<Timestamp> {
+    pub const fn created(&self) -> Option<Timestamp> {
         self.created
     }
 
-    pub(crate) const fn modified(&self) -> Option<Timestamp> {
+    pub const fn modified(&self) -> Option<Timestamp> {
         self.modified
     }
 
-    pub(crate) fn description(&self) -> &str {
+    pub fn description(&self) -> &str {
         &self.description
     }
 
-    pub(crate) fn keywords(&self) -> &[String] {
+    pub fn keywords(&self) -> &[String] {
         &self.keywords
     }
 
-    pub(crate) fn body(&self) -> &str {
+    pub fn body(&self) -> &str {
         &self.body
     }
 
     /// This memory with `body` in place of its body, checked again; the
     /// stamps stay.
-    pub(crate) fn with_body(&self, body: String) -> Result<Self, InvalidMemory> {
+    pub fn with_body(&self, body: String) -> Result<Self, InvalidMemory> {
         Ok(
             Self::new(self.description.clone(), self.keywords.clone(), body)?
                 .with_stamps(self.created, self.modified),
@@ -189,7 +185,7 @@ impl MemoryDocument {
     }
 
     /// Parses a memory file's bytes.
-    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, InvalidMemory> {
+    pub fn parse(bytes: &[u8]) -> Result<Self, InvalidMemory> {
         if bytes.len() > MAX_FILE_BYTES {
             return Err(too_large(bytes.len()));
         }
@@ -226,7 +222,7 @@ impl MemoryDocument {
     /// does not start with frontmatter. Line breaks may be `\n` or `\r\n`,
     /// as [`Self::parse`] reads them, so for a valid file the rest is the
     /// body it parses.
-    pub(crate) fn frontmatter_len(text: &str) -> Option<usize> {
+    pub fn frontmatter_len(text: &str) -> Option<usize> {
         let fence = |line: &str| {
             let line = line.strip_suffix('\n').unwrap_or(line);
             line.strip_suffix('\r').unwrap_or(line) == FENCE
@@ -248,7 +244,7 @@ impl MemoryDocument {
 
     /// The file text of this memory: `description`, `keywords` when there
     /// are any, the stamps it has, and the body as it is.
-    pub(crate) fn render(&self) -> String {
+    pub fn render(&self) -> String {
         let mut text = String::from("---\ndescription: ");
         text.push_str(&yaml_scalar(&self.description, false));
         text.push('\n');
@@ -273,7 +269,7 @@ impl MemoryDocument {
     }
 }
 
-pub(crate) fn too_large(bytes: usize) -> InvalidMemory {
+pub fn too_large(bytes: usize) -> InvalidMemory {
     invalid(format!(
         "the file is {bytes} bytes, more than any memory may be ({MAX_FILE_BYTES})"
     ))
@@ -302,16 +298,16 @@ fn yaml_scalar(value: &str, in_flow: bool) -> String {
 /// A memory file's revision: the first 16 hex digits of the SHA-256 of its
 /// bytes.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct MemoryRevision(String);
+pub struct MemoryRevision(String);
 
 impl MemoryRevision {
     const DIGITS: usize = 16;
 
-    pub(crate) fn of(bytes: &[u8]) -> Self {
+    pub fn of(bytes: &[u8]) -> Self {
         Self::from_digest(Sha256::digest(bytes).as_slice())
     }
 
-    pub(crate) fn from_digest(digest: &[u8]) -> Self {
+    pub fn from_digest(digest: &[u8]) -> Self {
         let mut text = String::with_capacity(Self::DIGITS);
         for byte in &digest[..Self::DIGITS / 2] {
             text.push_str(&format!("{byte:02x}"));
@@ -320,7 +316,7 @@ impl MemoryRevision {
     }
 
     /// A revision a caller sent: 16 lowercase hex digits.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         (value.len() == Self::DIGITS
             && value
                 .bytes()
@@ -329,7 +325,7 @@ impl MemoryRevision {
     }
 
     /// The revision as text, as `memory.*` sends it.
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }

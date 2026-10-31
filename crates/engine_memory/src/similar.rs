@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use super::{file::MemoryDocument, url::MemoryUrl};
 
 /// The most near memories a result lists.
-pub(crate) const MAX_NEAR: usize = 3;
+pub const MAX_NEAR: usize = 3;
 
 /// Words that say nothing about what a memory holds.
 const FILLER: [&str; 48] = [
@@ -23,14 +23,14 @@ const FILLER: [&str; 48] = [
 
 /// A memory near a new one, as a result lists it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NearMemory {
-    pub(crate) url: MemoryUrl,
-    pub(crate) description: String,
+pub struct NearMemory {
+    pub url: MemoryUrl,
+    pub description: String,
 }
 
 /// How a new memory compares with the memories around it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Similarity {
+pub enum Similarity {
     /// Nothing near: save it.
     None,
     /// Some memories share a word or a keyword: save it, and list them.
@@ -61,10 +61,7 @@ fn keywords(document: &MemoryDocument) -> BTreeSet<String> {
 
 /// How `new` compares with `existing`, the other valid memories in its
 /// place.
-pub(crate) fn compare(
-    new: &MemoryDocument,
-    existing: &[(MemoryUrl, MemoryDocument)],
-) -> Similarity {
+pub fn compare(new: &MemoryDocument, existing: &[(MemoryUrl, MemoryDocument)]) -> Similarity {
     let body = new.body().trim();
     if !body.is_empty()
         && let Some((url, _)) = existing

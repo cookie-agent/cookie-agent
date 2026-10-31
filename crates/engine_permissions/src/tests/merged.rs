@@ -9,7 +9,7 @@ use cookie_agent_protocol::{
 };
 
 use super::{agent_document, operation, policy, qualified, resource, resources, root_rules, rule};
-use crate::permissions::{
+use crate::{
     MergedRules, OwnedScope, PermissionPipeline, PermissionScope, effective_permission_view,
     rule_effects, stricter,
 };

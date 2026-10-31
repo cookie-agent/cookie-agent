@@ -846,6 +846,8 @@ dependencies = [
  "bytes",
  "cookie_agent_coding_runtime",
  "cookie_agent_config",
+ "cookie_agent_engine_memory",
+ "cookie_agent_engine_permissions",
  "cookie_agent_engine_store",
  "cookie_agent_identity",
  "cookie_agent_mcp",
@@ -879,6 +881,40 @@ dependencies = [
  "unicode-properties",
  "unicode-segmentation",
  "uuid",
+]
+
+[[package]]
+name = "cookie_agent_engine_memory"
+version = "0.4.0"
+dependencies = [
+ "cookie_agent_config",
+ "cookie_agent_identity",
+ "cookie_agent_models",
+ "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
+ "jiff",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "cookie_agent_engine_permissions"
+version = "0.4.0"
+dependencies = [
+ "cookie_agent_config",
+ "cookie_agent_engine_store",
+ "cookie_agent_models",
+ "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -2035,22 +2035,22 @@ fn a_home_pattern_expands_against_the_home_its_runtime_reported() {
 #[test]
 fn a_tool_scope_takes_the_home_of_its_instance() {
     let workspace = tempfile::tempdir().unwrap();
-    let context = crate::WorkspaceContext::new(workspace.path()).unwrap();
+    let context = cookie_agent_runtime_api::WorkspaceContext::new(workspace.path()).unwrap();
     let info = cookie_agent_runtime_api::RuntimeInfo::coding("labpc", context);
-    let without = crate::ToolOrigin::Runtime(std::sync::Arc::new(
+    let without = cookie_agent_runtime_api::ToolOrigin::Runtime(std::sync::Arc::new(
         cookie_agent_runtime_api::RuntimeInfo::coding(
             "labpc",
-            crate::WorkspaceContext::new(workspace.path()).unwrap(),
+            cookie_agent_runtime_api::WorkspaceContext::new(workspace.path()).unwrap(),
         ),
     ));
-    let with = crate::ToolOrigin::Runtime(std::sync::Arc::new(
+    let with = cookie_agent_runtime_api::ToolOrigin::Runtime(std::sync::Arc::new(
         info.with_home(Some("/home/ada".into())),
     ));
     assert_eq!(super::PermissionScope::of(&with).home, Some("/home/ada"));
     assert_eq!(super::PermissionScope::of(&with).runtime, Some("labpc"));
     assert_eq!(super::PermissionScope::of(&without).home, None);
     assert_eq!(
-        super::PermissionScope::of(&crate::ToolOrigin::Base).home,
+        super::PermissionScope::of(&cookie_agent_runtime_api::ToolOrigin::Base).home,
         None
     );
 }
@@ -2464,7 +2464,7 @@ fn root_runs_attach_machines_by_default_and_delegated_runs_do_not() {
         );
     }
     assert!(
-        attach(crate::permissions::run_default_rules(AgentMode::All, true)).is_empty(),
+        attach(crate::run_default_rules(AgentMode::All, true)).is_empty(),
         "a delegated run attaches only when its document grants `attach`"
     );
     assert!(

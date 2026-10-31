@@ -24,7 +24,7 @@ use super::{
 /// How much of a match the caller may see, decided per URL by its `memory`
 /// permission rules (section 9.3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Visibility {
+pub enum Visibility {
     /// URL, description, keywords, and what the caller may do with it.
     Full,
     /// URL, description, and what the caller may do with it; reading it
@@ -36,15 +36,15 @@ pub(crate) enum Visibility {
 
 /// One search result.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SearchHit {
-    pub(crate) url: MemoryUrl,
-    pub(crate) description: String,
+pub struct SearchHit {
+    pub url: MemoryUrl,
+    pub description: String,
     /// The memory's keywords; empty for a [`Visibility::Summary`] hit.
-    pub(crate) keywords: Vec<String>,
+    pub keywords: Vec<String>,
     /// When the memory was last modified.
-    pub(crate) modified: Timestamp,
+    pub modified: Timestamp,
     /// Whether the caller may read it without asking.
-    pub(crate) full: bool,
+    pub full: bool,
 }
 
 /// A memory's score, compared field by field.
@@ -61,7 +61,7 @@ struct Query {
 
 /// The segments of `url`, split on `://` and `/`: its scheme, then its
 /// group and name (section 16.9.3).
-pub(crate) fn url_segments(url: &MemoryUrl) -> Vec<String> {
+pub fn url_segments(url: &MemoryUrl) -> Vec<String> {
     let text = url.to_string();
     let (scheme, rest) = text.split_once("://").unwrap_or((text.as_str(), ""));
     std::iter::once(scheme)
@@ -108,7 +108,7 @@ impl MemoryRoot {
     /// The best `limit` memories for `query`, in `layer` or in all layers,
     /// that `visibility` lets the caller see. `visibility` is asked about
     /// candidates in rank order until `limit` hits are found.
-    pub(crate) fn search(
+    pub fn search(
         &self,
         query: &str,
         layer: Option<MemoryLayer>,

@@ -17,15 +17,15 @@ use super::{
 };
 
 /// The memory every project has, loaded in full into its sessions.
-pub(crate) const OVERVIEW: &str = "overview";
+pub const OVERVIEW: &str = "overview";
 
 /// The description the daemon gives a project's overview.
-pub(crate) fn overview_description(project: &str) -> String {
+pub fn overview_description(project: &str) -> String {
     format!("Overview of the `{project}` project, loaded in full into its sessions")
 }
 
 /// The URL of `project`'s overview.
-pub(crate) fn overview_url(project: &MemoryName) -> MemoryUrl {
+pub fn overview_url(project: &MemoryName) -> MemoryUrl {
     MemoryUrl::Project {
         project: project.clone(),
         name: MemoryName::new(OVERVIEW).expect("`overview` is a memory name"),
@@ -33,13 +33,13 @@ pub(crate) fn overview_url(project: &MemoryName) -> MemoryUrl {
 }
 
 /// Whether `url` is a project's overview.
-pub(crate) fn is_overview(url: &MemoryUrl) -> bool {
+pub fn is_overview(url: &MemoryUrl) -> bool {
     matches!(url, MemoryUrl::Project { name, .. } if name.as_str() == OVERVIEW)
 }
 
 /// `document` with the daemon's description for the overview of `project`;
 /// its stamps stay.
-pub(crate) fn managed_overview(
+pub fn managed_overview(
     project: &MemoryName,
     document: &MemoryDocument,
 ) -> Result<MemoryDocument, super::file::InvalidMemory> {
@@ -53,13 +53,13 @@ pub(crate) fn managed_overview(
 
 impl MemoryRoot {
     /// `memory/projects/<project>/`.
-    pub(crate) fn project_dir(&self, project: &MemoryName) -> PathBuf {
+    pub fn project_dir(&self, project: &MemoryName) -> PathBuf {
         self.root.join(PROJECTS_DIR).join(project.as_str())
     }
 
     /// The folders under `memory/projects/` whose names are project names,
     /// in name order.
-    pub(crate) fn project_folders(&self) -> Result<Vec<MemoryName>, MemoryError> {
+    pub fn project_folders(&self) -> Result<Vec<MemoryName>, MemoryError> {
         Ok(read_dir_sorted(&self.root.join(PROJECTS_DIR))?
             .into_iter()
             .filter(|(_, kind)| kind.is_dir())
@@ -69,7 +69,7 @@ impl MemoryRoot {
 
     /// The memory files (`*.md`) directly in a project's folder; none when
     /// it has no folder.
-    pub(crate) fn project_memory_count(&self, project: &MemoryName) -> usize {
+    pub fn project_memory_count(&self, project: &MemoryName) -> usize {
         count_memories(&self.project_dir(project))
     }
 
@@ -80,7 +80,7 @@ impl MemoryRoot {
     /// regular file, or a rewrite past `overview_max_bytes` is left alone, and
     /// so is everything while the memory folder does not exist. Returns
     /// whether it wrote anything, which it signals.
-    pub(crate) fn ensure_overview(
+    pub fn ensure_overview(
         &self,
         _lock: &MemoryLock,
         project: &MemoryName,
@@ -123,7 +123,7 @@ impl MemoryRoot {
 
     /// Moves `memory/projects/<from>/` to `<to>/`. Nothing moves when
     /// `from` has no folder; a `to` folder that already exists fails.
-    pub(crate) fn rename_project_folder(
+    pub fn rename_project_folder(
         &self,
         _lock: &MemoryLock,
         from: &MemoryName,
@@ -146,7 +146,7 @@ impl MemoryRoot {
     /// Deletes `memory/projects/<project>/` with everything in it, memory
     /// files or not, and returns how many memory files it held. Nothing
     /// happens when it has no folder.
-    pub(crate) fn remove_project_folder(
+    pub fn remove_project_folder(
         &self,
         _lock: &MemoryLock,
         project: &MemoryName,

@@ -13,7 +13,7 @@ use cookie_agent_protocol::{
 };
 use serde_json::Value;
 
-use crate::ToolError;
+use cookie_agent_runtime_api::ToolError;
 
 /// The action a declared call of a tool that needs no permission is
 /// identified under. No rule is evaluated for such a call; the identity only
@@ -42,7 +42,7 @@ const MAX_OPERATION_NAME_BYTES: usize = 128;
 /// The tool's identity is the source the daemon resolved (the runtime
 /// attachment, plugin, or MCP server) and the name the source knows the tool
 /// by, never anything the provider reports.
-pub(crate) fn declared_operation(
+pub fn declared_operation(
     tool: &ToolIdentity,
     origin_context: &[u8],
     permission: Option<&PermissionAction>,

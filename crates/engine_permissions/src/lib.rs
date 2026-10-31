@@ -13,14 +13,13 @@ use cookie_agent_protocol::{
     AgentId, AgentMode, AgentSnapshot, ApprovalEvaluation, DecisionTrace,
     EffectivePermissionAction, EffectivePermissionRule, EventPayload, MatchedPermissionRule,
     OperationFingerprint, PermissionAction, PermissionEffect, PermissionRule, PermissionRuleSource,
-    PreparedOperationIdentity, RunSelection, RuntimeId, SafeCode, SessionId, SessionOrigin,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionOverlay,
+    PreparedOperationIdentity, RuntimeId, SafeCode, SessionId, SessionPermissionOverlay,
     TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
 };
 use thiserror::Error;
 
 /// Display stand-in for a permission resource the tool did not scope.
-pub(crate) const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";
+pub const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";
 
 /// Where a permission is evaluated: the runtime that offers the tool, that
 /// runtime's workspace, and the home directory it reported.
@@ -52,7 +51,7 @@ impl<'a> PermissionScope<'a> {
 
     /// The scope of a tool from `origin`.
     #[must_use]
-    pub fn of(origin: &'a crate::ToolOrigin) -> Self {
+    pub fn of(origin: &'a cookie_agent_runtime_api::ToolOrigin) -> Self {
         let runtime = origin.runtime();
         Self {
             runtime: runtime.map(cookie_agent_runtime_api::RuntimeInfo::id),
@@ -151,9 +150,9 @@ pub fn tool_visible(
 /// One rule of a run's [merged list](MergedRules) and the level it comes
 /// from.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct MergedRule<'a> {
-    pub(crate) rule: &'a PermissionRule,
-    pub(crate) source: PermissionRuleSource,
+pub struct MergedRule<'a> {
+    pub rule: &'a PermissionRule,
+    pub source: PermissionRuleSource,
 }
 
 /// A run's permissions as one rule list
@@ -174,14 +173,14 @@ pub(crate) struct MergedRule<'a> {
 /// current overlay at each decision, so an overlay change applies to the next
 /// one without refreezing the run.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct MergedRules<'a> {
+pub struct MergedRules<'a> {
     rules: Vec<MergedRule<'a>>,
 }
 
 impl<'a> MergedRules<'a> {
     /// The merged list of the frozen `policy` and `overlay`, for a runtime
     /// that reported `home` (`None` compares `~` patterns as written).
-    pub(crate) fn new(
+    pub fn new(
         policy: &'a [PermissionRule],
         overlay: Option<&'a SessionPermissionOverlay>,
         home: Option<&str>,
@@ -222,7 +221,7 @@ impl<'a> MergedRules<'a> {
     }
 
     /// The merged list of `policy`'s frozen rules and `overlay`.
-    pub(crate) fn of(
+    pub fn of(
         policy: &'a AgentSnapshot,
         overlay: Option<&'a SessionPermissionOverlay>,
         home: Option<&str>,
@@ -231,14 +230,14 @@ impl<'a> MergedRules<'a> {
     }
 
     /// The rules in order: policy rules, then session rules.
-    pub(crate) fn rules(&self) -> &[MergedRule<'a>] {
+    pub fn rules(&self) -> &[MergedRule<'a>] {
         &self.rules
     }
 
     /// This list with the policy rules of each action whose rules are
     /// exactly that action's defaults for a root or `delegated` run of
     /// `policy`'s agent labelled `default`.
-    pub(crate) fn label_defaults(mut self, policy: &AgentSnapshot, delegated: bool) -> Self {
+    pub fn label_defaults(mut self, policy: &AgentSnapshot, delegated: bool) -> Self {
         let defaults = run_default_rules_with_delegate(policy.mode, delegated, &policy.permissions);
         let mut from_defaults = HashMap::<&PermissionAction, bool>::new();
         for merged in &mut self.rules {
@@ -268,7 +267,7 @@ impl<'a> MergedRules<'a> {
     /// allows or asks, or none of them covers every resource (`*`), so what
     /// they leave asks. Only a `*` deny with no allow or ask beside it hides
     /// the tool.
-    pub(crate) fn offers(&self, action: &PermissionAction, runtime: Option<&str>) -> bool {
+    pub fn offers(&self, action: &PermissionAction, runtime: Option<&str>) -> bool {
         let applying = || {
             self.rules.iter().filter(move |merged| {
                 merged.rule.action == *action && merged.rule.applies_to(runtime)
@@ -292,9 +291,9 @@ impl<'a> MergedRules<'a> {
     }
 
     /// The effect of `action` on `resource` in `scope`: the most specific
-    /// matching rule's ([`specificity`]), a later rule winning a tie, else
+    /// matching rule's (`specificity`), a later rule winning a tie, else
     /// ask. The list must have been built with `scope.home`.
-    pub(crate) fn decide(
+    pub fn decide(
         &self,
         action: &PermissionAction,
         resource: &str,
@@ -334,7 +333,7 @@ impl<'a> MergedRules<'a> {
     /// The effect of `action` checked by name only in `scope`: its `*`
     /// rules', a runtime-selected one over a bare one, then the later one;
     /// ask without one.
-    pub(crate) fn decide_name_only(
+    pub fn decide_name_only(
         &self,
         action: &PermissionAction,
         scope: PermissionScope<'_>,
@@ -405,7 +404,7 @@ fn name_only_rule(
 /// patterns of `*` (any characters) and `?` (one character). Decided
 /// exactly, without any resource having to exist; a trailing ` *`, which
 /// also matches the bare prefix, counts both ways.
-pub(crate) fn patterns_intersect(left: &str, right: &str) -> bool {
+pub fn patterns_intersect(left: &str, right: &str) -> bool {
     let spellings = |pattern: &str| {
         let mut spellings = vec![pattern.chars().collect::<Vec<_>>()];
         if let Some(prefix) = pattern.strip_suffix(" *") {
@@ -762,7 +761,7 @@ impl PermissionPipeline {
 
     /// [`Self::tool_offered`] against a merged list already built for
     /// `scope.home`, for callers that ask about many tools.
-    pub(crate) fn tool_offered_by(
+    pub fn tool_offered_by(
         merged: &MergedRules<'_>,
         grants: Option<&SessionPermissionOverlay>,
         permission_name: &str,
@@ -799,7 +798,7 @@ impl PermissionPipeline {
 
     /// [`Self::tool_visible_with_grants`] against a merged list already
     /// built for `scope.home`.
-    pub(crate) fn tool_visible_by(
+    pub fn tool_visible_by(
         merged: &MergedRules<'_>,
         grants: Option<&SessionPermissionOverlay>,
         permission_name: &str,
@@ -847,8 +846,8 @@ fn aggregate_effect(evaluations: &[ApprovalEvaluation]) -> PermissionEffect {
 
 /// The effect of `action` on `resource` in `scope` under `policy`'s frozen
 /// rules alone.
-#[cfg(test)]
-pub(crate) fn effective_permission<'a>(
+#[cfg(any(test, feature = "test-support"))]
+pub fn effective_permission<'a>(
     policy: &AgentSnapshot,
     action: &PermissionAction,
     resource: &str,
@@ -859,7 +858,7 @@ pub(crate) fn effective_permission<'a>(
 
 /// The effect of `action` on `resource` in `scope` under the merged list of
 /// `policy` and `overlay` ([`MergedRules::decide`]).
-pub(crate) fn effective_permission_with_overlay<'a>(
+pub fn effective_permission_with_overlay<'a>(
     policy: &AgentSnapshot,
     overlay: Option<&SessionPermissionOverlay>,
     action: &PermissionAction,
@@ -916,7 +915,7 @@ fn rule_pattern<'rule>(rule: &'rule PermissionRule, home: Option<&str>) -> Cow<'
 /// any other pattern (`~user/…` included), `pattern` as it is: a literal `~`
 /// then matches no absolute path. Pure and allocation-free when nothing
 /// expands.
-pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> Cow<'p, str> {
+pub fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> Cow<'p, str> {
     let Some(home) = home else {
         return Cow::Borrowed(pattern);
     };
@@ -947,9 +946,9 @@ pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> C
 /// delegates to nobody; `primary` and `all` agents also list runtimes.
 /// Internal agents, which call no tools, are denied every action. Memory's defaults
 /// depend on whether the run is delegated, so they are
-/// [separate](memory_default_rules), and `message` follows `delegate`
+/// separate (`memory_default_rules`), and `message` follows `delegate`
 /// ([`message_default_rules`]).
-pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
+pub fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
     let working: &[(PermissionAction, &str, PermissionEffect)] = &[
         (PermissionAction::READ, "*", PermissionEffect::Allow),
         (
@@ -1002,7 +1001,7 @@ pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
 /// default), allowed when one of them allows, asking when one asks, and
 /// denied when it may delegate to nobody, as it then has no subagent to
 /// message. Internal agents get nothing.
-pub(crate) fn message_default_rules<'r>(
+pub fn message_default_rules<'r>(
     mode: AgentMode,
     delegated: bool,
     delegate: impl IntoIterator<Item = &'r PermissionRule>,
@@ -1070,7 +1069,7 @@ fn memory_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule>
 /// root run of a non-internal agent manages every job; a `delegated` run
 /// and an internal agent get nothing, so the cron tools are hidden unless
 /// granted.
-pub(crate) fn cron_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+pub fn cron_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
     if delegated || mode == AgentMode::Internal {
         return Vec::new();
     }
@@ -1084,7 +1083,7 @@ pub(crate) fn cron_default_rules(mode: AgentMode, delegated: bool) -> Vec<Permis
 /// The `attach` default (`docs/site/specs/machines-on-demand.md` section
 /// 3.3): a root run may attach and detach machines, and a delegated one,
 /// or an internal agent, has no rule, so the tools are hidden.
-pub(crate) fn attach_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+pub fn attach_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
     if delegated || mode == AgentMode::Internal {
         return Vec::new();
     }
@@ -1098,7 +1097,7 @@ pub(crate) fn attach_default_rules(mode: AgentMode, delegated: bool) -> Vec<Perm
 /// Every rule the daemon supplies to a run of an agent of `mode`, root or
 /// `delegated`, each for an action its document names no key for. Whatever
 /// no rule matches asks ([`MergedRules`]).
-pub(crate) fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+pub fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
     let mut rules = run_defaults_but_message(mode, delegated);
     let message = message_default_rules(mode, delegated, &rules);
     rules.extend(message);
@@ -1107,7 +1106,7 @@ pub(crate) fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<Permiss
 
 /// [`run_default_rules`] for a run whose `delegate` rules are `delegate`:
 /// the `message` default follows them.
-pub(crate) fn run_default_rules_with_delegate<'r>(
+pub fn run_default_rules_with_delegate<'r>(
     mode: AgentMode,
     delegated: bool,
     delegate: impl IntoIterator<Item = &'r PermissionRule>,
@@ -1131,9 +1130,9 @@ fn run_defaults_but_message(mode: AgentMode, delegated: bool) -> Vec<PermissionR
 /// which is the run's agent: the session's machines in order, and the name
 /// of its project.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct MemoryVariables {
-    pub(crate) machines: Vec<String>,
-    pub(crate) project: Option<String>,
+pub struct MemoryVariables {
+    pub machines: Vec<String>,
+    pub project: Option<String>,
 }
 
 /// `rule` with the memory variables of its pattern expanded for a run of
@@ -1182,12 +1181,12 @@ fn expand_memory_variables(
 /// The rules an agent document gives its runs: the document's own, then
 /// the [mode defaults](mode_default_rules) of each action the document
 /// names no key for, with or without a runtime selector, and the
-/// [memory defaults](memory_default_rules) and the [cron default](cron_default_rules)
+/// memory defaults (`memory_default_rules`) and the [cron default](cron_default_rules)
 /// for a root or `delegated` run
 /// likewise. A declared key replaces its action's default entirely. The
 /// memory rule variables are expanded with `variables` as the run's policy
 /// is frozen, so frozen rules, which the wire carries, never hold one.
-pub(crate) fn agent_permission_rules(
+pub fn agent_permission_rules(
     document: &cookie_agent_config::AgentDocument,
     delegated: bool,
     variables: &MemoryVariables,
@@ -1202,7 +1201,7 @@ pub(crate) fn agent_permission_rules(
 /// The rules a root or `delegated` run of `document`'s agent starts with,
 /// as [`agent_permission_rules`] gives them before the memory variables are
 /// expanded, each with whether the daemon supplied it as a default.
-pub(crate) fn agent_rules_with_sources(
+pub fn agent_rules_with_sources(
     document: &cookie_agent_config::AgentDocument,
     delegated: bool,
 ) -> Vec<(PermissionRule, bool)> {
@@ -1329,343 +1328,30 @@ fn specificity(
 /// Refuses overlay rules a client sends with a runtime selector their
 /// action takes none of (`message@labpc`), as agent documents do. Only
 /// commands are checked: an overlay already in a session log reads as it is.
-pub(crate) fn check_rule_selectors(rules: &[PermissionRule]) -> Result<(), crate::EngineError> {
+pub fn check_rule_selectors(rules: &[PermissionRule]) -> Result<(), String> {
     rules.iter().try_for_each(|rule| {
         if let Some(variable) = WildcardPattern::MEMORY_VARIABLES
             .iter()
             .find(|variable| rule.resource.as_str().contains(**variable))
         {
-            return Err(crate::EngineError::Permission(format!(
+            return Err(format!(
                 "`{variable}` is only for agent documents' memory rules, not session rules"
-            )));
+            ));
         }
-        rule.action
-            .check_runtime_selector(rule.runtime.as_ref())
-            .map_err(crate::EngineError::Permission)
+        rule.action.check_runtime_selector(rule.runtime.as_ref())
     })
 }
 
-impl crate::Engine {
-    /// The effective permissions a session created with `selection` and the
-    /// overlay `rules` would have, computed exactly as for a live session.
-    pub async fn preview_session_permissions(
-        &self,
-        selection: &RunSelection,
-        rules: Vec<PermissionRule>,
-    ) -> Result<Vec<EffectivePermissionAction>, crate::EngineError> {
-        check_rule_selectors(&rules)?;
-        let overlay = SessionPermissionOverlay { rules };
-        overlay
-            .validate()
-            .map_err(|error| crate::EngineError::Permission(error.to_string()))?;
-        self.reconcile_provider_store_off_worker().await?;
-        let (_, policy) = self.freeze_selection_policy(selection)?;
-        Ok(effective_permission_view(
-            &policy.agent,
-            false,
-            &overlay,
-            &[],
-        ))
-    }
-
-    pub fn get_session_permissions(
-        &self,
-        session_id: SessionId,
-    ) -> Result<SessionPermissionGetResult, crate::EngineError> {
-        let session = self.inner.store.get(session_id)?;
-        let policy = governing_agent(&session);
-        let declared = self.declared_permission_actions(session_id)?;
-        let delegated = matches!(session.meta.origin, SessionOrigin::Delegated { .. });
-        Ok(SessionPermissionGetResult {
-            permissions: effective_permission_view(
-                &policy,
-                delegated,
-                &session.permission_overlay,
-                &declared,
-            ),
-            current_mode: Some(self.permission_mode(session_id)),
-        })
-    }
-
-    /// The actions the tools of every source of `session` are checked under,
-    /// visible or not, in source order.
-    fn declared_permission_actions(
-        &self,
-        session_id: SessionId,
-    ) -> Result<Vec<PermissionAction>, crate::EngineError> {
-        let context = cookie_agent_runtime_api::SessionToolContext::new(session_id);
-        let mut actions = Vec::new();
-        for source in self.session_tool_sources(session_id)? {
-            for tool in source
-                .provider
-                .tools_for_session(&context)
-                .map_err(|error| crate::EngineError::ToolFailed(error.to_string()))?
-            {
-                if let Some(Ok(action)) = tool
-                    .permission_name
-                    .as_deref()
-                    .map(PermissionPipeline::action_for_permission_name)
-                    && !actions.contains(&action)
-                {
-                    actions.push(action);
-                }
-            }
-        }
-        Ok(actions)
-    }
-
-    /// Sets the overlay rule for `action` (qualified by `runtime` when given)
-    /// on `resource`. A change that makes the rule stricter for any runtime
-    /// the session uses invalidates that action's tree grants there.
-    pub async fn set_session_permission(
-        &self,
-        session_id: SessionId,
-        action: &PermissionAction,
-        runtime: Option<RuntimeId>,
-        resource: WildcardPattern,
-        effect: PermissionEffect,
-        origin: cookie_agent_protocol::EventOrigin,
-    ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
-        check_rule_selectors(&[PermissionRule {
-            action: action.clone(),
-            runtime: runtime.clone(),
-            resource: resource.clone(),
-            effect,
-        }])?;
-        let _mutation = self
-            .inner
-            .approvals
-            .permission_overlay_mutation
-            .lock()
-            .await;
-        let session = self.inner.store.get(session_id)?;
-        let policy = governing_agent(&session);
-        let scopes = self.overlay_effect_scopes(&session, runtime.as_ref());
-        let mut overlay = session.permission_overlay.clone();
-        let old_effects = rule_effects(&policy, &overlay, action, resource.as_str(), &scopes);
-        overlay.rules.retain(|rule| {
-            rule.action != *action || rule.runtime != runtime || rule.resource != resource
-        });
-        overlay.rules.push(PermissionRule {
-            action: action.clone(),
-            runtime: runtime.clone(),
-            resource: resource.clone(),
-            effect,
-        });
-        overlay
-            .validate()
-            .map_err(|error| crate::EngineError::Permission(error.to_string()))?;
-        let new_effects = rule_effects(&policy, &overlay, action, resource.as_str(), &scopes);
-        if stricter(&old_effects, &new_effects) {
-            self.invalidate_action_grants(session_id, &session.meta.origin, action, runtime)?;
-        }
-        self.append(
-            session_id,
-            None,
-            origin,
-            EventPayload::SessionPermissionOverlaySet { overlay },
-        )
-        .await?;
-        let result = self.get_session_permissions(session_id)?;
-        Ok(SessionPermissionMutationResult {
-            permissions: result.permissions,
-        })
-    }
-
-    /// Removes the overlay rule for `action` (qualified by `runtime` when
-    /// given) on `resource`.
-    pub async fn clear_session_permission(
-        &self,
-        session_id: SessionId,
-        action: &PermissionAction,
-        runtime: Option<RuntimeId>,
-        resource: &WildcardPattern,
-        origin: cookie_agent_protocol::EventOrigin,
-    ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
-        let _mutation = self
-            .inner
-            .approvals
-            .permission_overlay_mutation
-            .lock()
-            .await;
-        let session = self.inner.store.get(session_id)?;
-        let policy = governing_agent(&session);
-        let scopes = self.overlay_effect_scopes(&session, runtime.as_ref());
-        let mut overlay = session.permission_overlay.clone();
-        let old_effects = rule_effects(&policy, &overlay, action, resource.as_str(), &scopes);
-        let prior_len = overlay.rules.len();
-        overlay.rules.retain(|rule| {
-            rule.action != *action || rule.runtime != runtime || &rule.resource != resource
-        });
-        if overlay.rules.len() != prior_len {
-            let new_effects = rule_effects(&policy, &overlay, action, resource.as_str(), &scopes);
-            if stricter(&old_effects, &new_effects) {
-                self.invalidate_action_grants(session_id, &session.meta.origin, action, runtime)?;
-            }
-            self.append(
-                session_id,
-                None,
-                origin,
-                EventPayload::SessionPermissionOverlaySet { overlay },
-            )
-            .await?;
-        }
-        let result = self.get_session_permissions(session_id)?;
-        Ok(SessionPermissionMutationResult {
-            permissions: result.permissions,
-        })
-    }
-
-    /// The scopes an overlay rule can affect in `session`: for a rule
-    /// qualified by `runtime`, each attachment of that runtime ID (or the
-    /// runtime without a workspace when none is attached); for an
-    /// unqualified rule, the base layer and every attachment.
-    fn overlay_effect_scopes(
-        &self,
-        session: &crate::session::SessionProjection,
-        runtime: Option<&RuntimeId>,
-    ) -> Vec<OwnedScope> {
-        let attachments = self.attachments_of(session);
-        let mut scopes = attachments
-            .iter()
-            .filter(|attachment| runtime.is_none_or(|runtime| &attachment.runtime_id == runtime))
-            .map(|attachment| OwnedScope {
-                runtime: Some(attachment.runtime_id.as_str().to_owned()),
-                workspace: attachment
-                    .workspace
-                    .as_deref()
-                    .map(std::path::PathBuf::from),
-                home: self.attachment_home(attachment),
-                platform: self.attachment_platform(attachment),
-            })
-            .collect::<Vec<_>>();
-        match runtime {
-            None => scopes.push(OwnedScope::default()),
-            Some(runtime) if scopes.is_empty() => {
-                scopes.push(OwnedScope {
-                    runtime: Some(runtime.as_str().to_owned()),
-                    workspace: None,
-                    home: self.runtime_home(runtime.as_str()),
-                    platform: self.runtime_platform(runtime.as_str()),
-                });
-            }
-            Some(_) => {}
-        }
-        scopes
-    }
-
-    /// The home directory the runtime of `attachment` reported: its running
-    /// instance's, else the one its runtime last reported.
-    fn attachment_home(
-        &self,
-        attachment: &cookie_agent_protocol::RuntimeAttachment,
-    ) -> Option<String> {
-        self.inner
-            .runtimes
-            .instance(attachment)
-            .and_then(|instance| instance.info().home().map(str::to_owned))
-            .or_else(|| self.runtime_home(attachment.runtime_id.as_str()))
-    }
-
-    /// The platform the runtime of `attachment` reported: its running
-    /// instance's workspace's, else the one its runtime last reported.
-    fn attachment_platform(
-        &self,
-        attachment: &cookie_agent_protocol::RuntimeAttachment,
-    ) -> Option<String> {
-        self.inner
-            .runtimes
-            .instance(attachment)
-            .and_then(|instance| {
-                instance
-                    .info()
-                    .workspace()
-                    .and_then(|workspace| workspace.platform().map(str::to_owned))
-            })
-            .or_else(|| self.runtime_platform(attachment.runtime_id.as_str()))
-    }
-
-    /// The platform the runtime with ID `runtime_id` last reported, whose
-    /// paths its permission resources are.
-    pub(crate) fn runtime_platform(&self, runtime_id: &str) -> Option<String> {
-        self.inner
-            .runtimes
-            .templates()
-            .into_iter()
-            .find(|template| template.runtime_id == runtime_id)
-            .and_then(|template| template.listing.platform)
-    }
-
-    /// The home directory the runtime with ID `runtime_id` last reported.
-    pub(crate) fn runtime_home(&self, runtime_id: &str) -> Option<String> {
-        self.inner
-            .runtimes
-            .templates()
-            .into_iter()
-            .find(|template| template.runtime_id == runtime_id)
-            .and_then(|template| template.listing.home)
-    }
-
-    fn invalidate_action_grants(
-        &self,
-        session_id: SessionId,
-        origin: &SessionOrigin,
-        action: &PermissionAction,
-        runtime: Option<RuntimeId>,
-    ) -> Result<(), crate::EngineError> {
-        let root = match origin {
-            SessionOrigin::Root => session_id,
-            SessionOrigin::Delegated {
-                root_session_id, ..
-            } => *root_session_id,
-        };
-        let grants = self
-            .inner
-            .approvals
-            .store
-            .for_root(root)
-            .into_iter()
-            .filter(|grant| {
-                runtime
-                    .as_ref()
-                    .is_none_or(|runtime| grant.runtime_id.as_ref() == Some(runtime))
-                    && grant
-                        .resources
-                        .iter()
-                        .any(|resource| resource.capability == *action)
-            })
-            .collect::<Vec<_>>();
-        let ids = grants
-            .iter()
-            .map(|grant| grant.grant_id)
-            .collect::<HashSet<_>>();
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let digests = grants
-            .iter()
-            .flat_map(|grant| grant.resources.iter())
-            .filter(|resource| resource.capability == *action)
-            .map(|resource| resource.binding_digest.digest().clone())
-            .collect();
-        self.inner.grant_journals.for_root(root)?.invalidate(
-            root,
-            ids.iter().copied().collect(),
-            digests,
-        )?;
-        self.inner.approvals.store.invalidate_grants(&ids);
-        Ok(())
-    }
-}
-
-pub(crate) fn governing_agent_for_skills(
-    session: &crate::session::SessionProjection,
+pub fn governing_agent_for_skills(
+    session: &cookie_agent_engine_store::session::SessionProjection,
 ) -> Arc<AgentSnapshot> {
     governing_agent(session)
 }
 
 /// The agent of the latest visible run, else the session's creation agent.
-fn governing_agent(session: &crate::session::SessionProjection) -> Arc<AgentSnapshot> {
+pub fn governing_agent(
+    session: &cookie_agent_engine_store::session::SessionProjection,
+) -> Arc<AgentSnapshot> {
     // The log index names the latest visible run; the projection already
     // holds its snapshot unless the run started after this projection was
     // taken, in which case the log itself is read.
@@ -1704,7 +1390,7 @@ fn effect_rank(effect: PermissionEffect) -> u8 {
 }
 
 /// Whether any scope's effect got stricter between `old` and `new`.
-fn stricter(old: &[PermissionEffect], new: &[PermissionEffect]) -> bool {
+pub fn stricter(old: &[PermissionEffect], new: &[PermissionEffect]) -> bool {
     old.iter()
         .zip(new)
         .any(|(old, new)| effect_rank(*new) > effect_rank(*old))
@@ -1712,17 +1398,17 @@ fn stricter(old: &[PermissionEffect], new: &[PermissionEffect]) -> bool {
 
 /// A [`PermissionScope`] that owns its parts.
 #[derive(Clone, Debug, Default)]
-struct OwnedScope {
-    runtime: Option<String>,
-    workspace: Option<std::path::PathBuf>,
-    home: Option<String>,
-    platform: Option<String>,
+pub struct OwnedScope {
+    pub runtime: Option<String>,
+    pub workspace: Option<std::path::PathBuf>,
+    pub home: Option<String>,
+    pub platform: Option<String>,
 }
 
 /// The effect of `action` on `resource` in each of `scopes`. A `~` in
 /// `resource`, a rule's pattern, expands against each scope's home as the
 /// rule's own pattern does.
-fn rule_effects(
+pub fn rule_effects(
     policy: &AgentSnapshot,
     overlay: &SessionPermissionOverlay,
     action: &PermissionAction,
@@ -1806,11 +1492,11 @@ fn expanded_from_defaults(
 /// unqualified `*` rule as its effect (ask, what no rule matching gives,
 /// with the source `default` without one) and lists every other rule as a pattern, each with its
 /// source; an action whose policy rules are exactly its [mode
-/// default](mode_default_rules), or its [memory default](memory_default_rules)
+/// default](mode_default_rules), or its memory default (`memory_default_rules`)
 /// for a root or `delegated` run, reports them with the source `default`. A
 /// session `*` rule replaces only the `*` row: the document's other patterns
 /// stay listed, because they still apply.
-fn effective_permission_view(
+pub fn effective_permission_view(
     policy: &AgentSnapshot,
     delegated: bool,
     overlay: &SessionPermissionOverlay,
@@ -1864,7 +1550,7 @@ fn effective_permission_view(
         .collect()
 }
 
-pub(crate) mod identity;
+pub mod identity;
 
 #[cfg(test)]
 mod tests;

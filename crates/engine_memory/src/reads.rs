@@ -16,7 +16,7 @@ use super::{MemoryRoot, READS_FILE, file::to_second, store::write_file, url::Mem
 
 /// The last-read times, loaded from the file on first use.
 #[derive(Debug, Default)]
-pub(crate) struct ReadTimes(std::sync::Mutex<Option<BTreeMap<String, Timestamp>>>);
+pub struct ReadTimes(std::sync::Mutex<Option<BTreeMap<String, Timestamp>>>);
 
 impl MemoryRoot {
     fn with_reads<T>(&self, work: impl FnOnce(&mut BTreeMap<String, Timestamp>) -> T) -> T {
@@ -37,11 +37,7 @@ impl MemoryRoot {
     /// Records that `urls` were read at `now`. Nothing is written while the
     /// memory folder does not exist; a failure to write is reported on
     /// standard error, since the times are advisory.
-    pub(crate) fn record_reads<'a>(
-        &self,
-        urls: impl IntoIterator<Item = &'a MemoryUrl>,
-        now: Timestamp,
-    ) {
+    pub fn record_reads<'a>(&self, urls: impl IntoIterator<Item = &'a MemoryUrl>, now: Timestamp) {
         let now = to_second(now);
         let text = self.with_reads(|times| {
             let mut changed = false;
@@ -59,7 +55,7 @@ impl MemoryRoot {
     }
 
     /// When the memory at `url` was last read, if the daemon knows.
-    pub(crate) fn last_read(&self, url: &MemoryUrl) -> Option<Timestamp> {
+    pub fn last_read(&self, url: &MemoryUrl) -> Option<Timestamp> {
         self.with_reads(|times| times.get(&url.to_string()).copied())
     }
 }

@@ -7,7 +7,7 @@ use std::{
 use cookie_agent_protocol::{AgentId, AttachmentName, MachineName};
 
 use super::{ReadRules, SnapshotRequest};
-use crate::memory::{MemoryRoot, limits::MemoryLimits, render};
+use crate::{MemoryRoot, limits::MemoryLimits, render};
 
 const MAX_FILE: usize = 4096;
 
@@ -416,7 +416,7 @@ fn the_overview_shares_the_user_limit_and_the_index_the_machines_limit() {
 /// only, and one they deny is left out and not counted.
 #[test]
 fn the_read_rules_show_list_or_leave_out_each_memory() {
-    use crate::memory::{search::Visibility, url::MemoryUrl};
+    use crate::{search::Visibility, url::MemoryUrl};
 
     let (data, memory) = root();
     put(

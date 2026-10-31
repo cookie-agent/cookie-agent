@@ -28,14 +28,14 @@ const MODE_KEYWORDS: [&str; 3] = ["primary", "subagent", "all"];
 /// What the daemon sets in one agent's memory file: the description, and
 /// the mode keyword that follows the agent ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AgentMemorySpec {
+pub struct AgentMemorySpec {
     description: String,
     mode: &'static str,
 }
 
 /// What the memory store knows about the agent of an `agent://` URL.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum AgentMemory {
+pub enum AgentMemory {
     /// The daemon keeps this agent's file and owns its description.
     Managed(AgentMemorySpec),
     /// The registry has the agent, but the daemon keeps no file for it
@@ -47,7 +47,7 @@ pub(crate) enum AgentMemory {
 
 impl AgentMemory {
     /// Whether a file for the agent may be created.
-    pub(crate) const fn exists(&self) -> bool {
+    pub const fn exists(&self) -> bool {
         !matches!(self, Self::Unknown)
     }
 }
@@ -85,7 +85,7 @@ impl AgentMemorySpec {
     /// ``Memory of the `<agent>` agent: <description>``, on one line: line
     /// breaks, tabs, and other control characters become spaces, runs of
     /// whitespace one space, and the whole is cut to 200 characters.
-    pub(crate) fn new(agent: &AgentId, document_description: &str, mode: &'static str) -> Self {
+    pub fn new(agent: &AgentId, document_description: &str, mode: &'static str) -> Self {
         let words = document_description
             .split(|character: char| character.is_whitespace() || character.is_control())
             .filter(|word| !word.is_empty())
@@ -105,14 +105,14 @@ impl AgentMemorySpec {
 
     /// The daemon's two keywords, the agent ID and the mode; one when the
     /// agent ID is the mode's name.
-    pub(crate) fn daemon_keywords(&self, agent: &AgentId) -> Vec<String> {
+    pub fn daemon_keywords(&self, agent: &AgentId) -> Vec<String> {
         daemon_keywords(agent, self.mode)
     }
 
     /// The daemon's two keywords, then `existing` without them, without
     /// any other mode keyword, and without repeats (all compared
     /// case-insensitively), at most 32 in all.
-    pub(crate) fn keywords(&self, agent: &AgentId, existing: &[String]) -> Vec<String> {
+    pub fn keywords(&self, agent: &AgentId, existing: &[String]) -> Vec<String> {
         let mut keywords = self.daemon_keywords(agent);
         let mut seen = keywords
             .iter()
@@ -132,7 +132,7 @@ impl AgentMemorySpec {
 
     /// `document` with the daemon's description and keywords; its stamps
     /// stay.
-    pub(crate) fn apply(
+    pub fn apply(
         &self,
         agent: &AgentId,
         document: &MemoryDocument,
@@ -156,7 +156,7 @@ impl AgentMemorySpec {
 
 /// `text`, a valid memory file, with the frontmatter of `document`, its
 /// stamps included, in place of its own; the body's bytes stay as they are.
-pub(crate) fn with_frontmatter(text: &str, document: &MemoryDocument) -> Option<String> {
+pub fn with_frontmatter(text: &str, document: &MemoryDocument) -> Option<String> {
     let body = &text[MemoryDocument::frontmatter_len(text)?..];
     let mut replaced =
         MemoryDocument::new(document.description(), document.keywords().to_vec(), "")
@@ -191,14 +191,14 @@ fn untouched(agent: &AgentId, bytes: &[u8]) -> bool {
 
 /// What [`MemoryRoot::sync_agents`] changed, by agent.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AgentSync {
-    pub(crate) created: Vec<AgentId>,
-    pub(crate) updated: Vec<AgentId>,
-    pub(crate) removed: Vec<AgentId>,
+pub struct AgentSync {
+    pub created: Vec<AgentId>,
+    pub updated: Vec<AgentId>,
+    pub removed: Vec<AgentId>,
 }
 
 impl AgentSync {
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.created.is_empty() && self.updated.is_empty() && self.removed.is_empty()
     }
 }
@@ -210,7 +210,7 @@ impl MemoryRoot {
     /// A file that is invalid, or would grow past `agent_max_bytes`, is left
     /// as it is. Nothing happens while the memory folder does not exist:
     /// the next start's first start creates it.
-    pub(crate) fn sync_agents(
+    pub fn sync_agents(
         &self,
         desired: impl FnOnce() -> BTreeMap<AgentId, AgentMemorySpec>,
         agent_max_bytes: usize,

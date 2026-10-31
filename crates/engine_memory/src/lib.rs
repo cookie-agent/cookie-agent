@@ -1,7 +1,7 @@
 //! The memory folder, `<data_root>/memory` (`docs/site/specs/memory.md`
 //! section 4): its advisory lock, its first-start defaults, the machine
 //! memory folders that renaming and merging machines move, and the memory
-//! store: URLs ([`url`]), the file format and revisions ([`file`]), the
+//! store: URLs ([`url`]), the file format and revisions ([`file`](mod@file)), the
 //! limits ([`limits`]), reads, listings, and changes ([`store`]), when
 //! memories were last read ([`reads`]), search ([`search`]), the
 //! similar-memory check ([`similar`]), and the snapshot a session's model
@@ -11,18 +11,18 @@
 //! because two plain `cookie` processes are two daemons sharing one data
 //! root. Functions that change folders take the held lock as proof.
 
-pub(crate) mod agents;
-pub(crate) mod file;
-pub(crate) mod format;
-pub(crate) mod limits;
-pub(crate) mod projects;
-pub(crate) mod reads;
-pub(crate) mod render;
-pub(crate) mod search;
-pub(crate) mod similar;
-pub(crate) mod snapshot;
-pub(crate) mod store;
-pub(crate) mod url;
+pub mod agents;
+pub mod file;
+pub mod format;
+pub mod limits;
+pub mod projects;
+pub mod reads;
+pub mod render;
+pub mod search;
+pub mod similar;
+pub mod snapshot;
+pub mod store;
+pub mod url;
 
 use std::{
     fs, io,
@@ -33,29 +33,29 @@ use std::{
 use cookie_agent_protocol::MachineName;
 
 /// The memory folder's name in the data root.
-pub(crate) const MEMORY_DIR: &str = "memory";
+pub const MEMORY_DIR: &str = "memory";
 /// The lock file inside the memory folder.
-pub(crate) const LOCK_FILE: &str = ".lock";
+pub const LOCK_FILE: &str = ".lock";
 /// Where the daemon keeps when each memory was last read, inside the
 /// memory folder ([`reads`]).
-pub(crate) const READS_FILE: &str = ".reads.json";
+pub const READS_FILE: &str = ".reads.json";
 /// The folder of user categories inside the memory folder.
-pub(crate) const USER_DIR: &str = "user";
+pub const USER_DIR: &str = "user";
 /// The folder of agent memories inside the memory folder.
-pub(crate) const AGENTS_DIR: &str = "agents";
+pub const AGENTS_DIR: &str = "agents";
 /// The folder of machine memories inside the memory folder.
-pub(crate) const MACHINES_DIR: &str = "machines";
+pub const MACHINES_DIR: &str = "machines";
 /// The folder of projects inside the memory folder.
-pub(crate) const PROJECTS_DIR: &str = "projects";
+pub const PROJECTS_DIR: &str = "projects";
 /// A memory file's extension.
-pub(crate) const MEMORY_EXTENSION: &str = "md";
+pub const MEMORY_EXTENSION: &str = "md";
 
 /// How long taking the lock waits for another process.
 const LOCK_BUDGET: Duration = Duration::from_secs(5);
 
 /// Why the memory folder could not be locked or changed.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum MemoryError {
+pub enum MemoryError {
     #[error("another cookie process holds the memory lock {}", .0.display())]
     Contention(PathBuf),
     #[error("{}: {source}", path.display())]
@@ -81,7 +81,7 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> MemoryError + '_ {
 
 /// The memory folder of one data root. Clones share one change signal.
 #[derive(Clone, Debug)]
-pub(crate) struct MemoryRoot {
+pub struct MemoryRoot {
     root: PathBuf,
     /// Bumped after each write, edit, or delete through this root.
     changes: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
@@ -91,7 +91,7 @@ pub(crate) struct MemoryRoot {
 
 /// The held memory lock; dropping it releases the lock.
 #[derive(Debug)]
-pub(crate) struct MemoryLock {
+pub struct MemoryLock {
     /// The locked file; `None` while the memory folder does not exist.
     file: Option<fs::File>,
 }
@@ -108,7 +108,7 @@ impl Drop for MemoryLock {
 /// of the same change fails.
 #[derive(Debug, Default)]
 #[must_use = "undo the moves when the change fails"]
-pub(crate) struct FolderMoves {
+pub struct FolderMoves {
     renamed: Vec<(PathBuf, PathBuf)>,
     created: Vec<PathBuf>,
     removed: Vec<PathBuf>,
@@ -116,7 +116,7 @@ pub(crate) struct FolderMoves {
 
 impl FolderMoves {
     /// Puts every moved file and folder back, best effort.
-    pub(crate) fn undo(self) {
+    pub fn undo(self) {
         for path in self.removed.iter().rev() {
             let _ = fs::create_dir(path);
         }
@@ -156,7 +156,7 @@ const DEFAULT_CATEGORIES: [(&str, &str, &[&str]); 4] = [
 
 impl MemoryRoot {
     /// The memory folder of the data root `data_dir`.
-    pub(crate) fn new(data_dir: &Path) -> Self {
+    pub fn new(data_dir: &Path) -> Self {
         Self {
             root: data_dir.join(MEMORY_DIR),
             changes: std::sync::Arc::new(tokio::sync::watch::channel(0).0),
@@ -166,7 +166,7 @@ impl MemoryRoot {
 
     /// Signals every memory file this root writes, edits, or deletes;
     /// changes other processes make are not seen.
-    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changes.subscribe()
     }
 
@@ -185,7 +185,7 @@ impl MemoryRoot {
     /// renamed into place, so a crash leaves no half-made memory folder
     /// that later starts would take as the user's, and a second daemon
     /// starting at the same moment keeps the first one's folder.
-    pub(crate) fn create_defaults_if_absent(&self) -> Result<bool, MemoryError> {
+    pub fn create_defaults_if_absent(&self) -> Result<bool, MemoryError> {
         if fs::symlink_metadata(&self.root).is_ok() {
             return Ok(false);
         }
@@ -231,13 +231,13 @@ impl MemoryRoot {
         placed
     }
 
-    #[cfg(test)]
-    pub(crate) fn path(&self) -> &Path {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn path(&self) -> &Path {
         &self.root
     }
 
     /// `memory/machines/<machine>/`.
-    pub(crate) fn machine_dir(&self, machine: &MachineName) -> PathBuf {
+    pub fn machine_dir(&self, machine: &MachineName) -> PathBuf {
         self.root.join(MACHINES_DIR).join(machine.as_str())
     }
 
@@ -246,7 +246,7 @@ impl MemoryRoot {
     /// nothing a change could race with, and the lock creates nothing, so
     /// that the first start still finds no memory folder: the returned lock
     /// then holds no file.
-    pub(crate) fn lock(&self) -> Result<MemoryLock, MemoryError> {
+    pub fn lock(&self) -> Result<MemoryLock, MemoryError> {
         if !self.root.is_dir() {
             return Ok(MemoryLock { file: None });
         }
@@ -268,7 +268,7 @@ impl MemoryRoot {
 
     /// The memory files (`*.md`) directly in a machine's folder; none when
     /// it has no folder.
-    pub(crate) fn machine_memory_count(&self, machine: &MachineName) -> usize {
+    pub fn machine_memory_count(&self, machine: &MachineName) -> usize {
         fs::read_dir(self.machine_dir(machine)).map_or(0, |entries| {
             entries
                 .filter_map(Result::ok)
@@ -284,10 +284,7 @@ impl MemoryRoot {
 
     /// Whether a machine's folder holds anything at all; false when it has
     /// no folder.
-    pub(crate) fn machine_folder_has_entries(
-        &self,
-        machine: &MachineName,
-    ) -> Result<bool, MemoryError> {
+    pub fn machine_folder_has_entries(&self, machine: &MachineName) -> Result<bool, MemoryError> {
         let path = self.machine_dir(machine);
         match fs::read_dir(&path) {
             Ok(mut entries) => Ok(entries.next().is_some()),
@@ -298,7 +295,7 @@ impl MemoryRoot {
 
     /// Moves `memory/machines/<from>/` to `<to>/`. Nothing moves when
     /// `from` has no folder; a `to` folder that already exists fails.
-    pub(crate) fn rename_machine_folder(
+    pub fn rename_machine_folder(
         &self,
         _lock: &MemoryLock,
         from: &MachineName,
@@ -320,7 +317,7 @@ impl MemoryRoot {
     /// Moves every file of `memory/machines/<from>/` into `<into>/` and
     /// removes the emptied folder. Fails, moving nothing, when a name exists
     /// in both; a partial move is undone.
-    pub(crate) fn merge_machine_folders(
+    pub fn merge_machine_folders(
         &self,
         lock: &MemoryLock,
         from: &MachineName,
@@ -366,7 +363,7 @@ impl MemoryRoot {
     }
 
     /// Removes a machine's empty folder, if it has one.
-    pub(crate) fn remove_empty_machine_folder(
+    pub fn remove_empty_machine_folder(
         &self,
         _lock: &MemoryLock,
         machine: &MachineName,

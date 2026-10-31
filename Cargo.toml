@@ -8,6 +8,8 @@ members = [
     "crates/runtime_api",
     "crates/mcp",
     "crates/engine_store",
+    "crates/engine_permissions",
+    "crates/engine_memory",
     "crates/engine",
     "crates/coding_runtime",
     "crates/config",

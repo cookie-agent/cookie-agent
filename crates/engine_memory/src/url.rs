@@ -18,7 +18,7 @@ use super::{AGENTS_DIR, MACHINES_DIR, MEMORY_EXTENSION, PROJECTS_DIR, USER_DIR};
 
 /// What a memory is about.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum MemoryLayer {
+pub enum MemoryLayer {
     User,
     Agent,
     Machine,
@@ -26,10 +26,10 @@ pub(crate) enum MemoryLayer {
 }
 
 impl MemoryLayer {
-    pub(crate) const ALL: [Self; 4] = [Self::User, Self::Agent, Self::Machine, Self::Project];
+    pub const ALL: [Self; 4] = [Self::User, Self::Agent, Self::Machine, Self::Project];
 
     /// The layer's name, which is also its URL scheme.
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
             Self::Agent => "agent",
@@ -40,12 +40,12 @@ impl MemoryLayer {
 
     /// The layer named `value`, as the `layer` argument of a search spells
     /// it.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|layer| layer.as_str() == value)
     }
 
     /// The layer's folder inside the memory folder.
-    pub(crate) const fn dir(self) -> &'static str {
+    pub const fn dir(self) -> &'static str {
         match self {
             Self::User => USER_DIR,
             Self::Agent => AGENTS_DIR,
@@ -64,17 +64,17 @@ impl fmt::Display for MemoryLayer {
 /// A category, memory name, or project name: a lowercase ASCII letter or
 /// digit, then up to 63 lowercase letters, digits, or `-`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct MemoryName(String);
+pub struct MemoryName(String);
 
 impl MemoryName {
-    pub(crate) const MAX_BYTES: usize = 64;
+    pub const MAX_BYTES: usize = 64;
 
-    pub(crate) fn new(value: impl Into<String>) -> Option<Self> {
+    pub fn new(value: impl Into<String>) -> Option<Self> {
         let value = value.into();
         valid_name(&value).then_some(Self(value))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -103,7 +103,7 @@ fn agent_segment(value: &str) -> Option<AgentId> {
 
 /// One memory's address.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum MemoryUrl {
+pub enum MemoryUrl {
     /// `user://<category>`
     User { category: MemoryName },
     /// `agent://<agent>`
@@ -122,7 +122,7 @@ pub(crate) enum MemoryUrl {
 
 /// Why a string is not a memory URL.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum MemoryUrlError {
+pub enum MemoryUrlError {
     #[error(
         "`{0}` is not a memory URL; use user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>"
     )]
@@ -143,7 +143,7 @@ const AGENT_RULE: &str = "agent ID";
 const MACHINE_RULE: &str = "machine name";
 
 impl MemoryUrl {
-    pub(crate) fn parse(value: &str) -> Result<Self, MemoryUrlError> {
+    pub fn parse(value: &str) -> Result<Self, MemoryUrlError> {
         let (scheme, rest) = value
             .split_once("://")
             .ok_or_else(|| MemoryUrlError::Scheme(value.to_owned()))?;
@@ -183,7 +183,7 @@ impl MemoryUrl {
         }
     }
 
-    pub(crate) const fn layer(&self) -> MemoryLayer {
+    pub const fn layer(&self) -> MemoryLayer {
         match self {
             Self::User { .. } => MemoryLayer::User,
             Self::Agent { .. } => MemoryLayer::Agent,
@@ -194,7 +194,7 @@ impl MemoryUrl {
 
     /// The memory's own name: the category, the agent ID, or the name after
     /// the machine or project.
-    pub(crate) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         match self {
             Self::User { category } => category.as_str(),
             Self::Agent { agent } => agent.as_str(),
@@ -203,7 +203,7 @@ impl MemoryUrl {
     }
 
     /// The machine or project a memory belongs to, if any.
-    pub(crate) fn group(&self) -> Option<&str> {
+    pub fn group(&self) -> Option<&str> {
         match self {
             Self::User { .. } | Self::Agent { .. } => None,
             Self::Machine { machine, .. } => Some(machine.as_str()),
@@ -212,7 +212,7 @@ impl MemoryUrl {
     }
 
     /// The folder holding the memory, relative to the memory folder.
-    pub(crate) fn relative_dir(&self) -> PathBuf {
+    pub fn relative_dir(&self) -> PathBuf {
         let layer = Path::new(self.layer().dir());
         match self.group() {
             Some(group) => layer.join(group),
@@ -221,7 +221,7 @@ impl MemoryUrl {
     }
 
     /// The memory's file, relative to the memory folder.
-    pub(crate) fn relative_path(&self) -> PathBuf {
+    pub fn relative_path(&self) -> PathBuf {
         self.relative_dir()
             .join(format!("{}.{MEMORY_EXTENSION}", self.name()))
     }

@@ -30,16 +30,16 @@ use super::{
 
 /// What the run's `memory` rules let it read of each memory URL.
 #[derive(Clone)]
-pub(crate) struct ReadRules(Arc<dyn Fn(&MemoryUrl) -> Visibility + Send + Sync>);
+pub struct ReadRules(Arc<dyn Fn(&MemoryUrl) -> Visibility + Send + Sync>);
 
 impl ReadRules {
-    pub(crate) fn new(rules: impl Fn(&MemoryUrl) -> Visibility + Send + Sync + 'static) -> Self {
+    pub fn new(rules: impl Fn(&MemoryUrl) -> Visibility + Send + Sync + 'static) -> Self {
         Self(Arc::new(rules))
     }
 
     /// Rules that let the run read every memory.
-    #[cfg(test)]
-    pub(crate) fn all() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn all() -> Self {
         Self::new(|_| Visibility::Full)
     }
 
@@ -56,22 +56,22 @@ impl std::fmt::Debug for ReadRules {
 
 /// What a run needs from memory.
 #[derive(Clone, Debug)]
-pub(crate) struct SnapshotRequest {
-    pub(crate) agent: AgentId,
-    pub(crate) delegated: bool,
-    pub(crate) writable: bool,
+pub struct SnapshotRequest {
+    pub agent: AgentId,
+    pub delegated: bool,
+    pub writable: bool,
     /// The session's machines in order, each with the session's attachments
     /// on it. Ignored for a delegated run.
-    pub(crate) machines: Vec<(MachineName, Vec<AttachmentName>)>,
+    pub machines: Vec<(MachineName, Vec<AttachmentName>)>,
     /// The session's project. Ignored for a delegated run.
-    pub(crate) project: Option<ProjectName>,
-    pub(crate) limits: MemoryLimits,
+    pub project: Option<ProjectName>,
+    pub limits: MemoryLimits,
     /// When the snapshot is taken.
-    pub(crate) now: Timestamp,
+    pub now: Timestamp,
     /// What the run's `memory` rules let it read.
-    pub(crate) read: ReadRules,
+    pub read: ReadRules,
     /// The fingerprint of those rules, which the snapshot records.
-    pub(crate) rules: Option<Sha256Digest>,
+    pub rules: Option<Sha256Digest>,
 }
 
 /// The user section: the categories shown, the names of those that did not
@@ -95,9 +95,9 @@ fn newest_first(entries: &mut [Dated]) {
 /// A snapshot and the memories it shows whole, with the revisions it
 /// showed, which the session has then seen (section 16.9.8).
 #[derive(Clone, Debug)]
-pub(crate) struct TakenSnapshot {
-    pub(crate) snapshot: MemorySnapshot,
-    pub(crate) shown: Vec<(MemoryUrl, MemoryRevision)>,
+pub struct TakenSnapshot {
+    pub snapshot: MemorySnapshot,
+    pub shown: Vec<(MemoryUrl, MemoryRevision)>,
 }
 
 /// How full `entry` is under `limits`, and when it was modified.
@@ -140,7 +140,7 @@ fn whole(
 impl MemoryRoot {
     /// Reads memory into a snapshot for `request`. Invalid files are left
     /// out; only a failure to read a folder fails.
-    pub(crate) fn snapshot(&self, request: &SnapshotRequest) -> Result<TakenSnapshot, MemoryError> {
+    pub fn snapshot(&self, request: &SnapshotRequest) -> Result<TakenSnapshot, MemoryError> {
         let limits = request.limits;
         let mut shown = Vec::new();
         let agent = self.agent_entry(&request.agent, &limits, &request.read, &mut shown)?;
@@ -477,13 +477,10 @@ fn project_index(project: &ProjectName, memories: &[Dated], count: usize) -> Mem
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl MemoryRoot {
     /// The snapshot alone, for tests that do not look at what it showed.
-    pub(crate) fn snapshot_only(
-        &self,
-        request: &SnapshotRequest,
-    ) -> Result<MemorySnapshot, MemoryError> {
+    pub fn snapshot_only(&self, request: &SnapshotRequest) -> Result<MemorySnapshot, MemoryError> {
         self.snapshot(request).map(|taken| taken.snapshot)
     }
 }

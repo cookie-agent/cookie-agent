@@ -3,4 +3,4 @@
 //! The wording lives in the protocol crate, so the clients show ages and
 //! sizes the way the model reads them.
 
-pub(crate) use cookie_agent_protocol::{memory_age as age, memory_size as size};
+pub use cookie_agent_protocol::{memory_age as age, memory_size as size};

@@ -35,6 +35,8 @@ const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/cookie_agent/Cargo.toml",
     "crates/engine/Cargo.toml",
     "crates/engine_store/Cargo.toml",
+    "crates/engine_permissions/Cargo.toml",
+    "crates/engine_memory/Cargo.toml",
     "crates/mcp/Cargo.toml",
     "crates/models/Cargo.toml",
     "crates/plugin_sdk/Cargo.toml",

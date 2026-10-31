@@ -19,6 +19,8 @@ base64 = "0.22"
 bytes.workspace = true
 similar = { version = "2.7.0", default-features = false, features = ["text"] }
 cookie_agent_config = { version = "=0.4.0", path = "../config" }
+cookie_agent_engine_memory = { version = "=0.4.0", path = "../engine_memory" }
+cookie_agent_engine_permissions = { version = "=0.4.0", path = "../engine_permissions" }
 cookie_agent_engine_store = { version = "=0.4.0", path = "../engine_store" }
 cookie_agent_identity = { version = "=0.4.0", path = "../identity" }
 cookie_agent_mcp = { version = "=0.4.0", path = "../mcp", features = ["oauth"] }
@@ -53,6 +55,8 @@ rustix.workspace = true
 
 [dev-dependencies]
 cookie_agent_coding_runtime = { version = "=0.4.0", path = "../coding_runtime" }
+cookie_agent_engine_memory = { version = "=0.4.0", path = "../engine_memory", features = ["test-support"] }
+cookie_agent_engine_permissions = { version = "=0.4.0", path = "../engine_permissions", features = ["test-support"] }
 cookie_agent_engine_store = { version = "=0.4.0", path = "../engine_store", features = ["test-support"] }
 cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support"] }
 cookie_agent_models = { version = "=0.4.0", path = "../models", features = ["test-support"] }

@@ -151,7 +151,7 @@ impl Engine {
             cookie_agent_protocol::SessionTitle,
         )>,
     ) -> Result<SessionMeta, EngineError> {
-        crate::permissions::check_rule_selectors(&rules)?;
+        crate::permissions::check_rule_selectors(&rules).map_err(EngineError::Permission)?;
         let overlay = SessionPermissionOverlay { rules };
         overlay
             .validate()

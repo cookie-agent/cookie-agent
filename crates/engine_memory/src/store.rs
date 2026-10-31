@@ -35,7 +35,7 @@ use super::{
 /// What the store is told about the owners of a URL: the agent of an
 /// `agent://` URL and whether the project of a `project://` URL exists.
 /// Asked while the memory lock is held.
-pub(crate) trait MemoryOwners {
+pub trait MemoryOwners {
     /// What the store knows about `agent`.
     fn agent(&self, agent: &AgentId) -> AgentMemory;
 
@@ -69,7 +69,7 @@ fn unknown_project(url: &MemoryUrl, project: &MemoryName, projects: &[String]) -
 
 /// How a write checks the memory it replaces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WriteMode<'a> {
+pub enum WriteMode<'a> {
     /// A client's `memory.write` (section 10): without a revision the
     /// memory must not exist; with one, it must exist at that revision.
     Client(Option<&'a MemoryRevision>),
@@ -86,7 +86,7 @@ pub(crate) enum WriteMode<'a> {
 
 /// Why a store operation failed.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum StoreError {
+pub enum StoreError {
     #[error(transparent)]
     Memory(#[from] MemoryError),
     #[error("{url} does not exist")]
@@ -194,25 +194,25 @@ fn similar_message(url: &MemoryUrl, near: &[NearMemory]) -> String {
 
 /// A memory file as found on disk.
 #[derive(Clone, Debug)]
-pub(crate) struct MemoryEntry {
-    pub(crate) url: MemoryUrl,
-    pub(crate) revision: MemoryRevision,
+pub struct MemoryEntry {
+    pub url: MemoryUrl,
+    pub revision: MemoryRevision,
     /// The file's size in bytes, which `memory.list` reports.
-    pub(crate) size: u64,
+    pub size: u64,
     /// When the memory was created and last modified: its stamps, or the
     /// file's modification time for a file without them (section 16.9.6).
-    pub(crate) created: Timestamp,
-    pub(crate) modified: Timestamp,
+    pub created: Timestamp,
+    pub modified: Timestamp,
     /// The parsed memory, or why the file is invalid.
-    pub(crate) document: Result<MemoryDocument, InvalidMemory>,
+    pub document: Result<MemoryDocument, InvalidMemory>,
 }
 
 /// One memory file read whole.
 #[derive(Clone, Debug)]
-pub(crate) struct MemoryRead {
-    pub(crate) entry: MemoryEntry,
+pub struct MemoryRead {
+    pub entry: MemoryEntry,
     /// The file's text; invalid UTF-8 is replaced.
-    pub(crate) text: String,
+    pub text: String,
 }
 
 /// What a write of an `agent://` file kept in place of what it was given
@@ -220,16 +220,16 @@ pub(crate) struct MemoryRead {
 /// keywords, and an agent file the daemon does not keep keeps the
 /// description it has.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct KeptMetadata {
+pub struct KeptMetadata {
     /// The description the file keeps, when the text gave another.
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     /// The daemon's keywords the text left out, added back.
-    pub(crate) keywords: Vec<String>,
+    pub keywords: Vec<String>,
 }
 
 impl KeptMetadata {
     /// What was kept, in a sentence or two for the writer of `url`.
-    pub(crate) fn describe(&self, url: &MemoryUrl) -> String {
+    pub fn describe(&self, url: &MemoryUrl) -> String {
         let mut parts = Vec::new();
         if let Some(description) = &self.description {
             parts.push(format!(
@@ -253,42 +253,42 @@ impl KeptMetadata {
 
 /// A successful write.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Written {
-    pub(crate) revision: MemoryRevision,
+pub struct Written {
+    pub revision: MemoryRevision,
     /// What an `agent://` write kept of the file's frontmatter; `None` when
     /// the text was written as given.
-    pub(crate) kept: Option<KeptMetadata>,
+    pub kept: Option<KeptMetadata>,
     /// The write created the memory.
-    pub(crate) created: bool,
+    pub created: bool,
     /// Memories near a new one (section 16.9.5), for the writer to check.
-    pub(crate) near: Vec<NearMemory>,
+    pub near: Vec<NearMemory>,
     /// The file the write replaced, as it was; `None` for a new memory.
-    pub(crate) replaced: Option<String>,
+    pub replaced: Option<String>,
     /// The file as the write left it.
-    pub(crate) text: String,
+    pub text: String,
 }
 
 /// A successful edit: the file before and after it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Edited {
-    pub(crate) revision: MemoryRevision,
-    pub(crate) before: String,
-    pub(crate) after: String,
+pub struct Edited {
+    pub revision: MemoryRevision,
+    pub before: String,
+    pub after: String,
 }
 
 /// Something in the memory folder that is not a memory file of the layout:
 /// a badly named file, a file without the `.md` extension, a folder where a
 /// file belongs, or anything nested deeper.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct IgnoredEntry {
+pub struct IgnoredEntry {
     /// The path relative to the memory folder, with `/` separators.
-    pub(crate) path: String,
-    pub(crate) reason: &'static str,
+    pub path: String,
+    pub reason: &'static str,
 }
 
 /// Which part of memory to list.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ListScope {
+pub enum ListScope {
     All,
     Layer(MemoryLayer),
     Agent(AgentId),
@@ -298,11 +298,11 @@ pub(crate) enum ListScope {
 
 /// What [`MemoryRoot::list`] found.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct MemoryListing {
+pub struct MemoryListing {
     /// Memory files, valid or not, in layer order and then by URL.
-    pub(crate) entries: Vec<MemoryEntry>,
+    pub entries: Vec<MemoryEntry>,
     /// Entries that are not memory files, by path.
-    pub(crate) ignored: Vec<IgnoredEntry>,
+    pub ignored: Vec<IgnoredEntry>,
 }
 
 const NOT_MARKDOWN: &str = "not a `.md` file";
@@ -427,7 +427,7 @@ impl MemoryRoot {
     }
 
     /// Reads one memory whole: its text, revision, and parsed content.
-    pub(crate) fn read(&self, url: &MemoryUrl) -> Result<MemoryRead, StoreError> {
+    pub fn read(&self, url: &MemoryUrl) -> Result<MemoryRead, StoreError> {
         let path = self.file_path(url);
         let (bytes, metadata) =
             read_bytes(&path)?.ok_or_else(|| StoreError::NotFound { url: url.clone() })?;
@@ -439,7 +439,7 @@ impl MemoryRoot {
 
     /// Every memory file in `scope`, valid or not, and what else lies in
     /// its folders.
-    pub(crate) fn list(&self, scope: &ListScope) -> Result<MemoryListing, MemoryError> {
+    pub fn list(&self, scope: &ListScope) -> Result<MemoryListing, MemoryError> {
         let mut listing = MemoryListing::default();
         let wants = |layer: MemoryLayer| match scope {
             ListScope::All => true,
@@ -633,7 +633,7 @@ impl MemoryRoot {
     /// kept as given and the frontmatter rendered anew. A write to a
     /// project that does not exist is refused; the first memory of a
     /// machine creates its folder.
-    pub(crate) fn write(
+    pub fn write(
         &self,
         url: &MemoryUrl,
         text: &str,
@@ -788,7 +788,7 @@ impl MemoryRoot {
     /// form [`MemoryDocument::render`] gives, stamped as modified now, with
     /// the daemon's description and keywords for an agent file the daemon
     /// keeps (section 16.7).
-    pub(crate) fn edit(
+    pub fn edit(
         &self,
         url: &MemoryUrl,
         old: &str,
@@ -845,7 +845,7 @@ impl MemoryRoot {
     /// now: the memory exists, is valid, and `old` occurs once in its body.
     /// Changes nothing; the edit checks again when it runs
     /// ([`MemoryRoot::edit`]).
-    pub(crate) fn check_edit(&self, url: &MemoryUrl, old: &str) -> Result<(), StoreError> {
+    pub fn check_edit(&self, url: &MemoryUrl, old: &str) -> Result<(), StoreError> {
         let read = self.read(url)?;
         let document =
             MemoryDocument::parse(read.text.as_bytes()).map_err(|reason| StoreError::Invalid {
@@ -859,7 +859,7 @@ impl MemoryRoot {
     /// client's delete), and returns the text it held. A model's delete
     /// deletes, whatever the layer (section 16.9.11). A project's folder
     /// stays when its last memory goes: it belongs to the project.
-    pub(crate) fn delete(
+    pub fn delete(
         &self,
         url: &MemoryUrl,
         expected: Option<&MemoryRevision>,
@@ -889,7 +889,7 @@ impl MemoryRoot {
     /// the file stays as written. Run once at start; until a file is
     /// stamped, reads take its modification time instead. Returns how many
     /// files it stamped, and signals when it stamped any.
-    pub(crate) fn stamp_unstamped(&self) -> Result<usize, MemoryError> {
+    pub fn stamp_unstamped(&self) -> Result<usize, MemoryError> {
         if !self.root.is_dir() {
             return Ok(0);
         }

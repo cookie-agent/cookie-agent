@@ -1,0 +1,32 @@
+[package]
+name = "cookie_agent_engine_memory"
+version = "0.4.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[features]
+# Seams the engine's own tests reach. Only dev-dependencies enable it.
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+cookie_agent_config = { version = "=0.4.0", path = "../config" }
+cookie_agent_identity = { version = "=0.4.0", path = "../identity" }
+cookie_agent_models = { version = "=0.4.0", path = "../models" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api" }
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

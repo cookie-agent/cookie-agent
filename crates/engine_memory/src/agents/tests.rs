@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs};
 
 use super::*;
-use crate::memory::{file::MemoryRevision, limits::MemoryLimits, store::WriteMode};
+use crate::{file::MemoryRevision, limits::MemoryLimits, store::WriteMode};
 
 const LIMIT: usize = 4096;
 

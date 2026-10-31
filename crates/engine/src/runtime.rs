@@ -79,6 +79,7 @@ pub(crate) mod official_agents;
 pub(crate) mod official_skills;
 pub(crate) mod onboarding;
 mod output_capture;
+mod permission_api;
 pub(crate) mod plugin_diagnostics;
 mod producer_claims;
 mod project_api;

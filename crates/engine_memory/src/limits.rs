@@ -7,18 +7,18 @@ use super::{projects::is_overview, url::MemoryUrl};
 
 /// The `[memory]` limits of one operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MemoryLimits {
-    pub(crate) user_max_bytes: usize,
-    pub(crate) agent_max_bytes: usize,
-    pub(crate) machine_max_bytes: usize,
-    pub(crate) project_max_bytes: usize,
-    pub(crate) overview_max_bytes: usize,
-    pub(crate) snapshot_user_bytes: usize,
-    pub(crate) snapshot_index_bytes: usize,
+pub struct MemoryLimits {
+    pub user_max_bytes: usize,
+    pub agent_max_bytes: usize,
+    pub machine_max_bytes: usize,
+    pub project_max_bytes: usize,
+    pub overview_max_bytes: usize,
+    pub snapshot_user_bytes: usize,
+    pub snapshot_index_bytes: usize,
 }
 
 impl MemoryLimits {
-    pub(crate) fn of(config: &cookie_agent_config::MemoryConfig) -> Self {
+    pub fn of(config: &cookie_agent_config::MemoryConfig) -> Self {
         Self {
             user_max_bytes: config.user_max_bytes,
             agent_max_bytes: config.agent_max_bytes,
@@ -31,7 +31,7 @@ impl MemoryLimits {
     }
 
     /// The largest the memory at `url` may be, frontmatter included.
-    pub(crate) fn max_bytes(&self, url: &MemoryUrl) -> usize {
+    pub fn max_bytes(&self, url: &MemoryUrl) -> usize {
         match url {
             MemoryUrl::User { .. } => self.user_max_bytes,
             MemoryUrl::Agent { .. } => self.agent_max_bytes,
@@ -42,10 +42,10 @@ impl MemoryLimits {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl MemoryLimits {
     /// Every limit at `bytes`.
-    pub(crate) const fn all(bytes: usize) -> Self {
+    pub const fn all(bytes: usize) -> Self {
         Self {
             user_max_bytes: bytes,
             agent_max_bytes: bytes,

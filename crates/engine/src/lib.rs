@@ -15,14 +15,12 @@ pub mod grant_journal;
 mod machines;
 mod machines_tool;
 mod media;
-mod memory;
 mod memory_tools;
 mod model_bridge;
 mod model_history;
 mod model_policy;
 mod model_snapshots;
 mod native_compaction;
-pub mod permissions;
 mod plugin;
 mod policy;
 mod preview;
@@ -40,6 +38,10 @@ pub mod testing;
 
 // The storage layer, at the paths the engine's modules have always used.
 pub use cookie_agent_engine_store::{TailOwner, delegation_events, events, session};
+// The permission rules, likewise.
+pub use cookie_agent_engine_permissions as permissions;
+// The memory folder and its store.
+use cookie_agent_engine_memory as memory;
 #[cfg(test)]
 pub(crate) use cookie_agent_engine_store::{bindings, ownership};
 pub(crate) use cookie_agent_engine_store::{blocking, goal_projection, usage};

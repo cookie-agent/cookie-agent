@@ -221,7 +221,7 @@ impl Engine {
                 .map_err(|error| refused(error.to_string()))?;
         }
         crate::permissions::check_rule_selectors(&template.permission_rules)
-            .map_err(|error| refused(error.to_string()))?;
+            .map_err(|error| refused(EngineError::Permission(error).to_string()))?;
         cookie_agent_protocol::SessionPermissionOverlay {
             rules: template.permission_rules.clone(),
         }

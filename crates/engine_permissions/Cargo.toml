@@ -1,0 +1,26 @@
+[package]
+name = "cookie_agent_engine_permissions"
+version = "0.4.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[features]
+# Seams the engine's own tests reach. Only dev-dependencies enable it.
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+cookie_agent_config = { version = "=0.4.0", path = "../config" }
+cookie_agent_engine_store = { version = "=0.4.0", path = "../engine_store" }
+cookie_agent_models = { version = "=0.4.0", path = "../models" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

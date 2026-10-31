@@ -24,7 +24,7 @@ fn the_overview_is_made_once_and_keeps_its_body_and_keywords() {
     assert!(changes.has_changed().unwrap());
     changes.mark_unchanged();
     let path = memory.project_dir(&name("web")).join("overview.md");
-    let made = crate::memory::file::MemoryDocument::parse(&fs::read(&path).unwrap()).unwrap();
+    let made = crate::file::MemoryDocument::parse(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(
         made.description(),
         "Overview of the `web` project, loaded in full into its sessions"
