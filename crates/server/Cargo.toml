@@ -35,6 +35,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 tokio-util.workspace = true
+yawc.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

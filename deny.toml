@@ -36,6 +36,13 @@ allow = [
 crate = "base16"
 allow = ["CC0-1.0"]
 
+# yawc (the daemon's WebSocket server, for permessage-deflate) is MPL-2.0:
+# file-level copyleft that leaves cookie's own license alone. Binary releases
+# name its source in the third-party notices. Allowed for that crate only.
+[[licenses.exceptions]]
+crate = "yawc"
+allow = ["MPL-2.0"]
+
 # Our own unpublished crates use the Cookie Agent License (see LICENSE);
 # dependencies still need an allowed license.
 [licenses.private]

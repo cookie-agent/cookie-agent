@@ -8,14 +8,15 @@ use std::{
 use async_trait::async_trait;
 use axum::{
     Router,
-    extract::{Query, State, WebSocketUpgrade},
+    extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
-use futures_util::StreamExt;
+use futures_util::SinkExt as _;
 use subtle::ConstantTimeEq;
 use tokio::net::{TcpListener, TcpStream};
+use yawc::{Frame, HttpWebSocket, IncomingUpgrade, OpCode, Options, close::CloseCode};
 use zeroize::Zeroizing;
 
 use super::{RunningServer, Server, ServerError};
@@ -24,11 +25,41 @@ use cookie_agent_protocol::{
 };
 use cookie_agent_protocol_transport::Authentication;
 
+/// A close frame's code and reason.
+#[derive(Clone, Debug)]
+struct CloseFrame {
+    code: u16,
+    reason: String,
+}
+
+impl CloseFrame {
+    fn normal() -> Self {
+        Self {
+            code: u16::from(CloseCode::Normal),
+            reason: String::new(),
+        }
+    }
+}
+
+/// Messages smaller than this go out uncompressed: deflating them saves
+/// next to nothing.
+const COMPRESSION_THRESHOLD_BYTES: usize = 256;
+
+/// How every upgrade on `/ws` and `/runtime` is set up: messages up to
+/// [`MAX_WEBSOCKET_MESSAGE_BYTES`], and `permessage-deflate` when the
+/// other end offers it, as every browser does.
+fn socket_options() -> Options {
+    Options::default()
+        .with_limits(MAX_WEBSOCKET_MESSAGE_BYTES, MAX_WEBSOCKET_MESSAGE_BYTES)
+        .with_balanced_compression()
+        .with_compression_threshold(COMPRESSION_THRESHOLD_BYTES)
+}
+
 struct WebSocketStream {
-    socket: axum::extract::ws::WebSocket,
+    socket: HttpWebSocket,
     /// The close frame this end closes with, once its handler has chosen
     /// it; a normal closure when there is none.
-    closing: Option<tokio::sync::watch::Receiver<Option<axum::extract::ws::CloseFrame>>>,
+    closing: Option<tokio::sync::watch::Receiver<Option<CloseFrame>>>,
     /// Set when the daemon shuts down to restart, which the closing frame
     /// says.
     restarting: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -86,10 +117,7 @@ fn client_ping_after() -> Duration {
 impl WebSocketStream {
     /// A client's stream: it closes with a normal closure, or saying the
     /// daemon is restarting once `restarting` is set.
-    fn client(
-        socket: axum::extract::ws::WebSocket,
-        restarting: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Self {
+    fn client(socket: HttpWebSocket, restarting: Arc<std::sync::atomic::AtomicBool>) -> Self {
         Self {
             socket,
             closing: None,
@@ -104,11 +132,8 @@ impl WebSocketStream {
     /// for a handler that learns how the connection ends only after the
     /// stream is handed on.
     fn choosing_close(
-        socket: axum::extract::ws::WebSocket,
-    ) -> (
-        Self,
-        tokio::sync::watch::Sender<Option<axum::extract::ws::CloseFrame>>,
-    ) {
+        socket: HttpWebSocket,
+    ) -> (Self, tokio::sync::watch::Sender<Option<CloseFrame>>) {
         let (choice, closing) = tokio::sync::watch::channel(None);
         (
             Self {
@@ -124,27 +149,23 @@ impl WebSocketStream {
     }
 
     /// The frame this end closes with.
-    async fn close_frame(&mut self) -> axum::extract::ws::CloseFrame {
-        let normal = axum::extract::ws::CloseFrame {
-            code: axum::extract::ws::close_code::NORMAL,
-            reason: "".into(),
-        };
+    async fn close_frame(&mut self) -> CloseFrame {
         if self
             .restarting
             .as_ref()
             .is_some_and(|restarting| restarting.load(std::sync::atomic::Ordering::Acquire))
         {
-            return axum::extract::ws::CloseFrame {
+            return CloseFrame {
                 code: cookie_agent_protocol::RESTART_CLOSE_CODE,
                 reason: cookie_agent_protocol::RESTART_CLOSE_REASON.into(),
             };
         }
         let Some(closing) = &mut self.closing else {
-            return normal;
+            return CloseFrame::normal();
         };
         match tokio::time::timeout(CLOSE_CHOICE_WAIT, closing.wait_for(Option::is_some)).await {
-            Ok(Ok(chosen)) => chosen.clone().unwrap_or(normal),
-            _ => normal,
+            Ok(Ok(chosen)) => chosen.clone().unwrap_or_else(CloseFrame::normal),
+            _ => CloseFrame::normal(),
         }
     }
 }
@@ -154,29 +175,29 @@ impl MessageStream for WebSocketStream {
     async fn send(&mut self, frame: MessageFrame) -> Result<(), TransportError> {
         self.active = tokio::time::Instant::now();
         self.socket
-            .send(axum::extract::ws::Message::Text(frame.into_text()?.into()))
+            .send(Frame::text(frame.into_text()?))
             .await
             .map_err(|error| TransportError::Other(error.to_string()))
     }
 
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
         loop {
-            let message = match self.ping_after {
+            let frame = match self.ping_after {
                 Some(ping_after) => {
                     let due = match self.pinged {
                         Some(pinged) => pinged + client_pong_wait(),
                         None => self.active + ping_after,
                     };
                     tokio::select! {
-                        message = self.socket.next() => Some(message),
+                        frame = self.socket.next_frame() => Some(frame),
                         () = tokio::time::sleep_until(due) => None,
                     }
                 }
-                None => Some(self.socket.next().await),
+                None => Some(self.socket.next_frame().await),
             };
             let now = tokio::time::Instant::now();
             self.active = now;
-            let Some(message) = message else {
+            let Some(frame) = frame else {
                 if self.pinged.is_some() {
                     return Err(TransportError::Other(format!(
                         "the client did not answer a ping within {}",
@@ -184,29 +205,31 @@ impl MessageStream for WebSocketStream {
                     )));
                 }
                 self.socket
-                    .send(axum::extract::ws::Message::Ping(Default::default()))
+                    .send(Frame::ping(Vec::new()))
                     .await
                     .map_err(|error| TransportError::Other(error.to_string()))?;
                 self.pinged = Some(now);
                 continue;
             };
             self.pinged = None;
-            match message {
-                Some(Ok(axum::extract::ws::Message::Text(text))) => {
-                    return Ok(Some(MessageFrame::Bytes(text.into())));
-                }
-                Some(Ok(axum::extract::ws::Message::Close(frame))) => return closed(frame),
-                None => return Ok(None),
-                Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(TransportError::Other(error.to_string())),
+            match frame {
+                Ok(frame) => match frame.opcode() {
+                    OpCode::Text => {
+                        return Ok(Some(MessageFrame::Bytes(frame.into_payload())));
+                    }
+                    OpCode::Close => return closed(&frame),
+                    _ => {}
+                },
+                Err(error) if error.is_closed() => return Ok(None),
+                Err(error) => return Err(TransportError::Other(error.to_string())),
             }
         }
     }
 
     /// Sends a close frame, a normal closure unless the handler chose
     /// another, and waits for the other end's answer. When the other end
-    /// closed first, sending fails and reading on sends the answer the
-    /// socket queued.
+    /// closed first, sending fails and reading on finds the connection
+    /// closed.
     async fn close(&mut self) {
         let frame = self.close_frame().await;
         #[cfg(debug_assertions)]
@@ -215,9 +238,9 @@ impl MessageStream for WebSocketStream {
         }
         let _ = self
             .socket
-            .send(axum::extract::ws::Message::Close(Some(frame)))
+            .send(Frame::close(CloseCode::from(frame.code), frame.reason))
             .await;
-        while let Some(Ok(_)) = self.socket.next().await {}
+        while self.socket.next_frame().await.is_ok() {}
     }
 }
 
@@ -239,21 +262,19 @@ fn test_close_delay() -> Option<Duration> {
 /// What a close frame the other end sent means: a normal closure (1000),
 /// going away (1001), or a frame without a code ends the connection
 /// cleanly; any other code ends it with that code and its reason.
-fn closed(
-    frame: Option<axum::extract::ws::CloseFrame>,
-) -> Result<Option<MessageFrame>, TransportError> {
-    use axum::extract::ws::close_code;
-    match frame {
-        None => Ok(None),
-        Some(frame) if matches!(frame.code, close_code::NORMAL | close_code::AWAY) => Ok(None),
-        Some(frame) if frame.reason.is_empty() => Err(TransportError::Other(format!(
-            "the other end closed the connection with code {}",
-            frame.code
+fn closed(frame: &Frame) -> Result<Option<MessageFrame>, TransportError> {
+    let Some(code) = frame.close_code().map(u16::from) else {
+        return Ok(None);
+    };
+    if code == u16::from(CloseCode::Normal) || code == u16::from(CloseCode::Away) {
+        return Ok(None);
+    }
+    match frame.close_reason().ok().flatten() {
+        None | Some("") => Err(TransportError::Other(format!(
+            "the other end closed the connection with code {code}"
         ))),
-        Some(frame) => Err(TransportError::Other(format!(
-            "the other end closed the connection with code {}: {}",
-            frame.code,
-            frame.reason.as_str()
+        Some(reason) => Err(TransportError::Other(format!(
+            "the other end closed the connection with code {code}: {reason}"
         ))),
     }
 }
@@ -477,7 +498,7 @@ fn client_authentication(
 async fn websocket_upgrade(
     State(state): State<WebSocketState>,
     headers: HeaderMap,
-    upgrade: WebSocketUpgrade,
+    upgrade: IncomingUpgrade,
 ) -> Response {
     let authentication = match client_authentication(&headers, &state) {
         Ok(authentication) => authentication,
@@ -487,14 +508,17 @@ async fn websocket_upgrade(
     // Held until the connection has closed, from before the upgrade so a
     // shutdown also waits for a connection still upgrading.
     let open = server.connections.subscribe();
-    upgrade
-        .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
-        .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
-        .on_upgrade(move |socket| async move {
+    let Ok((response, upgraded)) = upgrade.upgrade(socket_options()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    tokio::spawn(async move {
+        if let Ok(socket) = upgraded.await {
             let stream = WebSocketStream::client(socket, Arc::clone(&server.restarting));
             let _ = server.serve_stream(stream, authentication).await;
-            drop(open);
-        })
+        }
+        drop(open);
+    });
+    response.into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -511,7 +535,7 @@ async fn runtime_upgrade(
     State(state): State<WebSocketState>,
     Query(query): Query<RuntimeQuery>,
     headers: HeaderMap,
-    upgrade: WebSocketUpgrade,
+    upgrade: IncomingUpgrade,
 ) -> Response {
     if let Some(refused) = refused(&headers, state.token.as_str()) {
         return refused;
@@ -523,26 +547,28 @@ async fn runtime_upgrade(
             return (dial_in_status(&refusal), refusal.to_string()).into_response();
         }
     };
-    upgrade
-        .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
-        .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
-        .on_upgrade(move |socket| async move {
-            let (stream, choice) = WebSocketStream::choosing_close(socket);
-            let frame = match claim.accept(Box::new(stream)).await {
-                Ok(()) => axum::extract::ws::CloseFrame {
-                    code: axum::extract::ws::close_code::NORMAL,
-                    reason: "".into(),
-                },
-                Err(refusal) => {
-                    eprintln!("cookie-agent: {refusal}");
-                    axum::extract::ws::CloseFrame {
-                        code: cookie_agent_protocol::runtime_protocol::dial_in::CLOSE_INITIALIZE_FAILED,
-                        reason: close_reason(&refusal.to_string()).into(),
-                    }
+    let Ok((response, upgraded)) = upgrade.upgrade(socket_options()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    tokio::spawn(async move {
+        // A claim dropped unaccepted frees the ID again.
+        let Ok(socket) = upgraded.await else {
+            return;
+        };
+        let (stream, choice) = WebSocketStream::choosing_close(socket);
+        let frame = match claim.accept(Box::new(stream)).await {
+            Ok(()) => CloseFrame::normal(),
+            Err(refusal) => {
+                eprintln!("cookie-agent: {refusal}");
+                CloseFrame {
+                    code: cookie_agent_protocol::runtime_protocol::dial_in::CLOSE_INITIALIZE_FAILED,
+                    reason: close_reason(&refusal.to_string()),
                 }
-            };
-            let _ = choice.send(Some(frame));
-        })
+            }
+        };
+        let _ = choice.send(Some(frame));
+    });
+    response.into_response()
 }
 
 /// `reason` cut to fit a close frame, whose reason holds at most 123 bytes.
@@ -1202,6 +1228,83 @@ mod authentication_tests {
             assert_ne!(status, 404, "{path}");
             assert_ne!(body, index.bytes, "{path}");
         }
+        daemon.stop().await;
+    }
+
+    /// `/ws` accepts `permessage-deflate`, which every browser offers, and
+    /// a client that compresses talks to the daemon as any other does.
+    #[tokio::test]
+    async fn a_client_offering_compression_gets_it() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let daemon = Daemon::start().await;
+        let port = daemon.running.address().port();
+        // The upgrade answer names the extension.
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        stream
+            .write_all(
+                format!(
+                    "GET /ws HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nconnection: upgrade\r\n\
+                     upgrade: websocket\r\nsec-websocket-version: 13\r\n\
+                     sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                     sec-websocket-extensions: permessage-deflate; client_max_window_bits\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0; 1];
+            stream.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+        assert!(head.starts_with("http/1.1 101"), "{head}");
+        assert!(
+            head.lines().any(|line| line
+                .strip_prefix("sec-websocket-extensions:")
+                .is_some_and(|value| value.trim().starts_with("permessage-deflate"))),
+            "{head}"
+        );
+        drop(stream);
+        // A compressing client gets every answer whole.
+        let mut socket =
+            yawc::WebSocket::connect(format!("ws://127.0.0.1:{port}/ws").parse().unwrap())
+                .with_options(yawc::Options::default().with_balanced_compression())
+                .await
+                .expect("a compressing client connects");
+        let mut call = async |id: u64, method: &str, params: Value| -> Value {
+            socket
+                .send(yawc::Frame::text(
+                    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+                        .to_string(),
+                ))
+                .await
+                .unwrap();
+            loop {
+                let frame =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), socket.next_frame())
+                        .await
+                        .expect("a reply in time")
+                        .expect("a frame");
+                if frame.opcode() != yawc::OpCode::Text {
+                    continue;
+                }
+                let value: Value = serde_json::from_slice(frame.payload()).unwrap();
+                if value["id"] == json!(id) {
+                    return value;
+                }
+            }
+        };
+        let reply = call(1, "handshake", hello(Some(daemon.token.as_str()))).await;
+        assert!(reply["result"]["origin"].is_string(), "{reply}");
+        // A request well over the compression threshold, matching no
+        // session, answered in full.
+        let directory = format!("/{}", "a".repeat(3000));
+        let reply = call(2, "session.list", json!({"cwd_identity": directory})).await;
+        assert_eq!(reply["result"]["sessions"], json!([]), "{reply}");
         daemon.stop().await;
     }
 
