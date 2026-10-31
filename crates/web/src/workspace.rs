@@ -216,6 +216,13 @@ pub struct Workspace {
     /// `session.list`'s reads, with the `sessions.changed` that came while
     /// one was on its way.
     session_list: StoredValue<crate::session_list::ListReads>,
+    /// How far back the session list reaches: the last 30 days, and a
+    /// month more for each "Show older".
+    session_window: StoredValue<cookie_agent_client_state::session_window::SessionWindow>,
+    /// Whether the daemon has sessions older than the list shows.
+    pub has_older_sessions: RwSignal<bool>,
+    /// An older page is on its way.
+    pub older_sessions_loading: RwSignal<bool>,
     pub user_menu: RwSignal<Option<UserMenu>>,
     pub goal_draft: RwSignal<String>,
     pub skills: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
@@ -491,6 +498,9 @@ impl Workspace {
             tree_request: StoredValue::new(0),
             reads: StoredValue::new(reads::Reads::default()),
             session_list: StoredValue::new(Default::default()),
+            session_window: StoredValue::new(Default::default()),
+            has_older_sessions: RwSignal::new(false),
+            older_sessions_loading: RwSignal::new(false),
             user_menu: RwSignal::new(None),
             goal_draft: RwSignal::new(String::new()),
             skills: RwSignal::new(None),
@@ -725,16 +735,61 @@ impl Workspace {
             .update_value(|subscriptions| subscriptions.reset());
     }
 
-    /// Reads the session list and the runtime snapshot again.
+    /// "Show older": adds the next older month of sessions to the list.
+    pub fn show_older_sessions(self) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        let Some(params) = self
+            .session_window
+            .with_value(|window| window.older_params(SessionListParams::default()))
+        else {
+            return;
+        };
+        if self.older_sessions_loading.get_untracked() {
+            return;
+        }
+        self.older_sessions_loading.set(true);
+        spawn_local(async move {
+            match client.list_sessions(params).await {
+                Ok(result) => {
+                    self.session_window
+                        .update_value(|window| window.paged(result.older));
+                    self.has_older_sessions.set(result.older.is_some());
+                    self.sessions.update(|sessions| {
+                        cookie_agent_client_state::session_window::merge_older(
+                            sessions,
+                            result.sessions,
+                        );
+                    });
+                }
+                Err(error) => self.status.set(crate::errors::describe(&error)),
+            }
+            self.older_sessions_loading.set(false);
+        });
+    }
+
+    /// Reads the session list, as far back as its window reaches, and the
+    /// runtime snapshot again.
     pub async fn refresh_lists(self) {
         let Some(client) = self.client() else {
             return;
         };
         let read = self.session_list.try_update_value(|list| list.begin());
-        let answer = client.list_sessions(SessionListParams::default()).await;
+        let params = self.session_window.with_value(|window| {
+            window.read_params(
+                SessionListParams::default(),
+                client.daemon_version(),
+                jiff::Timestamp::now(),
+            )
+        });
+        let answer = client.list_sessions(params).await;
         if let Some(read) = read {
             match answer {
                 Ok(result) => {
+                    self.session_window
+                        .update_value(|window| window.read(result.older));
+                    self.has_older_sessions.set(result.older.is_some());
                     if let Some(sessions) = self
                         .session_list
                         .try_update_value(|list| list.land(read, result.sessions))

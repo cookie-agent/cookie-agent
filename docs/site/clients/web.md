@@ -252,6 +252,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     runs, changed since you selected it, or another cookie process holds
     it) is skipped and stays selected, the rest are deleted, and the
     status says what was skipped and why. **Done** leaves select mode.
+- **Older sessions.** The sidebar lists the sessions active in the last 30
+  days, and every unread or busy one whatever its age; **Show older**, at
+  the end of the list while there are older sessions, adds a month at a
+  time ([where sessions are stored](../sessions/index.md#where-sessions-are-stored)).
 - **Projects.** The sessions sidebar has a section for each project,
   oldest project first, so a new one goes last and the others keep their
   places, then **No project** last.

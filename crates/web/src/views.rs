@@ -478,6 +478,20 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 }
                 session_rows::keyed_rows(rows, move || shown.get()).into_any()
             }}
+            // Older sessions than the list's window, a month at a time; the
+            // unread and busy ones are listed whatever their age.
+            <Show when=move || workspace.has_older_sessions.get()>
+                <button
+                    type="button"
+                    class=format!("{BUTTON} mt-1 self-start")
+                    id="show-older-sessions"
+                    disabled=move || workspace.older_sessions_loading.get()
+                    on:click=move |_| workspace.show_older_sessions()
+                >
+                    <Glyph icon=icondata::FaClockRotateLeftSolid />
+                    {move || if workspace.older_sessions_loading.get() { "Loading…" } else { "Show older" }}
+                </button>
+            </Show>
         </nav>
     }
 }
