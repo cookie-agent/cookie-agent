@@ -2761,7 +2761,13 @@ def runtime_cards(browser):
     browser.wait("the message back", lambda: browser.script("return document.querySelector('#composer').value") == "hello from the workspace")
     assert count(browser, "#new-session") == 1 and count(browser, "aside [data-session-row]") == sessions_before
     print("a second coding runtime on one machine is refused on its card:", refusal)
-    browser.click(alt_card() + " [data-card-toggle]")
+    # The card takes its capability's key once `alt` reports it, which can
+    # happen between finding the card and clicking it: find it again.
+    def click_alt_toggle():
+        browser.click(alt_card() + " [data-card-toggle]")
+        return True
+
+    browser.wait("the alt card's toggle", click_alt_toggle)
     browser.wait("the cleared notice", lambda: count(browser, "#draft-error") == 0)
     # A refusal shows on its card, nothing is created, and the message comes
     # back.
