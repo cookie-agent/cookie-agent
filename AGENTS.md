@@ -67,7 +67,12 @@ documentation only.
 `scripts/check-changed.sh [base]` runs the local tier for the changes since
 the merge base with `base` (default `origin/main`), uncommitted and
 untracked files included; `-n` prints the commands without running them.
-The local tier is:
+On Linux it runs the tests with `TMPDIR` in a directory of its own on the
+`/dev/shm` tmpfs when that has room: the tests' many small writes and
+fsyncs then never wait on a busy disk, which made the engine tier's run
+several times faster and its timing failures go away. Run tests by hand
+the same way when the disk is busy (`TMPDIR="$(mktemp -d /dev/shm/t.XXXXXX)"`,
+removed afterwards). The local tier is:
 
 - `cargo fmt --all -- --check`, always;
 - Clippy with warnings denied and the tests of the changed crates and of

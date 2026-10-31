@@ -14,6 +14,11 @@
 #   - the documentation build when docs/ or mkdocs.yml changed, without
 #     rustdoc unless a crate changed too.
 #
+# The tests make their files under TMPDIR, which on Linux is a directory of
+# its own in /dev/shm when that is a tmpfs with room to spare: their many
+# small writes and fsyncs then never wait on the disk. A TMPDIR already set
+# is kept.
+#
 # A change outside these paths that may affect every crate (Cargo.toml,
 # Cargo.lock, test-support/, examples/, ...) checks the whole workspace.
 #
@@ -110,16 +115,27 @@ for crate in $(printf '%s\n' "${test_only[@]}" | sort -u); do
     [[ " ${packages[*]} " == *" $crate "* ]] || extra_tests+=("$crate")
 done
 
+# A tmpfs TMPDIR for the tests, removed when the script exits.
+test_env=
+if [[ -z "${TMPDIR:-}" && "$(uname -s)" == Linux ]] &&
+    [[ "$(stat -f -c %T /dev/shm 2>/dev/null)" == tmpfs ]] &&
+    ! findmnt -n -o OPTIONS /dev/shm 2>/dev/null | grep -qw noexec &&
+    (($(df --output=avail -B1G /dev/shm 2>/dev/null | tail -1) >= 8)); then
+    test_tmp="$(mktemp -d /dev/shm/cookie-agent-tests.XXXXXX)"
+    trap 'rm -rf "$test_tmp"' EXIT
+    test_env="TMPDIR=$test_tmp "
+fi
+
 steps=()
 step() { steps+=("$*"); }
 # Tests under cargo-nextest when it is installed, as CI runs them, with the
 # doctests, which nextest does not run, under cargo test.
 tests() {
     if cargo nextest --version >/dev/null 2>&1; then
-        step cargo nextest run --locked --no-fail-fast "$1"
-        step cargo test --doc --locked "$1"
+        step "${test_env}cargo nextest run --locked --no-fail-fast $1"
+        step "${test_env}cargo test --doc --locked $1"
     else
-        step cargo test --locked --no-fail-fast "$1"
+        step "${test_env}cargo test --locked --no-fail-fast $1"
     fi
 }
 step cargo fmt --all -- --check
