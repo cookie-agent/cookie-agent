@@ -5,17 +5,12 @@
 //! refused otherwise. Automatic compaction is the model loop's and never
 //! runs for an ACP run.
 
-use std::time::Duration;
-
 use cookie_agent_protocol::{
     ClientRunId, EventOrigin, EventPayload as Event, RunOutcome, RunStartParams,
     SessionCompactResult, SessionId, SessionStatus,
 };
 
 use super::super::{Engine, EngineError};
-
-/// How often a forwarded compaction checks whether its run has ended.
-const POLL: Duration = Duration::from_millis(50);
 
 impl Engine {
     /// The compaction of `session` when its agent is an ACP agent: the
@@ -54,6 +49,8 @@ impl Engine {
             Some(focus) => format!("/compact {focus}"),
             None => "/compact".to_owned(),
         };
+        // Watched before the run starts, so its end cannot slip past.
+        let mut changes = self.watch_subagent(session);
         let run = self
             .start_run(
                 RunStartParams {
@@ -77,6 +74,10 @@ impl Engine {
                 .event_snapshot()
                 .iter()
                 .rev()
+                .take_while(|event| {
+                    !(event.run_id == Some(run)
+                        && matches!(event.payload, Event::RunStarted { .. }))
+                })
                 .find_map(|event| match &event.payload {
                     Event::RunFinished {
                         outcome: cookie_agent_protocol::Open::Known(outcome),
@@ -84,7 +85,8 @@ impl Engine {
                     _ => None,
                 });
             match outcome {
-                None => tokio::time::sleep(POLL).await,
+                // A run's end signals the session's subagent waits.
+                None => super::super::delegation::subagent_changed_or_recheck(&mut changes).await,
                 Some(RunOutcome::Completed { .. }) => {
                     return Ok(Some(SessionCompactResult {
                         compacted: true,
