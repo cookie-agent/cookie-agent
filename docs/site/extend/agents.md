@@ -1260,7 +1260,9 @@ show, the run gets no memory turn at all, while the tools stay offered. See
 `attach_machine` and `detach_machine`, tools of the `global` runtime, use
 the `attach` action. It is checked on the target runtime, so
 `attach@<runtime>` narrows where, and its resource is the workspace the
-call names (`detach_machine`: the attachment's workspace):
+call names (`detach_machine`: the attachment's workspace), labelled as a path
+resource is, with a leading `~` expanded against the runtime's home, so
+`/srv/projects/../../root` is checked as `/root`:
 
 ```yaml
 permissions:

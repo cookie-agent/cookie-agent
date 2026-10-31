@@ -124,6 +124,23 @@ fn wrong_tool(tool: &str) -> ToolError {
     ))
 }
 
+/// The `attach` resource of `workspace` on a runtime whose home is `home`:
+/// a leading `~` expanded against the home, as the runtime expands it, and
+/// the path labelled ([`cookie_agent_protocol::paths::path_label`]), `.`
+/// and `..` collapsed and a trailing `/` dropped, so a rule matches the
+/// directory the runtime opens.
+fn attach_label(workspace: &str, home: Option<&str>) -> String {
+    let expanded = match home {
+        Some(home) if workspace == "~" => home.to_owned(),
+        Some(home) => match workspace.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", home.trim_end_matches(['/', '\\'])),
+            None => workspace.to_owned(),
+        },
+        None => workspace.to_owned(),
+    };
+    cookie_agent_protocol::paths::path_label(&expanded)
+}
+
 /// The capability and workspace a call names, checked.
 fn target(
     capability: &str,
@@ -171,7 +188,15 @@ impl ToolProvider for MachinesTool {
         let resource = match name {
             ATTACH_MACHINE => {
                 let args: AttachArgs = parse_args(ATTACH_MACHINE, arguments.clone())?;
-                args.workspace.unwrap_or_default()
+                match args.workspace {
+                    Some(workspace) => {
+                        let home = target(&args.capability, None).ok().and_then(|target| {
+                            self.engine().ok()?.runtime_home(target.runtime_id.as_str())
+                        });
+                        attach_label(&workspace, home.as_deref())
+                    }
+                    None => String::new(),
+                }
             }
             DETACH_MACHINE => {
                 let _: DetachArgs = parse_args(DETACH_MACHINE, arguments.clone())?;
@@ -255,13 +280,19 @@ impl ToolProvider for MachinesTool {
                 let target = target(&args.capability, args.workspace.clone())?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
+                let home = engine.runtime_home(target.runtime_id.as_str());
+                let label = args
+                    .workspace
+                    .as_deref()
+                    .map(|workspace| attach_label(workspace, home.as_deref()))
+                    .unwrap_or_default();
                 (
                     MachinesExecutor::Attach {
                         engine,
                         target: target.clone(),
                     },
                     normalized.clone(),
-                    args.workspace.clone().unwrap_or_default(),
+                    label,
                     target.runtime_id.to_string(),
                     "attach",
                     normalized,
@@ -275,6 +306,7 @@ impl ToolProvider for MachinesTool {
                 let workspace = engine
                     .attachment_of_capability(ctx.session, &target)
                     .and_then(|attachment| attachment.workspace)
+                    .map(|workspace| cookie_agent_protocol::paths::path_label(&workspace))
                     .unwrap_or_default();
                 (
                     MachinesExecutor::Detach {
@@ -465,7 +497,7 @@ mod tests {
         AttachmentName, CapabilityName, MachineName, RuntimeAttachment, RuntimeId, RuntimeKind,
     };
 
-    use super::attached_text;
+    use super::{attach_label, attached_text};
     use crate::runtime::machine_attach::{AttachedMachine, AttachedTool};
 
     fn attached(tools: Option<Vec<AttachedTool>>) -> AttachedMachine {
@@ -513,6 +545,24 @@ mod tests {
              - `read` with `machine: \"labpc\"`: read things.\n\
              Deferred until tool_search finds them: 3 tools, in groups `chrome`, `github`."
         );
+    }
+
+    #[test]
+    fn an_attach_resource_is_the_directory_the_runtime_opens() {
+        for (workspace, home, label) in [
+            ("/srv/projects/../../root", None, "/root"),
+            ("/srv/projects/api/", None, "/srv/projects/api"),
+            ("/srv/./projects/api", None, "/srv/projects/api"),
+            ("~/src/api", Some("/home/ada"), "/home/ada/src/api"),
+            ("~/src/../../bob", Some("/home/ada/"), "/home/bob"),
+            ("~", Some("/home/ada"), "/home/ada"),
+            ("~/src/api", Some(r"C:\Users\ada"), "C:/Users/ada/src/api"),
+            // Without a home `~` stays literal, as rule patterns do.
+            ("~/src/api", None, "~/src/api"),
+            ("~bob/src", Some("/home/ada"), "~bob/src"),
+        ] {
+            assert_eq!(attach_label(workspace, home), label, "{workspace}");
+        }
     }
 
     #[test]
