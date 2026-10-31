@@ -634,3 +634,32 @@ async fn a_change_announced_during_a_listing_lists_again() {
     // Settled: nothing further is asked for.
     assert_eq!(recorded_method_count(&recorded, "crons.list"), 2);
 }
+
+/// Another client's add, reorder, or delete moves the jobs: the selection
+/// stays on its job, so x, r, and e act on the job it shows.
+#[tokio::test]
+async fn the_selection_follows_its_job_through_another_clients_changes() {
+    let (mut app, _, _) = cron_app("1.15.0").await;
+    app.modal = Modal::Cron;
+    let listing = crate::ui::app::cron_panel::sample_crons();
+    let second = listing.jobs[1].id.clone();
+    app.install_cron_listing(Ok(listing.clone()));
+    app.cron_panel.selection.select(Some(1));
+    let selected = |app: &App| app.cron_panel.selected_job().map(|job| job.id.clone());
+    // A job added ahead of it.
+    let mut added = listing.clone();
+    let mut new = added.jobs[0].clone();
+    new.id = serde_json::from_value(json!("n3wj0b00")).unwrap();
+    added.jobs.insert(0, new);
+    app.install_cron_listing(Ok(added.clone()));
+    assert_eq!(selected(&app), Some(second.clone()));
+    // The order turned around.
+    let mut reordered = added.clone();
+    reordered.jobs.reverse();
+    app.install_cron_listing(Ok(reordered.clone()));
+    assert_eq!(selected(&app), Some(second.clone()));
+    // Its job deleted: the selection stays in the list.
+    reordered.jobs.retain(|job| job.id != second);
+    app.install_cron_listing(Ok(reordered.clone()));
+    assert!(selected(&app).is_some_and(|id| id != second));
+}

@@ -158,14 +158,18 @@ impl CronPanelState {
     }
 
     fn install(&mut self, listing: Result<CronsListResult, String>) {
+        // The selection follows its job, not its place: another client's
+        // add, delete, or reorder moves the job under it.
+        let selected = self.selected_job().map(|job| job.id.clone());
         self.listing = Some(listing);
         let count = self.jobs().len();
-        if let Some(index) = self
-            .focus
-            .as_ref()
-            .and_then(|id| self.jobs().iter().position(|job| job.id == *id))
-        {
+        let index_of = |id: &CronJobId| self.jobs().iter().position(|job| job.id == *id);
+        if let Some(index) = self.focus.as_ref().and_then(index_of) {
             self.focus = None;
+            self.selection.select(Some(index));
+            return;
+        }
+        if let Some(index) = selected.as_ref().and_then(index_of) {
             self.selection.select(Some(index));
             return;
         }
