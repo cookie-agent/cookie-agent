@@ -1916,6 +1916,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             _ => {}
         }
     };
+    // The user message row the pointer is over, whose ⋯ shows.
+    let marked_row = StoredValue::new_local(None::<web_sys::Element>);
     let message_press = MessagePress {
         workspace,
         press: StoredValue::new(Press::default()),
@@ -2002,12 +2004,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             on:pointermove=move |event: ev::PointerEvent| message_press.moved(&event)
             on:pointerup=move |_| message_press.cancel()
             on:pointercancel=move |_| message_press.cancel()
-            on:pointerover=move |event: ev::PointerEvent| mark_message_row(&event)
-            on:pointerleave=move |_| {
-                if let Some(element) = container.get_untracked() {
-                    unmark_message_rows(&element, None);
-                }
-            }
+            on:pointerover=move |event: ev::PointerEvent| mark_message_row(&event, marked_row)
+            on:pointerleave=move |_| unmark_message_row(marked_row)
             on:contextmenu=move |event: ev::MouseEvent| {
                 // A long press on a bubble is its menu, not the browser's.
                 if message_press.held() {
@@ -2465,7 +2463,10 @@ fn draw_blocks(element: &web_sys::Element, drawn: &mut Vec<(Arc<str>, u32)>, blo
 
 /// Shows the ⋯ of the user message row a mouse or pen is over (the class
 /// `pointer-over`, which style/main.css follows), and of no other row.
-fn mark_message_row(event: &ev::PointerEvent) {
+fn mark_message_row(
+    event: &ev::PointerEvent,
+    marked: StoredValue<Option<web_sys::Element>, LocalStorage>,
+) {
     if event.pointer_type() == "touch" {
         return;
     }
@@ -2476,27 +2477,21 @@ fn mark_message_row(event: &ev::PointerEvent) {
         return;
     };
     let row = target.closest(".user-row").ok().flatten();
-    if let Some(transcript) = target.closest("#transcript").ok().flatten() {
-        unmark_message_rows(&transcript, row.as_ref());
+    // Only the row marked before can show its ⋯: no other is looked for.
+    if !marked.with_value(|marked| *marked == row) {
+        unmark_message_row(marked);
     }
-    if let Some(row) = row {
+    // Again on the same row too: a redraw of it may have dropped the class.
+    if let Some(row) = &row {
         let _ = row.class_list().add_1("pointer-over");
     }
+    marked.set_value(row);
 }
 
-/// Hides the ⋯ of every user message row under `within` but `keep`.
-fn unmark_message_rows(within: &web_sys::Element, keep: Option<&web_sys::Element>) {
-    let Ok(rows) = within.query_selector_all(".user-row.pointer-over") else {
-        return;
-    };
-    for index in 0..rows.length() {
-        if let Some(row) = rows
-            .item(index)
-            .and_then(|row| row.dyn_into::<web_sys::Element>().ok())
-            && keep != Some(&row)
-        {
-            let _ = row.class_list().remove_1("pointer-over");
-        }
+/// Hides the ⋯ of the user message row the pointer was over.
+fn unmark_message_row(marked: StoredValue<Option<web_sys::Element>, LocalStorage>) {
+    if let Some(row) = marked.try_update_value(Option::take).flatten() {
+        let _ = row.class_list().remove_1("pointer-over");
     }
 }
 
