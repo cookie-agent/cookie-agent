@@ -5,6 +5,8 @@
 // One isolated home for the whole process, as every module's tests expect.
 #[path = "../../../../test-support/config_harness.rs"]
 mod config_harness;
+#[path = "../../../../test-support/eventually.rs"]
+mod eventually;
 
 mod daemon_restart;
 mod local_daemon;

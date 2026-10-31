@@ -37,6 +37,8 @@ use cookie_agent_protocol::{
 };
 use tempfile::TempDir;
 
+use crate::eventually::eventually;
+
 const WAIT: Duration = Duration::from_secs(60);
 
 /// A model endpoint that answers each request with the next queued SSE
@@ -400,13 +402,10 @@ shutdown_grace_ms = 2000
     }
 
     async fn wait_for_remote(&self, status: RuntimeInstanceStatus) {
-        tokio::time::timeout(WAIT, async {
-            while self.remote_status() != Some(status) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        eventually(WAIT, format!("`remote` {status:?}"), || {
+            self.remote_status() == Some(status)
         })
-        .await
-        .unwrap_or_else(|_| panic!("`remote` never became {status:?}"));
+        .await;
     }
 
     /// The machine the remote runtime is on, as calls name it.
@@ -1119,13 +1118,10 @@ async fn a_runtime_dials_in_and_serves_a_session() {
             .find(|template| template.runtime_id == "labpc")
             .map(|template| (template.lifetime, template.listing.connected))
     };
-    tokio::time::timeout(WAIT, async {
-        while labpc_connected(&fixture.engine).is_none_or(|(_, connected)| !connected) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    eventually(WAIT, "the runtime dials in", || {
+        labpc_connected(&fixture.engine).is_some_and(|(_, connected)| connected)
     })
-    .await
-    .expect("the runtime dials in");
+    .await;
     assert_eq!(
         labpc_connected(&fixture.engine),
         Some((cookie_agent_protocol::RuntimeLifetime::DialIn, true))
@@ -1162,13 +1158,10 @@ async fn a_runtime_dials_in_and_serves_a_session() {
         .expect("the runtime stops")
         .expect("exit status");
     assert!(status.success(), "{status}");
-    tokio::time::timeout(WAIT, async {
-        while labpc_connected(&fixture.engine).is_some_and(|(_, connected)| connected) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    eventually(WAIT, "the runtime shows disconnected", || {
+        labpc_connected(&fixture.engine).is_none_or(|(_, connected)| !connected)
     })
-    .await
-    .expect("the runtime shows disconnected");
+    .await;
     // It closed the WebSocket with a close handshake: the daemon records a
     // disconnect, not a reset connection.
     let message = fixture
@@ -1190,15 +1183,15 @@ async fn a_runtime_dials_in_and_serves_a_session() {
             .into_iter()
             .find(|instance| instance.runtime_id == "labpc")
     };
-    tokio::time::timeout(WAIT, async {
-        while labpc_instance(&fixture.engine)
-            .is_none_or(|instance| instance.status != RuntimeInstanceStatus::Failed)
-        {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the instance fails once reconnecting finds no runtime");
+    eventually(
+        WAIT,
+        "the instance fails once reconnecting finds no runtime",
+        || {
+            labpc_instance(&fixture.engine)
+                .is_some_and(|instance| instance.status == RuntimeInstanceStatus::Failed)
+        },
+    )
+    .await;
     let reason = labpc_instance(&fixture.engine)
         .and_then(|instance| instance.message)
         .expect("failure reason");
@@ -1318,18 +1311,14 @@ async fn a_refused_dial_in_prints_the_reason_and_stops_when_it_is_permanent() {
 
     // A second runtime under a connected runtime's ID waits its turn.
     let mut first = dial_in_command(&fixture, address, "labpc", token.as_str());
-    tokio::time::timeout(WAIT, async {
-        while !fixture
+    eventually(WAIT, "the first runtime dials in", || {
+        fixture
             .engine
             .runtime_templates()
             .iter()
             .any(|template| template.runtime_id == "labpc" && template.listing.connected)
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
     })
-    .await
-    .expect("the first runtime dials in");
+    .await;
     let mut second = dial_in_command(&fixture, address, "labpc", token.as_str());
     let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(
         second.stderr.take().expect("stderr"),

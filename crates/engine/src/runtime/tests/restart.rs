@@ -64,11 +64,11 @@ async fn start_with(
 }
 
 async fn wait_for_restart(called: &AtomicBool) {
-    with_watchdog("the restart to be due", async {
-        while !called.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    crate::eventually::eventually(
+        test_timeout(EVENT_WATCHDOG_SECONDS),
+        "the restart to be due",
+        || called.load(Ordering::SeqCst),
+    )
     .await;
 }
 

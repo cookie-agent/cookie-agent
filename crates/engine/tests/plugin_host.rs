@@ -13,6 +13,15 @@ use cookie_agent_models::{
 use cookie_agent_protocol::{PluginInfo, PluginState};
 use jiff::Timestamp;
 
+#[path = "../../../test-support/eventually.rs"]
+mod eventually;
+
+use eventually::{eventually, eventually_some};
+
+/// Bound for waiting on a plugin; passing tests stop as soon as it is
+/// reached, and loaded runners need the headroom for Python to start.
+const WAIT: Duration = Duration::from_secs(30);
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 
 fn tools(name: &str) -> String {
@@ -143,24 +152,13 @@ fn open_engine(config_text: &str) -> Harness {
 async fn wait_for_state(engine: &Engine, plugin: &str, expected: PluginState) {
     // Plugin lifecycle state has no public subscription; integration tests can
     // only observe the public status snapshot.
-    let result = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if engine
-                .plugin_statuses()
-                .into_iter()
-                .any(|status| status.name == plugin && status.state == expected)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    eventually(WAIT, format!("plugin {plugin:?} {expected:?}"), || {
+        engine
+            .plugin_statuses()
+            .into_iter()
+            .any(|status| status.name == plugin && status.state == expected)
     })
     .await;
-    assert!(
-        result.is_ok(),
-        "plugin state timeout waiting for {plugin:?}={expected:?}; statuses={:?}",
-        engine.plugin_statuses()
-    );
 }
 
 fn status(engine: &Engine, plugin: &str) -> PluginInfo {
@@ -179,29 +177,14 @@ fn read_pid(pid_file: &std::path::Path) -> Option<u32> {
 }
 
 async fn wait_for_pid(pid_file: &std::path::Path) -> u32 {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Some(pid) = read_pid(pid_file) {
-                break pid;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("plugin never published its pid")
+    eventually_some(WAIT, "the plugin's pid", || read_pid(pid_file)).await
 }
 
 // Process reaping is observed through Linux procfs.
 #[cfg(target_os = "linux")]
 async fn assert_process_reaped(pid: u32) {
     let proc_path = std::path::PathBuf::from(format!("/proc/{pid}"));
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while proc_path.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("plugin process was not reaped");
+    eventually(WAIT, "the plugin process reaped", || !proc_path.exists()).await;
 }
 
 #[tokio::test]
@@ -511,23 +494,16 @@ async fn messages_a_plugin_may_not_send_are_reported_and_ignored() {
             "",
         );
         let harness = open_engine(&config);
-        let reported = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
+        eventually(
+            WAIT,
+            format!("the fixture connected with {expected:?}"),
+            || {
                 let current = status(&harness.engine, "fixture");
-                if current.state == PluginState::Connected
+                current.state == PluginState::Connected
                     && current.reason.as_deref() == Some(expected)
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+            },
+        )
         .await;
-        assert!(
-            reported.is_ok(),
-            "{expected}: {:?}",
-            status(&harness.engine, "fixture")
-        );
         harness.engine.shutdown().await;
     }
 }
@@ -555,18 +531,11 @@ async fn a_command_with_an_unknown_member_is_refused_with_its_path() {
         "",
     );
     let harness = open_engine(&config);
-    let reply: serde_json::Value = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Ok(text) = fs::read_to_string(&replies)
-                && let Some(line) = text.lines().next()
-            {
-                break serde_json::from_str(line).expect("reply JSON");
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let reply: serde_json::Value = eventually_some(WAIT, "the daemon's answer", || {
+        let text = fs::read_to_string(&replies).ok()?;
+        Some(serde_json::from_str(text.lines().next()?).expect("reply JSON"))
     })
-    .await
-    .expect("the daemon answers");
+    .await;
     assert_eq!(reply["id"], 900);
     assert_eq!(reply["error"]["code"], -32602);
     assert_eq!(reply["error"]["data"]["code"], "unknown_field");

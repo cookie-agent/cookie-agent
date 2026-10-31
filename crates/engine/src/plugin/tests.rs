@@ -16,7 +16,10 @@ use super::{
     InterceptError, PluginDeliveryClass, PluginEmitContext, PluginEmitOutcome,
     PluginNotificationQueue, PluginRegistry, QueuedNotification, raw_params,
 };
-use crate::SessionToolContext;
+use crate::{
+    SessionToolContext,
+    eventually::{eventually, eventually_some},
+};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 const DECLARATION: &str = r#"[{"name":"fixture_echo","description":"Echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}]"#;
@@ -26,7 +29,7 @@ const PYTHON: &str = "python3";
 const PYTHON: &str = "python";
 
 /// A liveness bound on the Python fixture, not a latency assertion.
-const WAIT: Duration = Duration::from_secs(10);
+const WAIT: Duration = Duration::from_secs(30);
 
 fn capabilities(subscribe_events: &[&str], subscribe_bus: bool, intercept: &[&str]) -> String {
     serde_json::json!({
@@ -85,43 +88,26 @@ async fn start(plugins: Vec<(&str, PluginConfig)>) -> PluginRegistry {
 }
 
 async fn wait_for(registry: &PluginRegistry, plugin: &str, state: PluginState) {
-    let reached = tokio::time::timeout(WAIT, async {
-        loop {
-            if registry
-                .statuses()
-                .iter()
-                .any(|status| status.name == plugin && status.state == state)
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+    eventually(WAIT, format!("`{plugin}` {state:?}"), || {
+        registry
+            .statuses()
+            .iter()
+            .any(|status| status.name == plugin && status.state == state)
     })
     .await;
-    assert!(
-        reached.is_ok(),
-        "`{plugin}` never reached {state:?}: {:?}",
-        registry.statuses()
-    );
 }
 
 /// Waits until `path` holds at least `count` lines and returns them.
 async fn lines(path: &Path, count: usize) -> Vec<Value> {
-    tokio::time::timeout(WAIT, async {
-        loop {
-            let lines = std::fs::read_to_string(path)
-                .unwrap_or_default()
-                .lines()
-                .map(|line| serde_json::from_str(line).expect("fixture JSON line"))
-                .collect::<Vec<Value>>();
-            if lines.len() >= count {
-                return lines;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+    eventually_some(WAIT, format!("{count} lines in {}", path.display()), || {
+        let lines = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("fixture JSON line"))
+            .collect::<Vec<Value>>();
+        (lines.len() >= count).then_some(lines)
     })
     .await
-    .unwrap_or_else(|_| panic!("{} never held {count} lines", path.display()))
 }
 
 fn stored_event(session_id: SessionId, seq: u64) -> StoredEvent {
@@ -194,13 +180,10 @@ async fn restart_replaces_the_process_and_reports_the_change() {
     registry
         .restart("fixture")
         .expect("restart a connected plugin");
-    tokio::time::timeout(WAIT, async {
-        while std::fs::read_to_string(&pid_file).is_ok_and(|pid| pid == first) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+    eventually(WAIT, "a new process", || {
+        std::fs::read_to_string(&pid_file).is_ok_and(|pid| pid != first)
     })
-    .await
-    .expect("a new process");
+    .await;
     wait_for(&registry, "fixture", PluginState::Connected).await;
     assert!(changes.has_changed().expect("change channel"));
 

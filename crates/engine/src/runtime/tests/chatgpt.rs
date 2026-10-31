@@ -216,17 +216,12 @@ async fn wait_for(
     engine: &Engine,
     ready: impl Fn(&ProviderDescriptor) -> bool,
 ) -> ProviderDescriptor {
-    for _ in 0..200 {
-        let provider = descriptor(engine);
-        if ready(&provider) {
-            return provider;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!(
-        "the ChatGPT provider never reached the expected state: {:?}",
-        descriptor(engine)
-    );
+    crate::eventually::eventually_some(
+        Duration::from_secs(30),
+        "the ChatGPT provider in the expected state",
+        || Some(descriptor(engine)).filter(&ready),
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

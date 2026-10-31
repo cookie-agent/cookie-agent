@@ -79,11 +79,11 @@ async fn start_tool_run(
 
 /// Waits until `path` exists, as a command's marker that it is running.
 async fn wait_for_file(path: &Path) {
-    with_watchdog("the call to start", async {
-        while !path.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    crate::eventually::eventually(
+        test_timeout(EVENT_WATCHDOG_SECONDS),
+        "the call to start",
+        || path.exists(),
+    )
     .await;
 }
 

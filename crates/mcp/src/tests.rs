@@ -21,6 +21,8 @@ use cookie_agent_runtime_api::{
     ToolPreparationContext, ToolProvider as _, TurnAgentContext,
 };
 
+use crate::eventually::{eventually, eventually_some};
+
 use super::{
     MAX_INSTRUCTIONS_CHARS, McpRegistry, McpRegistryOptions, McpServerFailure, McpServerState,
     TOOL_LIST_DEBOUNCE, bounded_instructions, convert_tool, sanitize_name,
@@ -177,13 +179,10 @@ fn list_count(directory: &tempfile::TempDir) -> usize {
 }
 
 async fn wait_for_list_count(directory: &tempfile::TempDir, expected: usize) {
-    tokio::time::timeout(WAIT, async {
-        while list_count(directory) < expected {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+    eventually(WAIT, format!("tools/list count {expected}"), || {
+        list_count(directory) >= expected
     })
-    .await
-    .unwrap_or_else(|_| panic!("tools/list count did not reach {expected}"));
+    .await;
 }
 
 async fn wait_until_debounce_armed(armed: &AtomicU64, expected: u64) {
@@ -672,22 +671,10 @@ async fn stdio_lists_calls_and_refreshes_tools() {
     assert_eq!(result.output, "refresh");
     assert_eq!(result.metadata, json!({"mcp": {"is_error": false}}));
 
-    tokio::time::timeout(WAIT, async {
-        loop {
-            let names = registry
-                .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
-                .expect("refreshed tools")
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect::<Vec<_>>();
-            if names.contains(&"fixture_new_tool".to_owned()) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    eventually(WAIT, "tools/list_changed refresh", || {
+        tool_names(&registry).contains(&"fixture_new_tool".to_owned())
     })
-    .await
-    .expect("tools/list_changed refresh");
+    .await;
 
     let error = execute(&registry, "fixture_fail", json!({})).await;
     assert_eq!(error.output, "fixture failure");
@@ -728,18 +715,12 @@ async fn a_call_that_times_out_tells_the_server() {
         .await
         .expect_err("the call times out");
     assert!(error.to_string().contains("timed out"), "{error}");
-    let cancelled = tokio::time::timeout(WAIT, async {
-        loop {
-            if let Ok(text) = std::fs::read_to_string(&cancel_file)
-                && !text.is_empty()
-            {
-                return text;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let cancelled = eventually_some(WAIT, "the server hears the cancellation", || {
+        std::fs::read_to_string(&cancel_file)
+            .ok()
+            .filter(|text| !text.is_empty())
     })
-    .await
-    .expect("the server hears the cancellation");
+    .await;
     let params: Value = serde_json::from_str(cancelled.lines().next().unwrap()).unwrap();
     assert_eq!(params["reason"], "tool call timed out");
     let result = execute(&registry, "fixture_echo_text", json!({"text":"still here"})).await;
@@ -855,13 +836,7 @@ async fn tool_list_notification_burst_makes_one_refresh_round_trip() {
     let server = registry.server("fixture").expect("server");
     server.connect().await.expect("connect fixture");
 
-    tokio::time::timeout(WAIT, async {
-        while list_count(&directory) < 2 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("debounced tools/list refresh");
+    wait_for_list_count(&directory, 2).await;
     tokio::time::sleep(TOOL_LIST_DEBOUNCE + Duration::from_millis(250)).await;
 
     assert_eq!(list_count(&directory), 2);
@@ -1382,18 +1357,10 @@ fn tool_names(registry: &McpRegistry) -> Vec<String> {
 }
 
 async fn wait_for_state(registry: &McpRegistry, expected: McpServerState) {
-    tokio::time::timeout(WAIT, async {
-        while registry.statuses()[0].state != expected {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+    eventually(WAIT, format!("the server {expected:?}"), || {
+        registry.statuses()[0].state == expected
     })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "server did not reach {expected:?}: {:?}",
-            registry.statuses()[0]
-        )
-    });
+    .await;
 }
 
 /// A connected fixture whose restarts fail while `refuse` exists.
@@ -1805,13 +1772,10 @@ async fn stdio_listing_and_list_changed_refresh_are_filtered() {
     // and the filter keeps it out.
     let result = execute(&registry, "fixture_echo_text", json!({"text":"refresh"})).await;
     assert_eq!(result.output, "refresh");
-    tokio::time::timeout(WAIT, async {
-        while registry.statuses()[0].filtered_tools != 2 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    eventually(WAIT, "filtered list_changed refresh", || {
+        registry.statuses()[0].filtered_tools == 2
     })
-    .await
-    .expect("filtered list_changed refresh");
+    .await;
     assert_eq!(tool_names(&registry), ["fixture_echo_text"]);
     registry.shutdown().await;
 }

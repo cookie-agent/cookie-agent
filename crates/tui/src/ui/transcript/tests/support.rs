@@ -2454,22 +2454,12 @@ pub(crate) async fn wait_for_recorded_request(
     method: &str,
     count: usize,
 ) -> i64 {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let found = recorded
-                .lock()
-                .expect("recorded")
-                .iter()
-                .filter(|value| value["method"].as_str() == Some(method))
-                .count();
-            if found >= count {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("recorded request timeout");
+    crate::eventually::eventually(
+        Duration::from_secs(30),
+        format!("{count} `{method}` requests"),
+        || recorded_method_count(recorded, method) >= count,
+    )
+    .await;
     recorded
         .lock()
         .expect("recorded")

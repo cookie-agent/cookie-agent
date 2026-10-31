@@ -22,7 +22,10 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{ProtocolTemplate, RuntimeClient, runtime_settings};
-use crate::runtime::tests::support::{custom_fixture, private_tempdir};
+use crate::{
+    eventually::{eventually, eventually_async, eventually_some},
+    runtime::tests::support::{custom_fixture, private_tempdir},
+};
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -455,10 +458,10 @@ async fn cancellation_reaches_the_call_in_the_runtime() {
     let capture = Arc::clone(&call.capture);
     let started_at = std::time::Instant::now();
     let execution = tokio::spawn(execute(prepared, call.context));
-    while capture.stream("stdout").is_empty() {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(started_at.elapsed() < WAIT, "the command never started");
-    }
+    eventually(WAIT, "the command to start", || {
+        !capture.stream("stdout").is_empty()
+    })
+    .await;
     cancellation.cancel();
     let result = tokio::time::timeout(WAIT, execution)
         .await
@@ -643,9 +646,10 @@ async fn transport_loss_fails_calls_in_flight() {
     let call = call_context(CancellationToken::new());
     let capture = Arc::clone(&call.capture);
     let execution = tokio::spawn(execute(running, call.context));
-    while capture.stream("stdout").is_empty() {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    eventually(WAIT, "the command to start", || {
+        !capture.stream("stdout").is_empty()
+    })
+    .await;
     let connection = started.connection.clone().expect("protocol connection");
     connector.cut();
     let error = tokio::time::timeout(WAIT, execution)
@@ -700,13 +704,10 @@ async fn wait_for_status(
     runtime_id: &str,
     status: crate::RuntimeInstanceStatus,
 ) {
-    tokio::time::timeout(WAIT, async {
-        while instance_status(registry, runtime_id) != status {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    eventually(WAIT, format!("`{runtime_id}` {status:?}"), || {
+        instance_status(registry, runtime_id) == status
     })
-    .await
-    .unwrap_or_else(|_| panic!("`{runtime_id}` never became {status:?}"));
+    .await;
 }
 
 #[tokio::test]
@@ -926,17 +927,14 @@ async fn one_connection_serves_every_workspace_and_reconnects_once_for_them() {
     assert_eq!(listing.capabilities[0].name.as_str(), "coding");
 
     connector.cut();
-    tokio::time::timeout(WAIT, async {
-        while [&first, &second].iter().any(|instance| {
+    eventually(WAIT, "both instances reconnect", || {
+        [&first, &second].iter().all(|instance| {
             instance
                 .connection()
-                .is_none_or(|connection| connection.epoch() == first_connection.epoch())
-        }) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+                .is_some_and(|connection| connection.epoch() != first_connection.epoch())
+        })
     })
-    .await
-    .expect("both instances reconnect");
+    .await;
     assert_eq!(connector.connects(), 2);
     assert_eq!(
         first.connection().unwrap().epoch(),
@@ -1334,33 +1332,24 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
         .await
         .expect("the change is signalled")
         .unwrap();
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while hosted_fixture(&engine).state != cookie_agent_protocol::McpServerState::Failed {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "never listed failed"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually(WAIT, "the server listed failed", || {
+        hosted_fixture(&engine).state == cookie_agent_protocol::McpServerState::Failed
+    })
+    .await;
     assert!(
         engine
             .mcp_failures()
             .iter()
             .any(|failure| failure.runtime_id == "local" && failure.server == "fixture")
     );
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while engine
-        .compose_session_tools(session, |_, _| true)
-        .unwrap()
-        .get("fixture_echo_text")
-        .is_some()
-    {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "tools never dropped"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually(WAIT, "the tools dropped", || {
+        engine
+            .compose_session_tools(session, |_, _| true)
+            .unwrap()
+            .get("fixture_echo_text")
+            .is_none()
+    })
+    .await;
 
     // Opening a session that uses the runtime retries the failed server,
     // and its next run waits for the attempt.
@@ -1369,16 +1358,14 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
     tokio::time::timeout(WAIT, engine.await_session_mcp(session))
         .await
         .expect("the retry finishes");
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while engine
-        .compose_session_tools(session, |_, _| true)
-        .unwrap()
-        .get("fixture_echo_text")
-        .is_none()
-    {
-        assert!(tokio::time::Instant::now() < deadline, "tools never back");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually(WAIT, "the tools back", || {
+        engine
+            .compose_session_tools(session, |_, _| true)
+            .unwrap()
+            .get("fixture_echo_text")
+            .is_some()
+    })
+    .await;
     assert_eq!(
         hosted_fixture(&engine).state,
         cookie_agent_protocol::McpServerState::Connected
@@ -1891,26 +1878,23 @@ async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
     let source = cookie_agent_protocol::ProducerSource::runtime(instance.info().id()).unwrap();
 
     // The daemon opens producer messaging and the runtime recovers.
-    tokio::time::timeout(WAIT, async {
-        loop {
-            let sources = engine
-                .session_producers(cookie_agent_protocol::SessionProducersParams {
-                    session_id: attached,
-                })
-                .await
-                .unwrap()
-                .sources;
-            if sources.iter().any(|state| {
+    eventually_async(WAIT, "the runtime's producer source ready", || async {
+        let sources = engine
+            .session_producers(cookie_agent_protocol::SessionProducersParams {
+                session_id: attached,
+            })
+            .await
+            .unwrap()
+            .sources;
+        sources
+            .iter()
+            .any(|state| {
                 state.source == source
                     && state.status == cookie_agent_protocol::ProducerSourceStatus::Ready
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+            })
+            .then_some(())
     })
-    .await
-    .expect("the runtime's producer source becomes ready");
+    .await;
 
     let output = report(&instance, attached, serde_json::json!({})).await;
     assert!(output.starts_with("sent "), "{output}");
@@ -1971,9 +1955,11 @@ async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
         _ = call.detach.reached() => {}
     }
     drop(execution);
-    tokio::time::timeout(WAIT, async {
-        loop {
-            let arrived = engine
+    eventually(
+        WAIT,
+        "the self-reporting call's message after the daemon stopped waiting",
+        || {
+            engine
                 .inner
                 .store
                 .get(attached)
@@ -1987,15 +1973,10 @@ async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
                         cookie_agent_protocol::EventPayload::ProducerMessageAccepted { body, .. }
                             if body == "late output"
                     )
-                });
-            if arrived {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the self-reporting call sends its message after the daemon stopped waiting");
+                })
+        },
+    )
+    .await;
 
     // Detaching the runtime drops its registrations there.
     let producers = |session| async move {
@@ -2822,13 +2803,7 @@ async fn interrupting_a_run_stops_a_remote_bash_at_once() {
         serde_json::json!({"command": format!("touch '{}'; sleep 60", ready.display())}),
     )
     .await;
-    tokio::time::timeout(WAIT, async {
-        while !ready.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the command started");
+    eventually(WAIT, "the command started", || ready.exists()).await;
     let (elapsed, termination) = interrupt_remote_run(&fixture.engine, session, run).await;
     eprintln!("interrupt timing: remote bash `sleep 60`: {elapsed:?}");
     assert_eq!(
@@ -3229,23 +3204,22 @@ async fn a_connected_runtime_lists_its_servers_before_any_workspace_opens() {
         )
         .await
         .expect("dialed in");
-    let deadline = tokio::time::Instant::now() + WAIT;
-    let servers = loop {
+    let servers = eventually_some(WAIT, "labpc's browser server connected", || {
         let servers = fixture
             .engine
             .list_mcp_servers()
             .into_iter()
             .filter(|server| server.runtime_id.as_str() == "labpc")
             .collect::<Vec<_>>();
-        if servers.iter().any(|server| {
-            server.name == "browser"
-                && server.state == cookie_agent_protocol::McpServerState::Connected
-        }) {
-            break servers;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "{servers:?}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
+        servers
+            .iter()
+            .any(|server| {
+                server.name == "browser"
+                    && server.state == cookie_agent_protocol::McpServerState::Connected
+            })
+            .then_some(servers)
+    })
+    .await;
     let summary = servers
         .iter()
         .map(|server| {
@@ -3302,14 +3276,7 @@ async fn a_global_server_runs_in_the_daemon_users_home() {
         )],
     )
     .await;
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while !cwd_file.exists() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the server never started"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually(WAIT, "the server to start", || cwd_file.exists()).await;
     let started = std::path::PathBuf::from(std::fs::read_to_string(&cwd_file).unwrap())
         .canonicalize()
         .unwrap();
@@ -3488,10 +3455,11 @@ async fn a_dial_in_runtime_hosts_its_daemon_table_and_follows_changes() {
     let wait_for = |expected: &'static [&'static str]| {
         let engine = engine.clone();
         async move {
-            crate::runtime::tests::support::with_watchdog("labpc's servers", async {
-                while connected(&engine) != expected {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
+            let watchdog = crate::runtime::tests::support::test_timeout(
+                crate::runtime::tests::support::EVENT_WATCHDOG_SECONDS,
+            );
+            eventually(watchdog, format!("labpc's servers {expected:?}"), || {
+                connected(&engine) == expected
             })
             .await;
         }
@@ -3578,17 +3546,10 @@ async fn shell_environment_reports_are_kept_and_refreshes_reach_capturing_runtim
         .await
         .expect("initialized");
         let mut runtime = fake.await.unwrap();
-        let known = tokio::time::timeout(WAIT, async {
-            loop {
-                let known = client.shell_environment();
-                if known.report.is_some() {
-                    break known;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        let known = eventually_some(WAIT, "the report", || {
+            Some(client.shell_environment()).filter(|known| known.report.is_some())
         })
-        .await
-        .expect("the report arrives");
+        .await;
         assert_eq!(known.protocol_version, Some(version));
         assert_eq!(
             known.report.and_then(|report| report.error).as_deref(),

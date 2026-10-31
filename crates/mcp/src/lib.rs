@@ -2473,4 +2473,7 @@ fn safe_title(value: &str) -> SafeDisplayText {
 }
 
 #[cfg(test)]
+#[path = "../../../test-support/eventually.rs"]
+mod eventually;
+#[cfg(test)]
 mod tests;

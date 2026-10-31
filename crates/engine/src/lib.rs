@@ -11,6 +11,9 @@ mod deferred_tools;
 mod delegation_api;
 pub mod delegation_events;
 pub mod events;
+#[cfg(test)]
+#[path = "../../../test-support/eventually.rs"]
+mod eventually;
 mod goal_projection;
 pub mod grant_journal;
 mod machines;

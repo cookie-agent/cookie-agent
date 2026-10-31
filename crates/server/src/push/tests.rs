@@ -186,13 +186,12 @@ impl Fixture {
     }
 
     async fn wait_for_requests(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while self.requests() < count {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the push service got the requests");
+        crate::eventually::eventually(
+            Duration::from_secs(30),
+            format!("{count} requests to the push service"),
+            || self.requests() >= count,
+        )
+        .await;
     }
 
     async fn shutdown(self) {

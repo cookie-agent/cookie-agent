@@ -15,6 +15,9 @@ pub use token::{READY_LINE_PREFIX, TokenError, generate_token, ready_line};
 #[cfg(test)]
 mod corpus_tests;
 #[cfg(test)]
+#[path = "../../../test-support/eventually.rs"]
+mod eventually;
+#[cfg(test)]
 mod onboarding_tests;
 #[cfg(test)]
 mod tests;

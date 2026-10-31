@@ -22,7 +22,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{McpRegistry, McpRegistryOptions, McpServerState};
+use crate::{McpRegistry, McpRegistryOptions, McpServerState, eventually::eventually};
 
 use super::{
     McpOAuthHttpClient, OAUTH_CALLBACK_TIMEOUT, OAUTH_STORE_FILE, OAuthCredentialFile,
@@ -611,21 +611,18 @@ async fn wait_for_state(registry: &McpRegistry, expected: McpServerState) {
     wait_for_named_state(registry, &registry.statuses()[0].server, expected).await;
 }
 
+/// Bound for polling a fixture towards an expected state. Passing tests stop
+/// polling as soon as it is reached; loaded runners need the headroom.
+const WAIT: Duration = Duration::from_secs(30);
+
 async fn wait_for_named_state(registry: &McpRegistry, server: &str, expected: McpServerState) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if registry
-                .statuses()
-                .into_iter()
-                .any(|status| status.server == server && status.state == expected)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, format!("`{server}` {expected:?}"), || {
+        registry
+            .statuses()
+            .into_iter()
+            .any(|status| status.server == server && status.state == expected)
     })
-    .await
-    .expect("MCP state transition");
+    .await;
 }
 
 /// The client's loopback callback. Nothing listens on it: tests read the
@@ -669,16 +666,10 @@ fn authorization_parameters(authorization_url: &str) -> BTreeMap<String, String>
 }
 
 async fn wait_for_auth_flow(registry: &McpRegistry, active: bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if registry.statuses()[0].auth_in_progress == active {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, format!("an OAuth flow in progress: {active}"), || {
+        registry.statuses()[0].auth_in_progress == active
     })
-    .await
-    .expect("OAuth flow state");
+    .await;
 }
 
 #[tokio::test]
@@ -1006,7 +997,9 @@ async fn oauth_callback_timeout_returns_to_needs_auth() {
         .begin_auth("remote", CLIENT_REDIRECT)
         .await
         .expect("begin OAuth");
-    tokio::time::sleep(OAUTH_CALLBACK_TIMEOUT + Duration::from_millis(50)).await;
+    // The callback wait ends on its own: the flow is over, timed out.
+    tokio::time::sleep(OAUTH_CALLBACK_TIMEOUT).await;
+    wait_for_auth_flow(&registry, false).await;
     wait_for_state(&registry, McpServerState::NeedsAuth).await;
     assert!(
         registry.statuses()[0]

@@ -1378,15 +1378,17 @@ async fn mcp_connection_failures_reach_clients_viewing_affected_sessions() {
     )
     .await;
     let bare_id = bare["result"]["session"]["session_id"].clone();
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !harness.engine.mcp_statuses().iter().any(|status| {
-            status.server == "broken" && status.state == cookie_agent_engine::McpServerState::Failed
-        }) {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the retry at creation fails");
+    crate::eventually::eventually(
+        std::time::Duration::from_secs(30),
+        "the retry at creation fails",
+        || {
+            harness.engine.mcp_statuses().iter().any(|status| {
+                status.server == "broken"
+                    && status.state == cookie_agent_engine::McpServerState::Failed
+            })
+        },
+    )
+    .await;
 
     // Subscribing tells the client about the failure it missed.
     let (subscribed, _) = request(
@@ -1615,13 +1617,12 @@ async fn media_uploads_and_reads_travel_as_base64_and_end_with_their_connection(
     assert!(begun.get("result").is_some(), "{begun}");
     assert_eq!(upload_temporaries(harness._directory.path()), 1);
     drop(client);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while upload_temporaries(harness._directory.path()) != 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the closed connection's upload is dropped");
+    crate::eventually::eventually(
+        std::time::Duration::from_secs(30),
+        "the closed connection's upload is dropped",
+        || upload_temporaries(harness._directory.path()) == 0,
+    )
+    .await;
     harness.server.shutdown();
     harness.engine.shutdown().await;
 }

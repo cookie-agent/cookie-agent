@@ -16,6 +16,9 @@ pub use ui::{
 #[cfg(test)]
 #[path = "../../../test-support/config_harness.rs"]
 mod config_harness;
+#[cfg(test)]
+#[path = "../../../test-support/eventually.rs"]
+mod eventually;
 
 #[cfg(test)]
 mod tests;

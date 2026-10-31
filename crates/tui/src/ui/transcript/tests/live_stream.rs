@@ -99,13 +99,12 @@ impl GatedModel {
     }
 
     async fn wait_for_call(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while self.calls.load(Ordering::SeqCst) < count {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("model call timed out");
+        crate::eventually::eventually(
+            Duration::from_secs(30),
+            format!("model call {count}"),
+            || self.calls.load(Ordering::SeqCst) >= count,
+        )
+        .await;
     }
 }
 
