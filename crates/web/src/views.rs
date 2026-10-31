@@ -1901,6 +1901,9 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 return;
             }
             pin();
+            if let Some((element, _)) = metrics() {
+                load_history_in_view(&element, workspace);
+            }
             if let Some(key) = reveal.try_update_value(Option::take).flatten() {
                 reveal_work_row(container, content, pinned_work, &key);
                 shown();
@@ -1935,6 +1938,21 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             "approvals" => workspace.panel.set(Some(Panel::Approvals)),
+            "history" => {
+                if let Some(before) = target
+                    .get_attribute("data-history")
+                    .and_then(|before| before.parse().ok())
+                {
+                    workspace.load_history(before);
+                }
+            }
+            "cut-result" => {
+                if let Some(call) = call
+                    && let Ok(call) = call.parse::<cookie_agent_protocol::ToolCallId>()
+                {
+                    workspace.load_cut_result(call);
+                }
+            }
             "full" => {
                 let block = target
                     .get_attribute("data-block")
@@ -2050,9 +2068,10 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             class="min-h-0 flex-1 overflow-y-auto px-3 py-2"
             on:click=on_click
             on:scroll=move |_| {
-                if let Some((_, at)) = metrics() {
+                if let Some((element, at)) = metrics() {
                     follow.update_value(|follow| follow.scrolled(at));
                     shown();
+                    load_history_in_view(&element, workspace);
                 }
             }
             on:wheel=move |event: ev::WheelEvent| {
@@ -2275,6 +2294,34 @@ fn reveal_work_row(
 /// change would wake them all, and each one's resubscription costs the
 /// number of readers: a frame of a long transcript would cost the square
 /// of its rows. A change here wakes only the readers of what changed.
+/// Reads the history a row of history not loaded stands for once the row
+/// shows in `scroller`, the transcript: the user scrolled up to it. A row
+/// whose read failed waits for a click.
+fn load_history_in_view(scroller: &web_sys::Element, workspace: Workspace) {
+    let Ok(rows) = scroller.query_selector_all("[data-history]:not([data-history-failed])") else {
+        return;
+    };
+    let view = scroller.get_bounding_client_rect();
+    for index in 0..rows.length() {
+        let Some(row) = rows
+            .item(index)
+            .and_then(|row| row.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let at = row.get_bounding_client_rect();
+        if at.bottom() > view.top()
+            && at.top() < view.bottom()
+            && let Some(before) = row
+                .get_attribute("data-history")
+                .and_then(|before| before.parse().ok())
+        {
+            workspace.load_history(before);
+            return;
+        }
+    }
+}
+
 struct Slots<V: Send + Sync + 'static> {
     map: StoredValue<HashMap<u64, ArcRwSignal<Option<V>>>>,
 }

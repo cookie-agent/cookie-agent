@@ -2476,8 +2476,15 @@ impl App {
 
     /// Reads the history whose row the last frame showed: the history the
     /// user scrolled up to.
+    /// A row whose read failed waits for a click.
     pub(in crate::ui) fn load_history_in_view(&mut self) {
-        if let Some((session_id, before)) = self.history_in_view.take() {
+        if let Some((session_id, before)) = self.history_in_view.take()
+            && self
+                .store
+                .sessions
+                .get(&session_id)
+                .is_some_and(|state| state.history.failed.is_none())
+        {
             self.load_history(session_id, before);
         }
     }

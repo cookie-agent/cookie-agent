@@ -347,7 +347,13 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
 /// The item as HTML; `None` for a diagnostic row the level filter hides.
 pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<String> {
     Some(match item {
-        TranscriptItem::History { .. } => return None,
+        TranscriptItem::History {
+            before,
+            skipped,
+            loading,
+            failed,
+            ..
+        } => history_html(*before, *skipped, *loading, failed.as_deref()),
         TranscriptItem::User { markdown, seq, .. } => {
             let files = view
                 .state
@@ -1715,6 +1721,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
                 "… {omitted} more lines (maximum shown; click to collapse)"
             )),
         };
+        html.push_str(&cut_result_html(&id, tool.cut.as_ref()));
         if let Some(notice) = notice {
             html.push_str(&format!(
                 "<button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" data-more-lines class=\"min-h-11 rounded-md px-2 text-left text-xs text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button>",
@@ -1726,6 +1733,66 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     }
     html.push_str("</div>");
     html
+}
+
+/// What a call whose result the display view cut offers: a button that
+/// reads the whole result, or its read's state.
+fn cut_result_html(
+    call_id: &str,
+    cut: Option<&cookie_agent_client_state::history::CutResult>,
+) -> String {
+    use cookie_agent_client_state::history::CutState;
+    let Some(cut) = cut else {
+        return String::new();
+    };
+    let size = cookie_agent_protocol::human_bytes(cut.bytes);
+    let button = |label: String| {
+        format!(
+            "<button type=\"button\" data-action=\"cut-result\" data-call=\"{}\" class=\"min-h-11 rounded-md px-2 text-left text-xs text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button>",
+            escape(call_id),
+            escape(&label)
+        )
+    };
+    match &cut.state {
+        CutState::Cut => button(format!(
+            "… the result is cut short · load all of it ({size})"
+        )),
+        CutState::Loading => format!(
+            "<div class=\"{NOTE}\" data-cut-loading>loading the whole result ({size})…</div>"
+        ),
+        CutState::Failed(error) => button(format!(
+            "… could not load the whole result ({error}) · try again"
+        )),
+    }
+}
+
+/// A row of history the display view has not loaded: a button that reads
+/// it, which also reads it when it scrolls into view.
+fn history_html(before: u64, skipped: Option<u64>, loading: bool, failed: Option<&str>) -> String {
+    let what = match skipped {
+        Some(1) => "1 earlier event of this run".to_owned(),
+        Some(count) => format!("{count} earlier events of this run"),
+        None => "Earlier messages".to_owned(),
+    };
+    let label = match (loading, failed) {
+        (true, _) => format!("Loading {}…", what.to_lowercase()),
+        (false, Some(error)) => format!(
+            "Could not load {} ({error}) · try again",
+            what.to_lowercase()
+        ),
+        (false, None) => format!("{what} not loaded · load"),
+    };
+    // Never the row the browser keeps in place as rows arrive above it:
+    // the history it loads takes its place.
+    format!(
+        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{} style=\"overflow-anchor: none\" class=\"min-h-11 rounded-md px-2 text-left text-xs text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke w-full text-center\">{}</button>",
+        if failed.is_some() {
+            " data-history-failed"
+        } else {
+            ""
+        },
+        escape(&label)
+    )
 }
 
 /// A delegate call's subagent: its agent and handle, what it does while it
@@ -3045,5 +3112,35 @@ mod tests {
         }
         let per_delta = started.elapsed() / rounds;
         println!("one delta in a 4000-part reply: {per_delta:?}");
+    }
+
+    #[test]
+    fn history_not_loaded_is_a_button_that_reads_it() {
+        let row = super::history_html(40, Some(12), false, None);
+        assert!(row.contains("data-action=\"history\""), "{row}");
+        assert!(row.contains("data-history=\"40\""), "{row}");
+        assert!(row.contains("12"), "{row}");
+        assert!(!row.contains("data-history-failed"), "{row}");
+        // A failed read waits for a click: scrolling to it reads nothing.
+        let failed = super::history_html(40, None, false, Some("timed out"));
+        assert!(failed.contains("data-history-failed"), "{failed}");
+    }
+
+    #[test]
+    fn a_cut_result_offers_its_whole_result_until_it_is_read() {
+        use cookie_agent_client_state::history::{CutResult, CutState};
+        assert_eq!(super::cut_result_html("call", None), "");
+        let cut = |state| CutResult {
+            seq: 9,
+            bytes: 66_000,
+            state,
+        };
+        let offer = super::cut_result_html("call", Some(&cut(CutState::Cut)));
+        assert!(offer.contains("data-action=\"cut-result\""), "{offer}");
+        assert!(offer.contains("data-call=\"call\""), "{offer}");
+        let loading = super::cut_result_html("call", Some(&cut(CutState::Loading)));
+        assert!(!loading.contains("data-action"), "{loading}");
+        let failed = super::cut_result_html("call", Some(&cut(CutState::Failed("closed".into()))));
+        assert!(failed.contains("data-action=\"cut-result\""), "{failed}");
     }
 }

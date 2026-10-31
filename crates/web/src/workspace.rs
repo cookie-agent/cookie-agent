@@ -1639,6 +1639,9 @@ impl Workspace {
                 .with_value(|store| store.sessions.get(&session_id).map(|state| state.last_seq))
         };
         let connection = self.connection.get_value();
+        // A session opens at its newest messages when the daemon can send
+        // them first; older history loads as the user scrolls up.
+        client.use_display_view(true);
         spawn_local(async move {
             let outcome = match client.subscribe_events(session_id, cursor).await {
                 Ok(()) => {
@@ -2614,6 +2617,43 @@ impl Workspace {
             if self.read_is_current(|reads| &mut reads.usage, read) {
                 self.usage.set(Some(UsageView { session, tree }));
             }
+        });
+    }
+
+    /// Reads the history the viewed session's row of history not loaded
+    /// stands for (`events.page`), unless it is being read.
+    pub fn load_history(self, before: u64) {
+        let Some(session_id) = self.selected.get_untracked() else {
+            return;
+        };
+        let params = self.update_store(|store| store.request_history(session_id, before));
+        let (Some(params), Some(client)) = (params, self.client()) else {
+            return;
+        };
+        spawn_local(async move {
+            let page = client
+                .events_page(params)
+                .await
+                .map_err(|error| crate::errors::describe_full(&error));
+            self.update_store(|store| store.apply_history_page(session_id, before, page));
+        });
+    }
+
+    /// Reads a call's result the display view cut, whole (`event.read`).
+    pub fn load_cut_result(self, call_id: ToolCallId) {
+        let Some(session_id) = self.selected.get_untracked() else {
+            return;
+        };
+        let params = self.update_store(|store| store.request_cut_result(session_id, call_id));
+        let (Some(params), Some(client)) = (params, self.client()) else {
+            return;
+        };
+        spawn_local(async move {
+            let read = client
+                .read_event(params)
+                .await
+                .map_err(|error| crate::errors::describe_full(&error));
+            self.update_store(|store| store.apply_cut_result(session_id, call_id, read));
         });
     }
 
