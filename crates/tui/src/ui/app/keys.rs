@@ -978,6 +978,7 @@ impl App {
         let Some(session_id) = self.selected else {
             return;
         };
+        let read = self.permission_reads.begin();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1006,7 +1007,11 @@ impl App {
                 current_mode: None,
             })
             .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+            let _ = updates.send(RpcUpdate::PermissionsLoaded {
+                session_id,
+                read,
+                result,
+            });
         });
     }
 
@@ -1035,6 +1040,7 @@ impl App {
         let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) else {
             return;
         };
+        let read = self.permission_reads.begin();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1052,7 +1058,11 @@ impl App {
                     current_mode: None,
                 })
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+            let _ = updates.send(RpcUpdate::PermissionsLoaded {
+                session_id,
+                read,
+                result,
+            });
         });
     }
 
@@ -1076,6 +1086,7 @@ impl App {
         let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) else {
             return;
         };
+        let read = self.permission_reads.begin();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1092,7 +1103,11 @@ impl App {
                     current_mode: None,
                 })
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+            let _ = updates.send(RpcUpdate::PermissionsLoaded {
+                session_id,
+                read,
+                result,
+            });
         });
     }
 

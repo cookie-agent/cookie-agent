@@ -812,6 +812,9 @@ pub struct App {
     pub(super) skills: Vec<cookie_agent_protocol::SkillDescriptor>,
     /// The `skills.list` reads: only the newest one's answer is installed.
     pub(super) skills_reads: cookie_agent_client_state::refresh::Latest,
+    /// The session permission reads and changes on their way, each of which
+    /// answers with the whole list.
+    pub(super) permission_reads: cookie_agent_client_state::refresh::Latest,
     #[cfg(test)]
     pub(super) skill_refresh_requests: Vec<SessionId>,
     /// Revision of the catalog view the providers, models, and agents above
@@ -1359,6 +1362,7 @@ pub(in crate::ui) enum RpcUpdate {
     },
     PermissionsLoaded {
         session_id: SessionId,
+        read: cookie_agent_client_state::refresh::Ticket,
         result: Result<SessionPermissionGetResult, String>,
     },
     SkillsLoaded {
@@ -1629,6 +1633,7 @@ impl App {
             providers: Vec::new(),
             skills: Vec::new(),
             skills_reads: Default::default(),
+            permission_reads: Default::default(),
             #[cfg(test)]
             skill_refresh_requests: Vec::new(),
             catalog_view_revision: None,

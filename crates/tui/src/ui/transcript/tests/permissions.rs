@@ -304,3 +304,47 @@ async fn a_new_session_draft_holds_its_mode_and_rules_until_creation() {
     assert!(app.draft_permissions.rules.is_empty());
     assert!(app.draft_permissions.mode.is_none());
 }
+
+#[tokio::test]
+async fn only_the_newest_permission_answer_shows_and_only_in_the_open_panel() {
+    let mut app = test_app().await;
+    let session_id = SessionId::new_v7();
+    app.selected = Some(session_id);
+    app.modal = Modal::Permissions;
+    let listed = sample_permissions();
+    let emptied = cookie_agent_protocol::SessionPermissionGetResult {
+        permissions: Vec::new(),
+        current_mode: None,
+    };
+    let older = app.permission_reads.begin();
+    let newer = app.permission_reads.begin();
+    // The newer answer lands first; the older, which may predate a change
+    // the newer saw, lands last and is dropped.
+    app.handle_rpc_update(RpcUpdate::PermissionsLoaded {
+        session_id,
+        read: newer,
+        result: Ok(listed.clone()),
+    });
+    app.handle_rpc_update(RpcUpdate::PermissionsLoaded {
+        session_id,
+        read: older,
+        result: Ok(emptied.clone()),
+    });
+    assert_eq!(app.permission_panel.result.as_ref(), Some(&listed));
+    // Once the panel closed, even the newest answer installs nothing.
+    app.modal = Modal::None;
+    let closed = app.permission_reads.begin();
+    app.handle_rpc_update(RpcUpdate::PermissionsLoaded {
+        session_id,
+        read: closed,
+        result: Ok(emptied),
+    });
+    assert_eq!(app.permission_panel.result.as_ref(), Some(&listed));
+    // A failed change still says so.
+    app.handle_rpc_update(RpcUpdate::PermissionsLoaded {
+        session_id,
+        read: older,
+        result: Err("refused".into()),
+    });
+    assert!(app.status.contains("refused"), "{}", app.status);
+}

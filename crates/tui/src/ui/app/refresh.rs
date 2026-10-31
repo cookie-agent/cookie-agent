@@ -922,14 +922,26 @@ impl App {
                     }
                 }
             }
-            RpcUpdate::PermissionsLoaded { session_id, result } => {
-                if self.selected != Some(session_id) || self.permission_panel.draft {
+            RpcUpdate::PermissionsLoaded {
+                session_id,
+                read,
+                result,
+            } => {
+                if self.selected != Some(session_id) {
                     return;
                 }
                 match result {
+                    // Each read and change answers with the whole list: only
+                    // the newest started may show, and only while the
+                    // session's panel is open.
                     Ok(result) => {
-                        self.permission_panel.install(result);
-                        self.load_skills_for_session(session_id);
+                        if self.permission_reads.is_current(read)
+                            && self.modal == Modal::Permissions
+                            && !self.permission_panel.draft
+                        {
+                            self.permission_panel.install(result);
+                            self.load_skills_for_session(session_id);
+                        }
                     }
                     Err(error) => self.status = format!("permission update failed: {error}"),
                 }
@@ -1455,6 +1467,7 @@ impl App {
             self.restore_voided_inputs();
             if let Some(event) = &refresh_skills {
                 self.refresh_skills_for_event(event);
+                self.refresh_permissions_for_event(event);
             }
             if let Some(session_id) = refresh_cost {
                 self.refresh_session_cost(session_id);
@@ -1663,6 +1676,7 @@ impl App {
             self.status = "select a session before editing permissions".into();
             return;
         };
+        let read = self.permission_reads.begin();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1670,7 +1684,11 @@ impl App {
                 .get_session_permissions(SessionPermissionGetParams { session_id })
                 .await
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+            let _ = updates.send(RpcUpdate::PermissionsLoaded {
+                session_id,
+                read,
+                result,
+            });
         });
     }
 
@@ -1723,6 +1741,22 @@ impl App {
             )
         {
             self.load_skills_for_session(event.session_id);
+        }
+    }
+
+    /// A change to the viewed session's rules, by this client or another,
+    /// lists them again in its open panel: a read started before the change
+    /// was written may have answered after this client's own change did.
+    fn refresh_permissions_for_event(&mut self, event: &StoredEvent) {
+        if Some(event.session_id) == self.selected
+            && matches!(
+                event.payload,
+                EventPayload::SessionPermissionOverlaySet { .. }
+            )
+            && self.modal == Modal::Permissions
+            && !self.permission_panel.draft
+        {
+            self.load_permissions();
         }
     }
 
