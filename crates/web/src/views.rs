@@ -1717,7 +1717,26 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     // to the top once it drew folded.
     let pinned_work = NodeRef::<html::Div>::new();
     let reveal = StoredValue::new(None::<String>);
-    let pin_work = move || {
+    // Only a reduced transcript with a work row open has one to pin.
+    let pins_work = Memo::new(move |_| {
+        let Some(session_id) = workspace.selected.get() else {
+            return false;
+        };
+        workspace.transcript.get()
+            == cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced
+            && workspace.expanded.with(|expanded| {
+                expanded
+                    .get(&session_id)
+                    .is_some_and(crate::render::transcript::Expanded::any_work)
+            })
+    });
+    // The open work rows and the end of each one's work, found once per
+    // drawing of the rows rather than at every scroll; and the pinned
+    // copy's HTML, patched in only when it changes.
+    let open_heads = StoredValue::new_local(None::<Vec<OpenHead>>);
+    let pinned_html = StoredValue::new(None::<String>);
+    let pin_due = StoredValue::new(false);
+    let draw_pin = move || {
         let (Some(column), Some(pinned)) = (
             content.try_get_untracked().flatten(),
             pinned_work.try_get_untracked().flatten(),
@@ -1725,8 +1744,20 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             return;
         };
         let pinned: web_sys::HtmlElement = pinned.into();
-        if let Some(head) = pinned_work_head(&column, &pinned) {
-            crate::morph::patch(&pinned, &head.html);
+        let head = if pins_work.try_get_untracked() == Some(true) {
+            if open_heads.with_value(Option::is_none) {
+                open_heads.set_value(Some(open_work_heads(&column)));
+            }
+            open_heads
+                .with_value(|heads| pinned_work_head(heads.as_deref().unwrap_or_default(), &pinned))
+        } else {
+            None
+        };
+        if let Some(head) = head {
+            if pinned_html.with_value(|shown| shown.as_deref() != Some(head.html.as_str())) {
+                crate::morph::patch(&pinned, &head.html);
+                pinned_html.set_value(Some(head.html));
+            }
             let _ = pinned
                 .style()
                 .set_property("transform", &format!("translateY({}px)", head.offset));
@@ -1734,12 +1765,34 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         } else if !pinned.has_attribute("hidden") {
             let _ = pinned.set_attribute("hidden", "");
             pinned.set_inner_html("");
+            pinned_html.set_value(None);
         }
     };
+    // Every scroll, wheel, key, and touch asks; the copy is placed once a
+    // frame, before it paints.
+    let pin_work = move || {
+        if pin_due.try_get_value() != Some(false) {
+            return;
+        }
+        pin_due.set_value(true);
+        request_animation_frame(move || {
+            if pin_due.try_set_value(false).is_some() {
+                return;
+            }
+            draw_pin();
+        });
+    };
+    // The rows drew again, or work rows opened or closed: the heads are
+    // found again at the next placing.
+    Effect::new(move |_| {
+        rows.track();
+        pins_work.track();
+        open_heads.set_value(None);
+        pin_work();
+    });
     // Mirrors `follow` into `following` once it changed, and whether the
     // rows overflow.
-    let shown = move || {
-        pin_work();
+    let mirror = move || {
         if let Some(now) = follow.try_with_value(|follow| follow.following())
             && following.try_get_untracked() != Some(now)
         {
@@ -1752,7 +1805,15 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
         }
     };
-    // Pins the view to the end when following and the end moved away.
+    // After a scroll, a wheel, a key, or a touch: the pinned copy is placed
+    // at the next frame.
+    let shown = move || {
+        pin_work();
+        mirror();
+    };
+    // Pins the view to the end when following and the end moved away, and
+    // places the pinned copy now: a resize and a drawing of the rows call
+    // this as the frame is laid out.
     let pin = move || {
         let Some((element, at)) = metrics() else {
             return;
@@ -1760,7 +1821,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         if let Some(end) = follow.try_update_value(|follow| follow.pin(at)).flatten() {
             element.set_scroll_top(end);
         }
-        shown();
+        draw_pin();
+        mirror();
     };
     // A session opens at its end.
     Effect::new(move |_| {
@@ -2098,41 +2160,51 @@ struct PinnedHead {
     offset: f64,
 }
 
-/// The open work row in `column` that scrolled past the top `pinned`
+/// An open work row of the transcript, and the last part marked as its
+/// work.
+struct OpenHead {
+    head: web_sys::Element,
+    last_work: web_sys::Element,
+}
+
+/// The open work rows in `column`, in page order, each with the end of its
+/// work.
+fn open_work_heads(column: &web_sys::Element) -> Vec<OpenHead> {
+    let Ok(heads) = column.query_selector_all("[data-work][data-open]") else {
+        return Vec::new();
+    };
+    (0..heads.length())
+        .filter_map(|index| {
+            let head = heads.item(index)?.dyn_into::<web_sys::Element>().ok()?;
+            let key = head.get_attribute("data-block-key")?;
+            let work = column
+                .query_selector_all(&format!("[data-work-in=\"{key}\"]"))
+                .ok()?;
+            let last_work = work
+                .item(work.length().checked_sub(1)?)?
+                .dyn_into::<web_sys::Element>()
+                .ok()?;
+            Some(OpenHead { head, last_work })
+        })
+        .collect()
+}
+
+/// The open work row of `heads` that scrolled past the top `pinned`
 /// sticks at while its work, the parts marked as its, still shows there.
-fn pinned_work_head(
-    column: &web_sys::Element,
-    pinned: &web_sys::HtmlElement,
-) -> Option<PinnedHead> {
+fn pinned_work_head(heads: &[OpenHead], pinned: &web_sys::HtmlElement) -> Option<PinnedHead> {
+    if heads.is_empty() {
+        return None;
+    }
     let top = pinned.parent_element()?.get_bounding_client_rect().top();
-    let heads = column.query_selector_all("[data-work][data-open]").ok()?;
     let mut found = None;
-    for index in 0..heads.length() {
-        let Some(head) = heads
-            .item(index)
-            .and_then(|head| head.dyn_into::<web_sys::Element>().ok())
-        else {
-            continue;
-        };
+    for OpenHead { head, last_work } in heads {
         let rect = head.get_bounding_client_rect();
         // In order: this one and every later one still show.
         if rect.bottom() > top {
             break;
         }
-        let Some(key) = head.get_attribute("data-block-key") else {
-            continue;
-        };
-        let work = column
-            .query_selector_all(&format!("[data-work-in=\"{key}\"]"))
-            .ok()?;
-        let Some(last) = work
-            .item(work.length().saturating_sub(1))
-            .and_then(|last| last.dyn_into::<web_sys::Element>().ok())
-        else {
-            continue;
-        };
         // The copy rides up with the end of the work, and goes with it.
-        let room = last.get_bounding_client_rect().bottom() - top;
+        let room = last_work.get_bounding_client_rect().bottom() - top;
         if room <= 0.0 {
             continue;
         }

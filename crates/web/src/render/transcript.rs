@@ -120,6 +120,13 @@ impl Expanded {
         self.blocks.contains(&work_key(key))
     }
 
+    /// Whether any of the reduced mode's work rows is open.
+    pub fn any_work(&self) -> bool {
+        self.blocks
+            .iter()
+            .any(|key| key.starts_with(WORK_KEY_PREFIX))
+    }
+
     /// Folds every work row, as a switch to the reduced mode does.
     pub fn fold_work(&mut self) {
         self.blocks.retain(|key| !key.starts_with(WORK_KEY_PREFIX));
