@@ -230,8 +230,10 @@ The first real converter, `v1_to_v2` (`crates/engine_store/src/events/convert`):
 
 - a tool result's output over 8 KiB moves to `blobs/<sha256>`; the event
   keeps the first 2 KiB, the length, and the digest;
-- `acp_session_updated` records only the fields that changed since the
-  previous one; option and command lists go to `blobs/` by digest;
+- option and command lists in `acp_session_updated` go to `blobs/` by
+  digest; ACP tool presentations and context use are no longer stored at
+  all ([store locks and durability](store-locks-and-durability.md),
+  section 4.3);
 - `run_started`'s frozen model settings chains go to `blobs/` by digest.
 
 Expected effect: logs about 60% smaller, so every parse is faster,
