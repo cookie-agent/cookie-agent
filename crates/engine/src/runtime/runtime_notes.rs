@@ -176,7 +176,7 @@ impl Engine {
         builtin: Option<&BuiltinTools<'_>>,
         policy: Option<&FrozenRunPolicy>,
     ) -> Option<String> {
-        let project = self.session_project(session).map(|project| project.name);
+        let project = self.session_project_name(session);
         let project = project.as_ref().map(|name| name.as_str());
         let facts = self.attachment_facts(session);
         if facts.is_empty()

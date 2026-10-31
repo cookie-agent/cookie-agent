@@ -7,8 +7,8 @@ use std::sync::Arc;
 use cookie_agent_protocol::{
     AgentMdEntry, AgentMdProject, AgentMdSkipped, AttachmentName, ProjectAgentsMd,
     ProjectCreateParams, ProjectDefaults, ProjectDeleteParams, ProjectDeleteResult,
-    ProjectGetResult, ProjectId, ProjectInfo, ProjectUpdateParams, RuntimeId, SafeDisplayText,
-    SessionId, SessionMeta, SessionOrigin,
+    ProjectGetResult, ProjectId, ProjectInfo, ProjectName, ProjectUpdateParams, RuntimeId,
+    SafeDisplayText, SessionId, SessionMeta, SessionOrigin,
 };
 
 use super::{Engine, EngineError, Event, agent_md::AttachmentAgentMd};
@@ -263,8 +263,24 @@ impl Engine {
     /// a delegated session's root's. Blocking: it reads the project's
     /// folder.
     pub(crate) fn session_project(&self, session: SessionId) -> Option<Project> {
+        self.inner
+            .projects
+            .get(&self.session_project_id(session)?)
+            .ok()
+    }
+
+    /// The name of the project a session belongs to now, as
+    /// [`Self::session_project`] finds it. Blocking, though it reads the
+    /// project's file only when it changed since it was last read.
+    pub(crate) fn session_project_name(&self, session: SessionId) -> Option<ProjectName> {
+        self.inner.projects.name(&self.session_project_id(session)?)
+    }
+
+    /// The ID of the project a session belongs to: a root's own, a
+    /// delegated session's root's, whether or not it exists.
+    fn session_project_id(&self, session: SessionId) -> Option<ProjectId> {
         let projection = self.inner.store.get(session).ok()?;
-        let project = match projection.meta.origin {
+        match projection.meta.origin {
             SessionOrigin::Root => projection.meta.project.clone(),
             SessionOrigin::Delegated {
                 root_session_id, ..
@@ -276,8 +292,7 @@ impl Engine {
                 .meta
                 .project
                 .clone(),
-        }?;
-        self.inner.projects.get(&project).ok()
+        }
     }
 
     /// `meta` as clients are shown it: a delegated session takes its root's

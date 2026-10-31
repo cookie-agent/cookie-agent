@@ -399,3 +399,39 @@ fn defaults_list_each_runtime_once_with_a_real_workspace() {
     ));
     assert!(store.list().unwrap().is_empty());
 }
+
+#[test]
+fn a_projects_name_follows_its_changes_and_its_file() {
+    let (data, store) = store();
+    let web = store.create(name("web"), None, None, LIMIT).unwrap();
+    assert_eq!(store.name(&web.id), Some(name("web")));
+
+    // A change through the store is seen at once.
+    let renamed = store
+        .update(
+            &web.id,
+            &web.revision,
+            ProjectChange {
+                name: Some(name("shop")),
+                ..ProjectChange::default()
+            },
+            LIMIT,
+        )
+        .unwrap();
+    assert_eq!(store.name(&web.id), Some(name("shop")));
+
+    // So is one another process makes to the file.
+    let file = project_file(&data, &web.id);
+    let text = fs::read_to_string(&file).unwrap();
+    let edited = text.replace("\"shop\"", "\"storefront\"");
+    assert_ne!(edited, text, "the file names the project: {text}");
+    let replacement = file.with_extension("edited");
+    fs::write(&replacement, edited).unwrap();
+    fs::rename(&replacement, &file).unwrap();
+    assert_eq!(store.name(&web.id), Some(name("storefront")));
+
+    store
+        .delete(&renamed.id, &store.get(&web.id).unwrap().revision)
+        .unwrap();
+    assert_eq!(store.name(&web.id), None);
+}

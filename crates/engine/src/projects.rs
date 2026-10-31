@@ -318,6 +318,31 @@ pub(crate) struct ProjectStore {
     mutation: Mutex<()>,
     /// Bumped whenever a project changes through this store.
     changes: tokio::sync::watch::Sender<u64>,
+    /// Each project's name as last read, with the stamp of the
+    /// `project.toml` it was read from; dropped whenever this store changes
+    /// a project.
+    names: Mutex<std::collections::HashMap<ProjectId, (FileStamp, ProjectName)>>,
+}
+
+/// What tells a `project.toml` that another process replaced or changed
+/// from the one read before, without reading it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileStamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl FileStamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+            #[cfg(unix)]
+            inode: std::os::unix::fs::MetadataExt::ino(metadata),
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -335,6 +360,7 @@ impl ProjectStore {
             memory,
             mutation: Mutex::new(()),
             changes: tokio::sync::watch::channel(0).0,
+            names: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -345,6 +371,7 @@ impl ProjectStore {
     }
 
     fn changed(&self) {
+        lock(&self.names).clear();
         self.changes
             .send_modify(|count| *count = count.wrapping_add(1));
     }
@@ -404,6 +431,24 @@ impl ProjectStore {
     /// is not read.
     pub(crate) fn exists(&self, id: &ProjectId) -> bool {
         self.project_dir(id).join(PROJECT_FILE).is_file()
+    }
+
+    /// The name of project `id`, when it exists and reads. Read again only
+    /// when its `project.toml` changed since: what every model step of a
+    /// session in the project asks for.
+    pub(crate) fn name(&self, id: &ProjectId) -> Option<ProjectName> {
+        let metadata = fs::metadata(self.project_dir(id).join(PROJECT_FILE)).ok()?;
+        let stamp = FileStamp::of(&metadata);
+        if let Some((read, name)) = lock(&self.names).get(id)
+            && *read == stamp
+        {
+            return Some(name.clone());
+        }
+        // Stamped before the read: a change in between reads again next
+        // time.
+        let name = self.get(id).ok()?.name;
+        lock(&self.names).insert(id.clone(), (stamp, name.clone()));
+        Some(name)
     }
 
     /// One project.

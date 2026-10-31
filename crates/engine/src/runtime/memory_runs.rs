@@ -376,8 +376,8 @@ impl Engine {
                 .map(|(machine, _)| machine.as_str().to_owned())
                 .collect(),
             project: self
-                .session_project(session)
-                .map(|project| project.name.as_str().to_owned()),
+                .session_project_name(session)
+                .map(|project| project.as_str().to_owned()),
         }
     }
 
@@ -409,11 +409,10 @@ impl Engine {
         };
         let project = if access.available && !delegated {
             let engine = self.clone();
-            tokio::task::spawn_blocking(move || engine.session_project(session))
+            tokio::task::spawn_blocking(move || engine.session_project_name(session))
                 .await
                 .ok()
                 .flatten()
-                .map(|project| project.name)
         } else {
             None
         };
