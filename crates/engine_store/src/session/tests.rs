@@ -5037,3 +5037,45 @@ fn upgrading_reports_a_log_written_before_history_formats() {
     assert_eq!(conversion.left, vec![(root, None)]);
     assert_eq!(fs::read_to_string(&log).expect("log"), before);
 }
+
+/// A history page comes from the session's own log: it reads no subagent's
+/// log and does not complete the tree, and the final page is left to the
+/// path that registers the live tail.
+#[test]
+fn a_history_page_reads_only_the_session_log() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let store = SessionStore::open(&data, &cwd).expect("owner store");
+    let root = persist_test_session(&store);
+    let child = persist_test_session_with_origin(&store, delegated_origin(root, root, 1));
+    append_title(&store, root, "first");
+    append_title(&store, root, "second");
+    drop(store);
+
+    let observer = SessionStore::open(&data, &cwd).expect("cold observer store");
+    let one = std::num::NonZeroU32::new(1);
+    let page = observer
+        .history_page(root, None, None, one)
+        .expect("a page")
+        .expect("a history page");
+    assert_eq!(page.events.len(), 1);
+    assert!(page.has_more);
+    assert_eq!(observer.log_open_count(child), 0, "no subagent log read");
+    assert!(!observer.is_tree_loaded(root));
+
+    let last = observer
+        .history_page(root, None, None, None)
+        .expect("an unlimited request");
+    assert!(last.is_none(), "an unlimited request is the final page");
+    let tip = observer
+        .snapshot_events(root, None, None, None)
+        .expect("the whole log")
+        .events
+        .len() as u64;
+    let last = observer
+        .history_page(root, Some(tip - 1), None, one)
+        .expect("the last page");
+    assert!(last.is_none(), "the page reaching the tip is the final one");
+}

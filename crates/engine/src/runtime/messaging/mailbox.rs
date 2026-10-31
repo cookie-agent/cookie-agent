@@ -184,10 +184,23 @@ impl Engine {
         ),
         EngineError,
     > {
+        // History comes from the session's own log. Completing the tree
+        // reads every subagent's log, so it starts now in the background
+        // and only the final page, which goes live, waits for it.
+        let store = Arc::clone(&self.inner.store);
+        let history = off_worker(|| store.history_page(session, cursor, cursor_timestamp, limit))?;
+        if let Some(page) = history {
+            // Once per replay, from its first page: the load gate makes a
+            // second trigger wait for the first.
+            if cursor.is_none_or(|cursor| cursor == 0) {
+                self.load_tree_in_background(session);
+            }
+            return Ok((page, None));
+        }
         // Complete the tree only: a full `get` here would parse and fold a
         // log this process does not own just to learn that, and the snapshot
         // fallback reads it again.
-        self.inner.store.ensure_tree_for(session)?;
+        off_worker(|| store.ensure_tree_for(session))?;
         if !self.inner.store.is_owned(session) {
             return Err(EngineError::SessionOwnedByAnotherProcess(session));
         }
@@ -202,6 +215,19 @@ impl Engine {
             )?)
         })
         .await
+    }
+
+    /// Completes `session`'s tree on a blocking thread, for the final page
+    /// to find it done. A failure is left for that page's own load to
+    /// report.
+    fn load_tree_in_background(&self, session: SessionId) {
+        let store = Arc::clone(&self.inner.store);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        drop(runtime.spawn_blocking(move || {
+            let _ = store.ensure_tree_for(session);
+        }));
     }
 
     /// One page of events for a session this process does not own. It never

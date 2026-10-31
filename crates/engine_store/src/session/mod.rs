@@ -2164,6 +2164,41 @@ impl SessionStore {
         Ok((result, Some(receiver)))
     }
 
+    /// One page of `session`'s history cut from its own log alone: no tree
+    /// load, no opening for writing. `None` when the page would be the
+    /// final one, which registers the live tail and so goes through
+    /// [`Self::subscribe_events`] or [`Self::snapshot_events`].
+    ///
+    /// A resident session is paged from memory; any other from the parsed
+    /// read-only log, which a later open for writing takes over while the
+    /// file is unchanged.
+    pub fn history_page(
+        &self,
+        session: SessionId,
+        cursor: Option<u64>,
+        cursor_timestamp: Option<jiff::Timestamp>,
+        limit: Option<NonZeroU32>,
+    ) -> Result<Option<EventsSubscribeResult>, SessionError> {
+        // An unlimited request is its own final page.
+        if limit.is_none() {
+            return Ok(None);
+        }
+        let log = if let Some(resident) = self.get_resident(session) {
+            resident.log.clone()
+        } else {
+            let session_dir = self.resolve_dir(session)?;
+            if !session_dir.is_dir() {
+                return Err(SessionError::Missing(session));
+            }
+            self.read_only_log(session, session_dir.join(EVENTS_FILE))?
+        };
+        if cursor_is_stale(&log, cursor, cursor_timestamp) {
+            return Ok(Some(EventsSubscribeResult::stale()));
+        }
+        let page = log.events_after(cursor, limit);
+        Ok(page.has_more.then_some(page))
+    }
+
     /// One page of a session's events for a reader that does not own it.
     ///
     /// A resident session is paged from memory. Otherwise the log is parsed
