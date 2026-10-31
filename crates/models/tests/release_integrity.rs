@@ -376,6 +376,40 @@ fn workspace_metadata_limits_publishing_and_uses_registry_syntect() {
     );
 }
 
+/// What `cargo install` and the release builds compile: the shipped binary
+/// without dev-dependencies, so no crate's `test-support` feature (test
+/// agents, the format-0 log converter, test seams) is on. A build that also
+/// builds tests, such as `--all-targets`, unifies them in on purpose.
+#[test]
+fn the_shipped_binary_enables_no_test_support_feature() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--locked",
+            "-p",
+            "cookie_agent",
+            "-e",
+            "normal,build,features",
+            "--prefix",
+            "none",
+        ])
+        .current_dir(workspace())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cargo tree failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tree = String::from_utf8(output.stdout).unwrap();
+    assert!(tree.contains("cookie_agent_engine"), "{tree}");
+    let enabled = tree
+        .lines()
+        .filter(|line| line.contains("feature \"test-support\""))
+        .collect::<BTreeSet<_>>();
+    assert!(enabled.is_empty(), "{enabled:?}");
+}
+
 #[test]
 fn root_lockfile_is_the_only_checked_in_dependency_graph() {
     fn collect_lockfiles(root: &Path, directory: &Path, lockfiles: &mut Vec<PathBuf>) {

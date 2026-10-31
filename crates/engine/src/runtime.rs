@@ -2008,22 +2008,6 @@ impl Engine {
         self.inner.plugins.subscribe_changes()
     }
 
-    #[cfg(test)]
-    pub(crate) fn block_plugin_diagnostic_appends_for_test(&self) {
-        *self
-            .inner
-            .test_hooks
-            .plugin_diagnostic_append_block
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(Arc::new(tokio::sync::Notify::new()));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_plugin_diagnostic_keys_for_test(&self) -> usize {
-        self.inner.plugin_diagnostics.accumulator.key_count()
-    }
-
     /// Stops new session mailbox traffic and cancels active work. Existing
     /// client clones may keep a session mailbox alive.
     pub async fn shutdown(&self) {

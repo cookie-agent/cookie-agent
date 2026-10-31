@@ -684,47 +684,6 @@ impl Engine {
             .is_some_and(|state| state.starting || state.wake_scheduled)
     }
 
-    #[cfg(test)]
-    pub(crate) fn install_producer_wake_hook(
-        &self,
-    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
-        let (reached, receiver) = tokio::sync::oneshot::channel();
-        let release = Arc::new(tokio::sync::Notify::new());
-        *self
-            .inner
-            .test_hooks
-            .producer_wake_hook
-            .lock()
-            .expect("producer wake hook lock poisoned") =
-            Some(Arc::new(crate::runtime::PagingRaceHook {
-                reached: std::sync::Mutex::new(Some(reached)),
-                release: Arc::clone(&release),
-            }));
-        (receiver, release)
-    }
-
-    #[cfg(test)]
-    async fn wait_for_producer_wake_hook(&self) {
-        let hook = self
-            .inner
-            .test_hooks
-            .producer_wake_hook
-            .lock()
-            .expect("producer wake hook lock poisoned")
-            .clone();
-        if let Some(hook) = hook {
-            if let Some(reached) = hook
-                .reached
-                .lock()
-                .expect("producer wake hook reached lock poisoned")
-                .take()
-            {
-                let _ = reached.send(());
-            }
-            hook.release.notified().await;
-        }
-    }
-
     pub(in crate::runtime) fn commit_producer_start(
         &self,
         session: SessionId,
@@ -1718,36 +1677,6 @@ impl Engine {
         for parent in parents {
             self.refresh_live_waiting(parent);
         }
-    }
-
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn accept_agent_message_direct_for_test(
-        &self,
-        session: SessionId,
-        authority: &ProducerAuthority,
-        producer_id: ProducerId,
-        mode: ProducerDeliveryMode,
-        key: ProducerIdempotencyKey,
-        description: SafeDisplayText,
-        sender: SessionId,
-        sender_agent_type: &str,
-        body: String,
-        hop: u32,
-    ) -> Result<ProducerMessageId, EngineError> {
-        self.accept_agent_message_direct(
-            session,
-            authority,
-            producer_id,
-            mode,
-            key,
-            description,
-            sender,
-            sender_agent_type,
-            body,
-            super::api::ReplyHint::SendMessage,
-            hop,
-        )
     }
 
     #[allow(clippy::too_many_arguments)]

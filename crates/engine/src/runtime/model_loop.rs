@@ -1040,50 +1040,6 @@ impl Engine {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn has_active_run_for_test(&self, run_id: RunId) -> bool {
-        self.inner
-            .sessions
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains_key(&run_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn retry_run_setup_terminalization_for_test(
-        &self,
-        run_id: RunId,
-    ) -> Result<(), EngineError> {
-        let active = self
-            .inner
-            .sessions
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&run_id)
-            .cloned()
-            .ok_or(EngineError::MissingRun(run_id))?;
-        self.append(
-            active.session,
-            Some(run_id),
-            event_origin("engine:model-loop"),
-            Event::run_finished(cookie_agent_protocol::RunOutcome::Failed {
-                error: safe_error("run setup terminalization retried"),
-                model_error: None,
-                resolved_model: None,
-            }),
-        )
-        .await?;
-        self.inner
-            .sessions
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&run_id);
-        Ok(())
-    }
-
     fn run_failure_event(&self, session: SessionId, run: RunId, error: &EngineError) -> Event {
         let model_error = match error {
             EngineError::Model(error) => Some(model_error_summary(error)),

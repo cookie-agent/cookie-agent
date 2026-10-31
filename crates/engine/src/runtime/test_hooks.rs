@@ -2,8 +2,20 @@
 //!
 //! The whole module is `#![cfg(test)]`; it exists so the production `Inner`
 //! carries a single `test_hooks` field instead of two dozen `#[cfg(test)]`
-//! ones.
+//! ones. Its submodules hold the `Engine` methods tests drive those hooks
+//! and inspect state with, one per production module they reach into, so
+//! the production files keep only the seams their code paths pass through.
 #![cfg(test)]
+
+mod admission;
+mod cron_fire;
+mod delegation;
+mod engine;
+mod messaging_mailbox;
+mod messaging_producers;
+mod model_loop;
+mod sessions;
+mod sessions_residency;
 
 use std::sync::{
     Arc, Mutex,
