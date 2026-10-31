@@ -101,10 +101,11 @@ nothing the transcript shows depends on tree-load products (review L5 in
 
 ### 2.5 Rendering as pages arrive
 
-On a first open (nothing shown for the session yet), the client renders
-each page as it arrives instead of holding the whole replay. A rebuild of
-a session already on screen keeps today's staging, so the view never
-flashes empty. Phase 2 makes the first page the newest one.
+Folded into phase 2 (decided 2026-10-31). The client's replay contract
+names the replay's final sequence in `ReplayStart` and rebuilds the view
+at `ReplayEnd`, so rendering forward pages as they arrive would rework it
+only for 3.2's newest-first loading to replace it. With 2.1, 2.3, and 2.4,
+a replay no longer times out; 3.2 makes it show at once.
 
 ## 3. Phase 2: a display view
 
@@ -298,7 +299,7 @@ removed, so an older store upgrades step by step in one pass.
 
 ## 6. Order of work
 
-1. Phase 1 (2.1–2.5), one change each, measured against section 1's
+1. Phase 1 (2.1–2.4), one change each, measured against section 1's
    numbers on a scratch daemon with copies of real sessions.
 2. Phase 2: the reducer audit of 3.1, then `view: "display"`, then
    `from: "tail"` and `events.page`.
@@ -327,3 +328,5 @@ User decisions of 2026-10-31:
    alone, a generated third-party notices file in releases, and the
    licenses in the web and TUI About views (2.1, 2.2). The Cloudflare
    tunnel test is waived.
+8. Rendering pages as they arrive (2.5) is folded into phase 2's
+   newest-first loading.
