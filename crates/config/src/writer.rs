@@ -178,14 +178,43 @@ fn read_original(path: &Path) -> Result<Option<Vec<u8>>, ConfigError> {
     }
 }
 
+/// `path` with every symbolic link it names followed, so a write replaces
+/// the file a linked `config.toml` points to, beside it, and keeps the link.
+/// A link to a file that does not exist yet resolves to where it will be.
+fn resolve_links(path: &Path) -> Result<std::path::PathBuf, ConfigError> {
+    /// As many links as Linux follows before `ELOOP`.
+    const MOST_LINKS: usize = 40;
+    let mut path = path.to_owned();
+    for _ in 0..MOST_LINKS {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = fs::read_link(&path).map_err(ConfigError::Io)?;
+                path = match path.parent() {
+                    Some(parent) if target.is_relative() => parent.join(target),
+                    _ => target,
+                };
+            }
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(path),
+            Err(error) => return Err(ConfigError::Io(error)),
+        }
+    }
+    Err(ConfigError::Io(std::io::Error::other(format!(
+        "{} names more than {MOST_LINKS} symbolic links",
+        path.display()
+    ))))
+}
+
 /// Replaces `path` with `candidate`, or removes it when `candidate` is
 /// `None`, while `path` still holds `original` (`None`: does not exist).
+/// A linked `path` changes the file the link points to.
 fn commit(
     path: &Path,
     original: Option<&[u8]>,
     candidate: Option<&[u8]>,
     mut observe: impl FnMut(CommitStep),
 ) -> Result<(), ConfigError> {
+    let path = &resolve_links(path)?;
     let parent = path.parent().ok_or(ConfigError::UnsafePath)?;
     let Some(candidate) = candidate else {
         if read_original(path)?.as_deref() != original {
@@ -200,29 +229,12 @@ fn commit(
     };
     fs::create_dir_all(parent).map_err(ConfigError::Io)?;
     #[cfg(unix)]
-    let temporary = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("config.toml"),
-        std::process::id()
-    ));
-    #[cfg(unix)]
-    let mut open_options = OpenOptions::new();
-    #[cfg(unix)]
-    open_options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        open_options.mode(0o600);
-    }
-    #[cfg(unix)]
-    let mut temporary_file = open_options.open(&temporary).map_err(ConfigError::Io)?;
+    let (temporary, mut temporary_file) = create_unix_temporary(parent, path)?;
     #[cfg(windows)]
     let (temporary, mut temporary_file) = create_windows_temporary(parent, path)?;
     #[cfg(unix)]
     {
-        // A stale temp file from a crashed write keeps its old mode; force it.
+        // The umask may have narrowed the mode further; force it.
         use std::os::unix::fs::PermissionsExt;
         if let Err(error) = temporary_file.set_permissions(fs::Permissions::from_mode(0o600)) {
             let _ = fs::remove_file(&temporary);
@@ -259,6 +271,45 @@ fn commit(
     sync_directory(parent).map_err(ConfigError::Io)?;
     observe(CommitStep::ParentSynced);
     Ok(())
+}
+
+/// A new owner-only temporary file beside `destination`, under a name no
+/// other write uses, in this process or another.
+#[cfg(unix)]
+fn create_unix_temporary(
+    parent: &Path,
+    destination: &Path,
+) -> Result<(std::path::PathBuf, fs::File), ConfigError> {
+    use std::{
+        os::unix::fs::OpenOptionsExt as _,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    let base = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    for _ in 0..128 {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".{base}.{}.{sequence}.tmp", std::process::id()));
+        // `create_new` never follows or truncates a stale file or link; a
+        // collision moves on to the next name.
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(ConfigError::Io(error)),
+        }
+    }
+    Err(ConfigError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique private configuration temporary file",
+    )))
 }
 
 #[cfg(windows)]
@@ -412,6 +463,88 @@ mod tests {
             fs::read_to_string(&path).expect("read preserved external edit"),
             "# external edit\n"
         );
+    }
+
+    /// A linked config.toml, as a dotfiles checkout keeps it, stays a link:
+    /// the write replaces the file it points to, and the temporary file is
+    /// made beside that file.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_file_is_written_through_its_link() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let dotfiles = directory.path().join("dotfiles");
+        let config = directory.path().join("config");
+        fs::create_dir(&dotfiles).expect("dotfiles");
+        fs::create_dir(&config).expect("config directory");
+        let target = dotfiles.join("config.toml");
+        fs::write(&target, "# original\n").expect("initial config");
+        let link = config.join("config.toml");
+        std::os::unix::fs::symlink("../dotfiles/config.toml", &link).expect("link");
+
+        let temporaries = RefCell::new(Vec::new());
+        commit(&link, Some(b"# original\n"), Some(CANDIDATE), |step| {
+            if step == CommitStep::TemporarySynced {
+                temporaries.borrow_mut().extend(
+                    fs::read_dir(&dotfiles)
+                        .expect("list dotfiles")
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .filter(|name| name.ends_with(".tmp")),
+                );
+            }
+        })
+        .expect("write through the link");
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&target).expect("target"), CANDIDATE);
+        assert_eq!(temporaries.borrow().len(), 1, "made beside the target");
+        assert_eq!(fs::read_dir(&config).expect("list config").count(), 1);
+
+        // A link to a file that does not exist yet creates it there.
+        let dangling = config.join("other.toml");
+        std::os::unix::fs::symlink(dotfiles.join("other.toml"), &dangling).expect("link");
+        commit(&dangling, None, Some(CANDIDATE), |_| {}).expect("create through the link");
+        assert_eq!(
+            fs::read(dotfiles.join("other.toml")).expect("created"),
+            CANDIDATE
+        );
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    /// Two writes of one file at once in one process never share a
+    /// temporary file: one that fails cleaning up its own leaves the other's
+    /// whole.
+    #[test]
+    fn overlapping_commits_use_their_own_temporary_files() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("config.toml");
+        fs::write(&path, "# original\n").expect("initial config");
+
+        commit(&path, Some(b"# original\n"), Some(CANDIDATE), |step| {
+            if step == CommitStep::TemporarySynced {
+                // A second write, from what it read earlier, fails and
+                // removes its temporary file.
+                let stale = commit(&path, Some(b"# stale\n"), Some(b"# other\n"), |_| {});
+                assert!(
+                    matches!(stale, Err(ConfigError::ChangedOnDisk(_))),
+                    "{stale:?}"
+                );
+            }
+        })
+        .expect("the first write is untouched");
+
+        assert_eq!(fs::read(&path).expect("config"), CANDIDATE);
+        assert_eq!(fs::read_dir(directory.path()).expect("list").count(), 1);
     }
 
     #[test]
