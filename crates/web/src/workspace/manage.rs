@@ -410,6 +410,8 @@ impl Workspace {
             match result {
                 Ok(machines) => {
                     self.status.set(done);
+                    // Newer than a `machines.list` on its way.
+                    self.supersede_reads(|reads| &mut reads.runtimes);
                     self.machines.set(Some(Ok(machines)));
                 }
                 Err(error) => self.status.set(format!(
