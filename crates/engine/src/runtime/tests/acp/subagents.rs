@@ -396,6 +396,40 @@ async fn a_subagents_unnamed_call_goes_by_its_report_not_its_runner() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_call_codex_names_waits_for_its_own_report_beside_another_open_one() {
+    // The parent has an open report of the same tool, and the subagent's
+    // report trails its call: by the tool alone the call would take the
+    // parent's report. Codex's `_meta` `callId` names the subagent's.
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(
+        engine,
+        session,
+        "first",
+        r#"subagent-mcp-codex memory_search {"query": "notes"}"#,
+    )
+    .await;
+    let child = subagent_of(engine, session).await;
+    let outcome = first_run(engine, child).await;
+    assert!(
+        final_text(&outcome).ends_with("error: False"),
+        "{outcome:?}"
+    );
+    assert_eq!(engine.inner.test_hooks.bridge_attributions(), [child]);
+    assert_eq!(
+        final_text(&finished(engine, session, run).await),
+        "subagent done"
+    );
+    assert_eq!(cookie_calls(engine, child), ["memory_search"]);
+    assert!(
+        !cookie_calls(engine, session).contains(&"memory_search".to_owned()),
+        "{:?}",
+        cookie_calls(engine, session)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_subagents_call_its_rules_do_not_offer_runs_in_the_parent_and_shows_there_only() {
     // The document denies cron; the parent's session allows it, the
     // subagent's does not.

@@ -92,7 +92,14 @@ Each prompt's last text block is a command:
                          naming the call it reported (`_meta`
                          `claudecode/toolUseId`, as Claude Code does), and says
                          "subagent result: <text> error: <isError>";
-                         `subagent-mcp-unnamed` makes the call without naming it
+                         `subagent-mcp-unnamed` makes the call without naming it;
+                         `subagent-mcp-codex` names it as Codex does (`_meta`
+                         `callId`, beside `x-codex-turn-metadata`, `threadId`,
+                         and `sessionId`) while this session has an open report
+                         of the same tool, reports both calls as codex-acp does
+                         (`mcp.cookie.<tool>`, raw input {server, tool,
+                         arguments}), and the subagent's only after making it,
+                         as Codex's report can trail its call
   subagent-wait <title>  the same, but the subagent says "waiting" and waits (up to
                          10 s) for session/cancel, while this session answers
                          "subagent started" at once
@@ -602,9 +609,19 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             say(child, "subagent says: " + task)
         subagent(session_id, title, task, work)
         say(session_id, "subagent done")
-    elif word in ("subagent-mcp", "subagent-mcp-unnamed"):
+    elif word in ("subagent-mcp", "subagent-mcp-unnamed", "subagent-mcp-codex"):
         tool, _, arguments = rest.partition(" ")
         arguments = json.loads(arguments or "{}")
+        codex = word == "subagent-mcp-codex"
+        def codex_call(call_id):
+            # As codex-acp reports an `mcpToolCall` item: its ID the call's.
+            return {"toolCallId": call_id, "title": f"mcp.cookie.{tool}", "kind": "execute",
+                    "status": "in_progress",
+                    "rawInput": {"server": "cookie", "tool": tool, "arguments": arguments}}
+        # Its own call of the same tool, which no bridge call claims.
+        open_call = codex_call(f"{session_id}-mcp")
+        if codex:
+            tool_call(session_id, open_call)
         def work(child):
             import time
             # Its run is under way before it calls, as a real subagent's is.
@@ -612,13 +629,22 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             call = {"toolCallId": f"{child}-mcp", "name": f"mcp__cookie__{tool}",
                     "title": f"mcp__cookie__{tool}", "kind": "other", "status": "pending",
                     "rawInput": arguments}
-            tool_call(child, call)
+            if codex:
+                call = codex_call(call["toolCallId"])
+                threading.Timer(0.3, tool_call, args=(child, call)).start()
+            else:
+                tool_call(child, call)
             if not mcp_open(session):
                 say(child, "no bridge")
                 return
             params = {"name": tool, "arguments": arguments}
             if word == "subagent-mcp":
                 params["_meta"] = {"claudecode/toolUseId": call["toolCallId"]}
+            elif codex:
+                params["_meta"] = {"callId": call["toolCallId"],
+                                   "x-codex-turn-metadata": {"session_id": child, "thread_id": child,
+                                                             "turn_id": "turn-1"},
+                                   "threadId": child, "sessionId": session_id}
             reply = mcp(session, "tools/call", params, 7)
             result = reply.get("result", {})
             text = " ".join(item.get("text", "") for item in result.get("content", []))
@@ -626,6 +652,8 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
                               "status": "failed" if result.get("isError") else "completed"})
             say(child, f"subagent result: {text} error: {result.get('isError')}")
         subagent(session_id, "caller", "call a tool", work)
+        if codex:
+            tool_call(session_id, {"toolCallId": open_call["toolCallId"], "status": "failed"})
         say(session_id, "subagent done")
     elif word == "subagent-wait":
         def work(child):

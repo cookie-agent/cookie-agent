@@ -60,8 +60,11 @@ const MAX_SUBAGENT_DEPTH: usize = 16;
 const MAX_SIGHTINGS: usize = 1024;
 
 /// The `_meta` keys of a `tools/call` that name the agent's ID of the
-/// call, as it reports the call in its ACP stream: Claude Code's.
-const CALL_ID_META: [&str; 1] = ["claudecode/toolUseId"];
+/// call, as it reports the call in its ACP stream: Claude Code's
+/// (claude-agent-acp reports the tool use ID as the `toolCallId`), and
+/// Codex's `callId` (its model's call ID, which codex-acp reports as the
+/// `toolCallId` of the call's `mcpToolCall` item).
+const CALL_ID_META: [&str; 2] = ["claudecode/toolUseId", "callId"];
 
 /// Where an agent's report of its call of a cookie tool stands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
