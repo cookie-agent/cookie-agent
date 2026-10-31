@@ -239,6 +239,14 @@ class Browser:
             time.sleep(0.2)
         self.shot("failed-" + what.replace(" ", "-"))
         print("timed out waiting for %s; the page shows:\n%s" % (what, self.text()), file=sys.stderr)
+        # What the page text leaves out: a message still in the composer was
+        # never sent, or came back from a send that failed.
+        try:
+            composer = self.script("const e = document.querySelector('#composer'); return e ? [e.value, e.disabled] : null")
+        except RuntimeError:
+            composer = None
+        if composer is not None:
+            print("the composer holds %r%s" % (composer[0], " (disabled)" if composer[1] else ""), file=sys.stderr)
         sys.exit(1)
 
     def shot(self, name):
