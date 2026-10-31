@@ -1717,6 +1717,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     let container = NodeRef::<html::Div>::new();
     let content = NodeRef::<html::Div>::new();
     let follow = StoredValue::new(Follow::default());
+    // The row loaded history arrives above, and where it was.
+    let history_anchor = StoredValue::new(None::<(String, f64)>);
     // Whether the view follows the end, for the jump-to-latest button.
     let following = RwSignal::new(true);
     let metrics = move || {
@@ -1902,7 +1904,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
             pin();
             if let Some((element, _)) = metrics() {
-                load_history_in_view(&element, workspace);
+                keep_history_anchor(&element, workspace, history_anchor);
+                load_history_in_view(&element, workspace, history_anchor);
             }
             if let Some(key) = reveal.try_update_value(Option::take).flatten() {
                 reveal_work_row(container, content, pinned_work, &key);
@@ -1943,7 +1946,12 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     .get_attribute("data-history")
                     .and_then(|before| before.parse().ok())
                 {
-                    workspace.load_history(before);
+                    match metrics() {
+                        Some((scroller, _)) => {
+                            load_history(&scroller, &target, before, workspace, history_anchor);
+                        }
+                        None => workspace.load_history(before),
+                    }
                 }
             }
             "cut-result" => {
@@ -2071,7 +2079,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 if let Some((element, at)) = metrics() {
                     follow.update_value(|follow| follow.scrolled(at));
                     shown();
-                    load_history_in_view(&element, workspace);
+                    load_history_in_view(&element, workspace, history_anchor);
                 }
             }
             on:wheel=move |event: ev::WheelEvent| {
@@ -2297,7 +2305,11 @@ fn reveal_work_row(
 /// Reads the history a row of history not loaded stands for once the row
 /// shows in `scroller`, the transcript: the user scrolled up to it. A row
 /// whose read failed waits for a click.
-fn load_history_in_view(scroller: &web_sys::Element, workspace: Workspace) {
+fn load_history_in_view(
+    scroller: &web_sys::Element,
+    workspace: Workspace,
+    anchor: StoredValue<Option<(String, f64)>>,
+) {
     let Ok(rows) = scroller.query_selector_all("[data-history]:not([data-history-failed])") else {
         return;
     };
@@ -2316,9 +2328,69 @@ fn load_history_in_view(scroller: &web_sys::Element, workspace: Workspace) {
                 .get_attribute("data-history")
                 .and_then(|before| before.parse().ok())
         {
-            workspace.load_history(before);
+            load_history(scroller, &row, before, workspace, anchor);
             return;
         }
+    }
+}
+
+/// Reads the history `row`, a row of history not loaded, stands for, and
+/// notes where the row after it is: the history arrives above it, and
+/// `keep_history_anchor` keeps it there. The browser's own anchoring does
+/// not act while the view rests at its top.
+fn load_history(
+    scroller: &web_sys::Element,
+    row: &web_sys::Element,
+    before: u64,
+    workspace: Workspace,
+    anchor: StoredValue<Option<(String, f64)>>,
+) {
+    let next = row
+        .closest("[id^=row-]")
+        .ok()
+        .flatten()
+        .and_then(|row| row.next_element_sibling());
+    if let Some(next) = next {
+        let offset =
+            next.get_bounding_client_rect().top() - scroller.get_bounding_client_rect().top();
+        anchor.set_value(Some((next.id(), offset)));
+    }
+    workspace.load_history(before);
+}
+
+/// Puts the row noted by `load_history` back where it was, once rows
+/// arrived above it; the note goes once the history is read.
+fn keep_history_anchor(
+    scroller: &web_sys::Element,
+    workspace: Workspace,
+    anchor: StoredValue<Option<(String, f64)>>,
+) {
+    let Some((id, offset)) = anchor.get_value() else {
+        return;
+    };
+    let document = web_sys::window().and_then(|window| window.document());
+    if let Some(row) = document.and_then(|document| document.get_element_by_id(&id)) {
+        let now = row.get_bounding_client_rect().top() - scroller.get_bounding_client_rect().top();
+        let moved = now - offset;
+        if moved.abs() >= 1.0 {
+            scroller.set_scroll_top(scroller.scroll_top() + moved.round() as i32);
+        }
+    }
+    let loading = workspace
+        .selected
+        .get_untracked()
+        .is_some_and(|session_id| {
+            untrack(|| {
+                workspace.with_store(|store| {
+                    store
+                        .sessions
+                        .get(&session_id)
+                        .is_some_and(|state| state.history.loading.is_some())
+                })
+            })
+        });
+    if !loading {
+        anchor.set_value(None);
     }
 }
 
