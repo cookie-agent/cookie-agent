@@ -12,7 +12,7 @@ use cookie_agent_protocol::{
     SessionGoalLifecycleParams, SessionGoalSetParams,
 };
 
-use crate::runtime::producers::ProducerAuthority;
+use crate::runtime::messaging::producers::ProducerAuthority;
 
 const PRESET: &str = "goal-choice";
 

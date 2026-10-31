@@ -58,6 +58,7 @@ pub use machines_tool::machines_tool_specs;
 pub use memory_tools::memory_tool_specs;
 pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
 pub use projects::ProjectError;
+pub use runtime::artifacts::uploads::{MAX_UPLOADS_PER_CONNECTION, MediaError};
 pub use runtime::attachments::{DialInClaim, SessionRuntimeRequest, SessionRuntimes};
 pub use runtime::chatgpt::CHATGPT_MAINTENANCE_INTERVAL;
 pub use runtime::configuration::{
@@ -66,29 +67,28 @@ pub use runtime::configuration::{
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).
-pub use runtime::handles::SubagentScope;
-pub use runtime::machine_api::RememberedRuntimeFacts;
-pub use runtime::memory_api::MemoryRequestError;
-pub use runtime::messaging_api::{
+pub use runtime::delegation::handles::SubagentScope;
+pub use runtime::machines::api::RememberedRuntimeFacts;
+pub use runtime::memory::api::MemoryRequestError;
+pub use runtime::messaging::api::{
     MESSAGE_DISABLED, MESSAGE_ENGINE_SHUTDOWN, MESSAGE_INBOX_FULL, MESSAGE_INFLIGHT_FULL,
     MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED,
     MESSAGE_NOT_TREE_PEER, MESSAGE_SELF_SEND, MESSAGE_UNKNOWN_SESSION,
 };
-pub use runtime::official_agents::{
+pub use runtime::official::agents::{
     OFFICIAL_AGENTS_REFRESH, OFFICIAL_AGENTS_URL, OfficialAgentsReport,
 };
-pub use runtime::official_skills::{
+pub use runtime::official::onboarding::{
+    OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
+};
+pub use runtime::official::skills::{
     OFFICIAL_SKILLS_REFRESH, OFFICIAL_SKILLS_URL, OfficialSkillsReport, UserSkillRoots,
     version_satisfies,
-};
-pub use runtime::onboarding::{
-    OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
 };
 pub use runtime::push_signals::{
     NeedsYouItem, NeedsYouSignal, PushSignal, SettledOutcome, SettledSignal,
 };
 pub use runtime::restart::{RestartHook, RestartScheduled, RestartStatus};
-pub use runtime::uploads::{MAX_UPLOADS_PER_CONNECTION, MediaError};
 pub use runtime::{
     AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,
     Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,

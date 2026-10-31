@@ -11,7 +11,7 @@ use cookie_agent_protocol::{
 
 use super::{
     ActiveRun, ApprovalTerminal, Engine, EngineError, Event, SessionCommand, UserInputInterception,
-    approval_projection::{approval_records, approval_run_id},
+    approval::projection::{approval_records, approval_run_id},
     helpers::safe_error,
 };
 
@@ -157,7 +157,10 @@ impl Engine {
                         session,
                         &content,
                         &model,
-                        &super::uploads::catalog_input_media(&active.policy.runtime, &model),
+                        &super::artifacts::uploads::catalog_input_media(
+                            &active.policy.runtime,
+                            &model,
+                        ),
                     )
                     .await?;
                 self.on_actor(session, move |engine| {

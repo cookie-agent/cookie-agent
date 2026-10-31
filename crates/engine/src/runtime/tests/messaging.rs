@@ -3,7 +3,7 @@ use cookie_agent_protocol::{
     ProducerIdempotencyKey, ProducerOwner, RunId, SessionId, SessionOrigin, ToolCallId,
 };
 
-use crate::runtime::messaging_api::{
+use crate::runtime::messaging::api::{
     MESSAGE_INFLIGHT_FULL, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED, MESSAGE_NOT_TREE_PEER,
     MESSAGE_SELF_SEND, relationship_label,
 };
@@ -143,7 +143,7 @@ async fn agent_message_inflight_window_is_directed_and_idempotent() {
         .create_session(selection.clone())
         .expect("sender");
     let recipient = tree_recipient(&fixture.engine, sender.session_id);
-    let authority = crate::runtime::producers::ProducerAuthority {
+    let authority = crate::runtime::messaging::producers::ProducerAuthority {
         owner: ProducerOwner::Agent {
             session_id: sender.session_id,
         },
@@ -177,7 +177,7 @@ async fn agent_message_inflight_window_is_directed_and_idempotent() {
     );
     assert_eq!(send("one").expect("idempotent retry"), first);
     let other = SessionId::new_v7();
-    let other_authority = crate::runtime::producers::ProducerAuthority {
+    let other_authority = crate::runtime::messaging::producers::ProducerAuthority {
         owner: ProducerOwner::Agent { session_id: other },
         connection_epoch: None,
     };
@@ -230,7 +230,7 @@ async fn agent_message_hop_guard_rejects_above_limit_and_zero_disables_it() {
         .create_session(selection.clone())
         .expect("sender");
     let recipient = tree_recipient(&fixture.engine, sender.session_id);
-    let authority = crate::runtime::producers::ProducerAuthority {
+    let authority = crate::runtime::messaging::producers::ProducerAuthority {
         owner: ProducerOwner::Agent {
             session_id: sender.session_id,
         },
@@ -319,7 +319,7 @@ async fn agent_message_hop_is_inherited_by_the_send_path() {
     let child = tree_recipient(&fixture.engine, sender.session_id);
     let recipient = tree_session(&fixture.engine, sender.session_id, child, 2);
     let previous_sender = SessionId::new_v7();
-    let previous_authority = crate::runtime::producers::ProducerAuthority {
+    let previous_authority = crate::runtime::messaging::producers::ProducerAuthority {
         owner: ProducerOwner::Agent {
             session_id: previous_sender,
         },

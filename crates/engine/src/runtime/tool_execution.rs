@@ -19,7 +19,7 @@ use super::{
     ActiveRun, ApprovalToolInput, Engine, EngineError, Event, OutputCapture, PreparedToolCall,
     PublishedTool, PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
     ToolRoutes,
-    approval_projection::denied_tool_failure,
+    approval::projection::denied_tool_failure,
     helpers::{safe_display, session_depth},
 };
 use crate::{
@@ -1255,7 +1255,7 @@ impl Engine {
         // The memory tools follow the snapshot: none at all without a
         // `memory` rule, whatever `memory_write` rules say, and the write
         // tools only when some memory is both readable and writable.
-        let memory = super::memory_runs::memory_access(
+        let memory = super::memory::runs::memory_access(
             true,
             &policy.agent,
             Some(&session_projection.permission_overlay),

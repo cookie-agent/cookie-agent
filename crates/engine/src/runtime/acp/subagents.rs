@@ -189,10 +189,10 @@ impl Engine {
         };
         let short_id = {
             let existing = self.existing_tree_handles(root)?;
-            super::super::handles::generate_handle(
+            crate::runtime::delegation::handles::generate_handle(
                 selection.agent.as_str(),
                 &existing,
-                super::super::handles::random_hex,
+                crate::runtime::delegation::handles::random_hex,
             )?
         };
         let child = SessionId::new_v7();

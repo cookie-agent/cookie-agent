@@ -16,7 +16,7 @@ use super::support::*;
 use crate::{
     Engine,
     crons::{StoredDisabled, StoredFire, StoredJob, StoredOutcome, StoredSchedule, StoredSkip},
-    runtime::cron_api::CronRequester,
+    runtime::cron::api::CronRequester,
 };
 
 /// What `session` waits on as a listing shows it, without loading it.
@@ -89,7 +89,7 @@ fn last_outcome(job: &StoredJob) -> StoredOutcome {
 
 /// The `ProducerMessageAccepted` events of job `id` in `session`.
 fn fire_messages(engine: &Engine, session: SessionId, id: &CronJobId) -> usize {
-    let owner = crate::runtime::cron_fire::cron_owner(id);
+    let owner = crate::runtime::cron::fire::cron_owner(id);
     engine
         .inner
         .store
@@ -277,7 +277,7 @@ async fn a_run_that_ends_before_its_fire_is_recorded_delivered_is_counted() {
 /// it tries again instead of trying at once.
 #[tokio::test]
 async fn a_failing_store_backs_the_scheduler_off() {
-    use crate::runtime::cron_fire::scheduler_sleep;
+    use crate::runtime::cron::fire::scheduler_sleep;
     let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let engine = &fixture.engine;
@@ -1356,7 +1356,7 @@ fn failures_count_across_skips_reset_on_completion_and_not_on_cancel() {
         fire.uncounted = uncounted;
         job.history.push(fire);
         let mut jobs = vec![job.clone()];
-        crate::runtime::cron_fire::record_run_end(
+        crate::runtime::cron::fire::record_run_end(
             &mut jobs,
             session,
             cookie_agent_protocol::RunId::new_v7(),

@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Engine,
-    runtime::{Inner, cron_api::CronRequester},
+    runtime::{Inner, cron::api::CronRequester},
 };
 
 /// The provider's ID.
@@ -569,7 +569,7 @@ fn kind_visible(
 /// `at` in local time and UTC.
 fn when(at: jiff::Timestamp) -> String {
     let local = at
-        .to_zoned(crate::runtime::cron_api::host_zone())
+        .to_zoned(crate::runtime::cron::api::host_zone())
         .strftime("%Y-%m-%d %H:%M:%S %Z")
         .to_string();
     format!("{local} ({at})")

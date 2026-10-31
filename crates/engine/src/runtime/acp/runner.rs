@@ -1066,7 +1066,7 @@ struct Turn<'a> {
     /// The input's end, for the turns of the current round.
     input_through_seq: u64,
     /// The claim on the round's input, released at its first commit.
-    claim: Option<super::super::producer_claims::ClaimedPrompt>,
+    claim: Option<crate::runtime::messaging::claims::ClaimedPrompt>,
     usage_update: Option<Value>,
     /// The context use the session last recorded in this run.
     context: Option<cookie_agent_protocol::AcpContextUsage>,
@@ -1081,7 +1081,7 @@ struct Turn<'a> {
     /// The agent's terminals, by ID.
     terminals: HashMap<String, TerminalRoute>,
     /// Claims on input steered into the turn, released at its next commit.
-    steer_claims: Vec<super::super::producer_claims::ClaimedPrompt>,
+    steer_claims: Vec<crate::runtime::messaging::claims::ClaimedPrompt>,
     /// Input was taken to steer that the agent did not take: the next round
     /// sends it.
     unsteered: bool,
@@ -1105,7 +1105,7 @@ struct Turn<'a> {
 /// A `_session/steering` request on its way.
 struct PendingSteer {
     answer: tokio::sync::oneshot::Receiver<Result<String, String>>,
-    claim: super::super::producer_claims::ClaimedPrompt,
+    claim: crate::runtime::messaging::claims::ClaimedPrompt,
     /// The user inputs it carries, still waiting: their admission
     /// sequence numbers, promoted once the agent takes them.
     inputs: Vec<u64>,
@@ -3238,7 +3238,8 @@ impl Engine {
         let Ok(log) = self.inner.store.log(session) else {
             return Vec::new();
         };
-        let mut inputs = super::super::mailbox::pending_inputs(&log.event_snapshot(), run);
+        let mut inputs =
+            crate::runtime::messaging::mailbox::pending_inputs(&log.event_snapshot(), run);
         inputs.retain(|input| !declined.contains(&input.admission_seq));
         let held = inputs
             .iter()
@@ -3291,7 +3292,7 @@ impl Engine {
         held: &[u64],
     ) -> Result<(Vec<u64>, u64), EngineError> {
         self.release_steered_inputs(session);
-        let pending = super::super::mailbox::pending_inputs(
+        let pending = crate::runtime::messaging::mailbox::pending_inputs(
             &self.inner.store.log(session)?.event_snapshot(),
             run,
         );

@@ -161,7 +161,7 @@ fn target(
     capability: &str,
     workspace: Option<String>,
 ) -> Result<crate::DelegatedCapability, ToolError> {
-    crate::runtime::runtime_delegation::parse_capability(capability, workspace)
+    crate::runtime::delegation::runtimes::parse_capability(capability, workspace)
         .map_err(ToolError::execution)
 }
 
@@ -450,7 +450,7 @@ impl PreparedExecutor for MachinesExecutor {
 /// What `attach_machine` returns: where the new tools run, which they are,
 /// then the workspace's `AGENTS.md`, which later runs get in their context
 /// turn.
-fn attached_text(attached: &crate::runtime::machine_attach::AttachedMachine) -> String {
+fn attached_text(attached: &crate::runtime::machines::attach::AttachedMachine) -> String {
     let attachment = &attached.attachment;
     let mut text = format!(
         "Attached `{}/{}` as attachment `{}`.",
@@ -509,7 +509,7 @@ fn attached_text(attached: &crate::runtime::machine_attach::AttachedMachine) -> 
 }
 
 /// One line of `attach_machine`'s tool list.
-fn tool_line(tool: &crate::runtime::machine_attach::AttachedTool) -> String {
+fn tool_line(tool: &crate::runtime::machines::attach::AttachedTool) -> String {
     let mut line = format!("\n- `{}`", tool.name);
     if let Some(machine) = &tool.machine {
         line.push_str(&format!(" with `machine: \"{machine}\"`"));
@@ -529,7 +529,7 @@ mod tests {
     use cookie_agent_protocol::paths::PathStyle;
 
     use super::{attach_label, attached_text};
-    use crate::runtime::machine_attach::{AttachedMachine, AttachedTool};
+    use crate::runtime::machines::attach::{AttachedMachine, AttachedTool};
 
     fn attached(tools: Option<Vec<AttachedTool>>) -> AttachedMachine {
         AttachedMachine {

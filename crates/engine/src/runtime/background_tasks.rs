@@ -28,7 +28,9 @@ use cookie_agent_protocol::{
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::{Engine, EngineError, output_capture::OutputCapture, producers::ProducerAuthority};
+use super::{
+    Engine, EngineError, messaging::producers::ProducerAuthority, output_capture::OutputCapture,
+};
 
 use crate::{ToolCompletion, ToolError, ToolProgress, ToolResultTruncationPolicy};
 
@@ -558,7 +560,7 @@ impl Engine {
                 .resolve_subagent_target(
                     session,
                     job,
-                    super::handles::SubagentScope::DirectChildren,
+                    super::delegation::handles::SubagentScope::DirectChildren,
                 )
                 .is_ok()
             {
@@ -870,7 +872,10 @@ impl Engine {
                 mode: ProducerDeliveryMode::Steer,
                 idempotency_key: ProducerIdempotencyKey::new(COMPLETION_KEY)
                     .expect("static background idempotency key is valid"),
-                description: super::producers::producer_description("Background: ", summary),
+                description: super::messaging::producers::producer_description(
+                    "Background: ",
+                    summary,
+                ),
                 body,
             },
             None,

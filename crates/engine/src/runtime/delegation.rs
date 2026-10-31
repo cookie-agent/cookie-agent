@@ -1,3 +1,6 @@
+pub(crate) mod handles;
+pub(super) mod reports;
+pub(crate) mod runtimes;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{
@@ -19,10 +22,10 @@ use tokio_util::sync::CancellationToken;
 use super::{
     DelegatedResumeAdmission, Engine, EngineError, Event, SessionCommand,
     admission::{AdmissionGuard, InflightDelegation},
-    handles::SubagentScope,
+    delegation::handles::SubagentScope,
     helpers::{invocation_id, safe_code, safe_display, safe_error, session_depth},
-    mailbox::pending_inputs,
-    producers::ProducerAuthority,
+    messaging::mailbox::pending_inputs,
+    messaging::producers::ProducerAuthority,
 };
 use crate::{
     EngineHistoryView,
@@ -70,7 +73,7 @@ pub(crate) struct DelegationRuntimeState {
     /// The new-session cron jobs `cron_run` calls run now as delegated
     /// children, by the call's ID, while the child is admitted
     /// (`docs/site/specs/cron.md` section 8.2).
-    pub(crate) cron_runs: Mutex<HashMap<ToolCallId, super::cron_run::CronDelegation>>,
+    pub(crate) cron_runs: Mutex<HashMap<ToolCallId, super::cron::run::CronDelegation>>,
     /// A signal per session a subagent wait watches, sent when something it
     /// reads may have changed (see [`Engine::watch_subagent`]). An entry
     /// lives while a wait holds its receiver.
@@ -271,7 +274,7 @@ impl Engine {
             .runs
             .get(&run)
             .and_then(|run| run.pending_calls.get(&tool_call_id))
-            .is_none_or(|name| !super::cron_run::is_delegating_tool(name))
+            .is_none_or(|name| !super::cron::run::is_delegating_tool(name))
         {
             return false;
         }
@@ -344,7 +347,7 @@ impl Engine {
         if run
             .pending_calls
             .get(&parent_tool_call_id)
-            .is_some_and(|tool| super::cron_run::is_delegating_tool(tool))
+            .is_some_and(|tool| super::cron::run::is_delegating_tool(tool))
         {
             let result = cancelled_delegate_result_with_reason(
                 None,
@@ -1560,7 +1563,7 @@ impl Engine {
             .is_some_and(|run| {
                 run.pending_calls
                     .get(&tool_call_id)
-                    .is_some_and(|tool| super::cron_run::is_delegating_tool(tool))
+                    .is_some_and(|tool| super::cron::run::is_delegating_tool(tool))
             });
         if !pending {
             return Ok(false);
@@ -2670,7 +2673,7 @@ impl Engine {
                     .goal_producer_projection(child_session_id)?
                     .messages
                     .iter()
-                    .any(super::producers::pending)
+                    .any(super::messaging::producers::pending)
                 || self.producer_wake_in_flight(child_session_id);
             if !running {
                 let text = last_assistant_message(&child);
@@ -3816,10 +3819,10 @@ fn preview_line_count(preview: &str) -> u64 {
 }
 
 /// The report a background delegation's first turn sends, as every later
-/// turn's (`super::subagent_reports`). History renders recorded
+/// turn's (`self::reports`). History renders recorded
 /// `<subagent_notification>` messages as they were.
 pub(super) fn render_background_completion(teaser: &DelegateTeaser) -> String {
-    super::subagent_reports::render_subagent_report(teaser)
+    self::reports::render_subagent_report(teaser)
 }
 
 pub(crate) fn freeze_delegated_child_policy(

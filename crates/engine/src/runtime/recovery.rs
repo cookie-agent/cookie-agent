@@ -7,7 +7,7 @@ use cookie_agent_protocol::{
 
 use super::{
     Engine, EngineError, Event, ToolCallFailureCode, ToolFailure,
-    approval_projection::{approval_records, approval_run_id},
+    approval::projection::{approval_records, approval_run_id},
     delegation::{
         cancelled_delegate_result, cancelled_delegate_result_with_reason,
         completed_delegate_result, delegate_failure_result, is_delegation_event_append_failure,
@@ -99,7 +99,7 @@ impl Engine {
             }
             for run in session.runs.values() {
                 for (tool_call_id, tool) in &run.pending_calls {
-                    if super::cron_run::is_delegating_tool(tool) {
+                    if super::cron::run::is_delegating_tool(tool) {
                         continue;
                     }
                     let failure = restart_tool_failure();
@@ -194,7 +194,7 @@ impl Engine {
                     run.pending_calls
                         .get(&entry.reservation.parent_tool_call_id)
                 })
-                .is_some_and(|tool| super::cron_run::is_delegating_tool(tool));
+                .is_some_and(|tool| super::cron::run::is_delegating_tool(tool));
             let teaser =
                 self.finished_teaser(entry.reservation.invocation_id, SessionStatus::Failed);
             self.inner.delegation_events.mark_finished_with_reason(
@@ -269,7 +269,7 @@ impl Engine {
             )
         }) {
             for (call, tool) in &run.pending_calls {
-                if super::cron_run::is_delegating_tool(tool) {
+                if super::cron::run::is_delegating_tool(tool) {
                     let recovery_key = (session_id, run.id, *call);
                     if self
                         .inner

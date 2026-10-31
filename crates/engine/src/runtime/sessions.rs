@@ -1,3 +1,7 @@
+pub(super) mod delete;
+pub(super) mod history;
+pub(super) mod residency;
+pub(super) mod unread;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -256,10 +260,10 @@ impl Engine {
         // A new root begins an empty tree, so its first handle is trivially
         // unique; it still goes through the same generation path so every
         // session carries a handle uniformly.
-        let short_id = super::handles::generate_handle(
+        let short_id = super::delegation::handles::generate_handle(
             selection.agent.as_str(),
             &HashSet::new(),
-            super::handles::random_hex,
+            super::delegation::handles::random_hex,
         )?;
         let creation = Event::SessionCreated {
             cron: cron.clone(),
@@ -873,7 +877,7 @@ impl Engine {
     ///
     /// An upload still leased, or an artifact an input being admitted holds,
     /// is kept: the lease lock is held throughout, so neither can change
-    /// while the sweep decides (see [`super::uploads`]).
+    /// while the sweep decides (see [`super::artifacts::uploads`]).
     async fn collect_reverted_artifacts(&self, session: SessionId, dropped: HashSet<String>) {
         if dropped.is_empty() {
             return;

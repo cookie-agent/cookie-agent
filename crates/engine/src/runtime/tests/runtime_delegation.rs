@@ -17,7 +17,7 @@ use cookie_agent_protocol::{
 use super::support::*;
 use crate::{
     SessionRuntimes,
-    runtime::runtime_delegation::CapabilitiesParam,
+    runtime::delegation::runtimes::CapabilitiesParam,
     runtimes::{RuntimeListingState, StartError, StartedRuntime},
 };
 

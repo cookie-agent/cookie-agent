@@ -11,7 +11,7 @@ use cookie_agent_protocol::{
 
 use super::background_tasks::{JobControl, JobProvider, background_result, start_job_run};
 use super::support::*;
-use crate::runtime::producers::ProducerAuthority;
+use crate::runtime::messaging::producers::ProducerAuthority;
 
 /// How many `<subagent_report>` messages `session` accepted.
 fn subagent_reports(projection: &crate::session::SessionProjection) -> usize {

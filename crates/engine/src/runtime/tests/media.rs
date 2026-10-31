@@ -12,8 +12,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{EngineError, MediaError};
 
-use super::super::uploads::UPLOAD_LEASE;
 use super::support::*;
+use crate::runtime::artifacts::uploads::UPLOAD_LEASE;
 
 const IMAGE_CAPABILITIES: &str = "input = [\"text\", \"image\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\nmedia = { image = { mime_types = [\"image/png\"], max_bytes = 20971520, max_count = 1 } }";
 const TEXT_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\nmedia = {}";

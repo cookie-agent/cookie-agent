@@ -324,14 +324,19 @@ impl Engine {
             return;
         };
         if projection.status == SessionStatus::Running
-            || super::residency::has_runless_pending_inputs(&projection.log.event_snapshot())
+            || super::sessions::residency::has_runless_pending_inputs(
+                &projection.log.event_snapshot(),
+            )
         {
             return;
         }
         let Ok(producers) = self.goal_producer_projection(root) else {
             return;
         };
-        if producers.messages.iter().any(super::producers::pending)
+        if producers
+            .messages
+            .iter()
+            .any(super::messaging::producers::pending)
             || producers
                 .goal
                 .as_ref()
@@ -385,7 +390,7 @@ impl Engine {
                     || state.registrations.iter().any(|registration| {
                         match &registration.authority.owner {
                             ProducerOwner::Tool { .. } | ProducerOwner::Delegation { .. } => true,
-                            owner if super::cron_fire::is_cron_owner(owner) => false,
+                            owner if super::cron::fire::is_cron_owner(owner) => false,
                             ProducerOwner::External { .. } => true,
                             _ => false,
                         }

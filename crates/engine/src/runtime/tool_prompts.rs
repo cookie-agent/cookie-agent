@@ -116,7 +116,7 @@ impl Engine {
         let providers = self.session_tool_sources(session)?;
         // The memory provider decides from the run's frozen policy, with the
         // visibility test the tool list uses (memory spec section 16.9.1).
-        let mut memory_access = super::memory_runs::memory_access(
+        let mut memory_access = super::memory::runs::memory_access(
             true,
             &policy.agent,
             Some(&projection.permission_overlay),

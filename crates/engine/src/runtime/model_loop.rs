@@ -406,7 +406,7 @@ impl Engine {
                     params.session_id,
                     &params.content,
                     model,
-                    &super::uploads::catalog_input_media(&run_policy.runtime, model),
+                    &super::artifacts::uploads::catalog_input_media(&run_policy.runtime, model),
                 )
                 .await?,
             )
@@ -852,7 +852,7 @@ impl Engine {
         let restart_hold = self.hold_restart();
         let task = tokio::spawn(async move {
             let _restart_hold = restart_hold;
-            let _slot = super::mailbox::RunTaskSlot {
+            let _slot = super::messaging::mailbox::RunTaskSlot {
                 engine: engine.clone(),
                 run_id,
             };
@@ -1912,7 +1912,7 @@ impl Engine {
         policy: &FrozenRunPolicy,
         sticky_entry: &mut usize,
         replay_base: &mut ReplayEvaluationBase,
-        prompt_events: super::producer_claims::ClaimedPrompt,
+        prompt_events: super::messaging::claims::ClaimedPrompt,
         mut tools: Vec<ToolDefinition>,
     ) -> Result<AttemptTurn, EngineError> {
         let chain = &policy.selected_suffix;
@@ -2914,7 +2914,7 @@ impl Engine {
         session: SessionId,
         run: RunId,
         attempt_id: cookie_agent_protocol::AttemptId,
-        request_claim: &mut super::producer_claims::ClaimedPrompt,
+        request_claim: &mut super::messaging::claims::ClaimedPrompt,
         failure: crate::PluginHookFailure,
     ) -> EngineError {
         if let Err(error) = self

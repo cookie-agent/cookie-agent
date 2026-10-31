@@ -373,6 +373,8 @@ fn read_verified_file_numbered(
 }
 
 mod platform;
+pub(crate) mod reads;
+pub(crate) mod uploads;
 
 /// One tree's content-addressed blobs. Each is named by the SHA-256 of its
 /// content and never changes once published; readers verify the digest.

@@ -23,7 +23,7 @@
 //! exists, and holds the engine through a handle bound once the engine is
 //! made. Composition publishes its tools only to runs that have memory,
 //! and its write tools only to runs that can both read and write some
-//! memory ([`crate::runtime::memory_runs`]); the permission rules alone
+//! memory ([`crate::runtime::memory::runs`]); the permission rules alone
 //! decide what a run may change (section 16.9.11).
 
 use std::sync::{Arc, OnceLock, Weak};
@@ -56,7 +56,7 @@ use crate::{
     },
     runtime::{
         Inner,
-        memory_runs::{MemoryAccess, MemoryCaller},
+        memory::runs::{MemoryAccess, MemoryCaller},
     },
 };
 

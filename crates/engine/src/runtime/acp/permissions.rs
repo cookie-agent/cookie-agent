@@ -494,7 +494,7 @@ impl Engine {
             request,
             executor,
             true,
-            super::super::approval_flow::ApprovalToolInput {
+            crate::runtime::approval::flow::ApprovalToolInput {
                 tool_call_id,
                 origin: None,
             },

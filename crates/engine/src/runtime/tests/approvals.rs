@@ -679,11 +679,11 @@ async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
         .expect("reopened")
         .log
         .event_snapshot();
-    let conversation = crate::runtime::approval_context::render(
+    let conversation = crate::runtime::approval::context::render(
         &restarted,
         None,
         reviewed[1].0,
-        crate::runtime::approval_context::Bounds::new(None, None, ""),
+        crate::runtime::approval::context::Bounds::new(None, None, ""),
     )
     .expect("render");
     assert_eq!(conversation.reviews.len(), 1);

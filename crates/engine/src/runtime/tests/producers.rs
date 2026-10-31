@@ -20,7 +20,7 @@ use cookie_agent_protocol::{
     SessionGoalSetParams, SessionProducersParams,
 };
 
-use crate::runtime::producers::ProducerAuthority;
+use crate::runtime::messaging::producers::ProducerAuthority;
 
 pub(crate) fn producer_authority() -> ProducerAuthority {
     ProducerAuthority {

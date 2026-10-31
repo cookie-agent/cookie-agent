@@ -15,7 +15,7 @@ use cookie_agent_protocol::{
     ProducerSourceStatus, SessionProducersParams,
 };
 
-use crate::runtime::producers::ProducerAuthority;
+use crate::runtime::messaging::producers::ProducerAuthority;
 
 const DISCARD_CALLBACK_PLUGIN: &str = r#"
 import json, os, sys

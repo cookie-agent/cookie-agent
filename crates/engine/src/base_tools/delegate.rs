@@ -11,7 +11,7 @@ use cookie_agent_runtime_api::{
 use serde::{Deserialize, Serialize};
 
 use super::{base_presentation, prepared_operation, prepared_resource};
-use crate::runtime::runtime_delegation::{CapabilitiesParam, parse_capability};
+use crate::runtime::delegation::runtimes::{CapabilitiesParam, parse_capability};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 

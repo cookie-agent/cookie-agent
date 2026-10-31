@@ -9,7 +9,7 @@ use cookie_agent_protocol::{
     SessionRecallInputResult, SessionStatus, SessionSubmitInputParams, SessionSubmitInputResult,
 };
 
-use super::{Engine, EngineError, Event, mailbox::pending_inputs};
+use super::{Engine, EngineError, Event, messaging::mailbox::pending_inputs};
 
 /// Times `submit_input` re-reads a session whose run started or ended while
 /// the input was on its way. Each wait is longer than the last.
@@ -291,7 +291,7 @@ impl Engine {
                 session,
                 &content,
                 &selection.model.model,
-                &super::uploads::catalog_input_media(
+                &super::artifacts::uploads::catalog_input_media(
                     &self.current_runtime(),
                     &selection.model.model,
                 ),

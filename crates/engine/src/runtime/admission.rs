@@ -283,7 +283,11 @@ impl Engine {
         let child_session_id = entry.reservation.child_session_id;
         let short_id = {
             let existing = self.existing_tree_handles(root)?;
-            super::handles::generate_handle(agent.as_str(), &existing, super::handles::random_hex)?
+            super::delegation::handles::generate_handle(
+                agent.as_str(),
+                &existing,
+                super::delegation::handles::random_hex,
+            )?
         };
         let creation = Event::SessionCreated {
             cron: cron

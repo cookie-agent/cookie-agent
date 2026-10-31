@@ -361,7 +361,7 @@ async fn several_machines_publish_one_tool_routed_by_machine() {
             .engine
             .attachment_tools(session, &policy, &attached.name)
             .expect("attachment tools"),
-        [crate::runtime::machine_attach::AttachedTool {
+        [crate::runtime::machines::attach::AttachedTool {
             name: "write".into(),
             machine: Some("labpc".into()),
             deferred: None,

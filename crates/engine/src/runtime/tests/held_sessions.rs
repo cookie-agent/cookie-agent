@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 
 use super::support::*;
 use crate::runtime::ModelRetrySleepMode;
-use crate::runtime::producers::ProducerAuthority;
+use crate::runtime::messaging::producers::ProducerAuthority;
 use crate::{Engine, EngineError, PushSignal, SettledOutcome};
 
 fn client() -> EventOrigin {

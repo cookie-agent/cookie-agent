@@ -620,9 +620,11 @@ async fn bench(target: u64) {
     let model_state = time(20, || {
         cookie_agent_protocol::SessionModelState::from_events(&snapshot)
     });
-    let pending = time(20, || super::super::mailbox::pending_inputs(&snapshot, run));
+    let pending = time(20, || {
+        crate::runtime::messaging::mailbox::pending_inputs(&snapshot, run)
+    });
     let runless = time(20, || {
-        super::super::residency::has_runless_pending_inputs(&snapshot)
+        crate::runtime::sessions::residency::has_runless_pending_inputs(&snapshot)
     });
     let log = engine.inner.store.log(session).expect("log");
     let acp_subagent = time(20, || log.is_acp_subagent());

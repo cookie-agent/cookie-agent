@@ -113,7 +113,7 @@ pub fn base_layer_tool_specs(delegate_target: &str) -> Vec<ToolSpec> {
     let mut specs = vec![SkillTool::spec()];
     specs.extend(DelegateToolProvider::specs(
         &[delegate_target],
-        crate::runtime::runtime_delegation::CapabilitiesParam::Optional,
+        crate::runtime::delegation::runtimes::CapabilitiesParam::Optional,
     ));
     specs.push(MessageToolProvider::spec());
     specs.push(GoalTools::get_spec());
@@ -138,7 +138,7 @@ pub fn builtin_tool_groups(
             DelegateToolProvider::GROUP,
             names(DelegateToolProvider::specs(
                 &[delegate_target],
-                crate::runtime::runtime_delegation::CapabilitiesParam::Optional,
+                crate::runtime::delegation::runtimes::CapabilitiesParam::Optional,
             )),
         ),
         (

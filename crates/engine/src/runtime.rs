@@ -46,59 +46,37 @@ use crate::{
 pub(crate) mod acp;
 mod admission;
 mod agent_md;
-mod agent_memory;
-mod approval_api;
-mod approval_context;
-mod approval_flow;
-mod approval_projection;
-pub(crate) mod artifact_reads;
+mod approval;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
 pub mod chatgpt;
-mod runtime_producers;
-mod subagent_reports;
+pub(crate) mod cron;
+pub(crate) mod machines;
+pub(crate) mod memory;
+pub(crate) mod messaging;
+pub(crate) mod official;
 pub(crate) use background_tasks::{BackgroundActor, Stopped};
 mod blocking_io;
 pub(crate) mod compaction;
 pub(crate) mod configuration;
-mod delegation;
-mod get_history;
-pub(crate) mod handles;
+pub(crate) mod delegation;
 mod helpers;
 mod internal_agents;
 mod loop_guard;
-pub(crate) mod machine_api;
-pub(crate) mod machine_attach;
-mod mailbox;
-pub(crate) mod memory_api;
-pub(crate) mod memory_runs;
-pub(crate) mod messaging_api;
 mod model_loop;
-pub(crate) mod official_agents;
-pub(crate) mod official_skills;
-pub(crate) mod onboarding;
 mod output_capture;
 mod permission_api;
 pub(crate) mod plugin_diagnostics;
-mod producer_claims;
-mod project_api;
-pub(crate) mod runtime_delegation;
-pub(crate) use project_api::EngineMemoryOwners;
-pub(crate) mod cron_api;
-mod cron_fire;
-mod cron_run;
-pub(crate) mod producers;
+pub(crate) use memory::projects::EngineMemoryOwners;
 pub(crate) mod prompt_blocks;
 pub(crate) mod push_signals;
 mod recovery;
-mod residency;
 pub(crate) mod restart;
 mod runs;
 mod runtime_notes;
 mod runtime_tables;
-mod session_delete;
-mod sessions;
+pub(crate) mod sessions;
 mod skills;
 mod submit;
 /// Test-only hooks; the module body is `#![cfg(test)]`.
@@ -108,11 +86,8 @@ pub(crate) mod tests;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
-pub(crate) mod transfers;
-mod unread;
-pub(crate) mod uploads;
 
-pub(crate) use artifact_reads::read_artifact_async;
+pub(crate) use artifacts::reads::read_artifact_async;
 pub(crate) use artifacts::{ArtifactRouter, SessionArtifacts};
 
 /// Session id for artifact/capture tests that do not model tree placement.
@@ -120,11 +95,11 @@ pub(crate) use artifacts::{ArtifactRouter, SessionArtifacts};
 pub(crate) fn test_session_id() -> cookie_agent_protocol::SessionId {
     cookie_agent_protocol::SessionId::new_v7()
 }
-use approval_flow::{
+use approval::flow::{
     ApprovalEvaluationTransition, ApprovalRuntimeState, ApprovalTerminal, ApprovalToolInput,
     ModelApprovalInput, PreparedApprovalInvalidation, ReviewOutcome,
 };
-pub(crate) use approval_flow::{ApprovalOutcome, PendingApproval, ReviewerDenial};
+pub(crate) use approval::flow::{ApprovalOutcome, PendingApproval, ReviewerDenial};
 #[cfg(test)]
 pub(crate) use artifacts::ArtifactStore;
 #[cfg(test)]
@@ -133,18 +108,18 @@ pub(crate) use blocking_io::gate as block_artifact_io_for_test;
 pub(crate) use compaction::ContextTokenEstimator;
 use compaction::{CompactionDeferredKind, CompactionState};
 use delegation::DelegationRuntimeState;
-pub use get_history::EngineHistoryView;
 use helpers::safe_code;
 pub(crate) use internal_agents::FrozenInternalAgentPolicy;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use internal_agents::InternalAgentLimits;
 use internal_agents::{InternalAgentExecution, InternalAgentHistoryInput};
-use mailbox::SessionRuntimeState;
-pub use messaging_api::{AgentMessageHandle, AgentMessageInvocation, AgentRecipientState};
+pub use messaging::api::{AgentMessageHandle, AgentMessageInvocation, AgentRecipientState};
+use messaging::mailbox::SessionRuntimeState;
 pub(crate) use output_capture::OutputCapture;
 use output_capture::OutputState;
 pub(crate) use output_capture::finish_page;
 use plugin_diagnostics::{PluginDiagnosticsState, run_plugin_diagnostic_aggregator};
+pub use sessions::history::EngineHistoryView;
 pub use skills::SkillInvocation;
 use skills::SkillRuntimeState;
 #[cfg(test)]
@@ -208,8 +183,8 @@ pub enum EngineError {
     ConfigChangeRefused(String),
     /// `onboarding.run` would leave the daemon not set up; nothing was
     /// written.
-    #[error("onboarding is incomplete: {}", onboarding::describe_missing(.0))]
-    OnboardingIncomplete(Vec<onboarding::OnboardingRequirement>),
+    #[error("onboarding is incomplete: {}", official::onboarding::describe_missing(.0))]
+    OnboardingIncomplete(Vec<official::onboarding::OnboardingRequirement>),
     /// `onboarding.preview` since client protocol 1.56.0: there is no
     /// starter kit; the agents are official ones the daemon keeps.
     #[error("there is no starter kit: the daemon keeps the official agents itself")]
@@ -352,7 +327,7 @@ pub enum EngineError {
     Memory(String),
     /// A `memory.*` request was refused or failed.
     #[error(transparent)]
-    MemoryRequest(#[from] memory_api::MemoryRequestError),
+    MemoryRequest(#[from] memory::api::MemoryRequestError),
     /// A project request was refused or failed.
     #[error(transparent)]
     Project(#[from] crate::projects::ProjectError),
@@ -367,7 +342,7 @@ pub enum EngineError {
     Manifest(ManifestError),
     /// An upload, an artifact read, or an input's media was refused.
     #[error("{0}")]
-    Media(uploads::MediaError),
+    Media(artifacts::uploads::MediaError),
 }
 
 /// Atomic, secret-safe rejection details produced by the serialized approval transaction.
@@ -967,7 +942,7 @@ enum SessionCommand {
     },
     PromotePendingInputs {
         run: RunId,
-        reply: oneshot::Sender<Result<producer_claims::ClaimedPrompt, EngineError>>,
+        reply: oneshot::Sender<Result<messaging::claims::ClaimedPrompt, EngineError>>,
     },
 }
 
@@ -1065,7 +1040,7 @@ pub(crate) struct Inner {
     pub(crate) projects: Arc<crate::projects::ProjectStore>,
     /// The cron jobs.
     pub(crate) crons: Arc<crate::crons::CronStore>,
-    pub(crate) cron_scheduler: cron_fire::CronSchedulerState,
+    pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
     /// A restart a client scheduled, and the hook that does it.
     pub(crate) restart: restart::RestartState,
     /// The token the daemon created at start, which the started
@@ -1097,12 +1072,12 @@ pub(crate) struct Inner {
     /// When to push a notification (`runtime/push_signals.rs`).
     pub(crate) push: push_signals::PushSignalState,
     pub(crate) compaction: CompactionState,
-    pub(crate) uploads: uploads::UploadState,
-    pub(crate) onboarding: onboarding::OnboardingRuntimeState,
-    pub(crate) official_skills: official_skills::OfficialSkillsState,
-    pub(crate) official_agents: official_agents::OfficialAgentsState,
+    pub(crate) uploads: artifacts::uploads::UploadState,
+    pub(crate) onboarding: official::onboarding::OnboardingRuntimeState,
+    pub(crate) official_skills: official::skills::OfficialSkillsState,
+    pub(crate) official_agents: official::agents::OfficialAgentsState,
     /// The revision each session last saw of each memory.
-    pub(crate) memory_seen: memory_runs::SeenMemories,
+    pub(crate) memory_seen: memory::runs::SeenMemories,
     runtime: Option<tokio::runtime::Handle>,
     janitor_task: Mutex<Option<JoinHandle<()>>>,
     #[cfg(test)]
@@ -1331,7 +1306,7 @@ impl Engine {
             &published_runtime.revisions,
         )?;
         let initial_onboarding =
-            onboarding::onboarding_state(&options.config, &published_runtime.models);
+            official::onboarding::onboarding_state(&options.config, &published_runtime.models);
         let engine = Self {
             inner: Arc::new(Inner {
                 started_config: Arc::new(options.config.clone()),
@@ -1360,7 +1335,7 @@ impl Engine {
                 machines,
                 projects,
                 crons,
-                cron_scheduler: cron_fire::CronSchedulerState::default(),
+                cron_scheduler: cron::fire::CronSchedulerState::default(),
                 restart: restart::RestartState::default(),
                 served_server_token: std::sync::OnceLock::new(),
                 provider_ids: Mutex::new(provider_ids),
@@ -1386,11 +1361,11 @@ impl Engine {
                 background: background_tasks::BackgroundTaskState::default(),
                 push: push_signals::PushSignalState::default(),
                 compaction: CompactionState::default(),
-                uploads: uploads::UploadState::default(),
-                onboarding: onboarding::OnboardingRuntimeState::new(initial_onboarding),
-                official_skills: official_skills::OfficialSkillsState::new(&options.data_dir),
-                official_agents: official_agents::OfficialAgentsState::new(&options.data_dir),
-                memory_seen: memory_runs::SeenMemories::default(),
+                uploads: artifacts::uploads::UploadState::default(),
+                onboarding: official::onboarding::OnboardingRuntimeState::new(initial_onboarding),
+                official_skills: official::skills::OfficialSkillsState::new(&options.data_dir),
+                official_agents: official::agents::OfficialAgentsState::new(&options.data_dir),
+                memory_seen: memory::runs::SeenMemories::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),
                 #[cfg(test)]

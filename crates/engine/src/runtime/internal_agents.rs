@@ -1186,7 +1186,7 @@ mod tests {
             "validation must not remove replay witnesses"
         );
         assert_eq!(
-            crate::runtime::approval_context::parse_verdict(match &restored[0] {
+            crate::runtime::approval::context::parse_verdict(match &restored[0] {
                 oven_sdk::AssistantPart::Text(text) => &text.text,
                 _ => unreachable!(),
             })

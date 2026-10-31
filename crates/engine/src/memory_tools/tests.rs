@@ -12,7 +12,7 @@ use cookie_agent_runtime_api::text_tools::{LineWindow, MAX_LINE_BYTES};
 
 use crate::{
     memory::{limits::MemoryLimits, search::SearchHit, similar::NearMemory, url::MemoryUrl},
-    runtime::memory_runs::{MemoryAccess, MemoryCaller, RelatedMemory},
+    runtime::memory::runs::{MemoryAccess, MemoryCaller, RelatedMemory},
 };
 
 fn error(name: &str, arguments: serde_json::Value) -> String {
