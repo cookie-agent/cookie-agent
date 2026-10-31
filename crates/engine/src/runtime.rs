@@ -1130,7 +1130,7 @@ impl Engine {
             }
         };
         if options.config.runtimes.iter().any(|(id, template)| {
-            id.as_str() == cookie_agent_runtime_api::LOCAL_RUNTIME_ID
+            id.as_str() == cookie_agent_protocol::RuntimeId::LOCAL
                 && (!template.mcp_servers.is_empty() || !template.acp_agents.is_empty())
         }) {
             return Err(EngineError::Runtime(
@@ -1168,7 +1168,7 @@ impl Engine {
                 local_workspace.root(),
                 crate::runtimes::runtime_settings(
                     &options.config,
-                    cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+                    cookie_agent_protocol::RuntimeId::LOCAL,
                 ),
             )
             .with_mcp_hub(Arc::clone(&mcp_hub)),

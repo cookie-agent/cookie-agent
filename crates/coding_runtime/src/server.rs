@@ -1079,8 +1079,7 @@ impl Server {
                 .filter(|home| cookie_agent_protocol::runtime_protocol::is_valid_home(home)),
             capabilities: vec![CapabilityDeclaration {
                 name: cookie_agent_protocol::CapabilityName::coding(),
-                kind: RuntimeKind::new(cookie_agent_runtime_api::CODING_RUNTIME_KIND)
-                    .expect("`coding` is a valid kind"),
+                kind: RuntimeKind::coding(),
                 takes_workspace: true,
                 description: "Read, write, edit, and run commands in a workspace".into(),
             }],
@@ -1145,8 +1144,7 @@ impl Server {
         let info = RuntimeInfo::new(
             runtime_id,
             cookie_agent_protocol::CapabilityName::coding(),
-            RuntimeKind::new(cookie_agent_runtime_api::CODING_RUNTIME_KIND)
-                .expect("`coding` is a valid kind"),
+            RuntimeKind::coding(),
             runtime_id,
             None,
         )

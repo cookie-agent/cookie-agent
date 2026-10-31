@@ -2182,8 +2182,8 @@ mod tests {
         let runtime = crate::ToolOrigin::Runtime(std::sync::Arc::new(
             cookie_agent_runtime_api::RuntimeInfo::new(
                 "labpc",
-                CapabilityName::new("coding").unwrap(),
-                cookie_agent_protocol::RuntimeKind::new("coding").unwrap(),
+                CapabilityName::coding(),
+                cookie_agent_protocol::RuntimeKind::coding(),
                 "labpc_repo",
                 None,
             ),
@@ -2204,7 +2204,7 @@ mod tests {
                 ToolSource::Runtime {
                     runtime_id: RuntimeId::new("labpc").unwrap(),
                     attachment: AttachmentName::new("labpc_repo").unwrap(),
-                    capability: CapabilityName::new("coding").unwrap(),
+                    capability: CapabilityName::coding(),
                 },
             ),
             (

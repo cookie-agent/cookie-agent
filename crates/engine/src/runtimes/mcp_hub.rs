@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use cookie_agent_mcp::McpObserver;
-use cookie_agent_runtime_api::GLOBAL_RUNTIME_ID;
 
 /// An MCP server whose tools are unavailable: it failed to connect, or it
 /// dropped and did not reconnect.
@@ -78,7 +77,7 @@ impl McpObserver for GlobalObserver {
 
     fn failed(&self, failure: &cookie_agent_mcp::McpServerFailure) {
         self.0.failed(McpServerFailure {
-            runtime_id: GLOBAL_RUNTIME_ID.to_owned(),
+            runtime_id: cookie_agent_protocol::RuntimeId::GLOBAL.to_owned(),
             workspace: None,
             server: failure.server.clone(),
             reason: failure.reason.clone(),

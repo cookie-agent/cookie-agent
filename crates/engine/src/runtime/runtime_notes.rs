@@ -717,7 +717,7 @@ mod tests {
         AttachmentFacts {
             name: cookie_agent_protocol::AttachmentName::new(name).unwrap(),
             runtime: runtime.to_owned(),
-            kind: "coding".into(),
+            kind: cookie_agent_protocol::RuntimeKind::CODING.into(),
             workspace: workspace.map(str::to_owned),
             platform: platform.map(str::to_owned),
             machine: machine

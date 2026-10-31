@@ -745,8 +745,8 @@ impl Engine {
             activity.entry(runtime).or_default().background_calls += 1;
         }
         activity.retain(|runtime, _| {
-            runtime != cookie_agent_runtime_api::GLOBAL_RUNTIME_ID
-                && runtime != cookie_agent_runtime_api::LOCAL_RUNTIME_ID
+            runtime != cookie_agent_protocol::RuntimeId::GLOBAL
+                && runtime != cookie_agent_protocol::RuntimeId::LOCAL
         });
         activity
     }
@@ -866,7 +866,7 @@ mod tests {
             name: AttachmentName::new(name).unwrap(),
             runtime_id: RuntimeId::new("labpc").unwrap(),
             capability: cookie_agent_protocol::CapabilityName::coding(),
-            kind: RuntimeKind::new("coding").unwrap(),
+            kind: RuntimeKind::coding(),
             workspace: Some("/srv/api".into()),
         }
     }

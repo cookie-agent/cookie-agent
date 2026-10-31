@@ -506,7 +506,7 @@ mod tests {
                 name: AttachmentName::new("labpc").unwrap(),
                 runtime_id: RuntimeId::new("labpc").unwrap(),
                 capability: CapabilityName::coding(),
-                kind: RuntimeKind::new("coding").unwrap(),
+                kind: RuntimeKind::coding(),
                 workspace: Some("/srv/api".into()),
             },
             machine: Some(MachineName::new("labpc").unwrap()),

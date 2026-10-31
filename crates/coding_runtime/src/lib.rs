@@ -48,7 +48,7 @@ pub(crate) fn shown_root(path: impl AsRef<Path>) -> PathBuf {
 pub(crate) fn test_coding_origin(path: impl AsRef<Path>) -> cookie_agent_runtime_api::ToolOrigin {
     cookie_agent_runtime_api::ToolOrigin::Runtime(Arc::new(
         cookie_agent_runtime_api::RuntimeInfo::coding(
-            cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+            cookie_agent_protocol::RuntimeId::LOCAL,
             test_workspace(path),
         ),
     ))

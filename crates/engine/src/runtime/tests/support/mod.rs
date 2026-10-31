@@ -144,7 +144,7 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
             connected: true,
             capabilities: vec![cookie_agent_protocol::RuntimeCapabilityInfo {
                 name: cookie_agent_protocol::CapabilityName::coding(),
-                kind: cookie_agent_protocol::RuntimeKind::new("coding").expect("kind"),
+                kind: cookie_agent_protocol::RuntimeKind::coding(),
                 takes_workspace: true,
                 description: String::new(),
             }],

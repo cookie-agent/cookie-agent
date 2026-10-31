@@ -12,18 +12,10 @@ use std::{
 
 use crate::ToolProvider;
 
-/// Runtime ID of the global runtime; also its attachment name.
-pub const GLOBAL_RUNTIME_ID: &str = "global";
-/// Runtime ID of the built-in coding runtime for the daemon's working
-/// directory.
-pub const LOCAL_RUNTIME_ID: &str = "local";
-/// The kind the coding runtimes Cookie Agent ships declare. A label only: the
-/// daemon never branches on a runtime's kind.
-pub const CODING_RUNTIME_KIND: &str = "coding";
 /// Upper bound of an attachment name in bytes.
 pub const MAX_ATTACHMENT_NAME_BYTES: usize = 32;
 
-pub use cookie_agent_protocol::{CapabilityName, RuntimeKind};
+pub use cookie_agent_protocol::{CapabilityName, RuntimeId, RuntimeKind};
 
 /// The workspace a coding runtime works in.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,10 +77,10 @@ impl RuntimeInfo {
     #[must_use]
     pub fn global() -> Self {
         Self {
-            id: GLOBAL_RUNTIME_ID.to_owned(),
+            id: RuntimeId::GLOBAL.to_owned(),
             capability: CapabilityName::global(),
-            kind: RuntimeKind::new(GLOBAL_RUNTIME_ID).expect("`global` is a valid runtime kind"),
-            attachment_name: GLOBAL_RUNTIME_ID.to_owned(),
+            kind: RuntimeKind::global(),
+            attachment_name: RuntimeId::GLOBAL.to_owned(),
             workspace: None,
             home: None,
         }
@@ -121,7 +113,7 @@ impl RuntimeInfo {
         Self {
             id: id.to_owned(),
             capability: CapabilityName::coding(),
-            kind: RuntimeKind::new(CODING_RUNTIME_KIND).expect("`coding` is a valid runtime kind"),
+            kind: RuntimeKind::coding(),
             attachment_name: coding_attachment_name(id, workspace.root()),
             workspace: Some(workspace),
             home: None,

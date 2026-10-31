@@ -693,7 +693,7 @@ async fn a_memory_edit_diff_is_the_edit_tools_diff() {
                 run: cookie_agent_protocol::RunId::new_v7(),
                 origin: cookie_agent_runtime_api::ToolOrigin::Runtime(std::sync::Arc::new(
                     cookie_agent_runtime_api::RuntimeInfo::coding(
-                        cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+                        cookie_agent_protocol::RuntimeId::LOCAL,
                         workspace.clone(),
                     ),
                 )),

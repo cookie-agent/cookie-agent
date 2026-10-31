@@ -11,9 +11,8 @@ use std::{
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentSnapshot, AttachmentName, EventPayload as Event, MachineName,
     MemorySnapshot, PermissionAction, PermissionEffect, PermissionRule, ProjectName, RunId,
-    SessionId, SessionOrigin, SessionPermissionOverlay, Sha256Digest, StoredEvent,
+    RuntimeId, SessionId, SessionOrigin, SessionPermissionOverlay, Sha256Digest, StoredEvent,
 };
-use cookie_agent_runtime_api::GLOBAL_RUNTIME_ID;
 
 use super::{Engine, EngineError, event_origin};
 use crate::{
@@ -103,7 +102,7 @@ pub(crate) fn memory_access(
     overlay: Option<&SessionPermissionOverlay>,
 ) -> MemoryAccess {
     let merged = MergedRules::new(&agent.permissions, overlay, None);
-    let visible = |action: &PermissionAction| merged.offers(action, Some(GLOBAL_RUNTIME_ID));
+    let visible = |action: &PermissionAction| merged.offers(action, Some(RuntimeId::GLOBAL));
     // What no rule matches asks: without a `*` rule, every URL the rules
     // leave out is reachable.
     let patterns = |action: PermissionAction| {
@@ -111,7 +110,7 @@ pub(crate) fn memory_access(
             .rules()
             .iter()
             .map(|merged| merged.rule)
-            .filter(|rule| rule.action == action && rule.applies_to(Some(GLOBAL_RUNTIME_ID)))
+            .filter(|rule| rule.action == action && rule.applies_to(Some(RuntimeId::GLOBAL)))
             .collect::<Vec<_>>();
         let unmatched_asks = !applying.iter().any(|rule| rule.resource.as_str() == "*");
         applying
@@ -165,7 +164,7 @@ pub(crate) fn memory_rules_fingerprint(
         rules
             .iter()
             .filter(|rule| {
-                rule.action == PermissionAction::MEMORY && rule.applies_to(Some(GLOBAL_RUNTIME_ID))
+                rule.action == PermissionAction::MEMORY && rule.applies_to(Some(RuntimeId::GLOBAL))
             })
             .cloned()
             .collect::<Vec<_>>()
@@ -287,7 +286,7 @@ impl MemoryCaller {
             Some(&self.overlay),
             action,
             &url.to_string(),
-            PermissionScope::runtime(GLOBAL_RUNTIME_ID, None),
+            PermissionScope::runtime(RuntimeId::GLOBAL, None),
         )
         .0
     }
@@ -330,7 +329,7 @@ impl Engine {
         self.session_runtimes(session).is_ok_and(|attachments| {
             attachments
                 .iter()
-                .any(|attachment| attachment.runtime_id.as_str() == GLOBAL_RUNTIME_ID)
+                .any(|attachment| attachment.runtime_id.as_str() == RuntimeId::GLOBAL)
         })
     }
 
@@ -346,7 +345,7 @@ impl Engine {
         let facts = self.attachment_facts(session);
         if facts.is_empty() {
             return self
-                .runtime_machine(GLOBAL_RUNTIME_ID)
+                .runtime_machine(RuntimeId::GLOBAL)
                 .map(|machine| vec![(machine, Vec::new())])
                 .unwrap_or_default();
         }

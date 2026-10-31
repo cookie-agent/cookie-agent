@@ -164,7 +164,7 @@ impl ProtocolTemplate {
             liveness: None,
             lifetime: cookie_agent_protocol::RuntimeLifetime::Builtin,
             ..Self::new(
-                cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+                cookie_agent_protocol::RuntimeId::LOCAL,
                 connector,
                 settings,
                 Duration::ZERO,

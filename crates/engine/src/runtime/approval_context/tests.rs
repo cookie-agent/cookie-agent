@@ -77,8 +77,8 @@ impl Log {
             Event::RuntimeAttached {
                 name: cookie_agent_protocol::AttachmentName::new(name).unwrap(),
                 runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
-                capability: cookie_agent_protocol::CapabilityName::new("coding").unwrap(),
-                kind: cookie_agent_protocol::RuntimeKind::new("coding").unwrap(),
+                capability: cookie_agent_protocol::CapabilityName::coding(),
+                kind: cookie_agent_protocol::RuntimeKind::coding(),
                 workspace: Some(workspace.to_owned()),
             },
         );
@@ -145,7 +145,7 @@ impl Log {
         presentation.tool.source = Some(Open::Known(ToolSource::Runtime {
             runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
             attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
-            capability: cookie_agent_protocol::CapabilityName::new("coding").unwrap(),
+            capability: cookie_agent_protocol::CapabilityName::coding(),
         }));
         self.push(
             Some(run),

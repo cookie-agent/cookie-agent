@@ -2448,7 +2448,7 @@ fn attaching_and_detaching_keep_the_metadata_attachments_current() {
                 name: name.clone(),
                 runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
                 capability: cookie_agent_protocol::CapabilityName::coding(),
-                kind: cookie_agent_protocol::RuntimeKind::new("coding").unwrap(),
+                kind: cookie_agent_protocol::RuntimeKind::coding(),
                 workspace: Some("/srv/api".into()),
             },
         )

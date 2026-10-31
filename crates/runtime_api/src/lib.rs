@@ -52,7 +52,7 @@ pub use provider::{
     tool_presentation, tool_title_only,
 };
 pub use runtime::{
-    CODING_RUNTIME_KIND, CodingToolsFactory, DiagnosticTail, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID,
-    LocalRuntime, MAX_ATTACHMENT_NAME_BYTES, RuntimeConnection, RuntimeConnector, RuntimeInfo,
-    RuntimeKind, RuntimeOptions, ToolOrigin, WorkspaceContext, coding_attachment_name,
+    CodingToolsFactory, DiagnosticTail, LocalRuntime, MAX_ATTACHMENT_NAME_BYTES, RuntimeConnection,
+    RuntimeConnector, RuntimeInfo, RuntimeKind, RuntimeOptions, ToolOrigin, WorkspaceContext,
+    coding_attachment_name,
 };

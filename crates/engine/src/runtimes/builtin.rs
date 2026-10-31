@@ -8,13 +8,10 @@ use std::{
 use async_trait::async_trait;
 use cookie_agent_config::SkillRegistry;
 use cookie_agent_protocol::{
-    CapabilityName, RuntimeCapabilityInfo, RuntimeKind, RuntimeLifetime,
+    CapabilityName, RuntimeCapabilityInfo, RuntimeId, RuntimeKind, RuntimeLifetime,
     runtime_protocol::RuntimeMachine,
 };
-use cookie_agent_runtime_api::{
-    CODING_RUNTIME_KIND, CodingToolsFactory, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID, RuntimeInfo,
-    ToolProvider, WorkspaceContext,
-};
+use cookie_agent_runtime_api::{CodingToolsFactory, RuntimeInfo, ToolProvider, WorkspaceContext};
 
 use super::registry::{RuntimeListingState, RuntimeTemplate, StartError, StartedRuntime};
 
@@ -36,7 +33,7 @@ pub(crate) fn daemon_home() -> Option<String> {
 fn global_capability() -> RuntimeCapabilityInfo {
     RuntimeCapabilityInfo {
         name: CapabilityName::global(),
-        kind: RuntimeKind::new(GLOBAL_RUNTIME_ID).expect("`global` is a valid kind"),
+        kind: RuntimeKind::global(),
         takes_workspace: false,
         description: "The daemon's MCP servers, plugins, and global tools".into(),
     }
@@ -46,7 +43,7 @@ fn global_capability() -> RuntimeCapabilityInfo {
 pub(crate) fn coding_capability() -> RuntimeCapabilityInfo {
     RuntimeCapabilityInfo {
         name: CapabilityName::coding(),
-        kind: RuntimeKind::new(CODING_RUNTIME_KIND).expect("`coding` is a valid kind"),
+        kind: RuntimeKind::coding(),
         takes_workspace: true,
         description: "Read, write, edit, and run commands in a workspace".into(),
     }
@@ -60,7 +57,7 @@ pub(crate) struct GlobalTemplate;
 #[async_trait]
 impl RuntimeTemplate for GlobalTemplate {
     fn runtime_id(&self) -> &str {
-        GLOBAL_RUNTIME_ID
+        RuntimeId::GLOBAL
     }
 
     fn lifetime(&self) -> RuntimeLifetime {
@@ -127,7 +124,7 @@ impl LocalTemplate {
         let skills = cookie_agent_config::load_project_skills(workspace.root())
             .map_err(|error| format!("project skills: {error}"))?;
         Ok(StartedRuntime {
-            info: RuntimeInfo::coding(LOCAL_RUNTIME_ID, workspace.clone()).with_home(daemon_home()),
+            info: RuntimeInfo::coding(RuntimeId::LOCAL, workspace.clone()).with_home(daemon_home()),
             providers: (self.tools)(workspace),
             skills,
             connection: None,
@@ -144,7 +141,7 @@ impl LocalTemplate {
 #[async_trait]
 impl RuntimeTemplate for LocalTemplate {
     fn runtime_id(&self) -> &str {
-        LOCAL_RUNTIME_ID
+        RuntimeId::LOCAL
     }
 
     fn lifetime(&self) -> RuntimeLifetime {

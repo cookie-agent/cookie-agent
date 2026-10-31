@@ -268,6 +268,26 @@ kind_label!(
     "Runtime kind the runtime declares, such as `coding` or `global`."
 );
 
+impl RuntimeKind {
+    /// The kind the daemon's global runtime declares.
+    pub const GLOBAL: &'static str = "global";
+    /// The kind the coding runtimes Cookie Agent ships declare. A label only:
+    /// the daemon never branches on a runtime's kind.
+    pub const CODING: &'static str = "coding";
+
+    /// The global runtime's kind.
+    #[must_use]
+    pub fn global() -> Self {
+        Self(Self::GLOBAL.to_owned())
+    }
+
+    /// The kind of the coding runtimes Cookie Agent ships.
+    #[must_use]
+    pub fn coding() -> Self {
+        Self(Self::CODING.to_owned())
+    }
+}
+
 /// Who is on a connection. The kind names the client program; the instance
 /// identifies one running client and stays the same across its reconnects,
 /// so it can recognize events it caused.
