@@ -26,7 +26,7 @@ impl Workspace {
     /// The root of `session_id`'s tree: the shown tree's root when it holds
     /// the session, else the root its origin in the session list names,
     /// else the session itself.
-    pub(super) fn root_of(self, session_id: SessionId) -> SessionId {
+    pub(crate) fn root_of(self, session_id: SessionId) -> SessionId {
         let shown = self.tree.with_untracked(|tree| {
             tree.as_ref()
                 .filter(|tree| contains(tree, session_id))

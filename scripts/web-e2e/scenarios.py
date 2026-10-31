@@ -4683,10 +4683,13 @@ def projects(browser):
     assert labels == ["Edit the project", "Delete the project", "New session in this project"], labels
     browser.shot("project-header-hover")
 
-    # Folding is remembered across a reload.
+    # Folding is remembered across a reload, and the open session keeps
+    # its row in the folded section.
     click_row(browser, header(project) + " [data-section-toggle]")
     browser.wait("the folded section", lambda: browser.script(
         "return document.querySelector(arguments[0]).dataset.open", section(project)) == "false")
+    assert open_session_id(browser) == made
+    assert section_of(browser, made) == "project:" + project, "the open session's row left the folded section"
     browser.shot("project-folded")
     browser.go(LINK.split("#")[0])
     browser.wait("the connection", lambda: browser.text("#connected") != "")

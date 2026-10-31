@@ -267,7 +267,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     fold or unfold its section; the browser remembers it. A folded section
     still shows its sessions at work: running, or waiting on a producer
     (a goal, a background call, a subagent) to start their next run, but
-    not held ones. **+**, always
+    not held ones; its unread sessions; and the session the page shows
+    (for a subagent, its root), so opening an unread one does not make its
+    row vanish. **+**, always
     there, starts a new session in the project. Hover over a header (on a
     touch screen, press it for about half a second) for its pencil, which
     opens the project editor, and its trash. **No project** has only its

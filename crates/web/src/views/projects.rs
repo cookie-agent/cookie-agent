@@ -292,7 +292,7 @@ pub(super) struct ListedSection {
     /// that match it, in the list's order.
     sessions: Vec<SessionId>,
     /// Those of them a folded section still shows: at work (running, or
-    /// waiting on a producer) or unread.
+    /// waiting on a producer), unread, or the one the page shows.
     folded: Vec<SessionId>,
 }
 
@@ -319,6 +319,12 @@ pub(super) fn listed_sections(
         }
         let query = search_query(workspace);
         let searching = searching.get();
+        // The root of the session the page shows, so a subagent's
+        // transcript keeps its tree's row too.
+        let selected = workspace
+            .selected
+            .get()
+            .map(|session_id| workspace.root_of(session_id));
         labels.with(|labels| {
             workspace.projects.with(|projects| {
                 workspace.sessions.with(|sessions| {
@@ -341,7 +347,7 @@ pub(super) fn listed_sections(
                                 project: section.project,
                                 folded: shown
                                     .iter()
-                                    .filter(|session| row_shown(false, session))
+                                    .filter(|session| folded_shows(session, selected))
                                     .map(|session| session.session_id)
                                     .collect(),
                                 sessions: shown.iter().map(|session| session.session_id).collect(),
@@ -386,8 +392,8 @@ pub(super) fn project_list(
 }
 
 /// The root rows the project sections show, in page order: an open
-/// section's sessions, and a folded one's at work or unread; a search's
-/// matches, folded or not.
+/// section's sessions, and a folded one's at work, unread, or shown; a
+/// search's matches, folded or not.
 pub(super) fn listed_rows(
     workspace: Workspace,
     sections: Memo<Vec<ListedSection>>,
@@ -407,17 +413,21 @@ pub(super) fn listed_rows(
     })
 }
 
-/// Whether a section shows `session`'s row: an open one all of them, a
-/// folded one its sessions at work (running, or waiting on a producer)
-/// and its unread ones.
-fn row_shown(open: bool, session: &SessionMeta) -> bool {
-    open || session.unread || cookie_agent_client_state::activity::session_at_work(session)
+/// Whether a folded section still shows `session`'s row: at work (running,
+/// or waiting on a producer), unread, or `selected`, the root of the session
+/// the page shows, so a row the user just opened stays where they clicked
+/// it.
+fn folded_shows(session: &SessionMeta, selected: Option<SessionId>) -> bool {
+    session.unread
+        || selected == Some(session.session_id)
+        || cookie_agent_client_state::activity::session_at_work(session)
 }
 
 /// One section: its header, then its sessions while it is open, and its
-/// sessions at work (running, or waiting on a producer) and its unread ones
-/// while it is folded. The header draws again when the project or the
-/// section's sessions change; each row only when its own session does.
+/// sessions at work (running, or waiting on a producer), its unread ones,
+/// and the one the page shows while it is folded. The header draws again
+/// when the project or the section's sessions change; each row only when
+/// its own session does.
 fn section_view(
     rows: SessionRows,
     sections: Memo<Vec<ListedSection>>,
@@ -481,7 +491,8 @@ fn section_view(
                         .into_any();
                 }
                 // Folded, the section still shows its sessions at work,
-                // as a folded subagent tree shows its running agents.
+                // as a folded subagent tree shows its running agents, its
+                // unread ones, and the one the page shows.
                 // Its rows sit indented under the header.
                 has_rows
                     .get()
