@@ -792,9 +792,7 @@ impl Workspace {
                 return;
             }
             ClientDelivery::RecoveryFailed { session_id, error } => {
-                self.subscriptions
-                    .update_value(|subscriptions| subscriptions.recovery_failed(*session_id));
-                self.schedule_subscription_retry(*session_id);
+                self.note_recovery_failed(*session_id);
                 self.status.set(format!("recovery failed: {error}"));
                 return;
             }
@@ -1662,26 +1660,27 @@ impl Workspace {
         }
     }
 
-    fn schedule_subscription_retry(self, session_id: Option<SessionId>) {
-        let Some(selected) = self.selected.get_untracked() else {
+    /// The protocol client gave up recovering `session_id` (every
+    /// subscription when `None`): the next open subscribes it afresh, and
+    /// the viewed one is tried again once the connection had time to
+    /// settle.
+    fn note_recovery_failed(self, session_id: Option<SessionId>) {
+        let selected = self.selected.get_untracked();
+        let Some(retry) = self
+            .subscriptions
+            .try_update_value(|subscriptions| subscriptions.recovery_failed(session_id, selected))
+            .flatten()
+        else {
             return;
         };
-        if session_id.is_some_and(|session_id| session_id != selected) {
-            return;
-        }
         set_timeout(
             move || {
-                if self.selected.get_untracked() != Some(selected)
-                    || self
-                        .subscriptions
-                        .with_value(|subscriptions| subscriptions.contains(selected))
-                {
-                    return;
-                }
-                let owned = self.owned(selected);
-                let subscribe = self.subscriptions.try_update_value(|subscriptions| {
-                    subscriptions.subscribe_from_scratch(selected, owned)
-                });
+                let owned = self.owned(retry);
+                let selected = self.selected.get_untracked();
+                let subscribe = self
+                    .subscriptions
+                    .try_update_value(|subscriptions| subscriptions.retry(retry, selected, owned))
+                    .flatten();
                 if let Some(subscribe) = subscribe {
                     self.send_subscribe(subscribe);
                 }

@@ -320,13 +320,35 @@ impl Subscriptions {
 
     /// The protocol client gave up recovering `session_id` (every
     /// subscription when `None`): the next open subscribes it afresh.
-    pub fn recovery_failed(&mut self, session_id: Option<SessionId>) {
+    /// Returns the viewed session when it is among them: the client calls
+    /// [`Self::retry`] for it after [`SUBSCRIPTION_RETRY_DELAY`], once the
+    /// connection had time to settle. Other sessions resubscribe when next
+    /// opened.
+    pub fn recovery_failed(
+        &mut self,
+        session_id: Option<SessionId>,
+        viewed: Option<SessionId>,
+    ) -> Option<SessionId> {
         match session_id {
             Some(session_id) => {
                 self.states.remove(&session_id);
             }
             None => self.states.clear(),
         }
+        viewed.filter(|viewed| session_id.is_none_or(|session_id| session_id == *viewed))
+    }
+
+    /// The retry timer [`Self::recovery_failed`] asked for ran out for
+    /// `session_id`: the from-scratch subscribe to send when it is still
+    /// the viewed session (`viewed`) and nothing subscribed it meanwhile.
+    pub fn retry(
+        &mut self,
+        session_id: SessionId,
+        viewed: Option<SessionId>,
+        owned: bool,
+    ) -> Option<Subscribe> {
+        (viewed == Some(session_id) && !self.contains(session_id))
+            .then(|| self.subscribe_from_scratch(session_id, owned))
     }
 
     /// Ends `session_id`'s subscription. Returns whether it had one, so the
@@ -520,9 +542,9 @@ mod tests {
         );
         // A recovery that gives up leaves the session idle.
         subscriptions.recover(failed, false);
-        subscriptions.recovery_failed(Some(failed));
+        assert_eq!(subscriptions.recovery_failed(Some(failed), None), None);
         assert_eq!(subscriptions.state(failed), None);
-        subscriptions.recovery_failed(None);
+        subscriptions.recovery_failed(None, None);
         assert!(!subscriptions.contains(session));
         assert_eq!(
             subscriptions.subscribe_from_scratch(session, true),
@@ -532,6 +554,54 @@ mod tests {
                 from_scratch: true
             }
         );
+    }
+
+    #[test]
+    fn a_failed_recovery_retries_the_viewed_session_while_it_stays_unsubscribed() {
+        let viewed = SessionId::new_v7();
+        let other = SessionId::new_v7();
+        let mut subscriptions = Subscriptions::default();
+        subscriptions.subscribe(viewed, true, SubscribeIntent::Open);
+        subscriptions.subscribe(other, true, SubscribeIntent::Follow);
+
+        // Another session's failure retries nothing; it resubscribes when
+        // next opened.
+        assert_eq!(
+            subscriptions.recovery_failed(Some(other), Some(viewed)),
+            None
+        );
+        assert!(!subscriptions.contains(other));
+        assert_eq!(subscriptions.recovery_failed(Some(other), None), None);
+        // The viewed session's own failure, or every session's, retries it.
+        assert_eq!(
+            subscriptions.recovery_failed(Some(viewed), Some(viewed)),
+            Some(viewed)
+        );
+        assert_eq!(
+            subscriptions.recovery_failed(None, Some(viewed)),
+            Some(viewed)
+        );
+
+        // When the timer runs out the view moved on: nothing to send.
+        assert_eq!(subscriptions.retry(viewed, Some(other), true), None);
+        assert_eq!(subscriptions.retry(viewed, None, true), None);
+        // Still viewed and unsubscribed: a full replay.
+        let retry = subscriptions
+            .retry(viewed, Some(viewed), false)
+            .expect("the viewed session resubscribes");
+        assert!(retry.from_scratch);
+        assert_eq!(retry.session_id, viewed);
+        assert_eq!(
+            subscriptions.state(viewed),
+            Some(SubscriptionState::Subscribing {
+                attempt: retry.attempt,
+                owned: false,
+                resubscribe: false,
+                replay_ended: false,
+            })
+        );
+        // Subscribed meanwhile (here by the retry itself): no second one.
+        assert_eq!(subscriptions.retry(viewed, Some(viewed), false), None);
     }
 
     #[test]

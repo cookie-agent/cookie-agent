@@ -131,9 +131,34 @@ impl App {
     }
 
     /// The client gave up recovering `session_id` (every subscription when
-    /// `None`): the next open or tree refresh subscribes it afresh.
+    /// `None`): the next open or tree refresh subscribes it afresh, and the
+    /// viewed one is tried again once the connection had time to settle
+    /// ([`Self::retry_subscription`]).
     pub(super) fn note_recovery_failed(&mut self, session_id: Option<SessionId>) {
-        self.subscriptions.recovery_failed(session_id);
+        let Some(retry) = self
+            .subscriptions
+            .recovery_failed(session_id, self.selected)
+        else {
+            return;
+        };
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY).await;
+            let _ = updates.send(RpcUpdate::RetrySubscription { session_id: retry });
+        });
+    }
+
+    /// The retry [`Self::note_recovery_failed`] scheduled for `session_id`
+    /// is due: subscribe it from scratch if it is still viewed and
+    /// unsubscribed. A redial in progress resubscribes it when it lands.
+    pub(super) fn retry_subscription(&mut self, session_id: SessionId) {
+        if self.reconnecting {
+            return;
+        }
+        let owned = self.owned_sessions.contains(&session_id);
+        if let Some(subscribe) = self.subscriptions.retry(session_id, self.selected, owned) {
+            self.send_subscribe(subscribe);
+        }
     }
 
     /// Ends this connection's live tail for `session_id` and drops its
@@ -258,25 +283,6 @@ impl App {
             self.refresh_permission_mode_for_session(selected);
         }
         self.refresh_tree_background();
-    }
-
-    /// After the client gave up recovering a session, tries the viewed one
-    /// again with a fresh subscription once the connection had time to
-    /// settle. Other sessions resubscribe when next opened.
-    pub(super) fn schedule_subscription_retry(&mut self, session_id: Option<SessionId>) {
-        let Some(selected) = self.selected else {
-            return;
-        };
-        if session_id.is_some_and(|session_id| session_id != selected) {
-            return;
-        }
-        let updates = self.rpc_updates_tx.clone();
-        self.spawn_rpc(async move {
-            tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY).await;
-            let _ = updates.send(RpcUpdate::RetrySubscription {
-                session_id: selected,
-            });
-        });
     }
 
     /// Wait (bounded) for an in-flight subscribe of `session_id` to deliver

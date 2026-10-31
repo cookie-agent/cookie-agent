@@ -422,14 +422,7 @@ impl App {
                 session_id,
                 generation,
             } => self.finish_draft_publish(session_id, generation),
-            RpcUpdate::RetrySubscription { session_id } => {
-                if self.selected == Some(session_id)
-                    && !self.subscriptions.contains(session_id)
-                    && !self.reconnecting
-                {
-                    self.resubscribe_from_scratch(session_id);
-                }
-            }
+            RpcUpdate::RetrySubscription { session_id } => self.retry_subscription(session_id),
             RpcUpdate::RuntimeResynced { result } => {
                 let again = self.runtime_resync.landed();
                 match result {
@@ -1268,7 +1261,6 @@ impl App {
         }
         if let ClientDelivery::RecoveryFailed { session_id, error } = &delivery {
             self.note_recovery_failed(*session_id);
-            self.schedule_subscription_retry(*session_id);
             self.status = match session_id {
                 Some(session_id) => format!("recovery for {session_id} failed: {error}"),
                 None => format!("recovery failed: {error}"),
