@@ -101,25 +101,25 @@ impl KnownAgents {
         runtime: &RuntimeId,
         change: impl FnOnce(&mut KnownAgent),
     ) -> bool {
-        let snapshot = {
-            let mut entries = self.lock();
-            let entry = entries
-                .entry((agent.to_string(), runtime.to_string()))
-                .or_default();
-            let before = entry.clone();
-            change(entry);
-            if *entry == before {
-                return false;
-            }
-            entries
-                .iter()
-                .map(|((agent, runtime_id), known)| KnownEntry {
-                    agent: agent.clone(),
-                    runtime_id: runtime_id.clone(),
-                    known: known.clone(),
-                })
-                .collect::<Vec<_>>()
-        };
+        let mut entries = self.lock();
+        let entry = entries
+            .entry((agent.to_string(), runtime.to_string()))
+            .or_default();
+        let before = entry.clone();
+        change(entry);
+        if *entry == before {
+            return false;
+        }
+        let snapshot = entries
+            .iter()
+            .map(|((agent, runtime_id), known)| KnownEntry {
+                agent: agent.clone(),
+                runtime_id: runtime_id.clone(),
+                known: known.clone(),
+            })
+            .collect::<Vec<_>>();
+        // Written under the lock: the writes of two changes never
+        // interleave, and the last change is the last written.
         if let Some(path) = &self.path
             && let Err(error) = write_atomic(path, &KnownFile { agents: snapshot })
         {

@@ -67,6 +67,12 @@ struct RecordFile {
     providers: BTreeMap<String, Entry>,
 }
 
+/// [`RecordFile`] as it is written, borrowing the entries.
+#[derive(Serialize)]
+struct RecordFileRef<'a> {
+    providers: &'a BTreeMap<String, Entry>,
+}
+
 /// The record, held in memory and written whole on every change.
 #[derive(Debug, Default)]
 pub(crate) struct NativeCompactionRecord {
@@ -124,16 +130,13 @@ impl NativeCompactionRecord {
         config_digest: &str,
         now: jiff::Timestamp,
     ) -> Option<MarkState> {
-        let snapshot = {
-            let mut entries = self.lock();
-            let entry = entries.get(provider)?;
-            if !entry.expired(now) && entry.config_digest == config_digest {
-                return Some(entry.state);
-            }
-            entries.remove(provider);
-            entries.clone()
-        };
-        self.write(snapshot);
+        let mut entries = self.lock();
+        let entry = entries.get(provider)?;
+        if !entry.expired(now) && entry.config_digest == config_digest {
+            return Some(entry.state);
+        }
+        entries.remove(provider);
+        self.write(&entries);
         None
     }
 
@@ -157,20 +160,17 @@ impl NativeCompactionRecord {
         reason: String,
         now: jiff::Timestamp,
     ) {
-        let snapshot = {
-            let mut entries = self.lock();
-            entries.insert(
-                provider.to_owned(),
-                Entry {
-                    state,
-                    since: now,
-                    reason,
-                    config_digest: config_digest.to_owned(),
-                },
-            );
-            entries.clone()
-        };
-        self.write(snapshot);
+        let mut entries = self.lock();
+        entries.insert(
+            provider.to_owned(),
+            Entry {
+                state,
+                since: now,
+                reason,
+                config_digest: config_digest.to_owned(),
+            },
+        );
+        self.write(&entries);
     }
 
     /// The entries that have not expired, for the configuration status.
@@ -191,11 +191,13 @@ impl NativeCompactionRecord {
             .collect()
     }
 
-    fn write(&self, providers: BTreeMap<String, Entry>) {
+    /// Writes `providers`, which the caller holds locked: the writes of two
+    /// changes never interleave, and the last change is the last written.
+    fn write(&self, providers: &BTreeMap<String, Entry>) {
         let Some(path) = &self.path else {
             return;
         };
-        if let Err(error) = write_atomic(path, &RecordFile { providers }) {
+        if let Err(error) = write_atomic(path, &RecordFileRef { providers }) {
             eprintln!("cookie-agent: could not write {}: {error}", path.display());
         }
     }

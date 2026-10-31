@@ -166,3 +166,74 @@ fn an_unreadable_record_counts_as_empty_and_is_rewritten() {
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(written["providers"]["gateway"]["state"], "rejects_windows");
 }
+
+#[test]
+fn concurrent_marks_never_tear_the_file_and_all_reach_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let record = std::sync::Arc::new(NativeCompactionRecord::open(directory.path()));
+    let providers = (0..16)
+        .map(|index| format!("gateway-{index}"))
+        .collect::<Vec<_>>();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(providers.len()));
+    let writers = providers
+        .iter()
+        .cloned()
+        .map(|provider| {
+            let record = std::sync::Arc::clone(&record);
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                for round in 0..200 {
+                    record.mark_at(
+                        &provider,
+                        DIGEST,
+                        MarkState::Unsupported,
+                        format!("round {round}"),
+                        at(round),
+                    );
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    // A reader never finds the file half written.
+    let path = directory.path().join(RECORD_FILE);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let path = path.clone();
+        let done = std::sync::Arc::clone(&done);
+        std::thread::spawn(move || {
+            let mut torn = 0;
+            while !done.load(std::sync::atomic::Ordering::Acquire) {
+                if let Ok(bytes) = std::fs::read(&path)
+                    && serde_json::from_slice::<serde_json::Value>(&bytes).is_err()
+                {
+                    torn += 1;
+                }
+            }
+            torn
+        })
+    };
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        reader.join().unwrap(),
+        0,
+        "a read found the file half written"
+    );
+    assert!(!path.with_extension("json.tmp").exists());
+    let reopened = NativeCompactionRecord::open(directory.path());
+    let mut marked = reopened
+        .marks_at(at(200))
+        .into_iter()
+        .map(|mark| (mark.provider_id, mark.reason))
+        .collect::<Vec<_>>();
+    marked.sort();
+    let mut expected = providers
+        .into_iter()
+        .map(|provider| (provider, "round 199".to_owned()))
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(marked, expected);
+}

@@ -41,6 +41,12 @@ struct RecordFile {
     models: BTreeMap<String, Entry>,
 }
 
+/// [`RecordFile`] as it is written, borrowing the entries.
+#[derive(Serialize)]
+struct RecordFileRef<'a> {
+    models: &'a BTreeMap<String, Entry>,
+}
+
 /// The record, held in memory and written whole on every change.
 #[derive(Debug, Default)]
 pub(crate) struct DeferredToolsRecord {
@@ -88,20 +94,16 @@ impl DeferredToolsRecord {
         config_digest: &str,
         now: jiff::Timestamp,
     ) -> bool {
-        let snapshot = {
-            let mut entries = self.lock();
-            let Some(entry) = entries.get(model) else {
-                return false;
-            };
-            if now.duration_since(entry.since) < ENTRY_LIFETIME
-                && entry.config_digest == config_digest
-            {
-                return true;
-            }
-            entries.remove(model);
-            entries.clone()
+        let mut entries = self.lock();
+        let Some(entry) = entries.get(model) else {
+            return false;
         };
-        self.write(snapshot);
+        if now.duration_since(entry.since) < ENTRY_LIFETIME && entry.config_digest == config_digest
+        {
+            return true;
+        }
+        entries.remove(model);
+        self.write(&entries);
         false
     }
 
@@ -123,19 +125,16 @@ impl DeferredToolsRecord {
         reason: String,
         now: jiff::Timestamp,
     ) {
-        let snapshot = {
-            let mut entries = self.lock();
-            entries.insert(
-                model.to_owned(),
-                Entry {
-                    since: now,
-                    reason,
-                    config_digest: config_digest.to_owned(),
-                },
-            );
-            entries.clone()
-        };
-        self.write(snapshot);
+        let mut entries = self.lock();
+        entries.insert(
+            model.to_owned(),
+            Entry {
+                since: now,
+                reason,
+                config_digest: config_digest.to_owned(),
+            },
+        );
+        self.write(&entries);
     }
 
     /// The entries that have not expired, for the configuration status.
@@ -160,11 +159,13 @@ impl DeferredToolsRecord {
             .collect()
     }
 
-    fn write(&self, models: BTreeMap<String, Entry>) {
+    /// Writes `models`, which the caller holds locked: the writes of two
+    /// changes never interleave, and the last change is the last written.
+    fn write(&self, models: &BTreeMap<String, Entry>) {
         let Some(path) = &self.path else {
             return;
         };
-        if let Err(error) = write_atomic(path, &RecordFile { models }) {
+        if let Err(error) = write_atomic(path, &RecordFileRef { models }) {
             eprintln!("cookie-agent: could not write {}: {error}", path.display());
         }
     }
