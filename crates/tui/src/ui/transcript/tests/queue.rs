@@ -223,6 +223,7 @@ async fn producer_started_tool_loop_promotes_steers_without_composer_restore_and
             generation: 0,
             final_seq: 16,
             rebuild: true,
+            history: None,
         })
         .await;
     for event in events {
@@ -925,6 +926,7 @@ async fn pending_lane_rebuilds_from_replay_alone() {
         generation: 0,
         final_seq: 2,
         rebuild: true,
+        history: None,
     })
     .await;
     for seq in 1..=2 {
@@ -977,6 +979,7 @@ async fn replayed_run_end_never_restores_the_composer() {
             generation: 0,
             final_seq,
             rebuild,
+            history: None,
         })
         .await;
         for replayed in [

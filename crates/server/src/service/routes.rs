@@ -512,35 +512,57 @@ impl ServerProtocol for Server {
         params: EventsSubscribeParams,
         context: &ServerContext,
     ) -> Result<EventsSubscribeResult> {
-        let (result, receiver) = match self
-            .engine
-            .subscribe_page(
-                params.session_id,
-                params.cursor,
-                params.cursor_timestamp,
-                params.limit,
-                // One tail per session per connection: a re-subscribe (a
-                // reselected session, a recovery replay) replaces the tail
-                // rather than adding a second copy of every live message.
-                Some(TailOwner(context.connection_id())),
-            )
-            .await
-        {
-            Ok(subscription) => subscription,
-            Err(EngineError::SessionOwnedByAnotherProcess(_)) => {
-                // The protocol has no separate snapshot RPC. Return only the replay
-                // half of this response and deliberately register no live tail.
-                return self
-                    .engine
-                    .snapshot_events(
+        params.validate().map_err(ServerFault::invalid_params)?;
+        // One tail per session per connection: a re-subscribe (a reselected
+        // session, a recovery replay) replaces the tail rather than adding a
+        // second copy of every live message.
+        let owner = Some(TailOwner(context.connection_id()));
+        let budget = cookie_agent_protocol::history_window_bytes(params.max_bytes);
+        let subscribed = match params.from {
+            Some(cookie_agent_protocol::EventsFrom::Tail) => {
+                self.engine
+                    .subscribe_tail(params.session_id, params.view, budget, owner)
+                    .await
+            }
+            None => {
+                self.engine
+                    .subscribe_page(
                         params.session_id,
                         params.cursor,
                         params.cursor_timestamp,
                         params.limit,
+                        owner,
                     )
-                    .map_err(protocol_fault);
+                    .await
+            }
+        };
+        let (result, receiver) = match subscribed {
+            Ok(subscription) => subscription,
+            Err(EngineError::SessionOwnedByAnotherProcess(_)) => {
+                // The protocol has no separate snapshot RPC. Return only the replay
+                // half of this response and deliberately register no live tail.
+                return match params.from {
+                    Some(cookie_agent_protocol::EventsFrom::Tail) => {
+                        self.engine
+                            .snapshot_tail(params.session_id, params.view, budget)
+                    }
+                    None => self
+                        .engine
+                        .snapshot_events(
+                            params.session_id,
+                            params.cursor,
+                            params.cursor_timestamp,
+                            params.limit,
+                        )
+                        .map(|page| forward_view(page, params.view)),
+                }
+                .map_err(protocol_fault);
             }
             Err(error) => return Err(protocol_fault(error)),
+        };
+        let result = match params.from {
+            Some(_) => result,
+            None => forward_view(result, params.view),
         };
         // A non-final page is only history; the final page goes live.
         let Some(receiver) = receiver else {
@@ -550,6 +572,23 @@ impl ServerProtocol for Server {
         context.forward_session_tail(params.session_id, receiver);
         self.replay_connection_failures(context, params.session_id);
         Ok(result)
+    }
+
+    async fn events_page(
+        &self,
+        params: cookie_agent_protocol::EventsPageParams,
+    ) -> Result<cookie_agent_protocol::EventsPageResult> {
+        self.engine.events_page(params).map_err(protocol_fault)
+    }
+
+    async fn read_event(
+        &self,
+        params: cookie_agent_protocol::EventReadParams,
+    ) -> Result<cookie_agent_protocol::EventReadResult> {
+        self.engine
+            .read_event(params.session_id, params.seq)
+            .map(|event| cookie_agent_protocol::EventReadResult { event })
+            .map_err(protocol_fault)
     }
 
     async fn select_model(
@@ -1566,6 +1605,23 @@ impl Server {
             shutdown.cancelled().await;
             engine.drop_connection_uploads(connection);
         });
+    }
+}
+
+/// A forward page in `view`: the display view of its events, keeping the
+/// last so the next page, and the live tail, follow on from it.
+fn forward_view(
+    page: EventsSubscribeResult,
+    view: cookie_agent_protocol::EventsView,
+) -> EventsSubscribeResult {
+    if view.is_full() || page.stale_cursor {
+        return page;
+    }
+    let (events, cut) = cookie_agent_protocol::display_view::display_events(&page.events, true);
+    EventsSubscribeResult {
+        events,
+        cut,
+        ..page
     }
 }
 

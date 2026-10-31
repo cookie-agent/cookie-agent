@@ -1073,6 +1073,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
         generation: 0,
         final_seq: 1,
         rebuild: true,
+        history: None,
     })
     .await;
     app.handle_delivery(ClientDelivery::ReplayEvent {
@@ -1132,6 +1133,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
         generation: 1,
         final_seq: 1,
         rebuild: true,
+        history: None,
     })
     .await;
     app.handle_delivery(ClientDelivery::ReplayEvent {

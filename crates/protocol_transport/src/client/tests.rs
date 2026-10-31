@@ -326,9 +326,16 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
 async fn live_event_racing_replay_is_delivered_after_replay_end() {
     let session_id = SessionId::new_v7();
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let request = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("prepare replay");
+    let request = prepare_subscription(
+        &subscriptions,
+        session_id,
+        0,
+        false,
+        true,
+        cookie_agent_protocol::EventsView::Full,
+    )
+    .await
+    .expect("prepare replay");
     let (deliveries, mut receiver) = delivery_channel();
     let (recovery, mut recovery_receiver) = recovery();
 
@@ -344,6 +351,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
     begin_replay(
         request,
         vec![event(session_id, 1)],
+        None,
         &subscriptions,
         &deliveries,
         &recovery,
@@ -427,9 +435,16 @@ fn delivered_text(delivery: Option<ClientDelivery>) -> Option<String> {
 async fn transient_output_follows_its_durable_event_or_is_dropped() {
     let session_id = SessionId::new_v7();
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let request = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("prepare replay");
+    let request = prepare_subscription(
+        &subscriptions,
+        session_id,
+        0,
+        false,
+        true,
+        cookie_agent_protocol::EventsView::Full,
+    )
+    .await
+    .expect("prepare replay");
     let (deliveries, mut receiver) = delivery_channel();
     let (recovery, mut recovery_receiver) = recovery();
 
@@ -449,6 +464,7 @@ async fn transient_output_follows_its_durable_event_or_is_dropped() {
     begin_replay(
         request,
         vec![event(session_id, 1), event(session_id, 2)],
+        None,
         &subscriptions,
         &deliveries,
         &recovery,
@@ -505,9 +521,16 @@ async fn transient_output_follows_its_durable_event_or_is_dropped() {
 async fn replay_larger_than_delivery_capacity_reduces_completely() {
     let session_id = SessionId::new_v7();
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let request = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("prepare replay");
+    let request = prepare_subscription(
+        &subscriptions,
+        session_id,
+        0,
+        false,
+        true,
+        cookie_agent_protocol::EventsView::Full,
+    )
+    .await
+    .expect("prepare replay");
     let (deliveries, mut receiver) = mpsc::unbounded_channel();
     let (recovery, _recovery_receiver) = recovery();
     let events = (1..=2_000).map(|seq| event(session_id, seq)).collect();
@@ -515,7 +538,15 @@ async fn replay_larger_than_delivery_capacity_reduces_completely() {
         let subscriptions = subscriptions.clone();
         let recovery = recovery.clone();
         async move {
-            begin_replay(request, events, &subscriptions, &deliveries, &recovery).await;
+            begin_replay(
+                request,
+                events,
+                None,
+                &subscriptions,
+                &deliveries,
+                &recovery,
+            )
+            .await;
         }
     });
     let mut replayed = 0;
@@ -846,9 +877,16 @@ async fn failed_provider_connect_wipes_source_and_sensitive_json_tree() {
 async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
     let session_id = SessionId::new_v7();
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let request = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("prepare replay");
+    let request = prepare_subscription(
+        &subscriptions,
+        session_id,
+        0,
+        false,
+        true,
+        cookie_agent_protocol::EventsView::Full,
+    )
+    .await
+    .expect("prepare replay");
     let (deliveries, _receiver) = delivery_channel();
     let (recovery, mut recovery_receiver) = recovery();
     for seq in [11, 13] {
@@ -865,6 +903,7 @@ async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
     begin_replay(
         request,
         (1..=10).map(|seq| event(session_id, seq)).collect(),
+        None,
         &subscriptions,
         &deliveries,
         &recovery,
@@ -885,9 +924,16 @@ async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
 async fn buffered_gap_schedules_one_recovery() {
     let session_id = SessionId::new_v7();
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let request = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("prepare replay");
+    let request = prepare_subscription(
+        &subscriptions,
+        session_id,
+        0,
+        false,
+        true,
+        cookie_agent_protocol::EventsView::Full,
+    )
+    .await
+    .expect("prepare replay");
     let (deliveries, _receiver) = delivery_channel();
     let (recovery, mut recovery_receiver) = recovery();
     route_live(
@@ -903,6 +949,7 @@ async fn buffered_gap_schedules_one_recovery() {
     begin_replay(
         request,
         vec![event(session_id, 1)],
+        None,
         &subscriptions,
         &deliveries,
         &recovery,
@@ -981,23 +1028,38 @@ async fn rewound_pulls_the_cursor_back_and_queues_one_full_replay() {
 async fn stale_replay_attempt_response_is_discarded() {
     let session_id = SessionId::new_v7();
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let first = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("first request");
+    let first = prepare_subscription(
+        &subscriptions,
+        session_id,
+        0,
+        false,
+        true,
+        cookie_agent_protocol::EventsView::Full,
+    )
+    .await
+    .expect("first request");
     subscriptions
         .lock()
         .await
         .get_mut(&session_id)
         .expect("subscription")
         .fetching = false;
-    let second = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("second request");
+    let second = prepare_subscription(
+        &subscriptions,
+        session_id,
+        0,
+        false,
+        true,
+        cookie_agent_protocol::EventsView::Full,
+    )
+    .await
+    .expect("second request");
     let (deliveries, mut receiver) = delivery_channel();
     let (recovery, _recovery_receiver) = recovery();
     begin_replay(
         first,
         vec![event(session_id, 1)],
+        None,
         &subscriptions,
         &deliveries,
         &recovery,
@@ -1007,6 +1069,7 @@ async fn stale_replay_attempt_response_is_discarded() {
     begin_replay(
         second,
         vec![event(session_id, 1)],
+        None,
         &subscriptions,
         &deliveries,
         &recovery,
@@ -1702,4 +1765,124 @@ fn a_replay_page_drops_an_event_it_cannot_read_and_resumes_after_it() {
         panic!("no diagnostic");
     };
     assert!(message.contains("(seq 3)"), "{message}");
+}
+
+#[tokio::test]
+async fn a_display_view_replay_asks_for_the_newest_events_and_delivers_its_window() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    *client.daemon_version.lock().unwrap() = Some(DISPLAY_VIEW_SINCE);
+    client.use_display_view(true);
+    let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
+    let subscribe = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, None).await }
+    });
+
+    let request = next_request(&mut sent_rx).await;
+    assert_eq!(request["method"], "events.subscribe");
+    assert_eq!(request["params"]["from"], "tail");
+    assert_eq!(request["params"]["view"], "display");
+    for absent in ["cursor", "cursor_timestamp", "limit"] {
+        assert!(request["params"].get(absent).is_none(), "{absent}");
+    }
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {
+                "events": [event(session_id, 7), event(session_id, 9)],
+                "window": {
+                    "header": [event(session_id, 2)],
+                    "older_cursor": 7,
+                    "gap": {"after_seq": 7, "before_seq": 9, "skipped": 1},
+                },
+                "cut": [{"seq": 9, "bytes": 5000}],
+            },
+        })))
+        .expect("answer");
+    subscribe
+        .await
+        .expect("subscribe task")
+        .expect("subscribe result");
+
+    let Some(ClientDelivery::ReplayStart {
+        final_seq: 9,
+        rebuild: true,
+        history: Some(history),
+        ..
+    }) = deliveries.recv().await
+    else {
+        panic!("a rebuild in the display view");
+    };
+    let window = history.window.expect("a newest-first window");
+    assert_eq!(
+        window
+            .header
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        [2]
+    );
+    assert_eq!(window.older_cursor, Some(7));
+    assert_eq!(window.gap.map(|gap| gap.skipped), Some(1));
+    assert_eq!(
+        history.cut,
+        [cookie_agent_protocol::CutOutput {
+            seq: 9,
+            bytes: 5000
+        }]
+    );
+    for seq in [7, 9] {
+        assert!(matches!(
+            deliveries.recv().await,
+            Some(ClientDelivery::ReplayEvent { event, .. }) if event.seq == seq
+        ));
+    }
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayEnd { final_seq: 9, .. })
+    ));
+}
+
+#[tokio::test]
+async fn an_older_daemon_replays_the_whole_history_from_the_start() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    *client.daemon_version.lock().unwrap() = Some(cookie_agent_protocol::SemVer::new(1, 56, 0));
+    client.use_display_view(true);
+    assert_eq!(
+        client.history_view(),
+        cookie_agent_protocol::EventsView::Full
+    );
+    let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
+    let subscribe = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, None).await }
+    });
+    let request = next_request(&mut sent_rx).await;
+    assert_eq!(request["params"]["cursor"], 0);
+    assert!(request["params"].get("from").is_none());
+    assert!(request["params"].get("view").is_none());
+    incoming
+        .send(replay_page(&request, session_id, 1..=2, false))
+        .expect("answer");
+    subscribe
+        .await
+        .expect("subscribe task")
+        .expect("subscribe result");
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayStart { history: None, .. })
+    ));
 }

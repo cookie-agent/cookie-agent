@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "EventsView": {
+      "description": "Which of a session's events a history request returns (client protocol\n1.57.0; see [`crate::display_view`]).",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "Every stored event, whole.",
+          "type": "string"
+        },
+        {
+          "const": "display",
+          "description": "What a transcript shows: bookkeeping left out, a superseded ACP\ncommand list or tool presentation dropped, and a tool result over\n[`crate::display_view::CUT_ABOVE_BYTES`] cut to its first bytes.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Older history of a session, newest first, without a live tail (client\nprotocol 1.57.0).",
+  "properties": {
+    "before": {
+      "description": "The page holds events before this sequence.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "max_bytes": {
+      "description": "As `events.subscribe`'s `max_bytes`.",
+      "format": "uint32",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "view": {
+      "$ref": "#/$defs/EventsView"
+    }
+  },
+  "required": [
+    "session_id",
+    "before"
+  ],
+  "title": "EventsPageParams",
+  "type": "object"
+}

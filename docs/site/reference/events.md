@@ -922,6 +922,59 @@ missed. Without `limit` the first response is the final page. Paging a session
 this process does not own parses its log once and serves later pages from
 memory while the file is unchanged.
 
+### Newest first
+
+Since 1.57.0 a client can open a session at its newest messages instead of
+replaying it from the start (`docs/site/specs/session-storage-v3.md`
+section 3).
+
+`view: "display"` asks for the display view, what a transcript shows of
+the events: `model_request_prepared` and a `model_replay_evaluated` that
+discards nothing are left out; in a page, a `model_tools_published`, an
+`acp_session_updated` command list or starting options, or an ACP tool
+presentation that a later event of the page replaces is left out (an
+update left with nothing goes); and a tool result whose output, display,
+and metadata take more than 4 KiB is cut: its `output` keeps its first
+2 KiB, its `display` fits 2 KiB with the usual `omitted_*` counts, and its
+`metadata` is `null`. The result's `cut` lists each cut result's `seq` and
+the whole result's `bytes`; `event.read` returns the stored event. A
+forward page in the display view always ends with the last event it covers,
+so the next page and the live tail follow on from it. Live notifications
+are sent whole in either view.
+
+`from: "tail"` takes no cursor or limit. The answer holds the newest
+events within `max_bytes` (256 KiB unless given, at most 1 MiB, measured
+before compression), starting at a `run_started` or `user_input_submitted`,
+and goes live like a final page. Its `window` holds:
+
+- `header`: the events before the answer's first that the session's
+  current state depends on, in sequence order: the session's creation, the
+  latest run and its end, memory, published tools, ACP session and its
+  latest commands, options, starting options, and context use (an
+  `acp_session_updated` there holds only those), model selection, goal and
+  its changes, runtime attachments still attached, a hold, tools announced
+  since the latest compaction, and inputs still queued. A client folds them
+  before the events, so its state ends where a full replay's would;
+- `older_cursor`: the sequence of the answer's first event, which
+  `events.page` takes as `before`, or `null` when the answer starts at the
+  beginning of the log;
+- `gap`, when the newest run alone is larger than the budget: the answer
+  then holds the run's start through its first input, a gap, and the run's
+  newest model attempts. `after_seq` and `before_seq` are the events on
+  either side, and `skipped` how many display events between them it left
+  out. It still holds those between them the state depends on: the
+  settings above, an approval or question not answered, an input admitted
+  but not applied, and a tool call still running.
+
+`events.page { session_id, before, view, max_bytes }` returns the newest
+events before `before` within the budget, starting at a run or a model
+attempt when one fits and holding at least one event while any precede
+`before`, with the `header` and `older_cursor` for its first event. It
+reads the session's own log, registers no tail, and loads no subagent. A
+client that holds a gap reads into it with its `before_seq`, and older
+history with its `older_cursor`; it folds again everything it holds when a
+page arrives.
+
 `events.unsubscribe` ends the connection's live tail for a session: no further
 `events.subscription` or `events.plugin` notification for it is sent, and the
 shared client drops messages already in flight and stops recovering it until it

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One stored event, whole (client protocol 1.57.0): what a client reads to\nshow a tool result the display view cut.",
+  "properties": {
+    "seq": {
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "seq"
+  ],
+  "title": "EventReadParams",
+  "type": "object"
+}

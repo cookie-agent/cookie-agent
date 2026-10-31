@@ -1696,3 +1696,97 @@ async fn a_session_with_an_unknown_state_event_is_render_only() {
     );
     engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_tail_subscription_answers_the_newest_events_and_goes_live() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let session_id = session.session_id;
+    for index in 0..8 {
+        fixture
+            .engine
+            .inner
+            .store
+            .append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::engine("test")
+                        .expect("source"),
+                    kind: cookie_agent_protocol::DiagnosticKind::new("filler").expect("kind"),
+                    message: format!("{index} {}", "x".repeat(1_000)),
+                    count: None,
+                    detail: None,
+                },
+            )
+            .expect("direct append");
+    }
+    let (full, _) = fixture
+        .engine
+        .subscribe(session_id, None)
+        .await
+        .expect("full replay");
+    let tip = full.events.last().unwrap().seq;
+
+    let (tail, receiver) = fixture
+        .engine
+        .subscribe_tail(
+            session_id,
+            cookie_agent_protocol::EventsView::Display,
+            2_500,
+            None,
+        )
+        .await
+        .expect("tail");
+    let mut live = receiver.expect("an owned session goes live");
+    let window = tail.window.clone().expect("a tail answer has a window");
+    // No run fits the budget: the log's start, a gap, and its newest
+    // events.
+    assert_eq!(window.older_cursor, None);
+    let gap = window.gap.expect("the history does not fit");
+    assert_eq!(tail.events.first().unwrap().seq, 1);
+    assert_eq!(tail.events.last().unwrap().seq, tip);
+    assert!(tail.events.len() < full.events.len());
+
+    // Pages read into the gap until it closes, without a tail.
+    let mut before = gap.before_seq;
+    let mut held = seqs(&tail.events);
+    while before > gap.after_seq + 1 {
+        let page = fixture
+            .engine
+            .events_page(cookie_agent_protocol::EventsPageParams {
+                session_id,
+                before,
+                view: cookie_agent_protocol::EventsView::Display,
+                max_bytes: std::num::NonZeroU32::new(2_500),
+            })
+            .expect("older page");
+        assert!(page.events.last().unwrap().seq < before);
+        held.extend(seqs(&page.events));
+        before = page.events.first().unwrap().seq;
+    }
+    held.sort_unstable();
+    held.dedup();
+    assert_eq!(held, seqs(&full.events));
+
+    let read = fixture
+        .engine
+        .read_event(session_id, gap.before_seq)
+        .expect("read")
+        .expect("the event is there");
+    assert_eq!(read.seq, gap.before_seq);
+    assert!(
+        fixture
+            .engine
+            .read_event(session_id, tip + 1)
+            .expect("read")
+            .is_none()
+    );
+
+    append_inputs(&fixture.engine, session_id, 1);
+    assert!(matches!(
+        with_watchdog("live after the tail", live.recv()).await,
+        Some(EventSubscriptionMessage::Event { event }) if event.seq == tip + 1
+    ));
+}

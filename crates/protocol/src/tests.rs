@@ -220,13 +220,7 @@ fn wire_versions_accept_only_documented_history() {
 fn event_subscription_paging_fields_are_optional_on_the_wire() {
     let session_id = SessionId::new_v7();
     assert_eq!(
-        serde_json::to_value(EventsSubscribeParams {
-            session_id,
-            cursor: Some(4),
-            cursor_timestamp: None,
-            limit: None,
-        })
-        .unwrap(),
+        serde_json::to_value(EventsSubscribeParams::after(session_id, Some(4))).unwrap(),
         json!({"session_id": session_id, "cursor": 4})
     );
     let checked: EventsSubscribeParams = serde_json::from_value(json!({
@@ -251,11 +245,7 @@ fn event_subscription_paging_fields_are_optional_on_the_wire() {
         "a page holds at least one event"
     );
 
-    let last_page = EventsSubscribeResult {
-        events: Vec::new(),
-        has_more: false,
-        stale_cursor: false,
-    };
+    let last_page = EventsSubscribeResult::page(Vec::new(), false);
     assert_eq!(
         serde_json::to_value(&last_page).unwrap(),
         json!({"events": []})
@@ -265,12 +255,7 @@ fn event_subscription_paging_fields_are_optional_on_the_wire() {
         last_page
     );
     assert_eq!(
-        serde_json::to_value(EventsSubscribeResult {
-            events: Vec::new(),
-            has_more: true,
-            stale_cursor: false,
-        })
-        .unwrap(),
+        serde_json::to_value(EventsSubscribeResult::page(Vec::new(), true)).unwrap(),
         json!({"events": [], "has_more": true})
     );
     assert_eq!(

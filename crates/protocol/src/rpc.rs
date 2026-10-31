@@ -1973,7 +1973,96 @@ pub struct EventsSubscribeParams {
     /// Only the final page subscribes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<std::num::NonZeroU32>,
+    /// Which events the history holds (client protocol 1.57.0): every
+    /// stored event, or the display view, which leaves out what no client
+    /// shows and cuts long tool results. Live events are sent whole either
+    /// way.
+    #[serde(default, skip_serializing_if = "EventsView::is_full")]
+    pub view: EventsView,
+    /// `tail` (client protocol 1.57.0): answer with the newest events within
+    /// `max_bytes`, a [`HistoryWindow`], and the live tail, instead of
+    /// paging forward from `cursor`. It takes no `cursor`,
+    /// `cursor_timestamp`, or `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<EventsFrom>,
+    /// The byte budget of a `tail` answer's events, measured before
+    /// compression: [`HISTORY_WINDOW_DEFAULT_BYTES`] when absent, at most
+    /// [`HISTORY_WINDOW_MAX_BYTES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<std::num::NonZeroU32>,
 }
+
+impl EventsSubscribeParams {
+    /// A request for the events after `cursor`, in the full view, as every
+    /// client before 1.57.0 sent it.
+    #[must_use]
+    pub const fn after(session_id: SessionId, cursor: Option<u64>) -> Self {
+        Self {
+            session_id,
+            cursor,
+            cursor_timestamp: None,
+            limit: None,
+            view: EventsView::Full,
+            from: None,
+            max_bytes: None,
+        }
+    }
+
+    /// Why the request cannot be answered, if it cannot: `from` takes no
+    /// cursor or limit.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.from.is_some()
+            && (self.cursor.is_some() || self.cursor_timestamp.is_some() || self.limit.is_some())
+        {
+            return Err("`from` takes no `cursor`, `cursor_timestamp`, or `limit`");
+        }
+        Ok(())
+    }
+}
+
+/// The budget of a history window when the request names none: enough for
+/// the newest exchanges of a long session, small enough to arrive at once.
+pub const HISTORY_WINDOW_DEFAULT_BYTES: u32 = 256 * 1024;
+/// The largest budget a history window request may name.
+pub const HISTORY_WINDOW_MAX_BYTES: u32 = 1024 * 1024;
+
+/// The byte budget a history request asks for, bounded.
+#[must_use]
+pub fn history_window_bytes(max_bytes: Option<std::num::NonZeroU32>) -> usize {
+    max_bytes.map_or(HISTORY_WINDOW_DEFAULT_BYTES, |bytes| {
+        bytes.get().min(HISTORY_WINDOW_MAX_BYTES)
+    }) as usize
+}
+
+/// Which of a session's events a history request returns (client protocol
+/// 1.57.0; see [`crate::display_view`]).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventsView {
+    /// Every stored event, whole.
+    #[default]
+    Full,
+    /// What a transcript shows: bookkeeping left out, a superseded ACP
+    /// command list or tool presentation dropped, and a tool result over
+    /// [`crate::display_view::CUT_ABOVE_BYTES`] cut to its first bytes.
+    Display,
+}
+
+impl EventsView {
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
+/// Where a subscription's history starts.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventsFrom {
+    /// The newest events, newest run first.
+    Tail,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct EventsSubscribeResult {
     /// Shared with the log that holds them, so a page copies no event.
@@ -1985,6 +2074,13 @@ pub struct EventsSubscribeResult {
     /// returned and no tail is registered. The caller replays from the start.
     #[serde(default, skip_serializing_if = "is_false")]
     pub stale_cursor: bool,
+    /// The answer to `from: "tail"` (client protocol 1.57.0): what comes
+    /// before its events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<HistoryWindow>,
+    /// The tool results among `events` the display view cut.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut: Vec<CutOutput>,
 }
 
 impl EventsSubscribeResult {
@@ -1995,8 +2091,127 @@ impl EventsSubscribeResult {
             events: Vec::new(),
             has_more: false,
             stale_cursor: true,
+            window: None,
+            cut: Vec::new(),
         }
     }
+
+    /// A page of `events`, with more to follow when `has_more`.
+    #[must_use]
+    pub fn page(events: Vec<std::sync::Arc<StoredEvent>>, has_more: bool) -> Self {
+        Self {
+            events,
+            has_more,
+            stale_cursor: false,
+            window: None,
+            cut: Vec::new(),
+        }
+    }
+}
+
+/// What precedes the events of a newest-first answer (client protocol
+/// 1.57.0). A client folds `header` first, then the events, in sequence
+/// order; it shows a way to load what `older_cursor` and `gap` leave out.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct HistoryWindow {
+    /// The events before the window that the session's current state
+    /// depends on, in sequence order: the latest of each setting (agent,
+    /// model, ACP options and commands, tools, goal, attachments, hold,
+    /// queued inputs), so a client that folds them first ends where a full
+    /// replay would. An `acp_session_updated` among them holds only those
+    /// settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub header: Vec<std::sync::Arc<StoredEvent>>,
+    /// The sequence just before the first event, which `events.page` takes
+    /// as `before` + 1 to read older history; `null` when the events start
+    /// at the beginning of the log.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<u64>", required)]
+    pub older_cursor: Option<u64>,
+    /// Events left out inside the window: its newest run was larger than
+    /// the budget, so the answer holds the run's start, the gap, and the
+    /// run's newest events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap: Option<HistoryGap>,
+}
+
+/// Display events a newest-first answer left out between two it holds.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct HistoryGap {
+    /// The last event before the gap.
+    pub after_seq: u64,
+    /// The first event after the gap; `events.page` with this `before`
+    /// reads into it.
+    pub before_seq: u64,
+    /// How many display events between the two the answer left out. The
+    /// answer still holds those the session's state depends on, such as an
+    /// approval still waiting.
+    pub skipped: u64,
+}
+
+/// A tool result the display view cut (client protocol 1.57.0): its
+/// `output` is the first bytes of the stored one, its `display` fits the
+/// same budget, and its `metadata` is `null`. `event.read` of `seq` returns
+/// the whole event.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CutOutput {
+    /// The `tool_call_terminated` event's sequence.
+    pub seq: u64,
+    /// The whole result's length in bytes as JSON: what reading it costs.
+    pub bytes: u64,
+}
+
+pub const EVENTS_PAGE_METHOD: &str = "events.page";
+/// Older history of a session, newest first, without a live tail (client
+/// protocol 1.57.0).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventsPageParams {
+    pub session_id: SessionId,
+    /// The page holds events before this sequence.
+    #[schemars(range(min = 1))]
+    pub before: u64,
+    #[serde(default, skip_serializing_if = "EventsView::is_full")]
+    pub view: EventsView,
+    /// As `events.subscribe`'s `max_bytes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<std::num::NonZeroU32>,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct EventsPageResult {
+    /// The newest events before `before` within the budget, in sequence
+    /// order; at least one while any precede `before`. The page starts at a
+    /// run or a model attempt when one fits.
+    pub events: Vec<std::sync::Arc<StoredEvent>>,
+    /// As [`HistoryWindow::header`], for the page's first event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub header: Vec<std::sync::Arc<StoredEvent>>,
+    /// The sequence just before the page's first event; `null` at the start
+    /// of the log.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<u64>", required)]
+    pub older_cursor: Option<u64>,
+    /// The tool results among `events` the display view cut.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut: Vec<CutOutput>,
+}
+
+pub const EVENT_READ_METHOD: &str = "event.read";
+/// One stored event, whole (client protocol 1.57.0): what a client reads to
+/// show a tool result the display view cut.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventReadParams {
+    pub session_id: SessionId,
+    #[schemars(range(min = 1))]
+    pub seq: u64,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct EventReadResult {
+    /// The event at `seq`; `null` when the log holds none there.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<StoredEvent>", required)]
+    pub event: Option<std::sync::Arc<StoredEvent>>,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]

@@ -188,6 +188,7 @@ mod cron;
 mod daemon;
 pub mod diagnostics;
 mod display;
+pub mod display_view;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod editor;
 mod elicitation;

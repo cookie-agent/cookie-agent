@@ -1889,6 +1889,7 @@ fn replay(store: &mut StateStore, session: SessionId, events: &[StoredEvent]) {
         generation: 0,
         final_seq,
         rebuild: true,
+        history: None,
     })
     .chain(
         events

@@ -313,7 +313,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
 | `session.background.list` | Session ID | The session's background `calls` |
 | `session.background.stop` | Session ID, `job` | Empty, once the call has ended; it still reports to the model, as stopped by the user. An unknown or finished job is an error |
-| `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit` | Stored events after the cursor, or `stale_cursor`; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
+| `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit`; since 1.57.0 optional `view` (`full` or `display`), `from: "tail"`, and `max_bytes` | Stored events after the cursor, or `stale_cursor`; with `from: "tail"` the newest events and a `window`; the display view's `cut` results; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
+| `events.page` | Session ID, `before`, optional `view` and `max_bytes` (since 1.57.0) | The newest `events` before `before`, their `header`, `older_cursor`, and `cut`; no notifications (see [Newest first](events.md#newest-first)) |
+| `event.read` | Session ID, `seq` (since 1.57.0) | The stored `event` at `seq`, whole, or `null` |
 | `events.unsubscribe` | Session ID | Whether this connection had a live tail for it |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |

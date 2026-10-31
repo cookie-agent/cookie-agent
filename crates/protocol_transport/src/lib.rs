@@ -26,7 +26,10 @@ mod corpus_tests;
 
 #[cfg(all(feature = "websocket", target_arch = "wasm32"))]
 pub use browser_websocket::BrowserWebSocketTransport;
-pub use client::{Client, ClientDelivery, ClientError};
+pub use client::{
+    Client, ClientDelivery, ClientError, DISPLAY_VIEW_SINCE, EventsPage, ReplayHistory,
+    ReplayWindow,
+};
 #[cfg(feature = "websocket")]
 pub use daemon_url::{
     WebSocketUrlError, runtime_dial_in_url, validate_page_websocket_url, validate_websocket_url,

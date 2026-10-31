@@ -1779,6 +1779,7 @@ impl StateStore {
                 generation,
                 final_seq,
                 rebuild,
+                history: _,
             } => {
                 let (staged, last_seq) = if rebuild {
                     self.awaiting_rebuild.remove(&session_id);

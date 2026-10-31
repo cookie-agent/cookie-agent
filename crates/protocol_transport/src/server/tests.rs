@@ -59,11 +59,10 @@ impl ServerProtocol for StubServer {
             let _ = context.notify("stub.tail", &json!({})).await;
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(cookie_agent_protocol::EventsSubscribeResult {
-            events: Vec::new(),
-            has_more: false,
-            stale_cursor: false,
-        })
+        Ok(cookie_agent_protocol::EventsSubscribeResult::page(
+            Vec::new(),
+            false,
+        ))
     }
     async fn create_session(
         &self,
@@ -675,6 +674,18 @@ impl ServerProtocol for StubServer {
         &self,
         _: cookie_agent_protocol::ArtifactReadParams,
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn events_page(
+        &self,
+        _: cookie_agent_protocol::EventsPageParams,
+    ) -> Result<cookie_agent_protocol::EventsPageResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn read_event(
+        &self,
+        _: cookie_agent_protocol::EventReadParams,
+    ) -> Result<cookie_agent_protocol::EventReadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
     async fn runtime_snapshot(

@@ -262,6 +262,82 @@ impl Engine {
             .snapshot_events(session, cursor, cursor_timestamp, limit)?)
     }
 
+    /// The newest-first answer to `events.subscribe` with `from: "tail"`:
+    /// the newest events within `budget` bytes in `view`, the history
+    /// window before them, and the live tail, registered as an unlimited
+    /// subscription's final page registers it, so the window ends where the
+    /// tail begins. `None` for a session this process does not own: see
+    /// [`Self::snapshot_tail`].
+    pub async fn subscribe_tail(
+        &self,
+        session: SessionId,
+        view: cookie_agent_protocol::EventsView,
+        budget: usize,
+        owner: Option<crate::session::TailOwner>,
+    ) -> Result<
+        (
+            EventsSubscribeResult,
+            Option<mpsc::Receiver<EventSubscriptionMessage>>,
+        ),
+        EngineError,
+    > {
+        // The whole log shares its events: the page copies pointers only.
+        let (log, receiver) = self
+            .subscribe_page(session, None, None, None, owner)
+            .await?;
+        Ok((off_worker(|| tail_answer(&log, view, budget)), receiver))
+    }
+
+    /// [`Self::subscribe_tail`] for a session this process does not own: no
+    /// live tail.
+    pub fn snapshot_tail(
+        &self,
+        session: SessionId,
+        view: cookie_agent_protocol::EventsView,
+        budget: usize,
+    ) -> Result<EventsSubscribeResult, EngineError> {
+        let log = self.snapshot_events(session, None, None, None)?;
+        Ok(off_worker(|| tail_answer(&log, view, budget)))
+    }
+
+    /// Older history of `session` (`events.page`), cut from its own log
+    /// alone: no tree load, no opening for writing, no tail.
+    pub fn events_page(
+        &self,
+        params: cookie_agent_protocol::EventsPageParams,
+    ) -> Result<cookie_agent_protocol::EventsPageResult, EngineError> {
+        let store = Arc::clone(&self.inner.store);
+        off_worker(|| {
+            let events = store.recovery_event_snapshot(params.session_id)?;
+            let page = cookie_agent_protocol::display_view::older_page(
+                &events,
+                params.before,
+                params.view,
+                cookie_agent_protocol::history_window_bytes(params.max_bytes),
+            );
+            Ok(cookie_agent_protocol::EventsPageResult {
+                events: page.events,
+                header: page.header,
+                older_cursor: page.older_cursor,
+                cut: page.cut,
+            })
+        })
+    }
+
+    /// The stored event at `seq` of `session`'s own log, whole
+    /// (`event.read`).
+    pub fn read_event(
+        &self,
+        session: SessionId,
+        seq: u64,
+    ) -> Result<Option<Arc<StoredEvent>>, EngineError> {
+        let store = Arc::clone(&self.inner.store);
+        off_worker(|| {
+            let events = store.recovery_event_snapshot(session)?;
+            Ok(cookie_agent_protocol::display_view::event_at(&events, seq).cloned())
+        })
+    }
+
     /// Subscribes to a currently running call's retained output and live tail.
     /// Output is ephemeral and intentionally separate from event cursors.
     pub fn subscribe_tool_output(
@@ -1538,6 +1614,30 @@ pub(in crate::runtime) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
         }
     }
     pending.into_iter().collect()
+}
+
+/// The newest-first answer for `log`, a whole log as an unlimited page
+/// returned it.
+fn tail_answer(
+    log: &EventsSubscribeResult,
+    view: cookie_agent_protocol::EventsView,
+    budget: usize,
+) -> EventsSubscribeResult {
+    if log.stale_cursor {
+        return log.clone();
+    }
+    let window = cookie_agent_protocol::display_view::tail_window(&log.events, view, budget);
+    EventsSubscribeResult {
+        events: window.events,
+        has_more: false,
+        stale_cursor: false,
+        window: Some(cookie_agent_protocol::HistoryWindow {
+            header: window.header,
+            older_cursor: window.older_cursor,
+            gap: window.gap,
+        }),
+        cut: window.cut,
+    }
 }
 
 #[cfg(test)]

@@ -1537,11 +1537,7 @@ impl EventLog {
             }
             page.push(Arc::clone(event));
         }
-        cookie_agent_protocol::EventsSubscribeResult {
-            events: page,
-            has_more,
-            stale_cursor: false,
-        }
+        cookie_agent_protocol::EventsSubscribeResult::page(page, has_more)
     }
 
     /// Whether the event at `seq` is the one a reader saw at `timestamp`. A

@@ -60,6 +60,42 @@ const REPLAY_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 /// well inside [`REPLAY_RESPONSE_TIMEOUT`] however long the session is.
 const REPLAY_PAGE_EVENTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(2_000).unwrap();
 
+/// The first client protocol whose daemons answer the display view, a
+/// newest-first `events.subscribe`, `events.page`, and `event.read`.
+pub const DISPLAY_VIEW_SINCE: cookie_agent_protocol::SemVer =
+    cookie_agent_protocol::SemVer::new(1, 57, 0);
+
+/// What a replay in the display view adds to its events (client protocol
+/// 1.57.0): a replay without it holds every stored event, whole.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReplayHistory {
+    /// A newest-first replay's window: what to fold before its events and
+    /// what it left out. A replay from a cursor has none.
+    pub window: Option<ReplayWindow>,
+    /// The tool results among the replay's events the view cut.
+    pub cut: Vec<cookie_agent_protocol::CutOutput>,
+}
+
+/// What precedes a newest-first replay's events
+/// ([`cookie_agent_protocol::HistoryWindow`]), its header read as this
+/// build reads events: one it cannot read is left out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReplayWindow {
+    pub header: Vec<cookie_agent_protocol::StoredEvent>,
+    pub older_cursor: Option<u64>,
+    pub gap: Option<cookie_agent_protocol::HistoryGap>,
+}
+
+/// An `events.page` answer as this build reads it: events it cannot read
+/// are in `events` as unknown payloads, and left out of `header`.
+#[derive(Clone, Debug)]
+pub struct EventsPage {
+    pub events: Vec<ClientEvent>,
+    pub header: Vec<cookie_agent_protocol::StoredEvent>,
+    pub older_cursor: Option<u64>,
+    pub cut: Vec<cookie_agent_protocol::CutOutput>,
+}
+
 /// The sole ordered delivery stream consumed by the UI.
 ///
 /// The connection task is its only producer. Replays are injected into this
@@ -80,6 +116,8 @@ pub enum ClientDelivery {
         generation: u64,
         final_seq: u64,
         rebuild: bool,
+        /// Present when the replay is in the display view.
+        history: Option<Box<ReplayHistory>>,
     },
     ReplayEvent {
         session_id: SessionId,
@@ -232,6 +270,8 @@ struct ReplayRequest {
     generation: u64,
     rebuild: bool,
     attempt: u64,
+    /// The display view asks a rebuild for the newest events first.
+    view: cookie_agent_protocol::EventsView,
 }
 
 struct Command {
@@ -361,7 +401,12 @@ struct Subscription {
     /// Earlier pages of the replay attempt `replay_pages_attempt`, held until
     /// its final page arrives and the whole replay is delivered at once.
     replay_pages: Vec<ClientEvent>,
+    /// The results those pages cut.
+    replay_cut: Vec<cookie_agent_protocol::CutOutput>,
     replay_pages_attempt: u64,
+    /// The view this session's replays ask for, chosen when it was last
+    /// subscribed.
+    view: cookie_agent_protocol::EventsView,
     /// The view unsubscribed: live messages still in flight for the session
     /// are dropped and recovery leaves it alone until it subscribes again.
     closed: bool,
@@ -373,6 +418,7 @@ impl Subscription {
         self.cursor_timestamp = self.rollback_cursor_timestamp;
         self.fetching = false;
         self.replay_pages = Vec::new();
+        self.replay_cut = Vec::new();
     }
 }
 
@@ -410,6 +456,8 @@ pub struct Client {
     origin: Arc<StdMutex<Option<EventOrigin>>>,
     /// The daemon's client protocol version, from the handshake response.
     daemon_version: Arc<StdMutex<Option<cookie_agent_protocol::SemVer>>>,
+    /// Replays ask for the display view when the daemon has it.
+    display_view: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pending_command_count: Arc<AtomicUsize>,
 }
@@ -463,6 +511,7 @@ impl Client {
             shutdown,
             origin: Arc::new(StdMutex::new(None)),
             daemon_version: Arc::new(StdMutex::new(None)),
+            display_view: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(all(test, not(target_arch = "wasm32")))]
             pending_command_count,
         };
@@ -534,6 +583,29 @@ impl Client {
     #[must_use]
     pub fn daemon_version(&self) -> Option<cookie_agent_protocol::SemVer> {
         *self.daemon_version.lock().expect("daemon version lock")
+    }
+
+    /// Whether sessions subscribed from now on replay in the display view:
+    /// a transcript's events, newest first, with long tool results cut
+    /// ([`ReplayHistory`]). Only a daemon of [`DISPLAY_VIEW_SINCE`] or later
+    /// has it; with an older one, replays stay whole.
+    pub fn use_display_view(&self, display: bool) {
+        self.display_view.store(display, Ordering::Relaxed);
+    }
+
+    /// The view replays ask for now: the display view when it was asked for
+    /// and the daemon has it.
+    #[must_use]
+    pub fn history_view(&self) -> cookie_agent_protocol::EventsView {
+        if self.display_view.load(Ordering::Relaxed)
+            && self
+                .daemon_version()
+                .is_some_and(|version| version >= DISPLAY_VIEW_SINCE)
+        {
+            cookie_agent_protocol::EventsView::Display
+        } else {
+            cookie_agent_protocol::EventsView::Full
+        }
     }
 
     /// The origin the daemon stamps on events this connection causes, once
@@ -871,6 +943,55 @@ impl Client {
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ClientError> {
         self.call(cookie_agent_protocol::ARTIFACT_READ_METHOD, &params)
             .await
+    }
+
+    /// Older history of a session, newest first (`events.page`, client
+    /// protocol 1.57.0).
+    pub async fn events_page(
+        &self,
+        params: cookie_agent_protocol::EventsPageParams,
+    ) -> Result<EventsPage, ClientError> {
+        #[derive(Deserialize)]
+        struct Wire {
+            events: Vec<Box<RawValue>>,
+            #[serde(default)]
+            header: Vec<Box<RawValue>>,
+            older_cursor: Option<u64>,
+            #[serde(default)]
+            cut: Vec<cookie_agent_protocol::CutOutput>,
+        }
+        let wire: Wire = self
+            .call(cookie_agent_protocol::EVENTS_PAGE_METHOD, &params)
+            .await
+            .map_err(|error| too_old(cookie_agent_protocol::EVENTS_PAGE_METHOD, error))?;
+        Ok(EventsPage {
+            events: wire
+                .events
+                .iter()
+                .filter_map(|event| serde_json::from_str::<ClientEvent>(event.get()).ok())
+                .collect(),
+            header: read_known(&wire.header),
+            older_cursor: wire.older_cursor,
+            cut: wire.cut,
+        })
+    }
+
+    /// One stored event, whole (`event.read`, client protocol 1.57.0): what
+    /// a cut tool result holds. `None` when the log holds no event at `seq`
+    /// or this build cannot read it.
+    pub async fn read_event(
+        &self,
+        params: cookie_agent_protocol::EventReadParams,
+    ) -> Result<Option<cookie_agent_protocol::StoredEvent>, ClientError> {
+        #[derive(Deserialize)]
+        struct Wire {
+            event: Option<Box<RawValue>>,
+        }
+        let wire: Wire = self
+            .call(cookie_agent_protocol::EVENT_READ_METHOD, &params)
+            .await
+            .map_err(|error| too_old(cookie_agent_protocol::EVENT_READ_METHOD, error))?;
+        Ok(wire.event.and_then(|event| read_known(&[event]).pop()))
     }
 
     pub async fn cancel_run(
@@ -1618,9 +1739,16 @@ impl Client {
         cursor: Option<u64>,
     ) -> Result<(), ClientError> {
         let cursor = cursor.unwrap_or(0);
-        let request = self
-            .prepare_subscription(session_id, cursor, false, cursor == 0)
-            .await?;
+        let view = self.history_view();
+        let request = prepare_subscription(
+            &self.subscriptions,
+            session_id,
+            cursor,
+            false,
+            cursor == 0,
+            view,
+        )
+        .await?;
         // The replay runs to completion in its own task. A caller that stops
         // waiting must not strand it half-fetched: the session would stay
         // marked as fetching and refuse every later replay.
@@ -1682,16 +1810,6 @@ impl Client {
         if recovery.sender.send((full_replay, session_id)).is_err() {
             state.queued = false;
         }
-    }
-
-    async fn prepare_subscription(
-        &self,
-        session_id: SessionId,
-        cursor: u64,
-        recovering: bool,
-        rebuild: bool,
-    ) -> Result<ReplayRequest, ClientError> {
-        prepare_subscription(&self.subscriptions, session_id, cursor, recovering, rebuild).await
     }
 
     /// Calls `method`. A daemon that does not know the method fails the call
@@ -1767,10 +1885,12 @@ async fn prepare_subscription(
     cursor: u64,
     recovering: bool,
     rebuild: bool,
+    view: cookie_agent_protocol::EventsView,
 ) -> Result<ReplayRequest, ClientError> {
     let mut subscriptions = subscriptions.lock().await;
     let subscription = subscriptions.entry(session_id).or_default();
     subscription.closed = false;
+    subscription.view = view;
     if subscription.fetching {
         if recovering {
             subscription.recovery_requested =
@@ -1796,6 +1916,7 @@ async fn prepare_subscription(
         generation: subscription.generation,
         rebuild,
         attempt: subscription.active_attempt,
+        view,
     })
 }
 
@@ -1837,11 +1958,17 @@ async fn request_replay_with_timeout(
     timeout: Duration,
 ) -> Result<(), ClientError> {
     loop {
+        // A rebuild in the display view asks for the newest events first,
+        // in one answer that also registers the tail.
+        let tail = cursor == 0 && !replay.view.is_full();
         let params = EventsSubscribeParams {
             session_id: replay.session_id,
-            cursor: Some(cursor),
-            cursor_timestamp: cursor_timestamp.take(),
-            limit: Some(REPLAY_PAGE_EVENTS),
+            cursor: (!tail).then_some(cursor),
+            cursor_timestamp: if tail { None } else { cursor_timestamp.take() },
+            limit: (!tail).then_some(REPLAY_PAGE_EVENTS),
+            view: replay.view,
+            from: tail.then_some(cookie_agent_protocol::EventsFrom::Tail),
+            max_bytes: None,
         };
         let (response, receiver) = oneshot::channel();
         let (written, written_receiver) = oneshot::channel();
@@ -2042,6 +2169,7 @@ async fn recover_all(
                         generation: subscription.generation,
                         rebuild,
                         attempt: subscription.active_attempt,
+                        view: subscription.view,
                     },
                     cursor,
                     subscription.cursor_timestamp,
@@ -2332,24 +2460,40 @@ async fn handle_frame(
                         Ok(result) => {
                             let has_more = result.has_more;
                             let page = result.read(replay.session_id, deliveries);
-                            let page = if has_more {
+                            let (page, cut, window) = if has_more {
                                 match hold_replay_page(replay, page, subscriptions).await {
                                     Ok(next) => {
                                         let _ = command.response.send(Ok(replay_next(Some(next))));
                                         return Ok(());
                                     }
-                                    Err(page) => page,
+                                    Err(page) => (page, Vec::new(), None),
                                 }
                             } else {
-                                page.events
+                                (page.events, page.cut, page.window)
                             };
-                            let mut events = take_replay_pages(replay, subscriptions).await;
+                            let (mut events, mut held_cut) =
+                                take_replay_pages(replay, subscriptions).await;
                             events.extend(page);
+                            held_cut.extend(cut);
+                            let history = (!replay.view.is_full()).then(|| {
+                                Box::new(ReplayHistory {
+                                    window,
+                                    cut: held_cut,
+                                })
+                            });
                             // The application can now start draining the sole
                             // mpsc consumer while this task injects a large
                             // replay under natural channel backpressure.
                             let _ = command.response.send(Ok(replay_next(None)));
-                            begin_replay(replay, events, subscriptions, deliveries, recovery).await;
+                            begin_replay(
+                                replay,
+                                events,
+                                history,
+                                subscriptions,
+                                deliveries,
+                                recovery,
+                            )
+                            .await;
                         }
                         Err(error) => {
                             let _ = command.response.send(Err(ClientError::InvalidFrame(error)));
@@ -2483,6 +2627,19 @@ struct ReplayPageWire {
     has_more: bool,
     #[serde(default)]
     stale_cursor: bool,
+    #[serde(default)]
+    window: Option<ReplayWindowWire>,
+    #[serde(default)]
+    cut: Vec<cookie_agent_protocol::CutOutput>,
+}
+
+#[derive(Deserialize)]
+struct ReplayWindowWire {
+    #[serde(default)]
+    header: Vec<Box<RawValue>>,
+    older_cursor: Option<u64>,
+    #[serde(default)]
+    gap: Option<cookie_agent_protocol::HistoryGap>,
 }
 
 /// A page's events and the sequence of its last record, readable or not:
@@ -2490,6 +2647,17 @@ struct ReplayPageWire {
 struct ReplayPage {
     events: Vec<ClientEvent>,
     last_seq: Option<u64>,
+    cut: Vec<cookie_agent_protocol::CutOutput>,
+    window: Option<ReplayWindow>,
+}
+
+/// The events of `events` this build can read, as known events.
+fn read_known(events: &[Box<RawValue>]) -> Vec<cookie_agent_protocol::StoredEvent> {
+    events
+        .iter()
+        .filter_map(|event| serde_json::from_str::<ClientEvent>(event.get()).ok())
+        .filter_map(|event| event.into_known().ok())
+        .collect()
 }
 
 impl ReplayPageWire {
@@ -2502,7 +2670,7 @@ impl ReplayPageWire {
         let mut last_seq = None;
         let events = self
             .events
-            .into_iter()
+            .iter()
             .enumerate()
             .filter_map(|(index, event)| {
                 match serde_json::from_str::<ClientEvent>(event.get()) {
@@ -2513,7 +2681,7 @@ impl ReplayPageWire {
                         Some(event)
                     }
                     Err(error) => {
-                        let seq = event_seq(&event);
+                        let seq = event_seq(event);
                         if index + 1 == count {
                             last_seq = seq;
                         }
@@ -2528,7 +2696,16 @@ impl ReplayPageWire {
                 }
             })
             .collect();
-        ReplayPage { events, last_seq }
+        ReplayPage {
+            events,
+            last_seq,
+            cut: self.cut,
+            window: self.window.map(|window| ReplayWindow {
+                header: read_known(&window.header),
+                older_cursor: window.older_cursor,
+                gap: window.gap,
+            }),
+        }
     }
 }
 
@@ -2586,7 +2763,12 @@ async fn hold_replay_page(
     page: ReplayPage,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
 ) -> Result<u64, Vec<ClientEvent>> {
-    let ReplayPage { events, last_seq } = page;
+    let ReplayPage {
+        events,
+        last_seq,
+        cut,
+        window: _,
+    } = page;
     let Some(next) = last_seq else {
         return Err(events);
     };
@@ -2599,22 +2781,25 @@ async fn hold_replay_page(
     };
     if subscription.replay_pages_attempt != replay.attempt {
         subscription.replay_pages = Vec::new();
+        subscription.replay_cut = Vec::new();
         subscription.replay_pages_attempt = replay.attempt;
     }
     subscription.replay_pages.extend(events);
+    subscription.replay_cut.extend(cut);
     Ok(next)
 }
 
 async fn take_replay_pages(
     replay: ReplayRequest,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-) -> Vec<ClientEvent> {
+) -> (Vec<ClientEvent>, Vec<cookie_agent_protocol::CutOutput>) {
     let mut subscriptions = subscriptions.lock().await;
     match subscriptions.get_mut(&replay.session_id) {
-        Some(subscription) if subscription.replay_pages_attempt == replay.attempt => {
-            std::mem::take(&mut subscription.replay_pages)
-        }
-        _ => Vec::new(),
+        Some(subscription) if subscription.replay_pages_attempt == replay.attempt => (
+            std::mem::take(&mut subscription.replay_pages),
+            std::mem::take(&mut subscription.replay_cut),
+        ),
+        _ => (Vec::new(), Vec::new()),
     }
 }
 
@@ -2636,6 +2821,7 @@ async fn abort_stale_replay(
 async fn begin_replay(
     replay: ReplayRequest,
     events: Vec<ClientEvent>,
+    history: Option<Box<ReplayHistory>>,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
     deliveries: &Deliveries,
     recovery: &Arc<RecoveryQueue>,
@@ -2666,6 +2852,7 @@ async fn begin_replay(
         generation: replay.generation,
         final_seq,
         rebuild: replay.rebuild,
+        history,
     });
     for event in events {
         let _ = deliveries.send(match event.into_known() {

@@ -1,4 +1,31 @@
 {
+  "$defs": {
+    "EventsFrom": {
+      "description": "Where a subscription's history starts.",
+      "oneOf": [
+        {
+          "const": "tail",
+          "description": "The newest events, newest run first.",
+          "type": "string"
+        }
+      ]
+    },
+    "EventsView": {
+      "description": "Which of a session's events a history request returns (client protocol\n1.57.0; see [`crate::display_view`]).",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "Every stored event, whole.",
+          "type": "string"
+        },
+        {
+          "const": "display",
+          "description": "What a transcript shows: bookkeeping left out, a superseded ACP\ncommand list or tool presentation dropped, and a tool result over\n[`crate::display_view::CUT_ABOVE_BYTES`] cut to its first bytes.",
+          "type": "string"
+        }
+      ]
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -18,8 +45,28 @@
         "null"
       ]
     },
+    "from": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventsFrom"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`tail` (client protocol 1.57.0): answer with the newest events within\n`max_bytes`, a [`HistoryWindow`], and the live tail, instead of\npaging forward from `cursor`. It takes no `cursor`,\n`cursor_timestamp`, or `limit`."
+    },
     "limit": {
       "description": "Most events to return. The server may end a page sooner to bound its\nsize, but a page always holds at least one event while any remain.\nWhen more remain after them, the result sets `has_more` and registers\nno live tail; the client asks again from the last returned sequence.\nOnly the final page subscribes.",
+      "format": "uint32",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_bytes": {
+      "description": "The byte budget of a `tail` answer's events, measured before\ncompression: [`HISTORY_WINDOW_DEFAULT_BYTES`] when absent, at most\n[`HISTORY_WINDOW_MAX_BYTES`].",
       "format": "uint32",
       "minimum": 1,
       "type": [
@@ -30,6 +77,10 @@
     "session_id": {
       "format": "uuid",
       "type": "string"
+    },
+    "view": {
+      "$ref": "#/$defs/EventsView",
+      "description": "Which events the history holds (client protocol 1.57.0): every\nstored event, or the display view, which leaves out what no client\nshows and cuts long tool results. Live events are sent whole either\nway."
     }
   },
   "required": [

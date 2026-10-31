@@ -178,6 +178,22 @@
       "result": "ElicitationRespondResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "event.read",
+      "params": "EventReadParams",
+      "params_role": "command",
+      "result": "EventReadResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "events.page",
+      "params": "EventsPageParams",
+      "params_role": "command",
+      "result": "EventsPageResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "events.plugin",

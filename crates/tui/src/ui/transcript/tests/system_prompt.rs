@@ -904,6 +904,7 @@ fn replay_rebuild_restores_new_event_backed_blocks() {
         generation: 0,
         final_seq: 3,
         rebuild: true,
+        history: None,
     });
     for event in events {
         let _ = store.apply_delivery(ClientDelivery::ReplayEvent {

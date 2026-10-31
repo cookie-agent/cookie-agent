@@ -626,6 +626,7 @@ async fn conversation_selection_retires_on_recovery_replay() {
         generation: 0,
         final_seq: 2,
         rebuild: true,
+        history: None,
     })
     .await;
     for seq in 1..=2 {

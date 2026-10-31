@@ -1436,6 +1436,28 @@
       ],
       "type": "object"
     },
+    "CutOutput": {
+      "description": "A tool result the display view cut (client protocol 1.57.0): its\n`output` is the first bytes of the stored one, its `display` fits the\nsame budget, and its `metadata` is `null`. `event.read` of `seq` returns\nthe whole event.",
+      "properties": {
+        "bytes": {
+          "description": "The whole result's length in bytes as JSON: what reading it costs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seq": {
+          "description": "The `tool_call_terminated` event's sequence.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "bytes"
+      ],
+      "type": "object"
+    },
     "DecisionTrace": {
       "properties": {
         "action": {
@@ -5705,6 +5727,71 @@
       ],
       "x-open": true
     },
+    "HistoryGap": {
+      "description": "Display events a newest-first answer left out between two it holds.",
+      "properties": {
+        "after_seq": {
+          "description": "The last event before the gap.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "before_seq": {
+          "description": "The first event after the gap; `events.page` with this `before`\nreads into it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "description": "How many display events between the two the answer left out. The\nanswer still holds those the session's state depends on, such as an\napproval still waiting.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "after_seq",
+        "before_seq",
+        "skipped"
+      ],
+      "type": "object"
+    },
+    "HistoryWindow": {
+      "description": "What precedes the events of a newest-first answer (client protocol\n1.57.0). A client folds `header` first, then the events, in sequence\norder; it shows a way to load what `older_cursor` and `gap` leave out.",
+      "properties": {
+        "gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoryGap"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Events left out inside the window: its newest run was larger than\nthe budget, so the answer holds the run's start, the gap, and the\nrun's newest events."
+        },
+        "header": {
+          "description": "The events before the window that the session's current state\ndepends on, in sequence order: the latest of each setting (agent,\nmodel, ACP options and commands, tools, goal, attachments, hold,\nqueued inputs), so a client that folds them first ends where a full\nreplay would. An `acp_session_updated` among them holds only those\nsettings.",
+          "items": {
+            "$ref": "#/$defs/StoredEvent"
+          },
+          "type": "array"
+        },
+        "older_cursor": {
+          "description": "The sequence just before the first event, which `events.page` takes\nas `before` + 1 to read older history; `null` when the events start\nat the beginning of the log.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "older_cursor"
+      ],
+      "type": "object"
+    },
     "InternalAgentBackend": {
       "oneOf": [
         {
@@ -9403,6 +9490,13 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "cut": {
+      "description": "The tool results among `events` the display view cut.",
+      "items": {
+        "$ref": "#/$defs/CutOutput"
+      },
+      "type": "array"
+    },
     "events": {
       "description": "Shared with the log that holds them, so a page copies no event.",
       "items": {
@@ -9417,6 +9511,17 @@
     "stale_cursor": {
       "description": "`cursor_timestamp` no longer matches the event at `cursor`: nothing is\nreturned and no tail is registered. The caller replays from the start.",
       "type": "boolean"
+    },
+    "window": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HistoryWindow"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The answer to `from: \"tail\"` (client protocol 1.57.0): what comes\nbefore its events."
     }
   },
   "required": [

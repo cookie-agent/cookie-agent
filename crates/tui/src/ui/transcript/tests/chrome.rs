@@ -1200,6 +1200,7 @@ async fn agent_panel_keeps_watched_subagent_history_after_completion_at_each_dep
             generation: 0,
             final_seq: 3,
             rebuild: false,
+            history: None,
         })
         .await;
         assert_agent_panel_visible(&mut app, true);

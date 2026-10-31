@@ -319,6 +319,8 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(SESSION_RECALL_INPUT_METHOD, ToDaemon, SessionRecallInputParams => SessionRecallInputResult),
         request!("run.cancel", ToDaemon, RunCancelParams => RunCancelResult),
         request!("events.subscribe", ToDaemon, EventsSubscribeParams => EventsSubscribeResult),
+        request!(EVENTS_PAGE_METHOD, ToDaemon, EventsPageParams => EventsPageResult),
+        request!(EVENT_READ_METHOD, ToDaemon, EventReadParams => EventReadResult),
         request!("approval.respond", ToDaemon, ApprovalRespondParams => ApprovalRespondResult),
         request!("approval.list", ToDaemon, ApprovalListParams => ApprovalListResult),
         request!(ELICITATION_RESPOND_METHOD, ToDaemon, ElicitationRespondParams => ElicitationRespondResult),

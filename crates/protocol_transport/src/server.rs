@@ -469,6 +469,17 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: EventsSubscribeParams,
         context: &ServerContext,
     ) -> Result<EventsSubscribeResult, ServerFault>;
+    /// Older history of a session without a live tail (client protocol
+    /// 1.57.0).
+    async fn events_page(
+        &self,
+        params: cookie_agent_protocol::EventsPageParams,
+    ) -> Result<cookie_agent_protocol::EventsPageResult, ServerFault>;
+    /// One stored event, whole (client protocol 1.57.0).
+    async fn read_event(
+        &self,
+        params: cookie_agent_protocol::EventReadParams,
+    ) -> Result<cookie_agent_protocol::EventReadResult, ServerFault>;
     async fn respond_approval(
         &self,
         params: ApprovalRespondParams,
@@ -1321,7 +1332,27 @@ async fn dispatch<S: ServerProtocol>(
             for event in &mut page.events {
                 *event = audience.stored(event);
             }
+            if let Some(window) = &mut page.window {
+                for event in &mut window.header {
+                    *event = audience.stored(event);
+                }
+            }
             value(page)
+        }
+        cookie_agent_protocol::EVENTS_PAGE_METHOD => {
+            let mut page = server.events_page(decode(params)?).await?;
+            let audience = context.display_audience();
+            for event in page.events.iter_mut().chain(&mut page.header) {
+                *event = audience.stored(event);
+            }
+            value(page)
+        }
+        cookie_agent_protocol::EVENT_READ_METHOD => {
+            let mut read = server.read_event(decode(params)?).await?;
+            if let Some(event) = &mut read.event {
+                *event = context.display_audience().stored(event);
+            }
+            value(read)
         }
         "approval.respond" => value(server.respond_approval(decode(params)?, context).await?),
         cookie_agent_protocol::ELICITATION_RESPOND_METHOD => {

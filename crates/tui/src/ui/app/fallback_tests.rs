@@ -239,6 +239,7 @@ async fn replay_only_admission_consumes_reset_and_next_submission_uses_successfu
             generation: 1,
             final_seq: 6,
             rebuild: true,
+            history: None,
         })
         .await;
     for event in history {

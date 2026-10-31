@@ -3931,6 +3931,7 @@ fn replay(
         generation: 0,
         final_seq,
         rebuild,
+        history: None,
     }];
     deliveries.extend(events.into_iter().map(|event| ClientDelivery::ReplayEvent {
         session_id,
@@ -4034,6 +4035,7 @@ fn a_replay_from_the_cursor_changes_the_projection_only_when_it_is_complete() {
             generation: 0,
             final_seq: 3,
             rebuild: false,
+            history: None,
         },
         ClientDelivery::ReplayEvent {
             session_id,
@@ -4462,6 +4464,7 @@ fn unknown_events_advance_the_sequence_and_show_only_in_the_debug_view() {
             generation: 0,
             final_seq: 2,
             rebuild: true,
+            history: None,
         },
         ClientDelivery::ReplayEvent {
             session_id,

@@ -5,6 +5,25 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.59.0
+
+- Newest-first session history
+  ([session storage v3](../specs/session-storage-v3.md) section 3; see
+  [Newest first](events.md#newest-first)):
+  - `events.subscribe` takes an optional `view`, `full` (the default) or
+    `display`, which leaves out bookkeeping and superseded settings and
+    cuts tool results over 4 KiB; the result lists them in `cut` (`seq`,
+    `bytes`).
+  - `events.subscribe` takes `from: "tail"` and an optional `max_bytes`:
+    the newest events within the budget, starting at a run, and a `window`
+    with the `header` events the state depends on, `older_cursor`, and a
+    `gap` inside a run larger than the budget. It goes live as a final page
+    does.
+  - `events.page` (`session_id`, `before`, optional `view` and
+    `max_bytes`) reads older history without a tail.
+  - `event.read` (`session_id`, `seq`) returns one stored event whole, or
+    `null`.
+
 ## 1.58.0
 
 - `acp_session_updated` has an optional `prompt_context_system_prompt`
