@@ -315,6 +315,8 @@ impl HeldHistory {
                 version: 0,
                 before,
                 skipped: None,
+                loading: false,
+                failed: None,
             });
         }
         let mut anchors = Vec::new();
@@ -328,6 +330,8 @@ impl HeldHistory {
                     version: 0,
                     before: open.before_seq,
                     skipped: Some(open.skipped),
+                    loading: false,
+                    failed: None,
                 });
                 gap = None;
                 anchors.push((open.before_seq, Ids::of(&state)));
@@ -583,18 +587,23 @@ impl StateStore {
     }
 }
 
-/// Marks the [`TranscriptItem::History`] row for `before` changed, so a
-/// client that caches rows draws it again.
+/// Shows on the [`TranscriptItem::History`] row for `before` whether its
+/// read is in flight or failed, marked changed for a client that caches
+/// rows.
 fn bump_history_row(state: &mut SessionState, before: u64) {
     for item in &mut state.transcript {
         if let TranscriptItem::History {
             before: row,
             version,
+            loading,
+            failed,
             ..
         } = item
             && *row == before
         {
             *version = version.wrapping_add(1);
+            *loading = state.history.loading == Some(before);
+            failed.clone_from(&state.history.failed);
         }
     }
     state.version = state.version.wrapping_add(1);

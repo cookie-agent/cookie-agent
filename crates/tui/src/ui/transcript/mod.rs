@@ -390,6 +390,11 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         section: ToolOutputSection,
     },
+    /// A row of history the display view has not loaded, which reads it:
+    /// the history before this sequence.
+    History(u64),
+    /// The row that reads a call's result the display view cut, whole.
+    ToolCut(cookie_agent_protocol::ToolCallId),
     /// The row that loads, or puts away, the complete content of a call's
     /// cut display block.
     ToolFull {
@@ -643,6 +648,8 @@ pub(super) struct LayoutCache {
 #[derive(Clone, Copy)]
 enum ScrollAnchorPoint {
     Item(u64),
+    /// This many rows above an item's start.
+    AboveItem(u64, usize),
     BlockStart(BlockId),
     BlockEnd(BlockId),
 }
@@ -709,10 +716,41 @@ impl LayoutCache {
 
     /// The closest stable boundary before the viewport, plus its row offset.
     /// Block ends also anchor text following a tool within one assistant item.
-    fn scroll_anchor(&self, offset: usize) -> Option<(ScrollAnchorPoint, usize)> {
+    /// A row of history not loaded is never one: the history it loads takes
+    /// its place. While one shows in the `height` rows of the viewport, the
+    /// first item after it anchors instead, so loaded history arrives above
+    /// what the user reads.
+    fn scroll_anchor(&self, offset: usize, height: usize) -> Option<(ScrollAnchorPoint, usize)> {
+        let history = |item: &CachedItemLayout| {
+            item.key
+                .interaction
+                .iter()
+                .any(|(id, _)| matches!(id, BlockId::History(_)))
+        };
+        let shown_history = self
+            .items
+            .iter()
+            .zip(&self.item_offsets)
+            .find(|(item, start)| {
+                history(item) && start.lines >= offset && start.lines < offset + height
+            })
+            .map(|(_, start)| start.lines);
+        if let Some(history_start) = shown_history
+            && let Some((item, start)) = self
+                .items
+                .iter()
+                .zip(&self.item_offsets)
+                .find(|(item, start)| !history(item) && start.lines > history_start)
+        {
+            return Some((
+                ScrollAnchorPoint::AboveItem(item.key.id, start.lines - offset),
+                0,
+            ));
+        }
         self.items
             .iter()
             .zip(&self.item_offsets)
+            .filter(|(item, _)| !history(item))
             .map(|(item, start)| (ScrollAnchorPoint::Item(item.key.id), start.lines))
             .chain(
                 self.layout
@@ -725,6 +763,8 @@ impl LayoutCache {
                             region.id,
                             BlockId::ToolOutput { .. }
                                 | BlockId::ToolFull { .. }
+                                | BlockId::ToolCut(_)
+                                | BlockId::History(_)
                                 | BlockId::ToolSession { .. }
                                 | BlockId::ToolMemory { .. }
                         )
@@ -784,6 +824,13 @@ impl LayoutCache {
                 .iter()
                 .zip(&self.item_offsets)
                 .find_map(|(item, start)| (item.key.id == id).then_some(start.lines)),
+            ScrollAnchorPoint::AboveItem(id, rows) => self
+                .items
+                .iter()
+                .zip(&self.item_offsets)
+                .find_map(|(item, start)| {
+                    (item.key.id == id).then_some(start.lines.saturating_sub(rows))
+                }),
             ScrollAnchorPoint::BlockStart(id) | ScrollAnchorPoint::BlockEnd(id) => self
                 .layout
                 .regions
@@ -2021,7 +2068,10 @@ impl App {
             &self.conversation_splice_shifts,
         );
         let anchor = (!self.conversation_scroll.following)
-            .then(|| self.layout_cache.scroll_anchor(unspliced_offset))
+            .then(|| {
+                self.layout_cache
+                    .scroll_anchor(unspliced_offset, usize::from(area.height))
+            })
             .flatten();
         let mut layout_changed = false;
         let mut cached_layout = false;
@@ -2120,6 +2170,12 @@ impl App {
                     block_hit_at(*region, line_at, viewport, self.conversation_scroll.offset)
                 }),
         );
+        self.history_in_view = viewed.and_then(|session_id| {
+            self.hit_map.blocks.iter().find_map(|hit| match hit.id {
+                BlockId::History(before) => Some((session_id, before)),
+                _ => None,
+            })
+        });
         let open_work = work_spans(block_regions);
         self.hit_map.user_messages.clear();
         self.hit_map
@@ -2304,6 +2360,14 @@ impl App {
                 self.toggle_full_content(session_id, call_id, block as usize);
                 return;
             }
+            BlockId::ToolCut(call_id) => {
+                self.load_cut_result(session_id, call_id);
+                return;
+            }
+            BlockId::History(before) => {
+                self.load_history(session_id, before);
+                return;
+            }
             BlockId::ToolSession { session, .. } => {
                 self.watch_session(session);
                 return;
@@ -2357,6 +2421,67 @@ impl App {
 }
 
 impl App {
+    /// Read the history a transcript row of history not loaded stands for
+    /// with `events.page`, unless it is being read.
+    pub(super) fn load_history(&mut self, session_id: SessionId, before: u64) {
+        let Some(params) = self.store.request_history(session_id, before) else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let page = client
+                .events_page(params)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(super::app::RpcUpdate::HistoryPageLoaded {
+                session_id,
+                before,
+                page,
+            });
+        });
+    }
+
+    /// Read a call's result the display view cut, whole, with `event.read`.
+    pub(super) fn load_cut_result(
+        &mut self,
+        session_id: SessionId,
+        call_id: cookie_agent_protocol::ToolCallId,
+    ) {
+        let Some(params) = self.store.request_cut_result(session_id, call_id) else {
+            return;
+        };
+        self.expanded_blocks
+            .entry(session_id)
+            .or_default()
+            .insert(BlockId::ToolOutput {
+                call_id,
+                section: ToolOutputSection::Detail,
+            });
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let read = client
+                .read_event(params)
+                .await
+                .map(|read| read.map(Box::new))
+                .map_err(|error| error.to_string());
+            let _ = updates.send(super::app::RpcUpdate::CutResultLoaded {
+                session_id,
+                call_id,
+                read,
+            });
+        });
+    }
+
+    /// Reads the history whose row the last frame showed: the history the
+    /// user scrolled up to.
+    pub(in crate::ui) fn load_history_in_view(&mut self) {
+        if let Some((session_id, before)) = self.history_in_view.take() {
+            self.load_history(session_id, before);
+        }
+    }
+
     /// Load the complete content of a call's cut display block with
     /// `artifact.read`, or put loaded content away again. Loading expands
     /// the call's output, whose larger budget then shows it.
@@ -2948,6 +3073,8 @@ pub(super) fn block_hit_at<'a>(
             region.id,
             BlockId::ToolOutput { .. }
                 | BlockId::ToolFull { .. }
+                | BlockId::ToolCut(_)
+                | BlockId::History(_)
                 | BlockId::ToolSession { .. }
                 | BlockId::ToolMemory { .. }
         ) {

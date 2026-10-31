@@ -202,11 +202,11 @@ pub(super) fn for_each_item_block_id(
             visit(BlockId::ProducerMessage(*message_id))
         }
         TranscriptItem::Event { id, .. } => visit(BlockId::Event(*id)),
+        TranscriptItem::History { before, .. } => visit(BlockId::History(*before)),
         TranscriptItem::User { .. }
         | TranscriptItem::Goal { .. }
         | TranscriptItem::Plan { .. }
-        | TranscriptItem::AcpNotice { .. }
-        | TranscriptItem::History { .. } => true,
+        | TranscriptItem::AcpNotice { .. } => true,
     }
 }
 
@@ -345,7 +345,13 @@ pub(super) fn transcript_item_layout(
         return ItemLayout::default();
     }
     match item {
-        TranscriptItem::History { .. } => ItemLayout::default(),
+        TranscriptItem::History {
+            before,
+            skipped,
+            loading,
+            failed,
+            ..
+        } => super::events::history_layout(*before, *skipped, *loading, failed.as_deref(), context),
         TranscriptItem::User { markdown, seq, .. } => ItemLayout {
             lines: {
                 let width = context.width;

@@ -467,6 +467,20 @@ impl App {
                     self.request_runtime_resync();
                 }
             }
+            RpcUpdate::HistoryPageLoaded {
+                session_id,
+                before,
+                page,
+            } => self.store.apply_history_page(session_id, before, page),
+            RpcUpdate::CutResultLoaded {
+                session_id,
+                call_id,
+                read,
+            } => self.store.apply_cut_result(
+                session_id,
+                call_id,
+                read.map(|read| read.map(|event| *event)),
+            ),
             RpcUpdate::FullContentLoaded {
                 session_id,
                 call_id,

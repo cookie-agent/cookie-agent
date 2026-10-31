@@ -598,6 +598,8 @@ pub(super) enum ToolRowAction {
     OpenSession(SessionId),
     /// Opens the memory the `link` block at this index names.
     OpenMemory(usize),
+    /// Reads the result the display view cut, whole.
+    LoadCut,
 }
 
 impl ToolRowAction {
@@ -614,6 +616,7 @@ impl ToolRowAction {
                 call_id,
                 block: u32::try_from(block).unwrap_or(u32::MAX),
             },
+            Self::LoadCut => BlockId::ToolCut(call_id),
         }
     }
 }
@@ -813,6 +816,25 @@ pub(super) fn tool_body_lines(
         sink.budget(),
         theme,
     );
+    if let Some(cut) = &tool.cut {
+        let size = cookie_agent_protocol::human_bytes(cut.bytes);
+        let text = match &cut.state {
+            cookie_agent_client_state::history::CutState::Cut => {
+                format!("… the result is cut short · click to load all of it ({size})")
+            }
+            cookie_agent_client_state::history::CutState::Loading => {
+                format!("… loading the whole result ({size})…")
+            }
+            cookie_agent_client_state::history::CutState::Failed(error) => {
+                format!("… could not load the whole result ({error}); click to retry")
+            }
+        };
+        // Shown whatever the budget left: it is how the rest is read.
+        output.push(
+            ToolBodyLine::wrapped(Line::styled(text, theme.muted()))
+                .with_action(ToolRowAction::LoadCut),
+        );
+    }
     output
 }
 

@@ -948,3 +948,39 @@ pub(super) fn empty_conversation_lines(
     lines.extend(wrap(hint, theme.internal()));
     lines
 }
+
+/// A row of history the display view has not loaded: what it stands for,
+/// and that clicking it, or scrolling it into view, reads it.
+pub(super) fn history_layout(
+    before: u64,
+    skipped: Option<u64>,
+    loading: bool,
+    failed: Option<&str>,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let what = match skipped {
+        Some(1) => "1 earlier event of this run".to_owned(),
+        Some(count) => format!("{count} earlier events of this run"),
+        None => "earlier messages".to_owned(),
+    };
+    let text = match (loading, failed) {
+        (true, _) => format!("⋯ loading {what}…"),
+        (false, Some(error)) => format!("⋯ could not load {what} ({error}); click to retry"),
+        (false, None) => format!("⋯ {what} not loaded · scroll up or click to load"),
+    };
+    let lines = vec![Line::styled(
+        crate::ui::app::truncate_with_ellipsis(&text, usize::from(context.width)),
+        context.theme.muted(),
+    )];
+    ItemLayout {
+        regions: vec![BlockRegion {
+            id: BlockId::History(before),
+            start_line: 0,
+            end_line: lines.len(),
+            header_lines: Some(1),
+            header_gutter: None,
+        }],
+        lines,
+        user_seq: None,
+    }
+}

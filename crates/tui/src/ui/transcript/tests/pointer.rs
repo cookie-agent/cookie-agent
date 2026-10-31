@@ -265,12 +265,30 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
         let (memory, search) = memory_calls();
         state.transcript.extend(memory.transcript);
         state.tools.extend(memory.tools);
+        let search_id = read_tool_id(&search);
         app.expanded_blocks
             .entry(session)
             .or_default()
-            .insert(BlockId::Tool(read_tool_id(&search)));
+            .insert(BlockId::Tool(search_id));
         state.transcript.extend(search.transcript);
         state.tools.extend(search.tools);
+        // A result the display view cut, and history it has not loaded.
+        state.tools.get_mut(&search_id).expect("search").cut =
+            Some(cookie_agent_client_state::history::CutResult {
+                seq: 8_000,
+                bytes: 66_000,
+                state: cookie_agent_client_state::history::CutState::Cut,
+            });
+        state
+            .transcript
+            .push(crate::state::TranscriptItem::History {
+                id: 9_001,
+                version: 0,
+                before: 8_000,
+                skipped: Some(3),
+                loading: false,
+                failed: None,
+            });
         state.transcript.extend(running.transcript);
         state.tools.extend(running.tools);
         // A model's memory change, whose line opens the Memory panel.

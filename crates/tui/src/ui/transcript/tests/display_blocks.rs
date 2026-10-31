@@ -705,3 +705,50 @@ async fn clicking_a_session_reference_opens_that_session() {
     app.handle_click(row.x, row.y).await;
     assert_eq!(app.selected, Some(child));
 }
+
+#[test]
+fn a_cut_result_offers_to_load_the_whole_result() {
+    let mut state = shown(vec![DisplayBlock::text("the first bytes")]);
+    let call_id = read_tool_id(&state);
+    let has_load = |state: &SessionState| {
+        expanded_layout(state, 120)
+            .regions
+            .iter()
+            .any(|region| region.id == BlockId::ToolCut(call_id))
+    };
+    assert!(!has_load(&state));
+    for cut in [
+        cookie_agent_client_state::history::CutState::Cut,
+        cookie_agent_client_state::history::CutState::Loading,
+        cookie_agent_client_state::history::CutState::Failed("closed".into()),
+    ] {
+        state.tools.get_mut(&call_id).expect("call").cut =
+            Some(cookie_agent_client_state::history::CutResult {
+                seq: 9,
+                bytes: 66_000,
+                state: cut,
+            });
+        assert!(has_load(&state));
+    }
+}
+
+#[test]
+fn history_not_loaded_is_a_row_that_reads_it() {
+    let mut state = SessionState::default();
+    state.transcript.push(TranscriptItem::History {
+        id: 1,
+        version: 0,
+        before: 40,
+        skipped: Some(12),
+        loading: false,
+        failed: None,
+    });
+    let layout = transcript_layout_with(&state, None, 80, &Theme::default(), &PlainHighlighter);
+    assert!(
+        layout
+            .regions
+            .iter()
+            .any(|region| region.id == BlockId::History(40))
+    );
+    assert!(snapshot_lines(&layout.lines).contains("12"));
+}

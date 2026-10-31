@@ -56,6 +56,9 @@ impl App {
                 .get(&session_id)
                 .map(|state| state.last_seq)
         };
+        // A session opens at its newest messages when the daemon can send
+        // them first; older history loads as the user scrolls up.
+        self.client.use_display_view(true);
         let (finished, done) = tokio::sync::watch::channel(false);
         self.subscription_done.insert(session_id, done);
         let background = self.store.background_mark(session_id);

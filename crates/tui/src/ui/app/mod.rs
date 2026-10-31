@@ -911,6 +911,9 @@ pub struct App {
     /// it starts at, as of the last frame: folding it from there brings the
     /// row back to the top.
     pub(super) pinned_work: Option<(crate::ui::transcript::BlockId, usize)>,
+    /// The row of history not loaded the last frame showed, and its
+    /// session: the history to read next.
+    pub(super) history_in_view: Option<(SessionId, u64)>,
     /// Interactive element under the pointer as of the last mouse event or
     /// frame; resolved against the hit map at render time and purely visual.
     pub(super) hover: Option<PointerTarget>,
@@ -1106,6 +1109,19 @@ pub(in crate::ui) enum RpcUpdate {
     ConfigStatusFetched(Option<cookie_agent_protocol::ConfigStatus>),
     /// `daemon.restart` answered.
     RestartAnswered(cookie_agent_client_state::restart::RestartOutcome),
+    /// A page of history the display view had not loaded was read, or
+    /// could not be.
+    HistoryPageLoaded {
+        session_id: SessionId,
+        before: u64,
+        page: Result<cookie_agent_protocol_transport::EventsPage, String>,
+    },
+    /// A call's cut result was read whole, or could not be.
+    CutResultLoaded {
+        session_id: SessionId,
+        call_id: cookie_agent_protocol::ToolCallId,
+        read: Result<Option<Box<cookie_agent_protocol::StoredEvent>>, String>,
+    },
     /// The complete content of a call's cut display block was read, or
     /// could not be.
     FullContentLoaded {
@@ -1710,6 +1726,7 @@ impl App {
             highlighter: Box::<SyntectHighlighter>::default(),
             hit_map: UiHitMap::default(),
             pinned_work: None,
+            history_in_view: None,
             hover: None,
             animation_ticks: 0,
             transient_notices: Vec::new(),
@@ -2323,6 +2340,7 @@ async fn event_loop(
             {
                 return (Err(error), app.session_errors.clone());
             }
+            app.load_history_in_view();
             render.drew(Instant::now());
             // The next tick lands one full frame after this draw, when a
             // coalesced frame is allowed to draw.

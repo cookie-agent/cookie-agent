@@ -10,8 +10,10 @@
 //!
 //! Optional: `PREVIEW_WIDTH` (110), `PREVIEW_HEIGHT` (120), `PREVIEW_OFFSET`
 //! (scroll row; the tail is followed when unset), `PREVIEW_EVENT_LIMIT`
-//! (replay only the first N events), `PREVIEW_DARK` (dark theme), and
-//! `PREVIEW_OPEN_WORK` (open the reduced mode's work rows too).
+//! (replay only the first N events), `PREVIEW_DARK` (dark theme),
+//! `PREVIEW_OPEN_WORK` (open the reduced mode's work rows too), and
+//! `PREVIEW_TAIL_BYTES` (open the session newest first, as the display view
+//! sends a window of that many bytes).
 
 use std::collections::HashSet;
 
@@ -52,7 +54,10 @@ async fn render_preview() {
         },
         ColorLevel::TrueColor,
     );
-    assert!(app.store.rebuild_session(session, 1, events));
+    match std::env::var("PREVIEW_TAIL_BYTES") {
+        Ok(budget) => open_newest_first(&mut app, events, budget.parse().unwrap()),
+        Err(_) => assert!(app.store.rebuild_session(session, 1, events)),
+    }
     app.selected = Some(session);
     app.tree_root = Some(session);
     let state = &app.store.sessions[&session];
@@ -117,4 +122,58 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+/// Opens `events`' session as a newest-first replay in the display view
+/// delivers a window of `budget` bytes.
+fn open_newest_first(app: &mut crate::ui::app::App, events: Vec<StoredEvent>, budget: usize) {
+    use cookie_agent_protocol_transport::{ClientDelivery, ReplayHistory, ReplayWindow};
+    let events = events
+        .into_iter()
+        .map(std::sync::Arc::new)
+        .collect::<Vec<_>>();
+    let session_id = events[0].session_id;
+    let window = cookie_agent_protocol::display_view::tail_window(
+        &events,
+        cookie_agent_protocol::EventsView::Display,
+        budget,
+    );
+    let final_seq = window.events.last().unwrap().seq;
+    let mut deliveries = vec![ClientDelivery::ReplayStart {
+        session_id,
+        generation: 1,
+        final_seq,
+        rebuild: true,
+        history: Some(Box::new(ReplayHistory {
+            window: Some(ReplayWindow {
+                header: window
+                    .header
+                    .iter()
+                    .map(|event| (**event).clone())
+                    .collect(),
+                older_cursor: window.older_cursor,
+                gap: window.gap,
+            }),
+            cut: window.cut.clone(),
+        })),
+    }];
+    deliveries.extend(
+        window
+            .events
+            .iter()
+            .map(|event| ClientDelivery::ReplayEvent {
+                session_id,
+                generation: 1,
+                final_seq,
+                event: Box::new((**event).clone()),
+            }),
+    );
+    deliveries.push(ClientDelivery::ReplayEnd {
+        session_id,
+        generation: 1,
+        final_seq,
+    });
+    for delivery in deliveries {
+        let _ = app.store.apply_delivery(delivery);
+    }
 }

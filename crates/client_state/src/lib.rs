@@ -750,6 +750,10 @@ pub enum TranscriptItem {
         /// How many display events a gap left out; `None` for older
         /// history, whose size is not known.
         skipped: Option<u64>,
+        /// Its read is in flight.
+        loading: bool,
+        /// Why its last read failed.
+        failed: Option<String>,
     },
 }
 
