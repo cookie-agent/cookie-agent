@@ -42,6 +42,14 @@ pub struct ChatGptModel {
     pub priority: Option<i64>,
 }
 
+/// A fetched model list and the account it belongs to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChatGptModelList {
+    /// The subject of the account the list was fetched for.
+    pub subject: String,
+    pub models: Vec<ChatGptModel>,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ModelCache {
@@ -51,9 +59,11 @@ struct ModelCache {
 }
 
 impl ChatGptCredentials {
-    /// Lists the signed-in plan's models and caches them. The list does not
-    /// prove access; a completed request does.
-    pub async fn fetch_models(&self) -> Result<Vec<ChatGptModel>, ChatGptError> {
+    /// Lists the signed-in plan's models and caches them, with the account
+    /// they were fetched for: another may have signed in by the time the
+    /// list arrives. The list does not prove access; a completed request
+    /// does.
+    pub async fn fetch_models(&self) -> Result<ChatGptModelList, ChatGptError> {
         let subject = self
             .account()
             .filter(|account| !account.needs_sign_in)
@@ -73,17 +83,27 @@ impl ChatGptCredentials {
             )));
         }
         let models = parse_models(&answer.body)?;
-        let cache = ModelCache {
-            subject,
-            fetched_at: now_unix(),
-            models: models.clone(),
-        };
-        let bytes = serde_json::to_vec_pretty(&cache)
-            .map_err(|_| ChatGptError::Failed("could not encode the model list".into()))?;
-        self.directory
-            .lock(CACHE_LOCK)?
-            .atomic_replace(CACHE, &bytes)?;
-        Ok(models)
+        // An account that signed in meanwhile keeps its own cache.
+        if self.is_signed_in_as(&subject) {
+            let cache = ModelCache {
+                subject: subject.clone(),
+                fetched_at: now_unix(),
+                models: models.clone(),
+            };
+            let bytes = serde_json::to_vec_pretty(&cache)
+                .map_err(|_| ChatGptError::Failed("could not encode the model list".into()))?;
+            self.directory
+                .lock(CACHE_LOCK)?
+                .atomic_replace(CACHE, &bytes)?;
+        }
+        Ok(ChatGptModelList { subject, models })
+    }
+
+    /// Whether `subject` is the signed-in account and can still refresh.
+    #[must_use]
+    pub fn is_signed_in_as(&self, subject: &str) -> bool {
+        self.account()
+            .is_some_and(|account| account.subject == subject && !account.needs_sign_in)
     }
 
     /// The cached list of the signed-in account, or nothing when the cache

@@ -631,9 +631,10 @@ async fn the_model_list_is_fetched_with_the_token_and_cached_per_account() {
         );
         (200, LISTING.to_owned())
     });
-    let models = credentials.fetch_models().await.unwrap();
-    assert_eq!(models.len(), 2);
-    assert_eq!(open(&directory, &server).cached_models(), models);
+    let list = credentials.fetch_models().await.unwrap();
+    assert_eq!(list.subject, "user-123");
+    assert_eq!(list.models.len(), 2);
+    assert_eq!(open(&directory, &server).cached_models(), list.models);
     server.respond(|_| (200, String::new()));
     credentials.sign_out().await.unwrap();
     assert!(credentials.cached_models().is_empty());

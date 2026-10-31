@@ -3071,6 +3071,48 @@ fn offline_chatgpt(temporary: &TempDir) -> Arc<cookie_agent_models::chatgpt::Cha
     .unwrap()
 }
 
+/// A ChatGPT sign-in of account `subject`, as a completed sign-in stores it.
+fn signed_in_chatgpt(
+    temporary: &TempDir,
+    subject: &str,
+) -> Arc<cookie_agent_models::chatgpt::ChatGptCredentials> {
+    let directory =
+        cookie_agent_models::secure_store::SecureDirectory::open_in(temporary.path(), "chatgpt")
+            .unwrap();
+    let file = serde_json::json!({
+        "version": 1,
+        "host": {"ext_agent_host_id": "urn:uuid:host", "client_id": "oaiapp_issued"},
+        "account": {
+            "issuer": "https://auth.openai.com",
+            "subject": subject,
+            "email": null,
+            "access_token": "access",
+            "expires_at": 4_000_000_000_u64,
+            "earliest_refresh_at": null,
+            "refresh_token": "refresh",
+            "scopes": [],
+            "saved_at": 0,
+            "needs_sign_in": false,
+        },
+    });
+    directory
+        .lock("chatgpt-sign-in.lock")
+        .unwrap()
+        .atomic_replace("chatgpt-sign-in.json", file.to_string().as_bytes())
+        .unwrap();
+    offline_chatgpt(temporary)
+}
+
+fn chatgpt_list(
+    subject: &str,
+    models: Vec<cookie_agent_models::chatgpt::ChatGptModel>,
+) -> cookie_agent_models::chatgpt::ChatGptModelList {
+    cookie_agent_models::chatgpt::ChatGptModelList {
+        subject: subject.to_owned(),
+        models,
+    }
+}
+
 fn chatgpt_model(slug: &str, priority: i64) -> cookie_agent_models::chatgpt::ChatGptModel {
     cookie_agent_models::chatgpt::ChatGptModel {
         slug: slug.to_owned(),
@@ -3098,7 +3140,7 @@ fn the_built_in_chatgpt_provider_lists_its_plan_and_compiles_once_signed_in() {
         catalog(),
         store(&temporary),
         Some(cookie_agent_models::manager::ChatGptManagerInputs {
-            credentials: offline_chatgpt(&temporary),
+            credentials: signed_in_chatgpt(&temporary, "user-123"),
             models: vec![chatgpt_model("gpt-6-luna", 5)],
         }),
     )
@@ -3160,12 +3202,26 @@ fn the_built_in_chatgpt_provider_lists_its_plan_and_compiles_once_signed_in() {
         190_400
     );
 
+    // A list fetched for another account, which signed out meanwhile, is
+    // dropped.
+    assert!(
+        manager
+            .replace_chatgpt_models(
+                chatgpt_list("user-456", vec![chatgpt_model("gpt-6.1-sol", 1)]),
+                |_| Ok(()),
+            )
+            .unwrap()
+            .is_none()
+    );
     let replaced = manager
         .replace_chatgpt_models(
-            vec![
-                chatgpt_model("gpt-6.1-sol", 1),
-                chatgpt_model("gpt-6-luna", 5),
-            ],
+            chatgpt_list(
+                "user-123",
+                vec![
+                    chatgpt_model("gpt-6.1-sol", 1),
+                    chatgpt_model("gpt-6-luna", 5),
+                ],
+            ),
             |_| Ok(()),
         )
         .unwrap();
@@ -3183,10 +3239,13 @@ fn the_built_in_chatgpt_provider_lists_its_plan_and_compiles_once_signed_in() {
     assert!(
         manager
             .replace_chatgpt_models(
-                vec![
-                    chatgpt_model("gpt-6.1-sol", 1),
-                    chatgpt_model("gpt-6-luna", 5)
-                ],
+                chatgpt_list(
+                    "user-123",
+                    vec![
+                        chatgpt_model("gpt-6.1-sol", 1),
+                        chatgpt_model("gpt-6-luna", 5)
+                    ],
+                ),
                 |_| Ok(()),
             )
             .unwrap()

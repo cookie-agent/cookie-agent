@@ -15,7 +15,7 @@ mod sign_in;
 
 use std::time::Duration;
 
-pub use catalog::{ChatGptModel, provider_entry};
+pub use catalog::{ChatGptModel, ChatGptModelList, provider_entry};
 pub use credentials::{AccountSummary, ChatGptCredentials, ChatGptEndpoints};
 pub use sign_in::SignedIn;
 

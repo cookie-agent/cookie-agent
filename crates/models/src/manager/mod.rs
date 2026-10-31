@@ -1216,16 +1216,23 @@ impl ModelManager {
     }
 
     /// Replaces the ChatGPT plan's model list and publishes the runtime it
-    /// compiles to. Without the built-in provider this changes nothing.
+    /// compiles to. Without the built-in provider, or for a list of an
+    /// account that is not the signed-in one, this changes nothing.
     pub fn replace_chatgpt_models<P>(
         &self,
-        models: Vec<crate::chatgpt::ChatGptModel>,
+        list: crate::chatgpt::ChatGptModelList,
         prepare_publication: impl FnOnce(&Arc<CompiledModelRuntime>) -> Result<P, ModelManagerError>,
     ) -> Result<Option<(Arc<CompiledModelRuntime>, P)>, ModelManagerError> {
         let Some(chatgpt) = &self.chatgpt else {
             return Ok(None);
         };
         let _guard = lock(&self.mutation);
+        // A list fetched for an account that is no longer the signed-in
+        // one is dropped; the new account's own fetch replaces it.
+        if !chatgpt.credentials.is_signed_in_as(&list.subject) {
+            return Ok(None);
+        }
+        let models = list.models;
         if **lock(&chatgpt.models) == models {
             return Ok(None);
         }
