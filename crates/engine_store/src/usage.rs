@@ -13,11 +13,11 @@ const TOKENS_PER_MILLION: u128 = 1_000_000;
 ///
 /// A turn an interrupt cut off carries a default [`Usage`] whose fields are
 /// all `None`. Recording it as a stamped-but-unpriced observation would make
-/// [`observations_cost`] report `None`, hiding the whole session's estimated
+/// `observations_cost` report `None`, hiding the whole session's estimated
 /// cost, and would count a request the provider never finished. The fold skips
 /// only such interrupted turns: a completed turn without usage still counts as
 /// an unpriced request, so the cost stays honestly unknown.
-pub(crate) fn has_observed_tokens(usage: &Usage) -> bool {
+pub fn has_observed_tokens(usage: &Usage) -> bool {
     usage.input_tokens.is_some()
         || usage.input_tokens_no_cache.is_some()
         || usage.input_tokens_cache_read.is_some()
@@ -27,7 +27,7 @@ pub(crate) fn has_observed_tokens(usage: &Usage) -> bool {
         || usage.output_tokens_reasoning.is_some()
 }
 
-pub(crate) fn record_stamped(
+pub fn record_stamped(
     rollup: &mut UsageRollup,
     model: &ResolvedModelRef,
     usage: &Usage,
@@ -136,7 +136,7 @@ fn checked_increment(total: &mut u64, value: u64, overflow: &mut bool) {
     }
 }
 
-pub(crate) fn merge(target: &mut UsageRollup, source: &UsageRollup) {
+pub fn merge(target: &mut UsageRollup, source: &UsageRollup) {
     target.arithmetic_overflow |= source.arithmetic_overflow;
     checked_increment(
         &mut target.input_tokens,
@@ -212,7 +212,7 @@ pub(crate) fn merge(target: &mut UsageRollup, source: &UsageRollup) {
 
 /// `rollup` with its cache hit rates and the cost its observations were
 /// stamped with when they were recorded.
-pub(crate) fn with_pricing(mut rollup: UsageRollup) -> UsageRollup {
+pub fn with_pricing(mut rollup: UsageRollup) -> UsageRollup {
     rollup.cache_hit_rate = (!rollup.arithmetic_overflow)
         .then(|| {
             hit_rate(
@@ -255,7 +255,7 @@ pub(crate) fn with_pricing(mut rollup: UsageRollup) -> UsageRollup {
 
 /// Where a model's catalog cost comes from: the compiled runtime's models,
 /// looked up one at a time, or a map.
-pub(crate) trait CatalogCosts {
+pub trait CatalogCosts {
     fn catalog_cost(&self, model: &ModelKey) -> Option<&CatalogModelCost>;
 }
 
@@ -271,7 +271,7 @@ impl CatalogCosts for cookie_agent_models::CompiledModelRuntime {
     }
 }
 
-pub(crate) fn estimated_cost_pico_usd(
+pub fn estimated_cost_pico_usd(
     model: &ResolvedModelRef,
     usage: &Usage,
     pricing: &PricingConfig,
@@ -420,7 +420,7 @@ mod tests {
     use cookie_agent_protocol::{ModelKey, ResolvedModelRef, Usage, UsageRollup};
 
     fn model(model: &str) -> ResolvedModelRef {
-        crate::model_history::wire_model(&crate::test_support::model_binding_named(model))
+        crate::bindings::wire_resolved(&crate::test_support::model_binding_named(model))
     }
 
     fn reported(input: Option<u64>, output: Option<u64>, cache_read: Option<u64>) -> Usage {

@@ -129,7 +129,7 @@ mark a breaking change as compatible.
   is read; nothing outside the engine meets it.
 - **The history format bumps only for a change that cannot follow the
   additive rules**, and every bump ships a converter:
-  `crates/engine/src/events/convert/v<N>_to_v<N+1>.rs`, a pure function over
+  `crates/engine_store/src/events/convert/v<N>_to_v<N+1>.rs`, a pure function over
   the old log's JSON lines that never uses old Rust types, registered in
   `CONVERTERS` and kept forever, so converters chain. Converters are the only
   migrations allowed; nothing else upconverts, aliases, or migrates stored

@@ -4,7 +4,7 @@
 //! A log written under an older history format is converted to
 //! [`HISTORY_FORMAT`] when a newer build opens it. Each step is a pure
 //! function from the old log's JSON lines to the next format's lines, in
-//! `v<N>_to_v<N+1>.rs`, registered in [`CONVERTERS`] and kept, so the steps
+//! `v<N>_to_v<N+1>.rs`, registered in `CONVERTERS` and kept, so the steps
 //! chain: a format-1 log opened by a format-3 build converts 1 to 2 to 3.
 //! Converters never use old Rust types; they read and write JSON.
 //!
@@ -27,7 +27,7 @@
 //!    understand (an unknown or newer record) is copied unchanged. The chain
 //!    stamps `history_format: 2` on `session_created` afterwards.
 //! 3. Declare `mod v1_to_v2;` and register `Converter { from: 1, convert:
-//!    v1_to_v2::convert }` in [`CONVERTERS`]. Converters are never removed:
+//!    v1_to_v2::convert }` in `CONVERTERS`. Converters are never removed:
 //!    a format-1 log opened by a format-3 build converts 1 to 2 to 3.
 //! 4. Record new golden trees in `crates/engine/tests/fixtures/history/2/`
 //!    with the golden recorder, beside `history/1/`, which stays frozen: its
@@ -38,21 +38,21 @@
 //! 5. Describe the format in `docs/site/reference/events.md` (History
 //!    formats) and the converter in the compatibility spec's notes.
 //!
-//! The test-only step from format 0 ([`TEST_CONVERTERS`]) shows the shape of
+//! The test-only step from format 0 (`TEST_CONVERTERS`) shows the shape of
 //! a step and exercises the chain, the tree conversion, and the backups.
 
 use cookie_agent_protocol::HISTORY_FORMAT;
 use serde_json::Value;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod v0_to_v1;
 
 /// One conversion step, from format `from` to `from + 1`.
-pub(crate) struct Converter {
-    pub(crate) from: u32,
+pub struct Converter {
+    pub from: u32,
     /// The log's lines in format `from + 1`. The chain stamps the new
     /// format on `session_created` afterwards.
-    pub(crate) convert: fn(Vec<Value>) -> Result<Vec<Value>, String>,
+    pub convert: fn(Vec<Value>) -> Result<Vec<Value>, String>,
 }
 
 /// Every conversion step this build has, by the format it reads.
@@ -60,12 +60,12 @@ const CONVERTERS: &[Converter] = &[];
 
 /// Steps only tests use: format 0 exists only to exercise the machinery
 /// before the first real converter does.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const TEST_CONVERTERS: &[Converter] = &[Converter {
     from: 0,
     convert: v0_to_v1::convert,
 }];
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 const TEST_CONVERTERS: &[Converter] = &[];
 
 fn converter(from: u32) -> Option<&'static Converter> {
@@ -77,7 +77,7 @@ fn converter(from: u32) -> Option<&'static Converter> {
 
 /// Why a log could not be converted.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ConvertError {
+pub enum ConvertError {
     #[error("no conversion from history format {0} exists")]
     NoPath(u32),
     #[error("converting history format {from} to {} failed: {message}", from + 1)]
@@ -85,7 +85,7 @@ pub(crate) enum ConvertError {
 }
 
 /// The history format `session_created`, the first line, declares.
-pub(crate) fn history_format(first: &Value) -> Option<u32> {
+pub fn history_format(first: &Value) -> Option<u32> {
     first
         .get("payload")
         .filter(|payload| payload.get("type").and_then(Value::as_str) == Some("session_created"))?
@@ -95,13 +95,13 @@ pub(crate) fn history_format(first: &Value) -> Option<u32> {
 }
 
 /// Whether a log in `format` can be converted to this build's.
-pub(crate) fn convertible(format: u32) -> bool {
+pub fn convertible(format: u32) -> bool {
     format < HISTORY_FORMAT && (format..HISTORY_FORMAT).all(|from| converter(from).is_some())
 }
 
 /// Converts a log's lines from `from` to [`HISTORY_FORMAT`], one step at a
 /// time.
-pub(crate) fn convert(from: u32, mut lines: Vec<Value>) -> Result<Vec<Value>, ConvertError> {
+pub fn convert(from: u32, mut lines: Vec<Value>) -> Result<Vec<Value>, ConvertError> {
     for format in from..HISTORY_FORMAT {
         let step = converter(format).ok_or(ConvertError::NoPath(format))?;
         lines = (step.convert)(lines).map_err(|message| ConvertError::Failed {
@@ -126,7 +126,7 @@ pub(crate) fn convert(from: u32, mut lines: Vec<Value>) -> Result<Vec<Value>, Co
 /// Converts the complete lines of a log in `from` to [`HISTORY_FORMAT`] and
 /// returns the new log's bytes. A line that is not JSON is left out; the
 /// original keeps it.
-pub(crate) fn convert_bytes(from: u32, bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
+pub fn convert_bytes(from: u32, bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
     let lines = bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())

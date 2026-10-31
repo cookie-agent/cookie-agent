@@ -19,7 +19,7 @@ strict. The frozen corpora in `crates/protocol/compat/corpus/` and the golden
 session logs in `crates/engine/tests/fixtures/history/` are never
 regenerated; a change that fails them breaks data earlier builds wrote.
 
-Session-log converters (`crates/engine/src/events/convert/`) are the only
+Session-log converters (`crates/engine_store/src/events/convert/`) are the only
 migrations allowed, and every history-format bump ships one. Everywhere else,
 prefer removing obsolete aliases, migrations, and compatibility decoders over
 carrying them forward.

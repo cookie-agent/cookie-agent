@@ -846,6 +846,7 @@ dependencies = [
  "bytes",
  "cookie_agent_coding_runtime",
  "cookie_agent_config",
+ "cookie_agent_engine_store",
  "cookie_agent_identity",
  "cookie_agent_mcp",
  "cookie_agent_models",
@@ -877,6 +878,27 @@ dependencies = [
  "toml 0.8.23",
  "unicode-properties",
  "unicode-segmentation",
+ "uuid",
+]
+
+[[package]]
+name = "cookie_agent_engine_store"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "cookie_agent_config",
+ "cookie_agent_identity",
+ "cookie_agent_models",
+ "cookie_agent_protocol",
+ "jiff",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 0.8.23",
  "uuid",
 ]
 

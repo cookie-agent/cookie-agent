@@ -1354,9 +1354,9 @@ impl TreeLoadObserver for CapturingObserver {
     fn tree_loaded(
         &self,
         products: Arc<TreeLoadProducts>,
-    ) -> Result<(), crate::runtime::EngineError> {
+    ) -> Result<(), crate::session::TreeLoadRejection> {
         if self.reject.load(Ordering::SeqCst) {
-            return Err(crate::runtime::EngineError::ActorStopped);
+            return Err("the engine stopped".into());
         }
         self.deliveries
             .lock()
@@ -1471,7 +1471,7 @@ impl TreeLoadObserver for ProductsObserver {
     fn tree_loaded(
         &self,
         products: Arc<TreeLoadProducts>,
-    ) -> Result<(), crate::runtime::EngineError> {
+    ) -> Result<(), crate::session::TreeLoadRejection> {
         self.deliveries
             .lock()
             .expect("observer lock")
@@ -1837,7 +1837,7 @@ impl TreeLoadObserver for FactsAtDelivery {
     fn tree_loaded(
         &self,
         _products: Arc<TreeLoadProducts>,
-    ) -> Result<(), crate::runtime::EngineError> {
+    ) -> Result<(), crate::session::TreeLoadRejection> {
         let store = self
             .store
             .upgrade()
@@ -3136,7 +3136,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
     let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
     let binding = agent.fallback_chain[0].decode().expect("test binding");
-    let resolved_model = crate::model_history::wire_model(&binding);
+    let resolved_model = crate::bindings::wire_resolved(&binding);
     let runtime_revision = RuntimeRevision::new(format!("sha256:{}", "1".repeat(64))).unwrap();
     let catalog_revision = CatalogRevision::new(format!("sha256:{}", "2".repeat(64))).unwrap();
     let provider_state_revision =
@@ -3360,9 +3360,9 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
     let owner = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
     let binding = owner.fallback_chain[0].decode().expect("test binding");
-    let resolved_model = crate::model_history::wire_model(&binding);
+    let resolved_model = crate::bindings::wire_resolved(&binding);
     let fallback_model =
-        crate::model_history::wire_model(&crate::test_support::model_binding_named("fallback-one"));
+        crate::bindings::wire_resolved(&crate::test_support::model_binding_named("fallback-one"));
     let revision = |value: char| format!("sha256:{}", value.to_string().repeat(64));
     let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
     let catalog_revision = CatalogRevision::new(revision('2')).unwrap();
@@ -4028,7 +4028,7 @@ fn usage_rollup_after_a_usage_less_commit(
     let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
     let binding = agent.fallback_chain[0].decode().expect("test binding");
-    let resolved_model = crate::model_history::wire_model(&binding);
+    let resolved_model = crate::bindings::wire_resolved(&binding);
     let revision = |value: char| format!("sha256:{}", value.to_string().repeat(64));
     let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
     let catalog_revision = CatalogRevision::new(revision('2')).unwrap();

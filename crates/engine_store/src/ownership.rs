@@ -9,15 +9,15 @@ use std::{
 
 /// Lock file name in the unix layout, `<root-dir>/owner.lock`. The same name
 /// inside a child directory is a legacy artifact this build sweeps away.
-pub(crate) const OWNER_LOCK_FILE: &str = "owner.lock";
+pub const OWNER_LOCK_FILE: &str = "owner.lock";
 #[cfg(windows)]
 const OWNER_LOCK_EXTENSION: &str = OWNER_LOCK_FILE;
 /// Sidecar suffix in the Windows layout, `<root-id>.owner.lock`. A sidecar
 /// inside `subagents/` is a legacy artifact this build sweeps away.
-pub(crate) const OWNER_LOCK_SUFFIX: &str = ".owner.lock";
+pub const OWNER_LOCK_SUFFIX: &str = ".owner.lock";
 
 #[derive(Debug)]
-pub(crate) struct HeldLock {
+pub struct HeldLock {
     _file: fs::File,
 }
 
@@ -28,23 +28,29 @@ impl Drop for HeldLock {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct WriteCapability {
+pub struct WriteCapability {
     active: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
-pub(crate) struct WriteAuthority {
+pub struct WriteAuthority {
     active: Arc<AtomicBool>,
 }
 
+impl Default for WriteAuthority {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WriteAuthority {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             active: Arc::new(AtomicBool::new(true)),
         }
     }
 
-    pub(crate) fn capability(&self) -> WriteCapability {
+    pub fn capability(&self) -> WriteCapability {
         WriteCapability {
             active: Arc::clone(&self.active),
         }
@@ -58,13 +64,13 @@ impl Drop for WriteAuthority {
 }
 
 impl WriteCapability {
-    pub(crate) fn authorizes(&self, expected: &Self) -> bool {
+    pub fn authorizes(&self, expected: &Self) -> bool {
         Arc::ptr_eq(&self.active, &expected.active) && self.active.load(Ordering::Acquire)
     }
 }
 
 #[derive(Debug)]
-pub(crate) enum SessionOwnership {
+pub enum SessionOwnership {
     Owned(HeldLock),
     Foreign,
 }
@@ -74,7 +80,7 @@ pub(crate) enum SessionOwnership {
 /// `root_dir` is always a *root* session's directory. On unix the lock lives
 /// inside it; on Windows it is a sidecar beside it, so the open handle never
 /// blocks the publication rename. Children of the tree have no lock file.
-pub(crate) fn owner_lock_path(root_dir: &Path) -> PathBuf {
+pub fn owner_lock_path(root_dir: &Path) -> PathBuf {
     #[cfg(unix)]
     {
         root_dir.join(OWNER_LOCK_FILE)
@@ -90,8 +96,8 @@ pub(crate) fn owner_lock_path(root_dir: &Path) -> PathBuf {
 /// A lock filed inside a `subagents/` directory is a legacy per-child artifact
 /// and is deliberately not recognized: this build never writes one, and the
 /// tree load removes the ones an older build left behind.
-#[cfg(test)]
-pub(crate) fn is_owner_lock_path(path: &Path) -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn is_owner_lock_path(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
@@ -110,20 +116,20 @@ pub(crate) fn is_owner_lock_path(path: &Path) -> bool {
         && !is_subagents_dir(path.parent())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn is_subagents_dir(path: Option<&Path>) -> bool {
     path.and_then(Path::file_name)
         .is_some_and(|name| name == crate::session::SUBAGENTS_DIR)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn is_canonical_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
 }
 
 /// Classifies ownership of the tree rooted at `root_dir`, taking its lock when
 /// the lock is free.
-pub(crate) fn try_acquire(root_dir: &Path) -> std::io::Result<SessionOwnership> {
+pub fn try_acquire(root_dir: &Path) -> std::io::Result<SessionOwnership> {
     let path = owner_lock_path(root_dir);
     #[cfg(windows)]
     let file = match cookie_agent_models::secure_store::create_windows_private_lock_file(&path) {

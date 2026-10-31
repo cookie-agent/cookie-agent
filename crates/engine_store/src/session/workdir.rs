@@ -212,7 +212,7 @@ pub(super) fn workdir_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
 }
 
 #[cfg(unix)]
-pub(crate) fn create_unix_session_directory_all(path: &Path) -> Result<(), SessionError> {
+pub fn create_unix_session_directory_all(path: &Path) -> Result<(), SessionError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
     let mut builder = fs::DirBuilder::new();
@@ -224,7 +224,7 @@ pub(crate) fn create_unix_session_directory_all(path: &Path) -> Result<(), Sessi
 }
 
 #[cfg(windows)]
-pub(crate) fn create_windows_session_directory(path: &Path) -> Result<(), SessionError> {
+pub fn create_windows_session_directory(path: &Path) -> Result<(), SessionError> {
     cookie_agent_models::secure_store::SecureDirectory::open(path)
         .map(|_| ())
         .map_err(|error| match error {

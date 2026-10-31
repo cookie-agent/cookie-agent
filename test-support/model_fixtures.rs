@@ -1,3 +1,9 @@
+//! Model bindings, agent snapshots, and internal agent definitions for the
+//! engine's and its store's unit tests, built from a test provider the way
+//! the engine builds real ones. Each crate includes this file as its
+//! `test_support` module and uses what it needs.
+#![allow(dead_code)]
+
 use std::{collections::BTreeMap, sync::Arc};
 
 #[cfg(unix)]
@@ -144,7 +150,8 @@ pub(crate) fn run_selection(agent: &str) -> RunSelection {
 
 /// The form session history stores `binding` in.
 pub(crate) fn persisted(binding: &FrozenModelBinding) -> PersistedModelBinding {
-    crate::policy::persisted_binding(binding).expect("persisted test binding")
+    PersistedModelBinding::new(binding, crate::bindings::wire_resolved(binding))
+        .expect("persisted test binding")
 }
 
 pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {

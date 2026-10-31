@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use super::*;
 use crate::{
-    policy::wire_resolved,
+    bindings::wire_resolved,
     test_support::{agent_snapshot, model_binding_named, run_selection},
 };
 
@@ -2403,21 +2403,6 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
             .collect::<Vec<_>>(),
         vec![4]
     );
-    let events = log.events();
-    let EventPayload::SessionCreated { creation_agent, .. } = &events[0].payload else {
-        panic!("creation event")
-    };
-    let artifacts = crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
-        .expect("artifact store");
-    crate::model_history::assemble_full_history(
-        &events,
-        &artifacts,
-        &creation_agent.fallback_chain[0]
-            .decode()
-            .expect("creation binding"),
-        "system",
-    )
-    .expect("model history tolerates skipped records");
     let appended = log
         .append(
             None,
@@ -3686,8 +3671,8 @@ async fn finalize_drains_queued_delta_before_closing() {
 #[test]
 fn a_replay_evaluation_base_must_be_an_earlier_attempt_of_its_run_and_model() {
     let path = Path::new("events.jsonl");
-    let model = crate::model_history::wire_model(&fallback_binding("fallback-zero"));
-    let other_model = crate::model_history::wire_model(&fallback_binding("fallback-one"));
+    let model = crate::bindings::wire_resolved(&fallback_binding("fallback-zero"));
+    let other_model = crate::bindings::wire_resolved(&fallback_binding("fallback-one"));
     let run = RunId::new_v7();
     let attempt =
         |run_id, resolved_model: &cookie_agent_protocol::ResolvedModelRef| AttemptAttribution {

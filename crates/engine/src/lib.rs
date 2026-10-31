@@ -3,18 +3,14 @@
 pub mod actor;
 mod agents_tool;
 mod base_tools;
-mod blocking;
 mod config_store;
 mod cron_tools;
 mod crons;
 mod deferred_tools;
 mod delegation_api;
-pub mod delegation_events;
-pub mod events;
 #[cfg(test)]
 #[path = "../../../test-support/eventually.rs"]
 mod eventually;
-mod goal_projection;
 pub mod grant_journal;
 mod machines;
 mod machines_tool;
@@ -26,7 +22,6 @@ mod model_history;
 mod model_policy;
 mod model_snapshots;
 mod native_compaction;
-mod ownership;
 pub mod permissions;
 mod plugin;
 mod policy;
@@ -37,12 +32,17 @@ pub(crate) mod runtime;
 mod runtime_snapshot;
 mod runtimes;
 mod runtimes_tool;
-pub mod session;
 #[cfg(test)]
+#[path = "../../../test-support/model_fixtures.rs"]
 mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-mod usage;
+
+// The storage layer, at the paths the engine's modules have always used.
+pub use cookie_agent_engine_store::{TailOwner, delegation_events, events, session};
+#[cfg(test)]
+pub(crate) use cookie_agent_engine_store::{bindings, ownership};
+pub(crate) use cookie_agent_engine_store::{blocking, goal_projection, usage};
 
 pub use agents_tool::agents_tool_spec;
 pub use base_tools::{base_layer_tool_specs, builtin_tool_groups};
@@ -98,7 +98,6 @@ pub use runtimes::{
     RuntimeTemplateSummary, StartError, StartedRuntime, ToolLayer,
 };
 pub use runtimes_tool::runtimes_tool_spec;
-pub use session::TailOwner;
 
 // The tool API, imported once for the engine's own modules.
 pub(crate) use cookie_agent_runtime_api::{

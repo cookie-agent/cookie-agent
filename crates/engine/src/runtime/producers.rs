@@ -7,7 +7,8 @@ use std::{
 use cookie_agent_protocol::*;
 
 use super::{Engine, EngineError, Event, event_origin};
-use crate::goal_projection::{GoalProducerProjection, ProducerMessageRecord};
+use crate::goal_projection::GoalProducerProjection;
+pub(crate) use crate::goal_projection::{pending, producer_state_pending};
 
 pub(super) fn producer_description(prefix: &str, detail: &str) -> SafeDisplayText {
     let mut text = String::from(prefix);
@@ -2268,31 +2269,6 @@ fn next_revision(revision: u64) -> Result<u64, EngineError> {
     revision
         .checked_add(1)
         .ok_or_else(|| EngineError::Goal("revision exhausted".into()))
-}
-
-/// Whether a log carries goal-producer state that needs reconciliation after a
-/// restart: an active goal, an unread message, or a message consumed without its
-/// consumption record.
-pub(crate) fn producer_state_pending(events: &[Arc<cookie_agent_protocol::StoredEvent>]) -> bool {
-    let projection = GoalProducerProjection::from_events(events);
-    projection.goal.is_some()
-        || projection
-            .messages
-            .iter()
-            .any(|message| pending(message) || (message.consumed && !message.consumption_recorded))
-}
-
-/// Whether a message is accepted but neither consumed nor discarded: mail
-/// addressed to the session that it still owes a wake.
-///
-/// This is the race-free "a wake is owed" signal: `ProducerMessageAccepted` is
-/// durable before a send reports success, and a message stays pending through
-/// the whole window before its consumer's `RunStarted` flips session status to
-/// `Running` (it clears only when a committed model turn has actually consumed
-/// it). Liveness checks therefore cannot miss a steered finished child in the
-/// gap between acceptance and run admission.
-pub(super) fn pending(message: &ProducerMessageRecord) -> bool {
-    !message.consumed && !message.discarded
 }
 
 /// What the session's last runs say about starting one on its own

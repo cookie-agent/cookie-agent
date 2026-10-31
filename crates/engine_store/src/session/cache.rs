@@ -145,7 +145,7 @@ fn replace_cache_file(path: &Path, bytes: &[u8], sync: CacheSync) -> Result<(), 
 }
 
 /// Session metadata cache path.
-pub(crate) fn meta_path(session_dir: &Path) -> PathBuf {
+pub fn meta_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_META_FILE)
 }
 
@@ -171,7 +171,7 @@ pub(super) fn write_cache(
 /// before on hosts that fall back to `MoveFileExW`. The retryable set is
 /// therefore unchanged.
 #[cfg(windows)]
-pub(crate) fn replace_windows_path_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
+pub fn replace_windows_path_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
     const ATTEMPTS: usize = 50;
     const BACKOFF: cookie_agent_identity::Backoff =
         cookie_agent_identity::Backoff::fixed(std::time::Duration::from_millis(25));

@@ -36,7 +36,7 @@ impl Harness {
         let template: StoredEvent = serde_json::from_str(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../engine/tests/fixtures/events-current-delegation.jsonl"
+                "/../engine_store/tests/fixtures/events-current-delegation.jsonl"
             ))
             .lines()
             .nth(1)

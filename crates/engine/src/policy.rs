@@ -8,6 +8,10 @@ use cookie_agent_models::adapters::{
 };
 use cookie_agent_protocol as protocol;
 
+pub(crate) use cookie_agent_engine_store::bindings::{
+    ACP_ADAPTER, adapter_family, wire_adapter, wire_resolved,
+};
+
 use crate::{
     EngineError,
     model_snapshots::binding_for_selection,
@@ -682,18 +686,6 @@ pub(crate) fn decode_binding(
             .is_some()
         })
         .ok_or_else(|| EngineError::UnreadableModelBinding(binding.selection.model.clone()))
-}
-
-/// The model reference attempts made with `binding` record.
-pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol::ResolvedModelRef {
-    let adapter_id = wire_adapter(binding.descriptor.adapter_id.as_str());
-    protocol::ResolvedModelRef {
-        selection: binding.selection.clone(),
-        provider_id: binding.selection.model.provider_id(),
-        model_id: binding.selection.model.model_id(),
-        adapter_id,
-        selection_fingerprint: binding.selection_fingerprint.clone(),
-    }
 }
 
 /// The cache strategy of `binding` for a run of `layer`, from the agent's
@@ -1412,22 +1404,6 @@ pub(crate) fn resolve_agent<'a>(
         .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))
 }
 
-pub(crate) fn wire_adapter(value: &str) -> protocol::AdaptorId {
-    use cookie_agent_models::adapters::OvenAdapterFamily as Oven;
-    match adapter_family(value) {
-        Oven::Anthropic | Oven::AnthropicCompatible => protocol::AdaptorId::ANTHROPIC,
-        Oven::OpenaiChat => protocol::AdaptorId::OPENAI_CHAT,
-        Oven::OpenaiResponses => protocol::AdaptorId::OPENAI_RESPONSES,
-        Oven::OpenaiCompatible => protocol::AdaptorId::OPENAI_COMPATIBLE,
-        Oven::GoogleGemini => protocol::AdaptorId::GOOGLE_GEMINI,
-        Oven::GoogleVertexGemini => protocol::AdaptorId::GOOGLE_VERTEX_GEMINI,
-        Oven::AwsBedrockConverse => protocol::AdaptorId::AWS_BEDROCK_CONVERSE,
-        Oven::AzureOpenaiChat => protocol::AdaptorId::AZURE_OPENAI_CHAT,
-        Oven::AzureOpenaiResponses => protocol::AdaptorId::AZURE_OPENAI_RESPONSES,
-        Oven::CohereV2Chat => protocol::AdaptorId::COHERE_V2_CHAT,
-    }
-}
-
 /// The media tools may return to a model of `capabilities` behind a frozen
 /// binding's protocol adapter `adapter`.
 pub(crate) fn tool_input_media(
@@ -1473,11 +1449,6 @@ pub(crate) fn media_family(
     }
 }
 
-pub(crate) fn adapter_family(value: &str) -> cookie_agent_models::adapters::OvenAdapterFamily {
-    cookie_agent_models::adapters::wire_adapter_for_protocol(value)
-        .expect("frozen binding contains a reviewed protocol adapter")
-}
-
 /// The synthetic model binding an ACP agent's runs record
 /// (`docs/site/specs/acp-agents.md` section 6): the model `acp/<agent>`,
 /// adapter `acp`, whose complete binding no build can run as a model.
@@ -1510,9 +1481,6 @@ pub(crate) fn acp_binding(
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
     Ok(binding)
 }
-
-/// The adapter of an ACP agent's synthetic model binding.
-pub(crate) const ACP_ADAPTER: &str = "acp";
 
 /// Freezes a run of ACP agent `agent`, which names no models: its rules
 /// (`acp` defaulting to `ask`), its delegation targets, and the synthetic

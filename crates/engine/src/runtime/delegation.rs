@@ -723,7 +723,7 @@ impl Engine {
             &cache_strategies,
             &request,
         )
-        .map_err(|()| EngineError::RuntimeCompileFailed)?;
+        .ok_or(EngineError::RuntimeCompileFailed)?;
 
         let root_session_id = match parent.meta.origin {
             SessionOrigin::Delegated {

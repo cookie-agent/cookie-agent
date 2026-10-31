@@ -4,7 +4,7 @@ use super::*;
 
 /// Lazy-tree state for one root session (§3.1 of the storage spec).
 #[derive(Debug, Default)]
-pub(crate) struct TreeState {
+pub struct TreeState {
     /// The one-time bulk child pass completed *and* the engine accepted its
     /// products. Publication order is
     /// `Unloaded -> Loading -> (products applied + index durable) -> Loaded`:
@@ -37,24 +37,23 @@ pub(crate) struct TreeState {
 /// Products of a completed [`SessionStore::load_tree`] pass that the engine
 /// folds into its singletons (delegation registry, approvals, producers).
 #[derive(Debug)]
-pub(crate) struct TreeLoadProducts {
-    pub(crate) root: SessionId,
+pub struct TreeLoadProducts {
+    pub root: SessionId,
     /// `(parent_session_id, run_id, payload)` delegation records held in child logs.
-    pub(crate) delegations: Vec<(
+    pub delegations: Vec<(
         SessionId,
         Option<cookie_agent_protocol::RunId>,
         EventPayload,
     )>,
     /// Restart-stable tree approval grants held in child logs.
-    pub(crate) grants: Vec<cookie_agent_protocol::TreeApprovalGrant>,
+    pub grants: Vec<cookie_agent_protocol::TreeApprovalGrant>,
     /// Children whose logs carry goal-producer state needing reconciliation.
-    pub(crate) producer_sessions: Vec<SessionId>,
-    pub(crate) producer_projections:
-        Vec<(SessionId, crate::goal_projection::GoalProducerProjection)>,
+    pub producer_sessions: Vec<SessionId>,
+    pub producer_projections: Vec<(SessionId, crate::goal_projection::GoalProducerProjection)>,
     /// Every child summary the pass produced, for usage and listing caches.
-    pub(crate) summaries: Vec<SessionSummary>,
+    pub summaries: Vec<SessionSummary>,
     /// Per-child delegation-parent facts (4.1.3).
-    pub(crate) parent_facts: HashMap<SessionId, ParentRunFacts>,
+    pub parent_facts: HashMap<SessionId, ParentRunFacts>,
 }
 
 impl TreeLoadProducts {
@@ -76,18 +75,18 @@ impl TreeLoadProducts {
 /// Carrying these facts is what lets a nested registry rebuild run without
 /// reopening a child log for queued-delegation lookups.
 #[derive(Clone, Debug)]
-pub(crate) struct ParentRunFacts {
+pub struct ParentRunFacts {
     /// Tree root the parent belongs to (the parent itself when it is a root).
-    pub(crate) root_session_id: SessionId,
+    pub root_session_id: SessionId,
     /// The parent is itself delegated, which suppresses its background slot.
-    pub(crate) delegated: bool,
+    pub delegated: bool,
     /// `(parent run, child)` pairs of queued delegations: the run of each
     /// `queued` stage, paired with the child its invocation started.
-    pub(crate) queued: Vec<(cookie_agent_protocol::RunId, SessionId)>,
+    pub queued: Vec<(cookie_agent_protocol::RunId, SessionId)>,
     /// Delegations whose delivery a producer message already accepted.
-    pub(crate) producer_accepted: Vec<cookie_agent_protocol::InvocationId>,
+    pub producer_accepted: Vec<cookie_agent_protocol::InvocationId>,
     /// Runs of this parent that reached `Interrupted`.
-    pub(crate) interrupted_runs: Vec<cookie_agent_protocol::RunId>,
+    pub interrupted_runs: Vec<cookie_agent_protocol::RunId>,
 }
 
 impl ParentRunFacts {
@@ -153,7 +152,7 @@ impl ParentRunFacts {
 /// trigger waits on, so `Loaded` is only ever observed after the products of the
 /// pass were applied.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum TreeLoadStatus {
+pub enum TreeLoadStatus {
     /// No pass has completed.
     #[default]
     Unloaded,
@@ -177,7 +176,7 @@ pub(super) struct TreeGate {
 }
 
 impl TreeGate {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn status(&self) -> TreeLoadStatus {
         *self
             .status
@@ -247,12 +246,13 @@ impl std::fmt::Debug for PendingLoads {
 /// even when the load was triggered from inside the store. A failing observer
 /// fails the load, so the access that triggered it fails closed, and its
 /// products stay queued for the next attempt rather than being dropped.
-pub(crate) trait TreeLoadObserver: Send + Sync {
-    fn tree_loaded(
-        &self,
-        products: Arc<TreeLoadProducts>,
-    ) -> Result<(), crate::runtime::EngineError>;
+pub trait TreeLoadObserver: Send + Sync {
+    fn tree_loaded(&self, products: Arc<TreeLoadProducts>) -> Result<(), TreeLoadRejection>;
 }
+
+/// Why the engine rejected a tree load's products. The engine reports its
+/// own error type, which [`SessionError::TreeRejected`] carries back to it.
+pub type TreeLoadRejection = Box<dyn std::error::Error + Send + Sync>;
 
 /// How many unlocked folds a load may lose to a concurrent writer before the
 /// pass falls back to folding with `mutation` held (L1).
@@ -278,12 +278,12 @@ pub(super) enum Install {
 /// just a durable byte count: a resident log holds its newest records in a
 /// buffered writer, so the file can stay the same size while the log moves.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LogFingerprint {
+pub struct LogFingerprint {
     /// Tip of this process's resident log for the session (`None` when the
     /// session is not resident and the fold read the file itself).
-    pub(crate) resident_tip: Option<u64>,
+    pub resident_tip: Option<u64>,
     /// Bytes of `events.jsonl` visible on disk.
-    pub(crate) durable_len: u64,
+    pub durable_len: u64,
 }
 
 /// One read phase of a tree load: what was harvested, plus the fingerprints and
@@ -351,7 +351,7 @@ impl TreeFold {
                 }
             }
         }
-        if crate::runtime::producers::producer_state_pending(events) {
+        if crate::goal_projection::producer_state_pending(events) {
             self.products
                 .producer_sessions
                 .push(projection.meta.session_id);
@@ -418,7 +418,7 @@ impl Drop for TreeLoadDriver {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug)]
 pub(super) struct EvictionTransitionHook {
     pub(super) reached: Mutex<Option<tokio::sync::oneshot::Sender<SessionId>>>,
@@ -427,12 +427,12 @@ pub(super) struct EvictionTransitionHook {
 
 /// Test-only load hook. Hand-written `Debug`: the payload is a `dyn Fn`, and the
 /// store derives `Debug`.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 #[allow(clippy::type_complexity)]
 pub(super) struct TreeLoadReadHook(std::sync::Mutex<Option<Arc<dyn Fn(SessionId) + Send + Sync>>>);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl TreeLoadReadHook {
     pub(super) fn installed(&self) -> bool {
         self.0
@@ -442,7 +442,7 @@ impl TreeLoadReadHook {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl std::fmt::Debug for TreeLoadReadHook {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -452,7 +452,7 @@ impl std::fmt::Debug for TreeLoadReadHook {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug)]
 pub(super) struct PublishHook {
     pub(super) reached: std::sync::mpsc::Sender<SessionId>,
@@ -493,8 +493,8 @@ thread_local! {
 }
 
 impl SessionStore {
-    #[cfg(test)]
-    pub(crate) fn install_eviction_transition_hook_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_eviction_transition_hook_for_test(
         &self,
     ) -> (
         tokio::sync::oneshot::Receiver<SessionId>,
@@ -515,8 +515,8 @@ impl SessionStore {
     /// Test-only seam: fires at the end of a bulk load's read phase, right before
     /// the fold is verified and installed, i.e. exactly inside the window a stale
     /// publication would slip through (review L1).
-    #[cfg(test)]
-    pub(crate) fn install_tree_load_read_hook_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_tree_load_read_hook_for_test(
         &self,
         hook: impl Fn(SessionId) + Send + Sync + 'static,
     ) {
@@ -527,7 +527,7 @@ impl SessionStore {
             .expect("hook lock poisoned") = Some(Arc::new(hook));
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn run_tree_load_read_hook(&self, root: SessionId) {
         // Held across the call: the hook runs with no store lock, and a test that
         // appends from inside it must reach the same `mutation` mutex normally.
@@ -562,7 +562,7 @@ impl SessionStore {
     }
 
     /// The root whose tree must be complete before serving `id` (§3.2).
-    pub(crate) fn ensure_tree_for(&self, id: SessionId) -> Result<(), SessionError> {
+    pub fn ensure_tree_for(&self, id: SessionId) -> Result<(), SessionError> {
         if self.mutation_held() {
             // Deadlock safety net, not a serving path: a caller that takes
             // `mutation` must complete the tree *before* it takes the lock
@@ -624,9 +624,9 @@ impl SessionStore {
 
     /// Whether the child tree of `root` was bulk-loaded *and applied* in this
     /// process. Set only after the engine accepted the load's products.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub(crate) fn is_tree_loaded(&self, root: SessionId) -> bool {
+    pub fn is_tree_loaded(&self, root: SessionId) -> bool {
         self.tree_is_loaded(root)
     }
 
@@ -660,7 +660,7 @@ impl SessionStore {
     /// under the tree's load gate, so no load of the tree can start, and
     /// hand over again what it is dropping, until it returns. A tree being
     /// loaded, or not loaded, is left as it is, and `forget` does not run.
-    pub(crate) fn unload_tree(&self, root: SessionId, forget: impl FnOnce()) -> bool {
+    pub fn unload_tree(&self, root: SessionId, forget: impl FnOnce()) -> bool {
         let gate = self.tree_gate(root);
         let mut status = gate
             .status
@@ -689,7 +689,7 @@ impl SessionStore {
     /// concurrent triggers coalesce per root, and a trigger that arrives while a
     /// load is in flight waits for its completion record instead of taking the
     /// fast path (§3.1).
-    pub(crate) fn load_tree(&self, root: SessionId) -> Result<(), SessionError> {
+    pub fn load_tree(&self, root: SessionId) -> Result<(), SessionError> {
         let gate = self.tree_gate(root);
         for _ in 0..TREE_LOAD_TURNS {
             // `acquire` joins an in-flight load rather than racing it, so only
@@ -824,7 +824,7 @@ impl SessionStore {
                 fold.terminal_runs.insert(projection.meta.session_id, runs);
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.run_tree_load_read_hook(root);
         Ok(fold)
     }
@@ -1003,7 +1003,7 @@ impl SessionStore {
                 pending.queued.entry(root).or_insert(products);
                 drop(pending);
                 driver.settle(TreeLoadStatus::Pending);
-                Err(SessionError::TreeRejected(Box::new(error)))
+                Err(SessionError::TreeRejected(error))
             }
         }
     }
@@ -1056,7 +1056,7 @@ impl SessionStore {
                     .queued
                     .entry(root)
                     .or_insert(products);
-                Err(SessionError::TreeRejected(Box::new(error)))
+                Err(SessionError::TreeRejected(error))
             }
         }
     }
@@ -1064,7 +1064,7 @@ impl SessionStore {
     /// Delivers every completed load that is waiting for the engine hook,
     /// skipping the ones another thread's driver owns (D5). Each product set is
     /// claimed exactly once; a rejection leaves it queued for the next call.
-    pub(crate) fn drain_pending_loads(&self) -> Result<(), SessionError> {
+    pub fn drain_pending_loads(&self) -> Result<(), SessionError> {
         let (observer, claimed) = {
             let mut pending = self
                 .pending_loads
@@ -1106,7 +1106,7 @@ impl SessionStore {
                         .entry(*root)
                         .or_insert_with(|| Arc::clone(products));
                 }
-                return Err(SessionError::TreeRejected(Box::new(error)));
+                return Err(SessionError::TreeRejected(error));
             }
             self.pending_loads
                 .lock()
@@ -1118,7 +1118,7 @@ impl SessionStore {
     }
 
     /// Grants installed by tree loads, so a rebuild stays O(cached data) (§4.3).
-    pub(crate) fn loaded_tree_grants(&self) -> Vec<cookie_agent_protocol::TreeApprovalGrant> {
+    pub fn loaded_tree_grants(&self) -> Vec<cookie_agent_protocol::TreeApprovalGrant> {
         self.trees
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1132,7 +1132,7 @@ impl SessionStore {
     /// state when the tree loaded. A tree that was never loaded contributes
     /// nothing: its producer state is reconciled by its own load (tree-local
     /// C7).
-    pub(crate) fn loaded_producer_sessions(&self) -> Vec<SessionId> {
+    pub fn loaded_producer_sessions(&self) -> Vec<SessionId> {
         let mut ids = self
             .trees
             .lock()
@@ -1155,10 +1155,7 @@ impl SessionStore {
     /// `None` means "not knowable yet": `id` is a filed child whose tree has not
     /// been bulk-loaded, so its facts do not exist anywhere. Callers must treat
     /// the parent as unresolved — the log is *not* a legal read here (§3.3).
-    pub(crate) fn parent_run_facts(
-        &self,
-        id: SessionId,
-    ) -> Result<Option<ParentRunFacts>, SessionError> {
+    pub fn parent_run_facts(&self, id: SessionId) -> Result<Option<ParentRunFacts>, SessionError> {
         if let Some(session) = self.get_resident(id) {
             return Ok(Some(ParentRunFacts::from_projection(&session)));
         }
@@ -1200,7 +1197,7 @@ impl SessionStore {
 
     /// Installs the engine hook that receives tree load products and delivers
     /// everything a completed load already queued (§3.3, D5).
-    pub(crate) fn set_tree_load_observer(
+    pub fn set_tree_load_observer(
         &self,
         observer: Arc<dyn TreeLoadObserver>,
     ) -> Result<(), SessionError> {
@@ -1304,8 +1301,8 @@ impl SessionStore {
     }
 
     /// Test-only: the load gate state of one root, as the store sees it.
-    #[cfg(test)]
-    pub(crate) fn tree_load_status(&self, root: SessionId) -> TreeLoadStatus {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tree_load_status(&self, root: SessionId) -> TreeLoadStatus {
         self.tree_gate(root).status()
     }
 }

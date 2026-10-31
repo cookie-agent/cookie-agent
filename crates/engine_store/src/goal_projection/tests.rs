@@ -170,7 +170,7 @@ fn producer_replay_deduplicates_and_uses_commit_coverage_as_consumption() {
             EventPayload::ModelTurnCommitted {
                 attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
                 model_turn_seq: 1,
-                resolved_model: crate::model_history::wire_model(
+                resolved_model: crate::bindings::wire_resolved(
                     &crate::test_support::model_binding(),
                 ),
                 input_through_seq: 3,
@@ -829,7 +829,7 @@ fn committed(seq: u64, run: RunId, input_through_seq: u64) -> StoredEvent {
         EventPayload::ModelTurnCommitted {
             attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
             model_turn_seq: 1,
-            resolved_model: crate::model_history::wire_model(&crate::test_support::model_binding()),
+            resolved_model: crate::bindings::wire_resolved(&crate::test_support::model_binding()),
             input_through_seq,
             turn: PersistedModelTurn {
                 content: vec![],

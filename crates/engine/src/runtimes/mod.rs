@@ -50,7 +50,7 @@ pub(crate) use acp_hub::{AcpHub, AcpRelayHandler};
 pub(crate) use builtin::coding_capability;
 pub(crate) use builtin::daemon_home;
 pub(crate) use builtin::{GlobalTemplate, LocalTemplate};
-pub(crate) use composition::{ComposedTool, Composition, RoundPins, compose, composition_source};
+pub(crate) use composition::{ComposedTool, Composition, compose, composition_source};
 pub(crate) use cookie_agent_runtime_api::reconnect::{ReconnectOutcome, ReconnectPolicy};
 pub use dial_in::DialInRefusal;
 pub(crate) use dial_in::{DialInTemplate, not_connected};

@@ -58,22 +58,6 @@ pub(crate) fn prompt_block_fits(policy: &FrozenRunPolicy, block: &str) -> bool {
         .is_some_and(|bytes| bytes <= AgentSnapshot::MAX_PROMPT_BYTES)
 }
 
-/// The prompt blocks `spans` locate in `prompt`, in order; `None` when a
-/// span does not fit the prompt.
-pub(crate) fn prompt_block_texts(
-    prompt: &str,
-    spans: &[PromptBlockSpan],
-) -> Option<Vec<(String, String)>> {
-    spans
-        .iter()
-        .map(|span| {
-            let start = usize::try_from(span.start).ok()?;
-            let end = start.checked_add(usize::try_from(span.len).ok()?)?;
-            Some((span.key.clone(), prompt.get(start..end)?.to_owned()))
-        })
-        .collect()
-}
-
 impl Engine {
     /// The previous run's prompt blocks, which a run on a model that defers
     /// tools reuses unless a checkpoint lies after that run's start (stable

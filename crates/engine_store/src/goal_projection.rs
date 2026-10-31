@@ -13,7 +13,7 @@ use cookie_agent_protocol::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ProducerMessageRecord {
+pub struct ProducerMessageRecord {
     pub message_id: ProducerMessageId,
     pub producer_owner: ProducerOwner,
     pub mode: ProducerDeliveryMode,
@@ -35,7 +35,7 @@ pub(crate) struct ProducerMessageRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ProducerClaimRecord {
+pub struct ProducerClaimRecord {
     pub run_id: RunId,
     pub message_ids: Vec<ProducerMessageId>,
 }
@@ -43,11 +43,7 @@ pub(crate) struct ProducerClaimRecord {
 /// Whether a run is offered the goal tools: every root run, so its agent can
 /// start a goal itself (stable prefix spec, section 3), except an ACP
 /// agent's, which sees them only while the user's goal is active or paused.
-pub(crate) fn goal_tools_offered<E: Borrow<StoredEvent>>(
-    root: bool,
-    acp: bool,
-    events: &[E],
-) -> bool {
+pub fn goal_tools_offered<E: Borrow<StoredEvent>>(root: bool, acp: bool, events: &[E]) -> bool {
     root && (!acp
         || GoalProducerProjection::from_events(events)
             .goal
@@ -55,7 +51,7 @@ pub(crate) fn goal_tools_offered<E: Borrow<StoredEvent>>(
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct GoalProducerProjection {
+pub struct GoalProducerProjection {
     pub goal: Option<GoalState>,
     pub selection: Option<RunSelection>,
     pub messages: Vec<ProducerMessageRecord>,
@@ -64,7 +60,7 @@ pub(crate) struct GoalProducerProjection {
 }
 
 impl GoalProducerProjection {
-    pub(crate) fn next_reminder_kind(&self, goal_id: GoalId) -> GoalReminderKind {
+    pub fn next_reminder_kind(&self, goal_id: GoalId) -> GoalReminderKind {
         // Acceptance and claims are retractable; only committed input coverage introduces a goal.
         if self.messages.iter().any(|message| {
             message.consumed
@@ -92,7 +88,7 @@ impl GoalProducerProjection {
     /// unrelated topic. The guard's bound, not per-message linkage, is the
     /// control operators tune.
     #[must_use]
-    pub(crate) fn inherited_agent_hop(&self, run: RunId) -> u32 {
+    pub fn inherited_agent_hop(&self, run: RunId) -> u32 {
         self.messages
             .iter()
             .filter(|message| {
@@ -111,7 +107,7 @@ impl GoalProducerProjection {
     }
 
     #[must_use]
-    pub(crate) fn from_events<E: Borrow<StoredEvent>>(events: &[E]) -> Self {
+    pub fn from_events<E: Borrow<StoredEvent>>(events: &[E]) -> Self {
         let mut fold = GoalProducerFold::default();
         for event in events {
             fold.observe(event.borrow());
@@ -127,7 +123,7 @@ impl GoalProducerProjection {
 /// [`GoalProducerProjection`] folded one event at a time, so a log that
 /// grew is folded only through what it gained.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct GoalProducerFold {
+pub struct GoalProducerFold {
     /// Shared with the readers handed it; copied only when an event changes
     /// it while one still holds it.
     projection: Arc<GoalProducerProjection>,
@@ -140,7 +136,7 @@ pub(crate) struct GoalProducerFold {
 impl GoalProducerFold {
     /// The projection through the events observed so far.
     #[must_use]
-    pub(crate) fn projection(&self) -> Arc<GoalProducerProjection> {
+    pub fn projection(&self) -> Arc<GoalProducerProjection> {
         Arc::clone(&self.projection)
     }
 
@@ -149,7 +145,7 @@ impl GoalProducerFold {
     }
 
     /// Folds the next event of the log.
-    pub(crate) fn observe(&mut self, event: &StoredEvent) {
+    pub fn observe(&mut self, event: &StoredEvent) {
         match &event.payload {
             EventPayload::GoalActivated { selection, .. } => match self.goals.observe(event) {
                 Ok(()) => {
@@ -430,8 +426,8 @@ impl GoalProducerFold {
 /// where they stand. Shared by the producer projection and the session
 /// projection, which reports an active goal in `SessionMeta::waiting_on`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct GoalFold {
-    pub(crate) goal: Option<GoalState>,
+pub struct GoalFold {
+    pub goal: Option<GoalState>,
     /// The latest revision of every goal the log activated.
     revisions: HashMap<GoalId, u64>,
 }
@@ -439,7 +435,7 @@ pub(crate) struct GoalFold {
 impl GoalFold {
     /// Applies `event` when it is a goal event, or says why it is invalid
     /// and leaves the fold unchanged. Any other event is ignored.
-    pub(crate) fn observe(&mut self, event: &StoredEvent) -> Result<(), &'static str> {
+    pub fn observe(&mut self, event: &StoredEvent) -> Result<(), &'static str> {
         match &event.payload {
             EventPayload::GoalActivated {
                 goal_id,
@@ -516,7 +512,7 @@ impl GoalFold {
     /// Whether the current goal is active, so goal mode keeps scheduling
     /// runs. A paused, completed, or cancelled goal schedules none.
     #[must_use]
-    pub(crate) fn is_active(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         self.goal
             .as_ref()
             .is_some_and(|goal| goal.status == GoalStatus::Active)
@@ -551,6 +547,31 @@ fn valid_reminder_owner(owner: &ProducerOwner, reminder: Option<&GoalReminderIde
 /// cannot inflate an agent chain it never joined.
 const fn valid_hop_owner(owner: &ProducerOwner, agent_hop: Option<u32>) -> bool {
     agent_hop.is_some() == matches!(owner, ProducerOwner::Agent { .. })
+}
+
+/// Whether a log carries goal-producer state that needs reconciliation after a
+/// restart: an active goal, an unread message, or a message consumed without its
+/// consumption record.
+pub fn producer_state_pending(events: &[Arc<cookie_agent_protocol::StoredEvent>]) -> bool {
+    let projection = GoalProducerProjection::from_events(events);
+    projection.goal.is_some()
+        || projection
+            .messages
+            .iter()
+            .any(|message| pending(message) || (message.consumed && !message.consumption_recorded))
+}
+
+/// Whether a message is accepted but neither consumed nor discarded: mail
+/// addressed to the session that it still owes a wake.
+///
+/// This is the race-free "a wake is owed" signal: `ProducerMessageAccepted` is
+/// durable before a send reports success, and a message stays pending through
+/// the whole window before its consumer's `RunStarted` flips session status to
+/// `Running` (it clears only when a committed model turn has actually consumed
+/// it). Liveness checks therefore cannot miss a steered finished child in the
+/// gap between acceptance and run admission.
+pub fn pending(message: &ProducerMessageRecord) -> bool {
+    !message.consumed && !message.discarded
 }
 
 #[cfg(test)]

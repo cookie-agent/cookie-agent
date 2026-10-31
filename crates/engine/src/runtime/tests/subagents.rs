@@ -637,11 +637,10 @@ async fn a_fork_leaves_its_source_subagents_behind_and_delegates_its_own() {
     let waiting = reopened
         .inner
         .store
-        .fork_with(
+        .fork(
             source,
             accepted,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-            &|_| Ok(()),
         )
         .expect("fork while the report waits");
     let mail = crate::goal_projection::GoalProducerProjection::from_events(

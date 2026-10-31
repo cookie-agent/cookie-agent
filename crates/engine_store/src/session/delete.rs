@@ -17,12 +17,12 @@ use crate::events::fsync_directory;
 use crate::ownership::{HeldLock, SessionOwnership, try_acquire};
 
 /// Name prefix of a tree directory a deletion moved aside.
-pub(crate) const TOMBSTONE_PREFIX: &str = ".deleted-";
+pub const TOMBSTONE_PREFIX: &str = ".deleted-";
 
 /// A tree deletion that has passed its ownership checks and holds the
 /// store's exclusive mutation lock until it commits or is dropped. It lives
 /// on the thread that began it.
-pub(crate) struct TreeDeletion<'a> {
+pub struct TreeDeletion<'a> {
     store: &'a SessionStore,
     mutation: MutationGuard<'a>,
     root: SessionId,
@@ -37,24 +37,24 @@ pub(crate) struct TreeDeletion<'a> {
 
 impl TreeDeletion<'_> {
     /// Every session of the tree, the root first.
-    pub(crate) fn members(&self) -> &[SessionId] {
+    pub fn members(&self) -> &[SessionId] {
         &self.members
     }
 
     /// The root's last event sequence as the session list shows it.
-    pub(crate) fn root_last_seq(&self) -> u64 {
+    pub fn root_last_seq(&self) -> u64 {
         self.root_last_seq
     }
 
     /// Whether this process held the tree before the deletion: only then can
     /// a session of it be running here. A tree whose lock was free has no
     /// live run anywhere, whatever status a crashed writer left behind.
-    pub(crate) fn was_held(&self) -> bool {
+    pub fn was_held(&self) -> bool {
         self.held
     }
 
     /// The first session of the tree whose resident projection is running.
-    pub(crate) fn running_member(&self) -> Option<SessionId> {
+    pub fn running_member(&self) -> Option<SessionId> {
         let residency = self
             .store
             .residency
@@ -70,7 +70,7 @@ impl TreeDeletion<'_> {
 
     /// Moves the tree aside, forgets it, tells every connection, and removes
     /// it from disk. A failure before the move changes nothing on disk.
-    pub(crate) fn commit(self) -> Result<Vec<SessionId>, SessionError> {
+    pub fn commit(self) -> Result<Vec<SessionId>, SessionError> {
         let Self {
             store,
             mutation,
@@ -139,7 +139,7 @@ impl TreeDeletion<'_> {
 
 impl SessionStore {
     /// Whether this process holds the tree rooted at `root`, settled.
-    pub(crate) fn holds_tree(&self, root: SessionId) -> bool {
+    pub fn holds_tree(&self, root: SessionId) -> bool {
         self.ownership
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -153,10 +153,7 @@ impl SessionStore {
     /// lock when nobody does. Another process's lock is
     /// [`SessionError::SessionLocked`]; an adoption in flight is
     /// [`SessionError::TreeBusy`].
-    pub(crate) fn begin_tree_deletion(
-        &self,
-        root: SessionId,
-    ) -> Result<TreeDeletion<'_>, SessionError> {
+    pub fn begin_tree_deletion(&self, root: SessionId) -> Result<TreeDeletion<'_>, SessionError> {
         let mutation = self.lock_mutation();
         self.ensure_open()?;
         let root_dir = self.tree_root_dir(root);

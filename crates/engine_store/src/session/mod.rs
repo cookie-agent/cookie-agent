@@ -9,26 +9,26 @@ mod tree_load;
 mod unread;
 mod workdir;
 
-pub(crate) use cache::meta_path;
+pub use cache::meta_path;
 #[cfg(windows)]
-pub(crate) use cache::replace_windows_path_with_retry;
+pub use cache::replace_windows_path_with_retry;
 use cache::*;
 pub use convert::{TreeConversion, TreeUpgrade, upgrade_sessions};
-pub(crate) use fold::projection;
+pub use fold::projection;
 use fold::refold;
-pub(crate) use fold::restart_stable_grant;
-pub(crate) use fold::same_place;
-#[cfg(test)]
-pub(crate) use fold::skip_reference_fold;
+pub use fold::restart_stable_grant;
+pub use fold::same_place;
+#[cfg(any(test, feature = "test-support"))]
+pub use fold::skip_reference_fold;
 use fold::*;
-pub(crate) use tree_load::TreeLoadObserver;
-pub(crate) use tree_load::TreeLoadProducts;
-pub(crate) use tree_load::TreeState;
+pub use tree_load::TreeLoadProducts;
+pub use tree_load::TreeState;
 use tree_load::*;
+pub use tree_load::{TreeLoadObserver, TreeLoadRejection};
 #[cfg(unix)]
-pub(crate) use workdir::create_unix_session_directory_all;
+pub use workdir::create_unix_session_directory_all;
 #[cfg(windows)]
-pub(crate) use workdir::create_windows_session_directory;
+pub use workdir::create_windows_session_directory;
 use workdir::*;
 
 use std::{
@@ -71,17 +71,17 @@ use crate::ownership::{
     WriteCapability, owner_lock_path, try_acquire,
 };
 
-pub(crate) const WORKDIR_CWD_FILE: &str = "cwd";
+pub const WORKDIR_CWD_FILE: &str = "cwd";
 /// v2 session-store root under the data root (`~/.cookie-agent/sessions`).
-pub(crate) const SESSIONS_ROOT_DIR: &str = "sessions";
+pub const SESSIONS_ROOT_DIR: &str = "sessions";
 /// Marker file recording the on-disk layout version of a work-dir store.
-pub(crate) const LAYOUT_MARKER_FILE: &str = "layout.json";
+pub const LAYOUT_MARKER_FILE: &str = "layout.json";
 /// Session metadata cache file name.
-pub(crate) const SESSION_META_FILE: &str = "metadata";
+pub const SESSION_META_FILE: &str = "metadata";
 /// Per-root directory holding delegated child sessions.
-pub(crate) const SUBAGENTS_DIR: &str = "subagents";
+pub const SUBAGENTS_DIR: &str = "subagents";
 /// Persisted child-summary cache inside [`SUBAGENTS_DIR`].
-pub(crate) const SUBAGENT_INDEX_FILE: &str = "index.json";
+pub const SUBAGENT_INDEX_FILE: &str = "index.json";
 /// Current `subagents/index.json` schema version.
 const SUBAGENT_INDEX_VERSION: u32 = 1;
 const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
@@ -117,13 +117,13 @@ struct Tail {
     sender: mpsc::Sender<EventSubscriptionMessage>,
 }
 /// Event log file name.
-pub(crate) const EVENTS_FILE: &str = "events.jsonl";
+pub const EVENTS_FILE: &str = "events.jsonl";
 /// Layout version written by this build.
-pub(crate) const LAYOUT_VERSION: u32 = 2;
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// Where a session lives relative to its work-dir store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SessionLocation {
+pub enum SessionLocation {
     /// `sessions/<workdirkey>/<id>/`
     Root,
     /// `sessions/<workdirkey>/<root>/subagents/<id>/`
@@ -170,9 +170,10 @@ pub enum SessionError {
     InvalidForkTitle(String),
     /// A lazy tree load completed but the engine rejected its products (a child
     /// log referencing a manifest this runtime cannot serve, for example).
-    /// `impl From<SessionError> for EngineError` unwraps it back to its type.
+    /// The engine's `impl From<SessionError> for EngineError` unwraps it back
+    /// to its type.
     #[error("tree load rejected: {0}")]
-    TreeRejected(Box<crate::runtime::EngineError>),
+    TreeRejected(TreeLoadRejection),
     /// The tree of a root kept losing its read/install window to concurrent
     /// writers, or the load was retaken more times than the driver budget allows.
     #[error("tree load for session {0} keeps racing concurrent writers")]
@@ -214,7 +215,7 @@ pub struct SessionProjection {
     /// Whether the visible title history still admits an automatic title.
     pub automatic_title_eligible: bool,
     /// What an appended event needs to be folded in place.
-    pub(crate) fold: ProjectionFoldState,
+    pub fold: ProjectionFoldState,
     pub log: Arc<EventLog>,
 }
 
@@ -363,7 +364,7 @@ enum ForkTree {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WriteOpen {
+pub enum WriteOpen {
     AlreadyOwned,
     Adopting,
 }
@@ -420,17 +421,17 @@ pub struct SessionStore {
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
     closed: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     publish_hook: Mutex<Option<PublishHook>>,
     /// Test-only: how many times each session's `events.jsonl` was opened and
     /// folded by this store (§8.2 #5). Counts log opens, not load attempts.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     log_opens: Mutex<HashMap<SessionId, usize>>,
     /// Test-only: fires once at the end of a load read phase, before the fold is
     /// verified and installed, so a test can race a write into that window (L1).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     tree_load_read_hook: TreeLoadReadHook,
 }
 
@@ -507,20 +508,33 @@ impl ReadOnlyLogs {
 /// Index changes a connection may fall behind by before it is told to resync.
 const INDEX_CHANGE_CAPACITY: usize = 256;
 
+/// What a fork needs from the engine.
+#[derive(Clone, Copy)]
+pub struct ForkHooks<'a> {
+    /// Called with the unpublished tree directory of a fork that opens a
+    /// tree of its own, so what it adds there (the fork's artifacts)
+    /// publishes with the fork or not at all.
+    pub prepare_tree: &'a dyn Fn(&Path) -> std::io::Result<()>,
+    /// The ACP sessions a fork through the given sequence of the source's
+    /// events leaves behind, which the fork records as detached.
+    pub acp_detached: &'a AcpDetachedOnFork,
+}
+
+/// See [`ForkHooks::acp_detached`].
+pub type AcpDetachedOnFork =
+    dyn Fn(&[Arc<StoredEvent>], u64) -> Vec<cookie_agent_protocol::AcpDetached>;
+
 impl SessionStore {
     /// Every session's index changes as they happen: creation, status and
     /// title changes, reverts, deletions, and approval changes. A receiver
     /// that lags misses changes and must refetch.
-    pub(crate) fn subscribe_index_changes(
+    pub fn subscribe_index_changes(
         &self,
     ) -> tokio::sync::broadcast::Receiver<cookie_agent_protocol::SessionsChangedNotification> {
         self.index_changes.subscribe()
     }
 
-    pub(crate) fn notify_index_change(
-        &self,
-        change: cookie_agent_protocol::SessionsChangedNotification,
-    ) {
+    pub fn notify_index_change(&self, change: cookie_agent_protocol::SessionsChangedNotification) {
         // No receiver just means no connection is listening.
         let _ = self.index_changes.send(change);
     }
@@ -537,7 +551,7 @@ impl SessionStore {
     /// with what the engine's live producers make the session wait on, in
     /// `WaitingOn` order; and for a root, whether it is unread.
     #[must_use]
-    pub(crate) fn for_clients(&self, mut meta: SessionMeta) -> SessionMeta {
+    pub fn for_clients(&self, mut meta: SessionMeta) -> SessionMeta {
         meta.unread =
             matches!(meta.origin, SessionOrigin::Root) && self.unread.contains(meta.session_id);
         let live = self
@@ -558,7 +572,7 @@ impl SessionStore {
     /// and returns whether that changed; [`Self::announce_live_waiting`]
     /// then tells clients. The metadata cache never holds them, so a
     /// restart, which ends them all, leaves none behind.
-    pub(crate) fn record_live_waiting(&self, id: SessionId, kinds: Vec<WaitingOn>) -> bool {
+    pub fn record_live_waiting(&self, id: SessionId, kinds: Vec<WaitingOn>) -> bool {
         let mut live = self
             .live_waiting
             .lock()
@@ -573,7 +587,7 @@ impl SessionStore {
 
     /// Announces `id` with what it waits on now. An evicted session is
     /// announced from its in-memory summary, never reloaded for it.
-    pub(crate) fn announce_live_waiting(&self, id: SessionId) {
+    pub fn announce_live_waiting(&self, id: SessionId) {
         let meta = self
             .cached_summary(id)
             .map(|summary| summary.meta)
@@ -585,7 +599,7 @@ impl SessionStore {
 
     /// The direct parent of a delegated `id`, from memory when this process
     /// has seen the session (resident or evicted), else from its tree.
-    pub(crate) fn parent_of(&self, id: SessionId) -> Option<SessionId> {
+    pub fn parent_of(&self, id: SessionId) -> Option<SessionId> {
         let origin = self
             .cached_origin(id)
             .or_else(|| self.summary(id).ok().map(|summary| summary.meta.origin))?;
@@ -600,17 +614,17 @@ impl SessionStore {
     /// Marks the root sessions `ids` unread or read, returning those whose
     /// state changed; the caller announces them
     /// ([`Self::announce_live_waiting`]).
-    pub(crate) fn set_unread(&self, ids: &[SessionId], unread: bool) -> Vec<SessionId> {
+    pub fn set_unread(&self, ids: &[SessionId], unread: bool) -> Vec<SessionId> {
         self.unread.set(ids, unread, jiff::Timestamp::now())
     }
 
     /// Forgets the unread state of deleted sessions, announcing nothing.
-    pub(crate) fn forget_unread(&self, deleted: &HashSet<SessionId>) {
+    pub fn forget_unread(&self, deleted: &HashSet<SessionId>) {
         self.unread.forget(deleted.iter().copied());
     }
 
     /// Drops what deleted sessions waited on, announcing nothing.
-    pub(crate) fn forget_live_waiting(&self, deleted: &HashSet<SessionId>) {
+    pub fn forget_live_waiting(&self, deleted: &HashSet<SessionId>) {
         self.live_waiting
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -628,7 +642,7 @@ impl SessionStore {
     /// v2 work-dir key: `<16-hex-hash>-<sanitized-basename>` (§1.1). The hash
     /// prefix is the only component ever matched against; the suffix is
     /// cosmetic and computed once at directory creation.
-    pub(crate) fn workdir_key(cwd: &Path) -> String {
+    pub fn workdir_key(cwd: &Path) -> String {
         let hash = Self::project_hash(cwd);
         let suffix = workdir_key_suffix(cwd);
         if suffix.is_empty() {
@@ -641,7 +655,7 @@ impl SessionStore {
     /// Locate the v2 work-dir for `cwd`, matching an existing directory by hash
     /// prefix (a stale suffix after a cwd rename is harmless), else reserve the
     /// freshly derived name.
-    pub(crate) fn resolve_workdir_dir(data_root: &Path, cwd: &Path) -> PathBuf {
+    pub fn resolve_workdir_dir(data_root: &Path, cwd: &Path) -> PathBuf {
         let hash = Self::project_hash(cwd);
         let sessions_root = data_root.join(SESSIONS_ROOT_DIR);
         if let Ok(entries) = fs::read_dir(&sessions_root) {
@@ -694,13 +708,13 @@ impl SessionStore {
             unread: unread::UnreadSessions::open(data_root),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             closed: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             eviction_transition_hook: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             publish_hook: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             log_opens: Mutex::new(HashMap::new()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             tree_load_read_hook: TreeLoadReadHook::default(),
         });
         // Opening reads nothing under the work dir beyond the directory itself:
@@ -746,7 +760,7 @@ impl SessionStore {
     /// Root of the tree `id` belongs to (`id` itself for a root session).
     /// Unknown children are located on disk first, so the answer is
     /// disk-accurate — it decides which `owner.lock` guards the session.
-    pub(crate) fn root_of(&self, id: SessionId) -> Result<SessionId, SessionError> {
+    pub fn root_of(&self, id: SessionId) -> Result<SessionId, SessionError> {
         self.resolve_dir(id)?;
         Ok(self
             .cached_location(id)
@@ -760,7 +774,7 @@ impl SessionStore {
     }
 
     /// Resolves the on-disk directory of `id` by placement (§2.2).
-    pub(crate) fn resolve_dir(&self, id: SessionId) -> Result<PathBuf, SessionError> {
+    pub fn resolve_dir(&self, id: SessionId) -> Result<PathBuf, SessionError> {
         if let Some(location) = self.cached_location(id) {
             return Ok(self.path_for(location, id));
         }
@@ -1042,10 +1056,7 @@ impl SessionStore {
     ///
     /// Startup passes need a session's own log for bookkeeping; going through
     /// [`Self::get`] would put child reads back on the startup path (§4.1.1).
-    pub(crate) fn get_log_only(
-        &self,
-        id: SessionId,
-    ) -> Result<Arc<SessionProjection>, SessionError> {
+    pub fn get_log_only(&self, id: SessionId) -> Result<Arc<SessionProjection>, SessionError> {
         if let Some(session) = self.get_resident(id) {
             return Ok(session);
         }
@@ -1088,7 +1099,7 @@ impl SessionStore {
     }
 
     /// Inspects recovery controls without paging an owned dormant session back in.
-    pub(crate) fn recovery_event_snapshot(
+    pub fn recovery_event_snapshot(
         &self,
         id: SessionId,
     ) -> Result<crate::events::EventSnapshot, SessionError> {
@@ -1367,7 +1378,7 @@ impl SessionStore {
         MUTATION_DEPTH.with(|depths| depths.borrow().contains_key(&store))
     }
 
-    pub(crate) fn begin_write(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
+    pub fn begin_write(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
         // The tree has to be complete before a session in it starts writing, and
         // the load cannot run under `mutation` (it installs its own).
         self.ensure_tree_for(id)?;
@@ -1376,11 +1387,8 @@ impl SessionStore {
         self.begin_write_locked(id)
     }
 
-    #[cfg(test)]
-    pub(crate) fn open_for_write(
-        &self,
-        id: SessionId,
-    ) -> Result<Arc<SessionProjection>, SessionError> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_for_write(&self, id: SessionId) -> Result<Arc<SessionProjection>, SessionError> {
         let adoption_lock = self.adoption_lock(id);
         let _adoption = adoption_lock
             .lock()
@@ -1554,7 +1562,7 @@ impl SessionStore {
         Ok(WriteOpen::Adopting)
     }
 
-    pub(crate) fn commit_adoption(&self, id: SessionId) -> Result<(), SessionError> {
+    pub fn commit_adoption(&self, id: SessionId) -> Result<(), SessionError> {
         self.ensure_open()?;
         let mut ownership = self
             .ownership
@@ -1589,7 +1597,7 @@ impl SessionStore {
         Ok(())
     }
 
-    pub(crate) fn rollback_adoption(&self, id: SessionId) {
+    pub fn rollback_adoption(&self, id: SessionId) {
         {
             let _mutation = self.lock_mutation();
             // Best effort: whatever recovery appended is in the log, and a stale
@@ -1632,7 +1640,7 @@ impl SessionStore {
     /// Adoption gate for `id`'s *tree*. One tree lock means one adoption at a
     /// time in a tree; an id that cannot be located keeps a gate of its own,
     /// because its `begin_write` fails before it reaches any lock.
-    pub(crate) fn adoption_lock(&self, id: SessionId) -> Arc<Mutex<()>> {
+    pub fn adoption_lock(&self, id: SessionId) -> Arc<Mutex<()>> {
         let root = self.root_of(id).unwrap_or(id);
         self.adoption_locks
             .lock()
@@ -1715,7 +1723,7 @@ impl SessionStore {
             usage_rollup: session.usage_rollup.clone(),
         };
         residency.evicted.insert(id, summary);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = self
             .eviction_transition_hook
             .lock()
@@ -1778,8 +1786,8 @@ impl SessionStore {
     }
 
     /// Test-only: whether an in-run append left `id`'s `metadata` tip pending.
-    #[cfg(test)]
-    pub(crate) fn meta_cache_is_deferred(&self, id: SessionId) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn meta_cache_is_deferred(&self, id: SessionId) -> bool {
         self.residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1797,7 +1805,7 @@ impl SessionStore {
         self.append_with_mode(id, run, origin, event, false)
     }
 
-    pub(crate) fn append_recovery(
+    pub fn append_recovery(
         &self,
         id: SessionId,
         run: Option<RunId>,
@@ -1918,7 +1926,7 @@ impl SessionStore {
         if let Some(terminal) = terminal_run_of(run, &envelope.payload) {
             self.record_terminal_run(id, terminal.0, terminal.1)?;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if !reference_fold_skipped() {
             let reference = projection_fold(log).expect("reference fold");
             let resident = self.get_resident(id).expect("resident after append");
@@ -1952,7 +1960,7 @@ impl SessionStore {
 
     /// Removes `id`'s events after `through_seq` (a revert) and refolds it.
     /// Live tails are told with [`EventSubscriptionMessage::Rewound`].
-    pub(crate) fn truncate(&self, id: SessionId, through_seq: u64) -> Result<(), SessionError> {
+    pub fn truncate(&self, id: SessionId, through_seq: u64) -> Result<(), SessionError> {
         self.ensure_tree_for(id)?;
         let _mutation = self.lock_session(id);
         self.ensure_open()?;
@@ -1999,7 +2007,7 @@ impl SessionStore {
     /// Deletes delegated sessions — directories and every cached trace — for a
     /// revert that removed the delegations creating them. `ids` must already
     /// include their descendants; roots are never deleted here.
-    pub(crate) fn delete_children(&self, ids: &[SessionId]) -> Result<(), SessionError> {
+    pub fn delete_children(&self, ids: &[SessionId]) -> Result<(), SessionError> {
         let _mutation = self.lock_mutation();
         let mut roots = HashSet::new();
         for &id in ids {
@@ -2072,7 +2080,7 @@ impl SessionStore {
     /// `has_more`) also registers a live tail, which is the only case that
     /// returns a receiver. The tail replaces `owner`'s earlier one for the
     /// session, whose receiver then ends after the messages it already holds.
-    pub(crate) fn subscribe_events(
+    pub fn subscribe_events(
         &self,
         session: SessionId,
         cursor: Option<u64>,
@@ -2162,7 +2170,7 @@ impl SessionStore {
     /// from disk without folding a projection, and the parsed log is kept
     /// while the file is unchanged, so paging through a large log reads it
     /// once rather than once per page.
-    pub(crate) fn snapshot_events(
+    pub fn snapshot_events(
         &self,
         session: SessionId,
         cursor: Option<u64>,
@@ -2235,7 +2243,7 @@ impl SessionStore {
     /// the last durable event they were sent. Nothing is stored. `None` when
     /// this store has published nothing for the session yet, so there is no
     /// durable event for the output to follow.
-    pub(crate) fn publish_transient(
+    pub fn publish_transient(
         &self,
         session_id: SessionId,
         run_id: Option<RunId>,
@@ -2272,7 +2280,7 @@ impl SessionStore {
 
     /// Drops `owner`'s live tail on `session_id`, closing its receiver. Returns
     /// whether it had one. With no tail left the session can be evicted.
-    pub(crate) fn unsubscribe_events(&self, session_id: SessionId, owner: TailOwner) -> bool {
+    pub fn unsubscribe_events(&self, session_id: SessionId, owner: TailOwner) -> bool {
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let Some(tails) = subscribers.get_mut(&session_id) else {
             return false;
@@ -2283,7 +2291,7 @@ impl SessionStore {
     }
 
     /// Whether a reader still holds a live tail on `session_id`.
-    pub(crate) fn has_live_tail(&self, session_id: SessionId) -> bool {
+    pub fn has_live_tail(&self, session_id: SessionId) -> bool {
         self.subscribers
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2291,7 +2299,7 @@ impl SessionStore {
             .is_some_and(|tails| tails.senders.iter().any(|tail| !tail.sender.is_closed()))
     }
 
-    pub(crate) fn notify_evicted_subscribers(&self, session_id: SessionId, last_event_seq: u64) {
+    pub fn notify_evicted_subscribers(&self, session_id: SessionId, last_event_seq: u64) {
         let subscribers = self
             .subscribers
             .lock()
@@ -2307,26 +2315,36 @@ impl SessionStore {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fork(
         &self,
         source_id: SessionId,
         through_seq: u64,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionId, SessionError> {
-        self.fork_with(source_id, through_seq, origin, &|_| Ok(()))
+        self.fork_with(
+            source_id,
+            through_seq,
+            origin,
+            ForkHooks {
+                prepare_tree: &|_| Ok(()),
+                acp_detached: &|_, _| Vec::new(),
+            },
+        )
     }
 
-    /// Forks `source_id` through `through_seq`. A fork that opens a tree of its
-    /// own calls `prepare_tree` with the unpublished tree directory, so what it
-    /// adds there (the fork's artifacts) publishes with the fork or not at all.
+    /// Forks `source_id` through `through_seq`, with the engine's `hooks`.
     pub fn fork_with(
         &self,
         source_id: SessionId,
         through_seq: u64,
         origin: cookie_agent_protocol::EventOrigin,
-        prepare_tree: &dyn Fn(&Path) -> std::io::Result<()>,
+        hooks: ForkHooks<'_>,
     ) -> Result<SessionId, SessionError> {
+        let ForkHooks {
+            prepare_tree,
+            acp_detached,
+        } = hooks;
         // A fork reads its source's tree and files the new session into it, so
         // the tree has to be complete *before* `mutation` is taken: a load
         // installs under that lock and must never start while it is held.
@@ -2438,9 +2456,7 @@ impl SessionStore {
             }
             // The source's ACP sessions stay its own: the fork's agent
             // branches off them at its first turn.
-            for detached in
-                crate::runtime::acp::lifecycle::fork_detached(&source_events, through_seq)
-            {
+            for detached in acp_detached(&source_events, through_seq) {
                 let event = log.append_owned(
                     &capability,
                     None,
@@ -2516,7 +2532,7 @@ impl SessionStore {
                 }),
                 ForkTree::Joined(None) => None,
             };
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(hook) = self
                 .publish_hook
                 .lock()
@@ -2617,7 +2633,7 @@ impl SessionStore {
                 }
                 SessionLocation::Child { .. } => None,
             };
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(hook) = self
                 .publish_hook
                 .lock()
@@ -2680,7 +2696,7 @@ impl SessionStore {
         Ok(())
     }
 
-    pub(crate) fn persist_buffered_session(&self, id: SessionId) -> Result<(), SessionError> {
+    pub fn persist_buffered_session(&self, id: SessionId) -> Result<(), SessionError> {
         // Publishing a buffered session makes it a member of its tree, so the
         // tree has to be flat before `mutation` is taken — a cold root would
         // otherwise stay unflattened with a child filed into it, and a load
@@ -2718,7 +2734,7 @@ impl SessionStore {
 
     /// Existence check that never opens an event log: the location cache and, for
     /// unknown ids, a directory probe.
-    pub(crate) fn session_exists(&self, id: SessionId) -> bool {
+    pub fn session_exists(&self, id: SessionId) -> bool {
         self.resolve_dir(id).is_ok()
     }
 
@@ -3176,11 +3192,7 @@ impl SessionStore {
     /// Terminal run statuses for a child, served from the index/tree cache
     /// without paging the child log (§4.1.3).
     #[allow(dead_code)] // consumed by the delegation registry rebuild (P2)
-    pub(crate) fn terminal_run_status(
-        &self,
-        id: SessionId,
-        run_id: RunId,
-    ) -> Option<SessionStatus> {
+    pub fn terminal_run_status(&self, id: SessionId, run_id: RunId) -> Option<SessionStatus> {
         let root = self.root_of(id).ok()?;
         let trees = self
             .trees
@@ -3223,7 +3235,7 @@ impl SessionStore {
     /// Counts one `events.jsonl` open+fold of `id` (§8.2 #5 counts reads, not
     /// load attempts, so a hidden second fold cannot hide behind a cached flag).
     fn note_log_open(&self, id: SessionId) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             *self
                 .log_opens
@@ -3232,13 +3244,13 @@ impl SessionStore {
                 .entry(id)
                 .or_insert(0) += 1;
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let _ = id;
     }
 
     /// How many times this store opened and folded `id`'s `events.jsonl`.
-    #[cfg(test)]
-    pub(crate) fn log_open_count(&self, id: SessionId) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn log_open_count(&self, id: SessionId) -> usize {
         *self
             .log_opens
             .lock()
@@ -3294,16 +3306,16 @@ impl SessionStore {
     /// is guessed as `workdir_dir/<id>`, which is structurally wrong for a v2
     /// child. Production paths must use [`Self::resolve_dir`]; this stays
     /// available to tests, which know where they put their own fixtures.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub(crate) fn session_dir(&self, id: SessionId) -> PathBuf {
+    pub fn session_dir(&self, id: SessionId) -> PathBuf {
         self.cached_location(id)
             .map(|location| self.path_for(location, id))
             .unwrap_or_else(|| self.workdir_dir.join(id.to_string()))
     }
 
     /// Metadata cache path to *read*.
-    pub(crate) fn meta_cache_path(&self, id: SessionId) -> Result<PathBuf, SessionError> {
+    pub fn meta_cache_path(&self, id: SessionId) -> Result<PathBuf, SessionError> {
         Ok(meta_path(&self.resolve_dir(id)?))
     }
 
@@ -3517,7 +3529,7 @@ impl SessionStore {
         build_tree(id, &metadata, &children)
     }
 
-    pub(crate) fn release_ownership(&self) {
+    pub fn release_ownership(&self) {
         self.closed.store(true, Ordering::Release);
         let _mutation = self.lock_mutation();
         // Best effort, like the writer suspension below: a tip an in-run append

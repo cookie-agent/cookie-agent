@@ -15,11 +15,13 @@ use thiserror::Error;
 
 use crate::session::{SessionError, SessionStore};
 
-pub(crate) fn delegation_request_fingerprint(
+/// The fingerprint of a delegation request; `None` when it does not
+/// serialize.
+pub fn delegation_request_fingerprint(
     child_agent: &AgentSnapshot,
     cache_strategies: &[Option<FrozenCacheStrategy>],
     request: &DelegateRequestPayload,
-) -> Result<Sha256Digest, ()> {
+) -> Option<Sha256Digest> {
     let payload = serde_json::to_vec(&(
         &child_agent.agent,
         &request.description,
@@ -33,8 +35,8 @@ pub(crate) fn delegation_request_fingerprint(
         cache_strategies,
         &request.staged_skill,
     ))
-    .map_err(|_| ())?;
-    Sha256Digest::new(format!("{:x}", Sha256::digest(payload))).map_err(|_| ())
+    .ok()?;
+    Sha256Digest::new(format!("{:x}", Sha256::digest(payload))).ok()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -536,10 +538,10 @@ fn delegation_invocation_of(payload: &EventPayload) -> Option<cookie_agent_proto
     }
 }
 
-/// A delegation payload as [`apply_event`] consumes it: a reservation that
+/// A delegation payload as `apply_event` consumes it: a reservation that
 /// recorded no revisions of its own gets the ones it was frozen against,
 /// `revisions` having folded the log through it.
-pub(crate) fn harvested(payload: &EventPayload, revisions: &RevisionFold) -> EventPayload {
+pub fn harvested(payload: &EventPayload, revisions: &RevisionFold) -> EventPayload {
     let mut payload = payload.clone();
     if let EventPayload::DelegationReserved {
         revisions: recorded @ None,
@@ -551,12 +553,12 @@ pub(crate) fn harvested(payload: &EventPayload, revisions: &RevisionFold) -> Eve
     payload
 }
 
-/// The delegation lifecycle payloads [`apply_event`] consumes.
+/// The delegation lifecycle payloads `apply_event` consumes.
 ///
 /// Lazy tree loads hand child-session payloads over in log order and must offer
 /// exactly this set: a missing arm would leave an entry half-folded, and the
 /// following payload would then be rejected as corrupt.
-pub(crate) fn is_delegation_payload(payload: &EventPayload) -> bool {
+pub fn is_delegation_payload(payload: &EventPayload) -> bool {
     matches!(
         payload,
         EventPayload::DelegationReserved { .. }
@@ -752,7 +754,7 @@ fn suffix_matches_snapshot(snapshot: &AgentSnapshot, bindings: &[FrozenModelBind
     // An ACP agent runs no model: its snapshot holds only its synthetic
     // binding (`docs/site/specs/acp-agents.md` section 6).
     if bindings.is_empty() {
-        return matches!(suffix, [binding] if binding.adapter == crate::policy::ACP_ADAPTER);
+        return matches!(suffix, [binding] if binding.adapter == crate::bindings::ACP_ADAPTER);
     }
     suffix.len() == bindings.len()
         && suffix.iter().zip(bindings).all(|(stored, binding)| {

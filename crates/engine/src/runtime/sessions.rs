@@ -1039,16 +1039,21 @@ impl Engine {
             ..=through_seq,
             &mut referenced,
         )?;
-        let forked = self
-            .inner
-            .store
-            .fork_with(session_id, through_seq, origin, &|tree| {
-                self.inner.artifacts.link_into(
-                    session_id,
-                    &tree.join(crate::runtime::artifacts::ARTIFACTS_DIR),
-                    &referenced,
-                )
-            })?;
+        let forked = self.inner.store.fork_with(
+            session_id,
+            through_seq,
+            origin,
+            crate::session::ForkHooks {
+                prepare_tree: &|tree| {
+                    self.inner.artifacts.link_into(
+                        session_id,
+                        &tree.join(crate::runtime::artifacts::ARTIFACTS_DIR),
+                        &referenced,
+                    )
+                },
+                acp_detached: &crate::runtime::acp::lifecycle::fork_detached,
+            },
+        )?;
         // An ACP agent whose fork takes no fork point forks now, while its
         // conversation still ends at the fork point; when it cannot, the
         // fork is undone and refused.

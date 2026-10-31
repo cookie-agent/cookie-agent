@@ -3193,3 +3193,88 @@ fn a_window_alone_that_cannot_serve_needs_a_summary_from_the_log() {
     assert!(rendered.contains("live input"));
     assert!(view.native_context.is_none());
 }
+
+/// What a best-effort read of a log keeps assembles into history: an
+/// optional field it dropped and a required record it skipped leave no gap
+/// the assembly trips over.
+#[test]
+fn history_assembles_from_a_best_effort_read() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let session = SessionId(uuid::Uuid::from_u128(1));
+    let run = RunId::new_v7();
+    let binding = crate::test_support::model_binding();
+    let agent =
+        crate::test_support::agent_snapshot("test", cookie_agent_protocol::AgentMode::Primary);
+    let mut creation = event(
+        1,
+        run,
+        EventPayload::SessionCreated {
+            cron: None,
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
+            short_id: "test_00000000".into(),
+            origin: cookie_agent_protocol::SessionOrigin::Root,
+            cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
+            creation_selection: crate::test_support::run_selection("test"),
+            revisions: run_started_revisions(&binding),
+            creation_agent: Box::new(agent),
+        },
+    );
+    creation.run_id = None;
+    let mut optional = serde_json::to_value(event(
+        2,
+        run,
+        EventPayload::DelegateChildTerminated {
+            status: SessionStatus::Failed,
+            reason: None,
+        },
+    ))
+    .unwrap();
+    optional["run_id"] = serde_json::Value::Null;
+    optional["payload"]["reason"] = serde_json::json!(42);
+    let mut broken_required = serde_json::to_value(event(
+        3,
+        run,
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Failed {
+            error: cookie_agent_protocol::SafeErrorMessage::new("failed").unwrap(),
+            model_error: None,
+            resolved_model: None,
+        }),
+    ))
+    .unwrap();
+    broken_required["payload"]["outcome"]["error"] = serde_json::json!(42);
+    let lines = [
+        serde_json::to_value(&creation).unwrap(),
+        optional,
+        broken_required,
+    ]
+    .iter()
+    .map(|value| serde_json::to_string(value).unwrap() + "\n")
+    .collect::<String>();
+    std::fs::write(&path, lines).expect("write events");
+
+    let log = crate::events::EventLog::open(path, session).expect("best-effort open");
+    assert!(
+        log.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.skipped),
+        "{:?}",
+        log.diagnostics()
+    );
+    let artifacts = crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
+        .expect("artifact store");
+    assemble_full_history(&log.events(), &artifacts, &binding, "system")
+        .expect("model history tolerates skipped records");
+}
+
+/// The revisions [`run_started_event`] records for `binding`.
+fn run_started_revisions(binding: &FrozenModelBinding) -> cookie_agent_protocol::RuntimeRevisions {
+    let EventPayload::RunStarted {
+        revisions: Some(revisions),
+        ..
+    } = run_started_event(1, RunId::new_v7(), binding).payload
+    else {
+        unreachable!("run_started_event records revisions")
+    };
+    revisions
+}

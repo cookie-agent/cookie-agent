@@ -393,7 +393,10 @@ impl From<SessionError> for EngineError {
         match error {
             // A lazy tree load the engine rejected carries its own failure; keep
             // the original type so callers see what actually went wrong.
-            SessionError::TreeRejected(inner) => *inner,
+            SessionError::TreeRejected(inner) => match inner.downcast::<Self>() {
+                Ok(inner) => *inner,
+                Err(other) => Self::Session(SessionError::TreeRejected(other)),
+            },
             other => Self::Session(other),
         }
     }
@@ -1898,9 +1901,9 @@ impl Engine {
             fn tree_loaded(
                 &self,
                 products: Arc<crate::session::TreeLoadProducts>,
-            ) -> Result<(), EngineError> {
+            ) -> Result<(), crate::session::TreeLoadRejection> {
                 let inner = self.0.upgrade().ok_or(EngineError::ActorStopped)?;
-                Engine { inner }.apply_tree_load(products)
+                Ok(Engine { inner }.apply_tree_load(products)?)
             }
         }
 

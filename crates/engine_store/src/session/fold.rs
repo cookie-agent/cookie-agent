@@ -10,19 +10,19 @@ pub(super) fn projection_fold_count() -> u64 {
 /// Test-only: skips the per-append reference fold for the rest of the
 /// process, so a timing test measures the append path rather than the
 /// differential check, whichever thread appends.
-#[cfg(test)]
-pub(crate) fn skip_reference_fold() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn skip_reference_fold() {
     SKIP_REFERENCE_FOLD.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn reference_fold_skipped() -> bool {
     SKIP_REFERENCE_FOLD.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Asserts that two projections of the same log are field-identical. The log
 /// itself is compared by identity/tip rather than by folding the events.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn assert_projection_equivalent(
     actual: &SessionProjection,
     expected: &SessionProjection,
@@ -95,7 +95,7 @@ impl AutomaticTitleEligibility {
     }
 }
 
-pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
+pub fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     refold(log, None)
 }
 
@@ -106,13 +106,13 @@ pub(super) fn refold(
     log: Arc<EventLog>,
     previous: Option<&SessionProjection>,
 ) -> Result<SessionProjection, SessionError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     PROJECTION_FOLDS.with(|count| count.set(count.get() + 1));
     let previous = previous.filter(|previous| Arc::ptr_eq(&previous.log, &log));
     projection_fold_with(log, previous)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     projection_fold_with(log, None)
 }
@@ -256,7 +256,7 @@ pub(super) enum Observed {
 /// Fold state a projection keeps beyond its public fields, so an appended
 /// event can be applied in place instead of refolding the log.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ProjectionFoldState {
+pub struct ProjectionFoldState {
     user_title: Option<Option<SessionTitle>>,
     delegated_title: Option<SessionTitle>,
     automatic_title: Option<SessionTitle>,
@@ -275,7 +275,7 @@ pub(crate) struct ProjectionFoldState {
 impl ProjectionFoldState {
     /// Whether the user or a delegation named the session: an automatic
     /// title no longer shows.
-    pub(crate) fn titled_by_user(&self) -> bool {
+    pub fn titled_by_user(&self) -> bool {
         self.user_title.is_some() || self.delegated_title.is_some()
     }
 }
@@ -686,7 +686,7 @@ fn unrecord_provisional(rollup: &mut UsageRollup, provisional: &ProvisionalUsage
 /// Only restart-stable grants are folded into the approval store (§4.3): a grant
 /// whose binding cannot survive a restart must not outlive the process that
 /// earned it.
-pub(crate) fn restart_stable_grant(grant: &cookie_agent_protocol::TreeApprovalGrant) -> bool {
+pub fn restart_stable_grant(grant: &cookie_agent_protocol::TreeApprovalGrant) -> bool {
     !grant.resources.is_empty()
         && grant.resources.iter().all(|resource| {
             resource.binding_lifetime
@@ -739,19 +739,19 @@ pub(super) fn add_usage(total: &mut Option<u64>, value: Option<u64>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     pub(super) static PROJECTION_FOLDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// See [`skip_reference_fold`].
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static SKIP_REFERENCE_FOLD: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Whether two attachments name the same runtime capability at the same
 /// workspace, whatever their names.
-pub(crate) fn same_place(
+pub fn same_place(
     left: &cookie_agent_protocol::RuntimeAttachment,
     right: &cookie_agent_protocol::RuntimeAttachment,
 ) -> bool {

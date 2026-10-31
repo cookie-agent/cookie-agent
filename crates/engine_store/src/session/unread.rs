@@ -15,7 +15,7 @@ use cookie_agent_protocol::SessionId;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const UNREAD_FILE: &str = "unread.json";
+pub const UNREAD_FILE: &str = "unread.json";
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -33,7 +33,7 @@ struct UnreadEntry {
 
 /// The unread root sessions, and the file that keeps them.
 #[derive(Debug)]
-pub(crate) struct UnreadSessions {
+pub struct UnreadSessions {
     path: PathBuf,
     sessions: Mutex<BTreeMap<SessionId, Timestamp>>,
 }
@@ -42,7 +42,7 @@ impl UnreadSessions {
     /// Reads `<data_root>/unread.json`; none yet is no session unread. A
     /// file that does not read is reported and replaced by the next change:
     /// losing the bubbles is better than a daemon that does not start.
-    pub(crate) fn open(data_root: &Path) -> Self {
+    pub fn open(data_root: &Path) -> Self {
         let path = data_root.join(UNREAD_FILE);
         let sessions = match read(&path) {
             Ok(sessions) => sessions,
@@ -66,13 +66,13 @@ impl UnreadSessions {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(crate) fn contains(&self, id: SessionId) -> bool {
+    pub fn contains(&self, id: SessionId) -> bool {
         self.lock().contains_key(&id)
     }
 
     /// Marks `ids` unread (since `now`) or read, and returns those whose
     /// state changed. The file is written once, when anything changed.
-    pub(crate) fn set(&self, ids: &[SessionId], unread: bool, now: Timestamp) -> Vec<SessionId> {
+    pub fn set(&self, ids: &[SessionId], unread: bool, now: Timestamp) -> Vec<SessionId> {
         let mut sessions = self.lock();
         let changed = ids
             .iter()
@@ -92,7 +92,7 @@ impl UnreadSessions {
     }
 
     /// Forgets deleted sessions.
-    pub(crate) fn forget(&self, ids: impl IntoIterator<Item = SessionId>) {
+    pub fn forget(&self, ids: impl IntoIterator<Item = SessionId>) {
         let mut sessions = self.lock();
         let before = sessions.len();
         for id in ids {

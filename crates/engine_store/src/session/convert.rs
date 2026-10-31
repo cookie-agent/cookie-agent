@@ -45,10 +45,7 @@ const STAGED_SUFFIX: &str = "convert.tmp";
 /// rebuilt by the next tree load. A failure before that leaves every
 /// original untouched. A log already current, of a newer format, or of one
 /// no conversion exists from is left for its open to judge.
-pub(crate) fn convert_tree(
-    root: SessionId,
-    root_dir: &Path,
-) -> Result<TreeConversion, SessionError> {
+pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, SessionError> {
     let mut members = vec![(root, root_dir.to_owned())];
     if let Ok(entries) = fs::read_dir(root_dir.join(SUBAGENTS_DIR)) {
         for entry in entries.flatten() {

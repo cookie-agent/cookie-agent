@@ -104,9 +104,9 @@ pub struct EventLog {
     /// but nothing appends to it.
     render_only: Option<RenderOnly>,
     write_capability: Option<WriteCapability>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     _test_authority: Option<WriteAuthority>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     append_authorization_hook: Mutex<Option<AppendAuthorizationHook>>,
     writer: Mutex<Option<EventLogWriter>>,
 }
@@ -129,18 +129,18 @@ struct EventLogWriter {
     directory_sync_pending: bool,
     /// Records written since the last sync.
     unsynced: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     before_sync: Option<SyncHook>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug)]
 struct SyncHook {
     reached: std::sync::mpsc::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug)]
 struct AppendAuthorizationHook {
     reached: std::sync::mpsc::Sender<()>,
@@ -176,18 +176,18 @@ struct EventIndex {
 /// the blocks the latest run's system prompt carries, and the blocks the
 /// model knows, those folded with the announcements since.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct PromptBlockFold {
+pub struct PromptBlockFold {
     /// The latest run's composed prompt, until its blocks are recorded.
     prompt: Option<String>,
     /// What the model knew when the latest run started, until its blocks
     /// are recorded.
     known_at_start: Option<std::collections::BTreeMap<String, String>>,
     /// The latest run's blocks, in order; `None` when it recorded none.
-    pub(crate) run_blocks: Option<Vec<(String, String)>>,
+    pub run_blocks: Option<Vec<(String, String)>>,
     /// A checkpoint lies after the latest run's start.
-    pub(crate) checkpoint_since_run: bool,
+    pub checkpoint_since_run: bool,
     /// The blocks the model knows; `None` while the run's blocks are unknown.
-    pub(crate) known: Option<std::collections::BTreeMap<String, String>>,
+    pub known: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl PromptBlockFold {
@@ -208,8 +208,7 @@ impl PromptBlockFold {
                     return;
                 };
                 let previous = self.known_at_start.take();
-                self.run_blocks =
-                    crate::runtime::prompt_blocks::prompt_block_texts(&prompt, blocks);
+                self.run_blocks = prompt_block_texts(&prompt, blocks);
                 // A run that reused the previous run's blocks carries the
                 // same text, so what the model knew of them still holds.
                 self.known = match (composed_live, previous) {
@@ -252,31 +251,31 @@ impl PromptBlockFold {
 /// tools results loaded, and what announcements add up to. A checkpoint
 /// starts all three over, keeping the tools it folded.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct DeferralFold {
+pub struct DeferralFold {
     /// The latest `tool_round_started` record.
-    pub(crate) round: Option<ToolRound>,
+    pub round: Option<ToolRound>,
     /// Tools a result loaded.
-    pub(crate) loaded: std::collections::BTreeSet<String>,
+    pub loaded: std::collections::BTreeSet<String>,
     /// Announced, still-loadable tools by group.
-    pub(crate) announced: std::collections::BTreeMap<String, AnnouncedGroupState>,
+    pub announced: std::collections::BTreeMap<String, AnnouncedGroupState>,
     /// Tools the latest checkpoint folded: the next round declares them up
     /// front (section 8.3).
-    pub(crate) folded: std::collections::BTreeSet<String>,
+    pub folded: std::collections::BTreeSet<String>,
 }
 
 /// The eager tools of a tool round and the groups whose prompt sections the
 /// system prompt carries.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ToolRound {
-    pub(crate) tools: Vec<cookie_agent_protocol::RoundToolDefinition>,
-    pub(crate) prompt_groups: Vec<String>,
+pub struct ToolRound {
+    pub tools: Vec<cookie_agent_protocol::RoundToolDefinition>,
+    pub prompt_groups: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct AnnouncedGroupState {
-    pub(crate) tools: std::collections::BTreeSet<String>,
+pub struct AnnouncedGroupState {
+    pub tools: std::collections::BTreeSet<String>,
     /// The summary the latest announcement of the group carried.
-    pub(crate) summary: Option<String>,
+    pub summary: Option<String>,
 }
 
 impl DeferralFold {
@@ -429,7 +428,7 @@ struct EventStorage {
 
 /// Byte offsets of the sequenced lines of an event file, in file order.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct LineIndex {
+pub struct LineIndex {
     /// `(seq, start offset)` of every line that carries a sequence, records
     /// and skipped lines alike. Sequences strictly increase down the file.
     starts: Vec<(u64, u64)>,
@@ -439,7 +438,7 @@ pub(crate) struct LineIndex {
 
 impl LineIndex {
     /// Notes a line of `length` bytes, newline included, appended at the end.
-    pub(crate) fn push(&mut self, seq: Option<u64>, length: u64) {
+    pub fn push(&mut self, seq: Option<u64>, length: u64) {
         if let Some(seq) = seq {
             self.starts.push((seq, self.len));
         }
@@ -467,11 +466,11 @@ impl LineIndex {
 /// member of every record, known or not.
 ///
 /// A line read into its record stays in the file only, which those rare
-/// readers read again ([`Self::read`]); a line no record reproduces (one this
+/// readers read again (`Self::read`); a line no record reproduces (one this
 /// build skipped, quarantined, or repaired, or one of a log converted in
 /// memory) is kept here.
 #[derive(Clone, Default)]
-pub(crate) struct RawLines {
+pub struct RawLines {
     /// The file the lines left in a file were read from.
     file: Option<Arc<Path>>,
     /// Every sequenced line read, ascending by sequence.
@@ -770,7 +769,7 @@ impl EventStorage {
 }
 
 /// Borrows each event of a slice of owned or shared events.
-pub(crate) fn event_refs<E: Borrow<StoredEvent>>(events: &[E]) -> Vec<&StoredEvent> {
+pub fn event_refs<E: Borrow<StoredEvent>>(events: &[E]) -> Vec<&StoredEvent> {
     events.iter().map(Borrow::borrow).collect()
 }
 
@@ -815,7 +814,7 @@ impl EventLogWriter {
             file,
             directory_sync_pending: created,
             unsynced: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             before_sync: None,
         })
     }
@@ -825,7 +824,7 @@ impl EventLogWriter {
     /// after the file was created, its directory entry).
     fn append(&mut self, record: &[u8], sync: bool) -> Result<(), EventLogError> {
         let sync = sync || self.directory_sync_pending;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if sync && let Some(hook) = self.before_sync.take() {
             let _ = hook.reached.send(());
             let _ = hook.release.recv();
@@ -837,7 +836,7 @@ impl EventLogWriter {
             self.unsynced = true;
             return Ok(());
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
         self.file
             .sync_data()
@@ -865,7 +864,7 @@ impl Drop for EventLogWriter {
     /// reach; those records are what a crash may drop anyway.
     fn drop(&mut self) {
         if self.unsynced {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
             let _ = self.file.sync_data();
         }
@@ -898,7 +897,7 @@ pub struct EventLoadDiagnostic {
 }
 
 impl EventLog {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create(
         path: PathBuf,
         session_id: SessionId,
@@ -949,9 +948,9 @@ impl EventLog {
             converted: false,
             render_only: None,
             write_capability: Some(capability),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             _test_authority,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
         });
@@ -965,7 +964,7 @@ impl EventLog {
         Ok(log)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_buffered(
         path: PathBuf,
         session_id: SessionId,
@@ -988,7 +987,7 @@ impl EventLog {
 
     /// Creates a buffered log holding `creation` followed by `initial`, all
     /// published together with the session's first persistence.
-    pub(crate) fn create_buffered_owned(
+    pub fn create_buffered_owned(
         path: PathBuf,
         session_id: SessionId,
         origin: EventOrigin,
@@ -1001,14 +1000,14 @@ impl EventLog {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open(path: PathBuf, session_id: SessionId) -> Result<Arc<Self>, EventLogError> {
         let authority = WriteAuthority::new();
         let capability = authority.capability();
         Self::open_with_mode(path, session_id, false, Some(capability), Some(authority))
     }
 
-    pub(crate) fn open_owned(
+    pub fn open_owned(
         path: PathBuf,
         session_id: SessionId,
         capability: WriteCapability,
@@ -1075,9 +1074,9 @@ impl EventLog {
             converted: loaded.converted,
             render_only: loaded.render_only,
             write_capability,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             _test_authority,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
         }))
@@ -1094,7 +1093,7 @@ impl EventLog {
     /// sequence stays contiguous. The conversation stays as it was: the
     /// delegate calls and their results, the links to the children, and
     /// the producer messages that brought their reports.
-    pub(crate) fn fork_buffered(
+    pub fn fork_buffered(
         path: PathBuf,
         session_id: SessionId,
         source: &Self,
@@ -1167,9 +1166,9 @@ impl EventLog {
             converted: false,
             render_only: None,
             write_capability: Some(capability),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             _test_authority: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
         }))
@@ -1181,7 +1180,7 @@ impl EventLog {
     /// older history format in memory, which the tree's owner converts on
     /// disk. The caller
     /// proves the file is unchanged since the parse.
-    pub(crate) fn owned_from_read_only(&self, capability: WriteCapability) -> Option<Arc<Self>> {
+    pub fn owned_from_read_only(&self, capability: WriteCapability) -> Option<Arc<Self>> {
         if !self.read_only || self.torn_tail_ignored || self.converted {
             return None;
         }
@@ -1206,15 +1205,15 @@ impl EventLog {
             converted: false,
             render_only: self.render_only.clone(),
             write_capability: Some(capability),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             _test_authority: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
         }))
     }
 
-    pub(crate) fn append_owned(
+    pub fn append_owned(
         &self,
         capability: &WriteCapability,
         run_id: Option<RunId>,
@@ -1228,7 +1227,7 @@ impl EventLog {
         {
             return Err(EventLogError::ReadOnly(self.path.clone()));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = self
             .append_authorization_hook
             .lock()
@@ -1241,7 +1240,7 @@ impl EventLog {
         self.append_inner(Some(capability), run_id, origin, payload)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn append(
         &self,
         run_id: Option<RunId>,
@@ -1366,7 +1365,7 @@ impl EventLog {
     /// was read from is copied as it was read, only its `session_id` set to
     /// this log's; the records appended since are serialized. The caller
     /// syncs the directory.
-    pub(crate) fn write_whole(&self, path: &Path) -> Result<LineIndex, EventLogError> {
+    pub fn write_whole(&self, path: &Path) -> Result<LineIndex, EventLogError> {
         let (events, raw) = {
             let storage = self.storage();
             (storage.snapshot(), Arc::clone(&storage.raw))
@@ -1382,7 +1381,7 @@ impl EventLog {
     /// in `seqs`: a line read from disk as its bytes, which hold whatever this
     /// build did not decode (a skipped event, an unknown member), and a record
     /// written since as it serializes.
-    pub(crate) fn visit_json(
+    pub fn visit_json(
         &self,
         seqs: impl std::ops::RangeBounds<u64>,
         mut visit: impl FnMut(&Value),
@@ -1483,13 +1482,13 @@ impl EventLog {
 
     /// Physical `ModelTurnCommitted` records, including reverted ones.
     #[must_use]
-    pub(crate) fn physical_model_turns(&self) -> u64 {
+    pub fn physical_model_turns(&self) -> u64 {
         self.storage().physical_model_turns
     }
 
     /// Visible `ModelAttemptStarted` records of `run`.
     #[must_use]
-    pub(crate) fn visible_run_attempts(&self, run: RunId) -> u32 {
+    pub fn visible_run_attempts(&self, run: RunId) -> u32 {
         self.storage()
             .index
             .run_attempts
@@ -1559,9 +1558,7 @@ impl EventLog {
         self.storage().all.last().cloned()
     }
 
-    pub(crate) fn last_run_started(
-        &self,
-    ) -> Option<(u64, RunId, cookie_agent_protocol::ModelSelection)> {
+    pub fn last_run_started(&self) -> Option<(u64, RunId, cookie_agent_protocol::ModelSelection)> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1571,7 +1568,7 @@ impl EventLog {
     }
 
     /// Whether the latest run has not recorded its prompt blocks yet.
-    pub(crate) fn prompt_blocks_awaiting_record(&self) -> bool {
+    pub fn prompt_blocks_awaiting_record(&self) -> bool {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1582,7 +1579,7 @@ impl EventLog {
     }
 
     /// The prompt blocks of the latest run and what the model knows of them.
-    pub(crate) fn prompt_blocks(&self) -> PromptBlockFold {
+    pub fn prompt_blocks(&self) -> PromptBlockFold {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1592,7 +1589,7 @@ impl EventLog {
     }
 
     /// Whether the log is an ACP agent's own subagent session's.
-    pub(crate) fn is_acp_subagent(&self) -> bool {
+    pub fn is_acp_subagent(&self) -> bool {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1602,7 +1599,7 @@ impl EventLog {
 
     /// The latest `MemoryLoaded` record, and whether a checkpoint was
     /// committed after it.
-    pub(crate) fn last_memory_loaded(&self) -> Option<(Arc<StoredEvent>, bool)> {
+    pub fn last_memory_loaded(&self) -> Option<(Arc<StoredEvent>, bool)> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1612,7 +1609,7 @@ impl EventLog {
     }
 
     /// Deferred tools since the latest checkpoint, as the log records them.
-    pub(crate) fn deferral(&self) -> Arc<DeferralFold> {
+    pub fn deferral(&self) -> Arc<DeferralFold> {
         Arc::clone(
             &self
                 .events
@@ -1625,7 +1622,7 @@ impl EventLog {
 
     /// The published names the current tool round pins (stable prefix
     /// spec, section 5); empty without a round.
-    pub(crate) fn round_pins(&self) -> crate::runtimes::RoundPins {
+    pub fn round_pins(&self) -> std::collections::HashMap<(String, String), String> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1650,7 +1647,7 @@ impl EventLog {
     }
 
     /// Whether the latest recorded tool names sent to the model are `names`.
-    pub(crate) fn last_model_tools_match(&self, names: &[String], deferred: &[String]) -> bool {
+    pub fn last_model_tools_match(&self, names: &[String], deferred: &[String]) -> bool {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1660,7 +1657,7 @@ impl EventLog {
             .is_some_and(|(last, last_deferred)| last == names && last_deferred == deferred)
     }
 
-    pub(crate) fn latest_checkpoint_seq(&self) -> u64 {
+    pub fn latest_checkpoint_seq(&self) -> u64 {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1668,7 +1665,7 @@ impl EventLog {
             .last_checkpoint_seq
     }
 
-    pub(crate) fn latest_real_usage(&self) -> Option<(u64, u64)> {
+    pub fn latest_real_usage(&self) -> Option<(u64, u64)> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1676,7 +1673,7 @@ impl EventLog {
             .latest_real_usage()
     }
 
-    pub(crate) fn checkpoint_covers_input(&self, input_through_seq: u64) -> bool {
+    pub fn checkpoint_covers_input(&self, input_through_seq: u64) -> bool {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1691,7 +1688,7 @@ impl EventLog {
     }
 
     #[must_use]
-    pub(crate) fn delegation_event_tainted(&self, event: &StoredEvent) -> bool {
+    pub fn delegation_event_tainted(&self, event: &StoredEvent) -> bool {
         delegation_invocation_from_event(&event.payload).is_some_and(|invocation_id| {
             self.validation
                 .lock()
@@ -1722,7 +1719,7 @@ impl EventLog {
 
     /// Marks a buffered log persisted once its file was written whole with
     /// the layout `lines`.
-    pub(crate) fn mark_written(&self, lines: LineIndex) {
+    pub fn mark_written(&self, lines: LineIndex) {
         let _append = self
             .append
             .lock()
@@ -1735,8 +1732,8 @@ impl EventLog {
     }
 
     /// Test-only: the sequences of the lines the log keeps in memory.
-    #[cfg(test)]
-    pub(crate) fn kept_raw_seqs_for_test(&self) -> Vec<u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn kept_raw_seqs_for_test(&self) -> Vec<u64> {
         self.storage()
             .raw
             .lines
@@ -1747,7 +1744,7 @@ impl EventLog {
     }
 
     /// Closes the append handle; the next append reopens it.
-    pub(crate) fn suspend_writer(&self) {
+    pub fn suspend_writer(&self) {
         let _append = self
             .append
             .lock()
@@ -1768,7 +1765,7 @@ impl EventLog {
     /// Removes every event after `through_seq`, from the file (cut at the
     /// first later record and synced) and from memory. The removed sequence
     /// numbers are reused by the next appends. `SessionCreated` always stays.
-    pub(crate) fn truncate_after(
+    pub fn truncate_after(
         &self,
         capability: &WriteCapability,
         through_seq: u64,
@@ -1860,8 +1857,8 @@ impl EventLog {
     }
 
     /// Blocks the next record's sync until the returned sender releases it.
-    #[cfg(test)]
-    pub(crate) fn install_sync_hook_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_sync_hook_for_test(
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (reached, reached_receiver) = std::sync::mpsc::channel();
@@ -1877,8 +1874,8 @@ impl EventLog {
         (reached_receiver, release)
     }
 
-    #[cfg(test)]
-    pub(crate) fn install_append_authorization_hook_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_append_authorization_hook_for_test(
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (reached, reached_receiver) = std::sync::mpsc::channel();
@@ -1893,8 +1890,8 @@ impl EventLog {
         (reached_receiver, release)
     }
 
-    #[cfg(test)]
-    pub(crate) fn writer_is_open_for_test(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn writer_is_open_for_test(&self) -> bool {
         self.writer
             .lock()
             .expect("event log writer lock poisoned")
@@ -1903,8 +1900,8 @@ impl EventLog {
 
     /// Test-only: the file length a revert to `through_seq` keeps, by the
     /// line index, or `None` without one.
-    #[cfg(test)]
-    pub(crate) fn indexed_cut_for_test(&self, through_seq: u64) -> Option<u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn indexed_cut_for_test(&self, through_seq: u64) -> Option<u64> {
         self.storage()
             .lines
             .as_ref()
@@ -3775,12 +3772,12 @@ fn observe_sequence(
     true
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Test-only: event logs this thread parsed from disk.
-    pub(crate) static EVENT_LOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub static EVENT_LOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Test-only: appends this thread synced.
-    pub(crate) static EVENT_LOG_SYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub static EVENT_LOG_SYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Reads and decodes the whole log at `path`. A large log takes a while, so
@@ -3797,7 +3794,7 @@ fn load_event_jsonl_in_place(
     path: &Path,
     torn_tail: TornTail,
 ) -> Result<LoadedEvents, EventLogError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     EVENT_LOG_PARSES.with(|parses| parses.set(parses.get() + 1));
     let (bytes, torn) = read_complete_jsonl(path, torn_tail)?;
     let (bytes, converted) = in_current_format(path, bytes)?;
@@ -4358,9 +4355,9 @@ fn truncate_event_file(path: &Path, through_seq: u64) -> Result<(), EventLogErro
     })
 }
 
-/// The length [`truncate_event_file`] keeps of `bytes`, found by reading the
+/// The length `truncate_event_file` keeps of `bytes`, found by reading the
 /// sequence of each line.
-pub(crate) fn scanned_cut_length(bytes: &[u8], through_seq: u64) -> u64 {
+pub fn scanned_cut_length(bytes: &[u8], through_seq: u64) -> u64 {
     #[derive(Deserialize)]
     struct Sequenced {
         seq: u64,
@@ -4741,7 +4738,7 @@ impl OutputHub {
     }
 
     /// The output bytes the hub holds, across its streams.
-    pub(crate) fn retained_bytes(&self) -> u64 {
+    pub fn retained_bytes(&self) -> u64 {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -4753,7 +4750,7 @@ impl OutputHub {
 
     /// [`Self::finalize`], answering whether this call finalized the hub
     /// rather than an earlier one.
-    pub(crate) fn finalize_once(&self) -> bool {
+    pub fn finalize_once(&self) -> bool {
         let finalized = self
             .state
             .lock()
@@ -4778,7 +4775,7 @@ impl OutputHub {
 }
 
 /// The serialized size past which a limited replay page ends.
-pub(crate) const REPLAY_PAGE_MAX_BYTES: usize = 4 * 1024 * 1024;
+pub const REPLAY_PAGE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// An event's serialized size, counted without building its JSON.
 fn serialized_len(event: &StoredEvent) -> usize {
@@ -4797,7 +4794,23 @@ fn serialized_len(event: &StoredEvent) -> usize {
     counter.0
 }
 
-pub(crate) mod convert;
+/// The prompt blocks `spans` locate in `prompt`, in order; `None` when a
+/// span does not fit the prompt.
+pub fn prompt_block_texts(
+    prompt: &str,
+    spans: &[cookie_agent_protocol::PromptBlockSpan],
+) -> Option<Vec<(String, String)>> {
+    spans
+        .iter()
+        .map(|span| {
+            let start = usize::try_from(span.start).ok()?;
+            let end = start.checked_add(usize::try_from(span.len).ok()?)?;
+            Some((span.key.clone(), prompt.get(start..end)?.to_owned()))
+        })
+        .collect()
+}
+
+pub mod convert;
 
 #[cfg(test)]
 mod tests;
