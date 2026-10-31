@@ -89,7 +89,11 @@ fn cache_parent(path: &Path) -> Result<&Path, SessionError> {
 
 /// Stages `bytes` in a private temporary beside `path` and renames it over
 /// `path`, so a reader sees either the old or the new file, never a partial one.
-fn replace_cache_file(path: &Path, bytes: &[u8], sync: CacheSync) -> Result<(), SessionError> {
+pub(super) fn replace_cache_file(
+    path: &Path,
+    bytes: &[u8],
+    sync: CacheSync,
+) -> Result<(), SessionError> {
     let parent = cache_parent(path)?;
     let name = path
         .file_name()

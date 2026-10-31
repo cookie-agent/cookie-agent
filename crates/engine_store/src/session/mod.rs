@@ -1,19 +1,27 @@
 //! Session directories, projections, and rebuildable metadata caches.
 
+mod activity;
 mod cache;
 mod convert;
 mod delete;
+mod dirs;
 mod fold;
 mod in_flight;
+mod layout;
 mod tree_load;
 mod unread;
-mod workdir;
 
+pub use activity::{ListWindow, RootList};
 pub use cache::meta_path;
 #[cfg(windows)]
 pub use cache::replace_windows_path_with_retry;
 use cache::*;
 pub use convert::{TreeConversion, TreeUpgrade, upgrade_sessions};
+#[cfg(unix)]
+pub use dirs::create_unix_session_directory_all;
+#[cfg(windows)]
+pub use dirs::create_windows_session_directory;
+use dirs::*;
 pub use fold::projection;
 use fold::refold;
 pub use fold::restart_stable_grant;
@@ -21,20 +29,19 @@ pub use fold::same_place;
 #[cfg(any(test, feature = "test-support"))]
 pub use fold::skip_reference_fold;
 use fold::*;
+pub use layout::{
+    ACTIVITY_DIR, LAYOUT_VERSION, Month, PendingTree, RUNTIME_REVISIONS_FILE, StoreLayout,
+    read_layout, root_dir_in,
+};
 pub use tree_load::TreeLoadProducts;
 pub use tree_load::TreeState;
 use tree_load::*;
 pub use tree_load::{TreeLoadObserver, TreeLoadRejection};
-#[cfg(unix)]
-pub use workdir::create_unix_session_directory_all;
-#[cfg(windows)]
-pub use workdir::create_windows_session_directory;
-use workdir::*;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
-    hash::{Hash, Hasher},
+    hash::Hash,
     io::Write,
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -71,10 +78,9 @@ use crate::ownership::{
     WriteCapability, owner_lock_path, try_acquire,
 };
 
-pub const WORKDIR_CWD_FILE: &str = "cwd";
-/// v2 session-store root under the data root (`~/.cookie-agent/sessions`).
+/// The session store under the data root (`~/.cookie-agent/sessions`).
 pub const SESSIONS_ROOT_DIR: &str = "sessions";
-/// Marker file recording the on-disk layout version of a work-dir store.
+/// The store's layout and history format, in [`SESSIONS_ROOT_DIR`].
 pub const LAYOUT_MARKER_FILE: &str = "layout.json";
 /// Session metadata cache file name.
 pub const SESSION_META_FILE: &str = "metadata";
@@ -118,15 +124,14 @@ struct Tail {
 }
 /// Event log file name.
 pub const EVENTS_FILE: &str = "events.jsonl";
-/// Layout version written by this build.
-pub const LAYOUT_VERSION: u32 = 2;
 
-/// Where a session lives relative to its work-dir store.
+/// Where a session lives in the store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionLocation {
-    /// `sessions/<workdirkey>/<id>/`
+    /// `sessions/<yyyy-mm>/<id>/`, the month of the id's timestamp.
     Root,
-    /// `sessions/<workdirkey>/<root>/subagents/<id>/`
+    /// `sessions/<yyyy-mm>/<root>/subagents/<id>/`, under its root whatever
+    /// its own month.
     Child { root: SessionId },
 }
 
@@ -181,6 +186,29 @@ pub enum SessionError {
     /// The tree rooted at this session is being adopted right now.
     #[error("session tree {0} is being opened")]
     TreeBusy(SessionId),
+    /// A newer build laid the store out (`layout.json`).
+    #[error(
+        "the session store at {path} has layout version {version} and history format \
+         {history_format}, newer than this build knows (layout {LAYOUT_VERSION}, history format \
+         {}); it needs {needed}",
+        cookie_agent_protocol::HISTORY_FORMAT
+    )]
+    NewerStore {
+        path: PathBuf,
+        version: u32,
+        history_format: u32,
+        needed: String,
+    },
+    /// The disk cannot hold the logs a migration would convert.
+    #[error(
+        "moving the session store at {path} to layout {LAYOUT_VERSION} needs {needed} bytes free \
+         for converted logs, but {available} are; free some space and start again"
+    )]
+    StoreSpace {
+        path: PathBuf,
+        needed: u64,
+        available: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -260,6 +288,10 @@ struct SessionResidency {
     /// run's terminal event changes the status and rewrites it; eviction and
     /// store release flush whatever is still pending here.
     stale_meta_caches: HashSet<SessionId>,
+    /// Persisted residents with events since their last activity journal
+    /// entry, journaled when they leave memory (see
+    /// [`SessionStore::journal_if_behind`]).
+    unjournaled: HashSet<SessionId>,
 }
 
 /// Ownership of one root session tree. Exactly one lock and one
@@ -372,10 +404,14 @@ pub enum WriteOpen {
 #[derive(Debug)]
 pub struct SessionStore {
     data_root: PathBuf,
-    /// The work-dir store: `sessions/<workdirkey>/`. Root session dirs live
-    /// directly inside it, alongside the work-dir files (`cwd`, the layout
-    /// marker, the grant journal, runtime revisions and artifacts).
-    workdir_dir: PathBuf,
+    /// The store, `<data_root>/sessions/`: `layout.json`, the activity
+    /// journals, the runtime revision index, and a folder of roots per month.
+    sessions_dir: PathBuf,
+    /// The layout as this process opened it, with the trees left pending.
+    layout: StoreLayout,
+    /// Where roots whose ids are not UUIDv7 were found or created.
+    root_months: Mutex<HashMap<SessionId, Month>>,
+    activity: activity::ActivityJournals,
     cwd: PathBuf,
     /// id -> where it lives on disk. Roots are inserted at discovery; children
     /// lazily (tree load, index cache, or direct-address locate).
@@ -631,63 +667,23 @@ impl SessionStore {
             .retain(|id, _| !deleted.contains(id));
     }
 
-    /// The `<16-hex-hash>` component of the v2 work-dir key.
-    fn project_hash(cwd: &Path) -> String {
-        let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        canonical.to_string_lossy().hash(&mut hash);
-        format!("{:016x}", hash.finish())
-    }
-
-    /// v2 work-dir key: `<16-hex-hash>-<sanitized-basename>` (§1.1). The hash
-    /// prefix is the only component ever matched against; the suffix is
-    /// cosmetic and computed once at directory creation.
-    pub fn workdir_key(cwd: &Path) -> String {
-        let hash = Self::project_hash(cwd);
-        let suffix = workdir_key_suffix(cwd);
-        if suffix.is_empty() {
-            hash
-        } else {
-            format!("{hash}-{suffix}")
-        }
-    }
-
-    /// Locate the v2 work-dir for `cwd`, matching an existing directory by hash
-    /// prefix (a stale suffix after a cwd rename is harmless), else reserve the
-    /// freshly derived name.
-    pub fn resolve_workdir_dir(data_root: &Path, cwd: &Path) -> PathBuf {
-        let hash = Self::project_hash(cwd);
-        let sessions_root = data_root.join(SESSIONS_ROOT_DIR);
-        if let Ok(entries) = fs::read_dir(&sessions_root) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !entry.path().is_dir() {
-                    continue;
-                }
-                if name == hash || name.starts_with(&format!("{hash}-")) {
-                    return entry.path();
-                }
-            }
-        }
-        sessions_root.join(Self::workdir_key(cwd))
-    }
-
+    /// Opens the store under `data_root`, first bringing it to this build's
+    /// layout ([`StoreLayout`]): a store a newer build laid out is refused, and
+    /// an older one migrated, before anything reads a session. `cwd` is
+    /// where new sessions start when their creator names no directory.
     pub fn open(data_root: &Path, cwd: &Path) -> Result<Arc<Self>, SessionError> {
-        let v2_dir = Self::resolve_workdir_dir(data_root, cwd);
+        let sessions_dir = data_root.join(SESSIONS_ROOT_DIR);
         #[cfg(unix)]
-        create_unix_session_directory_all(&v2_dir)?;
+        create_unix_session_directory_all(&sessions_dir)?;
         #[cfg(windows)]
-        for path in [data_root.join(SESSIONS_ROOT_DIR), v2_dir.clone()] {
-            create_windows_session_directory(&path)?;
-        }
-        write_layout_marker_if_absent(&v2_dir)?;
-        write_workdir_cwd(&v2_dir, cwd)?;
-        // A deletion that stopped after moving its tree aside left a
-        // tombstone; nothing reads one, so it only has to go.
-        delete::sweep_tombstones(&v2_dir);
+        create_windows_session_directory(&sessions_dir)?;
+        let prepared = layout::prepare(&sessions_dir)?;
         let store = Arc::new(Self {
             data_root: data_root.to_owned(),
-            workdir_dir: v2_dir,
+            activity: activity::ActivityJournals::open(&sessions_dir),
+            sessions_dir,
+            layout: prepared.layout,
+            root_months: Mutex::new(HashMap::new()),
             cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
             locations: Mutex::new(HashMap::new()),
             trees: Mutex::new(HashMap::new()),
@@ -717,9 +713,14 @@ impl SessionStore {
             #[cfg(any(test, feature = "test-support"))]
             tree_load_read_hook: TreeLoadReadHook::default(),
         });
-        // Opening reads nothing under the work dir beyond the directory itself:
-        // roots are listed from their `metadata` on demand and every tree
-        // loads on first use (tree-local sessions, B1).
+        // A deletion that stopped after moving its tree aside may not have
+        // journaled itself.
+        for root in prepared.deleted {
+            store.journal_deleted(root);
+        }
+        // Opening reads no session: roots are listed from the activity
+        // journals and every tree loads on first use (tree-local sessions,
+        // B1).
         Ok(store)
     }
 
@@ -729,15 +730,57 @@ impl SessionStore {
         &self.data_root
     }
 
+    /// The trees a migration left in their old folders, with why.
+    #[must_use]
+    pub fn pending_trees(&self) -> &[PendingTree] {
+        &self.layout.pending
+    }
+
     /// Path of `id`'s session directory for a known placement.
     fn path_for(&self, location: SessionLocation, id: SessionId) -> PathBuf {
         match location {
-            SessionLocation::Root => self.workdir_dir.join(id.to_string()),
+            SessionLocation::Root => self.root_path(id),
             SessionLocation::Child { root } => self
-                .workdir_dir
-                .join(root.to_string())
+                .root_path(root)
                 .join(SUBAGENTS_DIR)
                 .join(id.to_string()),
+        }
+    }
+
+    /// The folder of the root `id`: `<yyyy-mm>/<id>` for the month of a
+    /// UUIDv7 id. Any other id's month is the folder found holding it, or
+    /// this month for one created now, and is remembered.
+    fn root_path(&self, id: SessionId) -> PathBuf {
+        let month = Month::of_id(id).unwrap_or_else(|| {
+            let mut months = self
+                .root_months
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(month) = months.get(&id) {
+                return *month;
+            }
+            match layout::find_root_month(&self.sessions_dir, id) {
+                Some(month) => {
+                    months.insert(id, month);
+                    month
+                }
+                None => Month::of(jiff::Timestamp::now()),
+            }
+        });
+        self.sessions_dir
+            .join(month.to_string())
+            .join(id.to_string())
+    }
+
+    /// Fixes the month of a new root whose id is not a UUIDv7, so its folder
+    /// stays where it was created.
+    fn place_new_root(&self, id: SessionId) {
+        if Month::of_id(id).is_none() {
+            self.root_months
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(id)
+                .or_insert_with(|| Month::of(jiff::Timestamp::now()));
         }
     }
 
@@ -778,7 +821,7 @@ impl SessionStore {
         if let Some(location) = self.cached_location(id) {
             return Ok(self.path_for(location, id));
         }
-        let root_dir = self.workdir_dir.join(id.to_string());
+        let root_dir = self.root_path(id);
         if root_dir.is_dir() {
             self.record_location(id, SessionLocation::Root);
             return Ok(root_dir);
@@ -791,39 +834,29 @@ impl SessionStore {
     }
 
     /// Direct-address locate for an unknown child: stat each root's
-    /// `subagents/<id>/metadata`. O(#roots) stats, paid once per unknown child
-    /// before `locations` caches the answer.
+    /// `subagents/<id>/metadata`, month by month from the child's own month
+    /// backwards, since a child is created after its root; the later months
+    /// only then. Paid once per unknown child before `locations` caches the
+    /// answer.
     fn locate_child(&self, id: SessionId) -> Option<SessionId> {
-        for root in self.root_dir_ids() {
-            let dir = self
-                .workdir_dir
-                .join(root.to_string())
-                .join(SUBAGENTS_DIR)
-                .join(id.to_string());
-            if dir.join(SESSION_META_FILE).exists() {
-                return Some(root);
-            }
-        }
-        None
-    }
-
-    /// Session-id-named directories directly inside the work dir. These are
-    /// roots *by construction*.
-    fn root_dir_ids(&self) -> Vec<SessionId> {
-        let mut ids = Vec::new();
-        let Ok(entries) = fs::read_dir(&self.workdir_dir) else {
-            return ids;
-        };
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
-                continue;
-            };
-            ids.push(id);
-        }
-        ids
+        let months = layout::month_dirs(&self.sessions_dir);
+        let own = Month::of_id(id);
+        let (earlier, later): (Vec<Month>, Vec<Month>) = months
+            .into_iter()
+            .partition(|month| own.is_none_or(|own| *month <= own));
+        earlier.into_iter().rev().chain(later).find_map(|month| {
+            let month_dir = self.sessions_dir.join(month.to_string());
+            layout::month_root_ids(&self.sessions_dir, month)
+                .into_iter()
+                .find(|root| {
+                    month_dir
+                        .join(root.to_string())
+                        .join(SUBAGENTS_DIR)
+                        .join(id.to_string())
+                        .join(SESSION_META_FILE)
+                        .exists()
+                })
+        })
     }
 
     /// Single source of truth for where a *new* session is created (§2.2).
@@ -923,17 +956,33 @@ impl SessionStore {
     }
 
     /// Directory a new session directory is renamed into (must share the
-    /// filesystem with its temporary sibling).
-    fn publish_parent_for(&self, location: SessionLocation) -> Result<PathBuf, SessionError> {
+    /// filesystem with its temporary sibling): a root's month folder, made
+    /// durable when this is its first root, or the root's `subagents/`.
+    fn publish_parent_for(
+        &self,
+        location: SessionLocation,
+        id: SessionId,
+    ) -> Result<PathBuf, SessionError> {
         match location {
-            SessionLocation::Root => Ok(self.workdir_dir.clone()),
+            SessionLocation::Root => {
+                let root_dir = self.root_path(id);
+                let month_dir = root_dir.parent().unwrap_or(&self.sessions_dir).to_owned();
+                if !month_dir.is_dir() {
+                    #[cfg(unix)]
+                    create_unix_session_directory_all(&month_dir)?;
+                    #[cfg(windows)]
+                    create_windows_session_directory(&month_dir)?;
+                    fsync_directory(&self.sessions_dir)?;
+                }
+                Ok(month_dir)
+            }
             SessionLocation::Child { root } => self.ensure_subagents_dir(root),
         }
     }
 
     /// Ensure a root's `subagents/` directory exists, returning it.
     fn ensure_subagents_dir(&self, root: SessionId) -> Result<PathBuf, SessionError> {
-        let dir = self.workdir_dir.join(root.to_string()).join(SUBAGENTS_DIR);
+        let dir = self.root_path(root).join(SUBAGENTS_DIR);
         if !dir.exists() {
             #[cfg(unix)]
             create_unix_session_directory_all(&dir)?;
@@ -986,6 +1035,9 @@ impl SessionStore {
         }
         let creation_origin = Self::creation_origin(&creation).unwrap_or(SessionOrigin::Root);
         let location = self.placement_for(&creation_origin);
+        if location == SessionLocation::Root {
+            self.place_new_root(session_id);
+        }
         self.record_location(session_id, location);
         let final_dir = self.dir_for_placement(location, session_id);
         if final_dir.exists() {
@@ -1695,8 +1747,10 @@ impl SessionStore {
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
         let _mutation = self.lock_mutation();
         // The evicted summary is served from memory, but other processes and
-        // the next tree load read `metadata`: bring a deferred tip up to date.
+        // the next tree load read `metadata`: bring a deferred tip up to date,
+        // and the listing's entry with it.
         self.flush_stale_meta_cache(id)?;
+        self.journal_if_behind(id);
         // Persisted child caches are refreshed after the residency guard drops.
         let parent_root = self.parent_root_of(id);
         let evicted = self.evict_locked(id)?;
@@ -1889,8 +1943,12 @@ impl SessionStore {
                         Observed::Applied { durable_meta } => {
                             resident.meta.last_event_seq = envelope.seq;
                             resident.meta.last_activity = envelope.timestamp;
+                            let root = matches!(resident.meta.origin, SessionOrigin::Root);
                             residency.evicted.remove(&id);
                             index_changed = durable_meta || first_user_message;
+                            if !index_changed && root && log.is_persisted() {
+                                residency.unjournaled.insert(id);
+                            }
                             Some(if first_user_message || !log.is_persisted() {
                                 None
                             } else if !durable_meta
@@ -1948,6 +2006,9 @@ impl SessionStore {
         }
         self.publish_stored_event(&envelope);
         if index_changed && let Some(resident) = self.get_resident(id) {
+            if resident.log.is_persisted() {
+                self.journal_root(&resident.meta);
+            }
             self.notify_upserted(&resident.meta);
         }
         if matches!(
@@ -2014,6 +2075,9 @@ impl SessionStore {
             self.persist_subagent_index(root)?;
         }
         self.publish_rewound(id, through_seq);
+        if log.is_persisted() {
+            self.journal_root(&reverted_meta);
+        }
         self.notify_upserted(&reverted_meta);
         Ok(())
     }
@@ -2453,7 +2517,7 @@ impl SessionStore {
             }
         };
         self.record_location(session_id, location);
-        let destination_parent = self.publish_parent_for(location)?;
+        let destination_parent = self.publish_parent_for(location, session_id)?;
         let final_dir = self.dir_for_placement(location, session_id);
         let temporary =
             destination_parent.join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
@@ -2612,6 +2676,7 @@ impl SessionStore {
             }
             log.mark_written(lines);
             let fork_origin = fork_projection.meta.origin.clone();
+            self.journal_root(&fork_projection.meta);
             self.residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2646,7 +2711,7 @@ impl SessionStore {
         let _publishing = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         self.record_location(session_id, location);
         self.note_placed_child(&location, &projection.meta.origin, session_id);
-        let destination_parent = self.publish_parent_for(location)?;
+        let destination_parent = self.publish_parent_for(location, session_id)?;
         let final_dir = self.dir_for_placement(location, session_id);
         let temporary =
             destination_parent.join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
@@ -2758,6 +2823,7 @@ impl SessionStore {
         let projection = self.get(id)?;
         if !projection.log.is_persisted() {
             self.persist_buffered(id, &projection)?;
+            self.journal_root(&projection.meta);
         }
         Ok(())
     }
@@ -2799,52 +2865,6 @@ impl SessionStore {
             .evicted
             .get(&id)
             .map(|summary| summary.meta.origin.clone())
-    }
-
-    /// Every root session in the work dir, for listing (tree-local sessions,
-    /// B2). A root this process holds in memory answers from its projection;
-    /// any other root costs one parse of its `metadata` and never a log read.
-    /// A root without `metadata` is a transient publication state and is
-    /// skipped silently; any other unreadable cache reports a diagnostic and is
-    /// skipped (B3). Nothing is cached, so the next listing sees what other
-    /// processes created or changed since (B4).
-    #[must_use]
-    pub fn list_roots(&self) -> Vec<SessionMeta> {
-        crate::blocking::off_worker(|| self.list_roots_in_place())
-    }
-
-    fn list_roots_in_place(&self) -> Vec<SessionMeta> {
-        // Roots created here can be in memory before their directory is
-        // published, so the resident ones are listed first, from memory.
-        let mut roots = self
-            .residency
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .resident
-            .values()
-            .filter(|session| matches!(session.meta.origin, SessionOrigin::Root))
-            .map(|session| session.meta.clone())
-            .collect::<Vec<_>>();
-        let listed = roots
-            .iter()
-            .map(|meta| meta.session_id)
-            .collect::<HashSet<_>>();
-        for root in self.root_dir_ids() {
-            if listed.contains(&root) {
-                continue;
-            }
-            let dir = self.workdir_dir.join(root.to_string());
-            match self.read_meta(root, &dir) {
-                Ok(meta) => {
-                    self.record_location(root, SessionLocation::Root);
-                    roots.push(meta);
-                }
-                Err(SessionError::Io { source, .. })
-                    if source.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => eprintln!("session {root} skipped: {error}"),
-            }
-        }
-        roots
     }
 
     /// The `metadata` cache of the session `id` in `dir`. A cache that does
@@ -3339,11 +3359,17 @@ impl SessionStore {
         counts
     }
 
-    /// The work dir: root session directories plus the work-dir files (runtime
-    /// revisions, `cwd` and `layout.json`).
+    /// The store, `<data_root>/sessions/`: `layout.json`, the activity
+    /// journals, the runtime revision index, and the month folders of roots.
     #[must_use]
-    pub fn workdir_dir_path(&self) -> &Path {
-        &self.workdir_dir
+    pub fn sessions_dir_path(&self) -> &Path {
+        &self.sessions_dir
+    }
+
+    /// The folder of the root session `id`, whether or not it exists.
+    #[must_use]
+    pub fn root_dir(&self, id: SessionId) -> PathBuf {
+        self.root_path(id)
     }
 
     #[must_use]
@@ -3352,15 +3378,14 @@ impl SessionStore {
     }
 
     /// Best-effort directory for `id`, *without* locating anything: an unknown id
-    /// is guessed as `workdir_dir/<id>`, which is structurally wrong for a v2
-    /// child. Production paths must use [`Self::resolve_dir`]; this stays
+    /// is guessed as a root, which is structurally wrong for a child. Production paths must use [`Self::resolve_dir`]; this stays
     /// available to tests, which know where they put their own fixtures.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn session_dir(&self, id: SessionId) -> PathBuf {
         self.cached_location(id)
             .map(|location| self.path_for(location, id))
-            .unwrap_or_else(|| self.workdir_dir.join(id.to_string()))
+            .unwrap_or_else(|| self.root_path(id))
     }
 
     /// Metadata cache path to *read*.
@@ -3419,7 +3444,7 @@ impl SessionStore {
     /// wrong-layout path (review L9).
     fn is_indexed_root(&self, id: SessionId) -> bool {
         matches!(self.cached_location(id), Some(SessionLocation::Root))
-            || self.workdir_dir.join(id.to_string()).is_dir()
+            || self.root_path(id).is_dir()
     }
 
     /// Checks one `index.json` entry against the directory it claims: the child
@@ -3432,7 +3457,7 @@ impl SessionStore {
             eprintln!("subagent index for {root} names {id}, which has no directory");
             return None;
         }
-        if self.workdir_dir.join(id.to_string()).is_dir() {
+        if self.root_path(id).is_dir() {
             eprintln!("subagent index for {root} names root session {id}; ignored");
             return None;
         }
@@ -3594,6 +3619,17 @@ impl SessionStore {
         for id in stale {
             let _ = self.flush_stale_meta_cache(id);
         }
+        let unjournaled = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unjournaled
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in unjournaled {
+            self.journal_if_behind(id);
+        }
         let residency = self
             .residency
             .lock()
@@ -3664,7 +3700,7 @@ mod windows_tests {
 
     use crate::ownership::owner_lock_path;
 
-    use super::{SESSION_META_FILE, SESSIONS_ROOT_DIR, SessionStore, WORKDIR_CWD_FILE};
+    use super::{LAYOUT_MARKER_FILE, SESSION_META_FILE, SESSIONS_ROOT_DIR, SessionStore};
 
     fn revision(label: char) -> String {
         format!("sha256:{}", label.to_string().repeat(64))
@@ -3679,12 +3715,10 @@ mod windows_tests {
         let store = SessionStore::open(&data, &cwd).unwrap_or_else(|error| {
             panic!("Windows session store open failed for data={data:?}, cwd={cwd:?}: {error:?}")
         });
-        let workdir = store.workdir_dir_path();
-        let sessions_root = workdir.parent().expect("sessions root");
+        let sessions_root = store.sessions_dir_path();
         for path in [
             sessions_root.to_owned(),
-            workdir.to_owned(),
-            workdir.join(WORKDIR_CWD_FILE),
+            sessions_root.join(LAYOUT_MARKER_FILE),
         ] {
             cookie_agent_models::secure_store::verify_windows_private_creation(&path)
                 .unwrap_or_else(|error| {
@@ -3694,16 +3728,13 @@ mod windows_tests {
     }
 
     #[test]
-    fn windows_session_store_uses_preexisting_untrusted_workdir_acl() {
+    fn windows_session_store_uses_preexisting_untrusted_sessions_acl() {
         let temporary = tempfile::tempdir().expect("temporary root");
         let cwd = temporary.path().join("workspace");
         std::fs::create_dir(&cwd).expect("workspace");
         let data = temporary.path().join("data");
-        let workdir = data
-            .join(SESSIONS_ROOT_DIR)
-            .join(SessionStore::workdir_key(&cwd));
-        std::fs::create_dir_all(&workdir).expect("ordinary workdir");
-        SessionStore::open(&data, &cwd).expect("ordinary existing workdir");
+        std::fs::create_dir_all(data.join(SESSIONS_ROOT_DIR)).expect("ordinary sessions folder");
+        SessionStore::open(&data, &cwd).expect("ordinary existing sessions folder");
     }
 
     #[test]
@@ -3782,7 +3813,7 @@ mod windows_tests {
             )
             .expect("persist first input");
 
-        let session_dir = store.workdir_dir_path().join(session_id.to_string());
+        let session_dir = store.root_dir(session_id);
         for path in [
             session_dir.clone(),
             session_dir.join("events.jsonl"),

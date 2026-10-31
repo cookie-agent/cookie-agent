@@ -59,7 +59,7 @@ The log is a compatibility surface. Each session records the *history format*
 it was written in (currently `1`); a later build reads it tolerantly, skipping
 what it does not know, and a build that changes the format converts older logs
 when it opens them, keeping the originals as `events.jsonl.v<N>.bak`.
-`cookie sessions upgrade` converts a directory's sessions at once. See
+`cookie sessions upgrade` converts every session at once. See
 [History formats](../sessions/index.md#history-formats) and
 [Compatibility](../reference/compatibility.md).
 

@@ -38,16 +38,23 @@ fn published_tree(
     (root, child, last)
 }
 
-fn workdir_entries(fixture: &Fixture) -> Vec<String> {
-    let mut names = std::fs::read_dir(fixture.engine.inner.store.workdir_dir_path())
-        .expect("work dir")
-        .map(|entry| {
-            entry
-                .expect("entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
+/// The names in `sessions/` and in the month folder `month`.
+fn store_entries(fixture: &Fixture, month: &std::path::Path) -> Vec<String> {
+    let names = |directory: &std::path::Path| {
+        std::fs::read_dir(directory)
+            .expect("store folder")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut names = names(fixture.engine.inner.store.sessions_dir_path())
+        .into_iter()
+        .chain(names(month))
         .collect::<Vec<_>>();
     names.sort();
     names
@@ -61,7 +68,8 @@ async fn deleting_a_tree_removes_it_from_disk_and_tells_every_listener() {
     let root_dir = engine.inner.store.resolve_dir(root).expect("root dir");
     assert!(root_dir.join("artifacts").is_dir());
     assert!(root_dir.join("subagents").join(child.to_string()).is_dir());
-    let before = workdir_entries(&fixture);
+    let month = root_dir.parent().expect("month folder").to_path_buf();
+    let before = store_entries(&fixture, &month);
     let mut changes = engine.subscribe_session_changes();
     let (_, mut tail) = engine.subscribe(root, None).await.expect("root tail");
     for session in [root, child] {
@@ -81,7 +89,7 @@ async fn deleting_a_tree_removes_it_from_disk_and_tells_every_listener() {
         "the tree's deferral views went with it"
     );
     assert!(!root_dir.exists(), "the tree's directory is gone");
-    let after = workdir_entries(&fixture);
+    let after = store_entries(&fixture, &month);
     assert_eq!(
         after,
         before
@@ -89,7 +97,7 @@ async fn deleting_a_tree_removes_it_from_disk_and_tells_every_listener() {
             // On Windows the tree's lock is a sidecar beside it, and goes too.
             .filter(|name| *name != root.to_string() && *name != format!("{root}.owner.lock"))
             .collect::<Vec<_>>(),
-        "only the tree (and its lock) left the work dir, and no tombstone stayed"
+        "only the tree (and its lock) left its month folder, and no tombstone stayed"
     );
     assert!(
         engine
@@ -254,11 +262,12 @@ async fn a_running_tree_is_not_deleted_until_it_finishes() {
 async fn a_tombstone_a_crash_left_behind_is_removed_at_the_next_start() {
     let (fixture, selection) = custom_fixture();
     let (root, _, _) = published_tree(&fixture, selection);
-    let workdir = fixture.engine.inner.store.workdir_dir_path().to_path_buf();
+    let sessions = fixture.engine.inner.store.sessions_dir_path().to_path_buf();
     // What a deletion that stopped after its rename leaves: the tree under
     // a tombstone name, which no listing reads.
-    let tombstone = workdir.join(format!(".deleted-{root}-crashed"));
-    std::fs::rename(workdir.join(root.to_string()), &tombstone).expect("move the tree aside");
+    let tombstone = sessions.join(format!(".deleted-{root}-crashed"));
+    std::fs::rename(fixture.engine.inner.store.root_dir(root), &tombstone)
+        .expect("move the tree aside");
     assert!(tombstone.join("events.jsonl").is_file());
     fixture.engine.shutdown().await;
 

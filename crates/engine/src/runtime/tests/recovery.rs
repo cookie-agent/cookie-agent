@@ -784,8 +784,8 @@ async fn a_runtime_revision_index_from_an_older_protocol_still_opens() {
         .engine
         .inner
         .store
-        .workdir_dir_path()
-        .join("runtime-revisions-v8.jsonl");
+        .sessions_dir_path()
+        .join(crate::session::RUNTIME_REVISIONS_FILE);
     fixture.engine.shutdown().await;
     let older = fs::read_to_string(&index)
         .expect("runtime revision index")

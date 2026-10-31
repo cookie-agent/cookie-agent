@@ -446,9 +446,7 @@ pub(crate) async fn dispatch(cli: Cli, launch: &mut Launch) -> anyhow::Result<()
         }
         Some(Command::Runtime { command }) => runtime::run_runtime(command).await,
         Some(Command::Update(args)) => update::run_update(args).await,
-        Some(Command::Sessions { command }) => {
-            sessions::run_sessions(command, workspace.as_deref().expect("sessions workspace"))
-        }
+        Some(Command::Sessions { command }) => sessions::run_sessions(command),
         Some(Command::Onboard { args, url, token }) => {
             let target = daemon_target(url, token)?;
             onboard::run_onboard(&target.url, &target.token, args).await

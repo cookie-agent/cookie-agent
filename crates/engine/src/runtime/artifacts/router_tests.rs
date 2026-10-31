@@ -66,8 +66,8 @@ fn concurrent_first_writes_share_one_tree_store() {
     assert!(stores.iter().all(|store| Arc::ptr_eq(store, &stores[0])));
 }
 
-fn tree_dir(workdir: &Path, root: SessionId) -> std::path::PathBuf {
-    workdir.join(root.to_string())
+fn tree_dir(sessions: &Path, root: SessionId) -> std::path::PathBuf {
+    crate::session::root_dir_in(sessions, root)
 }
 
 fn tree_blob(workdir: &Path, root: SessionId, digest: &str) -> std::path::PathBuf {

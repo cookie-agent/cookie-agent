@@ -70,6 +70,11 @@ impl UnreadSessions {
         self.lock().contains_key(&id)
     }
 
+    /// Every unread root session.
+    pub fn ids(&self) -> Vec<SessionId> {
+        self.lock().keys().copied().collect()
+    }
+
     /// Marks `ids` unread (since `now`) or read, and returns those whose
     /// state changed. The file is written once, when anything changed.
     pub fn set(&self, ids: &[SessionId], unread: bool, now: Timestamp) -> Vec<SessionId> {

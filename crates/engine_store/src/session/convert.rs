@@ -99,7 +99,7 @@ pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, 
 
 /// The history format the log at `path` declares on its first line: `None`
 /// when there is no log, `Some(None)` when it declares none.
-fn log_format(path: &Path) -> Result<Option<Option<u32>>, SessionError> {
+pub(super) fn log_format(path: &Path) -> Result<Option<Option<u32>>, SessionError> {
     use std::io::BufRead as _;
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -260,53 +260,28 @@ pub enum TreeUpgrade {
     Failed(SessionError),
 }
 
-/// Converts every session tree of the work dir of `cwd`, or of every work
-/// dir when `cwd` is `None`, to this build's history format, as an owned
-/// open would (`cookie sessions upgrade`). Returns each tree's root and work
-/// dir with what happened to it.
+/// Converts every session tree of the store under `data_root` to this
+/// build's history format, as an owned open would (`cookie sessions
+/// upgrade`), after bringing the store to this build's layout the way a
+/// daemon's start does. Returns each tree's month folder and root with what
+/// happened to it.
 pub fn upgrade_sessions(
     data_root: &Path,
-    cwd: Option<&Path>,
 ) -> Result<Vec<(PathBuf, SessionId, TreeUpgrade)>, SessionError> {
-    let work_dirs = match cwd {
-        Some(cwd) => vec![SessionStore::resolve_workdir_dir(data_root, cwd)],
-        None => {
-            let sessions = data_root.join(SESSIONS_ROOT_DIR);
-            match fs::read_dir(&sessions) {
-                Ok(entries) => {
-                    let mut dirs = entries
-                        .flatten()
-                        .map(|entry| entry.path())
-                        .filter(|path| path.is_dir())
-                        .collect::<Vec<_>>();
-                    dirs.sort();
-                    dirs
-                }
-                Err(source) if source.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                Err(source) => {
-                    return Err(SessionError::Io {
-                        path: sessions,
-                        source,
-                    });
-                }
-            }
-        }
-    };
+    let sessions = data_root.join(SESSIONS_ROOT_DIR);
+    #[cfg(unix)]
+    create_unix_session_directory_all(&sessions)?;
+    #[cfg(windows)]
+    create_windows_session_directory(&sessions)?;
+    super::layout::prepare(&sessions)?;
     let mut upgrades = Vec::new();
-    for work_dir in work_dirs {
-        let Ok(entries) = fs::read_dir(&work_dir) else {
-            continue;
-        };
-        let mut roots = entries
-            .flatten()
-            .filter_map(|entry| {
-                let id = entry.file_name().to_str()?.parse::<SessionId>().ok()?;
-                entry.path().join(EVENTS_FILE).is_file().then_some(id)
-            })
-            .collect::<Vec<_>>();
-        roots.sort_by_key(ToString::to_string);
-        for root in roots {
-            let root_dir = work_dir.join(root.to_string());
+    for month in super::layout::month_dirs(&sessions) {
+        let month_dir = sessions.join(month.to_string());
+        for root in super::layout::month_root_ids(&sessions, month) {
+            let root_dir = month_dir.join(root.to_string());
+            if !root_dir.join(EVENTS_FILE).is_file() {
+                continue;
+            }
             let upgrade = match try_acquire(&root_dir) {
                 Ok(SessionOwnership::Owned(_lock)) => match convert_tree(root, &root_dir) {
                     Ok(conversion) if conversion == TreeConversion::default() => {
@@ -321,7 +296,7 @@ pub fn upgrade_sessions(
                     source,
                 }),
             };
-            upgrades.push((work_dir.clone(), root, upgrade));
+            upgrades.push((month_dir.clone(), root, upgrade));
         }
     }
     Ok(upgrades)

@@ -694,12 +694,7 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
         .await
         .expect("fork the root")
         .session_id;
-    let source_dir = fixture
-        .engine
-        .inner
-        .store
-        .workdir_dir_path()
-        .join(session.session_id.to_string());
+    let source_dir = fixture.engine.inner.store.root_dir(session.session_id);
     fixture.engine.shutdown().await;
     fs::remove_dir_all(&source_dir).expect("delete the source tree");
 
@@ -806,15 +801,8 @@ async fn a_fork_keeps_what_a_newer_build_wrote_and_the_artifacts_it_names() {
         .await
         .expect("fork through the newer event")
         .session_id;
-    let fork_log = fs::read_to_string(
-        reopened
-            .inner
-            .store
-            .workdir_dir_path()
-            .join(fork.to_string())
-            .join("events.jsonl"),
-    )
-    .unwrap();
+    let fork_log =
+        fs::read_to_string(reopened.inner.store.root_dir(fork).join("events.jsonl")).unwrap();
     let copied = fork_log
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())

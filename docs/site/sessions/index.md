@@ -39,6 +39,34 @@ can drop only such records at the end of the log. While a run is in flight, fold
 metadata tip (`last_event_seq`, `last_activity`); it catches up at the run's
 next projection change or terminal event, on eviction, and on shutdown.
 
+## Where sessions are stored
+
+Every session lives in one store, `~/.cookie-agent/sessions/`, whatever
+directory the daemon was started in; each session records its own working
+directory, and projects group sessions. A root session's folder is
+`sessions/<yyyy-mm>/<session-id>/`, named for the month (UTC) its id was
+created in, and never moves; its subagents live under its `subagents/`
+folder. `sessions/layout.json` records the store's layout version (3) and
+history format.
+
+The session lists of the TUI and the web client show the sessions active in
+the last 30 days, and every unread or busy one (a run going, an approval or
+a question waiting, a background call running, or a subagent that can still
+wake it) whatever its age; **Older** (Ctrl+O in `/sessions`) or **Show
+older** adds a month at a time. The daemon answers from the activity
+journals in `sessions/activity/<yyyy-mm>.jsonl`, which get a session's entry
+when its title, project, or status changes, never for every event.
+
+A daemon that finds a store laid out by an older build, with a folder per
+directory (`sessions/<hash>-<name>/`), moves every session into its month
+once, before it accepts connections, converting logs of an older history
+format on the way; later starts find `layout.json` current and look at
+nothing else. A session that cannot move, such as one another cookie
+process holds, stays in its old folder: the daemon's log and the
+configuration diagnostics (`/config` in the TUI, Settings in the web client)
+name it, it is not listed, and every start tries again. A daemon refuses a
+store a newer build laid out and names the build it needs.
+
 Shutting the daemon down cleanly cancels whatever runs are in flight and waits,
 under a short bound, for them to record `RunCancelled`; a run only comes back as
 interrupted by daemon restart when the process died without that chance.
@@ -79,11 +107,11 @@ writing, keeping each original log beside the new one as
 every session up front instead:
 
 ```sh
-cookie sessions upgrade        # the sessions of this directory
-cookie sessions upgrade --all  # the sessions of every directory
+cookie sessions upgrade
 ```
 
-It reports each tree it converted, each it skipped because another cookie
+It moves the store to this build's layout first, as a daemon's start does,
+then converts every session. It reports each tree it converted, each it skipped because another cookie
 process holds it (that process converts it itself), and each session it
 cannot convert, such as one written before history formats, and exits
 nonzero when there was one. The backups stay until you delete them.
@@ -124,8 +152,8 @@ The daemon refuses while any session of the tree is running or compacting,
 while another cookie process owns the tree, and when the root gained events
 since the client showed it, such as another client's new turn. It moves the
 tree's directory aside first and then removes it, so a crash in between
-leaves only a `.deleted-…` directory, which the next start removes. Every
-client is told the sessions are gone.
+leaves only a `.deleted-…` directory, which the next start removes and
+drops from the session list. Every client is told the sessions are gone.
 
 In the TUI, open `/sessions`, highlight the session, press Ctrl+D (or Delete
 while the list has focus), and confirm with `y`. In the web client, use the

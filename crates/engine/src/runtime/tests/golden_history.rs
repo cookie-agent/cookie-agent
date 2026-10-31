@@ -46,7 +46,7 @@ use cookie_agent_protocol::{
 use serde_json::{Value, json};
 
 use super::support::*;
-use crate::{Engine, EngineHistoryView, session::SessionStore};
+use crate::{Engine, EngineHistoryView};
 
 const GOLDEN_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/history");
 const OUT_VARIABLE: &str = "COOKIE_GOLDEN_HISTORY_OUT";
@@ -66,7 +66,8 @@ enum Opening {
 struct OpenedScenario {
     engine: Engine,
     roots: Vec<SessionId>,
-    workdir: PathBuf,
+    /// The store's `sessions/` folder.
+    sessions: PathBuf,
     _locks: Vec<crate::ownership::SessionOwnership>,
     _directory: PanicResistantTempDir,
 }
@@ -85,14 +86,12 @@ async fn open_scenario(scenario: &Path, opening: Opening) -> OpenedScenario {
     let cwd = directory.path().join("workspace");
     create_private_test_dir(&cwd);
     let data = directory.path().join("data");
-    let workdir = data
-        .join(crate::session::SESSIONS_ROOT_DIR)
-        .join(SessionStore::workdir_key(&cwd));
-    std::fs::create_dir_all(&workdir).expect("work dir");
+    let sessions = data.join(crate::session::SESSIONS_ROOT_DIR);
     let roots = scenario_roots(scenario);
     let mut locks = Vec::new();
     for root in &roots {
-        let target = workdir.join(root.to_string());
+        let target = crate::session::root_dir_in(&sessions, *root);
+        std::fs::create_dir_all(target.parent().expect("month folder")).expect("month folder");
         copy_test_tree(&scenario.join(root.to_string()), &target);
         if matches!(opening, Opening::ReadOnly) {
             locks.push(crate::ownership::try_acquire(&target).expect("hold the tree's lock"));
@@ -114,7 +113,7 @@ async fn open_scenario(scenario: &Path, opening: Opening) -> OpenedScenario {
     OpenedScenario {
         engine,
         roots,
-        workdir,
+        sessions,
         _locks: locks,
         _directory: directory,
     }
@@ -416,7 +415,8 @@ async fn golden_history_reads_as_recorded() {
             if matches!(opening, Opening::ReadOnly) {
                 for root in &opened.roots {
                     let recorded = tree_bytes(&scenario.join(root.to_string()));
-                    if tree_bytes(&opened.workdir.join(root.to_string())) != recorded {
+                    if tree_bytes(&crate::session::root_dir_in(&opened.sessions, *root)) != recorded
+                    {
                         found.push(format!("the read-only open changed tree {root}"));
                     }
                 }
@@ -716,15 +716,28 @@ async fn answer_approvals(engine: &Engine, session: SessionId, decisions: &[Appr
     }
 }
 
-/// The trees of the work dir `workdir`, copied to `scenario` with their
+/// The trees of the session store `sessions`, copied to `scenario` with their
 /// snapshot.
-async fn keep_scenario(workdir: &Path, scenario: &Path) {
+async fn keep_scenario(sessions: &Path, scenario: &Path) {
     std::fs::create_dir_all(scenario).expect("scenario directory");
-    for root in scenario_roots(workdir) {
-        copy_test_tree(
-            &workdir.join(root.to_string()),
-            &scenario.join(root.to_string()),
-        );
+    let months = std::fs::read_dir(sessions)
+        .expect("session store")
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(crate::session::Month::parse)
+                .is_some()
+        })
+        .map(|entry| entry.path());
+    for month in months {
+        for root in scenario_roots(&month) {
+            copy_test_tree(
+                &month.join(root.to_string()),
+                &scenario.join(root.to_string()),
+            );
+        }
     }
     let opened = open_scenario(scenario, Opening::ReadOnly).await;
     let mut read = snapshot(&opened.engine, &opened.roots).await;
@@ -785,11 +798,10 @@ fn write_snapshot(value: &Value, depth: usize, out: &mut String) {
     }
 }
 
-fn workdir_of(fixture_root: &Path) -> PathBuf {
+fn sessions_of(fixture_root: &Path) -> PathBuf {
     fixture_root
         .join("data")
         .join(crate::session::SESSIONS_ROOT_DIR)
-        .join(SessionStore::workdir_key(fixture_root))
 }
 
 #[tokio::test]
@@ -863,7 +875,7 @@ async fn record_replay(scenario: &Path) {
     run_replay_test_turn(&fixture, session, &selection, "think-again").await;
     quiesce(&fixture.engine, session).await;
     fixture.engine.shutdown().await;
-    keep_scenario(&workdir_of(fixture._directory.path()), scenario).await;
+    keep_scenario(&sessions_of(fixture._directory.path()), scenario).await;
 }
 
 /// A revert to the end of the first run, and a fork of it.
@@ -938,7 +950,7 @@ async fn record_revert_and_fork(scenario: &Path) {
     .await;
     quiesce(engine, session).await;
     engine.shutdown().await;
-    keep_scenario(&workdir_of(fixture.root.path()), scenario).await;
+    keep_scenario(&sessions_of(fixture.root.path()), scenario).await;
 }
 
 /// Native compaction, and its fallback to a summary when it fails.
@@ -968,7 +980,7 @@ async fn record_native_compaction(scenario: &Path, fail_native: bool) {
     );
     quiesce(&fixture.engine, session).await;
     fixture.engine.shutdown().await;
-    keep_scenario(&workdir_of(fixture._directory.path()), scenario).await;
+    keep_scenario(&sessions_of(fixture._directory.path()), scenario).await;
 }
 
 // --- the coding fixture ------------------------------------------------------
@@ -1226,7 +1238,7 @@ async fn record_coding(scenario: &Path) {
     .await;
     quiesce(engine, session).await;
     engine.shutdown().await;
-    keep_scenario(&workdir_of(workspace), scenario).await;
+    keep_scenario(&sessions_of(workspace), scenario).await;
 }
 
 fn coding_rules() -> Rules {
@@ -1500,7 +1512,7 @@ async fn record_delegation(scenario: &Path) {
         .expect("queue input behind the run");
     quiesce(engine, root).await;
     engine.shutdown().await;
-    keep_scenario(&workdir_of(fixture.root.path()), scenario).await;
+    keep_scenario(&sessions_of(fixture.root.path()), scenario).await;
 }
 
 // --- what a newer build adds ------------------------------------------------
@@ -1675,9 +1687,7 @@ async fn tolerates_future_data(name: &str) {
                     .expect("fork a tree with future data")
                     .session_id;
                 let forked = std::fs::read_to_string(
-                    opened
-                        .workdir
-                        .join(fork.to_string())
+                    crate::session::root_dir_in(&opened.sessions, fork)
                         .join(crate::session::EVENTS_FILE),
                 )
                 .unwrap();
@@ -1737,7 +1747,7 @@ async fn reopen_scenario(
 ) -> OpenedScenario {
     let OpenedScenario {
         engine,
-        workdir,
+        sessions,
         _locks,
         _directory: directory,
         ..
@@ -1749,7 +1759,7 @@ async fn reopen_scenario(
     if matches!(opening, Opening::ReadOnly) {
         for root in &roots {
             locks.push(
-                crate::ownership::try_acquire(&workdir.join(root.to_string()))
+                crate::ownership::try_acquire(&crate::session::root_dir_in(&sessions, *root))
                     .expect("hold the tree's lock"),
             );
         }
@@ -1773,7 +1783,7 @@ async fn reopen_scenario(
     OpenedScenario {
         engine,
         roots,
-        workdir,
+        sessions,
         _locks: locks,
         _directory: directory,
     }
@@ -1805,7 +1815,7 @@ async fn a_fork_of_a_session_that_delegated_leaves_its_subagents_behind() {
         let opened = open_scenario(&scenario, opening).await;
         let root = opened.roots[0];
         let engine = &opened.engine;
-        let source_dir = opened.workdir.join(root.to_string());
+        let source_dir = crate::session::root_dir_in(&opened.sessions, root);
         let source_bytes = tree_bytes(&source_dir);
         let source_children = engine.children(root).expect("source children");
         assert_eq!(source_children.len(), 2);
@@ -1921,10 +1931,7 @@ async fn a_fork_of_a_session_that_delegated_leaves_its_subagents_behind() {
         }
         // On disk, each replacement is an audit record.
         let written = std::fs::read_to_string(
-            opened
-                .workdir
-                .join(fork.to_string())
-                .join(crate::session::EVENTS_FILE),
+            crate::session::root_dir_in(&opened.sessions, fork).join(crate::session::EVENTS_FILE),
         )
         .unwrap();
         let mut replaced = 0;

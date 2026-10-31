@@ -685,12 +685,12 @@ own binary: run `cookie update` there too. See
 ### `cookie sessions upgrade`
 
 ```text
-cookie sessions upgrade [--all]
+cookie sessions upgrade
 ```
 
-Converts the sessions of the current directory, or with `--all` of every
-directory, in `~/.cookie-agent` to this build's history format, as opening
-each one would. The originals stay beside them as `events.jsonl.v<N>.bak`,
+Moves the session store in `~/.cookie-agent` to this build's layout, as a
+daemon's start does, then converts every session to this build's history
+format, as opening each one would. The originals stay beside them as `events.jsonl.v<N>.bak`,
 and a session tree another cookie process holds is skipped. It works on the
 files directly, without a daemon. It prints a line per tree it converted or
 could not convert and a summary, and exits `1` when any session could not be

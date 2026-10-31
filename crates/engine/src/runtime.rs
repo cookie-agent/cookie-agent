@@ -1292,13 +1292,15 @@ impl Engine {
         runtimes.watch_builtin();
         crate::runtimes::register_configured_templates(&runtimes, &options.config, &mcp_hub)?;
         let delegation_events = DelegationEventStore::new(Arc::clone(&store));
-        let grant_journals = GrantJournals::new(store.workdir_dir_path());
+        let grant_journals = GrantJournals::new(store.sessions_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
         let (engine_events, _) = broadcast::channel(256);
         let plugin_diagnostics =
             Arc::new(plugin_diagnostics::PluginDiagnosticAccumulator::default());
         let mut runtime_revision_index = RuntimeRevisionIndex::open(
-            store.workdir_dir_path().join("runtime-revisions-v8.jsonl"),
+            store
+                .sessions_dir_path()
+                .join(crate::session::RUNTIME_REVISIONS_FILE),
         )?;
         runtime_revision_index.record(
             published_runtime.revisions.runtime_revision.clone(),

@@ -113,17 +113,12 @@ fn cli_commands_and_removed_flags_are_exact() {
             .unwrap()
             .command,
         Some(Command::Sessions {
-            command: SessionsCommand::Upgrade { all: false },
+            command: SessionsCommand::Upgrade,
         })
     );
-    assert_eq!(
-        Cli::try_parse_from(["cookie", "sessions", "upgrade", "--all"])
-            .unwrap()
-            .command,
-        Some(Command::Sessions {
-            command: SessionsCommand::Upgrade { all: true },
-        })
-    );
+    // Sessions are no longer kept per directory, so there is nothing to
+    // widen to.
+    assert!(Cli::try_parse_from(["cookie", "sessions", "upgrade", "--all"]).is_err());
     for arguments in [
         vec!["cookie", "sessions"],
         vec![

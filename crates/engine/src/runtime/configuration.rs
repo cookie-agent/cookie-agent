@@ -233,8 +233,27 @@ impl Engine {
         diagnostics.extend(self.default_agent_diagnostic(&published));
         diagnostics.extend(self.approval_cache_diagnostics(&published));
         diagnostics.extend(self.shell_environment_diagnostics());
+        diagnostics.extend(self.pending_session_tree_diagnostics());
         diagnostics.truncate(256);
         diagnostics
+    }
+
+    /// The session trees the move to this build's session storage layout
+    /// left in their old folders, retried at every start
+    /// (`docs/site/specs/session-storage-v3.md` section 5).
+    fn pending_session_tree_diagnostics(&self) -> Vec<String> {
+        self.inner
+            .store
+            .pending_trees()
+            .iter()
+            .map(|tree| {
+                format!(
+                    "session {} stays in sessions/{} and is not listed until it moves to the \
+                     current session storage layout, retried at every start: {}",
+                    tree.root_session_id, tree.path, tree.error
+                )
+            })
+            .collect()
     }
 
     /// The connected runtimes whose capture of the user's shell environment

@@ -1,9 +1,10 @@
 //! Deleting a whole session tree from disk (`session.delete`).
 //!
-//! A deletion renames the root directory to a tombstone in the work dir,
-//! which is the commit point, forgets the tree, and then removes the
-//! tombstone. A crash between the rename and the removal leaves only the
-//! tombstone, which the next [`SessionStore::open`] removes.
+//! A deletion renames the root directory to a tombstone directly in
+//! `sessions/`, which is the commit point, forgets the tree, journals the
+//! deletion, and then removes the tombstone. A crash between the rename and
+//! the removal leaves only the tombstone, which the next
+//! [`SessionStore::open`] removes.
 
 use std::{collections::HashSet, fs, path::Path};
 
@@ -102,22 +103,27 @@ impl TreeDeletion<'_> {
             .retain(|(cached, _, _)| !members.contains(cached));
         let tombstone = if root_dir.exists() {
             let tombstone = store
-                .workdir_dir
+                .sessions_dir
                 .join(format!("{TOMBSTONE_PREFIX}{root}-{}", Uuid::now_v7()));
             rename_directory(&root_dir, &tombstone).map_err(|source| SessionError::Io {
                 path: root_dir.clone(),
                 source,
             })?;
             // The rename is the commit point; make it durable before anyone
-            // is told the tree is gone.
-            if let Err(error) = fsync_directory(&store.workdir_dir) {
-                eprintln!("session tree {root} deleted, but syncing the work dir failed: {error}");
+            // is told the tree is gone. The month folder lost the tree.
+            if let Some(month_dir) = root_dir.parent()
+                && let Err(error) = fsync_directory(month_dir)
+            {
+                eprintln!(
+                    "session tree {root} deleted, but syncing its month folder failed: {error}"
+                );
             }
             Some(tombstone)
         } else {
             None
         };
         store.forget_tree(root, &members);
+        store.journal_deleted(root);
         drop(taken_lock);
         #[cfg(windows)]
         {
@@ -274,6 +280,7 @@ impl SessionStore {
                 residency.resident.remove(id);
                 residency.evicted.remove(id);
                 residency.stale_meta_caches.remove(id);
+                residency.unjournaled.remove(id);
             }
         }
         self.trees
@@ -328,21 +335,26 @@ impl SessionStore {
     }
 }
 
-/// Removes every tombstone a deletion left in `workdir_dir`, as when a
-/// daemon stopped between moving a tree aside and removing it.
-pub(super) fn sweep_tombstones(workdir_dir: &Path) {
-    let Ok(entries) = fs::read_dir(workdir_dir) else {
-        return;
+/// Removes every tombstone a deletion left in `directory`, as when a
+/// daemon stopped between moving a tree aside and removing it, and returns
+/// the roots they held: such a deletion may not have reached the activity
+/// journal yet.
+pub(super) fn sweep_tombstones(directory: &Path) -> Vec<SessionId> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
     };
+    let mut roots = Vec::new();
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(TOMBSTONE_PREFIX)
-        {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(rest) = name.strip_prefix(TOMBSTONE_PREFIX) {
             remove_tombstone(&entry.path());
+            // `<root>-<suffix>`: a session id is 36 characters.
+            if let Some(root) = rest.get(..36).and_then(|id| id.parse().ok()) {
+                roots.push(root);
+            }
         }
     }
+    roots
 }
 
 /// Removes a tombstone and everything in it. A failure is reported and

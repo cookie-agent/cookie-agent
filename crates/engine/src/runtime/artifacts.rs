@@ -991,7 +991,8 @@ pub(crate) struct ArtifactRouter {
     flat: Option<Arc<ArtifactStore>>,
     #[cfg(test)]
     flat_directory: Option<PathBuf>,
-    /// Directory whose children are the per-root tree directories.
+    /// The session store, whose month folders hold the per-root tree
+    /// directories.
     sessions_dir: PathBuf,
     /// A capture holds this until its terminal event is in the log, so a
     /// revert sweep never deletes output a log is about to reference.
@@ -1037,15 +1038,15 @@ impl std::fmt::Debug for ArtifactRouter {
 }
 
 impl ArtifactRouter {
-    /// Work-dir router: root session directories are children of `workdir_dir`
-    /// and each keeps its tree's artifacts in its own `artifacts/`.
-    pub(crate) fn open(workdir_dir: PathBuf) -> std::io::Result<Arc<Self>> {
-        Ok(Self::with_layout(None, workdir_dir))
+    /// Store router: each root session directory under `sessions_dir` keeps
+    /// its tree's artifacts in its own `artifacts/`.
+    pub(crate) fn open(sessions_dir: PathBuf) -> std::io::Result<Arc<Self>> {
+        Ok(Self::with_layout(None, sessions_dir))
     }
 
-    /// Router for an open store: a v2 store partitions artifacts by tree (§5.1).
+    /// Router for an open store, which partitions artifacts by tree (§5.1).
     pub(crate) fn for_store(store: &crate::session::SessionStore) -> std::io::Result<Arc<Self>> {
-        Self::open(store.workdir_dir_path().to_path_buf())
+        Self::open(store.sessions_dir_path().to_path_buf())
     }
 
     /// Flat router: every session reads and writes the one store at `directory`.
@@ -1340,7 +1341,7 @@ impl ArtifactRouter {
     }
 
     fn tree_dir(&self, tree: SessionId) -> PathBuf {
-        self.sessions_dir.join(tree.to_string())
+        crate::session::root_dir_in(&self.sessions_dir, tree)
     }
 
     /// The store for one root tree, created on first write.

@@ -31,7 +31,7 @@ and option; in outline:
 | `config edit [path]`, `config set <key> <value>`, `config unset <key>`, `config remove <path>`, `config reload`, `config status` | Read and change the daemon's `config.toml` and agent documents; see [config.toml](engine/configuration.md#changes-while-the-daemon-runs) |
 | `machine list`, `rename`, `assign`, `unassign`, `merge`, `forget` | List and regroup the machines the daemon's runtimes run on |
 | `memory list`, `edit`, `rm` | List, edit, and delete the daemon's memories |
-| `sessions upgrade [--all]` | Convert stored sessions to this build's history format, without a daemon |
+| `sessions upgrade` | Move the session store to this build's layout and convert stored sessions to its history format, without a daemon |
 
 The daemon authenticates every WebSocket with a bearer token kept in
 `[server] token` of `config.toml`, which it writes at its first start when
@@ -442,62 +442,84 @@ deletes the subagent sessions the removed delegations created; live
 subscribers get a `rewound` notification. Fork copies a persisted prefix under
 a new session ID.
 
-### Work-dir layout
+### Session storage layout
 
-Session data lives under the user data directory in one store per canonical
-working directory:
+Session data lives under the user data directory in one store for the whole
+daemon, whatever directory it was started in (layout version 3,
+[session storage v3](specs/session-storage-v3.md)):
 
 ```text
 ~/.cookie-agent/
   providers/store-v3.json          # durable managed connections
   catalog/                         # validated models.dev cache
-  sessions/<workdirkey>/           # one store per canonical cwd
-    layout.json                    # {"version":2}
-    cwd                            # canonical work-dir path
-    runtime-revisions-v8.jsonl     # runtime revision index
-    <root-session-id>/             # root sessions live directly inside
-      metadata                     # derived session cache
-      events.jsonl                 # append-only root log
-      grant-invalidations.jsonl    # this tree's grant invalidation journal
-      owner.lock                   # Unix in-directory lock for the whole tree
-      artifacts/                   # artifacts owned by this root's tree
+  unread.json                      # the unread root sessions
+  sessions/
+    layout.json                    # {"version":3,"history_format":1,"build":…,"pending":[]}
+    activity/<yyyy-mm>.jsonl       # list entries of root sessions, by month written
+    runtime-revisions.jsonl        # runtime revision index
+    <yyyy-mm>/                     # UTC month of the root's UUIDv7 id
+      <root-session-id>/
+        metadata                   # derived session cache
+        events.jsonl               # append-only root log
+        grant-invalidations.jsonl  # this tree's grant invalidation journal
+        owner.lock                 # Unix in-directory lock for the whole tree
+        artifacts/                 # artifacts owned by this root's tree
+        subagents/
+          index.json               # child-summary cache, {"version":1,...}
+          <child-session-id>/      # metadata, events.jsonl — no lock file
       <root-session-id>.owner.lock # Windows sidecar, also for the whole tree
-      subagents/
-        index.json                 # child-summary cache, {"version":1,...}
-        <child-session-id>/        # metadata, events.jsonl — no lock file
 ```
 
-`<workdirkey>` is `<16-hex-hash>-<sanitized-basename>`, where the hash is the
-`DefaultHasher` of the canonical path string and the suffix is the lowercased
-final path component with every character outside `[a-z0-9._-]` replaced by
-`-`, repeats collapsed, length capped at 32, and edge `-`/`_` trimmed. The
-suffix exists for browsability only and is computed once at directory creation:
-resolution scans `sessions/` for the entry equal to the hash or prefixed by
-`<hash>-`, so the hash alone is the addressing key and a stale suffix after a
-cwd rename is harmless. An empty suffix leaves the bare hash as the whole key.
+A root's folder follows from its id, so resolving one needs no lookup, and it
+never moves: a session resumed months later stays in its creation month. A
+child is filed under its root whatever its own month; an unknown child is
+found by checking each root's `subagents/<id>/` from the child's month
+backwards, which almost always stops in the first month. A root whose id is
+not a UUIDv7, which this build never creates, is found in whichever month
+folder holds it.
+
+`layout.json` is written last, durably, by the migration from an older
+layout; a daemon refuses a store whose layout version or history format is
+newer than it knows, naming the build it needs. The migration runs once,
+before the daemon accepts connections: it moves every root folder of every
+work-dir folder the version 2 layout kept (`sessions/<hash>-<name>/`) into its
+month, one tree at a time so a crash leaves each tree old or done, converts
+logs of an older history format on the way, writes the activity journals from
+each root's `metadata`, and merges the work-dir folders' runtime revision
+indexes. A tree that cannot move (another process holds it, or a log does not
+convert) stays where it was, is listed in `pending` with the error, named in
+the startup log and the configuration diagnostics, and retried at every
+start; it is not listed until it moves.
 
 Directories and files are created private (`0o700` / `0o600` on Unix).
 
-### Metadata-only listing and lazy trees
+### Listing from activity journals, and lazy trees
 
-Opening a store reads nothing under the work dir. Listing root sessions parses
-each root's `metadata` once, or answers from memory for a root this process
-holds; it never opens an `events.jsonl` and keeps no cache of its own, so the
-next listing sees roots other processes created or changed. Everything else
+Opening a store reads `layout.json` and lists `sessions/` itself, and nothing
+of any session. Listing root sessions reads the activity journals instead of
+every root's `metadata`: each `activity/<yyyy-mm>.jsonl` gets a root's list
+entry (its `SessionMeta`) when the root is first published, when its title,
+project, status, held state, attachments, or goal change, when it is reverted
+or forked, and when a root with later events leaves memory, and a tombstone
+when it is deleted; never for every event. A listing reads them newest month
+first: within a file a session's last line wins, a newer month wins over an
+older one, and a tombstone hides the session. The first entry of a month
+compacts the previous month's journal to each session's last line; older
+journals are not written again. The current and the previous month stay in
+memory, read again only when another process appended to them. A root this
+process holds in memory answers from its projection, so a listed
+`last_activity` trails only a root that is not open.
+
+A listing with a window (`session.list`'s `active_since` and `before`) reads
+only the months the window reaches and also lists every root that is unread
+or whose tree is busy, reading such a root's own `metadata` when no journal
+it read names it. Everything else
 about a tree — its children, usage, delegations, and grants — is read when the
 tree is first used (see [Tree-local sessions](specs/tree-local-sessions.md)).
 `subagents/index.json` carries each child's `SessionSummary` and terminal run
 statuses for that tree only. It is a cache: a missing, corrupt, or stale entry
 simply means the children are unknown until the tree is loaded, and `metadata`
 remains authoritative per session.
-
-A root directory whose `metadata` is absent is skipped silently, so the next
-listing retries it. That shape is transient rather
-than faulty: `<root>/subagents/` exists on its own whenever a child publishes
-before its root, and the same shape appears while a prepared directory is
-merged into it. Every other failure to read a root `metadata` — a corrupt cache,
-an ID that disagrees with its directory name — still reports a diagnostic and
-leaves the root uncached for the next pass.
 
 When a root first comes into use — resume, open for mutation, fork source, tree
 or child access — the root and every descendant are read and folded exactly
@@ -542,7 +564,7 @@ from the recovery projection and appears in the session's skipped-event
 diagnostics, while other delegations continue to load.
 
 Multiple cookie processes may share this project data directory. Ownership is
-per root session tree, not per session and not per work dir: one `owner.lock`
+per root session tree, not per session: one `owner.lock`
 guards a root and every delegated session filed under it, and the process that
 locks it is the only writer anywhere inside that root's directory. It retains
 the lock until process exit, including while every session in the tree is
@@ -554,7 +576,7 @@ and swept away by the tree's load pass. New-root and fork publication acquire
 the Windows sidecar derived from the final directory path before renaming the
 temporary directory; publishing a child takes no lock, because its tree is
 already held. Session discovery ignores the sidecar because it scans only
-directories. Session listing reads `metadata` without locking, which is safe
+directories. Reading a root's `metadata` takes no lock, which is safe
 because every rewrite of that cache stages a sibling temporary and publishes it
 with a replacement that keeps the name resolvable throughout: `rename` on Unix,
 and a superseding POSIX rename on Windows.

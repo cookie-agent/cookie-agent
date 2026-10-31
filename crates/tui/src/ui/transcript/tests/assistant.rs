@@ -384,9 +384,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
     let data_dir = directory.path().join("data");
     let session_dir = cookie_agent_engine::session::SessionStore::open(&data_dir, directory.path())
         .expect("session store")
-        .workdir_dir_path()
-        .to_path_buf()
-        .join(session.to_string());
+        .root_dir(session);
     #[cfg(unix)]
     fs::create_dir_all(&session_dir).unwrap();
     #[cfg(windows)]

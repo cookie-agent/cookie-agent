@@ -44,15 +44,16 @@ pub const GRANT_JOURNAL_FILE: &str = "grant-invalidations.jsonl";
 /// (tree-local C8).
 #[derive(Debug)]
 pub struct GrantJournals {
-    workdir: PathBuf,
+    /// The session store, whose month folders hold the root directories.
+    sessions_dir: PathBuf,
     journals: Mutex<HashMap<SessionId, Arc<GrantInvalidationJournal>>>,
 }
 
 impl GrantJournals {
     #[must_use]
-    pub fn new(workdir: &Path) -> Self {
+    pub fn new(sessions_dir: &Path) -> Self {
         Self {
-            workdir: workdir.to_owned(),
+            sessions_dir: sessions_dir.to_owned(),
             journals: Mutex::new(HashMap::new()),
         }
     }
@@ -70,7 +71,7 @@ impl GrantJournals {
             return Ok(Arc::clone(journal));
         }
         let journal = GrantInvalidationJournal::open(
-            self.workdir.join(root.to_string()).join(GRANT_JOURNAL_FILE),
+            crate::session::root_dir_in(&self.sessions_dir, root).join(GRANT_JOURNAL_FILE),
         )?;
         journals.insert(root, Arc::clone(&journal));
         Ok(journal)

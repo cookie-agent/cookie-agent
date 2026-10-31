@@ -11,13 +11,7 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::{
-    ffi::OsString,
-    os::unix::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink},
-    },
-};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentRevision, AttemptId, CatalogRevision, ClientRunId, EventPayload,
@@ -40,18 +34,11 @@ use super::{
 };
 
 #[cfg(unix)]
-use super::{LAYOUT_MARKER_FILE, WORKDIR_CWD_FILE};
+use super::LAYOUT_MARKER_FILE;
 
-/// The v2 work-dir store for `cwd` (what a freshly opened store creates).
-fn workdir_dir(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
-    data_root
-        .join(SESSIONS_ROOT_DIR)
-        .join(SessionStore::workdir_key(cwd))
-}
-
-#[cfg(unix)]
-fn cwd_file(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
-    workdir_dir(data_root, cwd).join(WORKDIR_CWD_FILE)
+/// The folder of the root `id` in the store under `data_root`.
+fn root_dir(data_root: &Path, id: SessionId) -> std::path::PathBuf {
+    super::root_dir_in(&data_root.join(SESSIONS_ROOT_DIR), id)
 }
 
 fn private_tempdir() -> tempfile::TempDir {
@@ -114,7 +101,15 @@ fn persist_test_session(store: &SessionStore) -> SessionId {
 /// Creates and durably publishes a session carrying `origin`. Delegated
 /// origins land under the root's `subagents/` directory (§2.2).
 fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin) -> SessionId {
-    let session_id = SessionId::new_v7();
+    persist_test_session_with_id(store, SessionId::new_v7(), origin)
+}
+
+/// [`persist_test_session_with_origin`] for a session of a chosen id.
+fn persist_test_session_with_id(
+    store: &SessionStore,
+    session_id: SessionId,
+    origin: SessionOrigin,
+) -> SessionId {
     let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
     let binding = agent.fallback_chain[0].decode().expect("test binding");
@@ -657,17 +652,11 @@ fn publishing_a_child_writes_no_lock_under_the_root() {
     let root_lock = owner_lock_path(&store.session_dir(root));
     assert!(root_lock.is_file(), "the tree keeps the root's lock");
     assert!(
-        owner_lock_artifacts(
-            &store
-                .workdir_dir_path()
-                .join(root.to_string())
-                .join(SUBAGENTS_DIR)
-        )
-        .is_empty(),
+        owner_lock_artifacts(&store.root_dir(root).join(SUBAGENTS_DIR)).is_empty(),
         "no lock of any layout is filed under subagents/"
     );
     assert_eq!(
-        owner_lock_artifacts(store.workdir_dir_path()),
+        owner_lock_artifacts(store.sessions_dir_path()),
         vec![root_lock],
         "the tree is guarded by exactly one lock"
     );
@@ -716,7 +705,7 @@ fn adopting_a_child_takes_the_root_lock_for_the_whole_tree() {
     adopter.open_for_write(child).expect("adopt the child");
     let root_lock = owner_lock_path(&adopter.session_dir(root));
     assert_eq!(
-        owner_lock_artifacts(adopter.workdir_dir_path()),
+        owner_lock_artifacts(adopter.sessions_dir_path()),
         vec![root_lock.clone()],
         "adopting through a child takes the root's lock and nothing else"
     );
@@ -734,7 +723,7 @@ fn adopting_a_child_takes_the_root_lock_for_the_whole_tree() {
         .open_for_write(grandchild)
         .expect("adopt a sibling branch of the same tree");
     assert_eq!(
-        owner_lock_artifacts(adopter.workdir_dir_path()),
+        owner_lock_artifacts(adopter.sessions_dir_path()),
         vec![root_lock],
         "no adoption in a held tree takes a second lock"
     );
@@ -779,10 +768,7 @@ fn legacy_child_lock_files_are_swept_and_never_consulted() {
     let data = temporary.path().join("data");
     let owner = SessionStore::open(&data, &cwd).expect("owner store");
     let (root, child, _) = persist_test_tree(&owner);
-    let subagents = owner
-        .workdir_dir_path()
-        .join(root.to_string())
-        .join(SUBAGENTS_DIR);
+    let subagents = owner.root_dir(root).join(SUBAGENTS_DIR);
     assert_eq!(Arc::strong_count(&owner), 1);
     drop(owner);
 
@@ -804,7 +790,7 @@ fn legacy_child_lock_files_are_swept_and_never_consulted() {
         .open_for_write(child)
         .expect("a legacy child lock never gated adoption");
     assert_eq!(
-        owner_lock_artifacts(store.workdir_dir_path()),
+        owner_lock_artifacts(store.sessions_dir_path()),
         vec![owner_lock_path(&store.session_dir(root))],
         "only the root's lock survives"
     );
@@ -944,49 +930,34 @@ fn bare_root_scaffolds_are_skipped_until_their_metadata_exists() {
     let data = temporary.path().join("data");
     let owner = SessionStore::open(&data, &cwd).expect("owner store");
     let session_id = persist_test_session(&owner);
-    let session_dir = owner.session_dir(session_id);
     drop(owner);
 
     // A root whose only content is the child scaffold, never published further.
     let orphan_id = SessionId::new_v7();
-    let orphan_dir = workdir_dir(&data, &cwd).join(orphan_id.to_string());
+    let orphan_dir = root_dir(&data, orphan_id);
     create_private_test_dir_all(&orphan_dir.join(SUBAGENTS_DIR));
 
-    // The published root, reduced to the same scaffold shape.
-    let cache_path = meta_path(&session_dir);
-    let withheld = fs::read(&cache_path).expect("published metadata cache");
-    fs::remove_file(&cache_path).expect("withhold the metadata cache");
-    create_private_test_dir_all(&session_dir.join(SUBAGENTS_DIR));
-
-    let scaffolded = SessionStore::open(&data, &cwd).expect("store opens over bare scaffolds");
+    let scaffolded = SessionStore::open(&data, &cwd).expect("store opens over a bare scaffold");
     let listed = scaffolded
         .list_roots()
         .into_iter()
         .map(|meta| meta.session_id)
         .collect::<Vec<_>>();
-    assert!(
-        !listed.contains(&session_id) && !listed.contains(&orphan_id),
-        "bare scaffolds must not be listed: {listed:?}"
+    assert_eq!(
+        listed,
+        vec![session_id],
+        "the listing holds the journaled root and no bare scaffold"
     );
     assert!(
         scaffolded.get(orphan_id).is_err(),
         "a scaffold without an event log is not a loadable session"
     );
-    drop(scaffolded);
-
-    write_private_test_file(&cache_path, &withheld);
-    let restored = SessionStore::open(&data, &cwd).expect("store reopens");
-    assert!(
-        restored
-            .list_roots()
-            .into_iter()
-            .any(|meta| meta.session_id == session_id),
-        "a root is discovered once its metadata cache exists"
-    );
 }
 
+/// The journals' months a listing holds in memory are read again once
+/// another process appended to them (tree-local B4).
 #[test]
-fn listing_reflects_metadata_another_process_changed() {
+fn listing_reflects_entries_another_process_journaled() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);
@@ -996,33 +967,25 @@ fn listing_reflects_metadata_another_process_changed() {
     drop(owner);
 
     let observer = SessionStore::open(&data, &cwd).expect("observer store");
-    let cached = observer.summary(session_id).expect("cached summary");
-    assert!(!observer.is_resident(session_id));
-    let mut replacement = cached.meta.clone();
-    replacement.title = Some(
-        cookie_agent_protocol::SessionTitle::new("changed on disk").expect("replacement title"),
-    );
-    super::write_cache(
-        &observer
-            .meta_cache_path(session_id)
-            .expect("metadata cache path"),
-        &replacement,
-        super::CacheSync::Atomic,
-    )
-    .expect("replace metadata cache");
+    assert_eq!(observer.list_roots().len(), 1);
+    let writer = SessionStore::open(&data, &cwd).expect("writer store");
+    writer.open_for_write(session_id).expect("adopt the tree");
+    append_title(&writer, session_id, "changed elsewhere");
+    drop(writer);
 
-    // Listing keeps no cache of its own: it re-parses `metadata`, so a title
-    // another process wrote shows up on the next listing (tree-local B4).
     let listed = observer
         .list_roots()
         .into_iter()
         .find(|meta| meta.session_id == session_id)
         .expect("listed root");
-    assert_eq!(listed.title, replacement.title);
+    assert_eq!(
+        listed.title.as_ref().map(|title| title.as_str().to_owned()),
+        Some("changed elsewhere".to_owned())
+    );
     assert_eq!(
         observer.log_open_count(session_id),
-        1,
-        "only the summary read"
+        0,
+        "listing read no log"
     );
 }
 
@@ -1289,8 +1252,7 @@ fn cached_summary_and_fork_do_not_bypass_the_tree_load() {
     drop(owner);
 
     fs::write(
-        workdir_dir(&data, &cwd)
-            .join(root.to_string())
+        root_dir(&data, root)
             .join(SUBAGENTS_DIR)
             .join(SUBAGENT_INDEX_FILE),
         serde_json::to_vec(&SubagentIndex {
@@ -1964,8 +1926,7 @@ fn subagent_index_entries_are_validated_before_they_are_trusted() {
             entry(other_summary),
         ],
     };
-    let index_path = workdir_dir(&data, &cwd)
-        .join(root.to_string())
+    let index_path = root_dir(&data, root)
         .join(SUBAGENTS_DIR)
         .join(SUBAGENT_INDEX_FILE);
     fs::write(
@@ -2013,8 +1974,7 @@ fn the_durable_index_names_only_published_children() {
         .session_dir(root)
         .join(SUBAGENTS_DIR)
         .join(SUBAGENT_INDEX_FILE);
-    let child_dir = workdir_dir(&data, &cwd)
-        .join(root.to_string())
+    let child_dir = root_dir(&data, root)
         .join(SUBAGENTS_DIR)
         .join(child.to_string());
     assert!(!child_dir.exists(), "a buffered child has no directory");
@@ -2212,8 +2172,7 @@ fn forged_index_usage_is_never_served() {
     drop(owner);
 
     fs::write(
-        workdir_dir(&data, &cwd)
-            .join(root.to_string())
+        root_dir(&data, root)
             .join(SUBAGENTS_DIR)
             .join(SUBAGENT_INDEX_FILE),
         serde_json::to_vec(&SubagentIndex {
@@ -2251,7 +2210,7 @@ fn forged_index_usage_is_never_served() {
 }
 
 /// §8.2 #11: a fork inherits the source's tree, so fork-of-root is published
-/// into the work dir and fork-of-child into the same root's `subagents/`.
+/// into its month and fork-of-child into the same root's `subagents/`.
 #[test]
 fn fork_placement_follows_the_source_tree() {
     let temporary = private_tempdir();
@@ -2272,8 +2231,8 @@ fn fork_placement_follows_the_source_tree() {
 
     let root_dir = store.session_dir(root);
     assert_eq!(
-        store.session_dir(root_fork).parent(),
-        Some(store.workdir_dir.as_path())
+        store.session_dir(root_fork),
+        super::root_dir_in(&store.sessions_dir, root_fork)
     );
     assert_eq!(
         store.session_dir(child_fork).parent(),
@@ -2939,13 +2898,13 @@ fn unix_buffered_session_is_private_at_creation() {
     let data = temporary.path().join("data");
     let store = SessionStore::open(&data, &cwd).unwrap();
     let session_id = persist_test_session(&store);
-    let workdir = store.workdir_dir_path();
     let session = store.session_dir(session_id);
+    let month = session.parent().expect("month folder");
 
     for path in [
         data.clone(),
         data.join(SESSIONS_ROOT_DIR),
-        workdir.to_owned(),
+        month.to_owned(),
         session.clone(),
     ] {
         assert_eq!(
@@ -2954,8 +2913,7 @@ fn unix_buffered_session_is_private_at_creation() {
         );
     }
     for path in [
-        workdir.join(WORKDIR_CWD_FILE),
-        workdir.join(LAYOUT_MARKER_FILE),
+        data.join(SESSIONS_ROOT_DIR).join(LAYOUT_MARKER_FILE),
         session.join("events.jsonl"),
         session.join(SESSION_META_FILE),
     ] {
@@ -2975,17 +2933,16 @@ fn unix_session_reuses_preexisting_loose_modes() {
     let data = temporary.path().join("data");
     let store = SessionStore::open(&data, &cwd).unwrap();
     let session_id = persist_test_session(&store);
-    let workdir = store.workdir_dir_path().to_owned();
     let session = store.session_dir(session_id);
+    let month = session.parent().expect("month folder").to_owned();
     let directories = [
         data.clone(),
         data.join(SESSIONS_ROOT_DIR),
-        workdir.clone(),
+        month,
         session.clone(),
     ];
     let files = [
-        workdir.join(WORKDIR_CWD_FILE),
-        workdir.join(LAYOUT_MARKER_FILE),
+        data.join(SESSIONS_ROOT_DIR).join(LAYOUT_MARKER_FILE),
         session.join("events.jsonl"),
         session.join(SESSION_META_FILE),
     ];
@@ -3011,119 +2968,6 @@ fn unix_session_reuses_preexisting_loose_modes() {
             0o644
         );
     }
-}
-
-// Requires Unix symlink semantics and exact raw path bytes.
-#[cfg(unix)]
-#[test]
-fn canonical_aliases_share_the_existing_workdir_and_record_canonical_bytes() {
-    let temp = tempfile::tempdir().expect("temp");
-    let real = temp.path().join("real");
-    let alias = temp.path().join("alias");
-    let data = temp.path().join("data");
-    fs::create_dir(&real).expect("real cwd");
-    symlink(&real, &alias).expect("alias");
-
-    let real_store = SessionStore::open(&data, &real).expect("real store");
-    let alias_store = SessionStore::open(&data, &alias).expect("alias store");
-    assert_eq!(
-        real_store.workdir_dir_path(),
-        alias_store.workdir_dir_path()
-    );
-    assert_eq!(
-        fs::read(cwd_file(&data, &alias)).expect("cwd bytes"),
-        real.canonicalize()
-            .expect("canonical")
-            .as_os_str()
-            .as_bytes()
-    );
-}
-
-// Requires constructing and comparing non-UTF8 Unix path bytes.
-#[cfg(unix)]
-#[test]
-fn non_utf8_cwd_round_trips_exact_bytes() {
-    let temp = tempfile::tempdir().expect("temp");
-    let cwd = temp
-        .path()
-        .join(OsString::from_vec(b"project-\xfe\xff".to_vec()));
-    let data = temp.path().join("data");
-    fs::create_dir(&cwd).expect("cwd");
-
-    SessionStore::open(&data, &cwd).expect("store");
-    assert_eq!(
-        fs::read(cwd_file(&data, &cwd)).expect("cwd bytes"),
-        cwd.canonicalize()
-            .expect("canonical")
-            .as_os_str()
-            .as_bytes()
-    );
-}
-
-// Existing state is reused without permission repair.
-#[cfg(unix)]
-#[test]
-fn cwd_file_is_private_at_creation_and_loose_mode_is_reused() {
-    let temp = tempfile::tempdir().expect("temp");
-    let data = temp.path().join("data");
-    SessionStore::open(&data, temp.path()).expect("store");
-    let path = cwd_file(&data, temp.path());
-    assert_eq!(
-        fs::metadata(&path).expect("metadata").mode() & 0o7777,
-        0o600
-    );
-
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("loosen mode");
-    SessionStore::open(&data, temp.path()).expect("reopen");
-    assert_eq!(fs::metadata(path).expect("metadata").mode() & 0o7777, 0o644);
-}
-
-// Verifies atomic replacement using Unix inode identity and mode bits.
-#[cfg(unix)]
-#[test]
-fn stale_cwd_file_is_replaced_atomically() {
-    let temp = tempfile::tempdir().expect("temp");
-    let data = temp.path().join("data");
-    SessionStore::open(&data, temp.path()).expect("store");
-    let path = cwd_file(&data, temp.path());
-    fs::write(&path, b"stale project path").expect("stale file");
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("mode");
-    let stale_inode = fs::metadata(&path).expect("stale metadata").ino();
-
-    SessionStore::open(&data, temp.path()).expect("refresh");
-    assert_ne!(
-        fs::metadata(&path).expect("new metadata").ino(),
-        stale_inode
-    );
-    assert_eq!(
-        fs::read(&path).expect("cwd bytes"),
-        temp.path()
-            .canonicalize()
-            .expect("canonical")
-            .as_os_str()
-            .as_bytes()
-    );
-    let workdir = path.parent().expect("workdir");
-    assert!(
-        fs::read_dir(workdir)
-            .expect("workdir entries")
-            .filter_map(Result::ok)
-            .all(|entry| !entry.file_name().to_string_lossy().starts_with(".cwd."))
-    );
-}
-
-// Verifies retention using Unix inode identity.
-#[cfg(unix)]
-#[test]
-fn correct_cwd_file_is_retained_on_reopen() {
-    let temp = tempfile::tempdir().expect("temp");
-    let data = temp.path().join("data");
-    SessionStore::open(&data, temp.path()).expect("store");
-    let path = cwd_file(&data, temp.path());
-    let inode = fs::metadata(&path).expect("metadata").ino();
-
-    SessionStore::open(&data, temp.path()).expect("reopen");
-    assert_eq!(fs::metadata(path).expect("metadata").ino(), inode);
 }
 
 #[test]
@@ -3305,7 +3149,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
     let data = temp.path().join("fork-data");
     create_private_test_dir_all(&cwd);
     let seed = SessionStore::open(&data, &cwd).unwrap();
-    let sessions_dir = seed.workdir_dir_path().to_owned();
+    let sessions_dir = seed.sessions_dir_path().to_owned();
     drop(seed);
     let stamped_source = SessionId::new_v7();
     let unpriced_source = SessionId::new_v7();
@@ -3316,7 +3160,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
         ),
         (unpriced_source, rewrite(unpriced_source, None)),
     ] {
-        let directory = sessions_dir.join(source_id.to_string());
+        let directory = super::root_dir_in(&sessions_dir, source_id);
         create_private_test_dir_all(&directory);
         write_private_test_file(&directory.join("events.jsonl"), contents);
     }
@@ -4976,7 +4820,7 @@ fn a_failed_conversion_leaves_every_original_untouched() {
 #[test]
 fn upgrading_sessions_converts_each_tree_up_front_once() {
     let tree = format_zero_tree();
-    let upgrades = super::upgrade_sessions(&tree.data, Some(&tree.cwd)).expect("upgrade");
+    let upgrades = super::upgrade_sessions(&tree.data).expect("upgrade");
     assert_eq!(upgrades.len(), 1);
     let (_, root, super::TreeUpgrade::Converted(conversion)) = &upgrades[0] else {
         panic!("{upgrades:?}");
@@ -4988,7 +4832,7 @@ fn upgrading_sessions_converts_each_tree_up_front_once() {
     expected.sort_by_key(|(id, _)| id.to_string());
     assert_eq!(converted, expected);
 
-    let again = super::upgrade_sessions(&tree.data, None).expect("upgrade again");
+    let again = super::upgrade_sessions(&tree.data).expect("upgrade again");
     assert!(
         matches!(again.as_slice(), [(_, _, super::TreeUpgrade::Current)]),
         "{again:?}"
@@ -4997,7 +4841,7 @@ fn upgrading_sessions_converts_each_tree_up_front_once() {
     // A tree another process holds is left to it.
     let held = SessionStore::open(&tree.data, &tree.cwd).expect("store");
     held.open_for_write(tree.root).expect("hold the tree");
-    let in_use = super::upgrade_sessions(&tree.data, None).expect("upgrade while held");
+    let in_use = super::upgrade_sessions(&tree.data).expect("upgrade while held");
     assert!(
         matches!(in_use.as_slice(), [(_, _, super::TreeUpgrade::InUse)]),
         "{in_use:?}"
@@ -5029,7 +4873,7 @@ fn upgrading_reports_a_log_written_before_history_formats() {
         .collect::<String>();
     fs::write(&log, &before).expect("write a pre-format log");
 
-    let upgrades = super::upgrade_sessions(&data, Some(&cwd)).expect("upgrade");
+    let upgrades = super::upgrade_sessions(&data).expect("upgrade");
     let [(_, _, super::TreeUpgrade::Converted(conversion))] = upgrades.as_slice() else {
         panic!("{upgrades:?}");
     };
@@ -5079,3 +4923,5 @@ fn a_history_page_reads_only_the_session_log() {
         .expect("the last page");
     assert!(last.is_none(), "the page reaching the tip is the final one");
 }
+
+mod layout;
