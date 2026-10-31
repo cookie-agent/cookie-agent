@@ -10,7 +10,7 @@
 //! `tool NAME` shows that tool exactly as the engine publishes it to the model,
 //! right under a heading naming it. Every tool has exactly one region.
 //! Regenerate them after changing a tool's name, description, or parameters:
-//! `COOKIE_UPDATE_TOOL_DOCS=1 cargo test -p cookie_agent --test tool_reference`.
+//! `COOKIE_UPDATE_TOOL_DOCS=1 cargo test -p cookie_agent --test integration tool_reference`.
 
 use std::fmt::Write as _;
 
@@ -393,6 +393,6 @@ fn tool_reference_page_matches_published_specs() {
     assert!(
         current == rendered,
         "docs/site/reference/tools.md is stale; regenerate with \
-         {UPDATE_ENV}=1 cargo test -p cookie_agent --test tool_reference"
+         {UPDATE_ENV}=1 cargo test -p cookie_agent --test integration tool_reference"
     );
 }

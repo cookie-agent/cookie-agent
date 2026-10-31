@@ -1,7 +1,7 @@
 <!-- The regions between the generated markers are rendered by
-crates/cookie_agent/tests/tool_reference.rs from the built-in tool specs. Do not
+crates/cookie_agent/tests/integration/tool_reference.rs from the built-in tool specs. Do not
 edit them by hand; regenerate them with
-COOKIE_UPDATE_TOOL_DOCS=1 cargo test -p cookie_agent --test tool_reference -->
+COOKIE_UPDATE_TOOL_DOCS=1 cargo test -p cookie_agent --test integration tool_reference -->
 
 # Tools
 

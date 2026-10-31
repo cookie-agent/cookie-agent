@@ -1175,7 +1175,7 @@ Landed as specified, with no wire change and no configuration key.
     a wrong token; a listener that closes; a silent listener and the
     handshake deadline; and a dial-in for another machine ID, whose
     session attaches `client_<host>` at the directory.
-  - **Binary.** `crates/cookie_agent/tests/local_daemon.rs` runs the real
+  - **Binary.** `crates/cookie_agent/tests/integration/local_daemon.rs` runs the real
     binary against a listener at the scratch home's `[server] port` that
     counts connections. Plain `cookie` dials once. Without a token, and
     for `--standalone` and `cookie run`, nothing dials.

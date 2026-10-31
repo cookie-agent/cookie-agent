@@ -53,3 +53,10 @@ toml.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 libc.workspace = true
+
+# A manual timing harness, run with `--test compile_timing -- --ignored`:
+# not built, or linked, by a plain test run.
+[[test]]
+name = "compile_timing"
+path = "tests/compile_timing.rs"
+test = false

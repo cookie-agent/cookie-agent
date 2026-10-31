@@ -668,9 +668,9 @@ async fn validated_bootstrap_is_the_final_offline_source() {
 #[tokio::test]
 async fn synthetic_metadata_fixture_retains_presence_and_quarantines_only_bad_sibling() {
     let temporary = tempfile::tempdir().unwrap();
-    let bytes = include_bytes!("fixtures/models-dev-metadata-synthetic.json").to_vec();
+    let bytes = include_bytes!("../fixtures/models-dev-metadata-synthetic.json").to_vec();
     let metadata: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "fixtures/models-dev-metadata-synthetic.meta.json"
+        "../fixtures/models-dev-metadata-synthetic.meta.json"
     ))
     .unwrap();
     assert_eq!(metadata["runtime_pin"], false);

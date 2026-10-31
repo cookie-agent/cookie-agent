@@ -1,6 +1,7 @@
 #![cfg(unix)]
 //! Manual timing of a full runtime compile against the bundled catalog.
 //! Run: cargo test --release -p cookie_agent_models --test compile_timing -- --ignored --nocapture
+//! (`test = false` in Cargo.toml: a plain test run neither builds nor links it).
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},

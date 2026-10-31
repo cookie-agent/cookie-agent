@@ -448,7 +448,7 @@ above:
   `now` overriding `idle` and the shutdown interrupting the run, the cron
   skip, and the missing hook; a server test over a real WebSocket for
   `restart_unsupported`, `daemon.restarting`, and the 1012 close; an
-  integration test (`crates/cookie_agent/tests/daemon_restart.rs`) that
+  integration test (`crates/cookie_agent/tests/integration/daemon_restart.rs`) that
   starts the real `cookie daemon` on a scratch home and a free port,
   restarts it through the RPC, and reconnects on the same port with the same
   token (same PID on Unix, a new one on Windows); TUI tests for `/restart`,

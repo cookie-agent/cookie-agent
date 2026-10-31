@@ -874,7 +874,7 @@ async fn kimi_for_coding_catalog_connect_compiles_full_runtime() {
     let catalog = fixture_catalog(
         &temporary,
         "catalog",
-        include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+        include_bytes!("../fixtures/models-dev-kimi-for-coding.json"),
     )
     .await;
     let manager =
@@ -927,7 +927,7 @@ async fn nested_provider_manifest_keeps_catalog_endpoint_identity() {
     let catalog = fixture_catalog(
         &temporary,
         "catalog",
-        include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+        include_bytes!("../fixtures/models-dev-kimi-for-coding.json"),
     )
     .await;
     let manager =
@@ -974,7 +974,7 @@ async fn nested_provider_store_rejected_when_catalog_endpoint_drifts() {
     let catalog = fixture_catalog(
         &temporary,
         "catalog",
-        include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+        include_bytes!("../fixtures/models-dev-kimi-for-coding.json"),
     )
     .await;
     let manager =
@@ -1033,7 +1033,7 @@ async fn anthropic_family_catalog_endpoints_connect_and_compile() {
         let source = fixture_catalog(
             &temporary,
             "catalog",
-            include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+            include_bytes!("../fixtures/models-dev-kimi-for-coding.json"),
         )
         .await;
         let source_id = ProviderId::new("kimi-for-coding").unwrap();
@@ -1087,7 +1087,7 @@ async fn nested_anthropic_beta_catalog_metadata_compiles_manager_runtime() {
     let catalog = fixture_catalog(
         &temporary,
         "catalog",
-        include_bytes!("fixtures/models-dev-live-audit-2026-08-05.json"),
+        include_bytes!("../fixtures/models-dev-live-audit-2026-08-05.json"),
     )
     .await;
     let manager = ModelManager::new(BTreeMap::new(), catalog, store(&temporary)).unwrap();

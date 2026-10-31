@@ -531,8 +531,8 @@ pointing to it.
 **§12 coverage** (`crates/engine/src/runtime/tests/acp.rs` against the
 scripted agent `crates/engine/tests/fixtures/acp_agent.py`,
 `crates/coding_runtime/src/server/acp_tests.rs`,
-`crates/config/tests/acp_agents.rs`, and the `cookie runtime mcp-bridge`
-test in `crates/cookie_agent/tests/runtime_command.rs`): declarations on
+`crates/config/tests/config/acp_agents.rs`, and the `cookie runtime mcp-bridge`
+test in `crates/cookie_agent/tests/integration/runtime_command.rs`): declarations on
 `local`, a template (configuration), and a dial-in runtime, dotted-free ids
 and collisions; offline refusal; handshake and capabilities; auto mode, modes
 without a mode option, and `acp.config`; a turn with chunks, thoughts, a

@@ -8,9 +8,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[path = "../../../test-support/config_harness.rs"]
-mod config_harness;
-
 /// A syntactically valid 43-character base64url daemon token for CLI parsing.
 const TEST_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 

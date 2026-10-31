@@ -35,9 +35,6 @@ use cookie_agent_protocol::{
 };
 use tempfile::TempDir;
 
-#[path = "../../../test-support/config_harness.rs"]
-mod config_harness;
-
 const PLUGIN_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../engine/tests/fixtures/fake_plugin.py"

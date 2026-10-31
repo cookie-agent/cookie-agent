@@ -8,7 +8,7 @@
 //! options, are compared with `fixtures/adapter_wire_snapshots.json`, which
 //! also records each model variant's adapter family and Oven descriptor.
 //! Regenerate the golden with
-//! `UPDATE_WIRE_SNAPSHOTS=1 cargo test -p cookie_agent_models --test wire_snapshots`.
+//! `UPDATE_WIRE_SNAPSHOTS=1 cargo test -p cookie_agent_models --test models wire_snapshots`.
 
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, path::PathBuf, sync::Arc};
 
