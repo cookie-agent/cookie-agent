@@ -40,9 +40,7 @@ impl Workspace {
     /// Every runtime's home, from `runtimes.list` (none before it answered,
     /// or from a daemon older than client protocol 1.7).
     pub fn homes(self) -> RuntimeHomes {
-        self.runtimes
-            .with(|listing| listing.as_ref().map(RuntimeHomes::from_listing))
-            .unwrap_or_default()
+        self.runtime_homes.get()
     }
 
     /// The attachments of `session_id`'s root session, as the session list

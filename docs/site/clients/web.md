@@ -661,8 +661,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     (`connected`, `connecting`, `needs_auth`, `failed`, …), tool count, and
     why it failed or what it waits for; a server its runtime shares across
     workspaces (`scope = "runtime"`) is marked `runtime-wide`.
-  - The open panel reads the runtimes again every second, and links to
-    the Machines & runtimes view.
+  - The open panel reads the runtimes again as `runtimes.changed` and
+    `machines.changed` announce changes, and every ten seconds in case a
+    notice was missed, and links to the Machines & runtimes view.
 - **Machines.** The **Machines & runtimes** view shows each machine as a
   card: an icon for its operating system (Linux, macOS, Windows, or a
   generic computer), its name, its runtimes and memories, and buttons to

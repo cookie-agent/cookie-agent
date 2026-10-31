@@ -1727,8 +1727,9 @@ Management landed as specified, with no wire change.
     daemon's own `coding` instance works, from `runtimes.list`). Each opens
     at once, and `session.create` attaches them. The **Machines** tab
     renames, merges, forgets, assigns, and unassigns. The panel re-reads
-    `runtimes.list` and `machines.list` every second while open, as the TUI
-    polls, and on `runtimes.changed` and `machines.changed`.
+    `runtimes.list` and `machines.list` on `runtimes.changed` and
+    `machines.changed`, and every ten seconds while open in case a notice
+    was missed; a tick skips while a read is on its way.
   - **`/mcp`:** the servers in the TUI's order with state, tools, source,
     and error, and add, edit, enable or disable, remove, reconnect, and
     persist. A server that needs authorization says to run

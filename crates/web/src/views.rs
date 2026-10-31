@@ -677,31 +677,39 @@ fn session_row(
     // workspace with its path.
     // Fitted to the line: machines whole, the last ones left out for a
     // `+N` when even the workspaces gone to `…` leave too little room.
-    let badges = {
+    // A memo: a runtimes change that leaves this row's badges as they were
+    // (a run starting elsewhere, say) does not draw them again.
+    let shown_badges = {
         let session = session.clone();
-        move |line: NodeRef<html::Span>| {
-            let homes = workspace.homes();
+        Memo::new(move |_| {
             let listed = workspace.lists_attachments.get();
-            let shown = workspace
-                .runtimes
-                .with(|listing| session_badges(&session, listing.as_ref(), &homes, listed));
-            crate::badges::fit_soon(line);
-            crate::badges::badge_line(shown)
-        }
+            workspace.runtime_homes.with(|homes| {
+                workspace
+                    .runtimes
+                    .with(|listing| session_badges(&session, listing.as_ref(), homes, listed))
+            })
+        })
+    };
+    let badges = move |line: NodeRef<html::Span>| {
+        let shown = shown_badges.get();
+        crate::badges::fit_soon(line);
+        crate::badges::badge_line(shown)
     };
     let badge_line = NodeRef::<html::Span>::new();
     crate::badges::keep_fitted(badge_line);
     let title = {
         let session = session.clone();
         let status = status_text.clone();
-        move || {
-            let homes = workspace.homes();
+        let title = Memo::new(move |_| {
             let listed = workspace.lists_attachments.get();
-            let places = workspace
-                .runtimes
-                .with(|listing| badges_tooltip(&session, listing.as_ref(), &homes, listed));
+            let places = workspace.runtime_homes.with(|homes| {
+                workspace
+                    .runtimes
+                    .with(|listing| badges_tooltip(&session, listing.as_ref(), homes, listed))
+            });
             format!("{places}\n{status}")
-        }
+        });
+        move || title.get()
     };
     let label = session_label(&session);
     let confirm_label = label.clone();
@@ -771,7 +779,6 @@ fn session_row(
         }
     };
     let lifted = move || drag.lifts(session_id);
-    let field_badges = badges.clone();
     view! {
         <div
             class=move || format!(
@@ -801,7 +808,7 @@ fn session_row(
         >
             <Show
                 when=move || !is_renaming()
-                fallback=move || rename_row(workspace, session_id, status_mark, actions, field_badges.clone())
+                fallback=move || rename_row(workspace, session_id, status_mark, actions, badges)
             >
             <button
                 type="button"
@@ -816,7 +823,7 @@ fn session_row(
                 aria-current=move || current().then_some("true")
                 aria-pressed=move || picking().then(|| picked().to_string())
                 data-session=session_id.to_string()
-                title=title.clone()
+                title=title
                 on:pointerdown=on_pointerdown
                 on:contextmenu=move |event: ev::MouseEvent| {
                     // A touch screen's long press lifts the row and offers
@@ -901,10 +908,7 @@ fn session_row(
                         </span>
                     </Show>
                     <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" node_ref=badge_line data-session-badges>
-                        {
-                            let badges = badges.clone();
-                            move || badges(badge_line)
-                        }
+                        {move || badges(badge_line)}
                     </span>
                 </span>
             </button>

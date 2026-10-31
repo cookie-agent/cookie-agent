@@ -29,7 +29,7 @@ use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading
 use crate::{
     browser,
     icons::Glyph,
-    workspace::{PANEL_POLL, Workspace},
+    workspace::{PANEL_POLL, RUNTIMES_POLL, Workspace},
 };
 
 pub(super) const FIELD: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
@@ -47,10 +47,10 @@ pub(super) const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 
 /// A confirmation before something cannot be undone.
 pub(super) const CONFIRM: &str = "flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char";
 
-/// Reads `poll` every second while the sheet is open, as the TUI polls its
-/// open `/runtime` and `/mcp` panels.
-pub(super) fn poll_while_open(poll: impl Fn() + 'static) {
-    let ticker = set_interval_with_handle(poll, PANEL_POLL).ok();
+/// Calls `poll` every `every` while the sheet is open, as the TUI polls
+/// its open `/runtime` and `/mcp` panels.
+pub(super) fn poll_while_open(every: std::time::Duration, poll: impl Fn() + 'static) {
+    let ticker = set_interval_with_handle(poll, every).ok();
     on_cleanup(move || {
         if let Some(ticker) = ticker {
             ticker.clear();
@@ -83,7 +83,7 @@ pub(super) fn area_value(id: &str) -> String {
 /// The session's attached runtimes (`/runtime`); the daemon's machines and
 /// runtimes are a view of their own.
 pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
-    poll_while_open(move || workspace.poll_runtimes());
+    poll_while_open(RUNTIMES_POLL, move || workspace.tick_runtimes());
     view! {
         {attachments_view(workspace)}
         <button
@@ -468,7 +468,7 @@ pub(crate) fn edit_dialog(
 // ---- /mcp ------------------------------------------------------------------
 
 pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
-    poll_while_open(move || workspace.poll_mcp());
+    poll_while_open(PANEL_POLL, move || workspace.poll_mcp());
     // The form: its fields, the server it edits, and where it is kept.
     let form = RwSignal::new(None::<McpEdit>);
     let persist = RwSignal::new(PersistChoice::Runtime);

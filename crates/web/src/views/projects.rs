@@ -429,11 +429,12 @@ fn project_header(
         let defaults = defaults.clone();
         let label = label.clone();
         move || {
-            let homes = workspace.homes();
             let places = defaults.as_ref().map(|defaults| {
-                workspace
-                    .runtimes
-                    .with(|listing| project_badges_tooltip(defaults, listing.as_ref(), &homes))
+                workspace.runtime_homes.with(|homes| {
+                    workspace
+                        .runtimes
+                        .with(|listing| project_badges_tooltip(defaults, listing.as_ref(), homes))
+                })
             });
             match places {
                 Some(places)

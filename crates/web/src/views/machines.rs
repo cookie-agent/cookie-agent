@@ -261,7 +261,9 @@ impl Manage {
 
 /// The daemon's machines and its runtimes: the Machines & runtimes view.
 pub fn machines_page(workspace: Workspace) -> impl IntoView {
-    poll_while_open(move || workspace.poll_runtimes());
+    poll_while_open(crate::workspace::RUNTIMES_POLL, move || {
+        workspace.tick_runtimes()
+    });
     let manage = Manage::new();
     // The agent documents the ACP agents link to.
     workspace.poll_config();

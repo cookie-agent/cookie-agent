@@ -21,6 +21,8 @@ pub(super) struct Reads {
     pub mcp: Latest,
     /// `runtimes.list` with the `machines.list` read after it.
     pub runtimes: Latest,
+    /// How many of those reads are on their way.
+    pub runtimes_in_flight: u32,
     pub projects: Latest,
     pub config: Latest,
     pub config_status: Latest,

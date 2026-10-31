@@ -44,9 +44,21 @@ use crate::{
     memory::{folder_key, project_delete_status, project_memories, project_strays},
 };
 
-/// How often an open `/runtime` or `/mcp` panel reads its list again, as the
-/// TUI polls.
+/// How often an open `/mcp` panel reads its list again, as the TUI polls.
 pub const PANEL_POLL: Duration = Duration::from_secs(1);
+
+/// How often a page showing the runtimes reads them again. `runtimes.changed`
+/// and `machines.changed` read them as they change; this only catches what
+/// a dropped notice missed.
+pub const RUNTIMES_POLL: Duration = Duration::from_secs(10);
+
+/// Sets `signal` to `value` only when that changes it: a poll that reads
+/// the same listing again wakes none of its readers.
+fn set_changed<T: PartialEq + Send + Sync + 'static>(signal: RwSignal<T>, value: T) {
+    if signal.with_untracked(|shown| *shown != value) {
+        signal.set(value);
+    }
+}
 
 /// Each runtime's ACP agent declarations, as the Machines view last read
 /// them.
@@ -118,12 +130,10 @@ impl Workspace {
         let runtimes = self.panel.get_untracked() == Some(Panel::Runtimes)
             || self.showing(View::Machines, None)
             || (self.new_session.get_untracked() && self.showing(View::Chat, None));
+        // `runtimes.changed` and `machines.changed` read the runtimes
+        // whatever shows (`Workspace::apply_delivery`).
         match delivery {
-            ClientDelivery::RuntimesChanged(_) if runtimes => self.poll_runtimes(),
             ClientDelivery::MachinesChanged(_) => {
-                if runtimes {
-                    self.poll_runtimes();
-                }
                 // Renaming or merging a machine moves its memories too.
                 if self.showing(View::Memory, None) {
                     self.poll_memory();
@@ -168,26 +178,41 @@ impl Workspace {
             return;
         };
         let read = self.begin_read(|reads| &mut reads.runtimes);
+        self.reads
+            .update_value(|reads| reads.runtimes_in_flight += 1);
         spawn_local(async move {
             let runtimes = client.list_runtimes().await;
             let machines = client
                 .list_machines()
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
+            self.reads.update_value(|reads| {
+                reads.runtimes_in_flight = reads.runtimes_in_flight.saturating_sub(1);
+            });
             if !self.read_is_current(|reads| &mut reads.runtimes, read) {
                 return;
             }
             match runtimes {
-                Ok(listing) => self.runtimes.set(Some(listing)),
+                Ok(listing) => set_changed(self.runtimes, Some(listing)),
                 Err(error) => self.status.set(format!(
                     "runtimes unavailable: {}",
                     crate::errors::describe(&error)
                 )),
             }
-            self.machines.set(Some(machines));
+            set_changed(self.machines, Some(machines));
         });
         // The MCP servers each runtime hosts, which its rows list.
         self.poll_mcp();
+    }
+
+    /// A poll's tick: reads the runtimes as [`Self::poll_runtimes`] does,
+    /// unless a read is still on its way. On a slow link each tick would
+    /// otherwise start a read that drops the one before, and none would
+    /// land.
+    pub fn tick_runtimes(self) {
+        if self.reads.with_value(|reads| reads.runtimes_in_flight == 0) {
+            self.poll_runtimes();
+        }
     }
 
     /// The attachments the panel shows: the viewed session's.
@@ -495,7 +520,7 @@ impl Workspace {
                 })
                 .map_err(|error| crate::errors::describe_full(&error));
             if self.read_is_current(|reads| &mut reads.mcp, read) {
-                self.mcp_servers.set(Some(result));
+                set_changed(self.mcp_servers, Some(result));
             }
         });
     }

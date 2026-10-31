@@ -62,7 +62,7 @@ pub use attachments::DownscaleOffer;
 pub use cards::CardSet;
 pub use cron::CronForm;
 pub use history::UserMenu;
-pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL};
+pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL, RUNTIMES_POLL};
 pub(crate) use notifications::release_push;
 pub use onboarding::Onboarding;
 pub use permissions::RuleRef;
@@ -245,6 +245,9 @@ pub struct Workspace {
     /// `runtimes.list`: read on connect and whenever runtimes or machines
     /// change, for the runtime cards and every runtime's home.
     pub runtimes: RwSignal<Option<cookie_agent_protocol::RuntimesListResult>>,
+    /// Every runtime's home, from `runtimes`: one map every row that shows
+    /// a path reads, worked out again only when the runtimes change.
+    pub runtime_homes: Memo<cookie_agent_client_state::paths::RuntimeHomes>,
     /// The runtimes a `runtimes.connect` or `runtimes.disconnect` is on its
     /// way for.
     pub connecting: RwSignal<std::collections::BTreeSet<cookie_agent_protocol::RuntimeId>>,
@@ -404,6 +407,16 @@ impl Workspace {
         let store = StoredValue::new(StateStore::default());
         let revision = RwSignal::new(0);
         let selected = RwSignal::new(None::<SessionId>);
+        let runtimes = RwSignal::new(None::<cookie_agent_protocol::RuntimesListResult>);
+        let runtime_homes = Memo::new(move |_| {
+            runtimes
+                .with(|listing| {
+                    listing
+                        .as_ref()
+                        .map(cookie_agent_client_state::paths::RuntimeHomes::from_listing)
+                })
+                .unwrap_or_default()
+        });
         let viewed = Memo::new(move |_| {
             let Some(session_id) = selected.get() else {
                 return Viewed::default();
@@ -493,7 +506,8 @@ impl Workspace {
             next_draft_file: StoredValue::new(0),
             downscale_offer: RwSignal::new(None),
             offer_bytes: StoredValue::new(Vec::new()),
-            runtimes: RwSignal::new(None),
+            runtimes,
+            runtime_homes,
             connecting: RwSignal::new(std::collections::BTreeSet::new()),
             machines: RwSignal::new(None),
             mcp_servers: RwSignal::new(None),
@@ -825,12 +839,12 @@ impl Workspace {
             | ClientDelivery::PluginsChanged(_)
             | ClientDelivery::MachinesChanged(_)
             | ClientDelivery::MemoryChanged(_) => {
-                // The cards and every path's home follow the runtimes.
+                // The cards, every path's home, and an open runtimes
+                // panel or Machines view follow the runtimes.
                 if matches!(
                     delivery,
                     ClientDelivery::RuntimesChanged(_) | ClientDelivery::MachinesChanged(_)
-                ) && self.panel.get_untracked() != Some(Panel::Runtimes)
-                {
+                ) {
                     self.poll_runtimes();
                 }
                 // An open panel refreshes now instead of at its next poll.
