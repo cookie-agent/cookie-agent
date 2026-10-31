@@ -28,6 +28,35 @@ pub const DIAL_IN_PING_AFTER: std::time::Duration = std::time::Duration::from_se
 /// or a network change, otherwise looks open for good.
 pub const DIAL_IN_DEAD_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
 
+/// How long connecting may take, TCP connect and WebSocket upgrade
+/// together: a peer that accepts the connection and never answers the
+/// upgrade, such as a stuck proxy, otherwise holds the caller for good.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connects with `request` within `timeout`; the outer error is the
+/// timeout.
+async fn connect_within(
+    request: tokio_tungstenite::tungstenite::http::Request<()>,
+    timeout: std::time::Duration,
+) -> Result<Result<Socket, tokio_tungstenite::tungstenite::Error>, TransportError> {
+    tokio::time::timeout(
+        timeout,
+        tokio_tungstenite::connect_async_with_config(request, Some(websocket_config()), false),
+    )
+    .await
+    .map(|connected| connected.map(|(socket, _)| socket))
+    .map_err(|_| timed_out(timeout))
+}
+
+fn timed_out(timeout: std::time::Duration) -> TransportError {
+    TransportError::Other(format!(
+        "the daemon did not answer the connection within {}",
+        diagnostics::duration(timeout)
+    ))
+}
+
 impl Client {
     /// Connect to a validated daemon endpoint using the per-run bearer token.
     pub async fn connect_websocket_with_token(url: &str, token: &str) -> Result<Self, ClientError> {
@@ -166,14 +195,29 @@ impl WebSocketTransport {
         token: &str,
         runtime_id: &str,
     ) -> Result<Self, DialInError> {
+        Self::connect_runtime_within(url, token, runtime_id, CONNECT_TIMEOUT).await
+    }
+
+    /// [`Self::connect_runtime`], giving up after `timeout` with an error
+    /// that dialing in again can get past.
+    async fn connect_runtime_within(
+        url: &str,
+        token: &str,
+        runtime_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Self, DialInError> {
         let url = runtime_dial_in_url(url, runtime_id)
             .map_err(|error| DialInError::permanent(error.to_string()))?;
         let request = authenticated_request(&url, token)
             .map_err(|error| DialInError::permanent(error.to_string()))?;
-        match tokio_tungstenite::connect_async_with_config(request, Some(websocket_config()), false)
+        let connected = connect_within(request, timeout)
             .await
-        {
-            Ok((socket, _)) => Ok(Self {
+            .map_err(|error| DialInError {
+                message: error.to_string(),
+                permanent: false,
+            })?;
+        match connected {
+            Ok(socket) => Ok(Self {
                 socket,
                 keepalive: None,
             }
@@ -219,12 +263,16 @@ impl WebSocketTransport {
             ));
         }
         let request = authenticated_request(url, token)?;
-        let (socket, _) = tokio_tungstenite::client_async_with_config(
-            request,
-            MaybeTlsStream::Plain(stream),
-            Some(websocket_config()),
+        let (socket, _) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio_tungstenite::client_async_with_config(
+                request,
+                MaybeTlsStream::Plain(stream),
+                Some(websocket_config()),
+            ),
         )
         .await
+        .map_err(|_| timed_out(CONNECT_TIMEOUT))?
         .map_err(|error| websocket_error(&error))?;
         Ok(Self {
             socket,
@@ -290,10 +338,9 @@ impl WebSocketTransport {
 
     async fn connect_request(url: &str, token: &str) -> Result<Self, TransportError> {
         let request = authenticated_request(url, token)?;
-        let (socket, _) =
-            tokio_tungstenite::connect_async_with_config(request, Some(websocket_config()), false)
-                .await
-                .map_err(|error| websocket_error(&error))?;
+        let socket = connect_within(request, CONNECT_TIMEOUT)
+            .await?
+            .map_err(|error| websocket_error(&error))?;
         Ok(Self {
             socket,
             keepalive: None,
@@ -545,6 +592,37 @@ mod tests {
             error.to_string(),
             "transport error: nothing arrived from the daemon for 250 ms"
         );
+        server.abort();
+    }
+
+    /// A peer that accepts the connection and never answers the upgrade
+    /// ends a dial-in with an error dialing in again can get past.
+    #[tokio::test]
+    async fn a_dial_in_to_a_peer_that_never_upgrades_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::WebSocketTransport::connect_runtime_within(
+                &format!("ws://{address}/ws"),
+                &"A".repeat(43),
+                "labpc",
+                std::time::Duration::from_millis(200),
+            ),
+        )
+        .await
+        .expect("the dial-in gives up")
+        .err()
+        .expect("no connection");
+        assert!(!error.is_permanent(), "{error}");
         server.abort();
     }
 

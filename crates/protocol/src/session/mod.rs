@@ -28,4 +28,6 @@ pub use transport::{
     TransportError, in_process_pair,
 };
 #[cfg(all(feature = "websocket", not(target_arch = "wasm32")))]
-pub use websocket::{DIAL_IN_DEAD_AFTER, DIAL_IN_PING_AFTER, DialInError, WebSocketTransport};
+pub use websocket::{
+    CONNECT_TIMEOUT, DIAL_IN_DEAD_AFTER, DIAL_IN_PING_AFTER, DialInError, WebSocketTransport,
+};

@@ -2445,7 +2445,9 @@ fn dial_in_id(id: &str) -> anyhow::Result<()> {
 /// connecting again after every drop or refusal for now with a growing
 /// wait, until stopped. A connection that has carried nothing, not even a
 /// pong to its keepalive pings, for `DIAL_IN_DEAD_AFTER` counts as a drop,
-/// so one that died without a close is noticed. A refusal for good, such as
+/// so one that died without a close is noticed, and so does a connect that
+/// the daemon has not answered within `CONNECT_TIMEOUT` (a peer that takes
+/// the TCP connection and never upgrades it). A refusal for good, such as
 /// a configured or reserved ID or a wrong token, ends it with the daemon's
 /// reason.
 async fn dial_in(
