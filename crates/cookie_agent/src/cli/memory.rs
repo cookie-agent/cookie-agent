@@ -64,7 +64,7 @@ impl MemoryIo for StdioMemoryIo {
     }
 
     fn edit(&mut self, _url: &str, text: &str) -> anyhow::Result<String> {
-        crate::config_command::edit_in_editor("cookie-memory-", ".md", text)
+        super::config::edit_in_editor("cookie-memory-", ".md", text)
     }
 
     fn confirm(&mut self, prompt: &str, default: bool) -> anyhow::Result<bool> {
@@ -101,7 +101,7 @@ pub(crate) async fn run_memory(
     }
     let client = Client::connect_websocket_with_token(url, token).await?;
     client
-        .handshake_as(crate::client_identity("cli"))
+        .handshake_as(super::client_identity("cli"))
         .await
         .context("handshake with daemon")?;
     run_memory_with(&client, command, &mut StdioMemoryIo).await

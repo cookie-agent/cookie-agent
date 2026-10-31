@@ -9,7 +9,7 @@ use cookie_agent_protocol::{
     ProjectRuntime, ProjectUpdateParams, RuntimeId, SessionId, errors,
 };
 
-use crate::memory_command::MemoryIo;
+use super::memory::MemoryIo;
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum ProjectCommand {
@@ -84,10 +84,10 @@ pub(crate) async fn run_project(
     }
     let client = Client::connect_websocket_with_token(url, token).await?;
     client
-        .handshake_as(crate::client_identity("cli"))
+        .handshake_as(super::client_identity("cli"))
         .await
         .context("handshake with daemon")?;
-    run_project_with(&client, command, &mut crate::memory_command::StdioMemoryIo).await
+    run_project_with(&client, command, &mut super::memory::StdioMemoryIo).await
 }
 
 /// The project named `name`.

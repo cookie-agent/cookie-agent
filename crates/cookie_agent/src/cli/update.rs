@@ -802,7 +802,7 @@ async fn report_daemon(version: &str) {
         return;
     };
     let probe =
-        crate::local_daemon::probe(&configuration.runtime.server, crate::client_identity("cli"))
+        crate::local_daemon::probe(&configuration.runtime.server, super::client_identity("cli"))
             .await;
     if let crate::local_daemon::Probe::Connected(daemon) = probe
         && let Some(hint) = daemon_hint(&daemon.hello.engine_version, version)

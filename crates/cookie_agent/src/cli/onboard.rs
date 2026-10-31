@@ -17,7 +17,7 @@ use cookie_agent_protocol::{
     OnboardingRunParams, OnboardingStatus, VariantId,
 };
 
-use crate::ConnectIo;
+use super::connect::ConnectIo;
 
 /// The flags of `cookie onboard`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Args)]
@@ -87,7 +87,7 @@ impl Slot {
 pub(crate) async fn run_onboard(url: &str, token: &str, args: OnboardArgs) -> anyhow::Result<()> {
     if !args.yes {
         use std::io::IsTerminal as _;
-        crate::require_interactive_tty(
+        super::connect::require_interactive_tty(
             std::io::stdin().is_terminal(),
             std::io::stdout().is_terminal(),
             std::io::stderr().is_terminal(),
@@ -96,10 +96,10 @@ pub(crate) async fn run_onboard(url: &str, token: &str, args: OnboardArgs) -> an
     }
     let client = Client::connect_websocket_with_token(url, token).await?;
     client
-        .handshake_as(crate::client_identity("cli"))
+        .handshake_as(super::client_identity("cli"))
         .await
         .context("handshake with daemon")?;
-    let mut io = crate::StdioConnectIo;
+    let mut io = super::connect::StdioConnectIo;
     run_onboard_with(&client, args, &mut io).await
 }
 
@@ -141,9 +141,9 @@ pub(crate) async fn run_onboard_with(
             );
         }
         io.write_line("1. Provider: none is connected yet.")?;
-        crate::connect_provider_flow(client, None, io).await?;
+        super::connect::connect_provider_flow(client, None, io).await?;
     } else if !args.yes && confirm(io, "1. Connect another provider? [y/N] ", false)? {
-        crate::connect_provider_flow(client, None, io).await?;
+        super::connect::connect_provider_flow(client, None, io).await?;
     }
     let models = client
         .runtime_snapshot()

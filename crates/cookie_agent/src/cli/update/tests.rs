@@ -291,11 +291,12 @@ fn the_daemon_hint_appears_only_for_another_version() {
 #[test]
 fn update_and_upgrade_parse_the_same_arguments() {
     for name in ["update", "upgrade"] {
-        let cli = crate::Cli::try_parse_from(["cookie", name, "--channel", "nightly", "--check"])
-            .unwrap();
+        let cli =
+            crate::cli::Cli::try_parse_from(["cookie", name, "--channel", "nightly", "--check"])
+                .unwrap();
         assert_eq!(
             cli.command,
-            Some(crate::Command::Update(UpdateArgs {
+            Some(crate::cli::Command::Update(UpdateArgs {
                 check: true,
                 channel: Some(ChannelArg::Nightly),
                 version: None,
@@ -304,10 +305,11 @@ fn update_and_upgrade_parse_the_same_arguments() {
         );
     }
     let cli =
-        crate::Cli::try_parse_from(["cookie", "update", "--version", "v0.3.0", "--force"]).unwrap();
+        crate::cli::Cli::try_parse_from(["cookie", "update", "--version", "v0.3.0", "--force"])
+            .unwrap();
     assert_eq!(
         cli.command,
-        Some(crate::Command::Update(UpdateArgs {
+        Some(crate::cli::Command::Update(UpdateArgs {
             check: false,
             channel: None,
             version: Some("v0.3.0".to_owned()),
@@ -315,7 +317,7 @@ fn update_and_upgrade_parse_the_same_arguments() {
         }))
     );
     assert!(
-        crate::Cli::try_parse_from([
+        crate::cli::Cli::try_parse_from([
             "cookie",
             "update",
             "--version",

@@ -4,7 +4,7 @@
 
 use clap::CommandFactory as _;
 
-use super::Cli;
+use crate::cli::Cli;
 
 const DOC_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

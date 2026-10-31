@@ -44,7 +44,7 @@ pub(crate) async fn run_skills(
 ) -> anyhow::Result<()> {
     let client = Client::connect_websocket_with_token(url, token).await?;
     client
-        .handshake_as(crate::client_identity("cli"))
+        .handshake_as(super::client_identity("cli"))
         .await
         .context("handshake with daemon")?;
     for line in skills_with(&client, command).await? {
@@ -208,7 +208,7 @@ fn skill_directories(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
 /// Every backticked `cookie …` command of `text` whose subcommands do not
 /// exist in this build's CLI.
 pub(crate) fn command_problems(text: &str) -> Vec<String> {
-    let root = crate::Cli::command();
+    let root = super::Cli::command();
     let mut problems = Vec::new();
     for span in text.split('`').skip(1).step_by(2) {
         let Some(rest) = span.strip_prefix("cookie ") else {

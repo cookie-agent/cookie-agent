@@ -15,7 +15,7 @@ use cookie_agent_protocol::{
 };
 use jiff::{Timestamp, tz::TimeZone};
 
-use crate::memory_command::MemoryIo;
+use super::memory::MemoryIo;
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum CronCommand {
@@ -119,7 +119,7 @@ pub(crate) struct CronCreateArgs {
     #[arg(long, value_enum, conflicts_with = "session")]
     permission_mode: Option<PermissionModeArg>,
     /// New-session jobs: the project the run sessions belong to.
-    #[arg(long, value_parser = crate::project_command::parse_project_name, conflicts_with = "session")]
+    #[arg(long, value_parser = super::project::parse_project_name, conflicts_with = "session")]
     project: Option<ProjectName>,
     /// Create the job disabled.
     #[arg(long)]
@@ -172,10 +172,10 @@ pub(crate) async fn run_cron(url: &str, token: &str, command: CronCommand) -> an
     }
     let client = Client::connect_websocket_with_token(url, token).await?;
     client
-        .handshake_as(crate::client_identity("cli"))
+        .handshake_as(super::client_identity("cli"))
         .await
         .context("handshake with daemon")?;
-    run_cron_with(&client, command, &mut crate::memory_command::StdioMemoryIo).await
+    run_cron_with(&client, command, &mut super::memory::StdioMemoryIo).await
 }
 
 pub(crate) async fn run_cron_with<I: MemoryIo>(
@@ -472,8 +472,7 @@ async fn create_draft(client: &Client, args: CronCreateArgs) -> anyhow::Result<(
         (None, Some(agent)) => {
             let mut template = bare_template(parse_agent(agent)?);
             if let Some(name) = &args.project {
-                template.project =
-                    Some(crate::project_command::find_project(client, name).await?.id);
+                template.project = Some(super::project::find_project(client, name).await?.id);
             }
             let mut draft = CronDraft::for_new_session(template);
             draft.model = args.model.unwrap_or_default();

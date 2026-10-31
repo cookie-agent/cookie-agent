@@ -18,7 +18,7 @@ configured in the repository's Actions secrets.
 5. Monitor the CI run for the `release` event and verify the attached artifacts.
 6. Once the release's docs are published as `latest`, move links that point
    at `https://cookie-agent.github.io/doc/dev/` back to `doc/latest/`
-   (`rg 'github.io/doc/dev/'`: `skills_command.rs`'s `DOCS_SITE`, the starter
+   (`rg 'github.io/doc/dev/'`: `cli/skills.rs`'s `DOCS_SITE`, the starter
    kit, the web client, and the official skills repository). Until a stable
    release carries the current docs, `latest` serves older pages.
 

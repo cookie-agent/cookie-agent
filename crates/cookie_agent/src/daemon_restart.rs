@@ -228,7 +228,7 @@ pub(crate) async fn run_restart(url: &str, token: &str, now: bool) -> anyhow::Re
         .subscribe_deliveries()
         .context("the connection's deliveries")?;
     let hello = client
-        .handshake_as(crate::client_identity("cli"))
+        .handshake_as(crate::cli::client_identity("cli"))
         .await
         .context("handshake with daemon")?;
     let when = if now {
@@ -291,7 +291,9 @@ pub(crate) async fn run_restart(url: &str, token: &str, now: bool) -> anyhow::Re
 /// Connects again; the daemon's version.
 async fn reconnect(url: &str, token: &str) -> anyhow::Result<String> {
     let client = Client::connect_websocket_with_token(url, token).await?;
-    let hello = client.handshake_as(crate::client_identity("cli")).await?;
+    let hello = client
+        .handshake_as(crate::cli::client_identity("cli"))
+        .await?;
     client.shutdown();
     Ok(hello.engine_version)
 }
