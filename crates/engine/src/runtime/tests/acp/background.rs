@@ -19,13 +19,22 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    let outcome = turn(engine, session, "first", "background 1.5").await;
+    // The command runs until the test is done looking at it.
+    let release = acp.marker("release");
+    let command = format!("sleep {}", release.display());
+    let outcome = turn(
+        engine,
+        session,
+        "first",
+        &format!("background {}", release.display()),
+    )
+    .await;
     assert_eq!(final_text(&outcome), "started");
     let calls = engine.background_calls(session);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].job, "term-bg");
     assert_eq!(calls[0].tool, "Bash");
-    assert_eq!(calls[0].display.as_deref(), Some("sleep 1.5"));
+    assert_eq!(calls[0].display.as_deref(), Some(command.as_str()));
     assert!(calls[0].agent_task);
     // Only the agent stops it.
     let refused = engine
@@ -45,6 +54,7 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
         [cookie_agent_protocol::WaitingOn::BackgroundCall]
     );
     let started = calls[0].clone();
+    std::fs::write(&release, "").unwrap();
     // Its exit, between runs, ends it, and the session records the end
     // outside any run, once.
     let ended = || {
@@ -72,7 +82,7 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
     assert_eq!(*run, None);
     assert_eq!(ended.tool_call_id, started.tool_call_id);
     assert_eq!(ended.tool, "Bash");
-    assert_eq!(ended.display.as_deref(), Some("sleep 1.5"));
+    assert_eq!(ended.display.as_deref(), Some(command.as_str()));
     assert_eq!(ended.started_at, started.started_at);
     assert_eq!(ended.exit_code, Some(0));
     assert_eq!(ended.signal, None);
@@ -83,7 +93,14 @@ async fn a_running_command_keeps_the_agents_process_from_idling_out() {
     let acp = acp_fixture_with(&[], &[], "[acp]\nidle_shutdown_ms = 200\n").await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, session, "first", "background 1.5").await;
+    let release = acp.marker("release");
+    turn(
+        engine,
+        session,
+        "first",
+        &format!("background {}", release.display()),
+    )
+    .await;
     // Well past the idle time, the command still runs: so does the agent.
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert!(
@@ -91,6 +108,7 @@ async fn a_running_command_keeps_the_agents_process_from_idling_out() {
         "the agent idled out under its command"
     );
     // Once it exits, the agent idles out.
+    std::fs::write(&release, "").unwrap();
     with_watchdog("the agent idling out", async {
         while agent_running(engine) {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -104,8 +122,8 @@ async fn a_command_that_ends_during_a_run_is_recorded_in_that_run() {
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, session, "first", "background 1").await;
-    // The next run waits past the command's exit.
+    // The command exits once the next prompt arrives, while its run waits.
+    turn(engine, session, "first", "background next").await;
     let run = start(engine, session, "second", "steer-wait 3").await;
     finished(engine, session, run).await;
     let ended = events(engine, session)
@@ -119,7 +137,7 @@ async fn a_command_that_ends_during_a_run_is_recorded_in_that_run() {
         .collect::<Vec<_>>();
     assert_eq!(ended.len(), 1, "{ended:?}");
     assert_eq!(ended[0].0, Some(run));
-    assert_eq!(ended[0].1.display.as_deref(), Some("sleep 1"));
+    assert_eq!(ended[0].1.display.as_deref(), Some("sleep next"));
     assert!(engine.background_calls(session).is_empty());
 }
 
@@ -148,9 +166,17 @@ async fn a_turn_that_left_a_command_running_is_never_pushed() {
     let engine = acp.engine();
     let mut signals = engine.subscribe_push_signals();
     let session = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, session, "first", "background 1").await;
+    let release = acp.marker("release");
+    turn(
+        engine,
+        session,
+        "first",
+        &format!("background {}", release.display()),
+    )
+    .await;
     // The turn ended with the command running: the session could still
     // wake, as with a background call of cookie's.
+    std::fs::write(&release, "").unwrap();
     with_watchdog("the command's exit", async {
         while engine.acp_background_running(session) {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -171,7 +197,15 @@ async fn an_agent_that_follows_up_settles_once_after_it() {
     let session = engine.create_session(selection()).unwrap().session_id;
     // The agent follows up a while after its command ended, as Claude Code
     // can take seconds to.
-    turn(engine, session, "first", "background-wake 1 6").await;
+    let release = acp.marker("release");
+    turn(
+        engine,
+        session,
+        "first",
+        &format!("background-wake {} 6", release.display()),
+    )
+    .await;
+    std::fs::write(&release, "").unwrap();
     // One settle, for the follow-up, none for the turn that left the
     // command running.
     let (root, text) = next_settle(&mut signals).await;
@@ -186,7 +220,15 @@ async fn a_command_a_cancel_left_running_is_background_work_until_it_exits() {
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    let run = start(engine, session, "left", "cancel-leaves 1").await;
+    // The command runs until the test is done looking at it.
+    let release = acp.marker("release");
+    let run = start(
+        engine,
+        session,
+        "left",
+        &format!("cancel-leaves {}", release.display()),
+    )
+    .await;
     await_event(engine, session, "the command started", |event| {
         matches!(&event.payload, EventPayload::ToolCallStarted { .. })
     })
@@ -200,9 +242,14 @@ async fn a_command_a_cancel_left_running_is_background_work_until_it_exits() {
     let calls = engine.background_calls(session);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].job, "term-left");
-    assert_eq!(calls[0].display.as_deref(), Some("sleep 1"), "unwrapped");
+    assert_eq!(
+        calls[0].display.as_deref(),
+        Some(format!("sleep {}", release.display()).as_str()),
+        "unwrapped"
+    );
     assert!(calls[0].agent_task);
-    tokio::time::timeout(Duration::from_secs(10), async {
+    std::fs::write(&release, "").unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
         while !engine.background_calls(session).is_empty() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

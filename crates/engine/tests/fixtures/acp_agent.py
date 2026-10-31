@@ -97,18 +97,19 @@ Each prompt's last text block is a command:
                          says "subagent asked: <outcome>"
   background <s>         runs `sleep <s>` in the background: an execute call whose
                          terminal stays open after the call completes, and exits
-                         <s> seconds later, between runs
+                         once <s> is over (see "Waits" below)
   cancel-leaves <s>      runs `sleep <s>` in an execute call with a terminal and
                          waits for session/cancel, which ends its work but not
-                         the call, as Codex's does: the terminal exits <s>
-                         seconds after the cancel, between runs
+                         the call, as Codex's does: the terminal exits once <s>
+                         after the cancel is over
   background-wake <s> <w>
                          the same, and <w> seconds after the command exits starts
                          work of its own that says "woke", as Claude Code follows
                          up on its backgrounded commands
   wake-later <s> <text>  answers "later", then <s> seconds after its work ended
                          starts work of its own (running, <text>, idle), as
-                         Claude Code does when a background command ends
+                         Claude Code does when a background command ends; work
+                         of a prompt running then goes first
   wake-steer <s>         the same, but its own work says "waiting" and waits (up to
                          10 s) for a message steered into it, then answers
                          "steered: <texts>"; session/cancel ends it as cancelled
@@ -119,6 +120,12 @@ Each prompt's last text block is a command:
                          Claude Code reports its MCP calls (`mcp__cookie__<tool>`)
   mcp miss <tool>        reports a call of one of cookie's tools that fails
                          before it reaches the bridge
+
+Waits: the <s> of a background command is a number of seconds, `next` (until
+the session's next prompt arrives, so the command ends in that prompt's run),
+or the path of a file (until the file exists, which the test creates when it
+is done looking at the running command). The last two keep a test from
+racing a clock.
 
 Its config options are `mode`, `model`, `fast` (a boolean), and
 `reasoning_effort`.
@@ -142,7 +149,8 @@ Environment:
                          invalid params, -32602)
   ACP_FIXTURE_FORK_WHOLE "1" with ACP_FIXTURE_FORK: session/fork ignores the
                          fork point and copies the whole history
-  ACP_FIXTURE_FORK_DELAY seconds session/fork takes to answer
+  ACP_FIXTURE_FORK_DELAY how long session/fork takes to answer: seconds, or a
+                         file's path, until the file exists (see "Waits")
   ACP_FIXTURE_FORK_FAIL  "1": session/fork fails, except cookie's probe (whose
                          fork point is `cookie-fork-probe-...`)
   ACP_FIXTURE_DELETE     "1": offers session/delete
@@ -182,6 +190,8 @@ late = {}
 client_capabilities = {}
 session_count = [0]
 message_count = [0]
+# Prompts each session received, for waits on the next one.
+prompts_seen = {}
 
 
 def log(message):
@@ -476,6 +486,9 @@ def prompt(request_id, params):
     session_id = params["sessionId"]
     session = sessions.setdefault(session_id, {"mode": "default", "model": "small", "turn": 0})
     session["turn"] = session.get("turn", 0) + 1
+    with state_lock:
+        prompts_seen[session_id] = prompts_seen.get(session_id, 0) + 1
+        state_lock.notify_all()
     texts = [block.get("text", "") for block in params.get("prompt", []) if block.get("type") == "text"]
     if texts:
         session.setdefault("first_text", texts[0])
@@ -488,8 +501,11 @@ def prompt(request_id, params):
     try:
         run_command(request_id, session_id, session, word, rest, texts, kinds)
     finally:
+        # Only now, with everything the prompt's work sent: a wake waiting
+        # for the work to end starts after it.
         with state_lock:
             running[session_id] = False
+            state_lock.notify_all()
 
 
 def wait_for_steer(session_id, timeout):
@@ -502,15 +518,32 @@ def wait_for_steer(session_id, timeout):
         return list(steered[session_id])
 
 
+def wait_out(session_id, spec):
+    """Waits until `spec` is over: a number of seconds, `next` for the
+    session's next prompt, or a file's path for the file to exist."""
+    import time
+    if spec == "next":
+        with state_lock:
+            seen = prompts_seen.get(session_id, 0)
+            state_lock.wait_for(lambda: prompts_seen.get(session_id, 0) > seen)
+        return
+    try:
+        seconds = float(spec or "1")
+    except ValueError:
+        while not os.path.exists(spec):
+            time.sleep(0.02)
+        return
+    time.sleep(seconds)
+
+
 def wake_later(session_id, delay, work):
-    """Starts work of the agent's own `delay` seconds after now, unless a
-    prompt's work runs then."""
+    """Starts work of the agent's own `delay` seconds after now, once no
+    prompt's work runs."""
     def later():
         import time
         time.sleep(delay)
         with state_lock:
-            if running.get(session_id):
-                return
+            state_lock.wait_for(lambda: not running.get(session_id))
             running[session_id] = True
             cancelled[session_id] = False
             steered[session_id] = []
@@ -603,15 +636,13 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         say(session_id, "subagent done")
     elif word in ("background", "background-wake"):
         seconds, _, wake = rest.partition(" ")
-        delay = float(seconds or "1")
         tool_call(session_id, {"toolCallId": "call-bg", "name": "Bash", "title": "sleep", "kind": "execute",
                                "status": "in_progress", "rawInput": {"command": f"sleep {seconds}"},
                                "content": [{"type": "terminal", "terminalId": "term-bg"}]})
         update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-bg", "command": f"sleep {seconds}"})
         tool_call(session_id, {"toolCallId": "call-bg", "status": "completed"})
         def later():
-            import time
-            time.sleep(delay)
+            wait_out(session_id, seconds)
             update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-bg",
                                 "exitStatus": {"exitCode": 0}})
             if word == "background-wake":
@@ -619,7 +650,6 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         threading.Thread(target=later, daemon=True).start()
         say(session_id, "started")
     elif word == "cancel-leaves":
-        delay = float(rest or "1")
         tool_call(session_id, {"toolCallId": "call-left", "name": "exec_command", "title": "sleep", "kind": "execute",
                                "status": "in_progress", "rawInput": {"command": f"/bin/bash -lc 'sleep {rest}'"},
                                "content": [{"type": "terminal", "terminalId": "term-left"}]})
@@ -627,8 +657,7 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         with state_lock:
             state_lock.wait_for(lambda: cancelled[session_id], timeout=30)
         def later():
-            import time
-            time.sleep(delay)
+            wait_out(session_id, rest)
             update(session_id, {"sessionUpdate": "terminal_update", "terminalId": "term-left",
                                 "exitStatus": {"exitCode": 0}})
             tool_call(session_id, {"toolCallId": "call-left", "status": "completed"})
@@ -879,8 +908,7 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
 def fork(request_id, params):
     delay = os.environ.get("ACP_FIXTURE_FORK_DELAY")
     if delay:
-        import time
-        time.sleep(float(delay))
+        wait_out(params["sessionId"], delay)
     source = sessions.get(params["sessionId"])
     if source is None:
         fail(request_id, -32002, "Resource not found: no such session")

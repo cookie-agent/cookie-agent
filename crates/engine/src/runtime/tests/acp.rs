@@ -57,6 +57,12 @@ impl AcpFixture {
             .to_owned()
     }
 
+    /// A path in the fixture's own directory, such as the file whose
+    /// creation ends a background command (`background <path>`).
+    pub(super) fn marker(&self, name: &str) -> PathBuf {
+        self._markers.path().join(name)
+    }
+
     /// The messages the agent received, in order.
     pub(super) fn received(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(&self.log)

@@ -412,12 +412,15 @@ async fn a_revert_the_agent_cannot_fork_to_is_refused_and_changes_nothing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_revert_before_the_agent_was_asked_is_refused_until_it_is() {
-    // The probe's answer takes a while.
+    // The probe's answer waits until the test is done asking.
+    let gate = private_tempdir();
+    let answer = gate.path().join("answer");
+    let answer_path = answer.to_string_lossy().into_owned();
     let acp = acp_fixture(
         &[
             ("ACP_FIXTURE_FORK", "1"),
             ("ACP_FIXTURE_DELETE", "1"),
-            ("ACP_FIXTURE_FORK_DELAY", "2"),
+            ("ACP_FIXTURE_FORK_DELAY", &answer_path),
         ],
         &[],
     )
@@ -435,6 +438,7 @@ async fn a_revert_before_the_agent_was_asked_is_refused_until_it_is() {
          conversation (it checks after the agent's next reply), so the session can't be \
          reverted past the agent's first reply yet"
     );
+    std::fs::write(&answer, "").unwrap();
     assert!(probed(engine, session).await);
     revert(engine, session, run_end_seq(engine, session, 0)).await;
     let outcome = turn(engine, session, "recall", "recall").await;
