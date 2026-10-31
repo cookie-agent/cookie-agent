@@ -6,10 +6,10 @@
 //! URL, or MCP tool onto that action's resources; the agent's merged rules
 //! decide each, through the same pipeline as cookie's tools. A call of
 //! cookie's own tools, which reach cookie's MCP server where the rules
-//! decide them, and a `think` are allowed at once; `switch_mode` and every
-//! kind that maps onto no action go through the approval flow, as does an
-//! `ask`. The answer is the agent's allow-once or reject-once option, never
-//! an "always" one.
+//! decide them, and a `think` are allowed at once; `switch_mode`, every
+//! kind that maps onto no action, and a file call that names no path go
+//! through the approval flow, as does an `ask`. The answer is the agent's
+//! allow-once or reject-once option, never an "always" one.
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalEvaluation, ApprovalId, ApprovalRequest, ApprovalResourceSource,
@@ -36,9 +36,10 @@ pub(crate) enum MappedRequest {
         action: PermissionAction,
         resources: Vec<String>,
     },
-    /// Decided by the approval flow alone: `switch_mode` and every kind
-    /// that maps onto no action. `label` names the kind (an action label
-    /// no rule decides), `resource` what the request shows.
+    /// Decided by the approval flow alone: `switch_mode`, every kind that
+    /// maps onto no action, and a file call that names no path. `label`
+    /// names the kind (an action label no rule decides) or the file call's
+    /// action, `resource` what the request shows.
     Ask {
         label: PermissionAction,
         resource: String,
@@ -94,13 +95,13 @@ fn command_of(call: &ToolCallFields) -> Option<String> {
 
 /// The paths a file call touches, as labels
 /// ([`cookie_agent_protocol::paths::path_label`]): its locations, else its
-/// raw input's path, else its title.
+/// raw input's path. None when it names neither: its title is no path.
 fn paths_of(call: &ToolCallFields) -> Vec<String> {
     let locations = call
         .locations
         .iter()
         .flatten()
-        .map(|location| location.path.clone())
+        .map(|location| location.path.as_str())
         .filter(|path| !path.is_empty())
         .collect::<Vec<_>>();
     let paths = if locations.is_empty() {
@@ -108,17 +109,34 @@ fn paths_of(call: &ToolCallFields) -> Vec<String> {
             call.raw_input.as_ref(),
             &["path", "file_path", "filePath", "abs_path", "absPath"],
         )
-        .map(str::to_owned)
-        .or_else(|| call.title.clone())
         .into_iter()
         .collect()
     } else {
         locations
     };
     paths
-        .iter()
-        .map(|path| cookie_agent_protocol::paths::path_label(path))
+        .into_iter()
+        .map(cookie_agent_protocol::paths::path_label)
         .collect()
+}
+
+/// A file call of `action`: decided by the rules on the paths it names, or,
+/// naming none, through the approval flow.
+fn file_request(action: PermissionAction, call: &ToolCallFields) -> MappedRequest {
+    let resources = paths_of(call);
+    if resources.is_empty() {
+        return MappedRequest::Ask {
+            resource: call
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .unwrap_or(action.as_str())
+                .to_owned(),
+            label: action,
+        };
+    }
+    MappedRequest::Rules { action, resources }
 }
 
 /// The MCP server and tool a call of kind `other` (or of a kind ACP v1
@@ -191,14 +209,8 @@ pub(crate) fn map_request(call: &ToolCallFields, known: Option<&ToolCallFields>)
     let merged = merge(known, call);
     let kind = merged.kind.as_deref().unwrap_or("other");
     match kind {
-        "read" | "search" => MappedRequest::Rules {
-            action: PermissionAction::READ,
-            resources: paths_of(&merged),
-        },
-        "edit" | "delete" | "move" => MappedRequest::Rules {
-            action: PermissionAction::WRITE,
-            resources: paths_of(&merged),
-        },
+        "read" | "search" => file_request(PermissionAction::READ, &merged),
+        "edit" | "delete" | "move" => file_request(PermissionAction::WRITE, &merged),
         "execute" => MappedRequest::Rules {
             action: PermissionAction::BASH,
             resources: command_of(&merged).into_iter().collect(),
@@ -372,7 +384,8 @@ impl Engine {
             return false;
         };
         let evaluations = if !by_rules {
-            // No rule decides it: the kind maps onto no action.
+            // No rule decides it: the kind maps onto no action, or the file
+            // call names no path.
             operation
                 .resources()
                 .iter()
@@ -385,10 +398,17 @@ impl Engine {
                         normalized_resource: resource.clone(),
                         candidates: Vec::new(),
                         effect: PermissionEffect::Ask,
-                        precedence_reason: format!(
-                            "an ACP agent's `{}` request maps onto no action and always asks",
-                            action.as_str()
-                        ),
+                        precedence_reason: if action.is_path() {
+                            format!(
+                                "an ACP agent's `{}` request names no path and always asks",
+                                action.as_str()
+                            )
+                        } else {
+                            format!(
+                                "an ACP agent's `{}` request maps onto no action and always asks",
+                                action.as_str()
+                            )
+                        },
                     },
                 })
                 .collect()
@@ -634,6 +654,34 @@ mod tests {
                 None,
             ),
             rules(PermissionAction::READ, "C:/ws/.env")
+        );
+    }
+
+    #[test]
+    fn a_file_call_naming_no_path_asks_by_its_title() {
+        for (kind, action) in [
+            ("edit", PermissionAction::WRITE),
+            ("delete", PermissionAction::WRITE),
+            ("read", PermissionAction::READ),
+        ] {
+            assert_eq!(
+                map_request(
+                    &call(json!({"toolCallId": "a", "kind": kind, "title": "Edit /etc/hosts"})),
+                    None,
+                ),
+                MappedRequest::Ask {
+                    label: action.clone(),
+                    resource: "Edit /etc/hosts".to_owned(),
+                },
+                "{kind}"
+            );
+        }
+        assert_eq!(
+            map_request(&call(json!({"toolCallId": "a", "kind": "edit"})), None),
+            MappedRequest::Ask {
+                label: PermissionAction::WRITE,
+                resource: "write".to_owned(),
+            }
         );
     }
 

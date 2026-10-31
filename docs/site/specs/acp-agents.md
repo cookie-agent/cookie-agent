@@ -247,6 +247,11 @@ no `acp` action)*:
 | `think` | allowed | none |
 | `switch_mode`, `other`, unknown | the approval flow | the title |
 
+- A path is the location's, else the raw input's `path` (or `file_path`,
+  `filePath`, `abs_path`, `absPath`), labelled as cookie's own file tools
+  label theirs (`.` and `..` collapsed). *(Revised 2026-10-30: a file request
+  naming neither asks through the approval flow instead of falling back to
+  its title, which a workspace allow matched as a relative path.)*
 - `bash: {"git *": allow}` allows the agent's own `git` commands exactly as it
   allows cookie's `bash` tool, and `mcp: {"exa_*": allow}` covers cookie's
   and the agent's `exa` tools alike. A request with several locations needs

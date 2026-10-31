@@ -266,6 +266,9 @@ You review changes for this project before they are committed.
   | `think` | allowed |
   | `switch_mode`, any other kind | asks, through the approval flow |
 
+  A file request (`read` through `move`) that names no path, in its
+  locations or its raw input, asks too: its title is never read as a path.
+
   A request with several locations needs each allowed, so
   `bash: {"git *": allow}` allows the agent's own `git` as it allows
   cookie's `bash` tool, and `mcp: {"exa_*": allow}` covers both cookie's
