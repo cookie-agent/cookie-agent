@@ -95,6 +95,8 @@ jobs:
         run: cargo audit --file Cargo.lock --deny yanked
       - name: Enforce advisory, license, and source policy
         run: cargo deny --locked check advisories licenses sources
+      - name: Check the third-party notices are current
+        run: python3 scripts/third-party-notices.py --check
 
   msrv:
     name: Rust 1.88 MSRV

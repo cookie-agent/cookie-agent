@@ -54,7 +54,15 @@ fi
 crate_dirs=()
 test_only=()
 workspace=false wasm=false wasm_client=false schema=false web=false docs=false workflows=false
+notices=false
 for path in "${changed[@]}"; do
+    # The third-party notices follow the dependencies and the web page's
+    # bundled licenses.
+    case "$path" in
+        Cargo.lock | THIRD-PARTY-NOTICES.txt | scripts/third-party-notices.py | \
+            crates/web/assets/fonts/*.txt | crates/web/assets/vendor/*.txt)
+            notices=true ;;
+    esac
     case "$path" in
         crates/protocol/*) crate_dirs+=(protocol) wasm=true wasm_client=true schema=true ;;
         crates/protocol_transport/*) crate_dirs+=(protocol_transport) wasm=true wasm_client=true ;;
@@ -158,6 +166,7 @@ if $wasm; then
         -p cookie_agent_client_state -p cookie_agent_web --all-targets -- -D warnings
 fi
 $schema && step crates/protocol/scripts/check-schema-additive.sh
+$notices && step python3 scripts/third-party-notices.py --check
 $wasm_client && step scripts/test-wasm-client.sh
 if $web; then
     step scripts/build-web.sh --fast

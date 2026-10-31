@@ -113,8 +113,8 @@ pub enum SettingsSection {
     /// This browser: installing the page as an app, and the token it
     /// keeps.
     Browser,
-    /// The client's and the daemon's versions, the connection, and the
-    /// credits.
+    /// The client's and the daemon's versions, the connection, the
+    /// licenses, and the credits.
     About,
 }
 
@@ -154,7 +154,7 @@ impl SettingsSection {
             Self::Notifications => "push notifications on this browser and your devices",
             Self::Display => "how the transcript shows agent work and diagnostics",
             Self::Browser => "installing the app and forgetting this daemon",
-            Self::About => "versions, the connection, links, and credits",
+            Self::About => "versions, the connection, links, licenses, and credits",
         }
     }
 

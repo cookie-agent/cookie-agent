@@ -1207,6 +1207,16 @@ impl App {
                 KeyCode::PageDown => self.usage_panel.page_down(),
                 _ => {}
             },
+            Modal::About => match key.code {
+                KeyCode::Esc => self.modal = Modal::None,
+                KeyCode::Up => self.about_panel.scroll_up(1),
+                KeyCode::Down => self.about_panel.scroll_down(1),
+                KeyCode::PageUp => self.about_panel.page_up(),
+                KeyCode::PageDown => self.about_panel.page_down(),
+                KeyCode::Home => self.about_panel.scroll = 0,
+                KeyCode::End => self.about_panel.scroll_down(u16::MAX),
+                _ => {}
+            },
             Modal::None
                 if self.current_approval().is_none()
                     && self.current_question().is_none()
@@ -1647,6 +1657,14 @@ impl App {
                 }
                 return;
             }
+            if self.modal == Modal::About {
+                if up {
+                    self.about_panel.scroll_up(3);
+                } else {
+                    self.about_panel.scroll_down(3);
+                }
+                return;
+            }
             if self
                 .hit_map
                 .picker
@@ -1681,6 +1699,7 @@ impl App {
                     | Modal::Runtimes
                     | Modal::Permissions
                     | Modal::Usage
+                    | Modal::About
                     | Modal::GoalDetail
                     | Modal::Background
                     | Modal::Onboarding

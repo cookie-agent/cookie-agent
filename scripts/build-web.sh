@@ -63,6 +63,10 @@ bundle="crates/web_assets/bundle"
 rm -rf "$bundle"
 mkdir -p "$bundle"
 cp -R crates/web/dist/. "$bundle/"
+# Settings › About links cookie's license and the third-party notices, which
+# live at the top of the repository rather than in the page's sources.
+cp LICENSE "$bundle/LICENSE.txt"
+cp THIRD-PARTY-NOTICES.txt "$bundle/THIRD-PARTY-NOTICES.txt"
 rm -rf "$bundle/.stage"
 # Stamp the service worker with the build: index.html names the build's
 # hashed files, so a new build changes sw.js too and browsers replace the

@@ -770,6 +770,18 @@ const ATTRIBUTIONS: [(&str, &str, &str); 3] = [
     ),
 ];
 
+/// cookie's own license and the third-party notices, which
+/// `scripts/build-web.sh` puts beside the page: what, the link's text, and
+/// the file.
+const LICENSES: [(&str, &str, &str); 2] = [
+    ("cookie", "the Cookie Agent License 1.0", "LICENSE.txt"),
+    (
+        "The software cookie is built from",
+        "their own licenses (third-party notices)",
+        "THIRD-PARTY-NOTICES.txt",
+    ),
+];
+
 /// Settings › About: this client's and the daemon's versions and client
 /// protocols, the daemon's address, cookie's website, documentation, and
 /// repository, and the credits.
@@ -827,6 +839,27 @@ pub(crate) fn about_section(connection: Connection) -> impl IntoView {
                         >
                             {*name}
                             <span class="font-mono text-xs text-ink no-underline dark:text-sand">{*url}</span>
+                        </a>
+                    </li>
+                })
+                .collect_view()}
+        </ul>
+        <h2 class="mt-4 text-sm font-bold">"Licenses"</h2>
+        <ul id="licenses" class="flex flex-col text-sm">
+            {LICENSES
+                .iter()
+                .map(|(what, license, file)| view! {
+                    <li>
+                        {*what}
+                        ", under "
+                        <a
+                            href=*file
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            data-about-license=*file
+                            class="inline-flex min-h-11 items-center underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
+                        >
+                            {*license}
                         </a>
                     </li>
                 })

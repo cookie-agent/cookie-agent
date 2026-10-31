@@ -1174,6 +1174,10 @@ impl App {
                 self.modal = Modal::Usage;
                 self.load_usage();
             }
+            SlashCommand::About => {
+                self.modal = Modal::About;
+                self.about_panel.scroll = 0;
+            }
             SlashCommand::Sessions => {
                 self.modal = Modal::Sessions;
                 self.session_search.reset();

@@ -84,6 +84,8 @@ removed afterwards). The local tier is:
 - the `wasm32-unknown-unknown` Clippy command only when `crates/protocol`,
   `crates/protocol_transport`, `crates/client_state`, or `crates/web`
   changed;
+- `python3 scripts/third-party-notices.py --check` only when `Cargo.lock`,
+  the script, or the web page's bundled license files changed;
 - `check-schema-additive.sh` only when `crates/protocol` changed, and
   `scripts/test-wasm-client.sh` when it or `crates/protocol_transport` did;
 - `scripts/build-web.sh --fast` and `scripts/test-web-page.sh` only when
@@ -181,7 +183,14 @@ Check the protocol compatibility baselines, documentation, and dependency policy
 crates/protocol/scripts/check-schema-additive.sh
 ./scripts/build-docs.sh
 cargo deny --locked check advisories licenses sources
+python3 scripts/third-party-notices.py --check
 ```
+
+`THIRD-PARTY-NOTICES.txt` lists every crate the `cookie` binary and the web
+page are built from, with the license texts; release archives, the web
+page's Settings › About, and the TUI's `/about` carry it. After changing
+dependencies, regenerate it with `python3 scripts/third-party-notices.py`
+and commit the result.
 
 `./scripts/build-docs.sh` builds workspace rustdoc and runs MkDocs in strict
 mode; `--no-rustdoc` skips rustdoc for changes to the prose alone. `check-schema-additive.sh` compares the generated protocol schemas with

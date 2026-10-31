@@ -1135,6 +1135,7 @@ impl App {
             | Modal::Runtimes
             | Modal::Permissions
             | Modal::Usage
+            | Modal::About
             | Modal::GoalDetail
             | Modal::Background
             | Modal::Plugins

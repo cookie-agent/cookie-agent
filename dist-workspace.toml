@@ -25,9 +25,10 @@ precise-builds = true
 allow-dirty = ["ci"]
 release-branch = "main"
 # The binary inherits `license-file` from the workspace, which dist 0.32
-# resolves against the wrong directory; ship the license explicitly instead.
+# resolves against the wrong directory; ship the license explicitly instead,
+# with the third-party notices (scripts/third-party-notices.py).
 auto-includes = false
-include = ["LICENSE"]
+include = ["LICENSE", "THIRD-PARTY-NOTICES.txt"]
 
 [dist.binaries]
 "*" = ["cookie"]

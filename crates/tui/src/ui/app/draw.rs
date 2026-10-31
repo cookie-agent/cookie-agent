@@ -504,6 +504,14 @@ impl App {
                     &self.theme,
                 );
             }
+            Modal::About => {
+                crate::ui::management::render_about(
+                    frame,
+                    centered(frame.area(), 86, 78),
+                    &mut self.about_panel,
+                    &self.theme,
+                );
+            }
             Modal::None => {}
         }
         if self.command_palette_visible() {

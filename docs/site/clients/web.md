@@ -826,8 +826,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   and forgets the daemon.
 - **About.** Settings › About shows this page's version and client
   protocol, the daemon's version, client protocol, and address, links to
-  cookie's website, documentation, and GitHub repository, and the
-  [credits](#credits).
+  cookie's website, documentation, and GitHub repository, cookie's
+  license and the third-party notices, and the [credits](#credits).
 
 ## Scheduled prompts
 
@@ -1141,6 +1141,11 @@ licence:
   `leptos_icons`), not a web font;
 - the code font, JetBrains Mono, under the SIL Open Font License 1.1;
 - code highlighting, highlight.js, under the BSD 3-Clause licence.
+
+It also links cookie's own license and `THIRD-PARTY-NOTICES.txt`: every
+crate the daemon and the page are built from, with its version, license,
+and source, and the license texts. Both files sit beside the page, and
+release archives carry the notices beside the `cookie` binary.
 
 ## Hosting the page elsewhere
 

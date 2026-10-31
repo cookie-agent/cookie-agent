@@ -53,6 +53,8 @@ pub(crate) enum SlashCommand {
     CronNew,
     Permissions,
     Usage,
+    /// `/about`: versions, cookie's license, and the third-party notices.
+    About,
     Sessions,
     Project,
     /// The session's ACP agent options.
@@ -296,6 +298,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         description: "show session and global token usage",
         action: PaletteAction::Run(SlashCommand::Usage),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "about",
+        aliases: &["version", "licenses", "notices"],
+        description: "show versions, cookie's license, and third-party notices",
+        action: PaletteAction::Run(SlashCommand::About),
         writes_session: false,
     },
     CommandSpec {

@@ -1511,3 +1511,43 @@ fn runtime_panels_show_a_runtimes_own_servers_and_those_waiting_for_a_workspace(
     assert!(text.contains("docs  connected  2 tools"), "{text}");
     assert!(!text.contains("starts with a workspace"), "{text}");
 }
+
+/// `/about` carries the notices the release ships, every line within the
+/// panel's width, and scrolls no further than its last page.
+#[test]
+fn about_panel_shows_the_notices_wrapped_and_scrolls_to_their_end() {
+    let theme = crate::theme::Theme::default();
+    let lines = super::about_lines(40, &theme);
+    let text = lines
+        .iter()
+        .map(ratatui::text::Line::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains(env!("CARGO_PKG_VERSION")),
+        "the TUI's version"
+    );
+    assert!(text.contains("Cookie Agent License"), "cookie's license");
+    // A crate the notices file must name, as the daemon serves through it.
+    assert!(text.contains("yawc 0.5.0"), "the third-party notices");
+    assert!(lines.iter().all(|line| line.width() <= 40));
+
+    let mut panel = super::AboutPanel::default();
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let mut draw = |panel: &mut super::AboutPanel| {
+        terminal
+            .draw(|frame| super::render_about(frame, frame.area(), panel, &theme))
+            .unwrap();
+    };
+    // The panel learns how far it scrolls when it is drawn, as it always is
+    // before a key reaches it.
+    draw(&mut panel);
+    panel.scroll_down(u16::MAX);
+    draw(&mut panel);
+    let at_end = panel.scroll;
+    assert!(at_end > 0);
+    panel.scroll_down(10);
+    assert_eq!(panel.scroll, at_end);
+    panel.page_up();
+    assert!(panel.scroll < at_end);
+}

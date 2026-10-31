@@ -124,7 +124,7 @@ use super::events::{
 };
 use super::input::{self, InputState};
 use super::management::{
-    AuthListener, McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm,
+    AboutPanel, AuthListener, McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm,
     PermissionFormFocus, PermissionHits, PermissionPanel, PermissionRow, RuntimePanel, UsagePanel,
     step_effect,
 };
@@ -172,6 +172,7 @@ pub(super) enum Modal {
     Runtimes,
     Permissions,
     Usage,
+    About,
     GoalDetail,
     /// The selected session's background calls.
     Background,
@@ -870,6 +871,7 @@ pub struct App {
     pub(super) runtime_panel: RuntimePanel,
     pub(super) permission_panel: PermissionPanel,
     pub(super) usage_panel: UsagePanel,
+    pub(super) about_panel: AboutPanel,
     pub(super) usage_load_generation: u64,
     pub(super) cost_refreshes: HashMap<SessionId, SessionCostRefresh>,
     pub(super) next_cost_refresh_request_id: u64,
@@ -1676,6 +1678,7 @@ impl App {
             runtime_panel: RuntimePanel::default(),
             permission_panel: PermissionPanel::default(),
             usage_panel: UsagePanel::default(),
+            about_panel: AboutPanel::default(),
             usage_load_generation: 0,
             cost_refreshes: HashMap::new(),
             next_cost_refresh_request_id: 0,

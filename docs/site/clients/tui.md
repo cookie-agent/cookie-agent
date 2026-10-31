@@ -142,6 +142,7 @@ Esc in a step returns to the command list with the search intact.
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed once a model is selected; see [Attachments](#attachments) |
 | `/usage` | Show selected-session and session-tree usage |
+| `/about` (also `version`, `licenses`, `notices`) | Show this TUI's version and client protocol, cookie's license, and the third-party notices: every crate cookie is built from, with its license and source, and the license texts |
 | `/cancel` | Cancel the active run |
 | `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](../sessions/goals.md) |
 | `/compact` | Prompt for an optional focus, then compact the selected idle session |
