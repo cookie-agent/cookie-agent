@@ -1,7 +1,9 @@
 # Responsive session loading and session storage v3
 
 Status: **approved** (2026-10-31), with the user's decisions of
-2026-10-31 in [section 7](#7-decisions); phase 1 in progress.
+2026-10-31 in [section 7](#7-decisions); phase 1 in progress; phase 3's
+layout, listing, and migration (4.1, 4.3, 4.4, 5) implemented with history
+format 1 ([section 5.1](#51-implementation-notes-2026-10-31)).
 
 ## 1. Problem
 
@@ -330,6 +332,57 @@ and 20–30 s on a busy one. The web client reconnects by itself (its
 backoff tops out at 10 s). Later format bumps use the same marker: one
 migration at startup, then the marker moves up. Converters are never
 removed, so an older store upgrades step by step in one pass.
+
+### 5.1 Implementation notes (2026-10-31)
+
+Layout version 3 with history format 1, so `view.json`, `blobs/`, and
+`v1_to_v2` are still to come. Where the implementation settles what the
+sections above leave open, or departs from them:
+
+- **No conversion yet, so no backups.** Each tree moves by one rename.
+  `convert_tree` still runs on it under its lock, converting logs of a
+  format older than 1; only their originals go to `.backup-v2/<root-id>/`,
+  deleted after the commit point. The free-space check counts only the
+  logs that need converting, by `statvfs` on Unix; Windows has no check
+  (a conversion that runs out of space fails its tree, which stays
+  pending).
+- **`layout.json`** is `{"version", "history_format", "build", "pending"}`:
+  `build` is the version of the cookie build that wrote it, which a
+  refusing older build names ("it needs cookie 0.5.0 or newer"). Each
+  pending tree is `{"root_session_id", "path", "error"}`, `path` relative
+  to `sessions/`. The startup also lists `sessions/` itself (one
+  directory): it removes deletion tombstones, `.backup-v2/`, and v2
+  work-dir folders left behind by an interrupted cleanup, but never looks
+  inside a month folder.
+- **Journal writes.** Besides creation (first publication), title,
+  project, and status, an entry is appended when held, attachments, or an
+  active goal change (everything the fold calls durable metadata), on a
+  fork or revert, and when a root with events since its last entry
+  leaves memory (eviction or shutdown), so the listed `last_event_seq`,
+  which guards a delete, is current. A root resident in this daemon
+  answers from its projection. Appends are not synced; compaction and the
+  migration's journals are (temp file, fsync, rename). A power loss can
+  lose the newest entries; a crashed process cannot. A deletion's
+  tombstone folder now sits in `sessions/` (`.deleted-<root>-<id>`), and
+  one found at startup also journals the deletion.
+- **Cursors.** `before` and `older` are timestamps. A page with `before`
+  and no `active_since` reaches back to the start of the newest month
+  that holds older sessions, passing over months that hold none.
+- **The migration's journals** are rebuilt from every root in a month
+  folder (so a resumed migration counts the trees an earlier attempt
+  moved); a retry of pending trees only appends theirs. The work-dir
+  folders' `runtime-revisions-v8.jsonl` are merged into
+  `sessions/runtime-revisions.jsonl`, each record once, and of two that
+  map one runtime revision differently the first.
+- **`cookie sessions upgrade`** loses `--all`: with no work-dir key it
+  moves the store to this layout, as a start does, and converts every
+  tree.
+- **Measured** on a scratch copy of this machine's store (96 roots in four
+  work-dir folders, 300 MB, a debug build, idle machine): 96 trees moved
+  in 0.7 s, none pending; the next start read only `layout.json`;
+  `session.list` over the 30-day window answered 94 of 96 sessions in
+  about 40 ms, over WebSocket. Seven of those roots predate history
+  formats and do not open, as before the migration.
 
 ## 6. Order of work
 
