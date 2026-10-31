@@ -205,7 +205,8 @@ pub(super) fn for_each_item_block_id(
         TranscriptItem::User { .. }
         | TranscriptItem::Goal { .. }
         | TranscriptItem::Plan { .. }
-        | TranscriptItem::AcpNotice { .. } => true,
+        | TranscriptItem::AcpNotice { .. }
+        | TranscriptItem::History { .. } => true,
     }
 }
 
@@ -292,7 +293,8 @@ pub(super) fn item_is_live(
         | TranscriptItem::AgentCompaction { .. }
         | TranscriptItem::AgentSessionMessage { .. }
         | TranscriptItem::AgentBackgroundEnded { .. }
-        | TranscriptItem::ProducerMessage { .. } => false,
+        | TranscriptItem::ProducerMessage { .. }
+        | TranscriptItem::History { .. } => false,
     }
 }
 
@@ -343,6 +345,7 @@ pub(super) fn transcript_item_layout(
         return ItemLayout::default();
     }
     match item {
+        TranscriptItem::History { .. } => ItemLayout::default(),
         TranscriptItem::User { markdown, seq, .. } => ItemLayout {
             lines: {
                 let width = context.width;

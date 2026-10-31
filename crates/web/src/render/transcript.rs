@@ -347,6 +347,7 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
 /// The item as HTML; `None` for a diagnostic row the level filter hides.
 pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<String> {
     Some(match item {
+        TranscriptItem::History { .. } => return None,
         TranscriptItem::User { markdown, seq, .. } => {
             let files = view
                 .state

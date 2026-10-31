@@ -17,6 +17,7 @@ pub mod cron;
 pub mod elicitation;
 pub mod format;
 pub mod held;
+pub mod history;
 pub mod markdown;
 pub mod mcp;
 pub mod memory;
@@ -131,6 +132,9 @@ pub struct ToolCallState {
     pub live_display: cookie_agent_protocol::LiveDisplay,
     /// The complete content of cut display blocks, loaded on request.
     pub full: Vec<FullContent>,
+    /// The display view cut the call's result (client protocol 1.57.0):
+    /// what it shows is the result's first bytes until it is read whole.
+    pub cut: Option<history::CutResult>,
     /// The call's tool supports the background, so a running call can be
     /// moved there.
     pub backgroundable: bool,
@@ -213,6 +217,7 @@ impl ToolCallState {
             progress: None,
             live_display: Default::default(),
             full: Vec::new(),
+            cut: None,
             backgroundable: false,
             backgrounded: false,
             revision: next_tool_revision(),
@@ -732,6 +737,20 @@ pub enum TranscriptItem {
         reminder: Option<GoalReminderIdentity>,
         status: ProducerMessageStatus,
     },
+    /// History the display view has not loaded (client protocol 1.57.0):
+    /// older history at the top of the transcript, or the middle of a run
+    /// larger than the first answer. Reading it is
+    /// [`StateStore::request_history`] with `before`.
+    History {
+        id: u64,
+        /// Changes when the row's read starts or fails.
+        version: u64,
+        /// The sequence the history left out ends before.
+        before: u64,
+        /// How many display events a gap left out; `None` for older
+        /// history, whose size is not known.
+        skipped: Option<u64>,
+    },
 }
 
 /// One ordered child segment inside an assistant item, owned by the committed
@@ -841,7 +860,8 @@ impl TranscriptItem {
             | Self::AgentCompaction { id, .. }
             | Self::AgentSessionMessage { id, .. }
             | Self::AgentBackgroundEnded { id, .. }
-            | Self::ProducerMessage { id, .. } => *id,
+            | Self::ProducerMessage { id, .. }
+            | Self::History { id, .. } => *id,
         }
     }
 
@@ -863,6 +883,7 @@ impl TranscriptItem {
             | Self::AgentCompaction { .. }
             | Self::AgentSessionMessage { .. }
             | Self::AgentBackgroundEnded { .. } => 0,
+            Self::History { version, .. } => *version,
             Self::ProducerMessage { status, .. } => match status {
                 ProducerMessageStatus::Pending => 0,
                 ProducerMessageStatus::Admitted => 1,
@@ -1382,6 +1403,8 @@ pub struct SessionState {
     pub assistant_ends: HashMap<u64, AssistantEnd>,
     /// The run each assistant block belongs to, when it has one.
     pub assistant_runs: HashMap<u64, RunId>,
+    /// What of the session's history the display view has not loaded.
+    pub history: history::HistoryState,
 }
 
 /// One source of the latest run's `AGENTS.md` turn.
@@ -1645,6 +1668,8 @@ pub struct StateStore {
     /// are left to that replay, which the client runs next.
     awaiting_rebuild: HashSet<SessionId>,
     replays: HashMap<SessionId, ReplayProgress>,
+    /// The display view's held history of each session opened in it.
+    histories: HashMap<SessionId, history::HeldHistory>,
     /// How many `background.changed` notifications each session had, which
     /// a `session.background.list` answer checks before it is installed.
     background_changes: HashMap<SessionId, u64>,
@@ -1659,6 +1684,8 @@ pub struct BackgroundMark(u64);
 struct ReplayProgress {
     generation: u64,
     final_seq: u64,
+    /// What a replay in the display view adds to its events.
+    history: Option<Box<cookie_agent_protocol_transport::ReplayHistory>>,
     /// The sequence of the last event the replay read.
     last_seq: u64,
     staged: Staged,
@@ -1671,6 +1698,9 @@ enum Staged {
     /// A full replay reduces into a projection of its own, which replaces
     /// the visible one.
     Rebuild(Box<SessionState>),
+    /// A newest-first replay in the display view keeps its events, which
+    /// fold after its window's header once the replay is complete.
+    Held(Vec<Replayed>),
     /// A replay from the view's cursor keeps the events it reads, which
     /// reduce onto the visible projection once the replay is complete.
     CatchUp(Vec<Replayed>),
@@ -1680,6 +1710,22 @@ enum Staged {
 enum Replayed {
     Event(Box<StoredEvent>),
     Unknown(Box<cookie_agent_protocol::UnknownEvent>),
+}
+
+impl Replayed {
+    fn seq(&self) -> u64 {
+        match self {
+            Self::Event(event) => event.seq,
+            Self::Unknown(event) => event.seq,
+        }
+    }
+
+    fn timestamp(&self) -> jiff::Timestamp {
+        match self {
+            Self::Event(event) => event.timestamp,
+            Self::Unknown(event) => event.timestamp,
+        }
+    }
 }
 
 /// Result of reducing one item from the client's ordered delivery stream.
@@ -1779,9 +1825,15 @@ impl StateStore {
                 generation,
                 final_seq,
                 rebuild,
-                history: _,
+                history,
             } => {
-                let (staged, last_seq) = if rebuild {
+                let windowed = history
+                    .as_ref()
+                    .is_some_and(|history| history.window.is_some());
+                let (staged, last_seq) = if rebuild && windowed {
+                    self.awaiting_rebuild.remove(&session_id);
+                    (Staged::Held(Vec::new()), 0)
+                } else if rebuild {
                     self.awaiting_rebuild.remove(&session_id);
                     let scratch = SessionState {
                         generation,
@@ -1802,6 +1854,7 @@ impl StateStore {
                     ReplayProgress {
                         generation,
                         final_seq,
+                        history,
                         last_seq,
                         staged,
                         deadline: Instant::now() + REPLAY_END_TIMEOUT,
@@ -1840,7 +1893,9 @@ impl StateStore {
                             );
                             scratch.version = scratch.version.wrapping_add(1);
                         }
-                        Staged::CatchUp(events) => events.push(Replayed::Event(event)),
+                        Staged::CatchUp(events) | Staged::Held(events) => {
+                            events.push(Replayed::Event(event));
+                        }
                     }
                     true
                 });
@@ -1864,7 +1919,28 @@ impl StateStore {
                 });
                 match replay {
                     Some(replay) if valid => match replay.staged {
+                        Staged::Held(events) => {
+                            let history =
+                                replay.history.map(|history| *history).unwrap_or_default();
+                            let mut held = history::HeldHistory::from_window(
+                                history.window.unwrap_or_default(),
+                                &history.cut,
+                                events,
+                            );
+                            let mut state = held.fold(session_id, generation);
+                            state.last_seq = final_seq;
+                            self.quarantined_sessions.remove(&session_id);
+                            if let Some(previous) = self.sessions.get_mut(&session_id) {
+                                state.background_calls =
+                                    std::mem::take(&mut previous.background_calls);
+                                state.version = previous.version.max(state.version).wrapping_add(1);
+                            }
+                            self.sessions.insert(session_id, state);
+                            self.histories.insert(session_id, held);
+                            DeliveryOutcome::Applied
+                        }
                         Staged::Rebuild(mut scratch) => {
+                            self.histories.remove(&session_id);
                             self.quarantined_sessions.remove(&session_id);
                             // A replay is durable history, not a live run
                             // termination, so it never restores unsent input.
@@ -1894,7 +1970,42 @@ impl StateStore {
                                 return DeliveryOutcome::ReplayFailed { session_id };
                             };
                             self.quarantined_sessions.remove(&session_id);
+                            // The display view's catch-up joins the held
+                            // history, its cut results marked as a fold
+                            // marks them.
+                            let cut = replay.history.map(|history| history.cut);
+                            if let (Some(held), Some(cut)) =
+                                (self.histories.get_mut(&session_id), &cut)
+                            {
+                                held.extend(events.clone(), cut);
+                            }
+                            let cut_calls = cut
+                                .iter()
+                                .flatten()
+                                .filter_map(|output| {
+                                    events.iter().find_map(|replayed| match replayed {
+                                        Replayed::Event(event) if event.seq == output.seq => {
+                                            match &event.payload {
+                                                EventPayload::ToolCallTerminated {
+                                                    termination,
+                                                } => Some((termination.tool_call_id, *output)),
+                                                _ => None,
+                                            }
+                                        }
+                                        _ => None,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
                             catch_up(state, events);
+                            for (call, output) in cut_calls {
+                                if let Some(tool) = state.tools.get_mut(&call) {
+                                    tool.cut = Some(history::CutResult {
+                                        seq: output.seq,
+                                        bytes: output.bytes,
+                                        state: history::CutState::Cut,
+                                    });
+                                }
+                            }
                             DeliveryOutcome::Applied
                         }
                     },
@@ -1919,7 +2030,9 @@ impl StateStore {
                                 push_unknown_event_row(scratch, &event);
                                 scratch.version = scratch.version.wrapping_add(1);
                             }
-                            Staged::CatchUp(events) => events.push(Replayed::Unknown(event)),
+                            Staged::CatchUp(events) | Staged::Held(events) => {
+                                events.push(Replayed::Unknown(event));
+                            }
                         }
                     }
                     true
@@ -1944,6 +2057,9 @@ impl StateStore {
                         state.last_seq = event.seq;
                         push_unknown_event_row(state, &event);
                         state.version = state.version.wrapping_add(1);
+                        if let Some(held) = self.histories.get_mut(&event.session_id) {
+                            held.hold_unknown(*event);
+                        }
                     }
                 }
                 DeliveryOutcome::Applied
@@ -2140,6 +2256,9 @@ impl StateStore {
         if event.seq <= state.last_seq {
             return true;
         }
+        if let Some(held) = self.histories.get_mut(&event.session_id) {
+            held.hold_live(&event);
+        }
         state.last_seq = event.seq;
         reduce_event_from(
             state,
@@ -2173,6 +2292,10 @@ impl StateStore {
         };
         if state.generation != generation || state.last_seq != event.after_seq {
             return;
+        }
+        if let Some(held) = self.histories.get_mut(&event.session_id) {
+            held.settle_transient(&event.payload);
+            held.hold_transient(event.clone());
         }
         if reduce_transient(state, event.timestamp, event.payload) {
             state.version = state.version.wrapping_add(1);
@@ -2254,6 +2377,7 @@ impl StateStore {
         }
         self.quarantined_sessions.remove(&session_id);
         self.awaiting_rebuild.insert(session_id);
+        self.histories.remove(&session_id);
         self.sessions.remove(&session_id).is_some()
     }
 
@@ -2274,6 +2398,7 @@ impl StateStore {
                 ..SessionState::default()
             },
         );
+        self.histories.remove(&session_id);
         self.awaiting_rebuild.remove(&session_id);
         true
     }
@@ -2304,6 +2429,7 @@ impl StateStore {
         }
         let state = reduce_session_events(session_id, generation, &events);
         self.awaiting_rebuild.remove(&session_id);
+        self.histories.remove(&session_id);
         self.sessions.insert(session_id, state);
         true
     }
