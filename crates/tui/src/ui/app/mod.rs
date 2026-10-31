@@ -2223,7 +2223,11 @@ async fn event_loop(
 ) -> (anyhow::Result<()>, SessionErrorSummary) {
     let mut events = EventStream::new();
     let mut replay_watchdog = tokio::time::interval(std::time::Duration::from_millis(250));
-    let mut mcp_poll = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut presence_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    // An open /mcp or /runtime panel lists again on the daemon's change
+    // notifications; this slow read only backs them up.
+    let mut listing_backstop = tokio::time::interval(LISTING_BACKSTOP);
+    listing_backstop.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut frame_tick = tokio::time::interval(RenderScheduler::FRAME_INTERVAL);
     // The tick is polled only while something animates or a coalesced frame
     // waits; resuming must not replay the ticks an idle TUI never took.
@@ -2419,12 +2423,11 @@ async fn event_loop(
                     render.mark_stream();
                 }
             },
-            _ = mcp_poll.tick() => {
-                app.poll_mcp();
-                app.poll_runtimes();
+            _ = presence_tick.tick() => {
                 // Going idle, or a session opened by a delivery.
                 app.report_presence();
             },
+            _ = listing_backstop.tick() => app.poll_listings_backstop(),
             _ = frame_tick.tick(), if frame_due => {
                 // The frame cadence drives the clock bucket (the "thinking…"
                 // ellipsis and the working spinner), which steps every
@@ -2437,6 +2440,10 @@ async fn event_loop(
         }
     }
 }
+
+/// How often an open `/mcp` or `/runtime` panel lists again with no change
+/// announced, in case a notification was lost.
+const LISTING_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A document the event loop hands to the editor.
 enum EditorJob {
@@ -2786,7 +2793,7 @@ pub(in crate::ui) struct ListingRefresh {
 }
 
 impl ListingRefresh {
-    #[cfg(test)]
+    /// Whether a listing is on its way.
     pub(in crate::ui) fn in_flight(&self) -> bool {
         self.in_flight
     }

@@ -1637,6 +1637,19 @@ impl App {
         self.poll_mcp();
     }
 
+    /// The backstop read of an open `/mcp` or `/runtime` panel: none while
+    /// a listing is on its way, which is as new as this would be.
+    pub(in crate::ui) fn poll_listings_backstop(&mut self) {
+        if !self.mcp_panel.refresh.in_flight() {
+            self.poll_mcp();
+        }
+        if !self.runtime_panel.refresh.in_flight()
+            && !self.runtime_panel.machines_refresh.in_flight()
+        {
+            self.poll_runtimes();
+        }
+    }
+
     pub(in crate::ui) fn poll_mcp(&mut self) {
         if self.modal != Modal::Mcp || !self.mcp_panel.refresh.start() {
             return;

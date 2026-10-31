@@ -513,3 +513,32 @@ async fn a_listing_older_than_a_machine_change_is_dropped() {
     });
     assert_eq!(machine_names(&app), ["labpc", "laptop"]);
 }
+
+/// The backstop read of an open panel waits for the listing on its way
+/// instead of asking for another once it lands.
+#[tokio::test]
+async fn the_backstop_read_never_doubles_a_listing_on_its_way() {
+    let mut app = test_app().await;
+    let (client, recorded) = answering_client(|method, _| match method {
+        "machines.list" => {
+            Ok(serde_json::to_value(crate::ui::management::sample_machines()).unwrap())
+        }
+        "runtimes.list" => Ok(serde_json::json!({"runtimes": [], "instances": []})),
+        "mcp.server.list" => Ok(serde_json::json!({"servers": []})),
+        _ => Err(serde_json::json!({"code": -32601, "message": "not scripted"})),
+    });
+    app.client = client;
+    app.modal = Modal::Runtimes;
+    app.poll_runtimes();
+    app.poll_listings_backstop();
+    updates_until(&mut app, |app| {
+        !app.runtime_panel.machines_refresh.in_flight() && !app.runtime_panel.refresh.in_flight()
+    })
+    .await;
+    settle_recording().await;
+    assert_eq!(recorded_method_count(&recorded, "machines.list"), 1);
+    assert_eq!(recorded_method_count(&recorded, "runtimes.list"), 1);
+    // Settled, the backstop lists again.
+    app.poll_listings_backstop();
+    wait_for_recorded_request(&recorded, "machines.list", 2).await;
+}
