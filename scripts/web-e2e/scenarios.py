@@ -1060,35 +1060,70 @@ def long_session(browser):
 
 def session_list_older(browser):
     """The session list shows the last 7 days (the filter's default), and
-    an unread session whatever its age; "Show older" adds a month at a time
-    until nothing is older (docs/site/specs/session-storage-v3.md 4.3,
-    docs/site/specs/session-pins-and-filters.md). test-web-page.sh
+    an unread session whatever its age, with no Show older: a longer date
+    in the filter lists older sessions (docs/site/specs/session-storage-v3.md
+    4.3, docs/site/specs/session-pins-and-filters.md). test-web-page.sh
     moved three sessions back (age-sessions.py): 45 and 80 days, read, and
     120 days, unread, each in its own month. An older session opens."""
     with open(os.path.join(HOME, "aged.json")) as file:
         aged = json.load(file)
-    row = lambda label: 'aside [data-session="%s"]' % aged[label]
+    row = lambda label: 'aside [data-session-row="%s"]' % aged[label]
     listed = lambda label: count(browser, row(label)) == 1
-    older = "#show-older-sessions"
-    browser.wait("the recent and the unread sessions", lambda: count(browser, 'aside [data-session="%s"]' % HELD_SESSION) == 1 and listed("days120"))
-    browser.wait("the offer of older sessions", lambda: count(browser, older) == 1)
+    # A session of the last 7 days, read, then the list read afresh: with
+    # none, the list would roll back to the newest old one's days.
+    new_session(browser)
+    send(browser, "a recent one")
+    idle(browser, text="a recent one")
+    browser.script("location.reload()")
+    time.sleep(0.5)
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    browser.wait("the recent and the unread sessions", lambda: count(browser, 'aside [data-session-row="%s"]' % HELD_SESSION) == 1 and listed("days120"))
     assert not listed("days45") and not listed("days80"), "a session older than the window is listed"
-    browser.click(older)
-    browser.wait("the 45-day-old session", lambda: listed("days45"))
-    browser.wait("the button back", lambda: count(browser, older + ":not([disabled])") == 1)
-    assert not listed("days80"), "a page reached past its month"
-    browser.click(older)
-    browser.wait("the 80-day-old session", lambda: listed("days80"))
-    # Only the unread session's month is older: its page adds nothing new,
-    # and nothing is older after it.
-    browser.wait("the button back", lambda: count(browser, older + ":not([disabled])") == 1)
-    browser.click(older)
-    browser.wait("no older sessions", lambda: count(browser, older) == 0)
+    assert count(browser, "#show-older-sessions") == 0, "the list offers Show older"
+    assert count(browser, "[data-rolled-back]") == 0, "a list with recent sessions rolled back"
+    browser.click("#filter-sessions")
+    browser.click("[data-within=quarter]")
+    browser.wait("ninety days", lambda: listed("days45") and listed("days80"))
     assert count(browser, row("days120")) == 1, "the unread session is listed twice"
-    print("the list shows 7 days and the unread session; Show older adds a month at a time")
+    browser.type("#filter-done", ESCAPE)
+    print("the list shows 7 days and the unread session; 90 days in the filter lists the older ones")
     click_row(browser, row("days80"))
     browser.wait("the old session's transcript", lambda: "from days80 ago" in browser.text("#transcript"))
     print("a session from an older month opens")
+    browser.click("#filter-sessions")
+    browser.click("#filter-reset")
+    browser.type("#filter-done", ESCAPE)
+
+
+def session_list_rollback(browser):
+    """With no session of its own in the last 7 days, the default list
+    rolls back to the 7 days up to the newest session's last activity and
+    says so; another date in the filter undoes that, and Reset rolls back
+    again. test-web-page.sh moved every session back: 40, 60, and 100 days,
+    all read."""
+    with open(os.path.join(HOME, "aged.json")) as file:
+        aged = json.load(file)
+    listed = lambda label: count(browser, 'aside [data-session-row="%s"]' % aged[label]) == 1
+    browser.wait("the newest session's days", lambda: listed("days40"))
+    assert not listed("days60") and not listed("held"), "the roll back reached past its 7 days"
+    browser.click("#filter-sessions")
+    browser.wait("the roll back said", lambda: count(browser, "#session-filter [data-rolled-back]") == 1)
+    assert browser.script(
+        "return document.querySelector('[data-within=week]').getAttribute('aria-checked')"
+    ) == "true", "the filter left its default"
+    browser.shot("session-list-rollback")
+    browser.click("[data-within=quarter]")
+    browser.wait("ninety days from now", lambda: listed("days40") and listed("days60"))
+    assert not listed("held"), "a session 100 days old is in the last 90"
+    assert count(browser, "#session-filter [data-rolled-back]") == 0
+    browser.click("[data-within=month]")
+    browser.wait("thirty days from now: none", lambda: not listed("days40"))
+    assert count(browser, "aside [data-filter-offer]") == 1, "the empty list offers no filter"
+    browser.click("#filter-reset")
+    browser.wait("rolled back again", lambda: listed("days40") and not listed("days60"))
+    print("an old store's list rolled back to the 7 days up to its newest session")
+
+
 
 
 def pinned_rows(browser):
@@ -6276,6 +6311,8 @@ SCENARIOS = [
     ("long_session", long_session, "long", []),
     # Its daemon has sessions last active months ago (test-web-page.sh).
     ("session_list_older", session_list_older, "long", []),
+    # Its daemon has only sessions last active weeks ago (test-web-page.sh).
+    ("session_list_rollback", session_list_rollback, "rollback", []),
     ("message_menu", message_menu, "chat", ["basics"]),
     ("session_depth", session_depth, "depth", []),
     ("permission_rules", permission_rules, "depth", []),

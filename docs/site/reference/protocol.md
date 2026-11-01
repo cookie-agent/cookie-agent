@@ -461,7 +461,9 @@ older, or absent once nothing is; passing it back as `before` (without
 `active_since`) returns the sessions last active before it, back to the
 start of the newest month that holds any, with a new `older`. So a client
 lists the last few days (the TUI 30, the web page as its filter says, 7 by
-default) and offers "Show older", one month at a time.
+default), and the TUI offers "Older", one month at a time. Both ends
+together list the sessions last active from `active_since` to before
+`before` (the web page's range of dates).
 Without `active_since` and `before` the answer holds every root session, as
 before 1.57.0, and no `older`. The daemon answers from its
 [activity journals](../sessions/index.md#where-sessions-are-stored), which

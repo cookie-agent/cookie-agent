@@ -241,7 +241,7 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     a dropdown above the list on a narrower screen. It chooses how far
     back the list reaches (24 hours, 7 days, the default, 30 or 90 days,
     all time, or **Dates…**: the days from one date to another, both
-    included, in the browser's time zone, with no **Show older**), which agents and which machines the sessions run on
+    included, in the browser's time zone), which agents and which machines the sessions run on
     (any while none is chosen), and, for a daemon without projects, the
     workspace. Pinned, unread, and busy sessions always show whatever the
     date; the agents and machines narrow them too. A dot on the button
@@ -281,8 +281,13 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     status says what was skipped and why. **Done** leaves select mode.
 - **Older sessions.** The sidebar lists the sessions active within the
   filter's date (the last 7 days by default), and every pinned, unread, or
-  busy one whatever its age; **Show older**, at the end of the list while
-  there are older sessions, adds a month at a time ([where sessions are stored](../sessions/index.md#where-sessions-are-stored)).
+  busy one whatever its age ([where sessions are stored](../sessions/index.md#where-sessions-are-stored));
+  a longer date in the filter lists older ones. When the default 7 days
+  hold none of their own (only pinned, unread, and busy sessions), the
+  list rolls back to the 7 days up to the newest session's last activity,
+  and on to now: the summary says **Since** its first day, and the filter
+  says why. Choosing a date in the filter ends that. A list the filter
+  leaves empty while older sessions exist offers **Change the filter**.
 - **Projects.** The sessions sidebar has a section for each project,
   oldest project first, so a new one goes last and the others keep their
   places, then **No project** last.

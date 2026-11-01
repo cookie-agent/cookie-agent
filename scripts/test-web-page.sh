@@ -318,6 +318,17 @@ TOML
         done
         python3 -I scripts/web-e2e/age-sessions.py "$allowing/.cookie-agent" "$allowing/aged.json" "${aged[@]}"
     fi
+    # For the default window's roll back, only old sessions: 40 and 60 days
+    # ago, and the session made by another process moved back 100 days, all
+    # read; aged.json names their ids.
+    if [[ " $* " == *" session_list_rollback "* ]]; then
+        aged=("held:$held_session=100")
+        for spec in "days40:40" "days60:60"; do
+            aged+=("${spec%%:*}:$(cd "$allowing/workspace" && HOME="$allowing" "$cookie" run --json "from ${spec%%:*} ago" |
+                python3 -I -c 'import json, sys; print([json.loads(l) for l in sys.stdin if l.strip()][-1]["session_id"])')=${spec#*:}")
+        done
+        python3 -I scripts/web-e2e/age-sessions.py "$allowing/.cookie-agent" "$allowing/aged.json" "${aged[@]}"
+    fi
     # A memory folder from before projects: the daemon makes it the project
     # `e2e` at start, which the memory scenario writes into.
     mkdir -p "$allowing/.cookie-agent/memory/projects/e2e"

@@ -99,8 +99,7 @@ the rail's Chat button there shows the sessions too
 - **What applies where.** The date is the list's window
   (`client_state::session_window`), which the daemon answers with the
   pinned, unread, and busy sessions too; choosing another date reads the
-  list again from the daemon, and **Show older** still adds a month at a
-  time. The agents (`creation_selection.agent`) and the machines (as the
+  list again from the daemon. The agents (`creation_selection.agent`) and the machines (as the
   row's badges name them, `client_state::badges::session_machines`) narrow
   what the list holds, pinned sessions included, and, like a search, hide
   the project sections they empty. The filter lives in the tab: a new page
@@ -117,10 +116,23 @@ Made while implementing, for the user to revisit:
   past the other end moves it to the same day. The days are the
   browser's, from the first day's start to the end of the last.
   `session.list` takes both ends already (`active_since` and `before`,
-  client protocol 1.57.0), so a range needs no protocol change; it offers
-  no **Show older**, and the page also leaves out a session announced
+  client protocol 1.57.0), so a range needs no protocol change; the page
+  also leaves out a session announced
   since whose last activity is past the range, unless it is pinned,
   unread, or busy.
+- **Show older** left the web page (user decision, 2026-11-01): it
+  stretched the filter's date back a month at a time while the summary
+  still named the date, which the filter does plainly. A list the filter
+  leaves empty while older sessions exist offers **Change the filter**.
+  The TUI keeps its **Older** (Ctrl+O), having no filter.
+- The default rolls back (user decision, 2026-11-01): when the default
+  7 days hold none of their own sessions (pinned, unread, and busy ones
+  do not count), the page reads back a month at a time
+  (`session.list` with `before`) for the newest session's last activity,
+  and lists the 7 days up to it and on to now
+  (`SessionWindow::rolled_back`). The summary reads **Since** that first
+  day and the filter says why; choosing any date ends it, and a reset or
+  a new connection tries again.
 - Agent and machine filters apply to pinned sessions too: only the date
   is exempted.
 - The web's selection bar gains no Pin/Unpin; `session.pin.set` takes many

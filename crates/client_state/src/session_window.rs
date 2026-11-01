@@ -2,8 +2,10 @@
 //! (`docs/site/specs/session-storage-v3.md` section 4.3): the last 30 days
 //! at first, or as many as the client's date filter says
 //! (`docs/site/specs/session-pins-and-filters.md`), then a month further
-//! each time the user asks for older sessions. Unread, pinned, and busy
-//! sessions come with every answer whatever their age.
+//! each time the user asks for older sessions (the TUI). Unread, pinned,
+//! and busy sessions come with every answer whatever their age. A window
+//! of recent days that finds none of the rest may roll back to the days up
+//! to the newest session's last activity ([`SessionWindow::rolled_back`]).
 
 use cookie_agent_protocol::{SemVer, SessionListParams, SessionMeta};
 use jiff::{SignedDuration, Timestamp};
@@ -34,6 +36,9 @@ enum Reach {
     /// The sessions last active from the first time to before the second:
     /// a range of days the user chose, with nothing older to offer.
     Between(Timestamp, Timestamp),
+    /// The window's days up to this time, the newest session's last
+    /// activity, then on to now: the recent days held none.
+    RolledBack(Timestamp),
 }
 
 /// The session list's window, and whether the daemon has older sessions.
@@ -63,6 +68,34 @@ impl SessionWindow {
             days,
             older: None,
         }
+    }
+
+    /// The `days` days up to `newest`, the last activity of the newest
+    /// session, and on to now: for a window of recent days that found
+    /// none of its own.
+    #[must_use]
+    pub fn rolled_back(newest: Timestamp, days: i64) -> Self {
+        Self {
+            reach: Reach::RolledBack(newest),
+            days: Some(days),
+            older: None,
+        }
+    }
+
+    /// The newest session's last activity a rolled-back window reaches up
+    /// to; `None` for any other window.
+    #[must_use]
+    pub fn rolled_back_to(&self) -> Option<Timestamp> {
+        match self.reach {
+            Reach::RolledBack(newest) => Some(newest),
+            _ => None,
+        }
+    }
+
+    /// Whether the window is the plain recent days, counted from now.
+    #[must_use]
+    pub fn is_recent(&self) -> bool {
+        self.reach == Reach::Recent && self.days.is_some()
     }
 
     /// The sessions last active from `low` to before `high`, and every
@@ -103,6 +136,11 @@ impl SessionWindow {
                     params.before = Some(high);
                     Some(low)
                 }
+                Reach::RolledBack(newest) => self.days.and_then(|days| {
+                    newest
+                        .checked_sub(SignedDuration::from_hours(24 * days))
+                        .ok()
+                }),
             };
         }
         params
@@ -135,13 +173,41 @@ impl SessionWindow {
     }
 
     /// Back to the window's recent days, or its range, as for another
-    /// daemon.
+    /// daemon: a rolled-back window rolls back again only if the recent
+    /// days hold nothing there.
     pub fn reset(&mut self) {
         *self = match self.reach {
             Reach::Between(low, high) => Self::between(low, high),
             _ => Self::recent(self.days),
         };
     }
+}
+
+/// Whether a session counts toward a window by its own activity: not one
+/// listed whatever its age (pinned, unread, or busy).
+fn counts_by_activity(session: &SessionMeta) -> bool {
+    !(crate::rows::listed_first(session) || session.unread)
+}
+
+/// Whether an answer for the days since `since` holds no session of its
+/// own, only those listed whatever their age: then the window may roll
+/// back.
+#[must_use]
+pub fn holds_nothing_recent(sessions: &[SessionMeta], since: Timestamp) -> bool {
+    !sessions
+        .iter()
+        .any(|session| counts_by_activity(session) && session.last_activity >= since)
+}
+
+/// The last activity of the newest session in `sessions` that counts by
+/// its activity, which a window rolls back to.
+#[must_use]
+pub fn newest_activity(sessions: &[SessionMeta]) -> Option<Timestamp> {
+    sessions
+        .iter()
+        .filter(|session| counts_by_activity(session))
+        .map(|session| session.last_activity)
+        .max()
 }
 
 /// Adds the sessions of an older page to `sessions`, keeping the copy the
@@ -219,6 +285,52 @@ mod tests {
 
         window.reset();
         assert_eq!(window, SessionWindow::default());
+    }
+
+    #[test]
+    fn a_window_rolls_back_to_the_days_before_the_newest_session() {
+        let newest = at("2026-09-20T15:00:00Z");
+        let now = at("2026-10-31T12:00:00Z");
+        let mut window = SessionWindow::rolled_back(newest, 7);
+        assert_eq!(window.rolled_back_to(), Some(newest));
+        assert!(!window.is_recent());
+        let params = window.read_params(SessionListParams::default(), WINDOWED, now);
+        assert_eq!(params.active_since, Some(at("2026-09-13T15:00:00Z")));
+        assert_eq!(params.before, None, "on to now");
+        window.reset();
+        assert_eq!(window, SessionWindow::recent(Some(7)));
+        assert!(window.is_recent());
+        assert!(
+            !SessionWindow::recent(None).is_recent(),
+            "every session has nothing to roll back"
+        );
+    }
+
+    #[test]
+    fn only_sessions_listed_by_their_activity_count_for_a_roll_back() {
+        let since = at("2026-10-24T12:00:00Z");
+        let mut old = session("old");
+        old.last_activity = at("2026-09-20T15:00:00Z");
+        let mut pinned = session("pinned");
+        pinned.last_activity = at("2026-10-01T00:00:00Z");
+        pinned.pinned = true;
+        let mut unread_now = session("unread");
+        unread_now.last_activity = at("2026-10-30T00:00:00Z");
+        unread_now.unread = true;
+        let listed = [old.clone(), pinned.clone(), unread_now.clone()];
+        assert!(
+            holds_nothing_recent(&listed, since),
+            "only the unread one is recent"
+        );
+        assert_eq!(
+            newest_activity(&listed),
+            Some(old.last_activity),
+            "the pinned one is newer"
+        );
+        let mut recent = session("recent");
+        recent.last_activity = at("2026-10-25T00:00:00Z");
+        assert!(!holds_nothing_recent(&[recent], since));
+        assert_eq!(newest_activity(&[pinned, unread_now]), None);
     }
 
     #[test]

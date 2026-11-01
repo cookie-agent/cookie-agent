@@ -68,7 +68,7 @@ pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL
 pub(crate) use notifications::release_push;
 pub use onboarding::Onboarding;
 pub use permissions::RuleRef;
-pub(crate) use pins::local_today;
+pub(crate) use pins::{date_label, local_date, local_today};
 pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 pub use selection::{PickState, Picked};
@@ -224,12 +224,13 @@ pub struct Workspace {
     /// one was on its way.
     session_list: StoredValue<crate::session_list::ListReads>,
     /// How far back the session list reaches: as far as the filter's date
-    /// says, and a month more for each "Show older".
+    /// says, or rolled back to the newest session's days.
     session_window: StoredValue<cookie_agent_client_state::session_window::SessionWindow>,
     /// Whether the daemon has sessions older than the list shows.
     pub has_older_sessions: RwSignal<bool>,
-    /// An older page is on its way.
-    pub older_sessions_loading: RwSignal<bool>,
+    /// The newest session's last activity, while the default window found
+    /// nothing of its own and lists the days up to it instead.
+    pub session_rollback: RwSignal<Option<jiff::Timestamp>>,
     pub user_menu: RwSignal<Option<UserMenu>>,
     pub goal_draft: RwSignal<String>,
     pub skills: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
@@ -527,7 +528,7 @@ impl Workspace {
                 ),
             ),
             has_older_sessions: RwSignal::new(false),
-            older_sessions_loading: RwSignal::new(false),
+            session_rollback: RwSignal::new(None),
             user_menu: RwSignal::new(None),
             goal_draft: RwSignal::new(String::new()),
             skills: RwSignal::new(None),
@@ -781,40 +782,6 @@ impl Workspace {
             .update_value(|subscriptions| subscriptions.reset());
     }
 
-    /// "Show older": adds the next older month of sessions to the list.
-    pub fn show_older_sessions(self) {
-        let Some(client) = self.client() else {
-            return;
-        };
-        let Some(params) = self
-            .session_window
-            .with_value(|window| window.older_params(SessionListParams::default()))
-        else {
-            return;
-        };
-        if self.older_sessions_loading.get_untracked() {
-            return;
-        }
-        self.older_sessions_loading.set(true);
-        spawn_local(async move {
-            match client.list_sessions(params).await {
-                Ok(result) => {
-                    self.session_window
-                        .update_value(|window| window.paged(result.older));
-                    self.has_older_sessions.set(result.older.is_some());
-                    self.sessions.update(|sessions| {
-                        cookie_agent_client_state::session_window::merge_older(
-                            sessions,
-                            result.sessions,
-                        );
-                    });
-                }
-                Err(error) => self.status.set(crate::errors::describe(&error)),
-            }
-            self.older_sessions_loading.set(false);
-        });
-    }
-
     /// Reads the session list, as far back as its window reaches, and the
     /// runtime snapshot again.
     pub async fn refresh_lists(self) {
@@ -841,17 +808,43 @@ impl Workspace {
         }
     }
 
-    /// Reads the session list, as far back as its window reaches.
+    /// Reads the session list, as far back as its window reaches. The
+    /// default window that finds none of its own sessions (only pinned,
+    /// unread, and busy ones) rolls back to the days up to the newest
+    /// session's last activity, and reads again.
     async fn read_session_list(self, client: &Client) {
+        use cookie_agent_client_state::session_window::{SessionWindow, holds_nothing_recent};
         let read = self.session_list.try_update_value(|list| list.begin());
-        let params = self.session_window.with_value(|window| {
+        let read_params = |window: SessionWindow| {
             window.read_params(
                 SessionListParams::default(),
                 client.daemon_version(),
                 jiff::Timestamp::now(),
             )
+        };
+        let params = self
+            .session_window
+            .with_value(|window| read_params(*window));
+        let mut answer = client.list_sessions(params.clone()).await;
+        let days = self.session_filter.with_untracked(|filter| {
+            (*filter == Default::default())
+                .then_some(filter.within.days())
+                .flatten()
         });
-        let answer = client.list_sessions(params).await;
+        if let (Ok(result), Some(since), Some(days)) = (&answer, params.active_since, days)
+            && self.session_window.with_value(SessionWindow::is_recent)
+            && result.older.is_some()
+            && holds_nothing_recent(&result.sessions, since)
+            && let Some(newest) = newest_older(client, result.older).await
+        {
+            let window = SessionWindow::rolled_back(newest, days);
+            self.session_window.set_value(window);
+            answer = client.list_sessions(read_params(window)).await;
+        }
+        self.session_rollback.set(
+            self.session_window
+                .with_value(SessionWindow::rolled_back_to),
+        );
         if let Some(read) = read {
             match answer {
                 Ok(result) => {
@@ -2858,6 +2851,32 @@ pub fn level_from_storage(stored: Option<&str>) -> EventLevel {
 
 fn client_run_id() -> ClientRunId {
     ClientRunId::new(format!("web-{}", uuid::Uuid::now_v7())).expect("a bounded client run id")
+}
+
+/// The last activity of the newest session older than `older` that counts
+/// by its activity, a month of sessions at a time; `None` when there is
+/// none, or a page fails.
+async fn newest_older(
+    client: &Client,
+    mut older: Option<jiff::Timestamp>,
+) -> Option<jiff::Timestamp> {
+    // A month a page: a few years at most.
+    for _ in 0..36 {
+        let page = client
+            .list_sessions(SessionListParams {
+                before: Some(older?),
+                ..SessionListParams::default()
+            })
+            .await
+            .ok()?;
+        if let Some(newest) =
+            cookie_agent_client_state::session_window::newest_activity(&page.sessions)
+        {
+            return Some(newest);
+        }
+        older = page.older;
+    }
+    None
 }
 
 #[cfg(test)]

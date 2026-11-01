@@ -370,6 +370,11 @@ pub(super) fn listed_sections(
     })
 }
 
+/// Whether no section holds a session.
+pub(super) fn sections_hold_none(sections: Memo<Vec<ListedSection>>) -> bool {
+    sections.with(|sections| sections.iter().all(|section| section.sessions.is_empty()))
+}
+
 /// The session list as project sections, then "No project".
 pub(super) fn project_list(
     rows: SessionRows,

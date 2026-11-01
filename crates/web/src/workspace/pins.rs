@@ -36,6 +36,7 @@ impl Workspace {
         if self.session_filter.with_untracked(|filter| filter.within) == within {
             return;
         }
+        self.session_rollback.set(None);
         self.session_filter.update(|filter| filter.within = within);
         self.session_window
             .set_value(within.window(&crate::cron::zone_at(jiff::Timestamp::now())));
@@ -95,4 +96,31 @@ impl Workspace {
 pub(crate) fn local_today() -> jiff::civil::Date {
     let now = jiff::Timestamp::now();
     now.to_zoned(crate::cron::zone_at(now)).date()
+}
+
+/// The browser's date at `at`.
+pub(crate) fn local_date(at: jiff::Timestamp) -> jiff::civil::Date {
+    at.to_zoned(crate::cron::zone_at(at)).date()
+}
+
+/// `date` as the list names a day: "Oct 3", with the year when it is not
+/// `today`'s.
+pub(crate) fn date_label(date: jiff::civil::Date, today: jiff::civil::Date) -> String {
+    cookie_agent_client_state::session_filter::DateRange::new(date, date).label(today)
+}
+
+impl Workspace {
+    /// The first day a rolled-back list shows: the filter's days before the
+    /// newest session's last activity; `None` while it is not rolled back.
+    pub fn rollback_start(self) -> Option<jiff::civil::Date> {
+        let newest = self.session_rollback.get()?;
+        let days = self
+            .session_filter
+            .with(|filter| filter.within.days())
+            .unwrap_or_default();
+        let start = newest
+            .checked_sub(jiff::SignedDuration::from_hours(24 * days))
+            .ok()?;
+        Some(local_date(start))
+    }
 }

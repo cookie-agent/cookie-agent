@@ -393,39 +393,34 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-x-hidden overflow-y-auto px-2 pb-3" aria-label="Sessions" node_ref=list>
             {move || {
                 if workspace.has_projects.get() {
-                    return projects::project_list(rows, sections, searching, headers).into_any();
+                    // The filter left every section empty: say so above
+                    // them, with the way to change it.
+                    let offer = !searching.get()
+                        && projects::sections_hold_none(sections)
+                        && (workspace.filter_changes() > 0 || workspace.has_older_sessions.get());
+                    return view! {
+                        {offer.then(|| filter_offer(workspace, icondata::FaFilterSolid, "No sessions in this time range or filter."))}
+                        {projects::project_list(rows, sections, searching, headers)}
+                    }
+                    .into_any();
                 }
                 if nothing_shown.get() {
                     if searching.get() {
                         return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
                     }
                     if workspace.filter_changes() > 0 {
-                        return empty_state(icondata::FaFilterSolid, "No sessions match the filter.").into_any();
+                        return filter_offer(workspace, icondata::FaFilterSolid, "No sessions match the filter.").into_any();
                     }
-                    // Older sessions than the window reaches: Show older,
-                    // below, or a longer date in the filter lists them.
+                    // Older sessions than the window reaches: a longer date
+                    // in the filter lists them.
                     if workspace.has_older_sessions.get() {
-                        return empty_state(icondata::FaClockRotateLeftSolid, "No sessions in this time range.").into_any();
+                        return filter_offer(workspace, icondata::FaClockRotateLeftSolid, "No sessions in this time range; older ones are a longer date away.").into_any();
                     }
                     return empty_state(icondata::FaFolderOpenSolid, "No sessions yet. Start one with New session.")
                         .into_any();
                 }
                 session_rows::keyed_rows(rows, move || shown.get()).into_any()
             }}
-            // Older sessions than the list's window, a month at a time; the
-            // pinned, unread, and busy ones are listed whatever their age.
-            <Show when=move || workspace.has_older_sessions.get()>
-                <button
-                    type="button"
-                    class=format!("{BUTTON} mt-1 self-start")
-                    id="show-older-sessions"
-                    disabled=move || workspace.older_sessions_loading.get()
-                    on:click=move |_| workspace.show_older_sessions()
-                >
-                    <Glyph icon=icondata::FaClockRotateLeftSolid />
-                    {move || if workspace.older_sessions_loading.get() { "Loading…" } else { "Show older" }}
-                </button>
-            </Show>
         </nav>
     }
 }
@@ -483,6 +478,13 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
     // The date, and how many other parts narrow the list: "Last 7 days",
     // or, short enough for the row, "7 days · 2 filters".
     let summary = move || {
+        // Rolled back to the newest session's days: from when.
+        if let Some(start) = workspace.rollback_start() {
+            return format!(
+                "Since {}",
+                crate::workspace::date_label(start, crate::workspace::local_today())
+            );
+        }
         let within = workspace.session_filter.with(|filter| filter.within);
         let others = filter_changes.get()
             - usize::from(
@@ -855,6 +857,16 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                                 {date_field("To", "filter-to", false)}
                             </div>
                         </Show>
+                        {move || workspace.session_rollback.get().map(|newest| {
+                            let today = crate::workspace::local_today();
+                            let newest = crate::workspace::date_label(crate::workspace::local_date(newest), today);
+                            view! {
+                                <p class=format!("flex items-center gap-1.5 {NOTE}") data-rolled-back>
+                                    <Glyph icon=icondata::FaClockRotateLeftSolid class="text-caramel dark:text-maple" />
+                                    {format!("Nothing in the last 7 days: listing the 7 days up to the newest session ({newest}), and on to now.")}
+                                </p>
+                            }
+                        })}
                         <p class=format!("flex items-center gap-1.5 {NOTE}")>
                             <Glyph icon=icondata::FaThumbtackSolid class="text-caramel dark:text-maple" />
                             "Pinned, unread, and busy sessions always show."
@@ -943,6 +955,25 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                     </div>
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// What the session list says when the filter leaves it empty, with the
+/// button that opens the filter.
+fn filter_offer(workspace: Workspace, icon: icons::Icon, text: &'static str) -> impl IntoView {
+    view! {
+        <div class="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-ink dark:text-sand" data-filter-offer>
+            <Glyph icon=icon class="text-2xl opacity-70" />
+            <p>{text}</p>
+            <button
+                type="button"
+                class=BUTTON
+                on:click=move |_| workspace.filter_open.set(true)
+            >
+                <Glyph icon=icondata::FaFilterSolid />
+                "Change the filter"
+            </button>
         </div>
     }
 }
