@@ -97,7 +97,9 @@ scripts/test-web-page.sh projects       # one scenario and those it builds on
 
 `scripts/test-web-page.sh` runs its groups of scenarios side by side, each
 with its own daemons and browser; `SCREENSHOT_DIR` keeps a screenshot of
-each step. A scenario fails when a page it opened had an uncaught error,
+each step. A step that times out prints what the page shows, what its
+composer holds, and the browser's console, where a WebSocket's own errors
+show; a failing group prints the end of its daemons' output. A scenario fails when a page it opened had an uncaught error,
 an unhandled rejection, or a panic, which the page's panic hook logs to the
 console with its message and location (the bundle aborts on panic, so the
 browser alone reports only `RuntimeError: unreachable`). A bundle built

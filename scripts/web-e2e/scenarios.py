@@ -247,7 +247,22 @@ class Browser:
             composer = None
         if composer is not None:
             print("the composer holds %r%s" % (composer[0], " (disabled)" if composer[1] else ""), file=sys.stderr)
+        self.print_log()
         sys.exit(1)
+
+    def print_log(self, last=40):
+        """Prints the last `last` entries of the browser's console, every
+        level: how a connection failed (a WebSocket's own error) shows
+        only there."""
+        try:
+            entries = call("POST", self.path("/se/log"), {"type": "browser"})
+        except (RuntimeError, OSError):
+            return
+        if entries:
+            print("the browser's console (last %d entries):" % min(last, len(entries)), file=sys.stderr)
+        for entry in entries[-last:]:
+            message = re.sub(r"#token=[^ \"]*", "#token=…", entry.get("message", ""))
+            print("  %s %s %s" % (entry.get("timestamp"), entry.get("level"), message), file=sys.stderr)
 
     def shot(self, name):
         if SCREENSHOTS:

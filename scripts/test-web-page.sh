@@ -337,10 +337,24 @@ TOML
         "$other_port" "$allowing" "$held_session" "${SCREENSHOT_DIR:-}" "$@"
 }
 
+# What the daemons under directory $1 said, restarts included: a flake on
+# CI is read from this log alone. Their output says when each one listened,
+# restarted, and listened again, without the token.
+print_daemon_logs() {
+    local said
+    while IFS= read -r said; do
+        [[ -s "$said" ]] || continue
+        echo "--- ${said#"$scratch/"} (last 40 lines)"
+        tail -n 40 "$said" | grep -v '^daemon-ready ' | sed 's/#token=[^ ]*/#token=…/'
+    done < <(find "$1" -maxdepth 2 \( -name daemon.err -o -name daemon.out \) | sort)
+}
+
 if ((${#groups[@]} == 1)); then
+    status=0
     # shellcheck disable=SC2086  # the group's names
-    (run_set "$scratch/set" ${groups[0]})
-    exit
+    (run_set "$scratch/set" ${groups[0]}) || status=$?
+    ((status == 0)) || print_daemon_logs "$scratch/set"
+    exit "$status"
 fi
 for index in "${!groups[@]}"; do
     # shellcheck disable=SC2086
@@ -355,14 +369,7 @@ for index in "${!groups[@]}"; do
     cat "$scratch/set$index.log"
     ((status == 0)) && continue
     failed+=("${groups[$index]}")
-    # What the group's daemons said, restarts included: a flake on CI is
-    # read from this log alone. Their output says when each one listened,
-    # restarted, and listened again, without the token.
-    while IFS= read -r said; do
-        [[ -s "$said" ]] || continue
-        echo "--- ${said#"$scratch/"} (last 40 lines)"
-        tail -n 40 "$said" | grep -v '^daemon-ready ' | sed 's/#token=[^ ]*/#token=…/'
-    done < <(find "$scratch/set$index" -maxdepth 2 \( -name daemon.err -o -name daemon.out \) | sort)
+    print_daemon_logs "$scratch/set$index"
 done
 sets=()
 if ((${#failed[@]})); then
