@@ -27,7 +27,7 @@ impl App {
         }
         if self.current_approval().is_some() {
             if let Some(hit) = hits.approval_actions.iter().find(|hit| over(hit.rect)) {
-                return Some(PointerTarget::ApprovalAction(hit.decision));
+                return Some(PointerTarget::ApprovalAction(hit.choice));
             }
             return hits
                 .approval_details
@@ -490,7 +490,7 @@ impl App {
                     self.focus_provider_field(hit, column, row);
                 }
             }
-            PointerTarget::ApprovalAction(decision) => self.answer_approval(decision).await,
+            PointerTarget::ApprovalAction(choice) => self.answer_approval(choice).await,
             PointerTarget::ApprovalDetails => self.toggle_approval_details(),
             PointerTarget::GoalAction(action) => self.activate_goal_action(action),
             PointerTarget::BackgroundBar => self.open_background_panel(),
@@ -853,11 +853,11 @@ impl App {
                 fill_style,
             ),
             PointerTarget::ApprovalDetails => (one(hits.approval_details), text_style),
-            PointerTarget::ApprovalAction(decision) => (
+            PointerTarget::ApprovalAction(choice) => (
                 one(hits
                     .approval_actions
                     .iter()
-                    .find(|hit| hit.decision == decision)
+                    .find(|hit| hit.choice == choice)
                     .map(|hit| hit.rect)),
                 fill_style,
             ),

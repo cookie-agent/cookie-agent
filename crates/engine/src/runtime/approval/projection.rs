@@ -278,6 +278,7 @@ impl Engine {
                                 client_response_id,
                                 decision,
                                 feedback,
+                                ..
                             },
                         ),
                 } if client_response_id == &params.client_response_id => {
@@ -375,14 +376,29 @@ impl Engine {
                 Some(&record),
             ));
         }
-        let allowed = match params.decision {
-            ApprovalUserDecision::ApproveOnce => approval_constraints(&record.request).allow_once,
-            ApprovalUserDecision::ApproveTree => {
-                approval_constraints(&record.request).allow_tree_grant
-            }
-            ApprovalUserDecision::Reject => true,
-            ApprovalUserDecision::Cancel => approval_constraints(&record.request).cancellable,
-        };
+        // An agent's option must be one it offered, approving with an
+        // approval and rejecting with a rejection.
+        let option_agrees = params.agent_option.as_ref().is_none_or(|chosen| {
+            record
+                .request
+                .agent_options()
+                .iter()
+                .find(|option| &option.option_id == chosen)
+                .is_some_and(|option| {
+                    option.kind.allows() == (params.decision == ApprovalUserDecision::ApproveOnce)
+                })
+        });
+        let allowed = option_agrees
+            && match params.decision {
+                ApprovalUserDecision::ApproveOnce => {
+                    approval_constraints(&record.request).allow_once
+                }
+                ApprovalUserDecision::ApproveTree => {
+                    approval_constraints(&record.request).allow_tree_grant
+                }
+                ApprovalUserDecision::Reject => true,
+                ApprovalUserDecision::Cancel => approval_constraints(&record.request).cancellable,
+            };
         if !allowed {
             return Err(approval_response_failure(
                 &params,
@@ -418,6 +434,7 @@ impl Engine {
                     client_response_id: params.client_response_id.clone(),
                     decision: params.decision,
                     feedback: params.feedback.clone(),
+                    agent_option: params.agent_option.clone(),
                 },
             ),
         )?;

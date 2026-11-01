@@ -323,6 +323,17 @@ impl App {
         self.picker_state.select(Some(current));
     }
 
+    /// [`Self::apply_agent_option`], for the agent's mode from the bottom
+    /// bar.
+    pub(super) fn choose_agent_option_value(
+        &mut self,
+        option_id: String,
+        value: String,
+        label: String,
+    ) {
+        self.apply_agent_option(option_id, value, label);
+    }
+
     /// Chooses `value` for option `option_id`: a new session's draft keeps
     /// it for `session.create`; a session sets it on its agent.
     fn apply_agent_option(&mut self, option_id: String, value: String, label: String) {

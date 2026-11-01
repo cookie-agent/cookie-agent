@@ -644,6 +644,43 @@
       ],
       "type": "object"
     },
+    "ApprovalAgentOption": {
+      "description": "One option an ACP agent's harness offered with its permission request\n(client protocol 1.68.0): the user answers with one of them, and the\nharness gets that option back.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ApprovalAgentOptionKind"
+        },
+        "name": {
+          "description": "The label the harness gave it.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "option_id": {
+          "description": "The harness's ID for the option.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ApprovalAgentOptionKind": {
+      "description": "What answering with an [`ApprovalAgentOption`] does, as ACP names\nit. A value this build does not know reads as `reject_once`, so an\noption it cannot tell apart never approves.",
+      "enum": [
+        "allow_once",
+        "allow_always",
+        "reject_always",
+        "reject_once"
+      ],
+      "type": "string",
+      "x-open": true
+    },
     "ApprovalBoundary": {
       "oneOf": [
         {
@@ -959,6 +996,14 @@
     },
     "ApprovalRequest": {
       "properties": {
+        "agent_options": {
+          "description": "For an ACP agent's permission request, the options its harness\noffered, in its order: the user answers with one (client protocol\n1.68.0). Absent for every other request.",
+          "items": {
+            "$ref": "#/$defs/ApprovalAgentOption"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
         "approval_id": {
           "format": "uuid",
           "type": "string"
@@ -1076,6 +1121,13 @@
         {
           "description": "A client answered for the user.",
           "properties": {
+            "agent_option": {
+              "description": "The ACP agent's option the user answered with (client protocol\n1.68.0), which the agent got back.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "client_response_id": {
               "description": "Bounded approval response idempotency key.",
               "maxLength": 256,

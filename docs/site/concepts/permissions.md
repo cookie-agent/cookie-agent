@@ -173,7 +173,14 @@ rejected in `auto-approve-n`. The mode is kept in the tree's log, so it
 survives a daemon restart. See
 [The approval reviewer](../extend/agents.md#the-approval-reviewer).
 
-A `deny` rule and the doom-loop guard hold in every mode. An approval shows the call as it will run, such as the command or
+A `deny` rule and the doom-loop guard hold in every mode.
+
+An [ACP agent](../extend/acp-agents.md#permissions)'s session uses no
+mode and no reviewer: its harness asks you in its own way, and the agent's
+own mode stands in for the permission mode. Cookie refuses a call of its
+tools that a `deny` rule matches and runs the rest, and answers the
+harness's own permission requests with your `deny` and `allow` rules,
+showing you what they leave open. An approval shows the call as it will run, such as the command or
 the diff of an edit, and you allow it once, allow it for the whole session
 tree, reject it, or reject it with a note for the agent. See
 [Live permission modes](../extend/agents.md#live-permission-modes) and

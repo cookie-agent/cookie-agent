@@ -2310,6 +2310,13 @@ pub struct ApprovalRespondParams {
     pub decision: ApprovalUserDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feedback: Option<ApprovalFeedback>,
+    /// The option of the request's `agent_options` the user chose (client
+    /// protocol 1.68.0): its kind must agree with `decision`, approving
+    /// with `approve_once` and rejecting with `reject`. Without it, an ACP
+    /// agent gets its allow-once or reject-once option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 1024))]
+    pub agent_option: Option<String>,
 }
 impl ApprovalRespondParams {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -2318,6 +2325,21 @@ impl ApprovalRespondParams {
         }
         if self.feedback.is_some() && self.decision != ApprovalUserDecision::Reject {
             return Err("approval feedback is allowed only with reject");
+        }
+        if self.agent_option.is_some()
+            && !matches!(
+                self.decision,
+                ApprovalUserDecision::ApproveOnce | ApprovalUserDecision::Reject
+            )
+        {
+            return Err("an agent option answers only with approve_once or reject");
+        }
+        if self
+            .agent_option
+            .as_ref()
+            .is_some_and(|option| option.is_empty() || option.len() > 1024)
+        {
+            return Err("an agent option ID is 1 to 1024 bytes");
         }
         Ok(())
     }
@@ -2337,6 +2359,8 @@ impl<'de> Deserialize<'de> for ApprovalRespondParams {
             client_response_id: ClientResponseId,
             decision: ApprovalUserDecision,
             feedback: Option<ApprovalFeedback>,
+            #[serde(default)]
+            agent_option: Option<String>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let value = Self {
@@ -2347,6 +2371,7 @@ impl<'de> Deserialize<'de> for ApprovalRespondParams {
             client_response_id: wire.client_response_id,
             decision: wire.decision,
             feedback: wire.feedback,
+            agent_option: wire.agent_option,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

@@ -2651,6 +2651,10 @@ pub enum ApprovalStep {
         decision: ApprovalUserDecision,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         feedback: Option<ApprovalFeedback>,
+        /// The ACP agent's option the user answered with (client protocol
+        /// 1.68.0), which the agent got back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_option: Option<String>,
     },
     /// The same operation was requested too often in a row.
     DoomLoop {

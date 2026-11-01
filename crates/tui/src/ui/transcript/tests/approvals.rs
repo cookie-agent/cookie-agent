@@ -293,10 +293,13 @@ async fn arrows_move_focus_and_enter_answers_with_the_focused_decision() {
     let (mut app, recorded, incoming_guard) = recording_app_with_linked_bash().await;
     assert_eq!(
         app.approval_panel.focus,
-        Some(ApprovalUserDecision::ApproveOnce)
+        Some(ApprovalChoice::plain(ApprovalUserDecision::ApproveOnce))
     );
     app.handle_key(key(KeyCode::Right)).await;
-    assert_eq!(app.approval_panel.focus, Some(ApprovalUserDecision::Reject));
+    assert_eq!(
+        app.approval_panel.focus,
+        Some(ApprovalChoice::plain(ApprovalUserDecision::Reject))
+    );
     // The effect row follows focus.
     let rendered = rendered_frame(&mut app, 120, 40);
     assert!(rendered.contains("refuses this call"), "{rendered}");
@@ -305,10 +308,13 @@ async fn arrows_move_focus_and_enter_answers_with_the_focused_decision() {
     app.handle_key(key(KeyCode::Tab)).await;
     assert_eq!(
         app.approval_panel.focus,
-        Some(ApprovalUserDecision::ApproveOnce)
+        Some(ApprovalChoice::plain(ApprovalUserDecision::ApproveOnce))
     );
     app.handle_key(key(KeyCode::Left)).await;
-    assert_eq!(app.approval_panel.focus, Some(ApprovalUserDecision::Cancel));
+    assert_eq!(
+        app.approval_panel.focus,
+        Some(ApprovalChoice::plain(ApprovalUserDecision::Cancel))
+    );
     app.handle_key(key(KeyCode::Left)).await;
 
     app.handle_key(key(KeyCode::Enter)).await;
@@ -340,7 +346,10 @@ async fn enter_waits_out_the_grace_and_says_so_in_the_panel() {
 async fn rejection_note_takes_typing_and_is_sent_as_feedback() {
     let (mut app, recorded, incoming_guard) = recording_app_with_linked_bash().await;
     app.handle_key(key(KeyCode::Char('e'))).await;
-    assert_eq!(app.approval_panel.focus, Some(ApprovalUserDecision::Reject));
+    assert_eq!(
+        app.approval_panel.focus,
+        Some(ApprovalChoice::plain(ApprovalUserDecision::Reject))
+    );
     // Hotkey letters are text while the note is open.
     type_input(&mut app, "try git log, then y").await;
     app.handle_paste(" instead\nplease");
@@ -468,7 +477,10 @@ async fn buttons_are_pills_on_one_row_with_their_keys() {
     }
     let actions = &app.hit_map.approval_actions;
     assert_eq!(
-        actions.iter().map(|hit| hit.decision).collect::<Vec<_>>(),
+        actions
+            .iter()
+            .map(|hit| hit.choice.decision)
+            .collect::<Vec<_>>(),
         vec![
             ApprovalUserDecision::ApproveOnce,
             ApprovalUserDecision::ApproveTree,
@@ -491,4 +503,54 @@ async fn cramped_panel_keeps_every_button_and_the_command() {
     assert_eq!(app.hit_map.approval_actions.len(), 3);
     assert!(rendered.contains("✓ Once y"), "{rendered}");
     assert!(rendered.contains(" git status"), "{rendered}");
+}
+
+#[tokio::test]
+async fn an_acp_agents_request_offers_its_own_options() {
+    use cookie_agent_protocol::{ApprovalAgentOption, ApprovalAgentOptionKind as Kind};
+    let mut app = app_with_linked_bash().await;
+    let session = app.selected.expect("session");
+    let option = |id: &str, name: &str, kind| ApprovalAgentOption {
+        option_id: id.to_owned(),
+        name: name.to_owned(),
+        kind,
+    };
+    app.store.sessions.get_mut(&session).unwrap().approvals[0].agent_options = vec![
+        option("always", "Always allow", Kind::AllowAlways),
+        option("once", "Allow", Kind::AllowOnce),
+        option("no", "Reject", Kind::RejectOnce),
+    ];
+    rendered_frame(&mut app, 140, 40);
+    // The agent's options in its order, then cancel; each answers with
+    // the option it stands for.
+    let actions = &app.hit_map.approval_actions;
+    assert_eq!(
+        actions
+            .iter()
+            .map(|hit| (hit.choice.decision, hit.choice.agent_option))
+            .collect::<Vec<_>>(),
+        vec![
+            (ApprovalUserDecision::ApproveOnce, Some(0)),
+            (ApprovalUserDecision::ApproveOnce, Some(1)),
+            (ApprovalUserDecision::Reject, Some(2)),
+            (ApprovalUserDecision::Cancel, None),
+        ]
+    );
+    let approval = app.current_approval().cloned().expect("approval");
+    // The letters stand for the kinds: y once, a always, n reject.
+    assert_eq!(
+        crate::ui::app::approval_hotkey_choice_for_tests('y', &approval)
+            .and_then(|choice| choice.agent_option),
+        Some(1)
+    );
+    assert_eq!(
+        crate::ui::app::approval_hotkey_choice_for_tests('a', &approval)
+            .and_then(|choice| choice.agent_option),
+        Some(0)
+    );
+    // A note goes with the agent's reject-once option.
+    assert_eq!(
+        crate::ui::app::note_choice_for_tests(&approval).agent_option,
+        Some(2)
+    );
 }

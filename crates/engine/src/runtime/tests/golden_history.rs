@@ -732,6 +732,8 @@ async fn answer_approvals(engine: &Engine, session: SessionId, decisions: &[Appr
                         .unwrap(),
                     decision: *decision,
                     feedback: None,
+
+                    agent_option: None,
                 },
                 origin(),
             )

@@ -597,7 +597,17 @@ impl App {
         let cost = state
             .and_then(|state| state.estimated_cost_usd)
             .map(format_cost_usd);
-        let mode = permission_mode_label(self.displayed_permission_mode());
+        // An ACP agent's own mode is the session's permission mode.
+        let mode_label = self.agent_mode().map_or_else(
+            || permission_mode_label(self.displayed_permission_mode()).to_owned(),
+            |option| {
+                format!(
+                    "{} · agent",
+                    cookie_agent_client_state::acp::current_name(&option)
+                )
+            },
+        );
+        let mode = mode_label.as_str();
         let hint = "`ctrl+p` commands";
         #[derive(Clone, Copy)]
         struct Candidate<'a> {

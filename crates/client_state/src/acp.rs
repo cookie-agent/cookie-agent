@@ -235,6 +235,31 @@ pub fn effort_option(options: &[AcpConfigOption]) -> Option<&AcpConfigOption> {
         .find(|option| option.category.as_deref() == Some("thought_level"))
 }
 
+/// The option that is the agent's mode: the one of category `mode`, else
+/// the one with ID `mode`. In an ACP session it is the session's
+/// permission mode (`docs/site/specs/acp-permissions.md` section 4): the
+/// agent's harness decides what it asks the user.
+pub fn mode_option(options: &[AcpConfigOption]) -> Option<&AcpConfigOption> {
+    options
+        .iter()
+        .find(|option| option.category.as_deref() == Some("mode"))
+        .or_else(|| options.iter().find(|option| option.id == "mode"))
+}
+
+/// The value after `option`'s current one, wrapping, for a key that cycles
+/// the agent's mode; `None` when it has fewer than two values.
+pub fn next_value(option: &AcpConfigOption) -> Option<&cookie_agent_protocol::AcpConfigValue> {
+    if option.values.len() < 2 {
+        return None;
+    }
+    let current = option
+        .values
+        .iter()
+        .position(|value| value.value == option.current_value);
+    let next = current.map_or(0, |index| (index + 1) % option.values.len());
+    option.values.get(next)
+}
+
 /// The name of `option`'s current value, else the value itself.
 pub fn current_name(option: &AcpConfigOption) -> String {
     option
@@ -672,5 +697,112 @@ mod tests {
         )];
         let options = session_options(&view, Some(&claude), &local);
         assert_eq!(model_label(&options).as_deref(), Some("Haiku"));
+    }
+}
+
+/// The server and tool of an ACP agent's call titled as Claude Code titles
+/// an MCP tool, `mcp__<server>__<tool>`.
+fn mcp_title(title: &str) -> Option<(&str, &str)> {
+    title
+        .strip_prefix("mcp__")?
+        .split_once("__")
+        .filter(|(server, tool)| !server.is_empty() && !tool.is_empty())
+}
+
+/// What a tool call of `session` belongs to, shown beside it where the
+/// user answers for it (`docs/site/specs/acp-permissions.md`, section 4):
+/// in a session an ACP agent runs, `cookie` for one of cookie's own tools,
+/// and the server of an MCP tool the agent connected itself. `None`
+/// elsewhere.
+#[must_use]
+pub fn tool_source_label(
+    session: &crate::SessionState,
+    tool: &crate::ToolCallState,
+) -> Option<String> {
+    session.acp.agent.as_ref()?;
+    match tool
+        .presentation
+        .tool
+        .source
+        .as_ref()
+        .and_then(cookie_agent_protocol::Open::known)
+    {
+        Some(cookie_agent_protocol::ToolSource::Acp { .. }) | None => {
+            mcp_title(tool.presentation.title.as_str()).map(|(server, _)| server.to_owned())
+        }
+        Some(_) => Some("cookie".to_owned()),
+    }
+}
+
+/// The title a tool call shows where the user answers for it: an ACP
+/// agent's call of an MCP tool by the tool's own name, without the
+/// `mcp__<server>__` prefix its harness gives it (its server is shown
+/// beside it, [`tool_source_label`]).
+#[must_use]
+pub fn approval_title(title: &str) -> &str {
+    mcp_title(title).map_or(title, |(_, tool)| tool)
+}
+
+#[cfg(test)]
+mod mode_option_tests {
+    use cookie_agent_protocol::{AcpConfigOption, AcpConfigOptionKind, AcpConfigValue};
+
+    fn mode(current: &str, values: &[&str]) -> AcpConfigOption {
+        AcpConfigOption {
+            id: "mode".to_owned(),
+            name: "Mode".to_owned(),
+            kind: AcpConfigOptionKind::default(),
+            description: None,
+            category: Some("mode".to_owned()),
+            current_value: current.to_owned(),
+            values: values
+                .iter()
+                .map(|value| AcpConfigValue {
+                    value: (*value).to_owned(),
+                    name: (*value).to_owned(),
+                    description: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_next_mode_wraps_and_needs_two_values() {
+        let option = mode("auto", &["default", "auto"]);
+        assert_eq!(
+            super::next_value(&option).map(|value| value.value.as_str()),
+            Some("default")
+        );
+        let option = mode("default", &["default", "auto"]);
+        assert_eq!(
+            super::next_value(&option).map(|value| value.value.as_str()),
+            Some("auto")
+        );
+        // An unknown current value starts at the first.
+        let option = mode("gone", &["default", "auto"]);
+        assert_eq!(
+            super::next_value(&option).map(|value| value.value.as_str()),
+            Some("default")
+        );
+        assert!(super::next_value(&mode("auto", &["auto"])).is_none());
+        let options = [mode("auto", &["auto", "default"])];
+        assert_eq!(
+            super::mode_option(&options).map(|option| option.id.as_str()),
+            Some("mode")
+        );
+    }
+}
+
+#[cfg(test)]
+mod approval_label_tests {
+    #[test]
+    fn an_mcp_title_drops_its_prefix() {
+        assert_eq!(super::approval_title("mcp__exa__web_search"), "web_search");
+        assert_eq!(super::approval_title("Run tests"), "Run tests");
+        assert_eq!(super::approval_title("mcp____x"), "mcp____x");
+        assert_eq!(
+            super::mcp_title("mcp__exa__web_search"),
+            Some(("exa", "web_search"))
+        );
     }
 }

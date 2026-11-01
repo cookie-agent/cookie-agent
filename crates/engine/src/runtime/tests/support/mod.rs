@@ -1640,6 +1640,8 @@ pub(crate) async fn approve_once(
                     .expect("client response ID"),
                 decision: ApprovalUserDecision::ApproveOnce,
                 feedback: None,
+
+                agent_option: None,
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1792,6 +1794,7 @@ pub(crate) async fn reject_approval(
                     .expect("client response ID"),
                 decision: ApprovalUserDecision::Reject,
                 feedback: None,
+                agent_option: None,
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

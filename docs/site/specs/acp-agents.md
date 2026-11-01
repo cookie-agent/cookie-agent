@@ -1547,3 +1547,14 @@ rows.
   (`crates/client_state/src/tests.rs`), and
   `an_acp_agents_system_prompt_row_shows_what_its_session_was_given`
   (`crates/client_state/src/rows.rs`).
+
+## Addendum (2026-11-01): permissions revised
+
+Section 8 and section 9's "permissions apply as for a model" are replaced
+by [ACP agent permissions](acp-permissions.md): a call of cookie's tools
+through the bridge is refused on `deny` and otherwise runs; the agent's
+own permission requests are decided by `deny` and `allow` and otherwise
+shown to the user with the agent's own options, a request for one of
+cookie's tools by that call's own rules on its row; the agent's mode is
+the session's permission mode, and cookie's modes and reviewer do not
+apply to ACP sessions (client protocol 1.68.0, plugin protocol 1.36.0).

@@ -26,7 +26,7 @@ pub(in crate::ui) struct ApprovalPanel {
     pub(in crate::ui) scroll: u16,
     pub(in crate::ui) max_scroll: u16,
     /// The keyboard-focused decision: Enter answers with it.
-    pub(in crate::ui) focus: Option<ApprovalUserDecision>,
+    pub(in crate::ui) focus: Option<ApprovalChoice>,
     /// Whether the full prepared-operation identity is expanded.
     pub(in crate::ui) details: bool,
     /// The rejection note being written, while its field is open.
@@ -44,28 +44,92 @@ impl ApprovalPanel {
         if self.request != Some(request) {
             *self = Self {
                 request: Some(request),
-                focus: offered_decisions(approval).first().copied(),
+                focus: offered_choices(approval).first().copied(),
                 ..Self::default()
             };
         }
     }
 }
 
-/// The decisions a request offers, in button order. Reject is always
-/// offered; the others follow the request's constraints.
-pub(super) fn offered_decisions(approval: &ApprovalState) -> Vec<ApprovalUserDecision> {
-    let mut decisions = Vec::new();
-    if approval.constraints.allow_once {
-        decisions.push(ApprovalUserDecision::ApproveOnce);
+/// One button of the approval panel: a decision, answered with the ACP
+/// agent's option at `agent_option` of the request's `agent_options` when
+/// the request is an agent's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) struct ApprovalChoice {
+    pub(in crate::ui) decision: ApprovalUserDecision,
+    pub(in crate::ui) agent_option: Option<usize>,
+}
+
+impl ApprovalChoice {
+    pub(in crate::ui) const fn plain(decision: ApprovalUserDecision) -> Self {
+        Self {
+            decision,
+            agent_option: None,
+        }
     }
-    if approval.constraints.allow_tree_grant {
-        decisions.push(ApprovalUserDecision::ApproveTree);
+
+    /// The agent's option this choice answers with, if any.
+    fn option(
+        self,
+        approval: &ApprovalState,
+    ) -> Option<&cookie_agent_protocol::ApprovalAgentOption> {
+        self.agent_option
+            .and_then(|index| approval.agent_options.get(index))
     }
-    decisions.push(ApprovalUserDecision::Reject);
+}
+
+/// The choices a request offers, in button order. An ACP agent's request
+/// offers its harness's options, in its order, then cancel. Any other
+/// always offers reject; the others follow the request's constraints.
+pub(super) fn offered_choices(approval: &ApprovalState) -> Vec<ApprovalChoice> {
+    let mut choices = Vec::new();
+    if !approval.agent_options.is_empty() {
+        choices.extend(
+            approval
+                .agent_options
+                .iter()
+                .enumerate()
+                .map(|(index, option)| ApprovalChoice {
+                    decision: if option.kind.allows() {
+                        ApprovalUserDecision::ApproveOnce
+                    } else {
+                        ApprovalUserDecision::Reject
+                    },
+                    agent_option: Some(index),
+                }),
+        );
+    } else {
+        if approval.constraints.allow_once {
+            choices.push(ApprovalChoice::plain(ApprovalUserDecision::ApproveOnce));
+        }
+        if approval.constraints.allow_tree_grant {
+            choices.push(ApprovalChoice::plain(ApprovalUserDecision::ApproveTree));
+        }
+        choices.push(ApprovalChoice::plain(ApprovalUserDecision::Reject));
+    }
     if approval.constraints.cancellable {
-        decisions.push(ApprovalUserDecision::Cancel);
+        choices.push(ApprovalChoice::plain(ApprovalUserDecision::Cancel));
     }
-    decisions
+    choices
+}
+
+/// The choice a rejection note is sent with: the agent's reject-once
+/// option, else its first rejecting one, else a plain reject.
+pub(in crate::ui) fn note_choice(approval: &ApprovalState) -> ApprovalChoice {
+    use cookie_agent_protocol::ApprovalAgentOptionKind as Kind;
+    let find = |kind: Option<Kind>| {
+        approval
+            .agent_options
+            .iter()
+            .position(|option| kind.map_or(!option.kind.allows(), |kind| option.kind == kind))
+    };
+    match find(Some(Kind::RejectOnce)).or_else(|| find(None)) {
+        Some(index) => ApprovalChoice {
+            decision: ApprovalUserDecision::Reject,
+            agent_option: Some(index),
+        },
+        None => ApprovalChoice::plain(ApprovalUserDecision::Reject),
+    }
 }
 
 /// Whole seconds before the request expires, if it ever does.
@@ -313,10 +377,20 @@ pub(super) fn decision_tone(decision: ApprovalUserDecision) -> crate::theme::Dec
     }
 }
 
-/// The key that answers an approval with `decision`: letters for the
-/// grants and the reject, Esc for cancel.
-pub(super) fn approval_hotkey(decision: ApprovalUserDecision) -> &'static str {
-    match decision {
+/// The key that answers an approval with `choice`: letters for the
+/// grants and the reject, Esc for cancel; none for an agent's option no
+/// letter stands for.
+pub(super) fn approval_hotkey(choice: ApprovalChoice, approval: &ApprovalState) -> &'static str {
+    use cookie_agent_protocol::ApprovalAgentOptionKind as Kind;
+    if let Some(option) = choice.option(approval) {
+        return match option.kind {
+            Kind::AllowOnce => "y",
+            Kind::AllowAlways => "a",
+            Kind::RejectOnce => "n",
+            Kind::RejectAlways => "",
+        };
+    }
+    match choice.decision {
         ApprovalUserDecision::ApproveOnce => "y",
         ApprovalUserDecision::ApproveTree => "a",
         ApprovalUserDecision::Reject => "n",
@@ -324,34 +398,61 @@ pub(super) fn approval_hotkey(decision: ApprovalUserDecision) -> &'static str {
     }
 }
 
-/// The decision a letter hotkey answers with, if this approval offers it.
+/// The choice a letter hotkey answers with, if this approval offers it.
 /// Case-insensitive so Caps Lock does not silently disable the keys.
-pub(super) fn approval_hotkey_decision(
+pub(in crate::ui) fn approval_hotkey_choice(
     character: char,
     approval: &ApprovalState,
-) -> Option<ApprovalUserDecision> {
-    match character.to_ascii_lowercase() {
-        'y' if approval.constraints.allow_once => Some(ApprovalUserDecision::ApproveOnce),
-        'a' if approval.constraints.allow_tree_grant => Some(ApprovalUserDecision::ApproveTree),
-        'n' => Some(ApprovalUserDecision::Reject),
-        _ => None,
-    }
+) -> Option<ApprovalChoice> {
+    let key = character.to_ascii_lowercase().to_string();
+    offered_choices(approval)
+        .into_iter()
+        .filter(|choice| choice.decision != ApprovalUserDecision::Cancel)
+        .find(|choice| approval_hotkey(*choice, approval) == key)
 }
 
-/// Glyph, full label, and short label of a decision. The glyph carries the
+/// Glyph, full label, and short label of a choice. The glyph carries the
 /// decision where color does not.
-fn decision_labels(decision: ApprovalUserDecision) -> (&'static str, &'static str, &'static str) {
-    match decision {
+fn choice_labels(
+    choice: ApprovalChoice,
+    approval: &ApprovalState,
+) -> (&'static str, String, String) {
+    use cookie_agent_protocol::ApprovalAgentOptionKind as Kind;
+    if let Some(option) = choice.option(approval) {
+        let (glyph, short) = match option.kind {
+            Kind::AllowOnce => ("✓", "Once"),
+            Kind::AllowAlways => ("✓", "Always"),
+            Kind::RejectOnce => ("✗", "No"),
+            Kind::RejectAlways => ("✗", "Never"),
+        };
+        return (glyph, option.name.clone(), short.to_owned());
+    }
+    let (glyph, full, short) = match choice.decision {
         ApprovalUserDecision::ApproveOnce => ("✓", "Allow once", "Once"),
         ApprovalUserDecision::ApproveTree => ("✓", "Allow all", "All"),
         ApprovalUserDecision::Reject => ("✗", "Reject", "No"),
         ApprovalUserDecision::Cancel => ("⎋", "Cancel", "Esc"),
-    }
+    };
+    (glyph, full.to_owned(), short.to_owned())
 }
 
-/// What answering with `decision` does, phrased for the label row that
+/// What answering with `choice` does, phrased for the label row that
 /// follows keyboard focus.
-fn decision_effect(decision: ApprovalUserDecision, approval: &ApprovalState) -> String {
+fn choice_effect(choice: ApprovalChoice, approval: &ApprovalState) -> String {
+    use cookie_agent_protocol::ApprovalAgentOptionKind as Kind;
+    if let Some(option) = choice.option(approval) {
+        return match option.kind {
+            Kind::AllowOnce => "the agent makes this call now; it asks again next time".into(),
+            Kind::AllowAlways => {
+                "the agent makes this call, and its harness stops asking about calls like it".into()
+            }
+            Kind::RejectOnce => "the agent does not make this call · e adds a note".into(),
+            Kind::RejectAlways => {
+                "the agent does not make this call, and its harness refuses calls like it".into()
+            }
+        };
+    }
+    let decision = choice.decision;
     match decision {
         ApprovalUserDecision::ApproveOnce => {
             "runs this exact call now; you will be asked again next time".into()
@@ -459,6 +560,7 @@ fn plain_rows(lines: Vec<Line<'static>>) -> Vec<ApprovalPreviewRow> {
 fn approval_body(
     approval: &ApprovalState,
     tool: Option<&crate::state::ToolCallState>,
+    source: Option<&str>,
     panel: &ApprovalPanel,
     width: u16,
     theme: &Theme,
@@ -468,7 +570,10 @@ fn approval_body(
     let first_action = &approval.resources[0].capability;
     let title = tool.map_or_else(
         || crate::ui::management::action_label(first_action).to_owned(),
-        |tool| tool.presentation.title.as_str().to_owned(),
+        |tool| {
+            cookie_agent_client_state::acp::approval_title(tool.presentation.title.as_str())
+                .to_owned()
+        },
     );
     let hint = tool.and_then(|tool| tool.presentation.hint.as_ref().map(|hint| hint.rendered()));
     let mut hero = vec![
@@ -476,6 +581,11 @@ fn approval_body(
         Span::raw(" "),
         Span::styled(title.clone(), theme.heading()),
     ];
+    // Whose tool it is, in a session an ACP agent runs.
+    if let Some(source) = source {
+        hero.push(Span::raw(" "));
+        hero.push(Span::styled(format!("[{source}]"), theme.muted()));
+    }
     if let Some(argument) = tool.and_then(crate::ui::transcript::header_argument) {
         hero.push(Span::raw("  "));
         hero.push(Span::styled(argument, theme.user()));
@@ -542,11 +652,11 @@ fn approval_body(
         )));
     }
     if let Some(focus) = panel.focus {
-        let (glyph, _, short) = decision_labels(focus);
-        let tone = theme.decision(decision_tone(focus), false);
+        let (glyph, _, short) = choice_labels(focus, approval);
+        let tone = theme.decision(decision_tone(focus.decision), false);
         rows.extend(plain_rows(labeled_rows(
             Span::styled(format!("{glyph} {}", short.to_lowercase()), tone),
-            Line::styled(decision_effect(focus, approval), theme.body()),
+            Line::styled(choice_effect(focus, approval), theme.body()),
             width,
         )));
     }
@@ -590,19 +700,20 @@ fn approval_body(
 /// One decision button: glyph and label in the decision's tone, then its
 /// key, all on one pill. The focused button is filled with its tone.
 fn button_spans(
-    decision: ApprovalUserDecision,
+    choice: ApprovalChoice,
+    approval: &ApprovalState,
     detail: usize,
     focused: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let (glyph, full, short) = decision_labels(decision);
-    let key = approval_hotkey(decision);
+    let (glyph, full, short) = choice_labels(choice, approval);
+    let key = approval_hotkey(choice, approval);
     let label = match detail {
         0 => format!(" {glyph} {full} "),
         1 => format!(" {glyph} {short} "),
         _ => format!(" {glyph} "),
     };
-    let tone = theme.decision(decision_tone(decision), focused);
+    let tone = theme.decision(decision_tone(choice.decision), focused);
     let (label_style, key_style) = if focused {
         (tone, tone.remove_modifier(Modifier::BOLD))
     } else {
@@ -611,18 +722,20 @@ fn button_spans(
             .map_or_else(Style::default, |background| Style::default().bg(background));
         (pill.patch(tone), pill.patch(theme.muted()))
     };
-    vec![
-        Span::styled(label, label_style),
-        Span::styled(format!("{key} "), key_style),
-    ]
+    let mut spans = vec![Span::styled(label, label_style)];
+    if !key.is_empty() {
+        spans.push(Span::styled(format!("{key} "), key_style));
+    }
+    spans
 }
 
 /// The decision buttons laid out left to right with a two-column gap, at
 /// the most detailed label size that fits `area`. Hit rects cover exactly
 /// each painted pill.
 fn layout_buttons(
-    decisions: &[ApprovalUserDecision],
-    focus: Option<ApprovalUserDecision>,
+    choices: &[ApprovalChoice],
+    approval: &ApprovalState,
+    focus: Option<ApprovalChoice>,
     area: Rect,
     theme: &Theme,
 ) -> Vec<(ApprovalHit, Vec<Span<'static>>)> {
@@ -635,20 +748,20 @@ fn layout_buttons(
     let gap = 2;
     let detail = (0..3)
         .find(|detail| {
-            let total = decisions
+            let total = choices
                 .iter()
-                .map(|decision| span_width(&button_spans(*decision, *detail, false, theme)))
+                .map(|choice| span_width(&button_spans(*choice, approval, *detail, false, theme)))
                 .sum::<usize>()
-                + gap * decisions.len().saturating_sub(1);
+                + gap * choices.len().saturating_sub(1);
             total <= usize::from(area.width)
         })
         .unwrap_or(2);
     let mut x = area.x;
     let right = area.x.saturating_add(area.width);
-    decisions
+    choices
         .iter()
-        .filter_map(|decision| {
-            let spans = button_spans(*decision, detail, focus == Some(*decision), theme);
+        .filter_map(|choice| {
+            let spans = button_spans(*choice, approval, detail, focus == Some(*choice), theme);
             let width = u16::try_from(span_width(&spans)).unwrap_or(u16::MAX);
             let visible = width.min(right.saturating_sub(x));
             if visible == 0 {
@@ -656,7 +769,7 @@ fn layout_buttons(
             }
             let hit = ApprovalHit {
                 rect: Rect::new(x, area.y, visible, 1),
-                decision: *decision,
+                choice: *choice,
             };
             x = x.saturating_add(width).saturating_add(gap as u16);
             Some((hit, spans))
@@ -736,14 +849,15 @@ impl App {
             KeyCode::Left | KeyCode::BackTab => self.move_approval_focus(&approval, true),
             KeyCode::Right | KeyCode::Tab => self.move_approval_focus(&approval, false),
             KeyCode::Enter => {
-                if let Some(decision) = self.approval_panel.focus {
-                    self.answer_approval_when_armed(&approval, decision, None)
+                if let Some(choice) = self.approval_panel.focus {
+                    self.answer_approval_when_armed(&approval, choice, None)
                         .await;
                 }
             }
             KeyCode::Esc => {
                 if approval.constraints.cancellable {
-                    self.answer_approval(ApprovalUserDecision::Cancel).await;
+                    self.answer_approval(ApprovalChoice::plain(ApprovalUserDecision::Cancel))
+                        .await;
                 }
             }
             KeyCode::Char(character) if is_printable_key(key) => {
@@ -756,12 +870,12 @@ impl App {
                         self.approval_panel.notice = Some("just appeared · press again".into());
                     }
                     'e' => {
-                        self.approval_panel.focus = Some(ApprovalUserDecision::Reject);
+                        self.approval_panel.focus = Some(note_choice(&approval));
                         self.approval_panel.note = Some(InputState::default());
                     }
                     _ => {
-                        if let Some(decision) = approval_hotkey_decision(character, &approval) {
-                            self.answer_approval_when_armed(&approval, decision, None)
+                        if let Some(choice) = approval_hotkey_choice(character, &approval) {
+                            self.answer_approval_when_armed(&approval, choice, None)
                                 .await;
                         }
                     }
@@ -782,7 +896,7 @@ impl App {
                     .note
                     .as_ref()
                     .and_then(|note| approval_feedback(note.as_str()));
-                self.answer_approval_when_armed(approval, ApprovalUserDecision::Reject, feedback)
+                self.answer_approval_when_armed(approval, note_choice(approval), feedback)
                     .await;
             }
             KeyCode::PageUp | KeyCode::PageDown => self.handle_approval_scroll_key(key.code),
@@ -796,18 +910,18 @@ impl App {
     }
 
     fn move_approval_focus(&mut self, approval: &ApprovalState, backward: bool) {
-        let decisions = offered_decisions(approval);
+        let choices = offered_choices(approval);
         let current = self
             .approval_panel
             .focus
-            .and_then(|focus| decisions.iter().position(|decision| *decision == focus))
+            .and_then(|focus| choices.iter().position(|choice| *choice == focus))
             .unwrap_or(0);
         let next = if backward {
-            (current + decisions.len() - 1) % decisions.len()
+            (current + choices.len() - 1) % choices.len()
         } else {
-            (current + 1) % decisions.len()
+            (current + 1) % choices.len()
         };
-        self.approval_panel.focus = Some(decisions[next]);
+        self.approval_panel.focus = Some(choices[next]);
     }
 
     /// Answer from the keyboard only once the request has been on top for
@@ -815,11 +929,11 @@ impl App {
     async fn answer_approval_when_armed(
         &mut self,
         approval: &ApprovalState,
-        decision: ApprovalUserDecision,
+        choice: ApprovalChoice,
         feedback: Option<cookie_agent_protocol::ApprovalFeedback>,
     ) {
         if self.approval_hotkeys_armed(approval, Instant::now()) {
-            self.answer_approval_with(decision, feedback).await;
+            self.answer_approval_with(choice, feedback).await;
         } else {
             self.status = "Approval just appeared; press the key again to answer.".into();
             self.approval_panel.notice = Some("just appeared · press again".into());
@@ -889,15 +1003,15 @@ impl App {
     /// the exact (id, revision, fingerprint, decision) tuple is sent
     /// asynchronously. Nothing executes locally; failures restore the modal
     /// only when the request is still durably escalated and unexpired.
-    pub(in crate::ui) async fn answer_approval(&mut self, decision: ApprovalUserDecision) {
-        self.answer_approval_with(decision, None).await;
+    pub(in crate::ui) async fn answer_approval(&mut self, choice: ApprovalChoice) {
+        self.answer_approval_with(choice, None).await;
     }
 
     /// [`Self::answer_approval`] with an optional note, which the protocol
     /// accepts only with a rejection.
     async fn answer_approval_with(
         &mut self,
-        decision: ApprovalUserDecision,
+        choice: ApprovalChoice,
         feedback: Option<cookie_agent_protocol::ApprovalFeedback>,
     ) {
         if self.pending_approval.is_some() {
@@ -906,6 +1020,10 @@ impl App {
         let Some(approval) = self.current_approval().cloned() else {
             return;
         };
+        let decision = choice.decision;
+        let agent_option = choice
+            .option(&approval)
+            .map(|option| option.option_id.clone());
         let feedback = feedback.filter(|_| decision == ApprovalUserDecision::Reject);
         self.next_approval_request_id = self.next_approval_request_id.wrapping_add(1);
         let request_id = self.next_approval_request_id;
@@ -925,6 +1043,7 @@ impl App {
                     client_response_id: client_response_id(),
                     decision,
                     feedback,
+                    agent_option,
                 })
                 .await
                 .map(|_| ())
@@ -1165,11 +1284,16 @@ impl App {
     ) -> Vec<ApprovalHit> {
         self.approval_panel.sync(approval);
         let tool = self.approval_tool(approval);
+        let source = tool.as_ref().and_then(|tool| {
+            let session = self.store.sessions.get(&approval.session_id)?;
+            cookie_agent_client_state::acp::tool_source_label(session, tool)
+        });
         let theme = &self.theme;
         let text_width = screen.width.saturating_sub(4).max(1);
         let (rows, details_row) = approval_body(
             approval,
             tool.as_ref(),
+            source.as_deref(),
             &self.approval_panel,
             text_width,
             theme,
@@ -1325,7 +1449,8 @@ impl App {
             );
         }
         let buttons = layout_buttons(
-            &offered_decisions(approval),
+            &offered_choices(approval),
+            approval,
             self.approval_panel.focus,
             buttons_row,
             &self.theme,

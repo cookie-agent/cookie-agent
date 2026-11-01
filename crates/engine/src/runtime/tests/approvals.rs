@@ -504,6 +504,8 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
                     .expect("response ID"),
                 decision: ApprovalUserDecision::ApproveTree,
                 feedback: None,
+
+                agent_option: None,
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

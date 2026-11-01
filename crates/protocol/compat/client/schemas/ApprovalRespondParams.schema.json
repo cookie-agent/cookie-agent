@@ -44,6 +44,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "agent_option": {
+      "description": "The option of the request's `agent_options` the user chose (client\nprotocol 1.68.0): its kind must agree with `decision`, approving\nwith `approve_once` and rejecting with `reject`. Without it, an ACP\nagent gets its allow-once or reject-once option.",
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "approval_id": {
       "format": "uuid",
       "type": "string"

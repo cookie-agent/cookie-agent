@@ -349,6 +349,41 @@ impl<'de> Deserialize<'de> for PreparedOperationIdentity {
     }
 }
 
+/// What answering with an [`ApprovalAgentOption`] does, as ACP names
+/// it. A value this build does not know reads as `reject_once`, so an
+/// option it cannot tell apart never approves.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum ApprovalAgentOptionKind {
+    AllowOnce,
+    AllowAlways,
+    RejectAlways,
+    #[serde(other)]
+    RejectOnce,
+}
+impl ApprovalAgentOptionKind {
+    /// Whether answering with the option approves the call.
+    #[must_use]
+    pub const fn allows(self) -> bool {
+        matches!(self, Self::AllowOnce | Self::AllowAlways)
+    }
+}
+
+/// One option an ACP agent's harness offered with its permission request
+/// (client protocol 1.68.0): the user answers with one of them, and the
+/// harness gets that option back.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ApprovalAgentOption {
+    /// The harness's ID for the option.
+    #[schemars(length(min = 1, max = 1024))]
+    pub option_id: String,
+    /// The label the harness gave it.
+    #[schemars(length(min = 1, max = 1024))]
+    pub name: String,
+    pub kind: ApprovalAgentOptionKind,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ApprovalConstraints {
     pub allow_once: bool,
@@ -721,6 +756,12 @@ pub struct ApprovalRequest {
     /// layer.
     #[schemars(with = "crate::NullableSchema<RuntimeId>", required)]
     runtime_id: Option<RuntimeId>,
+    /// For an ACP agent's permission request, the options its harness
+    /// offered, in its order: the user answers with one (client protocol
+    /// 1.68.0). Absent for every other request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 16))]
+    agent_options: Vec<ApprovalAgentOption>,
 }
 impl ApprovalRequest {
     /// A request for `operation` of call `tool_call_id`, whose fingerprint
@@ -801,7 +842,22 @@ impl ApprovalRequest {
             evaluations,
             constraints,
             runtime_id: None,
+            agent_options: Vec::new(),
         })
+    }
+    /// The request answered with one of `options`, an ACP agent's harness's
+    /// own, at most 16 of them.
+    #[must_use]
+    pub fn with_agent_options(mut self, mut options: Vec<ApprovalAgentOption>) -> Self {
+        options.truncate(16);
+        self.agent_options = options;
+        self
+    }
+    /// The options the user answers an ACP agent's request with; empty for
+    /// any other request.
+    #[must_use]
+    pub fn agent_options(&self) -> &[ApprovalAgentOption] {
+        &self.agent_options
     }
     /// The request for a tool of the runtime with ID `runtime_id` (`None`
     /// for the base layer).
@@ -869,6 +925,8 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
             constraints: ApprovalConstraints,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             runtime_id: Option<RuntimeId>,
+            #[serde(default)]
+            agent_options: Vec<ApprovalAgentOption>,
         }
         let w = Wire::deserialize(d)?;
         Ok(Self::with_fingerprint(
@@ -882,7 +940,8 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
             w.constraints,
         )
         .map_err(serde::de::Error::custom)?
-        .with_runtime(w.runtime_id))
+        .with_runtime(w.runtime_id)
+        .with_agent_options(w.agent_options))
     }
 }
 

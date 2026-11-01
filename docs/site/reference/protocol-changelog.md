@@ -5,6 +5,24 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.68.0
+
+- ACP agents' own permission options on approvals
+  ([ACP agent permissions](../specs/acp-permissions.md) section 4):
+  `ApprovalRequest` gains `agent_options`, the options an ACP agent's
+  harness offered with its permission request (`option_id`, `name`, and
+  `kind`: `allow_once`, `allow_always`, `reject_once`, or `reject_always`,
+  an open set read as `reject_once`), in its order. `approval.respond`
+  takes `agent_option`, one of their IDs, whose kind must agree with the
+  decision (`approve_once` for an allowing one, `reject` for a rejecting
+  one), and the `user_decision` approval step records it. An answer
+  without one gets the agent its allow-once or reject-once option.
+- An ACP session's approvals no longer depend on the tree's permission
+  mode: what cookie's rules leave open always waits for the user, and
+  carries no tree grant. A rejection's `feedback` is steered into the
+  agent's turn as the user's input.
+- Plugin protocol 1.36.0 carries the members the same way.
+
 ## 1.67.0
 
 - Assets ([spec](../specs/assets.md); see [Assets](protocol.md#assets)):

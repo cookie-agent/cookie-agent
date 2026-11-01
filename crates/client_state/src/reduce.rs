@@ -3512,6 +3512,7 @@ pub(super) fn approval_state_from_request(
         constraints,
         escalated,
         reviewer: None,
+        agent_options: request.agent_options().to_vec(),
     }
 }
 

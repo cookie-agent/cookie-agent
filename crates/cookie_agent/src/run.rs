@@ -1065,6 +1065,8 @@ async fn reject_escalated(
                         .expect("UUID is a valid client response ID"),
                     decision: ApprovalUserDecision::Reject,
                     feedback: None,
+
+                    agent_option: None,
                 },
                 headless_origin(),
             )

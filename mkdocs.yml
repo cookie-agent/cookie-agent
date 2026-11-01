@@ -165,6 +165,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - ACP agent permissions: specs/acp-permissions.md
           - Session pins and filters: specs/session-pins-and-filters.md
           - Daemon startup and status: specs/daemon-startup.md
           - "`cookie update`: self-update by channel": specs/self-update.md
@@ -196,7 +197,6 @@ nav:
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
           - "Assets: files agents give the user": specs/assets.md
-          - ACP agent permissions: specs/acp-permissions.md
           - ACP agents across several machines: specs/acp-several-runtimes.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md

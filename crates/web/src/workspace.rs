@@ -2500,12 +2500,23 @@ impl Workspace {
         });
     }
 
-    /// Answers an approval at the revision and fingerprint it was shown at.
+    /// Answers an approval at the revision and fingerprint it was shown at:
+    /// with an ACP agent's option, `agent_option`, when it offers its own,
+    /// and with a note for the agent when it rejects.
     pub fn respond(
         self,
         approval: cookie_agent_client_state::ApprovalState,
         decision: ApprovalUserDecision,
+        agent_option: Option<String>,
+        note: Option<String>,
     ) {
+        let feedback = note
+            .filter(|_| decision == ApprovalUserDecision::Reject)
+            .map(|note| note.trim().to_owned())
+            .filter(|note| !note.is_empty())
+            .map(|note| cookie_agent_protocol::ApprovalFeedback {
+                message: cookie_agent_protocol::diagnostics::headline(&note),
+            });
         let Some(client) = self.client() else {
             return;
         };
@@ -2519,7 +2530,8 @@ impl Workspace {
                     client_response_id: ClientResponseId::new(uuid::Uuid::now_v7().to_string())
                         .expect("a uuid is a client response id"),
                     decision,
-                    feedback: None,
+                    feedback,
+                    agent_option,
                 })
                 .await;
             match result {

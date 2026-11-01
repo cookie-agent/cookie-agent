@@ -998,6 +998,8 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
                 .expect("response ID"),
                 decision: cookie_agent_protocol::ApprovalUserDecision::ApproveOnce,
                 feedback: None,
+
+                agent_option: None,
             })
             .await
     });

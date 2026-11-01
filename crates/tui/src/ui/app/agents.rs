@@ -926,7 +926,25 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The mode option of the ACP agent the bottom bar is about: in its
+    /// session, the agent's mode is the permission mode
+    /// (`docs/site/specs/acp-permissions.md` section 4).
+    pub(super) fn agent_mode(&self) -> Option<cookie_agent_protocol::AcpConfigOption> {
+        self.draft_acp_agent()?;
+        cookie_agent_client_state::acp::mode_option(&self.agent_options()).cloned()
+    }
+
     pub(super) fn cycle_permission_mode(&mut self) {
+        // An ACP agent's harness decides what it asks: `m` cycles its mode.
+        if let Some(option) = self.agent_mode() {
+            let Some(next) = cookie_agent_client_state::acp::next_value(&option).cloned() else {
+                self.status = format!("the agent offers no other {}", option.name.to_lowercase());
+                return;
+            };
+            let label = format!("{}: {}", option.name, next.name);
+            self.choose_agent_option_value(option.id.clone(), next.value, label);
+            return;
+        }
         if self.new_session_draft.is_some() {
             // The draft has no session yet: hold the mode for creation.
             let mode = next_permission_mode(self.displayed_permission_mode());

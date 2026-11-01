@@ -16,8 +16,8 @@
 use cookie_agent_protocol::paths::PathStyle;
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalEvaluation, ApprovalId, ApprovalRequest, ApprovalResourceSource,
-    ApprovalTrigger, DecisionTrace, PermissionAction, PermissionEffect, PreparedBindingLifetime,
-    ToolCallId,
+    ApprovalTrigger, DecisionTrace, Open, PermissionAction, PermissionEffect,
+    PreparedBindingLifetime, ToolCallId,
 };
 use cookie_agent_runtime_api::authoring::{prepared_operation, prepared_resource};
 use serde_json::Value;
@@ -331,6 +331,74 @@ pub(crate) fn bridge_arguments(call: &ToolCallFields) -> Value {
     }
 }
 
+/// How a permission request was answered: whether it is allowed, the
+/// agent's option the user chose, and the note of a rejection the user gave
+/// one with.
+#[derive(Debug, Default)]
+pub(crate) struct AcpAnswer {
+    pub(crate) allowed: bool,
+    pub(crate) option: Option<String>,
+    pub(crate) note: Option<String>,
+}
+
+impl AcpAnswer {
+    fn decided(allowed: bool) -> Self {
+        Self {
+            allowed,
+            ..Self::default()
+        }
+    }
+
+    /// The option to answer the agent with: the user's, else its
+    /// allow-once or reject-once option.
+    pub(crate) fn outcome(&self, options: &[wire::PermissionOption]) -> Value {
+        let chosen = self
+            .option
+            .as_deref()
+            .filter(|chosen| options.iter().any(|option| option.option_id == *chosen));
+        wire::permission_outcome(chosen.or_else(|| answer_option(options, self.allowed)))
+    }
+}
+
+/// The agent's options as an approval offers them to the user.
+pub(crate) fn agent_options(
+    options: &[wire::PermissionOption],
+) -> Vec<cookie_agent_protocol::ApprovalAgentOption> {
+    options
+        .iter()
+        .filter(|option| {
+            !option.option_id.is_empty()
+                && option.option_id.len() <= cookie_agent_protocol::MAX_ACP_LABEL_BYTES
+        })
+        .map(|option| cookie_agent_protocol::ApprovalAgentOption {
+            option_id: option.option_id.clone(),
+            name: {
+                let name = option.name.trim();
+                if name.is_empty() {
+                    option.option_id.clone()
+                } else {
+                    bounded_label(name)
+                }
+            },
+            kind: serde_json::from_value(Value::String(option.kind.clone()))
+                .unwrap_or(cookie_agent_protocol::ApprovalAgentOptionKind::RejectOnce),
+        })
+        .collect()
+}
+
+/// `text` cut to the longest label the protocol carries.
+fn bounded_label(text: &str) -> String {
+    let max = cookie_agent_protocol::MAX_ACP_LABEL_BYTES;
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
 /// The agent's allow-once or reject-once option, as `allowed` says.
 pub(crate) fn answer_option(options: &[wire::PermissionOption], allowed: bool) -> Option<&str> {
     option_of(options, if allowed { "allow_once" } else { "reject_once" })
@@ -362,7 +430,7 @@ impl Engine {
         known: Option<&ToolCallFields>,
         tool_call_id: Option<ToolCallId>,
     ) -> Value {
-        let (allowed, note) = self
+        let answer = self
             .acp_permission_allowed(
                 active,
                 run,
@@ -375,10 +443,10 @@ impl Engine {
                 tool_call_id,
             )
             .await;
-        if let Some(note) = note {
-            self.steer_rejection_note(run, request, &note).await;
+        if let Some(note) = &answer.note {
+            self.steer_rejection_note(run, request, note).await;
         }
-        wire::permission_outcome(answer_option(&request.options, allowed))
+        answer.outcome(&request.options)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -393,11 +461,11 @@ impl Engine {
         request: &wire::PermissionRequest,
         known: Option<&ToolCallFields>,
         tool_call_id: Option<ToolCallId>,
-    ) -> (bool, Option<String>) {
-        let refused = (false, None);
+    ) -> AcpAnswer {
+        let refused = AcpAnswer::decided(false);
         let style = platform.map(PathStyle::of_platform);
         let (action, resources, by_rules) = match map_request(&request.tool_call, known, style) {
-            MappedRequest::Allow => return (true, None),
+            MappedRequest::Allow => return AcpAnswer::decided(true),
             // The runner decides these on the call's own row; one that
             // reaches here has no row to ask on.
             MappedRequest::Bridge(_) => return refused,
@@ -488,7 +556,7 @@ impl Engine {
                 .with_platform(platform),
             );
             match decision.effect {
-                PermissionEffect::Allow => return (true, None),
+                PermissionEffect::Allow => return AcpAnswer::decided(true),
                 PermissionEffect::Deny => return refused,
                 PermissionEffect::Ask => decision.evaluations,
             }
@@ -511,7 +579,7 @@ impl Engine {
                 expires_at: None,
             },
         ) {
-            Ok(request) => request,
+            Ok(approval) => approval.with_agent_options(agent_options(&request.options)),
             Err(_) => return refused,
         };
         let approval_id = request.approval_id();
@@ -531,38 +599,35 @@ impl Engine {
             )
             .await
             .is_ok_and(|outcome| outcome.approved);
-        let note = (!approved)
-            .then(|| self.rejection_note(active.session, approval_id))
-            .flatten();
-        (approved, note)
+        self.user_answer(active.session, approval_id, approved)
     }
 
     /// Decides the agent's request to call one of cookie's tools,
     /// `prepared` as the bridged call will be: `deny` rejects it, `allow`
     /// and tree grants allow it, and otherwise the user is asked on the
-    /// call's own row. Returns whether it is allowed, and the note of a
-    /// rejection the user gave one with.
+    /// call's own row, with the agent's `options`.
     pub(in crate::runtime) async fn decide_bridged_request(
         &self,
         active: &ActiveRun,
         run: cookie_agent_protocol::RunId,
         prepared: &super::super::PreparedToolCall,
-    ) -> (bool, Option<String>) {
+        options: &[wire::PermissionOption],
+    ) -> AcpAnswer {
         // A call cookie cannot prepare would fail at the bridge anyway: let
         // the agent make it and read why.
         if prepared.prepared.is_err() {
-            return (true, None);
+            return AcpAnswer::decided(true);
         }
         let Ok(permission) = self.decide_tool_permission(active, prepared) else {
-            return (false, None);
+            return AcpAnswer::decided(false);
         };
         let evaluations = match permission.effect {
-            PermissionEffect::Allow => return (true, None),
-            PermissionEffect::Deny => return (false, None),
+            PermissionEffect::Allow => return AcpAnswer::decided(true),
+            PermissionEffect::Deny => return AcpAnswer::decided(false),
             PermissionEffect::Ask => permission.evaluations,
         };
         let Ok(ready) = prepared.prepared.as_ref() else {
-            return (false, None);
+            return AcpAnswer::decided(false);
         };
         let Ok(request) = ApprovalRequest::new(
             ApprovalId::new_v7(),
@@ -577,8 +642,9 @@ impl Engine {
                 cancellable: true,
                 expires_at: None,
             },
-        ) else {
-            return (false, None);
+        )
+        .map(|request| request.with_agent_options(agent_options(options))) else {
+            return AcpAnswer::decided(false);
         };
         let approval_id = request.approval_id();
         let executor: cookie_agent_runtime_api::PreparedExecutorCell =
@@ -597,29 +663,45 @@ impl Engine {
             )
             .await
             .is_ok_and(|outcome| outcome.approved);
-        let note = (!approved)
-            .then(|| self.rejection_note(active.session, approval_id))
-            .flatten();
-        (approved, note)
+        self.user_answer(active.session, approval_id, approved)
     }
 
-    /// The note the user rejected approval `approval_id` of `session`
-    /// with, if they gave one.
-    fn rejection_note(
+    /// How approval `approval_id` of `session` ended, `approved` or not:
+    /// with the agent's option the user chose, and the note they rejected
+    /// it with.
+    fn user_answer(
         &self,
         session: cookie_agent_protocol::SessionId,
         approval_id: ApprovalId,
-    ) -> Option<String> {
-        let events = self.inner.store.log(session).ok()?.event_snapshot();
-        let record =
-            super::super::approval::projection::approval_record(session, &events, approval_id)?;
-        if record.user_decision != Some(cookie_agent_protocol::ApprovalUserDecision::Reject) {
-            return None;
+        approved: bool,
+    ) -> AcpAnswer {
+        let mut answer = AcpAnswer::decided(approved);
+        let Ok(log) = self.inner.store.log(session) else {
+            return answer;
+        };
+        for event in log.event_snapshot().iter().rev() {
+            if let cookie_agent_protocol::EventPayload::ApprovalStep {
+                approval_id: id,
+                step:
+                    Open::Known(cookie_agent_protocol::ApprovalStep::UserDecision {
+                        decision,
+                        feedback,
+                        agent_option,
+                        ..
+                    }),
+            } = &event.payload
+                && *id == approval_id
+            {
+                answer.option.clone_from(agent_option);
+                if *decision == cookie_agent_protocol::ApprovalUserDecision::Reject {
+                    answer.note = feedback
+                        .as_ref()
+                        .map(|feedback| feedback.message.to_string());
+                }
+                break;
+            }
         }
-        record
-            .final_decision?
-            .feedback
-            .map(|feedback| feedback.message.to_string())
+        answer
     }
 
     /// Steers the note the user rejected `request` with into the agent's

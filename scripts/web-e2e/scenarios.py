@@ -5864,6 +5864,35 @@ def acp_agents(browser):
     close_sheet(browser)
     print("the model chip shows and picks the agent's model and effort, and opens its other options, a boolean one a switch")
 
+    # The agent's mode is the session's permission mode: the mode chip shows
+    # it, and its sheet lists the agent's modes and picks one.
+    browser.wait("the agent's mode", lambda: "Plan · agent" in browser.text("#permission-mode"), timeout=40)
+    browser.click("#permission-mode")
+    default_mode = '#sheet [data-agent-mode="default"]'
+    browser.wait("the agent's modes", lambda: count(browser, default_mode) == 1)
+    assert count(browser, "#sheet [data-mode]") == 0, "cookie's own modes are offered"
+    settle(browser)
+    browser.shot("acp-agent-modes")
+    browser.click(default_mode)
+    browser.wait("the agent's default mode", lambda: "Default · agent" in browser.text("#permission-mode"), timeout=40)
+    print("the mode chip shows and picks the agent's own mode")
+
+    # What cookie's rules leave open goes to the user with the agent's own
+    # options, and the one chosen is what the agent gets.
+    send(browser, "permission execute make deploy")
+    browser.wait("the approval", lambda: browser.text("#approvals-badge") != "", timeout=40)
+    browser.click("#approvals-badge")
+    allow = '#sheet [data-agent-answer="yes"]'
+    browser.wait("the agent's options", lambda: count(browser, allow) == 1)
+    assert count(browser, '#sheet [data-agent-answer="no-always"]') == 1
+    assert count(browser, "#sheet [data-decision=approve_tree]") == 0, "an ACP approval offers a tree grant"
+    settle(browser)
+    browser.shot("acp-approval")
+    browser.click(allow)
+    browser.wait("the agent's answer", lambda: "permission: yes" in browser.text("#transcript"), timeout=60)
+    close_sheet(browser)
+    print("an ACP agent's approval offers its own options, and the agent gets the one chosen")
+
     # A new session's draft offers the options the agent last started a
     # session with, and its choices start the new session.
     new_session(browser)

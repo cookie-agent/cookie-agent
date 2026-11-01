@@ -292,6 +292,9 @@ pub struct ApprovalState {
     pub escalated: bool,
     /// What the approval reviewer made of the call, once it was evaluated.
     pub reviewer: Option<ReviewerNote>,
+    /// For an ACP agent's permission request, its harness's options in
+    /// its order: the buttons the user answers with.
+    pub agent_options: Vec<cookie_agent_protocol::ApprovalAgentOption>,
 }
 
 /// The approval reviewer's part in an approval, as clients show it

@@ -420,29 +420,70 @@ change the session's:
 
 ## Permissions
 
-The agent runs its own file and shell tools, and asks cookie before the
-calls its own policy asks about. Cookie decides each request with the
-document's rules, by the request's ACP tool kind:
+The agent's harness is the only gate that asks you. Cookie decides what
+your rules decide, without asking, and passes the rest of the harness's
+questions on to you
+([ACP agent permissions](../specs/acp-permissions.md)).
 
-| The agent asks to | Decided as |
+**Calls of cookie's tools.** A call that reaches cookie's
+[MCP bridge](#cookies-tools-for-the-agent-the-mcp-bridge) has already passed
+the harness's own check. Cookie refuses it when a `deny` rule matches,
+giving the agent a denied result that names the rule, and otherwise runs
+it. An `ask` rule, or no rule, never stops it: nobody is asked.
+
+**The harness's permission requests.** The agent asks before the calls its
+own mode asks about. Cookie matches each request against the document's
+rules by its ACP tool kind:
+
+| The agent asks to | Matched as |
 |---|---|
 | read or search a file | `read`, by the file's path |
 | edit, delete, or move a file | `write`, by the file's path |
 | run a command | `bash`, by the command |
 | fetch a URL | `webfetch`, by the URL |
 | call a tool of an MCP server it connects itself (`mcp__exa__search`) | `mcp`, by `exa_search`, the name cookie gives the same tool |
-| call one of cookie's own tools (`mcp__cookie__memory_search`) | allowed: the call reaches cookie, whose rules decide it there |
+| call one of cookie's own tools (`mcp__cookie__bash`) | that call's own rules, on the machine it runs on (`bash@labpc`) |
 | think | allowed |
 | switch its mode, or anything else | asks you |
 
-So `bash: {"git *": allow}` allows the agent's own `git` commands as it
-allows cookie's `bash` tool, and `mcp: {"exa_*": allow}` covers an `exa`
-server whether cookie or the agent connects it. A request that touches
-several files needs each allowed. An `ask` goes through the approval flow
-like any other, and cookie answers the agent with its allow-once or
-reject-once option, never an "always" one, so a repeat comes back to your
-rules. In the agent's auto mode, which cookie picks when it offers one, the
-agent asks about few calls.
+A `deny` rejects the request and an `allow` (or an earlier grant for the
+session tree) allows it, at once. Anything else, an `ask` rule or no rule
+at all, is shown to you with the harness's own options, *Always allow*
+included, and the one you pick is what the agent gets. A request that
+touches several files is allowed only when every file is, and rejected
+when any one is denied. So `bash: {"git *": allow}` allows the agent's own
+`git` commands as it allows cookie's `bash` tool, and `mcp: {"exa_*":
+allow}` covers an `exa` server whether cookie or the agent connects it.
+
+- **One approval per call of cookie's tools.** A request to call one of
+  cookie's tools starts that call's row in the transcript, by cookie's name
+  for the tool, and the approval is on it with cookie's preview (an edit's
+  diff, the command and its machine). Once allowed, the call runs on that
+  row without being asked about again.
+- **Reject with a note.** The note reaches the agent as a message steered
+  into its turn, since an ACP answer carries no text.
+- **Always allow is the harness's.** The harness remembers it per tool, not
+  per argument: one for cookie's `bash` stops it asking about cookie's
+  `bash` on every machine. Only your `deny` rules still apply then.
+- **The agent's mode is the session's permission mode.** The TUI's bottom
+  bar and the web's mode chip show the agent's mode (`Default · agent`),
+  `m` in the TUI cycles it, and the web's mode sheet lists the agent's
+  modes. Cookie's own modes (`auto-approve`, `ask`, `yolo`, ...) and the
+  approval reviewer do not apply to an ACP session; the tree's mode still
+  governs its native-model sessions.
+- **No approval expires on its own** unless `[approval] timeout_ms` is set.
+  A cron job or a delegated agent that must not wait on you runs the agent
+  in a mode that asks less (`acp.mode`), or has `allow` rules for the calls
+  it needs.
+
+What the harness asks about depends on the agent and its mode. In its auto
+mode, which cookie picks when the agent offers one, it asks about few calls,
+and a call it runs without asking never reaches cookie: a cookie `deny` on
+`bash` stops the harness's own Bash only when the harness asks. Limits that
+must hold there go in the harness's own settings (Claude Code's permission
+rules, Codex's sandbox). Cookie's tools always meet your `deny` rules, so
+write one for what an ACP agent must never do through them, such as
+`attach: deny`, `cron: deny`, `transfer: deny`, or `bash@prod: deny`.
 
 ## Questions from the agent
 
@@ -485,8 +526,9 @@ runtime over a local socket, and the runtime relays its messages to the
 daemon over the connection it already has. Through it, the agent sees the
 tools cookie would offer a model in that session: memory, cron,
 `list_agents`, `delegate_subagent` and the subagent tools, MCP servers'
-tools, and runtime tools, each listed only when the rules offer it, and
-each call decided by the rules as a model's would be.
+tools, and runtime tools, each listed unless the rules deny it everywhere,
+and each call refused when a `deny` rule matches it (see
+[Permissions](#permissions)).
 
 The list can change during a session: a machine attached or detached, an
 MCP server connecting, a rule changed. The bridge then sends the agent

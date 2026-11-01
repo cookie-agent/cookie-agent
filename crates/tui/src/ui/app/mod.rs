@@ -3,6 +3,12 @@
 mod acp;
 mod agents;
 mod approvals;
+pub(in crate::ui) use approvals::ApprovalChoice;
+#[cfg(test)]
+pub(in crate::ui) use approvals::{
+    approval_hotkey_choice as approval_hotkey_choice_for_tests,
+    note_choice as note_choice_for_tests,
+};
 mod attachments;
 mod background;
 mod composer;
@@ -350,7 +356,7 @@ pub(super) struct PickerRowHit {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ApprovalHit {
     pub(super) rect: Rect,
-    pub(super) decision: ApprovalUserDecision,
+    pub(super) choice: ApprovalChoice,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -543,7 +549,7 @@ pub(super) enum PointerTarget {
     ProviderSubmit,
     ProviderCancel,
     ProviderField(ProviderFormFocus),
-    ApprovalAction(ApprovalUserDecision),
+    ApprovalAction(ApprovalChoice),
     ApprovalDetails,
     GoalAction(GoalBarAction),
     /// The background bar; a click opens the panel.

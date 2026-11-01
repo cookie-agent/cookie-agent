@@ -2815,17 +2815,18 @@ impl Turn<'_> {
         let active = Arc::clone(self.active);
         let run = self.run;
         tokio::spawn(async move {
-            let (allowed, note) = tokio::select! {
-                decided = engine.decide_bridged_request(&active, run, &prepared) => decided,
-                () = active.cancellation.cancelled() => (false, None),
+            let decided = tokio::select! {
+                decided = engine.decide_bridged_request(&active, run, &prepared, &request.options) => Some(decided),
+                () = active.cancellation.cancelled() => None,
             };
-            if let Some(note) = note {
-                engine.steer_rejection_note(run, &request, &note).await;
+            if let Some(note) = decided.as_ref().and_then(|decided| decided.note.as_deref()) {
+                engine.steer_rejection_note(run, &request, note).await;
             }
-            let answer = if active.cancellation.is_cancelled() {
-                wire::permission_outcome(None)
-            } else {
-                wire::permission_outcome(permissions::answer_option(&request.options, allowed))
+            let answer = match decided {
+                Some(decided) if !active.cancellation.is_cancelled() => {
+                    decided.outcome(&request.options)
+                }
+                _ => wire::permission_outcome(None),
             };
             let _ = incoming.respond(&answer).await;
         });

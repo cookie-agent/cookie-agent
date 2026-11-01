@@ -3657,6 +3657,18 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     };
     let approvals = Memo::new(move |_| workspace.approvals().len());
     let mode = move || workspace.permission_mode();
+    // An ACP agent's own mode is its session's permission mode.
+    let mode_label = move || {
+        cookie_agent_client_state::acp::mode_option(&workspace.acp_options()).map_or_else(
+            || mode_name(mode()).to_owned(),
+            |option| {
+                format!(
+                    "{} · agent",
+                    cookie_agent_client_state::acp::current_name(option)
+                )
+            },
+        )
+    };
     view! {
         <div
             id="status-bar"
@@ -3691,14 +3703,14 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 type="button"
                 id="permission-mode"
                 class=CHIP.replace("min-w-0", "min-w-11 justify-center")
-                aria-label=move || format!("Permission mode: {}", mode_name(mode()))
+                aria-label=move || format!("Permission mode: {}", mode_label())
                 aria-haspopup="dialog"
-                title=move || format!("Permission mode: {} (click to change)", mode_name(mode()))
+                title=move || format!("Permission mode: {} (click to change)", mode_label())
                 on:click=move |_| workspace.panel.set(Some(Panel::Modes))
             >
                 <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-caramel dark:text-maple" />
                 // A phone shows the shield alone.
-                <span class="min-w-0 truncate compact:sr-only">{move || mode_name(mode())}</span>
+                <span class="min-w-0 truncate compact:sr-only">{mode_label}</span>
                 <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
             // Where the session works.
@@ -4350,7 +4362,8 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                         .and_then(|state| state.tools.get(&approval.tool_call_id))
                         .map(|tool| {
                             (
-                                tool.header_text(),
+                                cookie_agent_client_state::acp::approval_title(&tool.header_text())
+                                    .to_owned(),
                                 display_html(&tool.presentation.preview, BlockPlace::plain),
                                 icons::hint_icon(
                                     tool.presentation.hint.as_ref().map(|hint| hint.rendered()),
@@ -4364,38 +4377,129 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                     .as_ref()
                     .and_then(cookie_agent_client_state::ReviewerNote::escalation_line)
                     .map(|line| view! { <p class=NOTE data-reviewer>{line}</p> });
-                let decide = move |decision: ApprovalUserDecision| {
+                // The note goes with a rejection, to the agent.
+                let note = RwSignal::new(String::new());
+                let decide = {
                     let approval = approval.clone();
-                    move |_| workspace.respond(approval.clone(), decision)
+                    move |decision: ApprovalUserDecision, option: Option<String>| {
+                        let approval = approval.clone();
+                        move |_| {
+                            workspace.respond(
+                                approval.clone(),
+                                decision,
+                                option.clone(),
+                                Some(note.get_untracked()),
+                            );
+                        }
+                    }
                 };
+                let buttons = if approval.agent_options.is_empty() {
+                    let tree = approval.constraints.allow_tree_grant.then(|| {
+                        view! {
+                            <button type="button" class=BUTTON data-decision="approve_tree" on:click=decide(ApprovalUserDecision::ApproveTree, None)>
+                                <Glyph icon=icondata::FaCheckDoubleSolid />
+                                "Approve for this session tree"
+                            </button>
+                        }
+                    });
+                    view! {
+                        <button type="button" class=PRIMARY data-decision="approve_once" on:click=decide(ApprovalUserDecision::ApproveOnce, None)>
+                            <Glyph icon=icondata::FaCheckSolid />
+                            "Approve once"
+                        </button>
+                        {tree}
+                        <button type="button" class=BUTTON data-decision="reject" on:click=decide(ApprovalUserDecision::Reject, None)>
+                            <Glyph icon=icondata::FaXmarkSolid />
+                            "Reject"
+                        </button>
+                    }
+                    .into_any()
+                } else {
+                    // An ACP agent's own options, in its order.
+                    approval
+                        .agent_options
+                        .iter()
+                        .map(|option| {
+                            let allows = option.kind.allows();
+                            let decision = if allows {
+                                ApprovalUserDecision::ApproveOnce
+                            } else {
+                                ApprovalUserDecision::Reject
+                            };
+                            let icon = if allows {
+                                icondata::FaCheckSolid
+                            } else {
+                                icondata::FaXmarkSolid
+                            };
+                            // The agent's allow-once option leads.
+                            let class = if option.kind
+                                == cookie_agent_protocol::ApprovalAgentOptionKind::AllowOnce
+                            {
+                                PRIMARY
+                            } else {
+                                BUTTON
+                            };
+                            view! {
+                                <button
+                                    type="button"
+                                    class=class
+                                    data-decision=if allows { "approve_once" } else { "reject" }
+                                    data-agent-answer=option.option_id.clone()
+                                    on:click=decide(decision, Some(option.option_id.clone()))
+                                >
+                                    <Glyph icon=icon />
+                                    {option.name.clone()}
+                                </button>
+                            }
+                        })
+                        .collect_view()
+                        .into_any()
+                };
+                let source = approval_source(workspace, &approval).map(|source| {
+                    view! {
+                        <span class="inline-flex shrink-0 items-center rounded-full bg-toasted px-2 py-0.5 text-xs font-normal dark:bg-ember" data-approval-source>
+                            {source}
+                        </span>
+                    }
+                });
                 view! {
                     <div class="approval flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char">
                         <p class="flex items-center gap-2 font-mono text-sm font-bold">
                             <Glyph icon=icon class="text-caramel dark:text-maple" />
                             <span class="min-w-0 break-words">{title}</span>
+                            {source}
                         </p>
                         <div class="min-w-0" inner_html=preview></div>
                         {reviewer}
-                        <div class="flex flex-wrap gap-2">
-                            <button type="button" class=PRIMARY data-decision="approve_once" on:click=decide(ApprovalUserDecision::ApproveOnce)>
-                                <Glyph icon=icondata::FaCheckSolid />
-                                "Approve once"
-                            </button>
-                            <button type="button" class=BUTTON data-decision="approve_tree" on:click=decide(ApprovalUserDecision::ApproveTree)>
-                                <Glyph icon=icondata::FaCheckDoubleSolid />
-                                "Approve for this session tree"
-                            </button>
-                            <button type="button" class=BUTTON data-decision="reject" on:click=decide(ApprovalUserDecision::Reject)>
-                                <Glyph icon=icondata::FaXmarkSolid />
-                                "Reject"
-                            </button>
-                        </div>
+                        <input
+                            type="text"
+                            class="min-h-9 w-full min-w-0 rounded-md border border-crust bg-cream px-2 text-sm focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:focus:border-maple"
+                            data-approval-note
+                            placeholder="Note for the agent, sent with a rejection"
+                            prop:value=move || note.get()
+                            on:input=move |event| note.set(event_target_value(&event))
+                        />
+                        <div class="flex flex-wrap gap-2">{buttons}</div>
                     </div>
                 }
             })
             .collect_view()
             .into_any()
     }
+}
+
+/// What a waiting approval's call belongs to, when its session runs an ACP
+/// agent: `cookie` for one of cookie's tools the agent asked to call, else
+/// the server of an MCP tool the agent connected itself.
+fn approval_source(
+    workspace: Workspace,
+    approval: &cookie_agent_client_state::ApprovalState,
+) -> Option<String> {
+    workspace.with_store(|store| {
+        let state = store.sessions.get(&approval.session_id)?;
+        let tool = state.tools.get(&approval.tool_call_id)?;
+        cookie_agent_client_state::acp::tool_source_label(state, tool)
+    })
 }
 
 fn usage_sheet(workspace: Workspace) -> impl IntoView {
@@ -4742,6 +4846,11 @@ fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
 /// The permission mode picker: every mode with its shield and what it
 /// does, the current one checked; a click sets it.
 fn modes_sheet(workspace: Workspace) -> impl IntoView {
+    if let Some(option) =
+        cookie_agent_client_state::acp::mode_option(&workspace.acp_options()).cloned()
+    {
+        return agent_modes_sheet(workspace, option).into_any();
+    }
     view! {
         {MODES
             .into_iter()
@@ -4774,6 +4883,55 @@ fn modes_sheet(workspace: Workspace) -> impl IntoView {
         <p class=format!("mt-2 flex items-start gap-2 border-t border-toasted px-3 pt-3 dark:border-ember {NOTE}")>
             <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5" />
             {FOOTNOTE}
+        </p>
+    }
+    .into_any()
+}
+
+/// The permission mode picker of a session an ACP agent runs: the agent's
+/// own modes, since its harness decides what it asks the user, while
+/// cookie applies its `deny` and `allow` rules
+/// (`docs/site/specs/acp-permissions.md` section 4).
+fn agent_modes_sheet(
+    workspace: Workspace,
+    option: cookie_agent_protocol::AcpConfigOption,
+) -> impl IntoView {
+    let id = option.id.clone();
+    let current = option.current_value.clone();
+    let rows = option
+        .values
+        .into_iter()
+        .map(|value| {
+            let chosen = value.value == current;
+            let option_id = id.clone();
+            let label = format!("{}: {}", option.name, value.name);
+            let picked = value.value.clone();
+            view! {
+                <button
+                    type="button"
+                    class=ROW
+                    class:bg-toasted=chosen
+                    class:dark:bg-ember=chosen
+                    aria-pressed=chosen.to_string()
+                    data-agent-mode=value.value.clone()
+                    on:click=move |_| {
+                        workspace.choose_agent_option(option_id.clone(), picked.clone(), label.clone());
+                        workspace.panel.set(None);
+                    }
+                >
+                    <span class="flex min-w-0 flex-1 flex-col">
+                        {choice_line(value.name.clone(), chosen, "font-mono text-sm font-bold")}
+                        {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
+                    </span>
+                </button>
+            }
+        })
+        .collect_view();
+    view! {
+        {rows}
+        <p class=format!("mt-2 flex items-start gap-2 border-t border-toasted px-3 pt-3 dark:border-ember {NOTE}")>
+            <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5" />
+            "The agent decides in this mode what it asks you. Cookie still refuses what your deny rules deny and allows what your allow rules allow."
         </p>
     }
 }

@@ -1,6 +1,7 @@
 # ACP agent permissions: cookie decides what its rules decide, the agent asks
 
-Status: **approved** (2026-11-01), being implemented. The user decided it on
+Status: **implemented** (2026-11-01; client protocol 1.68.0, plugin
+protocol 1.36.0); the probes of section 6 are still to run. The user decided it on
 2026-11-01 (section 7). It ships before
 [ACP agents across several machines](acp-several-runtimes.md), which
 relies on it. It replaces section 8 of the [ACP agents](acp-agents.md)
@@ -49,8 +50,9 @@ native-model sessions in the tree.
   model's call gets, stopping at `deny`. What would have been an approval
   runs instead. The call shows as a cookie tool call of the agent's turn,
   with its outcome.
-- **Doom-loop guard.** Unchanged: it holds for bridged calls as for a
-  model's.
+- **Doom-loop guard.** It stops repeated approvals, and a bridged call
+  asks for none, so it does not apply to bridged calls; the harness's
+  repeated requests still meet it.
 
 ## 4. Check 2: the harness's requests
 

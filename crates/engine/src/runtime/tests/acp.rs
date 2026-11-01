@@ -1313,6 +1313,7 @@ async fn a_rejections_note_is_steered_into_the_agents_turn() {
                     )
                     .unwrap(),
                 }),
+                agent_option: None,
             },
             origin(),
         )
@@ -1334,6 +1335,88 @@ async fn a_rejections_note_is_steered_into_the_agents_turn() {
                     .contains("use the staging target")
         });
     assert!(steered, "the note reached the session as input");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acp_agents_approval_answers_with_the_option_the_user_chose() {
+    let document =
+        "---\ndescription: Fixture that asks\nmode: all\nacp: {}\npermissions:\n  bash: ask\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "ask", "permission execute make deploy").await;
+    let approval = wait_for_escalated_approval(engine, session).await;
+    let offered = approval
+        .request
+        .agent_options()
+        .iter()
+        .map(|option| (option.option_id.as_str(), option.kind.allows()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        offered,
+        [
+            ("yes-always", true),
+            ("yes", true),
+            ("no", false),
+            ("no-always", false)
+        ]
+    );
+    let respond = |decision, option: &str, key: &str| {
+        let approval = approval.clone();
+        let option = option.to_owned();
+        let key = key.to_owned();
+        async move {
+            let request_revision = serde_json::to_value(&approval.request).unwrap()["revision"]
+                .as_u64()
+                .unwrap();
+            engine
+                .approval_respond(
+                    cookie_agent_protocol::ApprovalRespondParams {
+                        session_id: session,
+                        approval_id: approval.request.approval_id(),
+                        request_revision,
+                        operation_fingerprint: approval.request.operation_fingerprint().clone(),
+                        client_response_id: cookie_agent_protocol::ClientResponseId::new(key)
+                            .unwrap(),
+                        decision,
+                        feedback: None,
+                        agent_option: Some(option),
+                    },
+                    origin(),
+                )
+                .await
+        }
+    };
+    // An option must agree with the decision, and be one the agent offered.
+    assert!(
+        respond(
+            cookie_agent_protocol::ApprovalUserDecision::Reject,
+            "yes",
+            "mismatch"
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        respond(
+            cookie_agent_protocol::ApprovalUserDecision::ApproveOnce,
+            "maybe",
+            "unknown"
+        )
+        .await
+        .is_err()
+    );
+    respond(
+        cookie_agent_protocol::ApprovalUserDecision::ApproveOnce,
+        "yes-always",
+        "always",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        final_text(&finished(engine, session, run).await),
+        "permission: yes-always"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

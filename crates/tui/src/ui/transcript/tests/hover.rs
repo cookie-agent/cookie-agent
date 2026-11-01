@@ -29,9 +29,9 @@ async fn hover_follows_mouse_moves_and_resolves_the_target() {
     assert!(app.handle_mouse(moved(target.x, target.y)).await);
     assert_eq!(
         app.hover,
-        Some(PointerTarget::ApprovalAction(
+        Some(PointerTarget::ApprovalAction(ApprovalChoice::plain(
             ApprovalUserDecision::ApproveOnce
-        ))
+        )))
     );
     // Staying put is not redraw-worthy; moving to the next button is.
     assert!(!app.handle_mouse(moved(target.x, target.y)).await);
@@ -39,7 +39,9 @@ async fn hover_follows_mouse_moves_and_resolves_the_target() {
     assert!(app.handle_mouse(moved(next.x, next.y)).await);
     assert_eq!(
         app.hover,
-        Some(PointerTarget::ApprovalAction(ApprovalUserDecision::Reject))
+        Some(PointerTarget::ApprovalAction(ApprovalChoice::plain(
+            ApprovalUserDecision::Reject
+        )))
     );
     // While the approval is up it owns the pointer: anywhere off a
     // button clears the hover instead of leaking to content beneath.
