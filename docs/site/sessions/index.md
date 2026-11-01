@@ -31,11 +31,19 @@ history holds finished turns and tool results. Reattaching to a session while
 a reply streams shows its finished turns, then the reply from the next live
 output on; a daemon that dies mid-reply leaves no partial reply on disk, and
 the run reopens as interrupted. Every stored event is written before it is
-published, and every event recovery depends on is also synced first. Per-attempt
-bookkeeping (`model_attempt_started`, `model_tools_published`,
-`model_request_prepared`, `model_replay_evaluated`, `model_output_started`,
-`model_usage_recorded`) is synced by the next event that is, so a system crash
-can drop only such records at the end of the log. While a run is in flight, fold-ignored records do not rewrite the
+published. Events that something outside the log acts on (a tool call's
+start and end, input a request confirms, grants and approval decisions,
+delegations, a run's end, and every rare kind) are commit points: each is
+synced before its append returns and before it is published, so a tool runs
+only once its start is on disk, and the starts of a turn's tool calls share
+one sync. The sync runs outside the store's locks, so a slow disk holds up
+only the session that waits on it. Per-attempt bookkeeping
+(`model_attempt_started`, `model_tools_published`, `model_request_prepared`,
+`model_replay_evaluated`, `model_output_started`, `model_usage_recorded`),
+committed model turns, and an ACP agent's stored state ride along: the next
+commit point's sync covers them, or closing the log does, so a system crash
+can drop only such records after the last commit point, and the log always
+reopens as a prefix of what was written. While a run is in flight, fold-ignored records do not rewrite the
 metadata tip (`last_event_seq`, `last_activity`); it catches up at the run's
 next projection change or terminal event, on eviction, and on shutdown.
 

@@ -2,9 +2,10 @@
 
 Status: **approved** (2026-10-31), with the user's decisions of 2026-10-31
 in [section 8](#8-decisions). The measurement step shipped and its findings
-are in [section 5.1](#51-what-the-measurement-found-2026-10-31); 4.1, 4.2,
-4.3, 4.4's heavy work before locks, and 4.5 in progress, the rest of 4.4
-shelved. Follows
+are in [section 5.1](#51-what-the-measurement-found-2026-10-31). 4.1,
+4.2, 4.4's heavy work before locks, and 4.5 are implemented (2026-10-31;
+notes in [section 9](#9-implementation-notes)); 4.3 is in progress; the
+rest of 4.4 is shelved. Follows
 [responsive session loading](session-storage-v3.md), whose phase 1 removed
 the tree load from a replay's history pages but left the locks below in
 every session command's path.
@@ -341,3 +342,81 @@ User decisions of 2026-10-31:
 8. (2026-10-31, after the measurement in 5.1) Build 4.1, 4.2, 4.3, the
    heavy work before locks of 4.4, and 4.5; shelve 4.4's fast path,
    retired actors, and per-tree residency locks.
+
+## 9. Implementation notes
+
+4.1, 4.2, the last item of 4.4, and 4.5, as built on 2026-10-31:
+
+- **Syncs.** `EventLog::write_owned` writes a record unsynced and returns
+  a `Commit` for a commit point; `EventLog::sync_through` waits until a
+  sync covers it. The sync state of a log (`events/durability.rs`) counts
+  records written and the count each finished sync started at, and keeps
+  a duplicate of the writer's descriptor to sync on. A caller whose
+  commit is not covered runs the sync when none is in flight and
+  otherwise waits for the one in flight and then runs the next, so
+  commit points written before a sync starts share it. Closing the
+  writer syncs what no sync covered; a revert's cut, synced whole, counts
+  as a sync of everything written. The `log sync` meter times each sync
+  as before.
+- **Appends.** `SessionStore::append` writes and folds the record under
+  the session's slot, queues its publication there
+  (`session/publication.rs`), releases the slot, then syncs a commit
+  point and publishes what its sync settled. A record publishes, to the
+  live tails and as the session list's and approvals' notifications,
+  when it rides along or its sync ended, and only after every earlier
+  record of its session. A failed sync is reported to the append that ran
+  it and still releases the queue. A tail registered while a commit point
+  syncs already has it in its first page and is not sent it again.
+- **Tool starts.** The model loop appends a turn's `tool_call_started`
+  records with `Engine::append_deferring_sync` and syncs them once
+  (`Engine::sync_appended`, which also streams them to plugins) before
+  any permission decision or tool runs. The ACP runner's starts each sync
+  on their own: they report calls the agent already runs.
+- **Classes.** `syncs_on_append` is an exhaustive match. Ride along: the
+  six bookkeeping kinds, `model_turn_committed`, `acp_session_updated`.
+  Live-only kinds are listed too (never written). Every other kind is a
+  commit point, `tool_round_started` and the per-run prompt, memory, and
+  internal-agent records among them, as rare kinds.
+- **Reopens.** A command's slow path calls `SessionStore::prepare_write`
+  off the async workers before the residency lock: it completes the
+  tree, reopens a session this process owns but evicted, and otherwise
+  parses the log read-only for the adoption to take over.
+  `reopen_owned` parses and folds without any store lock, one reopen of
+  a session at a time (a per-session gate, so nothing appends to the file
+  while it is parsed and a torn tail is cut safely), and takes the slot
+  only to install, re-checking for a projection installed meanwhile and
+  for deletion. `begin_write` reopens that way before its exclusive lock
+  and loops if the session was evicted again before the lock.
+- **Other files.** `unread.json`, `memory/.reads.json`, and the catalog's
+  `models-dev-v2.meta.json` are renamed into place without syncing the
+  file or its folder (`SecureDirectoryLock::replace_unsynced` for the
+  catalog); the catalog body keeps its sync.
+
+Deviations:
+
+- An adoption (the first write to a tree this process does not own yet)
+  still takes the tree's `owner.lock`, converts the tree, and folds the
+  log under the exclusive lock; only the parse moves before it, taken
+  over when the file is unchanged. Taking the owner lock outside the
+  store lock would let two acquisitions in this process race on it.
+- A command queued behind the residency lock while the janitor evicts its
+  session finds it evicted under the lock and reopens it there (outside
+  the store's mutation lock); retired actors, shelved, would remove that.
+- Forks, reverts, and a buffered session's first write still sync under
+  the locks that make them: they are rare structural changes.
+
+Measured with `strace -f -y -e trace=fdatasync,fsync` on `cookie run` in a
+scratch home with `scripts/web-e2e/showcase-model.py` (the same edit, check,
+reply turn, 36 events), the store warmed by one earlier run:
+
+| | Session log | All syncs |
+|---|---|---|
+| Before (`b59ba7c14`) | 15 | 29 |
+| After | 12 | 21 |
+
+Of the eight syncs fewer, three are the log's: the turn's three
+`model_turn_committed` now ride along. The other five are `unread.json`,
+memory's read times and their folder, and the catalog metadata and the
+folder sync after it. The rest are the new session's directory and
+`metadata`, the runtime revision index, the catalog body (fetched in this
+run), and the file the `edit` tool wrote with its directory.
