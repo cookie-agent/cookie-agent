@@ -2343,7 +2343,7 @@ fn mode_defaults_follow_the_agent_mode() {
         |action: &str, resource: &str, effect| (action.to_owned(), resource.to_owned(), effect);
     let allow = PermissionEffect::Allow;
     let ask = PermissionEffect::Ask;
-    // Memory's, cron's, and attach's defaults depend on delegation too;
+    // Memory's, cron's, attach's, and asset's defaults depend on delegation too;
     // they have their own tests.
     let mode_rules = |mode| {
         let mut rules = root_rules(&agent_document("worker", mode, &[]));
@@ -2352,6 +2352,7 @@ fn mode_defaults_follow_the_agent_mode() {
                 && rule.action != PermissionAction::MEMORY_WRITE
                 && rule.action != PermissionAction::CRON
                 && rule.action != PermissionAction::ATTACH
+                && rule.action != PermissionAction::ASSET
         });
         rule_triples(&rules)
     };
@@ -2523,6 +2524,70 @@ fn root_runs_manage_cron_jobs_by_default_and_delegated_runs_do_not() {
     ];
     assert_eq!(cron(root_rules(&granted)), expected);
     assert_eq!(cron(delegated(&granted)), expected);
+}
+
+/// A root run reads, shows, writes, and deletes every asset by default; a
+/// delegated run, at any depth, is denied them (`docs/site/specs/assets.md`
+/// section 6); a declared key replaces the default either way.
+#[test]
+fn root_runs_use_assets_by_default_and_delegated_runs_are_denied_them() {
+    let asset = |rules: Vec<PermissionRule>| {
+        rule_triples(
+            &rules
+                .into_iter()
+                .filter(|rule| rule.action == PermissionAction::ASSET)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let delegated = |document: &cookie_agent_config::AgentDocument| {
+        super::agent_permission_rules(document, true, &super::MemoryVariables::default())
+    };
+    let star = |effect| [("asset".to_owned(), "*".to_owned(), effect)];
+    for mode in [AgentMode::Primary, AgentMode::All, AgentMode::Subagent] {
+        let document = agent_document("worker", mode, &[]);
+        assert_eq!(
+            asset(root_rules(&document)),
+            star(PermissionEffect::Allow),
+            "{mode:?}"
+        );
+        assert_eq!(
+            asset(delegated(&document)),
+            star(PermissionEffect::Deny),
+            "{mode:?}"
+        );
+    }
+    let internal = agent_document("worker", AgentMode::Internal, &[]);
+    assert_eq!(asset(root_rules(&internal)), star(PermissionEffect::Deny));
+    let granted = agent_document(
+        "worker",
+        AgentMode::Subagent,
+        &[(
+            "asset",
+            resources(&[
+                ("read", PermissionEffect::Allow),
+                ("write", PermissionEffect::Allow),
+                ("delete", PermissionEffect::Ask),
+            ]),
+        )],
+    );
+    let expected = [
+        (
+            "asset".to_owned(),
+            "read".to_owned(),
+            PermissionEffect::Allow,
+        ),
+        (
+            "asset".to_owned(),
+            "write".to_owned(),
+            PermissionEffect::Allow,
+        ),
+        (
+            "asset".to_owned(),
+            "delete".to_owned(),
+            PermissionEffect::Ask,
+        ),
+    ];
+    assert_eq!(asset(delegated(&granted)), expected);
 }
 
 /// The memory rules of `rules`, as `(action, resource, effect)`.

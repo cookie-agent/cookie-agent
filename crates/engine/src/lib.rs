@@ -2,6 +2,8 @@
 
 pub mod actor;
 mod agents_tool;
+mod asset_tools;
+mod assets;
 mod base_tools;
 mod config_store;
 mod cron_tools;
@@ -48,6 +50,8 @@ pub(crate) use cookie_agent_engine_store::{bindings, ownership};
 pub(crate) use cookie_agent_engine_store::{blocking, goal_projection, timing, usage};
 
 pub use agents_tool::agents_tool_spec;
+pub use asset_tools::asset_tool_specs;
+pub use assets::AssetError;
 pub use base_tools::{base_layer_tool_specs, builtin_tool_groups};
 pub use cookie_agent_mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;

@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "AssetStore": {
+      "description": "Where an asset is kept (section 4.1). A store's assets are listed,\nread, and changed together; an asset never moves between stores.",
+      "oneOf": [
+        {
+          "description": "A session tree's own assets (scope `session`), named by the tree's\nroot. They are deleted with the tree.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "session",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A project's assets (scope `project`).",
+          "properties": {
+            "project": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The assets of every session in no project (scope `project`).",
+          "properties": {
+            "type": {
+              "const": "shared",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Deletes an asset. Figures of it then show it was deleted.",
+  "properties": {
+    "asset": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "store": {
+      "$ref": "#/$defs/AssetStore"
+    }
+  },
+  "required": [
+    "store",
+    "asset"
+  ],
+  "title": "AssetDeleteParams",
+  "type": "object"
+}

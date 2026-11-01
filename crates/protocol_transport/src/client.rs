@@ -172,6 +172,8 @@ pub enum ClientDelivery {
     MachinesChanged(cookie_agent_protocol::MachinesChangedNotification),
     /// A memory file changed through the daemon; refetch `memory.list`.
     MemoryChanged(cookie_agent_protocol::MemoryChangedNotification),
+    /// An asset was written, renamed, or deleted (client protocol 1.67.0).
+    AssetsChanged(cookie_agent_protocol::AssetsChangedNotification),
     /// A project was created, changed, or deleted; refetch
     /// `projects.list`.
     ProjectsChanged(cookie_agent_protocol::ProjectsChangedNotification),
@@ -948,6 +950,63 @@ impl Client {
         self.call(
             cookie_agent_protocol::ARTIFACT_UPLOAD_CANCEL_METHOD,
             &params,
+        )
+        .await
+    }
+
+    /// A store's assets, newest first (`assets.list`, client protocol
+    /// 1.67.0).
+    pub async fn list_assets(
+        &self,
+        store: cookie_agent_protocol::AssetStore,
+    ) -> Result<cookie_agent_protocol::AssetsListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::ASSETS_LIST_METHOD,
+            &cookie_agent_protocol::AssetsListParams { store },
+        )
+        .await
+    }
+
+    /// One asset as it is now (`asset.get`).
+    pub async fn get_asset(
+        &self,
+        store: cookie_agent_protocol::AssetStore,
+        asset: cookie_agent_protocol::AssetId,
+    ) -> Result<cookie_agent_protocol::AssetGetResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::ASSET_GET_METHOD,
+            &cookie_agent_protocol::AssetGetParams { store, asset },
+        )
+        .await
+    }
+
+    /// Read a range of an asset's current content (`asset.read`).
+    pub async fn read_asset(
+        &self,
+        params: cookie_agent_protocol::AssetReadParams,
+    ) -> Result<cookie_agent_protocol::AssetReadResult, ClientError> {
+        self.call(cookie_agent_protocol::ASSET_READ_METHOD, &params)
+            .await
+    }
+
+    /// Give an asset a new title (`asset.rename`).
+    pub async fn rename_asset(
+        &self,
+        params: cookie_agent_protocol::AssetRenameParams,
+    ) -> Result<cookie_agent_protocol::AssetRenameResult, ClientError> {
+        self.call(cookie_agent_protocol::ASSET_RENAME_METHOD, &params)
+            .await
+    }
+
+    /// Delete an asset (`asset.delete`).
+    pub async fn delete_asset(
+        &self,
+        store: cookie_agent_protocol::AssetStore,
+        asset: cookie_agent_protocol::AssetId,
+    ) -> Result<cookie_agent_protocol::AssetDeleteResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::ASSET_DELETE_METHOD,
+            &cookie_agent_protocol::AssetDeleteParams { store, asset },
         )
         .await
     }
@@ -2696,6 +2755,11 @@ async fn route_notification(
             let changed: cookie_agent_protocol::MemoryChangedNotification =
                 serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::MemoryChanged(changed));
+        }
+        cookie_agent_protocol::ASSETS_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::AssetsChangedNotification =
+                serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::AssetsChanged(changed));
         }
         cookie_agent_protocol::PROJECTS_CHANGED_METHOD => {
             let changed: cookie_agent_protocol::ProjectsChangedNotification =

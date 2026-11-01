@@ -117,7 +117,8 @@ fn encode_block(
         | DisplayBlock::Media { .. }
         | DisplayBlock::Link { .. }
         | DisplayBlock::SessionRef { .. }
-        | DisplayBlock::Plan { .. } => {}
+        | DisplayBlock::Plan { .. }
+        | DisplayBlock::Asset(_) => {}
     }
 }
 

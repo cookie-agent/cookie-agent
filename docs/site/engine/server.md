@@ -9,6 +9,7 @@ host = "127.0.0.1"
 port = 7419
 token = "<43-char base64url>"
 url = "ws://127.0.0.1:7419/ws"
+page_url = "https://cookie.example.com/"
 session_idle_eviction_after = "30m"
 ```
 
@@ -43,6 +44,7 @@ and TLS options; see [Remote access](../daemon/remote-access.md).
 | `port` | integer | `7419` | TCP port for the WebSocket daemon. |
 | `token` | string | *(none)* | The daemon's bearer token, exactly 43 base64url characters. The daemon writes a fresh one here when there is none; clients and dial-in runtimes on this machine use it when given no `--token`. |
 | `url` | string | `ws://<host>:<port>/ws` | The daemon clients and dial-in runtimes on this machine connect to when given no `--url` (or URL after `--daemon`): a `ws://` or `wss://` URL whose path is `/ws`. Set it on a machine whose daemon runs elsewhere. The daemon itself ignores it. |
+| `page_url` | string | *(none)* | Where this daemon's web page can be reached, such as a tunnel's address: an `http://` or `https://` URL with no credentials, query, or fragment. The daemon reads it and sends it to clients in the handshake, and the TUI builds its links to [assets](../specs/assets.md) from it. Unset, clients build links from the URL they reached the daemon at. Clients on this machine do not read it, unlike `url`. |
 | `session_idle_eviction_after` | duration string | `"30m"` | How long a root session's tree sits unused (no new event, nobody watching it, no pending work) before it is paged out of memory. Using the session again reloads it from disk. Compact `ms`, `s`, `m`, `h`, and `d` suffixes are accepted; `"0s"` pages a tree out at the next check, made every minute, once nobody watches it. Unlike the rest of the table, a change applies at once, from the next check. |
 
 ## The web page

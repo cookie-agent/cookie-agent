@@ -561,11 +561,19 @@ async fn websocket_upgrade(
     tokio::spawn(async move {
         if let Ok(socket) = upgraded.await {
             let stream = WebSocketStream::client(socket, Arc::clone(&shared.restarting));
+            let page_url = shared
+                .page_url
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
             let _ = cookie_agent_protocol_transport::serve_starting(
                 cookie_agent_protocol_transport::Startup {
                     server,
                     status: shared.board.subscribe(),
-                    engine_version: cookie_agent_engine::release::version().to_owned(),
+                    about: cookie_agent_protocol_transport::About {
+                        engine_version: cookie_agent_engine::release::version().to_owned(),
+                        page_url,
+                    },
                 },
                 stream,
                 shared.shutdown.child_token(),

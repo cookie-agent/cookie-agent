@@ -186,6 +186,49 @@ fn validate_cron_job_id(value: &str) -> Result<(), WireStringError> {
     }
 }
 
+/// An asset's handle (`docs/site/specs/assets.md` section 3.1): `asset_`
+/// and eight lowercase hexadecimal digits, assigned by the daemon. It is
+/// what a model names an asset by; clients use the [`AssetId`].
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AssetHandle(String);
+string_wire_impl!(
+    AssetHandle,
+    14,
+    "^asset_[0-9a-f]{8}$",
+    "An asset's handle: `asset_` and eight lowercase hexadecimal digits.",
+    validate_asset_handle
+);
+
+impl AssetHandle {
+    /// The handle's prefix.
+    pub const PREFIX: &'static str = "asset_";
+
+    /// A random handle: the last eight digits of a UUIDv7, which are
+    /// random, unlike its first digits, a timestamp that handles made close
+    /// together would share.
+    #[must_use]
+    pub fn random() -> Self {
+        let digits = Uuid::now_v7().simple().to_string();
+        Self(format!("{}{}", Self::PREFIX, &digits[digits.len() - 8..]))
+    }
+}
+
+fn validate_asset_handle(value: &str) -> Result<(), WireStringError> {
+    match value.strip_prefix(AssetHandle::PREFIX) {
+        Some(digits)
+            if digits.len() == 8
+                && digits
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            Ok(())
+        }
+        _ => Err(WireStringError::Invalid(
+            "must be `asset_` and eight lowercase hexadecimal digits",
+        )),
+    }
+}
+
 /// A producer's label, chosen by its sender at registration.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProducerName(String);
@@ -598,6 +641,7 @@ uuid_id!(ProducerId);
 uuid_id!(ProducerMessageId);
 uuid_id!(ClientInstanceId);
 uuid_id!(ElicitationId);
+uuid_id!(AssetId);
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Sha256Digest(String);

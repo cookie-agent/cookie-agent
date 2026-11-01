@@ -62,6 +62,9 @@ pub(crate) struct Shared {
     /// until it has closed, so a shutdown can wait for each to send its
     /// close frame ([`RunningServer::wait`]).
     pub(crate) connections: Arc<tokio::sync::watch::Sender<()>>,
+    /// The daemon's `[server] page_url`, which handshakes report while the
+    /// daemon starts; once ready, the server reads its configuration.
+    pub(crate) page_url: std::sync::RwLock<Option<String>>,
 }
 
 impl DaemonListener {
@@ -76,8 +79,21 @@ impl DaemonListener {
                 shutdown: CancellationToken::new(),
                 restarting: Arc::new(AtomicBool::new(false)),
                 connections: Arc::new(tokio::sync::watch::Sender::new(())),
+                page_url: std::sync::RwLock::new(None),
             }),
         }
+    }
+
+    /// Reports `page_url`, the daemon's `[server] page_url`, in the
+    /// handshakes of clients that connect while it starts.
+    #[must_use]
+    pub fn with_page_url(self, page_url: Option<String>) -> Self {
+        *self
+            .shared
+            .page_url
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = page_url;
+        self
     }
 
     /// The daemon's status.

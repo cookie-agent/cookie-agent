@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.66.0",
+    "protocol_version": "1.67.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.66.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.67.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -56,6 +56,11 @@ The reply:
   1.65.0 or later at once, in phase `starting` if it is not ready yet. An
   older client's handshake is answered once the daemon is ready, or with
   `daemon_start_failed` if its startup fails.
+- **`page_url`** (since 1.67.0) is where the daemon's web page can be
+  reached, its `[server] page_url`, when that is set. Clients build links
+  into the page from it, such as the TUI's links to an asset, and
+  otherwise from the URL they reached the daemon at (`ws` becomes `http`,
+  `wss` becomes `https`, and `/ws` is dropped).
 
 **Authentication.** A client authenticates with the daemon's bearer token
 (`[server] token`) in one of two places:
@@ -318,6 +323,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `artifact.upload.finish` | `upload_id`, `sha256` of every byte sent | The stored `artifact` (`ArtifactRef`), and `image` `{ width, height }` for an image |
 | `artifact.upload.cancel` | `upload_id` | Empty object |
 | `artifact.read` | Session ID, `sha256`, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
+| `assets.list` | `store` (since 1.67.0; see [Assets](#assets)) | The store's `assets`, newest first |
+| `asset.get` | `store`, `asset` ID | The `asset` as it is now, or `asset_not_found` |
+| `asset.read` | `store`, `asset` ID, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
+| `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
+| `asset.delete` | `store`, `asset` ID | Empty object |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
 | `session.background.list` | Session ID | The session's background `calls` |
@@ -753,11 +763,42 @@ has is `project_name_taken`; an unknown ID is `project_not_found`.
   root sessions in `session_ids`, while any session tree of the project is
   busy. Otherwise it deletes every session tree of the project as
   `session.delete` does (each announced as `removed`), then the project's
-  whole memory folder, non-memory files included, then the project, and
-  returns the counts.
+  whole memory folder, non-memory files included, then the project with
+  its assets, and returns the counts (`deleted_assets` since 1.67.0).
 
 Each change sends `projects.changed` to every connection. A failure to read
 or write a project is `project_store_failed`.
+
+### Assets
+
+Since 1.67.0 agents give the user files as **assets**
+([spec](../specs/assets.md)): the `assets` tools write and show them, and
+clients list, read, rename, and delete them. Each asset is kept in one
+**store**, a tagged `AssetStore`:
+
+| `type` | Fields | Holds |
+|---|---|---|
+| `session` | `session`: the tree's root | One session tree's own assets, deleted with the tree |
+| `project` | `project` | A project's assets |
+| `shared` | none | The assets of every session in no project |
+
+An `Asset` has its `id`, its `handle` (`asset_` and 8 hex digits, which the
+model names it by), its `store`, `title`, `media_type`, `byte_length`, the
+`sha256` of its current content, the `filename` it was last written from,
+and `created` and `updated` stamps (`at`, `session`, `agent`). Writing an
+asset again replaces its content and changes its `sha256`; there are no
+versions. `asset.read` reads the current content a chunk at a time, and
+says which content each chunk came from in `sha256`: a read whose `sha256`
+differs from the one before it started over on new content.
+
+A figure in a tool result is an `asset` display block: its `store`, the
+`asset` ID, and the `handle`, `title`, `media_type`, `byte_length`, and
+`filename` the asset had when it was shown. Clients show the asset as
+`asset.get` returns it now, and those fields when it is gone. Its tool call
+has the presentation hint `figure`. A store the request names that does not
+exist, or a session store named by a session that is not a root, is
+`-32602`; an asset the store does not hold is `asset_not_found`. Each change
+sends `assets.changed` to every connection.
 
 ### Cron jobs
 
@@ -1481,6 +1522,7 @@ subscriptions to the deleted sessions end with them: no further
 | `plugins.changed` | A plugin's status changed; an empty object |
 | `machines.changed` | The machine registry changed, or a runtime joined a new machine; an empty object |
 | `memory.changed` | A memory file changed through the daemon; an empty object |
+| `assets.changed` | An asset was written, renamed, or deleted through the daemon; an empty object (since 1.67.0) |
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 | `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
@@ -1503,7 +1545,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, `crons.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `projects.changed`, `crons.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -1530,7 +1572,8 @@ bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `runtimes.changed` and `plugins.changed` work the same way for
 `runtimes.list` and `plugins.list`, `machines.changed` for
 `machines.list` and `runtimes.list`, `memory.changed` for
-`memory.list`, `projects.changed` for `projects.list`, `crons.changed`
+`memory.list`, `assets.changed` for `assets.list` and `asset.get`,
+`projects.changed` for `projects.list`, `crons.changed`
 for `crons.list`, and `notifications.changed` for `notifications.get`.
 
 ### Connection failures

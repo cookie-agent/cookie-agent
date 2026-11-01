@@ -38,8 +38,8 @@ pub use daemon_url::{
 pub use server::test_server_context;
 #[cfg(not(target_arch = "wasm32"))]
 pub use server::{
-    AUTHENTICATION_DEADLINE, Authentication, ServerContext, ServerFault, ServerProtocol, Startup,
-    serve, serve_starting,
+    AUTHENTICATION_DEADLINE, About, Authentication, ServerContext, ServerFault, ServerProtocol,
+    Startup, serve, serve_starting,
 };
 #[cfg(all(feature = "websocket", not(target_arch = "wasm32")))]
 pub use websocket::{

@@ -185,6 +185,9 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             omitted_rows,
         } => table_html(columns, rows, *omitted_rows),
         DisplayBlock::Plan { entries } => plan_html(entries),
+        DisplayBlock::Asset(asset) => {
+            format!("<div class=\"{NOTE}\">{}</div>", escape(&asset.to_text()))
+        }
         DisplayBlock::Json { value } => format!(
             "<pre class=\"{PRE}\"><code class=\"language-json\">{}</code></pre>",
             escape(&serde_json::to_string_pretty(value).unwrap_or_default())

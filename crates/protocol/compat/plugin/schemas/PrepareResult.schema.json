@@ -38,6 +38,112 @@
       ],
       "type": "object"
     },
+    "AssetBlock": {
+      "description": "An asset shown as a figure (section 10): which asset, and what it was\nwhen the call showed it. Clients show the asset as it is now, read\nwith `asset.get`, and fall back to these fields when it is gone; a\ncurrent `sha256` that differs from this one says it was replaced since.",
+      "properties": {
+        "asset": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handle": {
+          "description": "An asset's handle: `asset_` and eight lowercase hexadecimal digits.",
+          "maxLength": 14,
+          "minLength": 1,
+          "pattern": "^asset_[0-9a-f]{8}$",
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the content shown.",
+          "type": "string"
+        },
+        "store": {
+          "$ref": "#/$defs/AssetStore"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "store",
+        "asset",
+        "handle",
+        "title",
+        "media_type",
+        "byte_length",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "AssetStore": {
+      "description": "Where an asset is kept (section 4.1). A store's assets are listed,\nread, and changed together; an asset never moves between stores.",
+      "oneOf": [
+        {
+          "description": "A session tree's own assets (scope `session`), named by the tree's\nroot. They are deleted with the tree.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "session",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A project's assets (scope `project`).",
+          "properties": {
+            "project": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The assets of every session in no project (scope `project`).",
+          "properties": {
+            "type": {
+              "const": "shared",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "DiffAsOf": {
       "description": "Whether a diff shows what a call will do (`prepare`) or what it did\n(`execute`); the two differ when the file changed in between.",
       "enum": [
@@ -596,6 +702,20 @@
           "required": [
             "type",
             "entries"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/AssetBlock",
+          "description": "An asset shown as a figure (client protocol 1.67.0,\n`docs/site/specs/assets.md` section 10).",
+          "properties": {
+            "type": {
+              "const": "asset",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
           ],
           "type": "object"
         }

@@ -1094,6 +1094,25 @@ pub fn attach_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionR
     )]
 }
 
+/// The `asset` default (`docs/site/specs/assets.md` section 6): a root run
+/// reads, shows, writes, and deletes every asset it can see; a `delegated`
+/// run, at any depth, is denied them, so the tools are hidden unless its
+/// document grants them; an internal agent gets nothing.
+pub fn asset_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    if mode == AgentMode::Internal {
+        return Vec::new();
+    }
+    vec![PermissionRule::new(
+        PermissionAction::ASSET,
+        WildcardPattern::new("*").expect("static default pattern"),
+        if delegated {
+            PermissionEffect::Deny
+        } else {
+            PermissionEffect::Allow
+        },
+    )]
+}
+
 /// Every rule the daemon supplies to a run of an agent of `mode`, root or
 /// `delegated`, each for an action its document names no key for. Whatever
 /// no rule matches asks ([`MergedRules`]).
@@ -1122,6 +1141,7 @@ fn run_defaults_but_message(mode: AgentMode, delegated: bool) -> Vec<PermissionR
         .chain(memory_default_rules(mode, delegated))
         .chain(cron_default_rules(mode, delegated))
         .chain(attach_default_rules(mode, delegated))
+        .chain(asset_default_rules(mode, delegated))
         .collect()
 }
 

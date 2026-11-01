@@ -182,6 +182,10 @@ pub fn builtin_tool_groups(
             crate::cron_tools::CronTools::GROUP,
             names(crate::cron_tools::cron_tool_specs()),
         ),
+        (
+            crate::asset_tools::AssetTools::GROUP,
+            names(crate::asset_tools::asset_tool_specs()),
+        ),
     ]
 }
 

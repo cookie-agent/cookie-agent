@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "data": {
+      "description": "Base64 of the bytes read: fewer than `length` at the end.",
+      "type": "string"
+    },
+    "media_type": {
+      "type": "string"
+    },
+    "sha256": {
+      "description": "The content the bytes come from. A read whose `sha256` differs from\nan earlier one's read content written in between: start again.",
+      "type": "string"
+    },
+    "total_bytes": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "data",
+    "total_bytes",
+    "media_type",
+    "sha256"
+  ],
+  "title": "AssetReadResult",
+  "type": "object"
+}

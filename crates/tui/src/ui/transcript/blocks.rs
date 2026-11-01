@@ -335,6 +335,11 @@ fn block_rows(
                 }
             }
         }
+        DisplayBlock::Asset(asset) => {
+            if let Some(text) = sink.line(&asset.to_text()) {
+                out.push(ToolBodyLine::wrapped(Line::raw(text)));
+            }
+        }
         DisplayBlock::Json { value } => {
             let text = serde_json::to_string_pretty(value).unwrap_or_default();
             let rows = source_lines(&text)

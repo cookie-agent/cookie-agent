@@ -398,6 +398,12 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Machine(error) => machine_error(error),
         EngineError::MemoryRequest(error) => memory_error(error),
         EngineError::Project(error) => project_error(error),
+        EngineError::Asset(cookie_agent_engine::AssetError::NotFound(asset)) => {
+            errors::ASSET_NOT_FOUND.error().field("asset", asset)
+        }
+        EngineError::Asset(cookie_agent_engine::AssetError::InvalidStore(_)) => {
+            errors::BAD_PARAMS.error().field("field", "store")
+        }
         EngineError::Cron(error) => cron_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()

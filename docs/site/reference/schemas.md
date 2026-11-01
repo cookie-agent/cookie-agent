@@ -10,9 +10,9 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 1.66.0 | 1.x |
-| Plugin protocol | 1.34.0 | 1.x |
-| Runtime protocol | 1.14.0 | 1.x |
+| Client protocol | 1.67.0 | 1.x |
+| Plugin protocol | 1.35.0 | 1.x |
+| Runtime protocol | 1.15.0 | 1.x |
 | Session history (events JSONL) | history format 1 | format 1; older formats are converted |
 | Session metadata | unversioned | unversioned current shape |
 | Session store layout (`sessions/layout.json`) | 3 | 3; 2 is moved to 3 at daemon start, a newer one is refused |
@@ -24,9 +24,9 @@ emit only their current version and reject unsupported versions.
 
 The three protocols have semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes: the
-client protocol `CLIENT_PROTOCOL_VERSION` (`1.66.0`), the plugin protocol
-`PLUGIN_PROTOCOL_VERSION` (`1.34.0`), and the runtime protocol
-`RUNTIME_PROTOCOL_VERSION` (`1.14.0`), all in `cookie_agent_protocol`. All
+client protocol `CLIENT_PROTOCOL_VERSION` (`1.67.0`), the plugin protocol
+`PLUGIN_PROTOCOL_VERSION` (`1.35.0`), and the runtime protocol
+`RUNTIME_PROTOCOL_VERSION` (`1.15.0`), all in `cookie_agent_protocol`. All
 three froze at `1.0.0`. Each handshake sends its side's version and accepts a
 peer of the same major; the two use what the lower minor includes, and the
 patch never matters. No `0.x` build from before the freeze connects to a 1.x

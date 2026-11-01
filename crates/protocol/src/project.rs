@@ -256,6 +256,10 @@ pub struct ProjectDeleteResult {
     pub deleted_sessions: u64,
     /// The memory files deleted with the memory folder.
     pub deleted_memories: u64,
+    /// The project's assets, deleted with its folder (client protocol
+    /// 1.67.0).
+    #[serde(default)]
+    pub deleted_assets: u64,
 }
 
 /// A project was created, changed, or deleted; refetch `projects.list`.

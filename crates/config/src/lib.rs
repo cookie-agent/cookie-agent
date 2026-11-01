@@ -48,7 +48,7 @@ pub use runtime::{
     PluginConfig, PluginsConfig, PricingConfig, ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES,
     ServerConfig, SessionTitleConfig, ShellEnvironmentConfig, ShellEnvironmentOverride,
     SkillsConfig, SubagentOutputConfig, ToolOutputConfig, TransferConfig, valid_daemon_token,
-    valid_daemon_url,
+    valid_daemon_url, valid_page_url,
 };
 pub use runtime_templates::{AcpAgentConfig, RuntimeTemplateConfig};
 pub use skills::{

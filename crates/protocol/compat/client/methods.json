@@ -66,6 +66,54 @@
       "result": "ArtifactUploadFinishResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "asset.delete",
+      "params": "AssetDeleteParams",
+      "params_role": "command",
+      "result": "AssetDeleteResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "asset.get",
+      "params": "AssetGetParams",
+      "params_role": "command",
+      "result": "AssetGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "asset.read",
+      "params": "AssetReadParams",
+      "params_role": "command",
+      "result": "AssetReadResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "asset.rename",
+      "params": "AssetRenameParams",
+      "params_role": "command",
+      "result": "AssetRenameResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "assets.changed",
+      "params": "AssetsChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "assets.list",
+      "params": "AssetsListParams",
+      "params_role": "command",
+      "result": "AssetsListResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "background.changed",

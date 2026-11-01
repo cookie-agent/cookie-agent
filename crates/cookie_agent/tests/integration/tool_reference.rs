@@ -16,8 +16,8 @@ use std::fmt::Write as _;
 
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
 use cookie_agent_engine::{
-    agents_tool_spec, base_layer_tool_specs, builtin_tool_groups, cron_tool_specs,
-    machines_tool_specs, memory_tool_specs, runtimes_tool_spec,
+    agents_tool_spec, asset_tool_specs, base_layer_tool_specs, builtin_tool_groups,
+    cron_tool_specs, machines_tool_specs, memory_tool_specs, runtimes_tool_spec,
 };
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
@@ -45,6 +45,7 @@ fn documented_specs() -> Vec<ToolSpec> {
     specs.push(agents_tool_spec());
     specs.extend(machines_tool_specs());
     specs.extend(cron_tool_specs());
+    specs.extend(asset_tool_specs());
     specs
 }
 
@@ -114,6 +115,12 @@ fn availability(name: &str) -> Option<&'static str> {
         "cron_list" => {
             "Only next to the other cron tools. It needs no rule of its own: it lists the jobs \
              whose target kind the `cron` rules allow or ask for."
+        }
+        "write_asset" | "show_asset" | "read_asset" | "list_assets" | "delete_asset" => {
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `asset` hides them. A root run of any agent but an internal one is allowed them by \
+             default; a delegated run is denied them. `write_asset` also checks its file as \
+             `read` on the machine it reads it from."
         }
         "read_artifact" => {
             "Always, whatever the agent's permission rules: it reads only output retained by \

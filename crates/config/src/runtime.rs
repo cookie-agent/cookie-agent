@@ -627,6 +627,12 @@ pub struct ServerConfig {
     /// or `wss://` URL ending in `/ws`. The daemon itself ignores it.
     #[serde(default)]
     pub url: Option<String>,
+    /// Where the daemon's web page can be reached, such as a tunnel's
+    /// address: an `http://` or `https://` URL. The daemon reads it and
+    /// tells clients in the handshake, which build links into the page from
+    /// it (`docs/site/specs/assets.md` section 9).
+    #[serde(default)]
+    pub page_url: Option<String>,
     /// How long a root session's tree sits unused (no event, no live tail,
     /// no pending work) before the daemon pages it out of memory. Using it
     /// again reloads it from disk.
@@ -643,6 +649,7 @@ impl Default for ServerConfig {
             port: default_port(),
             token: None,
             url: None,
+            page_url: None,
             session_idle_eviction_after: default_session_idle_eviction_after(),
         }
     }
@@ -665,6 +672,20 @@ impl ServerConfig {
     pub fn local_url(&self) -> String {
         format!("ws://{}:{}/ws", self.host, self.port)
     }
+}
+
+/// Whether `url` can be `[server] page_url`: `http://` or `https://`, a
+/// host, and no credentials, query, or fragment.
+#[must_use]
+pub fn valid_page_url(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 /// Whether `url` names a daemon's client endpoint: `ws://` or `wss://`, a
@@ -690,6 +711,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("port", &self.port)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("url", &self.url)
+            .field("page_url", &self.page_url)
             .field(
                 "session_idle_eviction_after",
                 &self.session_idle_eviction_after,
@@ -1009,7 +1031,8 @@ pub const PRODUCER_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// The built-in tool groups the deferral policy defers on a model that loads
 /// deferred tools (`docs/site/specs/stable-prefix.md` section 3).
-pub const DEFERRED_BUILTIN_GROUPS: &[&str] = &["agents", "cron", "goal", "memory", "runtimes"];
+pub const DEFERRED_BUILTIN_GROUPS: &[&str] =
+    &["agents", "assets", "cron", "goal", "memory", "runtimes"];
 
 /// `[deferred_tools]`: which deferred tools are sent up front instead.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -1751,6 +1774,14 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
                 .as_deref()
                 .is_some_and(|url| !valid_daemon_url(url)),
             "server.url must be a ws:// or wss:// URL whose path is /ws",
+        ),
+        (
+            runtime
+                .server
+                .page_url
+                .as_deref()
+                .is_some_and(|url| !valid_page_url(url)),
+            "server.page_url must be an http:// or https:// URL with no query or fragment",
         ),
         (
             runtime.tool_output.max_lines == 0,

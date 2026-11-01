@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "An asset was written, renamed, or deleted through this daemon; refetch\nwhat shows assets.",
+  "title": "AssetsChangedNotification",
+  "type": "object"
+}

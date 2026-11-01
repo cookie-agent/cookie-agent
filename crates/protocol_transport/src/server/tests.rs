@@ -538,6 +538,36 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::SessionPinSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_assets(
+        &self,
+        _: cookie_agent_protocol::AssetsListParams,
+    ) -> Result<cookie_agent_protocol::AssetsListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn get_asset(
+        &self,
+        _: cookie_agent_protocol::AssetGetParams,
+    ) -> Result<cookie_agent_protocol::AssetGetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn read_asset(
+        &self,
+        _: cookie_agent_protocol::AssetReadParams,
+    ) -> Result<cookie_agent_protocol::AssetReadResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn rename_asset(
+        &self,
+        _: cookie_agent_protocol::AssetRenameParams,
+    ) -> Result<cookie_agent_protocol::AssetRenameResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn delete_asset(
+        &self,
+        _: cookie_agent_protocol::AssetDeleteParams,
+    ) -> Result<cookie_agent_protocol::AssetDeleteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: cookie_agent_protocol::PluginsListParams,
@@ -742,7 +772,7 @@ impl Connection {
         let (outgoing, frames) = mpsc::unbounded_channel();
         tokio::spawn(serve_within(
             Gate {
-                engine_version: server.engine_version(),
+                about: server.about(),
                 server: Some(server),
                 pending: None,
                 status: None,

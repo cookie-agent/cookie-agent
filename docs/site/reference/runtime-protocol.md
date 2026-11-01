@@ -131,7 +131,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.14.0**
+The protocol version is a semver string, currently **1.15.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -224,6 +224,9 @@ and `runtime/shell_environment`.
 daemon copies files and folders between machines without storing them.
 1.14.0 made the shell environment's `capture` open: a value the runtime
 does not know reads as `off`.
+1.15.0 added the `asset` display block, shared with the client protocol
+([assets](../specs/assets.md)). Only the daemon makes it; a runtime
+never needs to send one.
 
 ## Capabilities and instances
 

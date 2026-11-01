@@ -411,6 +411,11 @@ pub struct ServerHello {
     /// daemons, which answer only once ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<crate::DaemonStatus>,
+    /// Where the daemon's web page can be reached (client protocol 1.67.0):
+    /// its `[server] page_url`, when set. Clients build links into the
+    /// page from it, and otherwise from the URL they reached the daemon at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

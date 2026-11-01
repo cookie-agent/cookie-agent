@@ -115,10 +115,12 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             "cron_list",
             "cron_run",
             "cron_update",
+            "delete_asset",
             "detach_machine",
             "edit",
             "fixture_mcp",
             "list_agents",
+            "list_assets",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -126,7 +128,10 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             "memory_search",
             "memory_write",
             "read",
-            "write"
+            "read_asset",
+            "show_asset",
+            "write",
+            "write_asset"
         ]
     );
     assert!(frozen.permissions.iter().any(|rule| {
@@ -263,16 +268,21 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "cron_list",
             "cron_run",
             "cron_update",
+            "delete_asset",
             "detach_machine",
             "fixture_mcp",
             "list_agents",
+            "list_assets",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
             "memory_read",
             "memory_search",
             "memory_write",
-            "read"
+            "read",
+            "read_asset",
+            "show_asset",
+            "write_asset"
         ]
     );
     assert!(
@@ -326,10 +336,12 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "cron_run",
             "cron_update",
             "delegate",
+            "delete_asset",
             "detach_machine",
             "edit",
             "fixture_mcp",
             "list_agents",
+            "list_assets",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -337,7 +349,10 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "memory_search",
             "memory_write",
             "read",
-            "write"
+            "read_asset",
+            "show_asset",
+            "write",
+            "write_asset"
         ]
     );
 }
@@ -444,8 +459,10 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             "cron_list",
             "cron_run",
             "cron_update",
+            "delete_asset",
             "detach_machine",
             "list_agents",
+            "list_assets",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -453,6 +470,9 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             "memory_search",
             "memory_write",
             "middle",
+            "read_asset",
+            "show_asset",
+            "write_asset",
             "zeta"
         ]
     );
@@ -633,10 +653,10 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     let (endpoint, server) = scripted_preset_switch_delegation_server().await;
     let (mut fixture, shared_selection) = custom_fixture_with_endpoint(&endpoint);
     fixture.engine.shutdown().await;
-    // Memory and cron stay off: their prompt section and tools do not fit
-    // the small context the historical compaction below works in.
+    // Memory, cron, and assets stay off: their prompt section and tools do
+    // not fit the small context the historical compaction below works in.
     for agent in fixture.config.agents.values_mut() {
-        for key in ["memory", "cron"] {
+        for key in ["memory", "cron", "asset"] {
             agent.frontmatter.permissions.insert(
                 key.parse().expect("permission key"),
                 cookie_agent_config::PermissionValue::Effect(PermissionEffect::Deny),

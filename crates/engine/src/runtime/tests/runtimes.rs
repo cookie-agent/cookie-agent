@@ -40,6 +40,7 @@ fn without_memory(mut policy: FrozenRunPolicy) -> FrozenRunPolicy {
         PermissionAction::LIST_RUNTIMES,
         PermissionAction::CRON,
         PermissionAction::ATTACH,
+        PermissionAction::ASSET,
     ];
     policy
         .agent

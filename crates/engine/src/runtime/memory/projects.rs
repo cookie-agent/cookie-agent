@@ -245,12 +245,27 @@ impl Engine {
             self.delete_session(root, last_seq).await?;
             deleted_sessions += 1;
         }
-        let deleted_memories = self
-            .projects_blocking(move |_, store| Ok(store.delete(&id, &params.revision)?))
+        // The project's assets go with its folder; they are counted first.
+        let (deleted_memories, deleted_assets) = self
+            .projects_blocking(move |engine, store| {
+                let assets = engine
+                    .inner
+                    .assets
+                    .count(&cookie_agent_protocol::AssetStore::Project {
+                        project: id.clone(),
+                    })
+                    .unwrap_or_default();
+                let memories = store.delete(&id, &params.revision)?;
+                Ok((memories, assets))
+            })
             .await?;
+        if deleted_assets > 0 {
+            self.inner.assets.announce();
+        }
         Ok(ProjectDeleteResult {
             deleted_sessions,
             deleted_memories,
+            deleted_assets,
         })
     }
 

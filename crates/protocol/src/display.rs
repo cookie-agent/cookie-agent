@@ -41,6 +41,7 @@ pub const DISPLAY_BLOCK_SINCE: &[(&str, u32)] = &[
     ("link", FIRST_STABLE_MINOR),
     ("session_ref", FIRST_STABLE_MINOR),
     ("plan", 17),
+    ("asset", 67),
 ];
 
 /// One typed unit of tool presentation.
@@ -137,6 +138,9 @@ pub enum DisplayBlock {
     Plan {
         entries: Vec<PlanEntry>,
     },
+    /// An asset shown as a figure (client protocol 1.67.0,
+    /// `docs/site/specs/assets.md` section 10).
+    Asset(crate::AssetBlock),
 }
 
 /// One step of a [`DisplayBlock::Plan`].
@@ -171,6 +175,7 @@ crate::open_enum! {
 }
 
 crate::open_enum!(tagged DisplayBlock, tag = "type", tags = [
+    "asset",
     "code",
     "diff",
     "file_excerpt",
@@ -301,6 +306,8 @@ pub enum DisplayBlockError {
     Artifact(crate::ContentError),
     #[error("the display exceeds its 64 KiB budget")]
     TooLarge,
+    #[error("an asset block's sha256 is not 64 lowercase hexadecimal digits")]
+    AssetDigest,
 }
 
 impl DisplayBlock {
@@ -321,6 +328,7 @@ impl DisplayBlock {
             Self::Link { .. } => "link",
             Self::SessionRef { .. } => "session_ref",
             Self::Plan { .. } => "plan",
+            Self::Asset(_) => "asset",
         }
     }
 
@@ -389,7 +397,8 @@ impl DisplayBlock {
             | Self::Media { .. }
             | Self::Link { .. }
             | Self::SessionRef { .. }
-            | Self::Plan { .. } => false,
+            | Self::Plan { .. }
+            | Self::Asset(_) => false,
         }
     }
 
@@ -554,6 +563,22 @@ impl DisplayBlock {
                 }
                 Ok(())
             }
+            Self::Asset(asset) => {
+                if asset.title.contains('\n') {
+                    return Err(DisplayBlockError::ControlCharacter("an asset title"));
+                }
+                text(&asset.title, "an asset title")?;
+                text(&asset.media_type, "a media type")?;
+                if asset.sha256.len() != 64
+                    || !asset
+                        .sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(DisplayBlockError::AssetDigest);
+                }
+                optional(&asset.filename, "a file name")
+            }
         }
     }
 
@@ -634,6 +659,13 @@ impl DisplayBlock {
             Self::Plan { entries } => {
                 for entry in entries {
                     clean(&mut entry.content);
+                }
+            }
+            Self::Asset(asset) => {
+                clean_line(&mut asset.title);
+                clean_line(&mut asset.media_type);
+                if let Some(filename) = &mut asset.filename {
+                    clean_line(filename);
                 }
             }
         }
@@ -762,6 +794,7 @@ impl DisplayBlock {
                     let _ = write!(out, "{mark} {}", entry.content);
                 }
             }
+            Self::Asset(asset) => out.push_str(&asset.to_text()),
         }
         out
     }
@@ -810,7 +843,8 @@ impl DisplayBlock {
             | Self::Media { .. }
             | Self::Link { .. }
             | Self::SessionRef { .. }
-            | Self::Plan { .. } => None,
+            | Self::Plan { .. }
+            | Self::Asset(_) => None,
         }
     }
 
@@ -902,7 +936,8 @@ impl DisplayBlock {
             | Self::Media { .. }
             | Self::Link { .. }
             | Self::SessionRef { .. }
-            | Self::Plan { .. } => {}
+            | Self::Plan { .. }
+            | Self::Asset(_) => {}
         }
         cut
     }
@@ -1564,6 +1599,9 @@ impl ToolHint {
     pub const MESSAGE: &'static str = "message";
     pub const SKILL: &'static str = "skill";
     pub const GOAL: &'static str = "goal";
+    /// A call that shows the user something, such as an asset: clients
+    /// keep it outside folded work and open (client protocol 1.67.0).
+    pub const FIGURE: &'static str = "figure";
     pub const GENERIC: &'static str = "generic";
     /// Every documented hint.
     pub const DOCUMENTED: &'static [&'static str] = &[
@@ -1577,6 +1615,7 @@ impl ToolHint {
         Self::MESSAGE,
         Self::SKILL,
         Self::GOAL,
+        Self::FIGURE,
         Self::GENERIC,
     ];
 

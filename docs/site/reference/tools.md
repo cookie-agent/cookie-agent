@@ -59,6 +59,11 @@ block under the system prompt in the TUI transcript.
 | [`cron_update`](#cron_update) | `cron` |
 | [`cron_delete`](#cron_delete) | `cron` |
 | [`cron_run`](#cron_run) | `cron` |
+| [`write_asset`](#write_asset) | `asset` |
+| [`show_asset`](#show_asset) | `asset` |
+| [`read_asset`](#read_asset) | `asset` |
+| [`list_assets`](#list_assets) | `asset` |
+| [`delete_asset`](#delete_asset) | `asset` |
 
 <!-- /generated -->
 
@@ -1026,6 +1031,7 @@ tools instead of in the system prompt.
 |---|---|---|---|
 | `agents` | [`list_agents`](#list_agents) | yes | The agents this session can delegate to or schedule, and what each is for. |
 | `artifacts` | [`read_artifact`](#read_artifact) | no | Tool output too large for the conversation, kept aside and read back by range. |
+| `assets` | [`write_asset`](#write_asset), [`show_asset`](#show_asset), [`read_asset`](#read_asset), [`list_assets`](#list_assets), [`delete_asset`](#delete_asset) | yes | Assets: files you give the user, such as charts, diagrams, HTML pages, and reports, shown in the conversation and kept for this session or the project. |
 | `background` | [`stop_background`](#stop_background) | no | Calls running in the background, and stopping them. |
 | `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash), [`webfetch`](#webfetch) | no | The workspace: reading, writing, and editing files, running shell commands, and fetching web pages. |
 | `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | yes | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
@@ -2859,3 +2865,286 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
     ```
 
 <!-- /generated -->
+
+## Asset tools
+
+Assets are files an agent gives the user ([spec](../specs/assets.md)):
+charts, diagrams, HTML pages, Markdown reports, or any other file. An asset
+belongs to the session tree that wrote it (`scope: "session"`, the default,
+deleted with the tree) or to its project (`scope: "project"`, kept in the
+project's assets, or the shared store of sessions in no project). The model
+names an asset by its handle, such as `asset_3f9a1c2e`. Writing an asset
+again replaces it; there are no versions.
+
+The tools are checked under the `asset` action, whose resource is what a
+call does: `read` (`read_asset`, `show_asset`, `list_assets`), `write`
+(`write_asset`), or `delete` (`delete_asset`). Assets have no owner: a rule
+applies the same to every asset a session can see.
+
+### `write_asset`
+
+<!-- generated: tool write_asset -->
+
+```text
+write_asset(asset?: string, caption?: string, machine?: string, path: string, scope?: "session" | "project", show?: boolean, title?: string)
+```
+
+Description sent to the model:
+
+```text
+Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and list_runtimes do; omitted, it is the machine of this session's workspace. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something the user will want to find again, in the Assets tab or from another session of the project. Saving does not show the asset: pass `show: true`, with an optional `caption`, or call show_asset.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `asset` | `string` | no | The handle of an asset to replace. Omit it to save a new asset |
+| `caption` | `string` | no | With `show`: one short line on what the asset shows |
+| `machine` | `string` | no | A machine of this session, as the machines block names it. Defaults to the machine of this session's workspace |
+| `path` | `string` | yes | The file to save: relative to the machine's working directory, absolute, or under `~` |
+| `scope` | `"session" \| "project"` | no | `session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset |
+| `show` | `boolean` | no | Also show the asset in the conversation, as show_asset does. Defaults to false |
+| `title` | `string` | no | Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "The handle of an asset to replace. Omit it to save a new asset",
+          "type": "string"
+        },
+        "caption": {
+          "description": "With `show`: one short line on what the asset shows",
+          "maxLength": 300,
+          "type": "string"
+        },
+        "machine": {
+          "description": "A machine of this session, as the machines block names it. Defaults to the machine of this session's workspace",
+          "type": "string"
+        },
+        "path": {
+          "description": "The file to save: relative to the machine's working directory, absolute, or under `~`",
+          "type": "string"
+        },
+        "scope": {
+          "description": "`session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset",
+          "enum": [
+            "session",
+            "project"
+          ],
+          "type": "string"
+        },
+        "show": {
+          "description": "Also show the asset in the conversation, as show_asset does. Defaults to false",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing",
+          "maxLength": 200,
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `show_asset`
+
+<!-- generated: tool show_asset -->
+
+```text
+show_asset(assets: string[], caption?: string)
+```
+
+Description sent to the model:
+
+```text
+Show one or more assets to the user in the conversation, by their handles. The user sees each asset as it is now: images, SVG, and video inline, a Markdown document rendered, an HTML page rendered live, and any other file as a download card. Several assets show together, in the order given. `caption` is one short line on what they show. The user may be on a phone, or in a terminal where a figure is a link, so still say in your reply what they show. You get nothing back but a confirmation: use read_asset to look at an asset yourself.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `assets` | `string[]` | yes | The handles of the assets to show, 1 to 12, in the order to show them |
+| `caption` | `string` | no | One short line on what they show |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "assets": {
+          "description": "The handles of the assets to show, 1 to 12, in the order to show them",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "type": "array"
+        },
+        "caption": {
+          "description": "One short line on what they show",
+          "maxLength": 300,
+          "type": "string"
+        }
+      },
+      "required": [
+        "assets"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `read_asset`
+
+<!-- generated: tool read_asset -->
+
+```text
+read_asset(asset: string, limit?: integer, offset?: integer)
+```
+
+Description sent to the model:
+
+```text
+Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines, an image as an image when you take images, and otherwise only the asset's type and size.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `asset` | `string` | yes | The asset's handle |
+| `limit` | `integer` | no | Lines, for text |
+| `offset` | `integer` | no | 1-based first line, for text |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "The asset's handle",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Lines, for text",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "1-based first line, for text",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "asset"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `list_assets`
+
+<!-- generated: tool list_assets -->
+
+```text
+list_assets(scope?: "session" | "project")
+```
+
+Description sent to the model:
+
+```text
+List the assets you can use: this conversation's and the project's, newest first, each with its handle, title, type, size, scope, and which session last saved it and when. At most 100 are listed.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `scope` | `"session" \| "project"` | no | Only that scope; both when omitted |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "description": "Only that scope; both when omitted",
+          "enum": [
+            "session",
+            "project"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `delete_asset`
+
+<!-- generated: tool delete_asset -->
+
+```text
+delete_asset(asset: string)
+```
+
+Description sent to the model:
+
+```text
+Delete an asset by its handle. Every place it was shown then says it was deleted, and it cannot be brought back.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `asset` | `string` | yes | The asset's handle |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "The asset's handle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### Display
+
+A figure (`show_asset`, or `write_asset` with `show: true`) is the caption
+as a `text` block, then one `asset` block per asset, under the presentation
+hint `figure`. Clients keep it outside a folded turn, show each asset as it
+is now, and say when it was replaced or deleted since. `write_asset` without
+`show` is one short row.

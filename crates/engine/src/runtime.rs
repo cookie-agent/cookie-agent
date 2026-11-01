@@ -48,6 +48,7 @@ mod admission;
 mod agent_md;
 mod approval;
 pub(crate) mod artifacts;
+pub(crate) mod assets;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
 pub mod chatgpt;
@@ -332,6 +333,9 @@ pub enum EngineError {
     /// A project request was refused or failed.
     #[error(transparent)]
     Project(#[from] crate::projects::ProjectError),
+    /// An asset request was refused or failed.
+    #[error(transparent)]
+    Asset(#[from] crate::assets::AssetError),
     /// A cron request was refused or failed.
     #[error(transparent)]
     Cron(#[from] crate::crons::CronError),
@@ -1042,6 +1046,9 @@ pub(crate) struct Inner {
     pub(crate) machines: Arc<crate::machines::MachineRegistry>,
     /// The projects sessions belong to.
     pub(crate) projects: Arc<crate::projects::ProjectStore>,
+    /// The asset stores of session trees, projects, and sessions in no
+    /// project.
+    pub(crate) assets: Arc<crate::assets::AssetStores>,
     /// The cron jobs.
     pub(crate) crons: Arc<crate::crons::CronStore>,
     pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
@@ -1258,6 +1265,10 @@ impl Engine {
             eprintln!("cookie-agent: projects: {error}");
         }
         let crons = Arc::new(crate::crons::CronStore::open(&options.data_dir)?);
+        let assets = Arc::new(crate::assets::AssetStores::new(
+            &options.data_dir,
+            store.sessions_dir_path(),
+        ));
         drop(restoring);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
@@ -1305,6 +1316,10 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, cron_tools.as_ref())?;
         mcp.reserve_provider(cron_tools.as_ref())
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let asset_tools = Arc::new(crate::asset_tools::AssetTools::new());
+        reserve_provider_id(&mut provider_ids, asset_tools.as_ref())?;
+        mcp.reserve_provider(asset_tools.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         let agents_tool = Arc::new(crate::agents_tool::AgentsTool::new());
         reserve_provider_id(&mut provider_ids, agents_tool.as_ref())?;
         mcp.reserve_provider(agents_tool.as_ref())
@@ -1316,6 +1331,7 @@ impl Engine {
         global_providers.push(runtimes_tool.clone());
         global_providers.push(machines_tool.clone());
         global_providers.push(cron_tools.clone());
+        global_providers.push(asset_tools.clone());
         global_providers.push(agents_tool.clone());
         // Each plugin's tools compose under the plugin's name.
         global_providers.extend(plugins.tool_providers());
@@ -1375,6 +1391,7 @@ impl Engine {
                 runtimes,
                 machines,
                 projects,
+                assets,
                 crons,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
                 restart: restart::RestartState::default(),
@@ -1418,6 +1435,7 @@ impl Engine {
         runtimes_tool.bind(&engine);
         machines_tool.bind(&engine);
         cron_tools.bind(&engine);
+        asset_tools.bind(&engine);
         agents_tool.bind(&engine);
         // Engine unit tests compose their own base-layer stand-ins.
         #[cfg(not(test))]

@@ -268,6 +268,7 @@ mod tests {
             machine_id: machine_id.map(str::to_owned),
             features: Vec::new(),
             status: None,
+            page_url: None,
         }
     }
 

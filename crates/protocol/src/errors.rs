@@ -688,6 +688,14 @@ error_codes! {
         hint: Some("See `projects.list` for the projects."),
         description: "A `project.*`, `session.create`, or `session.project.set` request named a project the daemon does not have.",
     }
+    ASSET_NOT_FOUND {
+        code: "asset_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("asset", "The asset ID.")],
+        message: "There is no asset {asset} in that store.",
+        hint: Some("See `assets.list` for the store's assets."),
+        description: "An `asset.*` request named an asset its store does not hold, such as one deleted since.",
+    }
     PROJECT_NAME_TAKEN {
         code: "project_name_taken",
         rpc: APPLICATION_ERROR,

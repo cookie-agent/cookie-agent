@@ -45,6 +45,7 @@ impl ServerProtocol for Server {
         self.start_machine_notifications(context.clone());
         self.start_memory_notifications(context.clone());
         self.start_project_notifications(context.clone());
+        self.start_asset_notifications(context.clone());
         self.start_cron_notifications(context.clone());
         self.start_push_notifications(context.clone());
         self.start_restart_notifications(context.clone());
@@ -59,6 +60,10 @@ impl ServerProtocol for Server {
 
     fn engine_version(&self) -> String {
         cookie_agent_engine::release::version().to_owned()
+    }
+
+    fn page_url(&self) -> Option<String> {
+        self.engine.page_url()
     }
 
     async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {
@@ -1016,6 +1021,50 @@ impl ServerProtocol for Server {
     ) -> Result<cookie_agent_protocol::CronRunResult> {
         self.engine
             .run_cron(params.id)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn list_assets(
+        &self,
+        params: cookie_agent_protocol::AssetsListParams,
+    ) -> Result<cookie_agent_protocol::AssetsListResult> {
+        self.engine
+            .list_assets(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn get_asset(
+        &self,
+        params: cookie_agent_protocol::AssetGetParams,
+    ) -> Result<cookie_agent_protocol::AssetGetResult> {
+        self.engine.get_asset(params).await.map_err(protocol_fault)
+    }
+
+    async fn read_asset(
+        &self,
+        params: cookie_agent_protocol::AssetReadParams,
+    ) -> Result<cookie_agent_protocol::AssetReadResult> {
+        self.engine.read_asset(params).await.map_err(protocol_fault)
+    }
+
+    async fn rename_asset(
+        &self,
+        params: cookie_agent_protocol::AssetRenameParams,
+    ) -> Result<cookie_agent_protocol::AssetRenameResult> {
+        self.engine
+            .rename_asset(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn delete_asset(
+        &self,
+        params: cookie_agent_protocol::AssetDeleteParams,
+    ) -> Result<cookie_agent_protocol::AssetDeleteResult> {
+        self.engine
+            .delete_asset(params)
             .await
             .map_err(protocol_fault)
     }

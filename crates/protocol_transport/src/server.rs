@@ -109,7 +109,7 @@ impl ServerContext {
     fn hello(
         &self,
         hello: &ClientHello,
-        engine_version: String,
+        about: &About,
         status: Option<DaemonStatus>,
     ) -> ServerHello {
         let origin = self
@@ -119,12 +119,13 @@ impl ServerContext {
         let _ = self.client_version.set(hello.protocol_version);
         ServerHello {
             protocol_version: cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
-            engine_version,
+            engine_version: about.engine_version.clone(),
             origin,
             machine_id: cookie_agent_protocol::paths::machine_id(),
             features: Vec::new(),
             status: status
                 .filter(|_| cookie_agent_protocol::reads_daemon_status(hello.protocol_version)),
+            page_url: about.page_url.clone(),
         }
     }
 
@@ -310,6 +311,20 @@ pub trait ServerProtocol: Send + Sync + 'static {
     /// The daemon's own version, which the handshake reports.
     fn engine_version(&self) -> String {
         env!("CARGO_PKG_VERSION").to_owned()
+    }
+
+    /// Where the daemon's web page can be reached, which the handshake
+    /// reports (client protocol 1.67.0); `None` when it is not configured.
+    fn page_url(&self) -> Option<String> {
+        None
+    }
+
+    /// What the handshake says about the daemon.
+    fn about(&self) -> About {
+        About {
+            engine_version: self.engine_version(),
+            page_url: self.page_url(),
+        }
     }
 
     async fn create_session(
@@ -884,6 +899,31 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: cookie_agent_protocol::ArtifactUploadCancelParams,
         context: &ServerContext,
     ) -> Result<cookie_agent_protocol::ArtifactUploadCancelResult, ServerFault>;
+    /// A store's assets, newest first.
+    async fn list_assets(
+        &self,
+        params: cookie_agent_protocol::AssetsListParams,
+    ) -> Result<cookie_agent_protocol::AssetsListResult, ServerFault>;
+    /// One asset as it is now.
+    async fn get_asset(
+        &self,
+        params: cookie_agent_protocol::AssetGetParams,
+    ) -> Result<cookie_agent_protocol::AssetGetResult, ServerFault>;
+    /// Reads a range of an asset's current content.
+    async fn read_asset(
+        &self,
+        params: cookie_agent_protocol::AssetReadParams,
+    ) -> Result<cookie_agent_protocol::AssetReadResult, ServerFault>;
+    /// Gives an asset a new title.
+    async fn rename_asset(
+        &self,
+        params: cookie_agent_protocol::AssetRenameParams,
+    ) -> Result<cookie_agent_protocol::AssetRenameResult, ServerFault>;
+    /// Deletes an asset.
+    async fn delete_asset(
+        &self,
+        params: cookie_agent_protocol::AssetDeleteParams,
+    ) -> Result<cookie_agent_protocol::AssetDeleteResult, ServerFault>;
     /// Reads a range of any artifact in the store of a session's tree.
     async fn read_artifact(
         &self,
@@ -1049,13 +1089,13 @@ where
     S: ServerProtocol,
 {
     let status = server.status();
-    let engine_version = server.engine_version();
+    let about = server.about();
     serve_within(
         Gate {
             server: Some(server),
             pending: None,
             status,
-            engine_version,
+            about,
         },
         transport,
         shutdown,
@@ -1072,8 +1112,17 @@ pub struct Startup<S> {
     /// Set once the daemon is ready to serve.
     pub server: Arc<std::sync::OnceLock<Arc<S>>>,
     pub status: watch::Receiver<DaemonStatus>,
-    /// The daemon's version, for the handshake.
+    /// What the handshake says about the daemon.
+    pub about: About,
+}
+
+/// What a handshake says about the daemon.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct About {
+    /// The daemon's own version.
     pub engine_version: String,
+    /// Where its web page can be reached, when that is configured.
+    pub page_url: Option<String>,
 }
 
 /// [`serve`] for a daemon that may still be starting. Until its server is
@@ -1099,7 +1148,7 @@ where
             pending: server.is_none().then_some(startup.server),
             server,
             status: Some(startup.status),
-            engine_version: startup.engine_version,
+            about: startup.about,
         },
         transport,
         shutdown,
@@ -1116,7 +1165,7 @@ struct Gate<S> {
     /// Where the server appears while the daemon starts.
     pending: Option<Arc<std::sync::OnceLock<Arc<S>>>>,
     status: Option<watch::Receiver<DaemonStatus>>,
-    engine_version: String,
+    about: About,
 }
 
 /// How often a connection is sent the daemon's status at most; a phase
@@ -1174,7 +1223,7 @@ where
         mut server,
         pending,
         mut status,
-        engine_version,
+        about,
     } = gate;
     let (outbound, mut outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     let context = ServerContext::new(outbound, shutdown);
@@ -1215,7 +1264,7 @@ where
                     server = Some(Arc::clone(&ready));
                     if let Some((id, hello)) = held.take() {
                         handshaken = true;
-                        let hello = server_hello(&context, &hello, ready.engine_version(), None);
+                        let hello = server_hello(&context, &hello, &ready.about(), None);
                         transport.send(MessageFrame::Text(success_response(&id, &hello)?)).await?;
                     }
                     if handshaken {
@@ -1311,7 +1360,7 @@ where
                                         let hello = server_hello(
                                             &context,
                                             &hello,
-                                            engine_version.clone(),
+                                            &about,
                                             current,
                                         );
                                         (Some(success_response(&id, &hello)?), false)
@@ -1349,7 +1398,7 @@ where
                         "handshake" => match decode_handshake(params) {
                             Ok(hello) => success_response(
                                 &id,
-                                &server_hello(&context, &hello, engine_version.clone(), Some(current)),
+                                &server_hello(&context, &hello, &about, Some(current)),
                             )?,
                             Err(fault) => error_response(Some(id), fault)?,
                         },
@@ -1443,7 +1492,7 @@ async fn handle<S: ServerProtocol>(
             let result = if method == "handshake" {
                 decode_handshake(params).map(|hello| {
                     let status = server.status().map(|status| status.borrow().clone());
-                    server_hello(context, &hello, server.engine_version(), status)
+                    server_hello(context, &hello, &server.about(), status)
                 })
             } else if method == cookie_agent_protocol::DAEMON_STATUS_METHOD {
                 decode_default::<cookie_agent_protocol::DaemonStatusParams>(params).map(|_| {
@@ -1478,10 +1527,10 @@ async fn handle<S: ServerProtocol>(
 fn server_hello(
     context: &ServerContext,
     hello: &ClientHello,
-    engine_version: String,
+    about: &About,
     status: Option<DaemonStatus>,
 ) -> Box<RawValue> {
-    raw(&context.hello(hello, engine_version, status))
+    raw(&context.hello(hello, about, status))
 }
 
 fn raw<T: Serialize>(value: &T) -> Box<RawValue> {
@@ -1830,6 +1879,33 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::ARTIFACT_READ_METHOD => {
             value(server.read_artifact(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ASSETS_LIST_METHOD => {
+            value(server.list_assets(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ASSET_GET_METHOD => value(server.get_asset(decode(params)?).await?),
+        cookie_agent_protocol::ASSET_READ_METHOD => {
+            let params: cookie_agent_protocol::AssetReadParams = decode(params)?;
+            if params.length == 0 || params.length > cookie_agent_protocol::ASSET_CHUNK_BYTES {
+                return Err(ServerFault::invalid_params(format!(
+                    "length must be 1 to {} bytes",
+                    cookie_agent_protocol::ASSET_CHUNK_BYTES
+                )));
+            }
+            value(server.read_asset(params).await?)
+        }
+        cookie_agent_protocol::ASSET_RENAME_METHOD => {
+            let params: cookie_agent_protocol::AssetRenameParams = decode(params)?;
+            if !cookie_agent_protocol::is_asset_title(&params.title) {
+                return Err(ServerFault::invalid_params(format!(
+                    "title must be 1 to {} characters on one line",
+                    cookie_agent_protocol::ASSET_TITLE_MAX_CHARS
+                )));
+            }
+            value(server.rename_asset(params).await?)
+        }
+        cookie_agent_protocol::ASSET_DELETE_METHOD => {
+            value(server.delete_asset(decode(params)?).await?)
         }
         cookie_agent_protocol::RUNTIME_SNAPSHOT_GET_METHOD if has_request_id => {
             value(server.runtime_snapshot(decode_default(params)?).await?)

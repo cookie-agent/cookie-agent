@@ -275,6 +275,33 @@ impl Server {
         });
     }
 
+    /// Signals asset changes to this connection; bursts coalesce.
+    pub(super) fn start_asset_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_asset_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                if context
+                    .notify(
+                        cookie_agent_protocol::ASSETS_CHANGED_METHOD,
+                        &cookie_agent_protocol::AssetsChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Signals cron job changes to this connection; bursts coalesce.
     pub(super) fn start_cron_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_cron_changes();

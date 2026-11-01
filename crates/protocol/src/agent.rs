@@ -60,9 +60,14 @@ impl PermissionAction {
     /// `detach_machine`); checked on the target runtime, with the workspace
     /// as resource.
     pub const ATTACH: Self = Self(Cow::Borrowed("attach"));
+    /// Reading, showing, writing, and deleting assets (`read_asset`,
+    /// `show_asset`, `list_assets`, `write_asset`, `delete_asset`); the
+    /// resource is what the call does: `read`, `write`, or `delete`
+    /// (`docs/site/specs/assets.md` section 6).
+    pub const ASSET: Self = Self(Cow::Borrowed("asset"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 13] = [
+    pub const BUILT_IN: [Self; 14] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -76,6 +81,7 @@ impl PermissionAction {
         Self::LIST_RUNTIMES,
         Self::CRON,
         Self::ATTACH,
+        Self::ASSET,
     ];
 
     pub const MAX_LEN: usize = 32;

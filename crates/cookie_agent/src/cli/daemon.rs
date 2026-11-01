@@ -127,7 +127,8 @@ pub(super) async fn run_daemon(
     };
     let listener = cookie_agent_server::DaemonListener::new(
         cookie_agent_engine::status::StatusBoard::new(cookie_agent_protocol::DaemonPhase::Starting),
-    );
+    )
+    .with_page_url(configuration.runtime.server.page_url.clone());
     let mut signals =
         cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;
     let running = daemon_restart::bind_retrying(bind_wait, || {

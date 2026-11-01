@@ -2131,6 +2131,7 @@ impl StateStore {
             | ClientDelivery::PluginsChanged(_)
             | ClientDelivery::MachinesChanged(_)
             | ClientDelivery::MemoryChanged(_)
+            | ClientDelivery::AssetsChanged(_)
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
             | ClientDelivery::NotificationsChanged(_)

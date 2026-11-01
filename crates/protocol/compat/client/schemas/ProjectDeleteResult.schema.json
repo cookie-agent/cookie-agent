@@ -2,6 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "What a delete removed.",
   "properties": {
+    "deleted_assets": {
+      "default": 0,
+      "description": "The project's assets, deleted with its folder (client protocol\n1.67.0).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
     "deleted_memories": {
       "description": "The memory files deleted with the memory folder.",
       "format": "uint64",

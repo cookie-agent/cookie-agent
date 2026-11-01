@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.67.0
+
+- Assets ([spec](../specs/assets.md); see [Assets](protocol.md#assets)):
+  `assets.list`, `asset.get`, `asset.read`, `asset.rename`, and
+  `asset.delete` over a `store` (`session`, `project`, or `shared`), and the
+  `assets.changed` notification.
+- The `asset` display block, a figure of an asset, and the `figure`
+  presentation hint. Older clients receive the block as text.
+- `ServerHello` gains `page_url`, the daemon's `[server] page_url`.
+- `project.delete` returns `deleted_assets`.
+- The plugin protocol (1.35.0) and the runtime protocol (1.15.0) share the
+  `asset` display block.
+
 ## 1.66.0
 
 - Pinned sessions ([session pins and filters](../specs/session-pins-and-filters.md);

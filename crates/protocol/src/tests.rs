@@ -3316,7 +3316,7 @@ fn display_blocks_newer_than_the_client_reach_it_as_text_and_unknown_ones_not_at
         "only the unknown block goes"
     );
     assert_eq!(current.blocks(&blocks[..2]), None, "nothing to change");
-    // Every kind but `plan` (1.17.0) exists from the first minor, and this
+    // Every kind but `plan` (1.17.0) and `asset` (1.67.0) exists from the first minor, and this
     // build speaks every minor, so no client of this build receives a
     // downgraded block.
     let this_build = DisplayAudience::new(CLIENT_PROTOCOL_VERSION);
@@ -3334,13 +3334,33 @@ fn display_blocks_newer_than_the_client_reach_it_as_text_and_unknown_ones_not_at
         Some(vec![Open::Known(DisplayBlock::text(plan.to_text()))])
     );
     for kind in DISPLAY_BLOCK_SINCE.iter().map(|(kind, _)| *kind) {
-        let expected = if kind == "plan" {
-            17
-        } else {
-            FIRST_STABLE_MINOR
+        let expected = match kind {
+            "plan" => 17,
+            "asset" => 67,
+            _ => FIRST_STABLE_MINOR,
         };
         assert_eq!(DisplayBlock::since(kind), Some(expected), "{kind}");
     }
+    let asset = DisplayBlock::Asset(crate::AssetBlock {
+        store: crate::AssetStore::Shared,
+        asset: crate::AssetId::new_v7(),
+        handle: crate::AssetHandle::new("asset_3f9a1c2e").unwrap(),
+        title: "Loss curves".into(),
+        media_type: "text/html".into(),
+        byte_length: 48 * 1024,
+        sha256: "a".repeat(64),
+        filename: Some("loss.html".into()),
+    });
+    assert_eq!(this_build.blocks(&[Open::Known(asset.clone())]), None);
+    assert_eq!(
+        DisplayAudience::new(crate::SemVer::new(1, 66, 0)).blocks(&[Open::Known(asset.clone())]),
+        Some(vec![Open::Known(DisplayBlock::text(asset.to_text()))])
+    );
+    assert!(
+        asset.to_text().contains("asset_3f9a1c2e"),
+        "{}",
+        asset.to_text()
+    );
 }
 
 #[test]

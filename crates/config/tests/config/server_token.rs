@@ -119,3 +119,33 @@ fn the_server_table_has_no_origin_allowlist() {
         .to_string();
     assert!(error.contains("allowed_origins"), "{error}");
 }
+
+#[test]
+fn the_page_url_is_an_http_or_https_url_without_query_or_fragment() {
+    let unset = root("[server]\nport = 7420\n");
+    let loaded = load_from_user_root(Some(unset.path())).expect("no page url");
+    assert_eq!(loaded.runtime.server.page_url, None);
+    for (url, valid) in [
+        ("https://cookie.example", true),
+        ("http://127.0.0.1:7419/", true),
+        ("https://example.com/cookie/", true),
+        ("wss://cookie.example/ws", false),
+        ("https://cookie.example/?token=x", false),
+        ("https://cookie.example/#token=x", false),
+        ("https://me:secret@cookie.example", false),
+        ("cookie.example", false),
+        ("", false),
+    ] {
+        let authored = root(&format!("[server]\npage_url = \"{url}\"\n"));
+        let loaded = load_from_user_root(Some(authored.path()));
+        assert_eq!(loaded.is_ok(), valid, "page_url = {url:?}");
+        if valid {
+            assert_eq!(
+                loaded.unwrap().runtime.server.page_url.as_deref(),
+                Some(url)
+            );
+        }
+    }
+    let wrong_type = root("[server]\npage_url = 7\n");
+    assert!(load_from_user_root(Some(wrong_type.path())).is_err());
+}

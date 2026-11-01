@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "AssetStore": {
+      "description": "Where an asset is kept (section 4.1). A store's assets are listed,\nread, and changed together; an asset never moves between stores.",
+      "oneOf": [
+        {
+          "description": "A session tree's own assets (scope `session`), named by the tree's\nroot. They are deleted with the tree.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "session",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A project's assets (scope `project`).",
+          "properties": {
+            "project": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The assets of every session in no project (scope `project`).",
+          "properties": {
+            "type": {
+              "const": "shared",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Reads part of an asset's current content, as `artifact.read` reads an\nartifact.",
+  "properties": {
+    "asset": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "length": {
+      "format": "uint64",
+      "maximum": 1048576,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "offset": {
+      "description": "At most `total_bytes`; reading at `total_bytes` returns no data.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "store": {
+      "$ref": "#/$defs/AssetStore"
+    }
+  },
+  "required": [
+    "store",
+    "asset",
+    "offset",
+    "length"
+  ],
+  "title": "AssetReadParams",
+  "type": "object"
+}

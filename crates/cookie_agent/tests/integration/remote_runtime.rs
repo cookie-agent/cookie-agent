@@ -1359,3 +1359,172 @@ async fn a_refused_dial_in_prints_the_reason_and_stops_when_it_is_permanent() {
     listening.wait().await;
     fixture.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
+    use cookie_agent_protocol::{AssetStore, AssetsListParams};
+
+    let fixture = Fixture::new(30_000).await;
+    let session = fixture.session().await;
+    let remote = fixture.remote_machine();
+    fs::write(
+        fixture.web.join("plot.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect/></svg>",
+    )
+    .unwrap();
+    fs::write(fixture.repo.join("report.md"), "# Report\n\nAll good.\n").unwrap();
+    // The workspace's machine by default, and the remote one by name.
+    fixture.model.enqueue(tool_call(
+        "write_asset",
+        &serde_json::json!({
+            "path": "plot.svg", "title": "Loss curves", "show": true,
+            "caption": "Training loss over 40 epochs.",
+        }),
+    ));
+    fixture.model.enqueue(tool_call(
+        "write_asset",
+        &serde_json::json!({"path": "report.md", "machine": remote, "scope": "project"}),
+    ));
+    fixture.model.enqueue(tool_call(
+        "write_asset",
+        &serde_json::json!({"path": "missing.png"}),
+    ));
+    fixture.model.enqueue(tool_call(
+        "show_asset",
+        &serde_json::json!({"assets": ["asset_00000000"]}),
+    ));
+    fixture.model.enqueue(final_answer("saved"));
+    fixture.run(session, "make the figures").await;
+    let requests = fixture.model.requests();
+    assert!(
+        offered_tools(&requests[0])
+            .iter()
+            .any(|tool| tool == "write_asset"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("Saved asset_") && requests[1].contains("Shown to the user"),
+        "{}",
+        requests[1]
+    );
+    assert!(requests[2].contains("project scope"), "{}", requests[2]);
+    assert!(requests[3].contains("does not exist"), "{}", requests[3]);
+    assert!(
+        requests[4].contains("there is no asset") && requests[4].contains("Loss curves"),
+        "an unknown handle lists the assets: {}",
+        requests[4]
+    );
+
+    let session_store = AssetStore::Session { session };
+    let mine = fixture
+        .engine
+        .list_assets(AssetsListParams {
+            store: session_store.clone(),
+        })
+        .await
+        .unwrap()
+        .assets;
+    assert_eq!(mine.len(), 1, "{mine:?}");
+    let plot = &mine[0];
+    assert_eq!(plot.title, "Loss curves");
+    assert_eq!(plot.media_type, "image/svg+xml");
+    let shared = fixture
+        .engine
+        .list_assets(AssetsListParams {
+            store: AssetStore::Shared,
+        })
+        .await
+        .unwrap()
+        .assets;
+    assert_eq!(shared.len(), 1, "a session in no project shares one store");
+    assert_eq!(shared[0].media_type, "text/markdown");
+    assert_eq!(shared[0].filename.as_deref(), Some("report.md"));
+
+    // The figure is an `asset` block of a call the clients keep open.
+    let (events, _) = fixture.engine.subscribe(session, None).await.unwrap();
+    let log = serde_json::to_string(&events).unwrap();
+    assert!(log.contains("\"hint\":\"figure\""), "the figure hint");
+    assert!(log.contains("\"type\":\"asset\""), "an asset block");
+    assert!(log.contains("Training loss over 40 epochs."), "the caption");
+
+    // A second run reads, lists, replaces, and deletes them by handle.
+    fs::write(
+        fixture.web.join("plot.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle/></svg>",
+    )
+    .unwrap();
+    let handle = plot.handle.to_string();
+    fixture.model.enqueue(tool_call(
+        "read_asset",
+        &serde_json::json!({"asset": handle}),
+    ));
+    fixture
+        .model
+        .enqueue(tool_call("list_assets", &serde_json::json!({})));
+    fixture.model.enqueue(tool_call(
+        "write_asset",
+        &serde_json::json!({"path": "plot.svg", "asset": handle}),
+    ));
+    fixture.model.enqueue(tool_call(
+        "write_asset",
+        &serde_json::json!({"path": "plot.svg", "asset": handle, "scope": "project"}),
+    ));
+    fixture.model.enqueue(tool_call(
+        "delete_asset",
+        &serde_json::json!({"asset": shared[0].handle.to_string()}),
+    ));
+    fixture.model.enqueue(final_answer("done"));
+    let before = fixture.model.requests().len();
+    fixture.run(session, "update the plot").await;
+    let requests = fixture.model.requests()[before..].to_vec();
+    assert!(
+        requests[1].contains("<rect/>"),
+        "read as text: {}",
+        requests[1]
+    );
+    assert!(
+        requests[2].contains("saved by this session") && requests[2].contains("report.md"),
+        "{}",
+        requests[2]
+    );
+    assert!(requests[3].contains("replaced"), "{}", requests[3]);
+    assert!(requests[4].contains("keeps its scope"), "{}", requests[4]);
+    assert!(requests[5].contains("Deleted asset_"), "{}", requests[5]);
+    let replaced = fixture
+        .engine
+        .get_asset(cookie_agent_protocol::AssetGetParams {
+            store: session_store.clone(),
+            asset: plot.id,
+        })
+        .await
+        .unwrap()
+        .asset;
+    assert_eq!(
+        replaced.title, "Loss curves",
+        "a replaced asset keeps its title"
+    );
+    assert_ne!(replaced.sha256, plot.sha256);
+    let old_blobs = files_holding(&fixture.root.path().join("data"), b"<rect/>")
+        .into_iter()
+        .filter(|path| path.components().any(|part| part.as_os_str() == "assets"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        old_blobs,
+        Vec::<PathBuf>::new(),
+        "the replaced content was freed"
+    );
+    assert!(
+        fixture
+            .engine
+            .list_assets(AssetsListParams {
+                store: AssetStore::Shared
+            })
+            .await
+            .unwrap()
+            .assets
+            .is_empty()
+    );
+    fixture.engine.shutdown().await;
+    drop(fixture.root);
+}

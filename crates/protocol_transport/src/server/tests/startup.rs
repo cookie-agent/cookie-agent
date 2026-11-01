@@ -32,7 +32,10 @@ impl Starting {
             Startup {
                 server: Arc::clone(&self.server),
                 status: self.status.subscribe(),
-                engine_version: "0.4.0".into(),
+                about: crate::server::About {
+                    engine_version: "0.4.0".into(),
+                    page_url: Some("https://cookie.example/".into()),
+                },
             },
             ChannelTransport { incoming, outgoing },
             CancellationToken::new(),
@@ -81,6 +84,8 @@ async fn a_client_connects_while_the_daemon_starts_and_keeps_its_connection() {
         hello["result"]["status"]["tasks"][0]["label"],
         "Moving sessions"
     );
+    // The page's address is known before the daemon is ready.
+    assert_eq!(hello["result"]["page_url"], "https://cookie.example/");
 
     connection.send(1, "session.list", json!({}));
     let refused = connection.next().await;
