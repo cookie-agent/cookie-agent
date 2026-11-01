@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use jiff::Timestamp;
 
 use super::super::{
-    ACTIVITY_DIR, LAYOUT_VERSION, ListWindow, Month, RUNTIME_REVISIONS_FILE, StoreLayout,
-    read_layout, root_dir_in,
+    ACTIVITY_DIR, LAYOUT_MARKER_FILE, LAYOUT_VERSION, ListWindow, Month, RUNTIME_REVISIONS_FILE,
+    StoreLayout, read_layout, root_dir_in,
 };
 use super::*;
 

@@ -78,6 +78,7 @@ async fn start_tool_run(
 }
 
 /// Waits until `path` exists, as a command's marker that it is running.
+#[cfg(unix)]
 async fn wait_for_file(path: &Path) {
     crate::eventually::eventually(
         test_timeout(EVENT_WATCHDOG_SECONDS),
@@ -151,6 +152,7 @@ async fn wait_for_process_gone(path: &Path) {
 }
 
 /// A bash call through the protocol `local` runtime that runs `command`.
+#[cfg(unix)]
 async fn local_bash_run(command: &str) -> (Fixture, SessionId, RunId) {
     let (endpoint, responses, _server) = scripted_channel_server(1).await;
     responses
