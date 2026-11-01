@@ -316,6 +316,9 @@ pub struct ManagedModelOverride {
     /// Whether the model loads deferred tools; omitted, the automatic rules
     /// decide.
     pub deferred_tools: Option<crate::DeferredToolsSetting>,
+    /// Whether the model binds replayed reasoning to its prefix; omitted, the
+    /// automatic rules decide.
+    pub reasoning_binding: Option<crate::ReasoningBinding>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
 }

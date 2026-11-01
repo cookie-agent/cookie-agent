@@ -92,6 +92,10 @@ pub struct CompiledDynamicModel {
     /// deferral from this and its own adapter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deferred_tools_setting: Option<crate::DeferredToolsSetting>,
+    /// The configured `reasoning_binding`; a variant that switches endpoint
+    /// decides the binding from this and its own adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_binding_setting: Option<crate::ReasoningBinding>,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
@@ -180,6 +184,14 @@ impl CompiledDynamicModel {
                 &selected.wire_model_id,
             )
         });
+        selected.capabilities.reasoning_binding =
+            self.reasoning_binding_setting.unwrap_or_else(|| {
+                automatic_reasoning_binding(
+                    selected.adapter,
+                    selected.capabilities.reasoning,
+                    &selected.wire_model_id,
+                )
+            });
         Ok(selected)
     }
 
@@ -243,6 +255,34 @@ fn automatic_replay(
         crate::ReplayCapability::Required
     } else {
         adapter.automatic_replay(reasoning)
+    }
+}
+
+/// Whether a model binds its replayed reasoning to the request prefix
+/// (`docs/site/specs/frozen-context.md`, section 3): a reasoning Claude model
+/// on an Anthropic, Anthropic-compatible, or Bedrock adaptor does, wherever
+/// its endpoint is, since a gateway in front of Anthropic forwards the check.
+/// Every other model, including other models on Anthropic-compatible
+/// endpoints, does not.
+fn automatic_reasoning_binding(
+    adapter: OvenAdapterFamily,
+    reasoning: bool,
+    wire_model_id: &crate::authoring::WireModelId,
+) -> crate::ReasoningBinding {
+    let wire = wire_model_id.as_str().to_ascii_lowercase();
+    let claude = wire.starts_with("claude-") || wire.contains("anthropic.claude-");
+    if reasoning
+        && claude
+        && matches!(
+            adapter,
+            OvenAdapterFamily::Anthropic
+                | OvenAdapterFamily::AnthropicCompatible
+                | OvenAdapterFamily::AwsBedrockConverse
+        )
+    {
+        crate::ReasoningBinding::Prefix
+    } else {
+        crate::ReasoningBinding::None
     }
 }
 
@@ -605,6 +645,10 @@ impl DynamicCompiler {
             .map_err(ModelLocalError::Provider)?;
         capabilities.native_replay =
             automatic_replay(adapter, capabilities.reasoning, &wire_model_id);
+        let reasoning_binding_setting = override_.and_then(|value| value.reasoning_binding);
+        capabilities.reasoning_binding = reasoning_binding_setting.unwrap_or_else(|| {
+            automatic_reasoning_binding(adapter, capabilities.reasoning, &wire_model_id)
+        });
         // Token sharing refuses the standalone `/responses/compact` but
         // compacts in the stream.
         let compaction_setting = override_.map(|value| value.compaction);
@@ -819,6 +863,7 @@ impl DynamicCompiler {
             native_compaction_allowed,
             in_stream_compaction,
             deferred_tools_setting,
+            reasoning_binding_setting,
             defaults,
             options,
             headers,
@@ -896,6 +941,14 @@ impl DynamicCompiler {
             if model.capabilities.native_replay.is_none() {
                 capabilities.native_replay =
                     automatic_replay(resolved_adapter, capabilities.reasoning, &wire_model_id);
+            }
+            let reasoning_binding_setting = model.capabilities.reasoning_binding;
+            if reasoning_binding_setting.is_none() {
+                capabilities.reasoning_binding = automatic_reasoning_binding(
+                    resolved_adapter,
+                    capabilities.reasoning,
+                    &wire_model_id,
+                );
             }
             let native_compaction_allowed = model.capabilities.compaction.is_none();
             if native_compaction_allowed {
@@ -1029,6 +1082,7 @@ impl DynamicCompiler {
                     native_compaction_allowed,
                     in_stream_compaction: false,
                     deferred_tools_setting,
+                    reasoning_binding_setting,
                     defaults,
                     options,
                     headers,
@@ -1595,6 +1649,34 @@ fn reasoning_supported(
 #[cfg(test)]
 mod tests {
     use super::authored_model_endpoint;
+
+    #[test]
+    fn bedrock_claude_ids_bind_their_reasoning() {
+        use super::{OvenAdapterFamily, automatic_reasoning_binding};
+        use crate::ReasoningBinding::{None, Prefix};
+        let binding = |adapter, wire: &str, reasoning| {
+            automatic_reasoning_binding(
+                adapter,
+                reasoning,
+                &crate::authoring::WireModelId::new(wire).unwrap(),
+            )
+        };
+        let bedrock = OvenAdapterFamily::AwsBedrockConverse;
+        assert_eq!(
+            binding(bedrock, "us.anthropic.claude-sonnet-5-5-v1:0", true),
+            Prefix
+        );
+        assert_eq!(binding(bedrock, "anthropic.claude-haiku-5-5", true), Prefix);
+        assert_eq!(binding(bedrock, "amazon.nova-pro-v1:0", true), None);
+        assert_eq!(
+            binding(
+                OvenAdapterFamily::OpenaiCompatible,
+                "claude-sonnet-5-5",
+                true
+            ),
+            None
+        );
+    }
 
     #[test]
     fn authored_base_url_rebases_same_origin_model_endpoints() {

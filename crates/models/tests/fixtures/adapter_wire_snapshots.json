@@ -33,7 +33,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -253,7 +254,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -482,7 +484,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -712,7 +715,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -917,7 +921,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -1122,7 +1127,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -1327,7 +1333,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -1512,7 +1519,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -1723,7 +1731,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -1936,7 +1945,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -2123,7 +2133,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -2335,7 +2346,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -2521,7 +2533,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -2727,7 +2740,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -2929,7 +2943,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -3115,7 +3130,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -3323,7 +3339,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -3531,7 +3548,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -3723,7 +3741,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -3925,7 +3944,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -4108,7 +4128,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -4317,7 +4338,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -4526,7 +4548,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -4715,7 +4738,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -4930,7 +4954,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -5145,7 +5170,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -5340,7 +5366,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -5548,7 +5575,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -5737,7 +5765,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -5797,6 +5826,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -5830,11 +5862,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
-        "anthropic-beta: files-api-2025-04-14",
+        "anthropic-beta: files-api-2025-04-14,thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 601"
+        "content-length: 659"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -5881,6 +5913,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -5910,11 +5945,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
-        "anthropic-beta: files-api-2025-04-14",
+        "anthropic-beta: files-api-2025-04-14,thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 457"
+        "content-length: 515"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -5954,7 +5989,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -6163,7 +6199,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -6218,6 +6255,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -6251,10 +6291,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 568"
+        "content-length: 626"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -6296,6 +6337,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -6325,10 +6369,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 424"
+        "content-length: 482"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -6368,7 +6413,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -6557,7 +6603,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -6615,6 +6662,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -6648,10 +6698,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 602"
+        "content-length: 660"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -6696,6 +6747,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -6725,10 +6779,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 458"
+        "content-length: 516"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -6768,7 +6823,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -6826,6 +6882,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -6859,10 +6918,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 601"
+        "content-length: 659"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -6907,6 +6967,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -6936,10 +6999,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 457"
+        "content-length: 515"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -6979,7 +7043,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -7174,7 +7239,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -7229,6 +7295,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -7262,10 +7331,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 568"
+        "content-length: 626"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -7307,6 +7377,9 @@
           }
         ],
         "thinking": {
+          "block_binding": {
+            "prefix_mismatch_behavior": "drop_block"
+          },
           "display": "summarized",
           "type": "adaptive"
         },
@@ -7336,10 +7409,11 @@
         "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
+        "anthropic-beta: thinking-binding-controls-2026-08-01",
         "x-api-key: anthropic-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 424"
+        "content-length: 482"
       ],
       "request_line": "POST /v1/messages HTTP/1.1"
     }
@@ -7379,7 +7453,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -7636,7 +7711,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -7895,7 +7971,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -8154,7 +8231,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -8416,7 +8494,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -8676,7 +8755,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -8970,7 +9050,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -9270,7 +9351,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -9579,7 +9661,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -9888,7 +9971,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -10122,7 +10206,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -10370,7 +10455,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -10618,7 +10704,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -10854,7 +10941,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -11108,7 +11196,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -11362,7 +11451,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -11608,7 +11698,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -11856,7 +11947,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -12104,7 +12196,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -12340,7 +12433,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -12594,7 +12688,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "prefix"
         }
       },
       "identity": {
@@ -12842,7 +12937,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -13090,7 +13186,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -13326,7 +13423,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -13562,7 +13660,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -13808,7 +13907,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -14054,7 +14154,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -14300,7 +14401,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -14544,7 +14646,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -14777,7 +14880,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -14877,7 +14981,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -14982,7 +15087,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -15086,7 +15192,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -15187,7 +15294,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -15291,7 +15399,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -15394,7 +15503,8 @@
         "replay": {
           "capability": "unsupported",
           "policy": "never",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -15663,7 +15773,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -15959,7 +16070,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -16255,7 +16367,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -16524,7 +16637,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -16820,7 +16934,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -17116,7 +17231,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -17412,7 +17528,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -17707,7 +17824,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -17969,7 +18087,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -18232,7 +18351,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -18491,7 +18611,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -18756,7 +18877,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -19024,7 +19146,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -19292,7 +19415,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -19517,7 +19641,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -19745,7 +19870,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -20145,7 +20271,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -20362,7 +20489,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -20584,7 +20712,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -20806,7 +20935,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -21031,7 +21161,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -21440,7 +21571,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -21837,7 +21969,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -22244,7 +22377,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -22641,7 +22775,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -23058,7 +23193,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -23479,7 +23615,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -23899,7 +24036,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": false
+          "reasoning": false,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -24171,7 +24309,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -24470,7 +24609,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -24769,7 +24909,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -25041,7 +25182,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -25340,7 +25482,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -25639,7 +25782,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -25938,7 +26082,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -26234,7 +26379,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -26454,7 +26600,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -26677,7 +26824,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -26900,7 +27048,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -27141,7 +27290,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -27361,7 +27511,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -27584,7 +27735,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -27808,7 +27960,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -27993,7 +28146,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -28200,7 +28354,8 @@
         "replay": {
           "capability": "required",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -28390,7 +28545,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -28610,7 +28766,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -28833,7 +28990,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -29240,7 +29398,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {
@@ -29651,7 +29810,8 @@
         "replay": {
           "capability": "optional",
           "policy": "if_valid",
-          "reasoning": true
+          "reasoning": true,
+          "reasoning_binding": "none"
         }
       },
       "identity": {

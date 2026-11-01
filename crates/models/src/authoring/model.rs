@@ -159,6 +159,10 @@ pub struct AuthoredCapabilities {
     /// not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_tools: Option<crate::DeferredToolsSetting>,
+    /// Omitted, a Claude model on an Anthropic or Bedrock adaptor binds its
+    /// replayed reasoning to its prefix; `"prefix"` or `"none"` says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_binding: Option<crate::ReasoningBinding>,
     pub native_replay: Option<ReplayCapability>,
     pub media: BTreeMap<MediaKind, MediaCapability>,
 }
@@ -180,6 +184,7 @@ impl AuthoredCapabilities {
             seed: self.seed,
             compaction: self.compaction.unwrap_or_default(),
             deferred_tools: crate::DeferredToolsSupport::Unsupported,
+            reasoning_binding: self.reasoning_binding.unwrap_or_default(),
             native_replay: self
                 .native_replay
                 .unwrap_or_else(|| adapter.automatic_replay(self.reasoning)),

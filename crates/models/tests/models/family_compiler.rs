@@ -1842,6 +1842,158 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, ou
     }
 }
 
+fn compiled_binding(
+    npm: &str,
+    provider_id: &str,
+    authored: &str,
+    reasoning: bool,
+) -> Result<cookie_agent_models::ReasoningBinding, String> {
+    let mut provider = record(npm, Some("https://llm-gateway.example/v1"));
+    provider.id = ProviderId::new(provider_id).unwrap();
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning = reasoning;
+    let authored: ModelsDevProvider = toml::from_str(authored).unwrap();
+    DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, Some(&authored))
+        .map_err(|error| error.to_string())?
+        .models
+        .values()
+        .next()
+        .map(|model| model.capabilities.reasoning_binding)
+        .ok_or_else(|| "no model compiled".to_owned())
+}
+
+#[test]
+fn a_reasoning_claude_model_binds_its_reasoning_wherever_its_endpoint_is() {
+    use cookie_agent_models::ReasoningBinding::{None, Prefix};
+    let model = |wire: &str, extra: &str| {
+        format!("api_key = \"secret\"\n[models.\"model/1\"]\nmodel_id = \"{wire}\"\n{extra}")
+    };
+    for (npm, provider_id, authored, reasoning, expected) in [
+        // Claude through Anthropic's adapter, here behind a gateway.
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            model("claude-sonnet-5-5", ""),
+            true,
+            Prefix,
+        ),
+        // No reasoning, nothing to bind.
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            model("claude-sonnet-5-5", ""),
+            false,
+            None,
+        ),
+        // Other models on Anthropic's adapter and on other adapters do not bind.
+        (
+            "@ai-sdk/anthropic",
+            "kimi-for-coding",
+            model("kimi-for-coding", ""),
+            true,
+            None,
+        ),
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            model("claude-sonnet-5-5", ""),
+            true,
+            None,
+        ),
+        // A setting wins over the rules.
+        (
+            "@ai-sdk/anthropic",
+            "anthropic",
+            model("claude-sonnet-5-5", "reasoning_binding = \"none\""),
+            true,
+            None,
+        ),
+        (
+            "@ai-sdk/anthropic",
+            "kimi-for-coding",
+            model("kimi-for-coding", "reasoning_binding = \"prefix\""),
+            true,
+            Prefix,
+        ),
+    ] {
+        assert_eq!(
+            compiled_binding(npm, provider_id, &authored, reasoning),
+            Ok(expected),
+            "{npm} {provider_id}: {authored} reasoning={reasoning}"
+        );
+    }
+}
+
+#[test]
+fn a_custom_model_declares_its_binding_or_takes_the_rules() {
+    use cookie_agent_models::ReasoningBinding::{None, Prefix};
+    for (adaptor, model_id, setting, expected) in [
+        ("anthropic-compatible", "claude-opus-5-5", "", Prefix),
+        ("anthropic-compatible", "glm-5", "", None),
+        (
+            "anthropic-compatible",
+            "claude-opus-5-5",
+            ", reasoning_binding = \"none\"",
+            None,
+        ),
+        (
+            "anthropic-compatible",
+            "glm-5",
+            ", reasoning_binding = \"prefix\"",
+            Prefix,
+        ),
+    ] {
+        let definition: ProviderDefinition = toml::from_str(&format!(
+            r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "{adaptor}"
+auth = {{ method = "no-auth-v1", values = {{}} }}
+
+[models.test]
+display_name = "Test"
+model_id = "{model_id}"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "required", media = {{}}{setting} }}
+"#
+        ))
+        .unwrap();
+        let ProviderDefinition::Custom(provider) = definition else {
+            unreachable!();
+        };
+        let compiled = DynamicCompiler::family_registry()
+            .compile_custom(&ProviderId::new("custom.test").unwrap(), &provider)
+            .map(|compiled| {
+                compiled
+                    .models
+                    .values()
+                    .next()
+                    .unwrap()
+                    .capabilities
+                    .reasoning_binding
+            })
+            .map_err(|error| error.to_string());
+        assert_eq!(compiled, Ok(expected), "{adaptor} {model_id} {setting}");
+    }
+}
+
+#[test]
+fn reasoning_binding_rejects_unknown_values() {
+    let error = toml::from_str::<ModelsDevProvider>(
+        r#"[models."model/1"]
+reasoning_binding = "always"
+"#,
+    )
+    .expect_err("only none and prefix are values");
+    assert!(error.to_string().contains("unknown variant"), "{error}");
+}
+
 #[test]
 fn deferred_tools_setting_rejects_unknown_values() {
     let attempted = toml::from_str::<ModelsDevProvider>(

@@ -2856,6 +2856,10 @@ fn oven_capabilities(
             reasoning: value.reasoning
                 && adapter != OvenAdapterFamily::AzureOpenaiChat
                 && value.native_replay != crate::ReplayCapability::Unsupported,
+            reasoning_binding: match value.reasoning_binding {
+                crate::ReasoningBinding::None => oven_sdk::ReasoningBinding::None,
+                crate::ReasoningBinding::Prefix => oven_sdk::ReasoningBinding::Prefix,
+            },
         },
     })
 }

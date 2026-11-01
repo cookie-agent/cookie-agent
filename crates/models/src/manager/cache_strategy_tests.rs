@@ -26,6 +26,7 @@ fn video_media_capability_maps_to_open_oven_modality() {
         seed: false,
         compaction: crate::CompactionCapability::Unsupported,
         deferred_tools: crate::DeferredToolsSupport::Unsupported,
+        reasoning_binding: crate::ReasoningBinding::None,
         native_replay: crate::ReplayCapability::Unsupported,
         cancellation: crate::CancellationCapability::LocalOnly,
         media: BTreeMap::from([(

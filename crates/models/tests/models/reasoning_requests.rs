@@ -265,7 +265,15 @@ fn compatible(
     }
 }
 
-const ADAPTIVE: fn() -> Value = || json!({ "type": "adaptive", "display": "summarized" });
+/// Claude binds its reasoning to its prefix, so adaptive thinking also asks
+/// Anthropic to drop a stale block instead of refusing the request.
+const ADAPTIVE: fn() -> Value = || {
+    json!({
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": { "prefix_mismatch_behavior": "drop_block" },
+    })
+};
 
 #[tokio::test]
 async fn anthropic_effort_variants_enable_summarized_adaptive_thinking() {
@@ -514,7 +522,11 @@ async fn anthropic_compatible_variants_use_the_anthropic_thinking_shape() {
     assert_eq!(off["thinking"], json!({ "type": "disabled" }));
 
     let high = request_body(&catalog, "high").await;
-    assert_eq!(high["thinking"], ADAPTIVE());
+    // Not Claude: no binding, so no `block_binding`.
+    assert_eq!(
+        high["thinking"],
+        json!({ "type": "adaptive", "display": "summarized" })
+    );
     assert_eq!(high["output_config"]["effort"], "high");
 }
 

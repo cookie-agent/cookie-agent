@@ -28,7 +28,8 @@ pub(crate) fn classify(error: &ModelError) -> ErrorPolicy {
         | OvenErrorKind::Unsupported
         | OvenErrorKind::ContentFilter
         | OvenErrorKind::InvalidToolInput
-        | OvenErrorKind::Replay => ErrorPolicy::AdvanceEntry,
+        | OvenErrorKind::Replay
+        | OvenErrorKind::ReasoningPrefixMismatch => ErrorPolicy::AdvanceEntry,
         OvenErrorKind::Transport
         | OvenErrorKind::Timeout
         | OvenErrorKind::RateLimited
@@ -119,6 +120,9 @@ const fn error_kind(kind: OvenErrorKind) -> ModelErrorKind {
         OvenErrorKind::InvalidToolInput => ModelErrorKind::InvalidToolInput,
         OvenErrorKind::ContentFilter => ModelErrorKind::ContentFilter,
         OvenErrorKind::Replay => ModelErrorKind::Replay,
+        // Recorded as the invalid request it is; the engine recovers from it
+        // before it is recorded as an error (thinking-replay recovery).
+        OvenErrorKind::ReasoningPrefixMismatch => ModelErrorKind::InvalidRequest,
         OvenErrorKind::NativeContext => ModelErrorKind::NativeContext,
         OvenErrorKind::Provider => ModelErrorKind::Provider,
         OvenErrorKind::Abort => ModelErrorKind::Abort,

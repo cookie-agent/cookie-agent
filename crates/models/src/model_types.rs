@@ -81,6 +81,25 @@ pub enum DeferredToolsSetting {
     Unsupported,
 }
 
+/// Whether a model binds replayed reasoning to the request prefix it was made
+/// in: `prefix` for Claude, whose thinking blocks Anthropic refuses (or drops)
+/// once the system prompt, the tools, or an earlier message changed. A model
+/// override or a custom model can set it; omitted, the automatic rules decide.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningBinding {
+    #[default]
+    None,
+    Prefix,
+}
+
+impl ReasoningBinding {
+    #[must_use]
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
 /// A model override's `compaction` setting. Native compaction is attempted
 /// on every Responses adapter unless the override says `"unsupported"`; the
 /// adapter-named values are accepted and mean the same as omitting the key.
@@ -180,6 +199,8 @@ pub struct ModelCapabilities {
     pub compaction: CompactionCapability,
     #[serde(default, skip_serializing_if = "DeferredToolsSupport::is_unsupported")]
     pub deferred_tools: DeferredToolsSupport,
+    #[serde(default, skip_serializing_if = "ReasoningBinding::is_none")]
+    pub reasoning_binding: ReasoningBinding,
     pub native_replay: ReplayCapability,
     pub cancellation: CancellationCapability,
     pub media: BTreeMap<MediaKind, MediaCapability>,

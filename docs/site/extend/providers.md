@@ -130,7 +130,7 @@ stored); unconfigured providers report counts alone.
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
 | `cache` | table | family default | [Prompt-cache policy](#prompt-caching) matching the resolved adaptor family. |
 | `headers` | map of strings | empty | Provider request-header overrides. |
-| `models` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `model_id`, `generation_options`, `adaptor_options`, `variants`, `default_variant`, `compaction`, `deferred_tools`, `headers`, `pricing`. Unmentioned catalog models remain available. Cannot invent models or directly change catalog capabilities. |
+| `models` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `model_id`, `generation_options`, `adaptor_options`, `variants`, `default_variant`, `compaction`, `deferred_tools`, `reasoning_binding`, `headers`, `pricing`. Unmentioned catalog models remain available. Cannot invent models or directly change catalog capabilities. |
 
 Every model on a Responses adaptor compacts natively by default (see
 [native compaction](../sessions/compaction.md#native-provider-compaction)):
@@ -167,6 +167,22 @@ decided per model, in this order:
    - Any other model on an Anthropic or Anthropic-compatible adaptor, a Claude
      model through a gateway included, is *attempted*: deferral is tried, and
      a rejected request falls back to sending every tool up front.
+
+Whether a model **binds its reasoning to its prefix** is decided per model
+too. A model that binds accepts a replayed thinking block only while the
+system prompt, the tools, and every earlier message are unchanged since the
+block was made; cookie leaves out reasoning whose prefix changed before
+sending, and asks Anthropic to drop any it missed
+([frozen context spec](../specs/frozen-context.md)).
+
+1. **`reasoning_binding`** in a model override: `"prefix"` declares that the
+   model binds, `"none"` that it does not. Any other value is an error.
+2. **Automatic rules:** a reasoning Claude model (a model ID starting
+   `claude-`, or containing `anthropic.claude-` on Bedrock) on an Anthropic,
+   Anthropic-compatible, or Bedrock adaptor binds, whatever its endpoint, so a
+   gateway in front of Anthropic is covered. Every other model does not,
+   including other models on Anthropic-compatible endpoints (Kimi, GLM,
+   MiniMax).
 
 A request with deferred tools that an attempted model refuses (any HTTP 400
 or 422), or that a `native` model refuses naming deferral, is tried once more
@@ -497,6 +513,7 @@ Custom fields are required unless a default or omission rule is stated below.
 | `seed` | boolean | Seed parameter support. |
 | `compaction` | string | Optional; `"unsupported"` is the only accepted value and turns native compaction off. Omitted, a model on a Responses adaptor (or an `openai-compatible` adaptor with `request_endpoint = "responses"`) compacts natively, and Azure Responses does so with `model`, `version`, and `deployment_type` in `setup`. |
 | `deferred_tools` | string | Optional `"native"` or `"unsupported"`; whether the model loads deferred tools. Omitted, the automatic rules under [provider fields](#provider-fields) decide: on an `anthropic` or `anthropic-compatible` adaptor a model is attempted (or `native` for a Claude model on `api.anthropic.com`), and every other custom model is unsupported. `"native"` on an adaptor that cannot load deferred tools is an error. |
+| `reasoning_binding` | string | Optional `"prefix"` or `"none"`; whether the model binds replayed reasoning to its request prefix. Omitted, the automatic rules under [provider fields](#provider-fields) decide: a reasoning Claude model on an `anthropic`, `anthropic-compatible`, or Bedrock adaptor binds, and every other custom model does not. |
 | `native_replay` | string | Optional `"unsupported"`, `"optional"`, or `"required"`; omission derives supported replay from the resolved adaptor and endpoint. |
 | `media` | map | Per-kind (`image`, `audio`, `pdf`, `video`) input limits: nonempty `mime_types` string array, positive `max_bytes` and `max_count`. `max_count` is per request: when the history holds more parts of a kind, the oldest are replaced by a text placeholder in the outgoing request (see [media reads](../reference/tools.md#media-reads)). Exactly the non-text input modalities need entries; text-only models use `{}`. |
 

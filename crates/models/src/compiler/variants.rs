@@ -385,6 +385,7 @@ mod tests {
             pricing: None,
             compaction: crate::NativeCompactionConfig::Default,
             deferred_tools: None,
+            reasoning_binding: None,
             headers: BTreeMap::new(),
         }
     }

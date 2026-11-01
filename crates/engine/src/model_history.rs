@@ -2344,6 +2344,7 @@ fn restore_turn_with_store(
                 response_metadata: turn.response_metadata.clone(),
                 provider_metadata: turn.provider_metadata.clone(),
                 native_replay,
+                reasoning_transformations: Vec::new(),
             },
             warnings: Vec::new(),
         },

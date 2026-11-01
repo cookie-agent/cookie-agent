@@ -3054,19 +3054,12 @@ fn is_overload_retry(error: &ModelError) -> bool {
         || (error.retryable && matches!(error.diagnostics.http_status, Some(429 | 503)))
 }
 
-/// Whether `error` is Anthropic's refusal of a replayed thinking block bound
-/// to a conversation prefix that changed since: a 400 whose message says the
-/// block "is bound to a different conversation". A tampered signature reads
-/// differently and is not recovered.
+/// Whether a model refused a replayed reasoning block because the request
+/// before it changed since the block was made (`ReasoningBinding::Prefix`;
+/// `docs/site/specs/thinking-replay-recovery.md`). The adapter classifies the
+/// refusal; a signature that failed to verify on its own is not one.
 pub(super) fn is_thinking_binding_mismatch(error: &ModelError) -> bool {
-    const MISMATCH: &str = "bound to a different conversation";
-    error.kind == oven_sdk::ModelErrorKind::InvalidRequest
-        && (error.message.contains(MISMATCH)
-            || error
-                .diagnostics
-                .sanitized_body
-                .as_ref()
-                .is_some_and(|body| body.text().contains(MISMATCH)))
+    error.kind == oven_sdk::ModelErrorKind::ReasoningPrefixMismatch
 }
 
 pub(super) fn retry_budget_allows(configured_retries: i64, retries_completed: u32) -> bool {
