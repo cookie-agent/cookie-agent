@@ -279,7 +279,7 @@ impl App {
         if let Some(selected) = self.selected {
             self.resubscribe_from_scratch(selected);
             // Owned again, the snapshot subscription becomes live.
-            self.classify_session_background(selected);
+            self.classify_again_background(selected);
             self.refresh_approvals(selected);
             self.refresh_permission_mode_for_session(selected);
         }

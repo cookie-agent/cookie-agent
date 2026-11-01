@@ -1833,14 +1833,23 @@ impl App {
         self.refresh_tree().await;
     }
 
+    /// Starts classifying a session as it opens: one this connection was
+    /// not told it owns takes no input until the daemon answers.
     fn begin_ownership_classification(&mut self, session_id: SessionId) -> u64 {
+        let generation = self.track_ownership_classification(session_id);
+        if !self.owned_sessions.contains(&session_id) {
+            self.read_only_sessions.insert(session_id);
+        }
+        generation
+    }
+
+    /// Makes the classification started now `session_id`'s current one: an
+    /// earlier one's answer is dropped.
+    fn track_ownership_classification(&mut self, session_id: SessionId) -> u64 {
         self.next_ownership_classification = self.next_ownership_classification.wrapping_add(1);
         let generation = self.next_ownership_classification;
         self.ownership_classifications
             .insert(session_id, generation);
-        if !self.owned_sessions.contains(&session_id) {
-            self.read_only_sessions.insert(session_id);
-        }
         generation
     }
 
@@ -1848,13 +1857,31 @@ impl App {
     /// whether a classification is pending; its outcome then subscribes the
     /// session, so the subscription knows whether it gets a live tail.
     fn classify_session_background(&mut self, session_id: SessionId) -> bool {
+        self.classify_in_background(session_id, true)
+    }
+
+    /// [`Self::classify_session_background`] for the open session after a
+    /// reconnect. It keeps the input it took before the connection dropped
+    /// while the daemon is asked: a read-only composer refuses every key,
+    /// so what the user typed meanwhile was lost. Input sent before the
+    /// answer is safe: the daemon takes the session for it, or refuses it
+    /// and the message goes back to the composer.
+    pub(super) fn classify_again_background(&mut self, session_id: SessionId) -> bool {
+        self.classify_in_background(session_id, false)
+    }
+
+    fn classify_in_background(&mut self, session_id: SessionId, hold_input: bool) -> bool {
         if self.owned_sessions.contains(&session_id) {
             return false;
         }
         if self.ownership_classifications.contains_key(&session_id) {
             return true;
         }
-        let generation = self.begin_ownership_classification(session_id);
+        let generation = if hold_input {
+            self.begin_ownership_classification(session_id)
+        } else {
+            self.track_ownership_classification(session_id)
+        };
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

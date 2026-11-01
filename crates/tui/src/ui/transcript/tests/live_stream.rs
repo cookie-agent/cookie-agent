@@ -745,3 +745,87 @@ async fn a_reconnected_view_rebuilds_the_reply_it_missed_without_duplicating_it(
     )
     .await;
 }
+
+/// After a reconnect the open session is asked again who owns it. It keeps
+/// taking input meanwhile: what the user types before the answer comes lands
+/// in the composer, where a read-only snapshot's would refuse every key.
+#[tokio::test]
+async fn a_reconnected_view_takes_input_while_its_owner_is_asked_again() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let model = GatedModel::start().await;
+    let (_directory, server) = streaming_app(&model).await;
+    let (_runner, session, _run) = start_reply_elsewhere(&server, "hello").await;
+    model.wait_for_call(1).await;
+    let identity = cookie_agent_protocol::ClientIdentity::generate(
+        cookie_agent_protocol::ClientKind::new("tui").expect("client kind"),
+    );
+    let (client, _log, sever) = crate::tests::connect_counting(&server);
+    client
+        .handshake_as(identity.clone())
+        .await
+        .expect("handshake");
+    let mut app = App::new(client).await.expect("app");
+    let mut deliveries = app.take_deliveries();
+    let redial = Arc::clone(&server);
+    app.reconnector = Some(Arc::new(move || {
+        let (server, identity) = (Arc::clone(&redial), identity.clone());
+        Box::pin(async move {
+            let (client, _log, _sever) = crate::tests::connect_counting(&server);
+            client
+                .handshake_as(identity)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(client)
+        })
+    }));
+    settle(&mut app, &mut deliveries).await;
+    assert_eq!(app.selected, Some(session));
+    assert!(app.composer_focused(), "the open session takes input");
+
+    sever.sever();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(delivery) = deliveries.recv().await {
+            app.handle_delivery(delivery).await;
+        }
+    })
+    .await
+    .expect("the dropped connection closes its delivery stream");
+    assert!(app.begin_reconnect());
+    let client = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match app.rpc_updates_rx.recv().await.expect("reconnect update") {
+                crate::ui::app::RpcUpdate::Reconnected { client } => break client,
+                update => app.handle_rpc_update(update),
+            }
+        }
+    })
+    .await
+    .expect("reconnected");
+    app.finish_reconnect(client).await;
+
+    // The daemon has not answered yet: its answer waits among the updates
+    // nothing has handled.
+    assert!(app.ownership_classifications.contains_key(&session));
+    assert!(
+        app.composer_focused(),
+        "the session took input before the drop"
+    );
+    for typed in ['h', 'i'] {
+        app.handle_input_key(KeyEvent::new(KeyCode::Char(typed), KeyModifiers::NONE))
+            .await;
+    }
+    assert_eq!(app.input.as_str(), "hi", "status: {}", app.status);
+
+    // The answer says this daemon owns the session: nothing changes.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while app.ownership_classifications.contains_key(&session) {
+            let update = app.rpc_updates_rx.recv().await.expect("rpc update");
+            app.handle_rpc_update(update);
+        }
+    })
+    .await
+    .expect("the ownership answer");
+    assert!(app.composer_focused());
+    assert_eq!(app.input.as_str(), "hi");
+}
