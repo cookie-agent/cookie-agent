@@ -349,11 +349,35 @@ def count(browser, selector):
 WORKSPACE = os.path.join(HOME, "workspace")
 
 
-# How long a restarted daemon may take to answer again. A debug daemon
-# spends seconds of CPU before it listens, which every group's daemons and
-# browsers share on CI, and the page redials at most every 10 s: on CI's
-# runners the page came back after just under or over a minute.
-RESTART_TIMEOUT = 120
+# How long a restarted daemon may take to get ready again. A debug daemon
+# parses and compiles the bundled model catalog before it listens, over 3 s
+# of CPU on a fast machine, and every group's daemons and browsers share a
+# CI runner's four cores while the restart groups run: there a restart took
+# a minute, at times over two.
+DAEMON_RESTART_TIMEOUT = 300
+
+# How long the page may take to reconnect once the restarted daemon is
+# ready: it redials at most every 10 s, then reads what it shows again.
+RECONNECT_TIMEOUT = 60
+
+
+def ready_lines():
+    """How often the group's daemon got ready: once at its start, and once
+    more after each restart."""
+    with open(os.path.join(HOME, "daemon.out")) as file:
+        return sum(1 for line in file if line.startswith("daemon-ready "))
+
+
+def wait_reconnected(browser, ready_before, what="the reconnection"):
+    """Waits for the group's daemon, restarted when it had `ready_before`
+    ready lines, to get ready again, then for the page to reconnect to it:
+    a slow daemon and a page that does not follow it fail apart."""
+    browser.wait("the restarted daemon to get ready", lambda: ready_lines() > ready_before, timeout=DAEMON_RESTART_TIMEOUT)
+    browser.wait(
+        what,
+        lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0,
+        timeout=RECONNECT_TIMEOUT,
+    )
 
 
 def card(key):
@@ -4257,6 +4281,7 @@ def restart_daemon(browser):
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
     with open(os.path.join(HOME, "daemon.pid")) as file:
         pid = int(file.read())
+    ready_before = ready_lines()
     browser.click("#restart-idle")
     browser.wait(
         "the daemon restarting",
@@ -4268,15 +4293,14 @@ def restart_daemon(browser):
     # Configuration opened while the page reconnects reads on the closed
     # connection; the reconnect reads it again.
     open_section(browser, "settings", "configuration")
-    browser.wait("the reconnected page", lambda: count(browser, "#reconnecting") == 0 and browser.text("#connected") != "", timeout=RESTART_TIMEOUT)
+    wait_reconnected(browser, ready_before, "the reconnected page")
     browser.wait("the banner gone", lambda: count(browser, "#restart-banner") == 0)
     browser.wait(
         "the plain restart button",
         lambda: count(browser, "#restart-daemon") == 1 and count(browser, "#restart-daemon[data-restart-needed]") == 0,
     )
     os.kill(pid, 0)
-    with open(os.path.join(HOME, "daemon.out")) as file:
-        readies = sum(1 for line in file if line.startswith("daemon-ready "))
+    readies = ready_lines()
     assert readies == 2, "the daemon did not restart in place: %d ready lines" % readies
     print("Settings restarts the daemon when idle; the page reconnects to the same process")
 
@@ -5339,9 +5363,10 @@ def acp_restart(browser):
     browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
     browser.click("#connection-restart")
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
+    ready_before = ready_lines()
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
-    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=RESTART_TIMEOUT)
+    wait_reconnected(browser, ready_before)
     send_after_reconnect(browser, "say afterwards")
     browser.wait("the agent's reply after the restart", lambda: "afterwards" in browser.text("#transcript").replace("say afterwards", ""), timeout=60)
     idle(browser, "the agent's turn after the restart")
@@ -5361,9 +5386,10 @@ def session_restart(browser):
     browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
     browser.click("#connection-restart")
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
+    ready_before = ready_lines()
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
-    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=RESTART_TIMEOUT)
+    wait_reconnected(browser, ready_before)
     send_after_reconnect(browser, "after the restart")
     browser.wait("the reply after the restart", lambda: answers(browser) > before, timeout=60)
     idle(browser, "the turn after the restart")
