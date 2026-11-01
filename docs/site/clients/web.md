@@ -129,10 +129,13 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     transcript, and the agents beside the open agent. The sidebar button
     hides and shows it, and the browser remembers the choice (one for
     both views).
-  - **640 to 1023 px:** the rail stays; the sidebar button shows the
-    sessions as the page in place of the transcript (the agents in place
-    of the open agent), and hides them again. Choosing one, or browser
-    Back, hides them too.
+  - **640 to 1023 px** (a tablet, an unfolded foldable): the rail stays;
+    the sidebar button shows the sessions as the page in place of the
+    transcript (the agents in place of the open agent), and hides them
+    again. Choosing one, or browser Back, hides them too. As on a phone,
+    the page opens on the sessions, and Chat on the rail shows them: only
+    a desktop's width has room for the rail, the sessions, and a new
+    session side by side.
   - **Narrower, a phone:** see [Phones](#phones).
 - **Sheets.** The session's panels open as a sheet on the right (from the
   bottom on a phone): approvals, the agent, model, permission mode, and

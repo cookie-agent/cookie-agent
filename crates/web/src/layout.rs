@@ -66,11 +66,14 @@ impl View {
         }
     }
 
-    /// Whether a tap on the view's rail button opens its sidebar, on a
-    /// `phone`: for a list the sidebar holds. Anywhere else the tap closes
-    /// the sidebar.
-    pub const fn rail_opens_sidebar(self, phone: bool) -> bool {
-        phone && matches!(self.phone_list(), Some(PhoneList::Sidebar))
+    /// Whether a tap on the view's rail button opens its sidebar, when the
+    /// window is narrower than a desktop's (`paged`: a phone, a tablet, an
+    /// unfolded foldable), where the sidebar shows as the page: for a list
+    /// the sidebar holds. Only a desktop has room for the rail, the list,
+    /// and what it opens side by side. Anywhere else the tap closes the
+    /// sidebar.
+    pub const fn rail_opens_sidebar(self, paged: bool) -> bool {
+        paged && matches!(self.phone_list(), Some(PhoneList::Sidebar))
     }
 
     /// The `data-view` value of its rail button and page.
@@ -375,7 +378,7 @@ mod tests {
         assert!(View::Chat.rail_opens_sidebar(true));
         assert!(
             !View::Chat.rail_opens_sidebar(false),
-            "a wider window opens on the transcript"
+            "a desktop opens on the transcript"
         );
         let after_tap = |view: View| -> Vec<Layer> {
             if view.rail_opens_sidebar(true) {

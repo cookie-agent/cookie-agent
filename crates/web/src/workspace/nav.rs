@@ -28,12 +28,12 @@ impl Workspace {
         self.view.set(view);
     }
 
-    /// A tap on `view`'s rail button: on a phone, a view with a list shows
-    /// the list first (see [`View::phone_list`]); choosing one of its
-    /// items opens it.
+    /// A tap on `view`'s rail button: below desktop widths, where the
+    /// sidebar shows as the page, a view with a list shows the list first
+    /// (see [`View::phone_list`]); choosing one of its items opens it.
     pub fn open_from_rail(self, view: View) {
         self.open_view(view, None);
-        if view.rail_opens_sidebar(self.narrow.get_untracked()) {
+        if view.rail_opens_sidebar(!browser::matches(browser::DESKTOP_QUERY)) {
             self.sidebar_open.set(true);
         }
     }

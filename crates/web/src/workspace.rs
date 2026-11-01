@@ -694,11 +694,13 @@ impl Workspace {
         self.finish_waiting_sign_in();
         let selected = self.selected.get_untracked();
         self.refresh_onboarding(!reconnected);
-        // A phone opens on its sessions, over a new session: what it is
-        // opened for is mostly a session already going. A notification's
-        // session, opened next, closes them.
+        // Below desktop widths the page opens on its sessions, over a new
+        // session: what it is opened for is mostly a session already going,
+        // and only a desktop has room for the rail, the sessions, and the
+        // new session side by side. A notification's session, opened next,
+        // closes them.
         if !reconnected
-            && self.narrow.get_untracked()
+            && !browser::matches(browser::DESKTOP_QUERY)
             && self.new_session.get_untracked()
             && self.view.get_untracked() == crate::layout::View::Chat
         {
