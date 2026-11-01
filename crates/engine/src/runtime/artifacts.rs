@@ -749,6 +749,14 @@ pub(crate) struct ArtifactRange {
     pub(crate) head: Vec<u8>,
 }
 
+fn is_dir(path: &std::path::Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 fn artifact_reference(digest: &str) -> cookie_agent_protocol::ArtifactReference {
     cookie_agent_protocol::ArtifactReference {
         uri: format!("artifact://sha256/{digest}"),
@@ -975,7 +983,9 @@ use cookie_agent_protocol::{ArtifactReference, SessionId, ToolAttachment};
 type TreeResolver = Arc<dyn Fn(SessionId) -> Option<SessionId> + Send + Sync>;
 
 /// Directory holding a tree's own artifacts (`<root>/artifacts`).
-pub(crate) const ARTIFACTS_DIR: &str = "artifacts";
+/// A tree's artifacts: its `blobs/` folder, which also holds the large
+/// values of its session logs (history format 2).
+pub(crate) const ARTIFACTS_DIR: &str = crate::events::blobs::BLOBS_DIR;
 
 /// Content-addressed artifacts, each belonging to exactly one root tree
 /// (tree-local sessions, D).
@@ -1111,12 +1121,18 @@ impl ArtifactRouter {
         if let Some(store) = self.cached_tree_store(tree) {
             return Ok(Some(store));
         }
-        match std::fs::metadata(self.tree_dir(tree).join(ARTIFACTS_DIR)) {
-            Ok(metadata) if metadata.is_dir() => self.tree_store(tree).map(Some),
-            Ok(_) => Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
+        let tree_dir = self.tree_dir(tree);
+        if is_dir(&tree_dir.join(ARTIFACTS_DIR))? {
+            return self.tree_store(tree).map(Some);
         }
+        // A tree no conversion reached yet (another process holds it) keeps
+        // its artifacts where trees did before history format 2. Its store
+        // is not cached: the conversion that takes the tree moves them.
+        let legacy = tree_dir.join(crate::events::blobs::LEGACY_ARTIFACTS_DIR);
+        if is_dir(&legacy)? {
+            return self.new_store(legacy).map(Some);
+        }
+        Ok(None)
     }
 
     /// Where a session's blob with this digest is stored (placement visibility

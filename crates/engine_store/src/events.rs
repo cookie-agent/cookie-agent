@@ -29,6 +29,7 @@ use tokio::sync::mpsc;
 
 use crate::ownership::{WriteAuthority, WriteCapability};
 
+pub mod blobs;
 mod durability;
 pub use durability::Commit;
 
@@ -1406,11 +1407,24 @@ impl EventLog {
             path: self.path.clone(),
             message: error.to_string(),
         })?;
-        let mut record = cookie_agent_protocol::write_stored_history(|| serde_json::to_vec(&event))
-            .map_err(|source| EventLogError::Json {
+        // Readers take any format; this build writes its own.
+        if matches!(event.payload, EventPayload::SessionCreated { .. })
+            && !is_current_creation(&event.payload)
+        {
+            return Err(EventLogError::Corrupt {
                 path: self.path.clone(),
-                source,
-            })?;
+                message: cookie_agent_protocol::EventSchemaError::UnsupportedHistoryFormat
+                    .to_string(),
+            });
+        }
+        let mut moved = Vec::new();
+        let mut record = stored_line(&event, &mut |digest, bytes| {
+            moved.push((digest.to_owned(), bytes));
+        })
+        .map_err(|source| EventLogError::Json {
+            path: self.path.clone(),
+            source,
+        })?;
         record.push(b'\n');
         let mut validation = self
             .validation
@@ -1431,7 +1445,8 @@ impl EventLog {
         drop(events);
         let written = self.persisted.load(Ordering::Acquire);
         let write_result = if written {
-            self.write_record(&record, syncs_on_append(&event.payload))
+            self.write_blobs(&moved)
+                .and_then(|()| self.write_record(&record, syncs_on_append(&event.payload)))
         } else {
             Ok(None)
         };
@@ -1511,9 +1526,10 @@ impl EventLog {
     }
 
     /// Calls `visit` with the JSON of every line of the log whose sequence is
-    /// in `seqs`: a line read from disk as its bytes, which hold whatever this
-    /// build did not decode (a skipped event, an unknown member), and a record
-    /// written since as it serializes.
+    /// in `seqs`, as the log stores it: a line read from disk as its bytes,
+    /// which hold whatever this build did not decode (a skipped event, an
+    /// unknown member), and a record written since as it serializes, with
+    /// the references to the blobs its large values move to ([`blobs`]).
     pub fn visit_json(
         &self,
         seqs: impl std::ops::RangeBounds<u64>,
@@ -1553,7 +1569,13 @@ impl EventLog {
             seqs.contains(&event.seq)
                 && (raw.get(event.seq).is_none() || unread.contains(&event.seq))
         }) {
-            visit(&serde_json::to_value(event.as_ref()).map_err(json_error)?);
+            let mut value = serde_json::to_value(event.as_ref()).map_err(json_error)?;
+            if blobs::may_move(&event.payload)
+                && let Some(payload) = value.get_mut("payload")
+            {
+                blobs::externalize(payload, &mut |_, _| {});
+            }
+            visit(&value);
         }
         Ok(())
     }
@@ -1936,7 +1958,7 @@ impl EventLog {
                 Some(length) => cut_event_file(&self.path, length)?,
                 None => truncate_event_file(&self.path, through_seq)?,
             }
-            self.durability.cut();
+            self.durability.cut()?;
         }
         let mut events = self
             .events
@@ -1957,6 +1979,27 @@ impl EventLog {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
             rebuild_validation(&self.path, self.session_id, &events.all, &taint)?;
         self.next_seq.store(through_seq + 1, Ordering::Release);
+        Ok(())
+    }
+
+    /// Stores the blobs a record about to be written names, unsynced: the
+    /// sync that covers the record syncs them first. The caller holds
+    /// `append`.
+    fn write_blobs(&self, moved: &[(String, Vec<u8>)]) -> Result<(), EventLogError> {
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let directory = blobs::tree_blob_dir(&self.path);
+        let mut named = Vec::with_capacity(moved.len());
+        for (digest, bytes) in moved {
+            let stored =
+                blobs::write(&directory, digest, bytes).map_err(|source| EventLogError::Io {
+                    path: directory.join(digest),
+                    source,
+                })?;
+            named.push((directory.join(digest), stored.is_some()));
+        }
+        self.durability.names_blobs(&directory, named);
         Ok(())
     }
 
@@ -3813,6 +3856,15 @@ struct LoadedEvents {
     next_seq: u64,
 }
 
+/// Whether `payload` is a `session_created` of this build's history format.
+fn is_current_creation(payload: &EventPayload) -> bool {
+    matches!(
+        payload,
+        EventPayload::SessionCreated { history_format, .. }
+            if *history_format == cookie_agent_protocol::HISTORY_FORMAT
+    )
+}
+
 /// Checks the history format `session_created` declares. A log without one
 /// predates history formats; a newer one needs a newer build. An older one
 /// was converted before it got here, unless no conversion from it exists.
@@ -3847,8 +3899,12 @@ fn check_history_format(path: &Path, creation: Option<&Value>) -> Result<(), Eve
 
 /// The bytes of `bytes`'s log in this build's history format: converted when
 /// its first line declares an older format a conversion exists from, else
-/// as they are, for the loader to judge.
-fn in_current_format(path: &Path, bytes: Vec<u8>) -> Result<(Vec<u8>, bool), EventLogError> {
+/// as they are, for the loader to judge. A conversion's blobs stay in
+/// memory, where the loader reads them back from.
+fn in_current_format(
+    path: &Path,
+    bytes: Vec<u8>,
+) -> Result<(Vec<u8>, Option<blobs::Blobs>), EventLogError> {
     let first = bytes
         .split(|byte| *byte == b'\n')
         .find(|line| !line.is_empty())
@@ -3860,9 +3916,9 @@ fn in_current_format(path: &Path, bytes: Vec<u8>) -> Result<(Vec<u8>, bool), Eve
                     path: path.to_owned(),
                     message: error.to_string(),
                 })?;
-            Ok((converted, true))
+            Ok((converted.0, Some(converted.1)))
         }
-        _ => Ok((bytes, false)),
+        _ => Ok((bytes, None)),
     }
 }
 
@@ -3930,7 +3986,16 @@ fn load_event_jsonl_in_place(
     #[cfg(any(test, feature = "test-support"))]
     EVENT_LOG_PARSES.with(|parses| parses.set(parses.get() + 1));
     let (bytes, torn) = read_complete_jsonl(path, torn_tail)?;
-    let (bytes, converted) = in_current_format(path, bytes)?;
+    let (bytes, converted_blobs) = in_current_format(path, bytes)?;
+    let converted = converted_blobs.is_some();
+    let blob_dir = blobs::tree_blob_dir(path);
+    let mut fetch = |digest: &str| match converted_blobs
+        .as_ref()
+        .and_then(|converted| converted.get(digest))
+    {
+        Some(bytes) => Ok(bytes.clone()),
+        None => blobs::read(&blob_dir, digest),
+    };
     let mut lines = LineIndex {
         starts: Vec::new(),
         len: bytes.len() as u64,
@@ -3958,8 +4023,15 @@ fn load_event_jsonl_in_place(
     {
         let line_number = index as u64 + 1;
         // Nearly every record is intact: type it straight from the bytes and
-        // leave the untyped, repairing reader to the rest.
-        if let Some(event) = StoredEvent::decode_strict(line) {
+        // leave the untyped, repairing reader to the rest, and to a record
+        // whose large values it reads back from blobs.
+        let references = blobs::has_references(line);
+        // The first record also has to be of this build's history format,
+        // which the slower reader explains when it is not.
+        if !references
+            && let Some(event) = StoredEvent::decode_strict(line)
+            && (index > 0 || is_current_creation(&event.payload))
+        {
             if !observe_sequence(
                 event.seq,
                 &mut last_observed_seq,
@@ -4072,7 +4144,7 @@ fn load_event_jsonl_in_place(
             object.remove("engine_version");
             degraded.push("engine_version".to_owned());
         }
-        let Some(payload_value) = object.remove("payload") else {
+        let Some(mut payload_value) = object.remove("payload") else {
             if index == 0 {
                 return corrupt_value(path, "SessionCreated payload is absent");
             }
@@ -4085,6 +4157,29 @@ fn load_event_jsonl_in_place(
             validation_taint.mark_broad(seq, seq);
             continue;
         };
+        if references && let Err(reason) = blobs::internalize(&mut payload_value, &mut fetch) {
+            // A blob a crash lost before the sync that covers its record, or
+            // one removed by hand: the record cannot be read whole.
+            if index == 0 {
+                return corrupt_value(
+                    path,
+                    format!("SessionCreated is unsupported or corrupt: {reason}"),
+                );
+            }
+            diagnostics.push(EventLoadDiagnostic {
+                seq,
+                reason,
+                engine_version,
+                skipped: true,
+            });
+            validation_taint
+                .mark_record(seq, envelope_run_id, &payload_value)
+                .map_err(|message| EventLogError::Corrupt {
+                    path: path.to_owned(),
+                    message: message.into(),
+                })?;
+            continue;
+        }
         let payload = match deserialize_event_payload_best_effort(&payload_value) {
             Ok(read) => {
                 degraded.extend(
@@ -4403,6 +4498,39 @@ fn corrupt_value<T>(path: &Path, message: impl Into<String>) -> Result<T, EventL
     })
 }
 
+/// The records of the session log at `path`, each read whole, the values
+/// history format 2 keeps in the tree's blobs read back: for tools and
+/// tests that look at a log's lines without opening it, which validates
+/// them.
+pub fn load_whole_records(path: &Path) -> Result<Vec<StoredEvent>, EventLogError> {
+    let blob_dir = blobs::tree_blob_dir(path);
+    let json_error = |source| EventLogError::Json {
+        path: path.to_owned(),
+        source,
+    };
+    let bytes = fs::read(path).map_err(|source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    cookie_agent_protocol::read_stored_history(|| {
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let mut value = serde_json::from_slice::<Value>(line).map_err(json_error)?;
+                if let Some(payload) = value.get_mut("payload") {
+                    blobs::internalize(payload, &mut |digest| blobs::read(&blob_dir, digest))
+                        .map_err(|message| EventLogError::Corrupt {
+                            path: path.to_owned(),
+                            message,
+                        })?;
+                }
+                serde_json::from_value(value).map_err(json_error)
+            })
+            .collect()
+    })
+}
+
 /// Reads a JSONL file after removing a crash-torn final record.  A malformed
 /// complete record is corruption, not a torn tail, and is rejected.
 pub fn load_jsonl<T>(path: &Path) -> Result<Vec<T>, EventLogError>
@@ -4550,6 +4678,25 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLog
     Ok(())
 }
 
+/// The line `event` is stored as, newline excluded: serialized in the
+/// storage encoding, its large values moved to blobs ([`blobs`]), each
+/// handed to `keep` with its digest.
+fn stored_line(
+    event: &StoredEvent,
+    keep: &mut dyn FnMut(&str, Vec<u8>),
+) -> Result<Vec<u8>, serde_json::Error> {
+    cookie_agent_protocol::write_stored_history(|| {
+        if !blobs::may_move(&event.payload) {
+            return serde_json::to_vec(event);
+        }
+        let mut value = serde_json::to_value(event)?;
+        if let Some(payload) = value.get_mut("payload") {
+            blobs::externalize(payload, keep);
+        }
+        serde_json::to_vec(&value)
+    })
+}
+
 /// Writes `events` as the content of the new log at `path` through one
 /// buffered writer and syncs the file once. Every line `raw` holds (each
 /// record read from disk, and each line the read skipped or quarantined) is
@@ -4580,6 +4727,7 @@ fn write_event_jsonl_in_place(
     let mut writer = io::BufWriter::new(options.open(path).map_err(io_error)?);
     let mut lines = LineIndex::default();
     let mut record = Vec::new();
+    let mut moved = blobs::Blobs::new();
     let mut copied = raw.raw.lines.iter().peekable();
     let mut events = events.iter().peekable();
     loop {
@@ -4605,8 +4753,8 @@ fn write_event_jsonl_in_place(
             continue;
         } else {
             let event = events.next().expect("peeked event");
-            cookie_agent_protocol::write_stored_history(|| {
-                serde_json::to_writer(&mut record, event.as_ref())
+            record = stored_line(event, &mut |digest, bytes| {
+                moved.insert(digest.to_owned(), bytes);
             })
             .map_err(json_error)?;
         }
@@ -4617,6 +4765,11 @@ fn write_event_jsonl_in_place(
     let file = writer
         .into_inner()
         .map_err(|error| io_error(error.into_error()))?;
+    let directory = blobs::tree_blob_dir(path);
+    blobs::write_synced(&directory, &moved).map_err(|source| EventLogError::Io {
+        path: directory,
+        source,
+    })?;
     file.sync_all().map_err(io_error)?;
     Ok(lines)
 }

@@ -156,13 +156,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
     drop(reopened);
 
     let event_path = child_dir.join("events.jsonl");
-    let mut events = fs::read_to_string(&event_path)
-        .expect("child events")
-        .lines()
-        .map(|line| {
-            serde_json::from_str::<cookie_agent_protocol::StoredEvent>(line).expect("event")
-        })
-        .collect::<Vec<_>>();
+    let mut events = crate::events::load_whole_records(&event_path).expect("child events");
     let removed_seq = events
         .iter()
         .find(|event| {

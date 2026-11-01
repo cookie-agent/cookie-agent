@@ -866,7 +866,7 @@ deletes) referenced, directly or through a generic manifest, unless an event
 still in the tree's logs references them too. The sweep is skipped while any
 session of the tree runs or a capture is still publishing its terminal
 references. Artifacts orphaned any other way, such as by a crash or a cancelled
-capture, stay in the tree's `artifacts/` directory until the tree is deleted.
+capture, stay in the tree's `blobs/` directory until the tree is deleted.
 
 ### `read_artifact`
 

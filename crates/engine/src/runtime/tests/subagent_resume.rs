@@ -293,14 +293,8 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
             }),
         ),
     ] {
-        let mut events = fs::read_to_string(&path)
-            .expect("rewrite recovery isolation events")
-            .lines()
-            .map(|line| {
-                serde_json::from_str::<cookie_agent_protocol::StoredEvent>(line)
-                    .expect("stored recovery isolation event")
-            })
-            .collect::<Vec<_>>();
+        let mut events =
+            crate::events::load_whole_records(&path).expect("rewrite recovery isolation events");
         let terminal = events
             .iter_mut()
             .find(|event| {

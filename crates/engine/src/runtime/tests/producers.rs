@@ -1,4 +1,4 @@
-use std::{fs, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -1179,13 +1179,7 @@ async fn idle_send_auto_runs_and_recovery_restores_missing_consumption_marker() 
         .session_dir(session_id)
         .join("events.jsonl");
     fixture.engine.shutdown().await;
-    let mut events = fs::read_to_string(&event_path)
-        .expect("producer events")
-        .lines()
-        .map(|line| {
-            serde_json::from_str::<cookie_agent_protocol::StoredEvent>(line).expect("event")
-        })
-        .collect::<Vec<_>>();
+    let mut events = crate::events::load_whole_records(&event_path).expect("producer events");
     let removed_seq = events
         .iter()
         .find(|event| {

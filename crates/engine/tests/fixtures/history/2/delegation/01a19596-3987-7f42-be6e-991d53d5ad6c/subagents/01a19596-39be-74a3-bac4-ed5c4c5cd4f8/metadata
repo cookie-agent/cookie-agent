@@ -1,0 +1,50 @@
+{
+  "agent_revision": "sha256:782e99288baa6a5c83b81ebe015430a15960b8a74082a9011e56f5e80ae1c4c9",
+  "attachments": [
+    {
+      "capability": "global",
+      "kind": "global",
+      "name": "global",
+      "runtime_id": "global"
+    },
+    {
+      "capability": "coding",
+      "kind": "coding",
+      "name": "local_tmpyvo8qs",
+      "runtime_id": "local",
+      "workspace": "/dev/shm/t.4OSkac/.tmpYvo8qS"
+    }
+  ],
+  "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "creation_selection": {
+    "agent": "worker",
+    "model": {
+      "model": "custom.test/group/model",
+      "variant": null
+    }
+  },
+  "cwd_identity": "/dev/shm/t.4OSkac/.tmpYvo8qS",
+  "last_activity": "2026-11-01T05:30:14.480314709Z",
+  "last_agent_activity": "2026-11-01T05:30:14.350009182Z",
+  "last_event_seq": 43,
+  "manifest_revision": "sha256:7a4c47ea2887b02d30c3abb94ce0c7679628a43edb8a8fc50bc69f9978403521",
+  "model_revision": "sha256:970914a694b93884e34744e486e9536565d2ee050eda6d22ae51d0c4ddf8a96c",
+  "origin": {
+    "depth": 1,
+    "invocation_id": "9ed308a8-03c3-4ede-5d06-33e0a6b2d994",
+    "parent_run_id": "01a19596-398f-7652-b92b-eb6dff0d9d04",
+    "parent_session_id": "01a19596-3987-7f42-be6e-991d53d5ad6c",
+    "parent_tool_call_id": "01a19596-39b8-7910-81c2-c44034cb0cda",
+    "root_session_id": "01a19596-3987-7f42-be6e-991d53d5ad6c",
+    "type": "delegated"
+  },
+  "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+  "recipe_registry_revision": "sha256:132d96c484536348b2b6422b5788eb0bb2b0bdc99702acf609e95e27321f684a",
+  "runtime_revision": "sha256:037b2431ae8a14e5591bb5dddfd054cf091a9eb48416a5a7e4f31b22dedaa1c5",
+  "session_id": "01a19596-39be-74a3-bac4-ed5c4c5cd4f8",
+  "short_id": "worker_a8d37029",
+  "skipped_events": [],
+  "status": "completed",
+  "title": "Survey the module",
+  "title_updated_seq": 4
+}

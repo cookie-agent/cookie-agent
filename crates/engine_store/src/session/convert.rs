@@ -2,6 +2,7 @@
 //! (`docs/site/specs/compatibility-v1.md` section 8.7).
 
 use super::*;
+use crate::events::blobs::{self, BLOBS_DIR, LEGACY_ARTIFACTS_DIR};
 use crate::events::convert::{self as history, ConvertError};
 use crate::ownership::{SessionOwnership, try_acquire};
 
@@ -14,6 +15,8 @@ pub struct TreeConversion {
     /// `None` for one written before history formats, else its format,
     /// such as a newer build's.
     pub left: Vec<(SessionId, Option<u32>)>,
+    /// The tree's artifacts moved from `artifacts/` to `blobs/`.
+    pub artifacts_moved: bool,
 }
 
 /// What one member's log needs.
@@ -38,14 +41,19 @@ const STAGED_SUFFIX: &str = "convert.tmp";
 /// this build's, together with each one's `metadata` cache. The caller holds
 /// the tree's lock.
 ///
-/// Each converted log and its `metadata`, folded from it, are first written
-/// beside the originals and synced. Only once every log converted does each
-/// original become `events.jsonl.v<N>.bak` and the new file take its place;
-/// `subagents/index.json`, a cache of the old summaries, is removed and
-/// rebuilt by the next tree load. A failure before that leaves every
-/// original untouched. A log already current, of a newer format, or of one
-/// no conversion exists from is left for its open to judge.
+/// The tree's artifacts move from `artifacts/`, where trees kept them
+/// before history format 2, to `blobs/` first. Then the blobs the
+/// conversion moves values to, each converted log, and its `metadata`,
+/// folded from it, are written beside the originals and synced. Only once
+/// every log converted does each original become `events.jsonl.v<N>.bak`
+/// and the new file take its place; `subagents/index.json`, a cache of the
+/// old summaries, is removed and rebuilt by the next tree load. A failure
+/// before that leaves every original log untouched. A log already current,
+/// of a newer format, or of one no conversion exists from is left for its
+/// open to judge. Each step can be repeated, so a conversion a crash cut
+/// short goes on at the next.
 pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, SessionError> {
+    let artifacts_moved = move_legacy_artifacts(root_dir)?;
     let mut members = vec![(root, root_dir.to_owned())];
     if let Ok(entries) = fs::read_dir(root_dir.join(SUBAGENTS_DIR)) {
         for entry in entries.flatten() {
@@ -60,7 +68,10 @@ pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, 
         }
     }
     let mut staged = Vec::new();
-    let mut conversion = TreeConversion::default();
+    let mut conversion = TreeConversion {
+        artifacts_moved,
+        ..TreeConversion::default()
+    };
     for (id, dir) in &members {
         match stage(*id, dir) {
             Ok(Stage::Staged(log)) => {
@@ -95,6 +106,52 @@ pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, 
         }
     }
     Ok(conversion)
+}
+
+/// Moves the tree's artifacts from `artifacts/`, where trees kept them
+/// before history format 2, to `blobs/`: the whole folder when there is no
+/// `blobs/` yet, else file by file, so a move a crash cut short goes on at
+/// the next conversion. Returns whether there was anything to move.
+fn move_legacy_artifacts(root_dir: &Path) -> Result<bool, SessionError> {
+    let legacy = root_dir.join(LEGACY_ARTIFACTS_DIR);
+    let io_error = |path: &Path| {
+        let path = path.to_owned();
+        move |source| SessionError::Io { path, source }
+    };
+    let entries = match fs::read_dir(&legacy) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(io_error(&legacy)(source)),
+    };
+    let target = root_dir.join(BLOBS_DIR);
+    if !target.exists() {
+        drop(entries);
+        // Windows renames no folder a handle inside it keeps open: the
+        // artifacts of a tree not converted yet are read through handles
+        // closed after each read.
+        fs::rename(&legacy, &target).map_err(io_error(&target))?;
+        fsync_directory(root_dir)?;
+        return Ok(true);
+    }
+    for entry in entries {
+        let entry = entry.map_err(io_error(&legacy))?;
+        let source = entry.path();
+        let name = entry.file_name();
+        let into = target.join(&name);
+        let keep =
+            name.to_str().is_some_and(blobs::is_digest) && fs::symlink_metadata(&into).is_err();
+        if keep {
+            replace(&source, &into)?;
+        } else {
+            // The blob is there already under its address, or this is a
+            // temporary a writer left.
+            fs::remove_file(&source).map_err(io_error(&source))?;
+        }
+    }
+    fsync_directory(&target)?;
+    fs::remove_dir(&legacy).map_err(io_error(&legacy))?;
+    fsync_directory(root_dir)?;
+    Ok(true)
 }
 
 /// The history format the log at `path` declares on its first line: `None`
@@ -146,13 +203,19 @@ fn stage(id: SessionId, dir: &Path) -> Result<Stage, SessionError> {
         .iter()
         .rposition(|byte| *byte == b'\n')
         .map_or(0, |at| at + 1);
-    let converted =
+    let (converted, moved) =
         history::convert_bytes(format, &bytes[..complete]).map_err(|error: ConvertError| {
             SessionError::Event(EventLogError::Corrupt {
                 path: path.clone(),
                 message: error.to_string(),
             })
         })?;
+    // The blobs are in place and synced before any log names them.
+    let blob_dir = blobs::tree_blob_dir(&path);
+    blobs::write_synced(&blob_dir, &moved).map_err(|source| SessionError::Io {
+        path: blob_dir,
+        source,
+    })?;
     let log = dir.join(format!("{EVENTS_FILE}.{STAGED_SUFFIX}"));
     let metadata = dir.join(format!("{SESSION_META_FILE}.{STAGED_SUFFIX}"));
     let staged = Staged {

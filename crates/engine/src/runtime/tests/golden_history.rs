@@ -242,10 +242,15 @@ fn differences(expected: &Value, actual: &Value, path: &str, found: &mut Vec<Str
     }
 }
 
+/// The first history format whose golden snapshots were recorded with the
+/// file labels of [`without_file_labels`].
+const FILE_LABELS_FORMAT: u32 = 2;
+
 /// Removes from `read`'s history views the file labels a build adds before
 /// each user file (`docs/site/specs/machines-on-demand.md` section 6.4):
-/// model text the engine injects as it reads, which logs recorded before it
-/// cannot hold. Everything else of the history must still read as recorded.
+/// model text the engine injects as it reads, which snapshots recorded
+/// before it (those of format 1) cannot hold. Everything else of the history
+/// must still read as recorded.
 fn without_file_labels(read: &mut Value) {
     for_each_session(read, |session| {
         for view in ["full", "assembled"] {
@@ -333,6 +338,20 @@ fn expand_recorded_events(scenario: &Path, recorded: &mut Value) {
     });
 }
 
+/// What the converters change in what a snapshot of an older format shows:
+/// `session_created` names the format it was converted to. Format 2 moves
+/// large values to blobs, which every reader reads back, so nothing else
+/// changes.
+fn as_converted(recorded: &mut Value) {
+    for_each_session(recorded, |session| {
+        for event in session["events"].as_array_mut().into_iter().flatten() {
+            if event["payload"]["type"] == "session_created" {
+                event["payload"]["history_format"] = json!(HISTORY_FORMAT);
+            }
+        }
+    });
+}
+
 fn tree_bytes(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in std::fs::read_dir(directory)
@@ -405,11 +424,16 @@ async fn golden_history_reads_as_recorded() {
         )
         .expect("recorded snapshot JSON");
         expand_recorded_events(&scenario, &mut recorded);
+        if format < HISTORY_FORMAT {
+            as_converted(&mut recorded);
+        }
         let name = scenario.strip_prefix(GOLDEN_ROOT).unwrap_or(&scenario);
         for opening in [Opening::ReadOnly, Opening::Owned] {
             let opened = open_scenario(&scenario, opening).await;
             let mut read = snapshot(&opened.engine, &opened.roots).await;
-            without_file_labels(&mut read);
+            if format < FILE_LABELS_FORMAT {
+                without_file_labels(&mut read);
+            }
             let mut found = Vec::new();
             differences(&recorded["trees"], &read["trees"], "trees", &mut found);
             if matches!(opening, Opening::ReadOnly) {
@@ -1056,6 +1080,12 @@ fn write_workspace(root: &Path) {
     std::fs::write(root.join("src/lib.rs"), LIBRARY).unwrap();
     std::fs::create_dir_all(root.join("assets")).unwrap();
     std::fs::write(root.join("assets/pixel.png"), super::media::png(2, 2, 16)).unwrap();
+    // Long enough that reading it gives an output history format 2 stores
+    // in a blob.
+    let changelog = (1..=400)
+        .map(|release| format!("- 0.{release}.0: steadier subtraction in area {release}\n"))
+        .collect::<String>();
+    std::fs::write(root.join("CHANGELOG.md"), changelog).unwrap();
     let skill = root.join(".agents/skills/release-notes");
     std::fs::create_dir_all(&skill).unwrap();
     std::fs::write(
@@ -1251,6 +1281,7 @@ fn coding_rules() -> Rules {
                     ("read", json!({"filePath": "src"})),
                     ("read", json!({"filePath": "assets/pixel.png"})),
                     ("read", json!({"filePath": "missing.txt"})),
+                    ("read", json!({"filePath": "CHANGELOG.md"})),
                 ]),
                 Reply::Tools(vec![
                     (
@@ -1653,7 +1684,6 @@ async fn tolerates_future_data(name: &str) {
                     clear_skipped(&mut tree["tree"]);
                 }
             }
-            without_file_labels(&mut read);
             let mut found = Vec::new();
             differences(&recorded["trees"], &read["trees"], "trees", &mut found);
             assert!(

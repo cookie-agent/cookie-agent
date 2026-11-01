@@ -912,6 +912,23 @@ fn an_omitted_record_is_a_debug_row_and_nothing_else() {
     ));
 }
 
+/// An ACP agent's live state that the conversion to history format 2 left
+/// out is in the records it went to: it shows no row.
+#[test]
+fn omitted_live_state_shows_nothing() {
+    let session = SessionId::new_v7();
+    let events = vec![stored_event(
+        session,
+        Some(RunId::new_v7()),
+        7,
+        EventPayload::RecordOmitted {
+            omitted_type: cookie_agent_protocol::EventType::new("acp_session_updated").unwrap(),
+        },
+    )];
+    let replayed = reduce_session_events(session, 0, &events);
+    assert!(replayed.transcript.is_empty(), "{:?}", replayed.transcript);
+}
+
 fn model_inputs(state: &SessionState) -> Vec<(crate::model_input::ModelInputKind, &str, &str)> {
     state
         .transcript

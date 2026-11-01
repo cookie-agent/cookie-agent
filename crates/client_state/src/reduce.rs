@@ -1626,6 +1626,8 @@ pub(super) fn reduce_event_from(
                 apply_tool_presentation(state, presented.tool_call_id, presented.presentation);
             }
         }
+        // Live state a conversion left out is in the records it went to.
+        payload if payload.is_omitted_live_state() => {}
         // What a writer left out changes nothing; the debug view names it.
         EventPayload::RecordOmitted { omitted_type } => push_event(
             state,

@@ -52,6 +52,7 @@ pub const CUT_KEEP_BYTES: usize = 2 * 1024;
 pub fn leaves_out(payload: &EventPayload) -> bool {
     match payload {
         EventPayload::ModelRequestPrepared { .. } => true,
+        payload if payload.is_omitted_live_state() => true,
         // Its replayed and reconstructed entries are debug rows, and an
         // empty list an info row; only a discard warns.
         EventPayload::ModelReplayEvaluated {

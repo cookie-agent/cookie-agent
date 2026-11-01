@@ -1,0 +1,44 @@
+{
+  "agent_revision": "sha256:86997aa530e5c8aabca3b456109eec42b73714d2b10d4233f5aa85a27255912f",
+  "attachments": [
+    {
+      "capability": "global",
+      "kind": "global",
+      "name": "global",
+      "runtime_id": "global"
+    },
+    {
+      "capability": "coding",
+      "kind": "coding",
+      "name": "local_tmpqc5wrv",
+      "runtime_id": "local",
+      "workspace": "/dev/shm/t.4OSkac/.tmpqc5wrV"
+    }
+  ],
+  "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "creation_selection": {
+    "agent": "primary",
+    "model": {
+      "model": "custom.test/group/model",
+      "variant": null
+    }
+  },
+  "cwd_identity": "/dev/shm/t.4OSkac/.tmpqc5wrV",
+  "last_activity": "2026-11-01T05:30:11.448351597Z",
+  "last_agent_activity": "2026-11-01T05:30:11.417174443Z",
+  "last_event_seq": 179,
+  "manifest_revision": "sha256:e64ca6791b842db8b42143f98f2e0eea2db031ee5d98c01e48f476e44e8f5388",
+  "model_revision": "sha256:4e0cfdfa62a0bf3f7db9d6a0f134abd69955a19905533eb5446b1fc397ff50da",
+  "origin": {
+    "type": "root"
+  },
+  "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+  "recipe_registry_revision": "sha256:132d96c484536348b2b6422b5788eb0bb2b0bdc99702acf609e95e27321f684a",
+  "runtime_revision": "sha256:7fc46c4973c3e498c2fdcb067f74f241ebf6bef11908f2eb23dccf2983f1c74b",
+  "session_id": "01a19596-1ef2-7062-adda-2b4a608b16cb",
+  "short_id": "primary_8fb27948",
+  "skipped_events": [],
+  "status": "completed",
+  "title": null,
+  "title_updated_seq": 0
+}

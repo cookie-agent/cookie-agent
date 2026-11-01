@@ -1,0 +1,1 @@
+{"streams":[{"name":"stdout","reference":{"uri":"artifact://sha256/8b577a4eea2f0508b005db74583f418bc55c2ec7f68dc1261709d6837066a9d4"},"sha256":"8b577a4eea2f0508b005db74583f418bc55c2ec7f68dc1261709d6837066a9d4","byte_length":72894,"line_count":14000,"truncated":true,"next_offset":100},{"name":"stderr","byte_length":0,"line_count":0,"truncated":false,"next_offset":null}]}

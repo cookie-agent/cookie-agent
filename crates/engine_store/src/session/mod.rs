@@ -73,6 +73,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::events::blobs::BLOBS_DIR;
 use crate::events::{EventLog, EventLogError, fsync_directory};
 use crate::ownership::{
     HeldLock, OWNER_LOCK_FILE, OWNER_LOCK_SUFFIX, SessionOwnership, WriteAuthority,
@@ -932,10 +933,11 @@ impl SessionStore {
             });
         }
         let existing = scaffold_listing(final_dir)?.unwrap_or_default();
-        let merged_scaffold = match existing.as_slice() {
-            [entry] => entry.file_name() == SUBAGENTS_DIR && entry.path().is_dir(),
-            _ => false,
-        };
+        let merged_scaffold = !existing.is_empty()
+            && existing.iter().all(|entry| {
+                (entry.file_name() == SUBAGENTS_DIR || entry.file_name() == BLOBS_DIR)
+                    && entry.path().is_dir()
+            });
         if !final_dir.is_dir() || !merged_scaffold {
             return Err(SessionError::SessionLocked(session_id));
         }
@@ -948,6 +950,12 @@ impl SessionStore {
         })?;
         for entry in &prepared {
             let destination = final_dir.join(entry.file_name());
+            // The children's blobs and the root's share the tree's folder;
+            // a blob is its content's address, so one already there is it.
+            if entry.file_name() == BLOBS_DIR && destination.is_dir() {
+                merge_blobs(&entry.path(), &destination)?;
+                continue;
+            }
             // Never rename over a name another writer created in the meantime.
             if destination.symlink_metadata().is_ok() {
                 return Err(SessionError::SessionLocked(session_id));
@@ -3837,6 +3845,26 @@ impl Drop for SessionStore {
 }
 
 /// The gate for `key` in a map of lazily created per-session gates.
+/// Moves the blobs of a prepared `blobs/` folder into the tree's, then
+/// removes it. A blob the tree has already is the same content.
+fn merge_blobs(prepared: &Path, into: &Path) -> Result<(), SessionError> {
+    let io_error = |path: &Path| {
+        let path = path.to_owned();
+        move |source| SessionError::Io { path, source }
+    };
+    for entry in fs::read_dir(prepared).map_err(io_error(prepared))? {
+        let entry = entry.map_err(io_error(prepared))?;
+        let destination = into.join(entry.file_name());
+        if destination.symlink_metadata().is_ok() {
+            fs::remove_file(entry.path()).map_err(io_error(&entry.path()))?;
+        } else {
+            fs::rename(entry.path(), &destination).map_err(io_error(&destination))?;
+        }
+    }
+    fs::remove_dir(prepared).map_err(io_error(prepared))?;
+    fsync_directory(into).map_err(SessionError::from)
+}
+
 fn keyed_gate(gates: &Mutex<HashMap<SessionId, Arc<Mutex<()>>>>, key: SessionId) -> Arc<Mutex<()>> {
     Arc::clone(
         gates

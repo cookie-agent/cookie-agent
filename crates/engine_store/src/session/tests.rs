@@ -2928,11 +2928,14 @@ fn fork_suspends_the_source_writer_until_its_next_append() {
     )));
     let reopened = append_test_in_run_record(&store, session_id, &attempt);
     assert!(log.writer_is_open_for_test());
-    let durable = crate::events::load_jsonl::<cookie_agent_protocol::StoredEvent>(
+    let durable = crate::events::load_jsonl::<serde_json::Value>(
         &store.session_dir(session_id).join("events.jsonl"),
     )
     .expect("read source event log");
-    assert_eq!(durable.last().map(|event| event.seq), Some(reopened.seq));
+    assert_eq!(
+        durable.last().and_then(|event| event["seq"].as_u64()),
+        Some(reopened.seq)
+    );
 }
 
 #[cfg(unix)]
@@ -5031,4 +5034,120 @@ fn a_cold_reopen_parses_before_it_takes_a_store_lock() {
         super::WriteOpen::AlreadyOwned
     );
     assert!(store.is_resident(cold));
+}
+
+/// History format 2's conversion of a whole tree: the artifacts move from
+/// `artifacts/` to `blobs/`, the large values of every log (here the ACP
+/// command lists of the root and its child, the same list stored once) move
+/// to blobs written and synced before the logs, and every log reads back
+/// whole.
+#[test]
+fn converting_a_format_one_tree_moves_its_artifacts_and_large_values_to_blobs() {
+    use crate::events::blobs::{self, BLOBS_DIR, LEGACY_ARTIFACTS_DIR};
+
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let root = persist_test_session(&owner);
+    let child = persist_test_session_with_origin(&owner, delegated_origin(root, root, 1));
+    let commands = (0..20)
+        .map(|index| cookie_agent_protocol::AcpCommand {
+            name: format!("command-{index}"),
+            description: "a command the agent offers".into(),
+            input_hint: None,
+        })
+        .collect::<Vec<_>>();
+    for session in [root, child] {
+        owner
+            .append(
+                session,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::AcpSessionUpdated {
+                    update: cookie_agent_protocol::AcpSessionUpdate {
+                        commands: Some(commands.clone()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .expect("commands");
+    }
+    let root_dir = owner.session_dir(root);
+    let child_dir = root_dir.join(SUBAGENTS_DIR).join(child.to_string());
+    drop(owner);
+
+    // The same tree as history format 1 wrote it: whole values, and the
+    // artifacts in `artifacts/`.
+    let blob_dir = root_dir.join(BLOBS_DIR);
+    for dir in [&root_dir, &child_dir] {
+        let path = dir.join(EVENTS_FILE);
+        let lines = fs::read_to_string(&path)
+            .expect("read log")
+            .lines()
+            .map(|line| {
+                let mut value = serde_json::from_str::<serde_json::Value>(line).expect("line");
+                blobs::internalize(&mut value["payload"], &mut |digest| {
+                    blobs::read(&blob_dir, digest)
+                })
+                .expect("whole");
+                if value["payload"]["type"] == "session_created" {
+                    value["payload"]["history_format"] = serde_json::json!(1);
+                }
+                serde_json::to_string(&value).expect("line") + "\n"
+            })
+            .collect::<String>();
+        fs::write(&path, lines).expect("write format 1");
+    }
+    fs::remove_dir_all(&blob_dir).expect("no blobs in format 1");
+    let artifact = b"an artifact of format 1".to_vec();
+    let artifact_digest = blobs::digest(&artifact);
+    fs::create_dir(root_dir.join(LEGACY_ARTIFACTS_DIR)).expect("artifacts");
+    fs::write(
+        root_dir.join(LEGACY_ARTIFACTS_DIR).join(&artifact_digest),
+        &artifact,
+    )
+    .expect("an artifact");
+
+    // A read-only open reads it in memory and writes nothing.
+    let log = crate::events::EventLog::open_read_only(root_dir.join(EVENTS_FILE), root)
+        .expect("a format-1 log opens read-only");
+    assert!(log.event_snapshot().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::AcpSessionUpdated { update } if update.commands.as_ref() == Some(&commands)
+    )));
+    assert!(!blob_dir.exists());
+
+    let conversion = super::convert::convert_tree(root, &root_dir).expect("convert");
+    assert!(conversion.artifacts_moved);
+    assert_eq!(conversion.converted.len(), 2);
+    assert!(!root_dir.join(LEGACY_ARTIFACTS_DIR).exists());
+    assert_eq!(
+        fs::read(blob_dir.join(&artifact_digest)).expect("the artifact"),
+        artifact
+    );
+    let list = serde_json::to_vec(&serde_json::to_value(&commands).unwrap()).unwrap();
+    assert_eq!(
+        fs::read(blob_dir.join(blobs::digest(&list))).expect("the list's blob"),
+        list
+    );
+    for (dir, session) in [(&root_dir, root), (&child_dir, child)] {
+        assert!(dir.join(format!("{EVENTS_FILE}.v1.bak")).is_file());
+        let stored = fs::read_to_string(dir.join(EVENTS_FILE)).expect("converted log");
+        assert!(stored.contains("\"commands_blob\":\"artifact://sha256/"));
+        let log = crate::events::EventLog::open_read_only(dir.join(EVENTS_FILE), session)
+            .expect("the converted log opens");
+        assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
+        assert!(log.event_snapshot().iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::AcpSessionUpdated { update }
+                if update.commands.as_ref() == Some(&commands)
+        )));
+    }
+    // A second conversion finds nothing left to do.
+    assert_eq!(
+        super::convert::convert_tree(root, &root_dir).expect("again"),
+        super::convert::TreeConversion::default()
+    );
 }

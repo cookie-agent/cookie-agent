@@ -10,7 +10,7 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 1.62.0 | 1.x |
+| Client protocol | 1.63.0 | 1.x |
 | Plugin protocol | 1.34.0 | 1.x |
 | Runtime protocol | 1.14.0 | 1.x |
 | Session history (events JSONL) | history format 1 | format 1; older formats are converted |
@@ -24,7 +24,7 @@ emit only their current version and reject unsupported versions.
 
 The three protocols have semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes: the
-client protocol `CLIENT_PROTOCOL_VERSION` (`1.62.0`), the plugin protocol
+client protocol `CLIENT_PROTOCOL_VERSION` (`1.63.0`), the plugin protocol
 `PLUGIN_PROTOCOL_VERSION` (`1.34.0`), and the runtime protocol
 `RUNTIME_PROTOCOL_VERSION` (`1.14.0`), all in `cookie_agent_protocol`. All
 three froze at `1.0.0`. Each handshake sends its side's version and accepts a
@@ -34,7 +34,7 @@ one. The client protocol's versions are listed in its
 [changelog](protocol-changelog.md).
 
 Session history is versioned apart from the protocols, by the
-`history_format` that `session_created` records (format 1 in this build). It
+`history_format` that `session_created` records (format 2 in this build). It
 bumps only when a change cannot follow the additive rules of
 [Events](events.md#history-formats); a log of a lower format is converted when
 a newer build opens it, and one of a higher format opens only to be viewed.

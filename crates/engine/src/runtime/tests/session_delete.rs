@@ -66,7 +66,7 @@ async fn deleting_a_tree_removes_it_from_disk_and_tells_every_listener() {
     let (root, child, last) = published_tree(&fixture, selection);
     let engine = &fixture.engine;
     let root_dir = engine.inner.store.resolve_dir(root).expect("root dir");
-    assert!(root_dir.join("artifacts").is_dir());
+    assert!(root_dir.join("blobs").is_dir());
     assert!(root_dir.join("subagents").join(child.to_string()).is_dir());
     let month = root_dir.parent().expect("month folder").to_path_buf();
     let before = store_entries(&fixture, &month);

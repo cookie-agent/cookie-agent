@@ -1829,9 +1829,10 @@ fn bookkeeping_records_are_written_at_once_and_synced_with_the_next_record() {
             record.payload
         );
         deferred += usize::from(!synced);
-        let on_disk = load_jsonl::<StoredEvent>(&path).expect("read log");
+        // The lines as stored: a format-2 record's large values are in blobs.
+        let on_disk = load_jsonl::<Value>(&path).expect("read log");
         assert_eq!(
-            on_disk.last().map(|event| event.seq),
+            on_disk.last().and_then(|event| event["seq"].as_u64()),
             Some(log.physical_tip_seq())
         );
     }
@@ -2751,9 +2752,9 @@ fn the_history_format_of_a_log_decides_whether_it_opens() {
                     error,
                     EventLogError::RequiresNewerEngine {
                         event: None,
-                        history_format: Some(2),
+                        history_format: Some(format),
                         ..
-                    }
+                    } if format == cookie_agent_protocol::HISTORY_FORMAT + 1
                 ),
                 "{error:?}"
             ),
@@ -4398,8 +4399,16 @@ fn a_log_keeps_only_unreproducible_lines_and_reads_the_rest_again() {
         if matches!(line["seq"].as_u64(), Some(4 | 5)) {
             assert_eq!(line, &expected);
         } else {
+            // A record written from memory names the blobs its large values
+            // moved to.
+            let blob_dir = directory.path().join(super::blobs::BLOBS_DIR);
             let decoded = |value: &Value| {
-                StoredEvent::decode_strict(serde_json::to_string(value).unwrap().as_bytes())
+                let mut value = value.clone();
+                super::blobs::internalize(&mut value["payload"], &mut |digest| {
+                    super::blobs::read(&blob_dir, digest)
+                })
+                .expect("the blobs read back");
+                StoredEvent::decode_strict(serde_json::to_string(&value).unwrap().as_bytes())
                     .expect("a record")
             };
             assert_eq!(decoded(line), decoded(&expected));
@@ -4554,4 +4563,168 @@ fn an_omitted_record_belongs_to_no_run_or_a_started_one() {
         cookie_agent_protocol::EventType::new("Delegation-Reserved").is_err(),
         "an event type is a snake-case label"
     );
+}
+
+/// A tool call whose result's output is `output`, displayed whole.
+fn completed_tool_call(output: &str) -> (Vec<StoredEvent>, StoredEvent, StoredEvent) {
+    let (records, start, mut termination) = tool_call_records();
+    if let EventPayload::ToolCallTerminated { termination } = &mut termination.payload {
+        termination.outcome = ToolTerminationOutcome::Completed;
+        termination.error = None;
+        termination.result = Some(cookie_agent_protocol::PersistedToolResult {
+            title: SafeDisplayText::new("Read").expect("title"),
+            output: output.to_owned(),
+            display: vec![Open::Known(cookie_agent_protocol::DisplayBlock::text(
+                output.to_owned(),
+            ))],
+            background: None,
+            retained_output: None,
+            metadata: serde_json::json!({}),
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
+        });
+    }
+    (records, start, termination)
+}
+
+/// History format 2: a tool result's output over 8 KiB is stored in the
+/// tree's `blobs/`, the record keeping its head, length, and digest, and
+/// every open reads it back whole. A blob that is gone makes its record
+/// unreadable, never silently short.
+#[test]
+fn a_large_tool_output_moves_to_a_blob_and_reads_back_whole() {
+    let output = (0..2_000)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    assert!(output.len() > blobs::OUTPUT_BLOB_MIN_BYTES);
+    let (records, start, termination) = completed_tool_call(&output);
+    let session = records[0].session_id;
+    let origin = || EventOrigin::new("engine:test").expect("origin");
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let log = EventLog::create(path.clone(), session, origin(), records[0].payload.clone())
+        .expect("create log");
+    for record in records[1..].iter().chain([&start, &termination]) {
+        log.append(record.run_id, origin(), record.payload.clone())
+            .expect("append");
+    }
+    drop(log);
+
+    let stored = load_jsonl::<Value>(&path).expect("stored lines");
+    let result = &stored.last().expect("termination")["payload"]["result"];
+    assert_eq!(result["output"], output[..blobs::OUTPUT_HEAD_BYTES]);
+    assert_eq!(result["output_bytes"], output.len());
+    let digest = blobs::digest(output.as_bytes());
+    assert_eq!(result["output_blob"], format!("artifact://sha256/{digest}"));
+    let blob = directory.path().join(blobs::BLOBS_DIR).join(&digest);
+    assert_eq!(fs::read(&blob).expect("the blob"), output.as_bytes());
+
+    for log in [
+        EventLog::open(path.clone(), session),
+        EventLog::open_read_only(path.clone(), session),
+    ] {
+        let log = log.expect("reopen");
+        assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
+        assert_eq!(
+            log.events().last().expect("termination").payload,
+            termination.payload
+        );
+        // Artifact liveness sees the blob the record names.
+        let mut named = Vec::new();
+        log.visit_json(.., |value| {
+            if value["payload"]["result"]["output_blob"].is_string() {
+                named.push(value["seq"].clone());
+            }
+        })
+        .expect("visit");
+        assert_eq!(named, vec![serde_json::json!(termination.seq)]);
+    }
+
+    fs::remove_file(&blob).expect("lose the blob");
+    let log = EventLog::open_read_only(path, session).expect("the log still opens");
+    assert!(
+        log.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.skipped && diagnostic.reason.contains(&digest)),
+        "{:?}",
+        log.diagnostics()
+    );
+    assert!(
+        log.events()
+            .iter()
+            .all(|event| !matches!(event.payload, EventPayload::ToolCallTerminated { .. }))
+    );
+}
+
+/// A format-1 log opened read-only is converted in memory, its large values
+/// read back from the conversion's blobs, and nothing is written.
+#[test]
+fn a_read_only_open_of_a_format_one_log_writes_no_blobs() {
+    let output = "x".repeat(blobs::OUTPUT_BLOB_MIN_BYTES * 2);
+    let (records, start, termination) = completed_tool_call(&output);
+    let session = records[0].session_id;
+    let mut values = records
+        .iter()
+        .chain([&start, &termination])
+        .map(|record| serde_json::to_value(record).expect("record"))
+        .collect::<Vec<_>>();
+    values[0]["payload"]["history_format"] = Value::from(1);
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(&path, &values);
+    let before = fs::read(&path).expect("the log");
+
+    let log = EventLog::open_read_only(path.clone(), session).expect("open");
+    assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
+    let events = log.events();
+    assert!(matches!(
+        events[0].payload,
+        EventPayload::SessionCreated { history_format, .. }
+            if history_format == cookie_agent_protocol::HISTORY_FORMAT
+    ));
+    assert_eq!(
+        events.last().expect("termination").payload,
+        termination.payload
+    );
+    assert_eq!(fs::read(&path).expect("the log"), before);
+    assert!(!directory.path().join(blobs::BLOBS_DIR).exists());
+}
+
+/// A record naming a blob syncs it before the log, when its commit point
+/// syncs, and a record naming it again does not sync it again.
+#[test]
+fn a_commit_point_syncs_the_blobs_its_records_name() {
+    let output = "y".repeat(blobs::OUTPUT_BLOB_MIN_BYTES + 1);
+    let (records, start, termination) = completed_tool_call(&output);
+    let session = records[0].session_id;
+    let origin = || EventOrigin::new("engine:test").expect("origin");
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let log = EventLog::create(path.clone(), session, origin(), records[0].payload.clone())
+        .expect("create log");
+    for record in records[1..].iter().chain([&start]) {
+        log.append(record.run_id, origin(), record.payload.clone())
+            .expect("append");
+    }
+    let (_, commit) = log
+        .write_owned(
+            &log.write_capability.clone().expect("owned"),
+            termination.run_id,
+            origin(),
+            termination.payload.clone(),
+        )
+        .expect("write the termination");
+    let blob = directory
+        .path()
+        .join(blobs::BLOBS_DIR)
+        .join(blobs::digest(output.as_bytes()));
+    assert!(
+        log.durability.state_blobs_for_test().contains(&blob),
+        "pending until the sync"
+    );
+    log.sync_through(commit.expect("a commit point"))
+        .expect("sync");
+    assert!(log.durability.state_blobs_for_test().is_empty());
+    assert!(log.durability.synced_blob_for_test(&blob));
 }

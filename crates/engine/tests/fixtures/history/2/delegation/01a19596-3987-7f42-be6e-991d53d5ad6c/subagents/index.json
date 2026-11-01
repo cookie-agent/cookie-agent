@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "children": [
+    {
+      "summary": {
+        "meta": {
+          "session_id": "01a19596-39be-74a3-bac4-ed5c4c5cd4f8",
+          "origin": {
+            "type": "delegated",
+            "root_session_id": "01a19596-3987-7f42-be6e-991d53d5ad6c",
+            "parent_session_id": "01a19596-3987-7f42-be6e-991d53d5ad6c",
+            "parent_run_id": "01a19596-398f-7652-b92b-eb6dff0d9d04",
+            "parent_tool_call_id": "01a19596-39b8-7910-81c2-c44034cb0cda",
+            "invocation_id": "9ed308a8-03c3-4ede-5d06-33e0a6b2d994",
+            "depth": 1
+          },
+          "short_id": "worker_a8d37029",
+          "cwd_identity": "/dev/shm/t.4OSkac/.tmpYvo8qS",
+          "creation_selection": {
+            "agent": "worker",
+            "model": {
+              "model": "custom.test/group/model",
+              "variant": null
+            }
+          },
+          "runtime_revision": "sha256:037b2431ae8a14e5591bb5dddfd054cf091a9eb48416a5a7e4f31b22dedaa1c5",
+          "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+          "model_revision": "sha256:970914a694b93884e34744e486e9536565d2ee050eda6d22ae51d0c4ddf8a96c",
+          "agent_revision": "sha256:782e99288baa6a5c83b81ebe015430a15960b8a74082a9011e56f5e80ae1c4c9",
+          "recipe_registry_revision": "sha256:132d96c484536348b2b6422b5788eb0bb2b0bdc99702acf609e95e27321f684a",
+          "manifest_revision": "sha256:7a4c47ea2887b02d30c3abb94ce0c7679628a43edb8a8fc50bc69f9978403521",
+          "title": "Survey the module",
+          "title_updated_seq": 4,
+          "last_event_seq": 43,
+          "last_activity": "2026-11-01T05:30:14.480314709Z",
+          "last_agent_activity": "2026-11-01T05:30:14.350009182Z",
+          "status": "completed",
+          "skipped_events": []
+        },
+        "usage": {
+          "input_tokens": null,
+          "input_tokens_no_cache": null,
+          "input_tokens_cache_read": null,
+          "input_tokens_cache_write": null,
+          "output_tokens": null,
+          "output_tokens_text": null,
+          "output_tokens_reasoning": null
+        },
+        "usage_rollup": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "request_count": 3,
+          "cache_hit_rate": null,
+          "estimated_cost_usd": null,
+          "by_model": {
+            "custom.test/group/model": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "reasoning_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "request_count": 3,
+              "cache_hit_rate": null,
+              "estimated_cost_usd": null
+            }
+          }
+        }
+      },
+      "terminal_runs": {
+        "01a19596-39c7-72b1-99a1-b157c51477e7": "completed",
+        "01a19596-3fca-73d1-8241-b8fea2e23867": "completed",
+        "01a19596-401e-7752-b6cc-66e04b5c2446": "completed"
+      }
+    },
+    {
+      "summary": {
+        "meta": {
+          "session_id": "01a19596-3a01-7d61-aa16-86d5ab213a47",
+          "origin": {
+            "type": "delegated",
+            "root_session_id": "01a19596-3987-7f42-be6e-991d53d5ad6c",
+            "parent_session_id": "01a19596-3987-7f42-be6e-991d53d5ad6c",
+            "parent_run_id": "01a19596-398f-7652-b92b-eb6dff0d9d04",
+            "parent_tool_call_id": "01a19596-39fa-7e81-bb5e-6e748cad8cf7",
+            "invocation_id": "b2bc3672-a7ae-a590-c15d-7506521a3b06",
+            "depth": 1
+          },
+          "short_id": "worker_9572a7c8",
+          "cwd_identity": "/dev/shm/t.4OSkac/.tmpYvo8qS",
+          "creation_selection": {
+            "agent": "worker",
+            "model": {
+              "model": "custom.test/group/model",
+              "variant": null
+            }
+          },
+          "runtime_revision": "sha256:037b2431ae8a14e5591bb5dddfd054cf091a9eb48416a5a7e4f31b22dedaa1c5",
+          "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+          "model_revision": "sha256:970914a694b93884e34744e486e9536565d2ee050eda6d22ae51d0c4ddf8a96c",
+          "agent_revision": "sha256:782e99288baa6a5c83b81ebe015430a15960b8a74082a9011e56f5e80ae1c4c9",
+          "recipe_registry_revision": "sha256:132d96c484536348b2b6422b5788eb0bb2b0bdc99702acf609e95e27321f684a",
+          "manifest_revision": "sha256:7a4c47ea2887b02d30c3abb94ce0c7679628a43edb8a8fc50bc69f9978403521",
+          "title": "Write the report",
+          "title_updated_seq": 4,
+          "last_event_seq": 32,
+          "last_activity": "2026-11-01T05:30:14.55149163Z",
+          "last_agent_activity": "2026-11-01T05:30:12.892516009Z",
+          "status": "completed",
+          "skipped_events": []
+        },
+        "usage": {
+          "input_tokens": null,
+          "input_tokens_no_cache": null,
+          "input_tokens_cache_read": null,
+          "input_tokens_cache_write": null,
+          "output_tokens": null,
+          "output_tokens_text": null,
+          "output_tokens_reasoning": null
+        },
+        "usage_rollup": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "request_count": 2,
+          "cache_hit_rate": null,
+          "estimated_cost_usd": null,
+          "by_model": {
+            "custom.test/group/model": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "reasoning_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "request_count": 2,
+              "cache_hit_rate": null,
+              "estimated_cost_usd": null
+            }
+          }
+        }
+      },
+      "terminal_runs": {
+        "01a19596-3a14-75b1-8047-65c553781f83": "completed",
+        "01a19596-4071-74e2-a037-b7834c37cf32": "completed"
+      }
+    }
+  ]
+}

@@ -531,3 +531,35 @@ fn a_replay_evaluation_that_discards_history_stays() {
     );
     assert!(!leaves_out(&discarding.payload));
 }
+
+/// A reader takes a `session_created` of any history format (client
+/// protocol 1.61.0); a client before 1.61.0, which refuses any but the
+/// first, receives the first, as its whole values are.
+#[test]
+fn a_session_created_of_any_format_reads_and_older_clients_get_the_first() {
+    let mut creation =
+        serde_json::from_str::<serde_json::Value>(CODING.lines().next().unwrap()).unwrap();
+    for format in [1, 2, 3] {
+        creation["payload"]["history_format"] = json!(format);
+        let event = Arc::new(serde_json::from_value::<StoredEvent>(creation.clone()).unwrap());
+        let format_of = |event: &StoredEvent| match event.payload {
+            EventPayload::SessionCreated { history_format, .. } => history_format,
+            _ => unreachable!(),
+        };
+        let older = crate::DisplayAudience::new(crate::SemVer::new(1, 60, 0)).stored(&event);
+        assert_eq!(format_of(&older), crate::FIRST_HISTORY_FORMAT);
+        let current = crate::DisplayAudience::new(crate::CLIENT_PROTOCOL_VERSION).stored(&event);
+        assert_eq!(format_of(&current), format);
+    }
+}
+
+/// The display view leaves out the live state a conversion left out, and
+/// keeps every other omitted record.
+#[test]
+fn omitted_live_state_is_left_out_of_the_display_view() {
+    let omitted = |kind: &str| EventPayload::RecordOmitted {
+        omitted_type: crate::EventType::new(kind).unwrap(),
+    };
+    assert!(leaves_out(&omitted("acp_session_updated")));
+    assert!(!leaves_out(&omitted("delegation_finished")));
+}

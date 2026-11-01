@@ -2700,7 +2700,11 @@ impl ApprovalFinalization {
 /// The history format this build writes and reads: the major version of the
 /// session log layout, stamped on `session_created`. It bumps only for a
 /// change that cannot follow the additive rules of session history.
-pub const HISTORY_FORMAT: u32 = 1;
+pub const HISTORY_FORMAT: u32 = 2;
+
+/// The history format the protocols froze with, the only one a client
+/// before client protocol 1.61.0 reads.
+pub const FIRST_HISTORY_FORMAT: u32 = 1;
 
 /// The most bytes of a diagnostic's serialized `detail`.
 pub const MAX_DIAGNOSTIC_DETAIL_BYTES: usize = 16 * 1024;
@@ -2771,7 +2775,10 @@ impl RevisionFold {
 #[allow(clippy::large_enum_variant)]
 pub enum EventPayload {
     SessionCreated {
-        /// The session log's [`HISTORY_FORMAT`].
+        /// The session log's history format: [`HISTORY_FORMAT`] for a log
+        /// this build wrote or converted. Readers take any (client protocol
+        /// 1.61.0); a client before 1.61.0 receives
+        /// [`FIRST_HISTORY_FORMAT`].
         history_format: u32,
         origin: SessionOrigin,
         /// Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).
@@ -3348,7 +3355,9 @@ pub enum EventPayload {
     /// In place of a record of type `omitted_type` that the writer
     /// deliberately did not carry over, at that record's sequence, run, and
     /// time: a fork writes it for each of its source's delegation records,
-    /// whose subagents stay the source's.
+    /// whose subagents stay the source's, and the conversion to history
+    /// format 2 for each `acp_session_updated` that held only an ACP agent's
+    /// live state ([`EventPayload::is_omitted_live_state`]).
     RecordOmitted {
         omitted_type: EventType,
     },
@@ -3831,15 +3840,14 @@ impl EventPayload {
             Self::ProducerMessagesReleased { claim_seq } if *claim_seq == 0 => {
                 return Err(EventSchemaError::InvalidProducerMessage);
             }
+            // Any `history_format` reads: the wire carries whole values,
+            // whatever the log stores, and the loader judges a log's format
+            // itself (client protocol 1.61.0).
             Self::SessionCreated {
-                history_format,
                 creation_selection,
                 creation_agent,
                 ..
             } => {
-                if *history_format != HISTORY_FORMAT {
-                    return Err(EventSchemaError::UnsupportedHistoryFormat);
-                }
                 creation_agent
                     .validate_selection(creation_selection)
                     .map_err(|_| EventSchemaError::SelectionAgentMismatch)?;
@@ -5413,6 +5421,17 @@ impl fmt::Display for EventSchemaError {
 }
 impl std::error::Error for EventSchemaError {}
 
+impl EventPayload {
+    /// Whether this stands for an `acp_session_updated` that held only an
+    /// ACP agent's live state (a tool presentation or context use), which
+    /// the conversion to history format 2 did not carry over: what it held
+    /// is in the call's end or a later record, so it shows nothing.
+    #[must_use]
+    pub fn is_omitted_live_state(&self) -> bool {
+        matches!(self, Self::RecordOmitted { omitted_type } if omitted_type.as_str() == "acp_session_updated")
+    }
+}
+
 impl crate::DisplayAudience {
     /// What the client receives of `payload`'s display blocks: the call's
     /// presentation, its result's display, and a progress `replace`. `None`
@@ -5420,6 +5439,18 @@ impl crate::DisplayAudience {
     #[must_use]
     pub fn payload(&self, payload: &EventPayload) -> Option<EventPayload> {
         match payload {
+            // A client before 1.61.0 refuses a `session_created` of any
+            // format but the first; what it receives is whole values, as
+            // history format 1 stores them, so that is the format it gets.
+            EventPayload::SessionCreated { history_format, .. }
+                if *history_format != FIRST_HISTORY_FORMAT && !self.reads_any_history_format() =>
+            {
+                let mut payload = payload.clone();
+                if let EventPayload::SessionCreated { history_format, .. } = &mut payload {
+                    *history_format = FIRST_HISTORY_FORMAT;
+                }
+                Some(payload)
+            }
             EventPayload::ToolCallStarted { start } => {
                 let arguments = self.blocks(&start.presentation.arguments);
                 let preview = self.blocks(&start.presentation.preview);

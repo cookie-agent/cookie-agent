@@ -552,7 +552,8 @@ A writer stamps `"skippable": true` in the envelope of every audit event.
 
 ### 8.7 History format and conversion
 
-`session_created` carries `history_format: 1`. A reader handles a log as
+`session_created` carries `history_format` (1 at the freeze, 2 since
+[session storage v3](session-storage-v3.md)). A reader handles a log as
 follows:
 
 - **No `history_format`:** a pre-1.0 log. It is not converted, and the open
@@ -2657,3 +2658,49 @@ corpora, and the compatibility policy.
   contributor rules and is in the nav; `protocol.md`, `runtime-protocol.md`,
   `development/plugins.md`, `schemas.md`, `architecture.md`, and `events.md`
   describe the frozen versions, the storage encoding, and the golden logs.
+
+### History format 2 (2026-11-01)
+
+The first real converter, `v1_to_v2`, for
+[session storage v3](session-storage-v3.md) section 4.2. No client, plugin,
+or runtime protocol changed: readers read every value back.
+
+- **Converters take a blob sink.** A step is now
+  `fn(Vec<Value>, &mut Blobs) -> Result<Vec<Value>, String>`: it may move a
+  value out of the log into the tree's blobs (`Blobs`, content by digest),
+  and `convert_bytes` returns them with the converted log. `convert_tree`
+  writes and syncs them in `blobs/` before it stages the logs; a read-only
+  open keeps them in memory, where its loader reads them back, and writes
+  nothing. The test-only step from format 0 ignores the sink, so a format-0
+  log converts 0 to 1 to 2.
+- **What moves** is the writer's own rule (`events::blobs::externalize`),
+  shared by the converter and the writer, so a converted log reads as one a
+  format-2 build wrote: a tool result's `output` longer than 8 KiB (its
+  head, `output_bytes`, and `output_blob` stay), its `display` and the
+  parts of its `metadata` longer than 8 KiB of JSON (whole, listed in
+  `moved_values` by JSON pointer), `acp_session_updated`'s `commands` and
+  `options`, and `run_started`'s `agent.fallback_chain` and each internal
+  agent's `fallbacks` of 512 bytes of JSON or more (as `<member>_blob`). A
+  stored display's ranges stay ranges of the whole output, which the reader
+  restores first. Unknown records are copied as they are.
+- **Old ACP live state** is stored as a format-2 writer stores it
+  ([store locks and durability](store-locks-and-durability.md) 4.3): a
+  call's last presentation moves into its end record, the context record in
+  effect at each usage record, run end, and the log's end stays, and every
+  other `acp_session_updated` that held only live state becomes a
+  `record_omitted` at its sequence, run, and time. Dropping the lines would
+  break the sequence, which the loader reports as damage. Clients show no row
+  for such a `record_omitted` and the display view leaves it out
+  (`EventPayload::is_omitted_live_state`).
+- **The tree's artifacts move too.** `convert_tree` first moves
+  `artifacts/` to `blobs/` (the folder when there is no `blobs/` yet, else
+  file by file), so the step can be repeated after a crash. A tree no
+  conversion reached is read from `artifacts/`.
+- **Golden logs.** `history/2/` was recorded with this build; its `coding`
+  scenario reads a 19 KB file, so it holds a moved output. `history/1/`
+  reads through the converter, read-only and owned: what a snapshot of an
+  older format shows changes only in `session_created`'s `history_format`,
+  which names the format the log converted to, and in the model history's
+  file labels, which format-1 snapshots predate. The native-compaction
+  scenarios' fake server answered only two requests, from when native
+  compaction did not yet run beside a summary; it now answers by path.

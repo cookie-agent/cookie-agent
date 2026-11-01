@@ -2702,7 +2702,7 @@
               "type": "string"
             },
             "history_format": {
-              "description": "The session log's [`HISTORY_FORMAT`].",
+              "description": "The session log's history format: [`HISTORY_FORMAT`] for a log\nthis build wrote or converted. Readers take any (client protocol\n1.61.0); a client before 1.61.0 receives\n[`FIRST_HISTORY_FORMAT`].",
               "format": "uint32",
               "minimum": 0,
               "type": "integer"

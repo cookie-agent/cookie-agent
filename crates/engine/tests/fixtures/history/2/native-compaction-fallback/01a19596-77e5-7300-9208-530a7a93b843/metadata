@@ -1,0 +1,44 @@
+{
+  "agent_revision": "sha256:d09781f1391b49cd92916e1b8b46a2275e4383d34702214414e7d59da24fd0d9",
+  "attachments": [
+    {
+      "capability": "global",
+      "kind": "global",
+      "name": "global",
+      "runtime_id": "global"
+    },
+    {
+      "capability": "coding",
+      "kind": "coding",
+      "name": "local_tmpisjkvy",
+      "runtime_id": "local",
+      "workspace": "/dev/shm/t.4OSkac/.tmpISjkVy"
+    }
+  ],
+  "catalog_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "creation_selection": {
+    "agent": "primary",
+    "model": {
+      "model": "openai/gpt-test",
+      "variant": null
+    }
+  },
+  "cwd_identity": "/dev/shm/t.4OSkac/.tmpISjkVy",
+  "last_activity": "2026-11-01T05:30:29.818729138Z",
+  "last_agent_activity": "2026-11-01T05:30:28.713914026Z",
+  "last_event_seq": 20,
+  "manifest_revision": "sha256:6ba6ad0f877aa90a22774b43a6a7c64cd3a4e791438c7a8729133ab9abe0c030",
+  "model_revision": "sha256:4ed93ad6140f8e7c4a054cdf3524e9ad3163fb51b05d3f588a15068a85f0df1e",
+  "origin": {
+    "type": "root"
+  },
+  "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+  "recipe_registry_revision": "sha256:132d96c484536348b2b6422b5788eb0bb2b0bdc99702acf609e95e27321f684a",
+  "runtime_revision": "sha256:9de8da366d81e24a93bb5acbec0cf1e59af19443ce814108eb0e0389d190867a",
+  "session_id": "01a19596-77e5-7300-9208-530a7a93b843",
+  "short_id": "primary_2c8e4c25",
+  "skipped_events": [],
+  "status": "completed",
+  "title": null,
+  "title_updated_seq": 0
+}

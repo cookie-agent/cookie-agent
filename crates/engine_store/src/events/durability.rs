@@ -10,6 +10,7 @@
 //! waits for it to end and then runs the next one.
 
 use std::{
+    collections::HashSet,
     fs::File,
     io,
     path::{Path, PathBuf},
@@ -51,6 +52,15 @@ struct State {
     /// The log's directory, synced with the next sync after the writer
     /// created the file.
     directory: Option<PathBuf>,
+    /// Blobs records written since the last sync name, synced before the
+    /// log, with their folder, so a synced record never names a blob a
+    /// crash could lose.
+    blobs: Vec<PathBuf>,
+    /// The folder of `blobs`.
+    blob_directory: Option<PathBuf>,
+    /// The blobs a sync of this log covered, which a later record naming
+    /// them again does not sync again.
+    synced_blobs: HashSet<PathBuf>,
     #[cfg(any(test, feature = "test-support"))]
     hook: Option<SyncHook>,
     #[cfg(any(test, feature = "test-support"))]
@@ -101,6 +111,33 @@ impl Durability {
         (Commit(state.written), state.directory.is_some())
     }
 
+    /// A record about to be written names the blobs at `blobs`, in the
+    /// folder `directory`, each with whether this write just stored it: the
+    /// sync that covers the record syncs them first. One stored earlier
+    /// that a sync of this log covered already is not synced again.
+    pub(super) fn names_blobs(
+        &self,
+        directory: &Path,
+        blobs: impl IntoIterator<Item = (PathBuf, bool)>,
+    ) {
+        let mut state = self.state();
+        let mut any = false;
+        for (blob, stored) in blobs {
+            if stored {
+                state.synced_blobs.remove(&blob);
+            } else if state.synced_blobs.contains(&blob) {
+                continue;
+            }
+            if !state.blobs.contains(&blob) {
+                state.blobs.push(blob);
+            }
+            any = true;
+        }
+        if any {
+            state.blob_directory = Some(directory.to_owned());
+        }
+    }
+
     /// The last record written.
     pub(super) fn latest(&self) -> Commit {
         Commit(self.state().written)
@@ -134,6 +171,7 @@ impl Durability {
             let target = state.written;
             let file = state.file.clone();
             let directory = state.directory.take();
+            let blobs = Blobs::take(&mut state);
             #[cfg(any(test, feature = "test-support"))]
             let hook = state.hook.take();
             drop(state);
@@ -142,7 +180,7 @@ impl Durability {
                 let _ = hook.reached.send(());
                 let _ = hook.release.recv();
             }
-            let result = self.sync(file.as_deref(), directory.as_deref());
+            let result = self.sync(file.as_deref(), directory.as_deref(), &blobs);
             state = self.state();
             state.syncing = false;
             state.settled = state.settled.max(target);
@@ -151,11 +189,15 @@ impl Durability {
                 state.syncs += usize::from(file.is_some());
             }
             match &result {
-                Ok(()) => state.synced = state.synced.max(target),
+                Ok(()) => {
+                    state.synced = state.synced.max(target);
+                    blobs.synced(&mut state);
+                }
                 Err(_) => {
                     if state.directory.is_none() {
                         state.directory = directory;
                     }
+                    blobs.restore(&mut state);
                 }
             }
             self.synced.notify_all();
@@ -163,7 +205,13 @@ impl Durability {
         }
     }
 
-    fn sync(&self, file: Option<&File>, directory: Option<&Path>) -> Result<(), EventLogError> {
+    fn sync(
+        &self,
+        file: Option<&File>,
+        directory: Option<&Path>,
+        blobs: &Blobs,
+    ) -> Result<(), EventLogError> {
+        blobs.sync()?;
         if let Some(file) = file {
             #[cfg(any(test, feature = "test-support"))]
             super::EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
@@ -197,8 +245,9 @@ impl Durability {
         }
         let target = state.written;
         let directory = state.directory.take();
+        let blobs = Blobs::take(&mut state);
         drop(state);
-        let result = self.sync(Some(file), directory.as_deref());
+        let result = self.sync(Some(file), directory.as_deref(), &blobs);
         let mut state = self.state();
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -208,6 +257,7 @@ impl Durability {
             Ok(()) => {
                 state.synced = state.synced.max(target);
                 state.settled = state.settled.max(target);
+                blobs.synced(&mut state);
                 if state.synced >= state.written {
                     state.file = None;
                 }
@@ -216,18 +266,29 @@ impl Durability {
                 if state.directory.is_none() {
                     state.directory = directory;
                 }
+                blobs.restore(&mut state);
             }
         }
         self.synced.notify_all();
     }
 
     /// The file was cut and synced whole (a revert): everything written so
-    /// far is as durable as the cut.
-    pub(super) fn cut(&self) {
+    /// far is as durable as the cut, once the blobs its records name are.
+    pub(super) fn cut(&self) -> Result<(), EventLogError> {
+        let blobs = Blobs::take(&mut self.state());
+        let result = blobs.sync();
         let mut state = self.state();
+        match result {
+            Ok(()) => blobs.synced(&mut state),
+            Err(error) => {
+                blobs.restore(&mut state);
+                return Err(error);
+            }
+        }
         state.synced = state.written;
         state.settled = state.written;
         self.synced.notify_all();
+        Ok(())
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -235,10 +296,65 @@ impl Durability {
         self.state().hook = Some(hook);
     }
 
+    /// Test-only: the blobs the next sync syncs first.
+    #[cfg(test)]
+    pub(super) fn state_blobs_for_test(&self) -> Vec<PathBuf> {
+        self.state().blobs.clone()
+    }
+
+    /// Test-only: whether a sync of this log covered the blob at `path`.
+    #[cfg(test)]
+    pub(super) fn synced_blob_for_test(&self, path: &Path) -> bool {
+        self.state().synced_blobs.contains(path)
+    }
+
     /// Test-only: how many times this log was synced.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn syncs(&self) -> usize {
         self.state().syncs
+    }
+}
+
+/// The blobs one sync covers, taken from the state as it starts.
+struct Blobs {
+    paths: Vec<PathBuf>,
+    directory: Option<PathBuf>,
+}
+
+impl Blobs {
+    fn take(state: &mut State) -> Self {
+        Self {
+            paths: std::mem::take(&mut state.blobs),
+            directory: state.blob_directory.take(),
+        }
+    }
+
+    /// Syncs each blob, then their folder.
+    fn sync(&self) -> Result<(), EventLogError> {
+        for path in &self.paths {
+            super::blobs::sync(path).map_err(|source| EventLogError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        match &self.directory {
+            Some(directory) => fsync_directory(directory),
+            None => Ok(()),
+        }
+    }
+
+    fn synced(self, state: &mut State) {
+        state.synced_blobs.extend(self.paths);
+    }
+
+    /// A failed sync leaves them for the next one.
+    fn restore(self, state: &mut State) {
+        let mut paths = self.paths;
+        paths.append(&mut state.blobs);
+        state.blobs = paths;
+        if state.blob_directory.is_none() {
+            state.blob_directory = self.directory;
+        }
     }
 }
 

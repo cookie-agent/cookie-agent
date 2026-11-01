@@ -32,7 +32,7 @@ fn delegated_child_artifacts_are_placed_inside_the_root_tree() {
         .store
         .resolve_dir(root.session_id)
         .expect("root session directory")
-        .join("artifacts");
+        .join("blobs");
     assert_eq!(
         path.parent(),
         Some(root_artifacts.as_path()),

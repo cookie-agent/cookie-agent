@@ -584,10 +584,8 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
         .expect("live session")
         .log
         .events();
-    let disk_events = crate::events::load_jsonl::<cookie_agent_protocol::StoredEvent>(
-        &session_dir.join("events.jsonl"),
-    )
-    .expect("disk events");
+    let disk_events =
+        crate::events::load_whole_records(&session_dir.join("events.jsonl")).expect("disk events");
     assert_eq!(disk_events, memory_events);
     assert!(matches!(
         disk_events[0].payload,

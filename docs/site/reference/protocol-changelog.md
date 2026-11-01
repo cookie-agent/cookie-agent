@@ -5,6 +5,22 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.63.0
+
+- History format 2 ([session storage v3](../specs/session-storage-v3.md)
+  section 4.2; see [History formats](events.md#history-formats)): the
+  daemon keeps large tool output, ACP option and command lists, and a
+  run's model settings chains in the tree's `blobs/` folder, and reads them
+  back, so events on the wire stay whole. A converted older log holds a
+  `record_omitted` for each ACP live-state record it no longer stores;
+  clients of this version show no row for it, and the display view leaves
+  it out. `session_created`'s
+  `history_format` names the log's format, 2 for a log this build wrote or
+  converted, and a client reads a `session_created` of any format. A client
+  before 1.63.0 refuses any format but 1, so it receives
+  `history_format: 1`, which is what its whole values are. Plugins, whose
+  events carried no such check, receive the log's format.
+
 ## 1.62.0
 
 - The frozen context ([frozen context](../specs/frozen-context.md) section

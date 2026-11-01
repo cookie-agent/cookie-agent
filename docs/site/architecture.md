@@ -454,7 +454,7 @@ daemon, whatever directory it was started in (layout version 3,
   catalog/                         # validated models.dev cache
   unread.json                      # the unread root sessions
   sessions/
-    layout.json                    # {"version":3,"history_format":1,"build":…,"pending":[]}
+    layout.json                    # {"version":3,"history_format":2,"build":…,"pending":[]}
     activity/<yyyy-mm>.jsonl       # list entries of root sessions, by month written
     runtime-revisions.jsonl        # runtime revision index
     <yyyy-mm>/                     # UTC month of the root's UUIDv7 id
@@ -463,7 +463,7 @@ daemon, whatever directory it was started in (layout version 3,
         events.jsonl               # append-only root log
         grant-invalidations.jsonl  # this tree's grant invalidation journal
         owner.lock                 # Unix in-directory lock for the whole tree
-        artifacts/                 # artifacts owned by this root's tree
+        blobs/                     # this root's tree's artifacts and the large values of its logs
         subagents/
           index.json               # child-summary cache, {"version":1,...}
           <child-session-id>/      # metadata, events.jsonl — no lock file
@@ -535,8 +535,10 @@ write path and later evicts like any other session.
 
 Tool output is content-addressed under a digest-named file, and every artifact
 belongs to exactly one tree: output written by a root or one of its descendants
-lands in that root's `artifacts/`. A session reads only its own tree's
-artifacts, so a `read_artifact` digest naming content another tree stored does not
+lands in that root's `blobs/`, which also holds the large values of the
+tree's logs (history format 2). A tree no conversion reached yet, held by
+another process, is read from its `artifacts/`, where trees kept them
+before. A session reads only its own tree's artifacts, so a `read_artifact` digest naming content another tree stored does not
 resolve there. `read_artifact` therefore needs no permission rule: it is a
 base-layer tool that declares no permission, always published and always
 allowed.

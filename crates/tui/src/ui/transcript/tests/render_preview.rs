@@ -15,7 +15,7 @@
 //! `PREVIEW_TAIL_BYTES` (open the session newest first, as the display view
 //! sends a window of that many bytes).
 
-use std::collections::HashSet;
+use std::{collections::HashSet, path::Path};
 
 use cookie_agent_protocol::StoredEvent;
 use ratatui::{Terminal, backend::TestBackend};
@@ -38,12 +38,13 @@ async fn render_preview() {
     let dark = std::env::var("PREVIEW_DARK").is_ok();
     let limit: usize = env_or("PREVIEW_EVENT_LIMIT", usize::MAX);
 
-    let events = std::fs::read_to_string(events_path)
+    // Whole, as the daemon reads them: history format 2 keeps large values
+    // in the tree's blobs.
+    let events = cookie_agent_engine::events::load_whole_records(Path::new(&events_path))
         .unwrap()
-        .lines()
+        .into_iter()
         .take(limit)
-        .map(|line| serde_json::from_str::<StoredEvent>(line).unwrap())
-        .collect::<Vec<_>>();
+        .collect::<Vec<StoredEvent>>();
     let session = events[0].session_id;
     let mut app = test_app().await;
     app.theme = Theme::new(
