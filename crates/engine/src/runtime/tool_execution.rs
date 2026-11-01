@@ -693,6 +693,31 @@ impl Engine {
             .await
     }
 
+    /// Runs `prepared`, a call of cookie's tools that an ACP agent made
+    /// through the bridge. It has passed the harness's own check, so
+    /// cookie's rules only refuse it on `deny` and nobody is asked
+    /// (`docs/site/specs/acp-permissions.md`, check 1).
+    pub(super) async fn execute_bridged_tool(
+        &self,
+        active: Arc<ActiveRun>,
+        run: RunId,
+        prepared: PreparedToolCall,
+        turn_context: Arc<crate::TurnAgentContext>,
+        retain_output: bool,
+    ) -> Result<ToolResult, ToolFailure> {
+        let permission = self.decide_tool_permission(&active, &prepared)?;
+        if permission.effect == cookie_agent_protocol::PermissionEffect::Deny {
+            return Err(ToolError::PermissionDenied(denied_tool_failure(
+                "policy",
+                "permission denied",
+                None,
+            ))
+            .into());
+        }
+        self.execute_approved_tool(active, run, prepared, turn_context, retain_output)
+            .await
+    }
+
     pub(super) async fn execute_approved_tool(
         &self,
         active: Arc<ActiveRun>,

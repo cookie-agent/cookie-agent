@@ -27,6 +27,10 @@ Each prompt's last text block is a command:
   permission-tool <kind> <title>
                          asks permission for a call of ACP kind <kind> titled
                          <title>, with no locations or raw input
+  mcp ask <tool> <json>  reports a call of cookie's <tool> with arguments <json>,
+                         asks permission for it as Claude Code does (titled
+                         mcp__cookie__<tool>, the arguments as raw input), and
+                         makes it through the bridge only when allowed
   permission-mcp <server> <tool>
                          asks permission as Codex does for an MCP tool: kind
                          other, titled "Tool: <server>/<tool>", raw input
@@ -946,6 +950,17 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             reported = {"toolCallId": f"call-{action}-{tool}", "name": name, "title": name, "kind": "other"}
             if action in ("echo", "miss"):
                 tool_call(session_id, {**reported, "status": "pending", "rawInput": arguments})
+            if action == "ask":
+                # As Claude Code does: the call is reported, its permission
+                # asked with the arguments as raw input, and only then made.
+                outcome = permission(session_id, reported["toolCallId"], "other", "",
+                                     title=name, raw=arguments)
+                if outcome not in ("yes", "yes-always"):
+                    tool_call(session_id, {"toolCallId": reported["toolCallId"], "status": "failed",
+                                           "rawOutput": f"The user rejected the call ({outcome})"})
+                    say(session_id, f"permission: {outcome}")
+                    finish(session_id, "end_turn", USAGE)
+                    return
             if action == "miss":
                 tool_call(session_id, {"toolCallId": reported["toolCallId"], "status": "failed",
                                        "content": [{"type": "content", "content": {"type": "text", "text": "MCP error: not connected"}}]})
@@ -955,10 +970,11 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             reply = mcp(session, "tools/call", {"name": tool, "arguments": arguments}, 3)
             result = reply.get("result", {})
             text = " ".join(item.get("text", "") for item in result.get("content", []))
-            if action == "echo":
+            if action in ("echo", "ask"):
                 tool_call(session_id, {"toolCallId": reported["toolCallId"],
                                        "status": "failed" if result.get("isError") else "completed"})
-            say(session_id, f"result: {text} error: {result.get('isError')}")
+            prefix = f"permission: {outcome} " if action == "ask" else ""
+            say(session_id, f"{prefix}result: {text} error: {result.get('isError')}")
     else:
         say(session_id, " | ".join(texts))
     finish(session_id, "end_turn", USAGE)

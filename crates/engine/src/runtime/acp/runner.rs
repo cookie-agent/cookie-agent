@@ -1034,6 +1034,14 @@ impl ShownCall {
 /// The agent's own call of one of cookie's tools through the bridge. The
 /// bridge records cookie's call of the tool, so the agent's is not shown
 /// too, unless it ends without reaching cookie.
+/// A call of cookie's tools whose row started when the agent asked to
+/// make it, so its approval is on that row: the bridged call that follows
+/// takes the row over.
+struct PrestartedBridge {
+    tool: String,
+    tool_call_id: ToolCallId,
+}
+
 struct BridgeEcho {
     tool: String,
     fields: ToolCallFields,
@@ -1068,6 +1076,9 @@ struct Turn<'a> {
     echoes: HashMap<String, BridgeEcho>,
     /// The tools of bridge calls no echo has claimed yet, oldest first.
     unclaimed_bridge_calls: Vec<String>,
+    /// Rows of cookie's tool calls the agent asked to make, by the agent's
+    /// call ID, until the call reaches the bridge.
+    prestarted: HashMap<String, PrestartedBridge>,
     /// Model call IDs used in the run, which must stay unique.
     used_call_ids: std::collections::HashSet<String>,
     last_turn_seq: Option<u64>,
@@ -1505,7 +1516,9 @@ impl Turn<'_> {
             SessionEvent::Permission(_, incoming) if cancelling => {
                 let _ = incoming.respond(&wire::permission_outcome(None)).await;
             }
-            SessionEvent::Permission(request, incoming) => self.permission(*request, incoming),
+            SessionEvent::Permission(request, incoming) => {
+                self.permission(*request, incoming).await?;
+            }
             SessionEvent::BridgeCall {
                 name,
                 arguments,
@@ -2021,6 +2034,15 @@ impl Turn<'_> {
                 .echoes
                 .remove(&update.tool_call_id)
                 .expect("echo just found");
+            // A call the agent asked to make has its row already: it ends
+            // there, refused or abandoned.
+            if let Some(row) = self.prestarted.remove(&update.tool_call_id) {
+                self.forget_sighting(&update.tool_call_id);
+                let message = echo_failure(&echo.fields)
+                    .unwrap_or_else(|| "the agent did not make the call".to_owned());
+                self.end_prestarted_row(row, message).await;
+                return Ok(());
+            }
             if self.forget_sighting(&update.tool_call_id)
                 == Some(super::mcp::SightingState::ClaimedElsewhere)
             {
@@ -2495,6 +2517,7 @@ impl Turn<'_> {
         // unclaimed call of the tool, which is then not shown; one the
         // agent reports later claims it instead. One a subagent reported
         // stands for that.
+        let mut prestarted = None;
         if !for_subagent {
             let echo = match &call {
                 Some(call) => self
@@ -2513,20 +2536,23 @@ impl Turn<'_> {
                 Some((echoed, echo)) => {
                     echo.claimed = true;
                     self.forget_sighting(&echoed);
+                    prestarted = self.prestarted.remove(&echoed);
                 }
                 None if call.is_none() => self.unclaimed_bridge_calls.push(name.clone()),
                 None => {}
             }
+            if prestarted.is_none()
+                && let Some(call) = &call
+            {
+                prestarted = self.prestarted.remove(call);
+            }
         }
-        let selection = cookie_agent_protocol::acp_model_selection(&self.live.agent.id);
-        let turn_context = Arc::new(cookie_agent_runtime_api::TurnAgentContext {
-            agent: self.live.agent.id.clone(),
-            model: selection.model,
-            adapter: cookie_agent_protocol::AdaptorId::new(crate::policy::ACP_ADAPTER)
-                .expect("static adapter"),
-            input_media: Vec::new(),
-        });
-        let tool_call_id = ToolCallId::new_v7();
+        let turn_context = self.bridge_turn_context();
+        // The row the agent's request started, else a new one.
+        let (tool_call_id, started) = match prestarted.filter(|row| row.tool == name) {
+            Some(row) => (row.tool_call_id, true),
+            None => (ToolCallId::new_v7(), false),
+        };
         let call = cookie_agent_runtime_api::ToolCall {
             id: tool_call_id,
             name: name.clone(),
@@ -2542,6 +2568,68 @@ impl Turn<'_> {
                 Arc::clone(&turn_context),
             )
             .await;
+        if !started {
+            self.start_bridged_row(&name, arguments, &prepared).await?;
+        }
+        let engine = self.engine.clone();
+        let active = Arc::clone(self.active);
+        let run = self.run;
+        self.bridged.push(tokio::spawn(async move {
+            let result = engine
+                .execute_bridged_tool(Arc::clone(&active), run, prepared, turn_context, true)
+                .await;
+            let answer = match &result {
+                Ok(result) => {
+                    let mut text = crate::model_history::tool_result_text(result);
+                    if text.is_empty() {
+                        text = result.title.as_str().to_owned();
+                    }
+                    serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false})
+                }
+                Err(failure) => serde_json::json!({
+                    "content": [{"type": "text", "text": failure.message}],
+                    "isError": true,
+                }),
+            };
+            let cancelled = active.cancellation.is_cancelled();
+            let _ = engine
+                .submit_tool_result_status(
+                    active.session,
+                    run,
+                    tool_call_id,
+                    result,
+                    cancelled,
+                    None,
+                )
+                .await;
+            let _ = reply.send(answer);
+        }));
+        Ok(())
+    }
+
+    /// The turn context a call of cookie's tools through the bridge runs
+    /// with: the agent's, on its synthetic model.
+    fn bridge_turn_context(&self) -> Arc<cookie_agent_runtime_api::TurnAgentContext> {
+        let selection = cookie_agent_protocol::acp_model_selection(&self.live.agent.id);
+        Arc::new(cookie_agent_runtime_api::TurnAgentContext {
+            agent: self.live.agent.id.clone(),
+            model: selection.model,
+            adapter: cookie_agent_protocol::AdaptorId::new(crate::policy::ACP_ADAPTER)
+                .expect("static adapter"),
+            input_media: Vec::new(),
+        })
+    }
+
+    /// Starts the row of `prepared`, a call of cookie's tool `name` with
+    /// `arguments`, as a call of this turn: the turn so far commits with the
+    /// call in it, and the call starts as cookie's tool calls do.
+    async fn start_bridged_row(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        prepared: &super::super::PreparedToolCall,
+    ) -> Result<(), EngineError> {
+        let tool_call_id = prepared.call.id;
         let model_call_id = ModelCallId::new(format!("cookie:{tool_call_id}"))
             .map_err(|error| EngineError::Acp(error.to_string()))?;
         let tool_name = SafeCode::new(
@@ -2619,41 +2707,27 @@ impl Turn<'_> {
                     },
                 },
             )
-            .await?;
-        let engine = self.engine.clone();
-        let active = Arc::clone(self.active);
-        let run = self.run;
-        self.bridged.push(tokio::spawn(async move {
-            let result = engine
-                .execute_tool(Arc::clone(&active), run, prepared, turn_context, true)
-                .await;
-            let answer = match &result {
-                Ok(result) => {
-                    let mut text = crate::model_history::tool_result_text(result);
-                    if text.is_empty() {
-                        text = result.title.as_str().to_owned();
-                    }
-                    serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false})
-                }
-                Err(failure) => serde_json::json!({
-                    "content": [{"type": "text", "text": failure.message}],
-                    "isError": true,
+            .await
+    }
+
+    /// Ends the row of a call of cookie's tools the agent asked to make
+    /// and never made, with `message`.
+    async fn end_prestarted_row(&self, row: PrestartedBridge, message: String) {
+        let _ = self
+            .engine
+            .submit_tool_result_status(
+                self.session(),
+                self.run,
+                row.tool_call_id,
+                Err(ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message,
+                    partial_output: None,
                 }),
-            };
-            let cancelled = active.cancellation.is_cancelled();
-            let _ = engine
-                .submit_tool_result_status(
-                    active.session,
-                    run,
-                    tool_call_id,
-                    result,
-                    cancelled,
-                    None,
-                )
-                .await;
-            let _ = reply.send(answer);
-        }));
-        Ok(())
+                self.active.cancellation.is_cancelled(),
+                None,
+            )
+            .await;
     }
 
     /// Asks the user an `elicitation/create` of the agent's.
@@ -2675,7 +2749,92 @@ impl Turn<'_> {
     }
 
     /// Answers a permission request, by the agent's rules and approvals.
-    fn permission(
+    /// A request to call one of cookie's tools starts that call's row, so
+    /// the call is decided, and asked about, where it will run.
+    async fn permission(
+        &mut self,
+        request: wire::PermissionRequest,
+        incoming: cookie_agent_runtime_api::rpc::IncomingRequest,
+    ) -> Result<(), EngineError> {
+        let known_fields = self
+            .calls
+            .get(&request.tool_call.tool_call_id)
+            .map(|call| call.fields.clone())
+            .or_else(|| {
+                self.echoes
+                    .get(&request.tool_call.tool_call_id)
+                    .map(|echo| echo.fields.clone())
+            });
+        let merged = permissions::merge(known_fields.as_ref(), &request.tool_call);
+        if let permissions::MappedRequest::Bridge(tool) =
+            permissions::map_request(&merged, None, None)
+        {
+            return self
+                .bridged_permission(tool, merged, request, incoming)
+                .await;
+        }
+        self.rule_permission(request, incoming);
+        Ok(())
+    }
+
+    /// Decides the agent's request to call cookie's tool `tool` (`call`,
+    /// what is known of the call) on the call's own row, which the bridged
+    /// call takes over once it arrives.
+    async fn bridged_permission(
+        &mut self,
+        tool: String,
+        call: ToolCallFields,
+        request: wire::PermissionRequest,
+        incoming: cookie_agent_runtime_api::rpc::IncomingRequest,
+    ) -> Result<(), EngineError> {
+        let arguments = permissions::bridge_arguments(&call);
+        let turn_context = self.bridge_turn_context();
+        let prepared = self
+            .engine
+            .prepare_tool_call(
+                self.session(),
+                self.run,
+                cookie_agent_runtime_api::ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: tool.clone(),
+                    arguments: arguments.clone(),
+                },
+                &self.active.policy,
+                turn_context,
+            )
+            .await;
+        self.start_bridged_row(&tool, arguments, &prepared).await?;
+        self.prestarted.insert(
+            request.tool_call.tool_call_id.clone(),
+            PrestartedBridge {
+                tool,
+                tool_call_id: prepared.call.id,
+            },
+        );
+        let engine = self.engine.clone();
+        let active = Arc::clone(self.active);
+        let run = self.run;
+        tokio::spawn(async move {
+            let (allowed, note) = tokio::select! {
+                decided = engine.decide_bridged_request(&active, run, &prepared) => decided,
+                () = active.cancellation.cancelled() => (false, None),
+            };
+            if let Some(note) = note {
+                engine.steer_rejection_note(run, &request, &note).await;
+            }
+            let answer = if active.cancellation.is_cancelled() {
+                wire::permission_outcome(None)
+            } else {
+                wire::permission_outcome(permissions::answer_option(&request.options, allowed))
+            };
+            let _ = incoming.respond(&answer).await;
+        });
+        Ok(())
+    }
+
+    /// Answers a permission request for the agent's own tools by cookie's
+    /// rules, and asks the user what they leave open.
+    fn rule_permission(
         &self,
         request: wire::PermissionRequest,
         incoming: cookie_agent_runtime_api::rpc::IncomingRequest,
@@ -2723,6 +2882,22 @@ impl Turn<'_> {
             let _ = incoming.respond(&answer).await;
         });
     }
+}
+
+/// What the agent said of a call of cookie's tools that failed before it
+/// reached the bridge, such as one the user rejected.
+fn echo_failure(fields: &ToolCallFields) -> Option<String> {
+    let text = |value: &Value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Null => None,
+        other => Some(other.to_string()),
+    };
+    fields
+        .raw_output
+        .as_ref()
+        .and_then(text)
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
 }
 
 /// The MCP result of a call through the bridge outside the agent's turn.
@@ -2811,6 +2986,7 @@ impl Engine {
             calls: HashMap::new(),
             echoes: HashMap::new(),
             unclaimed_bridge_calls: Vec::new(),
+            prestarted: HashMap::new(),
             used_call_ids: Default::default(),
             last_turn_seq: None,
             last_text: String::new(),
@@ -3138,6 +3314,11 @@ impl Engine {
         self.end_acp_questions(turn.run);
         for call in std::mem::take(&mut turn.bridged) {
             let _ = call.await;
+        }
+        // A call the agent asked to make and never made ends with the turn.
+        for (_, row) in std::mem::take(&mut turn.prestarted) {
+            turn.end_prestarted_row(row, "the agent did not make the call".to_owned())
+                .await;
         }
         let cancelled = turn.active.cancellation.is_cancelled();
         let idle = turn.round.idle.take();

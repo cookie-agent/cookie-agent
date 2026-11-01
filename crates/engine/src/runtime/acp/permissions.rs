@@ -1,15 +1,17 @@
 //! An ACP agent's own permission requests
-//! (`docs/site/specs/acp-agents.md` section 8).
+//! (`docs/site/specs/acp-permissions.md`, check 2, which revises
+//! `docs/site/specs/acp-agents.md` section 8).
 //!
 //! A `session/request_permission` names one of the agent's tool calls. Its
 //! ACP kind maps onto one of cookie's actions, and its locations, command,
 //! URL, or MCP tool onto that action's resources; the agent's merged rules
 //! decide each, through the same pipeline as cookie's tools. A call of
-//! cookie's own tools, which reach cookie's MCP server where the rules
-//! decide them, and a `think` are allowed at once; `switch_mode`, every
-//! kind that maps onto no action, and a file call that names no path go
-//! through the approval flow, as does an `ask`. The answer is the agent's
-//! allow-once or reject-once option, never an "always" one.
+//! cookie's own tools is decided by the rules of that call, prepared as the
+//! bridged call will be, and asked about on its row; a `think` is allowed
+//! at once. `deny` rejects and `allow` allows without asking; an `ask`,
+//! no rule, `switch_mode`, every kind that maps onto no action, and a file
+//! call that names no path go to the user, never to the reviewer. A
+//! rejection's note is steered into the agent's turn.
 
 use cookie_agent_protocol::paths::PathStyle;
 use cookie_agent_protocol::{
@@ -28,9 +30,11 @@ use crate::runtime_snapshot::RuntimeAgent;
 /// What a permission request asks, by its mapping (spec section 8).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MappedRequest {
-    /// Allowed at once: a call of cookie's own tools, which cookie's MCP
-    /// server decides when it arrives, or a `think`.
+    /// Allowed at once: a `think`.
     Allow,
+    /// A call of cookie's own tool, by its name: decided by the rules of
+    /// the call itself.
+    Bridge(String),
     /// Decided by the agent's rules: one action and the resources it
     /// needs, each of which must be allowed.
     Rules {
@@ -240,7 +244,7 @@ pub(crate) fn map_request(
         "think" => MappedRequest::Allow,
         "switch_mode" => ask(kind, &merged),
         other => match mcp_tool_of(&merged) {
-            Some((server, _)) if server == BRIDGE_SERVER => MappedRequest::Allow,
+            Some((server, tool)) if server == BRIDGE_SERVER => MappedRequest::Bridge(tool),
             Some((server, tool)) => MappedRequest::Rules {
                 action: PermissionAction::MCP,
                 resources: vec![format!(
@@ -310,6 +314,28 @@ pub(crate) fn merge(known: Option<&ToolCallFields>, update: &ToolCallFields) -> 
     merged
 }
 
+/// The arguments of the agent's call of one of cookie's tools, as the
+/// bridged call will get them: Codex's raw input wraps them as
+/// `{server, tool, arguments}`, Claude Code's is the arguments themselves.
+pub(crate) fn bridge_arguments(call: &ToolCallFields) -> Value {
+    let Some(input) = call.raw_input.as_ref().filter(|input| input.is_object()) else {
+        return Value::Object(serde_json::Map::new());
+    };
+    let wrapped = ["tool", "toolName", "tool_name"]
+        .iter()
+        .any(|name| input.get(*name).is_some_and(Value::is_string));
+    match input.get("arguments") {
+        Some(arguments) if wrapped && arguments.is_object() => arguments.clone(),
+        _ if wrapped => Value::Object(serde_json::Map::new()),
+        _ => input.clone(),
+    }
+}
+
+/// The agent's allow-once or reject-once option, as `allowed` says.
+pub(crate) fn answer_option(options: &[wire::PermissionOption], allowed: bool) -> Option<&str> {
+    option_of(options, if allowed { "allow_once" } else { "reject_once" })
+}
+
 /// The option of `kind` (`allow_once` or `reject_once`) the agent offered.
 fn option_of<'a>(options: &'a [wire::PermissionOption], kind: &str) -> Option<&'a str> {
     options
@@ -336,7 +362,7 @@ impl Engine {
         known: Option<&ToolCallFields>,
         tool_call_id: Option<ToolCallId>,
     ) -> Value {
-        let allowed = self
+        let (allowed, note) = self
             .acp_permission_allowed(
                 active,
                 run,
@@ -349,12 +375,10 @@ impl Engine {
                 tool_call_id,
             )
             .await;
-        let option = if allowed {
-            option_of(&request.options, "allow_once")
-        } else {
-            option_of(&request.options, "reject_once")
-        };
-        wire::permission_outcome(option)
+        if let Some(note) = note {
+            self.steer_rejection_note(run, request, &note).await;
+        }
+        wire::permission_outcome(answer_option(&request.options, allowed))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -369,15 +393,19 @@ impl Engine {
         request: &wire::PermissionRequest,
         known: Option<&ToolCallFields>,
         tool_call_id: Option<ToolCallId>,
-    ) -> bool {
+    ) -> (bool, Option<String>) {
+        let refused = (false, None);
         let style = platform.map(PathStyle::of_platform);
         let (action, resources, by_rules) = match map_request(&request.tool_call, known, style) {
-            MappedRequest::Allow => return true,
+            MappedRequest::Allow => return (true, None),
+            // The runner decides these on the call's own row; one that
+            // reaches here has no row to ask on.
+            MappedRequest::Bridge(_) => return refused,
             MappedRequest::Rules { action, resources } => (action, resources, true),
             MappedRequest::Ask { label, resource } => (label, vec![resource], false),
         };
         if resources.is_empty() {
-            return false;
+            return refused;
         }
         let tool = format!("acp:{}", agent.id);
         let prepared = resources
@@ -399,7 +427,7 @@ impl Engine {
             "resources": resources,
         });
         let Ok(prepared) = prepared else {
-            return false;
+            return refused;
         };
         let Ok(operation) = prepared_operation(
             &tool,
@@ -408,7 +436,7 @@ impl Engine {
             prepared,
             agent.id.as_str().as_bytes(),
         ) else {
-            return false;
+            return refused;
         };
         let evaluations = if !by_rules {
             // No rule decides it: the kind maps onto no action, or the file
@@ -441,7 +469,7 @@ impl Engine {
                 .collect()
         } else {
             let Ok(session) = self.inner.store.get(active.session) else {
-                return false;
+                return refused;
             };
             let overlay = session.permission_overlay.clone();
             let labels = resources.iter().cloned().map(Some).collect::<Vec<_>>();
@@ -460,8 +488,8 @@ impl Engine {
                 .with_platform(platform),
             );
             match decision.effect {
-                PermissionEffect::Allow => return true,
-                PermissionEffect::Deny => return false,
+                PermissionEffect::Allow => return (true, None),
+                PermissionEffect::Deny => return refused,
                 PermissionEffect::Ask => decision.evaluations,
             }
         };
@@ -475,32 +503,155 @@ impl Engine {
             evaluations,
             ApprovalConstraints {
                 allow_once: true,
-                // A tree grant names an action the rules decide; a request
-                // no rule decides is answered once.
-                allow_tree_grant: by_rules && !action.is_path(),
+                // An ACP session makes no tree grants: its approvals are
+                // the harness's.
+                allow_tree_grant: false,
                 cancellable: true,
                 // The user's window starts at the escalation.
                 expires_at: None,
             },
         ) {
             Ok(request) => request,
-            Err(_) => return false,
+            Err(_) => return refused,
         };
+        let approval_id = request.approval_id();
         let executor: cookie_agent_runtime_api::PreparedExecutorCell =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(Box::new(AnsweredExecutor))));
-        self.await_user_approval(
-            active,
-            run,
-            request,
-            executor,
-            true,
-            crate::runtime::approval::flow::ApprovalToolInput {
-                tool_call_id,
-                origin: None,
+        let approved = self
+            .await_user_approval(
+                active,
+                run,
+                request,
+                executor,
+                true,
+                crate::runtime::approval::flow::ApprovalToolInput {
+                    tool_call_id,
+                    origin: None,
+                },
+            )
+            .await
+            .is_ok_and(|outcome| outcome.approved);
+        let note = (!approved)
+            .then(|| self.rejection_note(active.session, approval_id))
+            .flatten();
+        (approved, note)
+    }
+
+    /// Decides the agent's request to call one of cookie's tools,
+    /// `prepared` as the bridged call will be: `deny` rejects it, `allow`
+    /// and tree grants allow it, and otherwise the user is asked on the
+    /// call's own row. Returns whether it is allowed, and the note of a
+    /// rejection the user gave one with.
+    pub(in crate::runtime) async fn decide_bridged_request(
+        &self,
+        active: &ActiveRun,
+        run: cookie_agent_protocol::RunId,
+        prepared: &super::super::PreparedToolCall,
+    ) -> (bool, Option<String>) {
+        // A call cookie cannot prepare would fail at the bridge anyway: let
+        // the agent make it and read why.
+        if prepared.prepared.is_err() {
+            return (true, None);
+        }
+        let Ok(permission) = self.decide_tool_permission(active, prepared) else {
+            return (false, None);
+        };
+        let evaluations = match permission.effect {
+            PermissionEffect::Allow => return (true, None),
+            PermissionEffect::Deny => return (false, None),
+            PermissionEffect::Ask => permission.evaluations,
+        };
+        let Ok(ready) = prepared.prepared.as_ref() else {
+            return (false, None);
+        };
+        let Ok(request) = ApprovalRequest::new(
+            ApprovalId::new_v7(),
+            1,
+            prepared.call.id,
+            ApprovalTrigger::PermissionPolicy,
+            ready.operation().clone(),
+            evaluations,
+            ApprovalConstraints {
+                allow_once: true,
+                allow_tree_grant: false,
+                cancellable: true,
+                expires_at: None,
             },
-        )
-        .await
-        .is_ok_and(|outcome| outcome.approved)
+        ) else {
+            return (false, None);
+        };
+        let approval_id = request.approval_id();
+        let executor: cookie_agent_runtime_api::PreparedExecutorCell =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Some(Box::new(AnsweredExecutor))));
+        let approved = self
+            .await_user_approval(
+                active,
+                run,
+                request,
+                executor,
+                true,
+                crate::runtime::approval::flow::ApprovalToolInput {
+                    tool_call_id: prepared.call.id,
+                    origin: prepared.origin(),
+                },
+            )
+            .await
+            .is_ok_and(|outcome| outcome.approved);
+        let note = (!approved)
+            .then(|| self.rejection_note(active.session, approval_id))
+            .flatten();
+        (approved, note)
+    }
+
+    /// The note the user rejected approval `approval_id` of `session`
+    /// with, if they gave one.
+    fn rejection_note(
+        &self,
+        session: cookie_agent_protocol::SessionId,
+        approval_id: ApprovalId,
+    ) -> Option<String> {
+        let events = self.inner.store.log(session).ok()?.event_snapshot();
+        let record =
+            super::super::approval::projection::approval_record(session, &events, approval_id)?;
+        if record.user_decision != Some(cookie_agent_protocol::ApprovalUserDecision::Reject) {
+            return None;
+        }
+        record
+            .final_decision?
+            .feedback
+            .map(|feedback| feedback.message.to_string())
+    }
+
+    /// Steers the note the user rejected `request` with into the agent's
+    /// turn, so the agent reads why: an ACP permission answer carries no
+    /// text.
+    pub(in crate::runtime) async fn steer_rejection_note(
+        &self,
+        run: cookie_agent_protocol::RunId,
+        request: &wire::PermissionRequest,
+        note: &str,
+    ) {
+        let call = request
+            .tool_call
+            .title
+            .as_deref()
+            .or(request.title.as_deref())
+            .map(str::trim)
+            .filter(|title| !title.is_empty());
+        let text = match call {
+            Some(call) => format!("Rejected `{call}`: {note}"),
+            None => format!("Rejected: {note}"),
+        };
+        if let Err(error) = self
+            .steer(
+                run,
+                cookie_agent_protocol::UserContent::text(text),
+                cookie_agent_protocol::EventOrigin::new("user").expect("static event origin"),
+            )
+            .await
+        {
+            eprintln!("cookie-agent: a rejection's note was not steered: {error}");
+        }
     }
 }
 
@@ -561,15 +712,15 @@ mod tests {
             ),
             (
                 json!({"toolCallId": "d", "kind": "other", "title": "mcp__cookie__memory_read"}),
-                MappedRequest::Allow,
+                MappedRequest::Bridge("memory_read".to_owned()),
             ),
             (
                 json!({"toolCallId": "e", "kind": "other", "rawInput": {"server": "cookie", "tool": "cron_list"}}),
-                MappedRequest::Allow,
+                MappedRequest::Bridge("cron_list".to_owned()),
             ),
             (
                 json!({"toolCallId": "f", "kind": "other", "title": "memory_read (cookie MCP Server)"}),
-                MappedRequest::Allow,
+                MappedRequest::Bridge("memory_read".to_owned()),
             ),
         ] {
             assert_eq!(
@@ -732,6 +883,31 @@ mod tests {
                 label: PermissionAction::WRITE,
                 resource: "write".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn a_bridged_calls_arguments_are_unwrapped_from_each_adapters_raw_input() {
+        for (raw_input, expected) in [
+            // Claude Code: the arguments themselves.
+            (
+                json!({"command": "ls", "machine": "labpc"}),
+                json!({"command": "ls", "machine": "labpc"}),
+            ),
+            // Codex: wrapped with the server and tool.
+            (
+                json!({"server": "cookie", "tool": "bash", "arguments": {"command": "ls"}}),
+                json!({"command": "ls"}),
+            ),
+            (json!({"server": "cookie", "tool": "bash"}), json!({})),
+            (json!("ls"), json!({})),
+        ] {
+            let fields = call(json!({"toolCallId": "a", "rawInput": raw_input.clone()}));
+            assert_eq!(super::bridge_arguments(&fields), expected, "{raw_input}");
+        }
+        assert_eq!(
+            super::bridge_arguments(&call(json!({"toolCallId": "a"}))),
+            json!({})
         );
     }
 

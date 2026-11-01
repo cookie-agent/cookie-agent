@@ -331,7 +331,14 @@ impl Engine {
             });
         }
 
-        let permission_mode = self.permission_mode(root);
+        // An ACP agent's harness is its only gate that asks: what cookie's
+        // rules leave open goes to the user, whatever the tree's mode
+        // (`docs/site/specs/acp-permissions.md`).
+        let permission_mode = if active.policy.acp_agent().is_some() {
+            PermissionMode::Ask
+        } else {
+            self.permission_mode(root)
+        };
         if permission_mode == PermissionMode::Yolo {
             self.append(
                 active.session,

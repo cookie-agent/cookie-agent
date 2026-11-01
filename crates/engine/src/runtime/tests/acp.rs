@@ -966,7 +966,7 @@ async fn permission_requests_are_decided_by_the_mapped_rules() {
             "permission-tool other create_issue (github MCP Server)".to_owned(),
             "permission: no",
         ),
-        // Cookie's own tools: the bridge decides the call itself.
+        // Cookie's own tools: decided by the rules of the call itself.
         (
             "permission-tool other mcp__cookie__memory_search".to_owned(),
             "permission: yes",
@@ -1180,6 +1180,197 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     assert!(final_text(&outcome).ends_with("error: True"));
 }
 
+/// The approvals `session` has had, in order.
+fn requested_approvals(
+    engine: &Engine,
+    session: SessionId,
+) -> Vec<cookie_agent_protocol::ApprovalRequest> {
+    engine
+        .inner
+        .store
+        .log(session)
+        .unwrap()
+        .event_snapshot()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ApprovalRequested { request } => Some(request.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The tool calls started in `session`, by ID, with their tool's name.
+fn started_calls(
+    engine: &Engine,
+    session: SessionId,
+) -> Vec<(cookie_agent_protocol::ToolCallId, String)> {
+    engine
+        .inner
+        .store
+        .log(session)
+        .unwrap()
+        .event_snapshot()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } => Some((
+                start.tool_call_id,
+                start.presentation.tool.name.as_str().to_owned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bridged_call_runs_unless_a_deny_rule_matches() {
+    // The call has passed the harness's own check: cookie's rules only
+    // refuse it, and an `ask` lets it run without an approval.
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp:\n  hide_tools: []\npermissions:\n  bash: { \"rm *\": deny, \"*\": ask }\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let call = format!(
+        "mcp call bash {}",
+        serde_json::json!({"command": "echo asked-nobody", "description": "echo"})
+    );
+    let answer = final_text(&turn(engine, session, "ask-rule", &call).await);
+    assert!(answer.contains("asked-nobody"), "{answer}");
+    assert!(answer.ends_with("error: False"), "{answer}");
+    let call = format!(
+        "mcp call bash {}",
+        serde_json::json!({"command": "rm -rf build", "description": "clean"})
+    );
+    let answer = final_text(&turn(engine, session, "deny-rule", &call).await);
+    assert!(answer.ends_with("error: True"), "{answer}");
+    assert!(requested_approvals(engine, session).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_for_cookies_tool_is_decided_on_the_calls_own_row() {
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp:\n  hide_tools: []\npermissions:\n  bash: { \"echo *\": allow, \"rm *\": deny, \"*\": ask }\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let ask = |command: &str| {
+        format!(
+            "mcp ask bash {}",
+            serde_json::json!({"command": command, "description": "run"})
+        )
+    };
+    // `allow` and `deny` answer without an approval.
+    let answer = final_text(&turn(engine, session, "allowed", &ask("echo from-request")).await);
+    assert!(answer.starts_with("permission: yes"), "{answer}");
+    assert!(answer.contains("from-request"), "{answer}");
+    let answer = final_text(&turn(engine, session, "denied", &ask("rm -rf build")).await);
+    assert_eq!(answer, "permission: no");
+    assert!(requested_approvals(engine, session).is_empty());
+    // Each request started one row of cookie's `bash`, and the call took
+    // the allowed one over.
+    let rows = started_calls(engine, session);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows.iter().all(|(_, tool)| tool == "bash"), "{rows:?}");
+
+    // The rest asks, on that row.
+    let run = start(engine, session, "asked", &ask("ls")).await;
+    let approval = wait_for_escalated_approval(engine, session).await;
+    let rows = started_calls(engine, session);
+    assert_eq!(
+        rows.last().map(|(id, _)| *id),
+        Some(approval.request.tool_call_id())
+    );
+    approve_once(engine, &approval, "approve-ls").await;
+    let answer = final_text(&finished(engine, session, run).await);
+    assert!(answer.starts_with("permission: yes"), "{answer}");
+    assert!(answer.ends_with("error: False"), "{answer}");
+    assert_eq!(started_calls(engine, session).len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejections_note_is_steered_into_the_agents_turn() {
+    let document =
+        "---\ndescription: Fixture that asks\nmode: all\nacp: {}\npermissions:\n  bash: ask\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "ask", "permission execute make deploy").await;
+    let approval = wait_for_escalated_approval(engine, session).await;
+    let request_revision = serde_json::to_value(&approval.request).unwrap()["revision"]
+        .as_u64()
+        .unwrap();
+    engine
+        .approval_respond(
+            cookie_agent_protocol::ApprovalRespondParams {
+                session_id: session,
+                approval_id: approval.request.approval_id(),
+                request_revision,
+                operation_fingerprint: approval.request.operation_fingerprint().clone(),
+                client_response_id: cookie_agent_protocol::ClientResponseId::new("reject-note")
+                    .unwrap(),
+                decision: cookie_agent_protocol::ApprovalUserDecision::Reject,
+                feedback: Some(cookie_agent_protocol::ApprovalFeedback {
+                    message: cookie_agent_protocol::SafeErrorMessage::new(
+                        "use the staging target".to_owned(),
+                    )
+                    .unwrap(),
+                }),
+            },
+            origin(),
+        )
+        .await
+        .unwrap();
+    finished(engine, session, run).await;
+    wait_for_session_not_running(engine, session).await;
+    let steered = engine
+        .inner
+        .store
+        .log(session)
+        .unwrap()
+        .event_snapshot()
+        .iter()
+        .any(|event| {
+            matches!(&event.payload, EventPayload::UserInputSubmitted { .. })
+                && serde_json::to_string(&event.payload)
+                    .unwrap()
+                    .contains("use the staging target")
+        });
+    assert!(steered, "the note reached the session as input");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acp_agents_approval_is_the_users_in_any_tree_mode() {
+    let document =
+        "---\ndescription: Fixture that asks\nmode: all\nacp: {}\npermissions:\n  bash: ask\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for (index, mode) in [
+        cookie_agent_protocol::PermissionMode::Yolo,
+        cookie_agent_protocol::PermissionMode::AutoApproveY,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        engine
+            .set_permission_mode(session, mode, origin())
+            .await
+            .unwrap();
+        let run = start(
+            engine,
+            session,
+            &format!("ask-{index}"),
+            "permission execute make deploy",
+        )
+        .await;
+        let approval = wait_for_escalated_approval(engine, session).await;
+        approve_once(engine, &approval, &format!("approve-{index}")).await;
+        assert_eq!(
+            final_text(&finished(engine, session, run).await),
+            "permission: yes",
+            "{mode:?}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bridged_call_of_a_streaming_tool_returns_its_output() {
     // `bash` streams its output: a bridged call captures it as a model's
@@ -1233,12 +1424,12 @@ async fn the_bridge_tells_the_agent_once_when_its_tool_list_changes() {
     );
 
     // A list changed during a bridged call is announced before the call's
-    // result (request 3), and not again as the next turn starts. The call,
-    // a write outside the workspace, waits on its approval while the
-    // document comes to hide `cron_list`.
+    // result (request 3), and not again as the next turn starts. The
+    // agent's request to make the call, a write outside the workspace,
+    // waits on its approval while the document comes to hide `cron_list`.
     let outside = acp.workspace().parent().unwrap().join("outside.txt");
     let call = format!(
-        "mcp call write {}",
+        "mcp ask write {}",
         serde_json::json!({"filePath": outside.to_string_lossy(), "content": "x"})
     );
     let run = start(engine, session, "call", &call).await;
