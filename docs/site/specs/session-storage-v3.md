@@ -6,8 +6,10 @@ Status: **approved** (2026-10-31), with the user's decisions of
 phase 3's layout, listing, and migration (4.1, 4.3, 4.4, 5) implemented with
 history format 1 ([section 5.1](#51-implementation-notes-2026-10-31)), then
 history format 2 and `blobs/` (4.2) through the same marker
-([section 4.2.1](#421-implementation-notes-2026-11-01)); `view.json` is
-still to come.
+([section 4.2.1](#421-implementation-notes-2026-11-01)); `view.json`, a
+newest-first open without the tree, and phase 2's wire leftovers (client
+protocol 1.64.0) implemented
+([section 4.5](#45-implementation-notes-viewjson-2026-11-01)).
 
 ## 1. Problem
 
@@ -278,12 +280,12 @@ two real sessions, over a local WebSocket (sizes before compression):
 
 Left for later:
 
-- An older page repeats its header (47 KB in the ACP session, 2.3 MB over
-  all its pages); `view.json` (phase 3) or a header the client already
-  holds could spare it.
-- A tool result's `display` repeats its output on the wire (the stored
-  encoding's spans do not reach clients), so results under the cut still
-  take about twice their output.
+- ~~An older page repeats its header (47 KB in the ACP session, 2.3 MB over
+  all its pages).~~ Done in 1.64.0: a delta of the header the client holds
+  ([4.5](#45-implementation-notes-viewjson-2026-11-01)).
+- ~~A tool result's `display` repeats its output on the wire, so results
+  under the cut still take about twice their output.~~ Done in 1.64.0:
+  ranges of the output ([4.5](#45-implementation-notes-viewjson-2026-11-01)).
 - A window may start at an input steered into a running run, whose run
   started before it: the reply rows before it are older history.
 - Live events are sent whole; only what a client holds is cut.
@@ -524,6 +526,125 @@ answer by reading two small files.
 
 A daemon refuses to open a store whose `layout.json` version or
 `history_format` is newer than it knows, and says which build it needs.
+
+### 4.5 Implementation notes: `view.json` (2026-11-01)
+
+Shipped on history format 2 (4.2.1), with the wire leftovers of 3.4 and
+the TUI's open as client protocol 1.64.0. Where it settles what 4.1 and
+3.2 leave open, or departs from them:
+
+- **What `view.json` holds**: `{version, history_format, start, header}`.
+  `start` is a run boundary (`run_started` or `user_input_submitted`) by
+  `seq`, `timestamp`, and the byte `offset` of its line in `events.jsonl`;
+  `header` is the header (3.2) of everything before it. Not a header at
+  the tip plus several run starts, as 4.1 put it: a window needs the
+  header at *its* start, and the header composes — the header of a log
+  through a boundary, followed by the events after it, has the header of
+  the log through them — so one boundary and its header answer every
+  window that starts after it (`display_view::tail_window_after`, tested
+  against the whole log's window for every boundary of the golden
+  histories). The boundary is the last one before the newest 1 MiB of
+  display events (`HISTORY_WINDOW_MAX_BYTES`, every request's budget), so
+  every window starts after it, and stays so as the log grows; a log that
+  fits whole has no cache.
+- **Reading it.** A cold open parses the log from `offset` to its end, as
+  the loader reads intact records (`events::read_records_from`): a line
+  that names blobs has them read back first (`blobs::internalize`), then
+  every line is typed as it is (`StoredEvent::decode_strict`). It uses the
+  cache only when the line there is the record `start` names, whole; a
+  revert, a rewritten or converted log, a missing blob, a line the loader
+  would repair or skip, and a `history_format` or `version` other than this
+  build's all fall back to parsing the whole log, as does a window that
+  would reach before the boundary, from a larger budget. The conversion
+  of a tree to a newer format removes its logs' caches as it puts each
+  converted log in place; one it cannot remove names the older format.
+  Tested on a format-1 history with an ACP agent's live state converted
+  to format 2 (moved outputs, model settings chains, `record_omitted`):
+  read from every line, the records are the loader's, and every window
+  read from a run boundary is the whole log's.
+- **Writing it.** After a run's `run_finished` is appended, when a session
+  leaves memory, and after a cold open parsed a log this process owns;
+  only when the boundary moved since this process last wrote it. Outside
+  every lock, as a temporary file renamed over the old one, never synced.
+  Nothing deletes it: a stale one fails the check above. About 37–62 KB
+  for the sessions measured, mostly ACP command lists and agent snapshots.
+- **No tree, no opening.** `from: "tail"` no longer goes through the final
+  page. A session this process owns is answered from memory when it is
+  resident, else from the cache or the parsed log, and its tail is
+  registered under the session's slot, which every append takes, after a
+  check that what was read is still the whole log: the same resident
+  log, or, for a session not resident (which is appended to only once it
+  is resident again), a file whose length and modification time did not
+  change. A read that loses that race reads again; a fourth holds the
+  slot throughout. A session this process does not own is answered the
+  same way without a tail (it was `snapshot_events`, which completed the
+  tree too). Either starts the tree load in the background.
+- **Deviation: no adoption in the background.** Subscribing never adopted
+  a session (a session this process does not own got a snapshot, and a
+  client calls `session.resume`, which adopts it, then subscribes again
+  live), so the open path adopts nothing now either.
+- **The clients' open.** The web client sends `session.resume` and the
+  subscription together and shows the snapshot at once. The TUI awaited
+  `session.resume` before it subscribed, so its first paint waited for the
+  tree and the adoption; it now subscribes first and classifies the
+  session in the background, its composer taking input meanwhile as after
+  a reconnect (the daemon takes the session for what is sent, or refuses
+  it and the message goes back to the composer). A session the TUI just
+  created is its own at once. So that a session the daemon already owns
+  is not subscribed twice (once before the classification, once after),
+  the answer that registered the tail says `live: true` (1.64.0), and both
+  clients take such a subscription as live.
+- **Older pages' headers** (1.64.0): `events.page` takes `header: "delta"`,
+  which the clients send for older history (the header they hold is the
+  one of `before`); the answer holds only the header events the client
+  lacks or holds differently, and the client keeps the held events before
+  the page's `older_cursor` and replaces those of the same sequence. That
+  this gives the page's whole header follows from the same composition
+  (tested for every pair of starts of the golden histories). A page read
+  into a gap asks for `header: "none"`: clients never used its header.
+- **Display text that repeats the output** (1.64.0): to a client of 1.64.0
+  or newer, display-view answers send such a text (a `text`, `markdown`, or
+  `code` block's, a `terminal` segment's, a `file_excerpt`'s lines) empty,
+  with an `OutputSpan` `{seq, block, segment, start, end}` in the answer's
+  `spans`; the client puts the text back before decoding, through the
+  session log's own span decoding. Spans live beside the events, not in
+  them, so neither the stored event types, the plugin protocol, nor the
+  display blocks change; texts under 64 bytes stay. Live events and
+  `event.read` stay whole.
+
+Measured on 2026-11-01 with release builds of `main` (2c35cb728, history
+format 2) and of this change, each on a fresh scratch copy of three
+sessions of this machine's store that a start of this build had converted
+to format 2 (its `view.json` written by `session.resume` and a session
+leaving memory), over a local WebSocket, a Node client sending
+`events.subscribe {from: "tail", view: "display"}`; medians of three (one
+run each for a session paged out after `session.resume` and an idle
+minute), and "busy" pins the daemon to two cores beside eight busy loops.
+The answers' events and windows were byte for byte the same.
+
+| First answer | Not owned (a fresh daemon) | Owned, paged out | With `session.resume` sent alongside (web, and the TUI now) |
+|---|---|---|---|
+| 20 subagents (1.6 MB root in format 2), idle | 408 → 51 ms | 406 → 43 ms | 397 → 73 ms |
+| same, busy | 1,893 → 117 ms | 1,862 → 94 ms | 1,412 → 140 ms |
+| 12 subagents (4.6 MB root), idle | 283 → 45 ms | 259 → 42 ms | 282 → 87 ms |
+| same, busy | 1,262 → 110 ms | 1,161 → 86 ms | 1,403 → 107 ms |
+| ACP, 9.3 MB root (16.9 MB in format 1), idle | 253 → 51 ms | 212 → 54 ms | 233 → 61 ms |
+| same, busy | 807 → 91 ms | 830 → 87 ms | 1,035 → 159 ms |
+
+The TUI's first paint was `session.resume` and then the answer: 270–490 ms
+idle and 0.8–2.3 s busy; it is now the answer sent alongside, the last
+column. `session.resume` itself takes as long as before (0.23–0.85 s
+idle, 0.8–3.3 s busy): it loads the tree. Without a `view.json` (a
+session no build wrote one for yet), the first answer skips only the
+tree: 64–253 ms idle, 163–1,046 ms busy, the ACP log's full parse the
+most.
+
+On the wire, for a 1.64.0 client (a 1.63.0 client gets the same bytes as
+before): the ACP session's newest-first answer went from 274 to 257 KB,
+and its 35 older pages from 10.1 MB to 7.75 MB (their headers from
+1.61 MB to 0.33 MB); the 20-subagent root's 8 pages from 2.01 to 1.69 MB
+(headers 382 to 140 KB). The first older page now parses the whole log,
+which the first answer no longer does.
 
 ## 5. Migration
 
