@@ -1517,12 +1517,17 @@ impl Workspace {
 
     /// Classifies `session_id`'s ownership on the current connection; once
     /// owned, its subscription becomes live
-    /// ([`Self::apply_ownership_classification`]).
+    /// ([`Self::apply_ownership_classification`]). The session keeps the
+    /// input it took before the connection dropped while the daemon is
+    /// asked: a composer disabled for that round trip loses the focus, and
+    /// with it what the user types or the Enter they press meanwhile. Input
+    /// sent before the answer is safe: the daemon takes the session for it,
+    /// or refuses it and the message goes back to the draft.
     fn classify_again(self, session_id: SessionId) {
         let Some(client) = self.client() else {
             return;
         };
-        let generation = self.begin_ownership_classification(session_id);
+        let generation = self.track_ownership_classification(session_id);
         let connection = self.connection.get_value();
         spawn_local(async move {
             let outcome = classify_session(&client, session_id).await;
@@ -1532,7 +1537,21 @@ impl Workspace {
         });
     }
 
+    /// Starts classifying a session as it opens: one this connection was
+    /// not told it owns takes no input until the daemon answers.
     fn begin_ownership_classification(self, session_id: SessionId) -> u64 {
+        let generation = self.track_ownership_classification(session_id);
+        if !self.owned(session_id) {
+            self.read_only.update(|read_only| {
+                read_only.insert(session_id);
+            });
+        }
+        generation
+    }
+
+    /// Makes the classification started now `session_id`'s current one: an
+    /// earlier one's answer is dropped.
+    fn track_ownership_classification(self, session_id: SessionId) -> u64 {
         self.next_ownership_classification
             .update_value(|next| *next = next.wrapping_add(1));
         let generation = self.next_ownership_classification.get_value();
@@ -1540,11 +1559,6 @@ impl Workspace {
             .update_value(|classifications| {
                 classifications.insert(session_id, generation);
             });
-        if !self.owned(session_id) {
-            self.read_only.update(|read_only| {
-                read_only.insert(session_id);
-            });
-        }
         generation
     }
 

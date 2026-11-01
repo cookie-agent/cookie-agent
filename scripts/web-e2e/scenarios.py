@@ -298,6 +298,32 @@ def composer_text(browser):
     return browser.script("const e = document.querySelector('#composer'); return e ? e.value : ''")
 
 
+# Records from now on whether any of the page's composers was disabled
+# (window.__composerDisabled), the ones a reconnect mounts included. A
+# disabled textarea loses the focus, so what is typed or the Enter pressed
+# while it is disabled goes nowhere.
+WATCH_COMPOSER = """
+window.__composerDisabled = 0;
+const note = (e) => { if (e.id === 'composer' && e.disabled) window.__composerDisabled += 1; };
+if (window.__composerWatch) window.__composerWatch.disconnect();
+window.__composerWatch = new MutationObserver((records) => {
+    for (const record of records) {
+        if (record.type === 'attributes') note(record.target);
+        for (const node of record.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE) [node, ...node.querySelectorAll('#composer')].forEach(note);
+        }
+    }
+});
+window.__composerWatch.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['disabled']});
+"""
+
+
+def composer_stayed_enabled(browser, what):
+    """Ends WATCH_COMPOSER, failing when a composer was disabled since."""
+    disabled = browser.script("window.__composerWatch.disconnect(); return window.__composerDisabled")
+    assert disabled == 0, "the open session's composer was disabled %d time(s) %s" % (disabled, what)
+
+
 def send_after_reconnect(browser, text, timeout=60):
     """Sends `text` once the page has reconnected and waits until the
     transcript shows it. A send whose connection ended under it (a restart
@@ -5318,6 +5344,7 @@ def acp_reconnect(browser):
         "Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => arguments[0]});"
         "document.dispatchEvent(new Event('visibilitychange'))"
     )
+    browser.script(WATCH_COMPOSER)
     os.kill(daemon, signal.SIGSTOP)
     try:
         browser.script(visibility, "hidden")
@@ -5336,6 +5363,9 @@ def acp_reconnect(browser):
     browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
     browser.type("#composer", ENTER)
     browser.wait("the kept message after the reconnect", lambda: "say meanwhile" in browser.text("#transcript"), timeout=30)
+    # The session took input before the connection dropped, and keeps
+    # taking it while the page asks the daemon again who owns it.
+    composer_stayed_enabled(browser, "while the page reconnected")
     browser.wait("the agent's reply to it", lambda: "meanwhile" in browser.text("#transcript").replace("say meanwhile", ""), timeout=60)
     idle(browser, "the agent's turn on the kept message")
     send(browser, "say afterwards")
@@ -5389,8 +5419,10 @@ def session_restart(browser):
     ready_before = ready_lines()
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
+    browser.script(WATCH_COMPOSER)
     wait_reconnected(browser, ready_before)
     send_after_reconnect(browser, "after the restart")
+    composer_stayed_enabled(browser, "while the page reconnected to the restarted daemon")
     browser.wait("the reply after the restart", lambda: answers(browser) > before, timeout=60)
     idle(browser, "the turn after the restart")
     print("after a daemon restart, the open session shows a new message and its reply")
