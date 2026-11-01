@@ -1044,6 +1044,38 @@ def long_session(browser):
     print("find in page finds and shows a row far above the end")
 
 
+def session_list_older(browser):
+    """The session list shows the last 30 days, and an unread session
+    whatever its age; "Show older" adds a month at a time until nothing is
+    older (docs/site/specs/session-storage-v3.md 4.3). test-web-page.sh
+    moved three sessions back (age-sessions.py): 45 and 80 days, read, and
+    120 days, unread, each in its own month. An older session opens."""
+    with open(os.path.join(HOME, "aged.json")) as file:
+        aged = json.load(file)
+    row = lambda label: 'aside [data-session="%s"]' % aged[label]
+    listed = lambda label: count(browser, row(label)) == 1
+    older = "#show-older-sessions"
+    browser.wait("the recent and the unread sessions", lambda: count(browser, 'aside [data-session="%s"]' % HELD_SESSION) == 1 and listed("days120"))
+    browser.wait("the offer of older sessions", lambda: count(browser, older) == 1)
+    assert not listed("days45") and not listed("days80"), "a session older than 30 days is listed"
+    browser.click(older)
+    browser.wait("the 45-day-old session", lambda: listed("days45"))
+    browser.wait("the button back", lambda: count(browser, older + ":not([disabled])") == 1)
+    assert not listed("days80"), "a page reached past its month"
+    browser.click(older)
+    browser.wait("the 80-day-old session", lambda: listed("days80"))
+    # Only the unread session's month is older: its page adds nothing new,
+    # and nothing is older after it.
+    browser.wait("the button back", lambda: count(browser, older + ":not([disabled])") == 1)
+    browser.click(older)
+    browser.wait("no older sessions", lambda: count(browser, older) == 0)
+    assert count(browser, row("days120")) == 1, "the unread session is listed twice"
+    print("the list shows 30 days and the unread session; Show older adds a month at a time")
+    click_row(browser, row("days80"))
+    browser.wait("the old session's transcript", lambda: "from days80 ago" in browser.text("#transcript"))
+    print("a session from an older month opens")
+
+
 def pinned_rows(browser):
     """The system prompt and the tools the latest request offered, pinned
     folded at the top of the transcript as in the TUI; each opens to the
@@ -6030,6 +6062,8 @@ SCENARIOS = [
     ("streaming_scroll", streaming_scroll, "chat", []),
     ("open_row_streams", open_row_streams, "chat", []),
     ("long_session", long_session, "long", []),
+    # Its daemon has sessions last active months ago (test-web-page.sh).
+    ("session_list_older", session_list_older, "long", []),
     ("message_menu", message_menu, "chat", ["basics"]),
     ("session_depth", session_depth, "depth", []),
     ("permission_rules", permission_rules, "depth", []),

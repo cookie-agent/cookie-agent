@@ -303,6 +303,17 @@ TOML
     # as another cookie process would.
     held_session="$(cd "$allowing/workspace" && HOME="$allowing" "$cookie" run --json "hello from another process" |
         python3 -I -c 'import json, sys; print([json.loads(l) for l in sys.stdin if l.strip()][-1]["session_id"])')"
+    # For the session list's window, sessions last active 45 and 80 days
+    # ago, and one 120 days ago that is unread (age-sessions.py); aged.json
+    # in the home names their ids.
+    if [[ " $* " == *" session_list_older "* ]]; then
+        aged=()
+        for spec in "days45:45" "days80:80" "days120:120,unread"; do
+            aged+=("${spec%%:*}:$(cd "$allowing/workspace" && HOME="$allowing" "$cookie" run --json "from ${spec%%:*} ago" |
+                python3 -I -c 'import json, sys; print([json.loads(l) for l in sys.stdin if l.strip()][-1]["session_id"])')=${spec#*:}")
+        done
+        python3 -I scripts/web-e2e/age-sessions.py "$allowing/.cookie-agent" "$allowing/aged.json" "${aged[@]}"
+    fi
     # A memory folder from before projects: the daemon makes it the project
     # `e2e` at start, which the memory scenario writes into.
     mkdir -p "$allowing/.cookie-agent/memory/projects/e2e"
