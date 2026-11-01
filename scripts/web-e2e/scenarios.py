@@ -6028,7 +6028,7 @@ def runtime_mcp(browser):
     # Its form opens over the page, in view however far the page scrolled,
     # and its close button (Escape, the backdrop) closes it as Cancel does.
     browser.click(machine_runtime + " [data-runtime-add-acp]")
-    browser.wait("the ACP agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
+    browser.wait("the ACP agent form", lambda: count(browser, "[data-acp-form]") == 1)
     in_view = (
         "const r = document.querySelector('#machines-acp-form').getBoundingClientRect();"
         "return r.top >= 0 && r.bottom <= window.innerHeight && r.height > 0;"
@@ -6037,11 +6037,11 @@ def runtime_mcp(browser):
     settle(browser)
     browser.shot("runtime-acp-form-desktop")
     browser.click("#machines-acp-form [data-edit-dialog-close]")
-    browser.wait("the form closed", lambda: count(browser, "[data-machines-acp-form]") == 0)
+    browser.wait("the form closed", lambda: count(browser, "[data-acp-form]") == 0)
     # A phone's is a page of its own, whose arrow goes back.
     browser.phone(390, 844)
     browser.script("document.querySelector(arguments[0]).click()", machine_runtime + " [data-runtime-add-acp]")
-    browser.wait("the phone's ACP agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
+    browser.wait("the phone's ACP agent form", lambda: count(browser, "[data-acp-form]") == 1)
     whole = browser.script(
         "const r = document.querySelector('#machines-acp-form').getBoundingClientRect();"
         "return [r.left, r.top, Math.round(r.width) - innerWidth, Math.round(r.height) - innerHeight];"
@@ -6050,10 +6050,10 @@ def runtime_mcp(browser):
     settle(browser)
     browser.shot("runtime-acp-form-phone")
     browser.click("#machines-acp-form [data-edit-dialog-close]")
-    browser.wait("the phone's form closed", lambda: count(browser, "[data-machines-acp-form]") == 0)
+    browser.wait("the phone's form closed", lambda: count(browser, "[data-acp-form]") == 0)
     browser.resize(1280, 900)
     browser.click(machine_runtime + " [data-runtime-add-acp]")
-    browser.wait("the ACP agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
+    browser.wait("the ACP agent form", lambda: count(browser, "[data-acp-form]") == 1)
     browser.type("#acp-agent", "helper")
     browser.script("document.querySelector('#acp-command').value = '';")
     browser.type("#acp-command", '["true"]')
@@ -6068,18 +6068,24 @@ def runtime_mcp(browser):
     browser.wait("the agent removed", lambda: count(browser, helper) == 0, timeout=40)
     print("an ACP agent is declared on and removed from a runtime in the Machines view")
 
-    # One declared for every runtime: listed on top, offered by the runtime,
-    # turned off there by the runtime's own, which removing undoes.
-    browser.click("#page [data-shared-add-acp]")
-    browser.wait("the shared agent form", lambda: count(browser, "[data-machines-acp-form]") == 1)
-    assert "every runtime" in browser.text("#machines-acp-form"), browser.text("#machines-acp-form")
+    # One declared for every runtime, in the Agents view: listed under the
+    # agents, offered by the runtime, turned off there by the runtime's own,
+    # which removing undoes. The Machines view only points there.
+    assert count(browser, "#page [data-shared-acp]") == 0, "the Machines view still declares shared agents"
+    assert count(browser, "#page [data-shared-acp-moved]") == 1
+    view(browser, "agents")
+    browser.click("#agents-sidebar [data-shared-add-acp]")
+    browser.wait("the shared agent form", lambda: count(browser, "#agents-acp-form [data-acp-form]") == 1)
+    assert "every runtime" in browser.text("#agents-acp-form"), browser.text("#agents-acp-form")
     browser.type("#acp-agent", "everywhere")
     browser.script("document.querySelector('#acp-command').value = '';")
     browser.type("#acp-command", '["true"]')
     browser.click("#acp-save")
-    top = '#page [data-shared-acp] [data-acp-agent="everywhere"]'
+    top = '#agents-sidebar [data-shared-acp] [data-acp-agent="everywhere"]'
     here = machine_runtime + ' [data-acp-agent="everywhere"]'
     browser.wait("the shared agent listed", lambda: count(browser, top) == 1, timeout=40)
+    browser.shot("agents-acp-shared")
+    view(browser, "machines")
     browser.wait("offered by the runtime", lambda: count(browser, here + "[data-acp-shared]") == 1, timeout=40)
     # `global` hosts none: its card does not list it again.
     assert count(browser, '#page [data-runtime="global"] [data-acp-agent="everywhere"]') == 0
@@ -6093,15 +6099,14 @@ def runtime_mcp(browser):
         and count(browser, here + "[data-acp-enabled]") == 0,
         timeout=40,
     )
-    assert count(browser, top + "[data-acp-enabled]") == 1, "the shared one stays on"
     browser.click(here + " [data-acp-remove]")
     browser.wait("offered again", lambda: count(browser, here + "[data-acp-shared]") == 1, timeout=40)
+    view(browser, "agents")
+    assert count(browser, top + "[data-acp-enabled]") == 1, "the shared one did not stay on"
     browser.click(top + " [data-acp-remove]")
-    browser.wait(
-        "the shared agent removed",
-        lambda: count(browser, top) == 0 and count(browser, here) == 0,
-        timeout=40,
-    )
+    browser.wait("the shared agent removed", lambda: count(browser, top) == 0, timeout=40)
+    view(browser, "machines")
+    browser.wait("gone from the runtime", lambda: count(browser, here) == 0, timeout=40)
     print("an ACP agent declared for every runtime is offered by each, and one runtime can turn it off")
     close_sheet(browser)
 

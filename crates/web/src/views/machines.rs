@@ -213,7 +213,7 @@ type RuntimeAgentsSignal =
 /// open, and the runtimes' ACP agent declarations read so far. The forms
 /// show above the cards, which render again as the lists change.
 #[derive(Clone, Copy)]
-struct Manage {
+pub(super) struct Manage {
     mcp: RwSignal<Option<McpEdit>>,
     mcp_error: RwSignal<Option<String>>,
     persist: RwSignal<PersistChoice>,
@@ -225,14 +225,14 @@ struct Manage {
 /// An ACP agent declaration form open: the runtime, the fields, and the
 /// key of the declaration it edits.
 #[derive(Clone, Debug, PartialEq)]
-struct AcpEdit {
+pub(super) struct AcpEdit {
     runtime: RuntimeId,
     fields: AcpAgentFields,
     editing: Option<AgentId>,
 }
 
 impl Manage {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             mcp: RwSignal::new(None),
             mcp_error: RwSignal::new(None),
@@ -245,7 +245,11 @@ impl Manage {
 
     /// Reads the declarations of every runtime `ids` names that it has not
     /// read yet.
-    fn read_agents(self, workspace: Workspace, ids: impl IntoIterator<Item = RuntimeId>) {
+    pub(super) fn read_agents(
+        self,
+        workspace: Workspace,
+        ids: impl IntoIterator<Item = RuntimeId>,
+    ) {
         for id in ids {
             // `global`'s are those every runtime offers.
             if (id.as_str() != RuntimeId::GLOBAL || workspace.shares_acp_agents.get_untracked())
@@ -299,8 +303,21 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
         <Show when=move || adding.get()>
             {add_runtime(workspace, adding)}
         </Show>
+        // The ACP agents every runtime offers are set in Agents.
         <Show when=move || workspace.shares_acp_agents.get()>
-            {shared_agents(workspace, manage)}
+            <div class="flex flex-wrap items-center gap-2" data-shared-acp-moved>
+                <p class=format!("{NOTE} min-w-0 flex-1")>
+                    "ACP agents every runtime offers are set in Agents; each runtime's card shows them, and its own declaration of the same ID replaces one there."
+                </p>
+                <button
+                    type="button"
+                    class=BUTTON
+                    on:click=move |_| workspace.open_view(crate::layout::View::Agents, None)
+                >
+                    <Glyph icon=icondata::FaRobotSolid />
+                    "Open Agents"
+                </button>
+            </div>
         </Show>
         {open_forms(workspace, manage)}
         {move || {
@@ -339,14 +356,14 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
 }
 
 /// The ACP agents every runtime offers (`[acp.agents]`, `global`'s), with
-/// the button that adds one.
-fn shared_agents(workspace: Workspace, manage: Manage) -> impl IntoView {
+/// the button that adds one: in the Agents view's list.
+pub(super) fn shared_agents(workspace: Workspace, manage: Manage) -> impl IntoView {
     let global = RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a runtime ID");
     let listed = global.clone();
     view! {
         <section class="flex flex-col gap-2 rounded-lg border border-toasted p-3 dark:border-ember" data-shared-acp>
             <div class="flex flex-wrap items-center gap-2">
-                <h3 class="min-w-0 flex-1 text-sm font-bold">"On every runtime"</h3>
+                <h3 class="min-w-0 flex-1 text-sm font-bold">"ACP agents on every runtime"</h3>
                 <button
                     type="button"
                     class=BUTTON
@@ -393,15 +410,24 @@ fn open_forms(workspace: Workspace, manage: Manage) -> impl IntoView {
                 </div>
             },
         ))}
-        {move || manage.acp.get().map(|edit| edit_dialog(
-            "machines-acp-form",
-            move || manage.acp.set(None),
-            view! {
-                <div class="flex flex-col gap-2" data-machines-acp-form>
-                    {acp_form(workspace, manage, edit)}
-                </div>
-            },
-        ))}
+        {acp_dialog(workspace, manage, "machines-acp-form")}
+    }
+}
+
+/// The open ACP agent form of `manage`, over the page, as `id`.
+pub(super) fn acp_dialog(workspace: Workspace, manage: Manage, id: &'static str) -> impl IntoView {
+    move || {
+        manage.acp.get().map(|edit| {
+            edit_dialog(
+                id,
+                move || manage.acp.set(None),
+                view! {
+                    <div class="flex flex-col gap-2" data-acp-form>
+                        {acp_form(workspace, manage, edit)}
+                    </div>
+                },
+            )
+        })
     }
 }
 

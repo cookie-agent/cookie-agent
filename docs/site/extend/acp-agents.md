@@ -143,10 +143,11 @@ command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
 enabled = false
 ```
 
-In the web client, the Machines view lists these under **On every
-runtime**, where **ACP agent** adds one; each runtime's card shows the ones
-it offers with an `every runtime` badge, and **Turn off here** writes that
-runtime's own declaration with `enabled = false`.
+In the web client, the Agents view lists these under **ACP agents on
+every runtime**, below the agent documents, where **ACP agent** adds one.
+In the Machines view, each runtime's card shows the ones it offers with an
+`every runtime` badge, and **Turn off here** writes that runtime's own
+declaration with `enabled = false`.
 
 ## Which runtime runs it
 

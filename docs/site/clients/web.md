@@ -835,7 +835,12 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   are at the editor's foot, with **Delete** behind a confirmation. **New
   agent** asks for the document's path (`agents/<id>.md`, or
   `agents/<preset>/<id>.md`), and the ↻ button reloads the documents from
-  disk after editing them by hand.
+  disk after editing them by hand. Below the documents, **ACP agents on
+  every runtime** lists the `[acp.agents]` declarations every runtime but
+  `global` offers (see [ACP agents](../extend/acp-agents.md#on-every-runtime)),
+  edited as a runtime's own are on its card: **ACP agent** adds one. The
+  Machines view shows them on each runtime's card, where **Turn off here**
+  leaves one off on that runtime.
 - **Memory.** The **Memory** view lists the memories by layer, grouped by machine and
   project, with the files that are not valid memories. Open one to edit it,
   create one at a URL (clicking a layer or group, or a project's **+**,

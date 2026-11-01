@@ -2,7 +2,9 @@
 //! (the shared agents, then each preset's), and the open document's
 //! editor beside it. A desktop pins the sidebar, which the sidebar button
 //! hides and shows; a narrower window shows it as the page in place of the
-//! editor. A phone shows the agents as the page until one opens.
+//! editor. A phone shows the agents as the page until one opens. Under the
+//! documents, the ACP agents every runtime offers (`[acp.agents]`), whose
+//! form opens over the page.
 
 use leptos::prelude::*;
 
@@ -72,10 +74,24 @@ pub fn agents_page(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// The agent documents by preset, with New agent and Reload above them.
+/// The agent documents by preset, with New agent and Reload above them,
+/// then the ACP agents every runtime offers.
 #[component]
 pub fn AgentList(workspace: Workspace) -> impl IntoView {
     let creating = RwSignal::new(false);
+    // `global`'s ACP agent declarations, read once the daemon shares them.
+    let acp = super::machines::Manage::new();
+    Effect::new(move |_| {
+        if workspace.shares_acp_agents.get() {
+            acp.read_agents(
+                workspace,
+                [
+                    cookie_agent_protocol::RuntimeId::new(cookie_agent_protocol::RuntimeId::GLOBAL)
+                        .expect("`global` is a runtime ID"),
+                ],
+            );
+        }
+    });
     let create = move || workspace.new_agent(&field_value("config-new-path"));
     view! {
         <div class="flex flex-col gap-2 p-3">
@@ -168,7 +184,11 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
                     .collect_view()
                     .into_any()
             }}
+            <Show when=move || workspace.shares_acp_agents.get()>
+                <div class="mt-3">{super::machines::shared_agents(workspace, acp)}</div>
+            </Show>
         </nav>
+        {super::machines::acp_dialog(workspace, acp, "agents-acp-form")}
     }
 }
 
