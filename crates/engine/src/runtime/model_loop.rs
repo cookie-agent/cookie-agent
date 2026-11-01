@@ -1332,6 +1332,9 @@ impl Engine {
                 )
                 .await;
             let mut batch_prepared = batch_prepared.into_iter();
+            // Every start is written first and one sync covers them all
+            // before any tool runs (store locks and durability, section 4.1).
+            let mut started = Vec::with_capacity(calls.len());
             for (id, content_index, model_call_id, provider_item_id, tool, _arguments, approval) in
                 calls.iter()
             {
@@ -1396,29 +1399,39 @@ impl Engine {
                     },
                     |prepared| OperationFingerprint::from_prepared_operation(prepared.operation()),
                 );
-                self.append(
-                    active.session,
-                    Some(run_id),
-                    event_origin("engine:model-loop"),
-                    Event::ToolCallStarted {
-                        start: ToolCallStart {
-                            tool_call_id: *id,
-                            output: output_declaration,
-                            owner: cookie_agent_protocol::AssistantToolCallRef {
-                                model_turn_seq: attempt.model_turn_seq,
-                                content_index: *content_index,
-                                model_call_id: model_call_id.clone(),
-                                provider_item_id: provider_item_id.clone(),
+                let start = self
+                    .append_deferring_sync(
+                        active.session,
+                        Some(run_id),
+                        event_origin("engine:model-loop"),
+                        Event::ToolCallStarted {
+                            start: ToolCallStart {
+                                tool_call_id: *id,
+                                output: output_declaration,
+                                owner: cookie_agent_protocol::AssistantToolCallRef {
+                                    model_turn_seq: attempt.model_turn_seq,
+                                    content_index: *content_index,
+                                    model_call_id: model_call_id.clone(),
+                                    provider_item_id: provider_item_id.clone(),
+                                },
+                                presentation: prepared_call.presentation.clone(),
+                                operation_fingerprint,
+                                background: prepared_call.background.is_some(),
                             },
-                            presentation: prepared_call.presentation.clone(),
-                            operation_fingerprint,
-                            background: prepared_call.background.is_some(),
                         },
-                    },
-                )
-                .await?;
+                    )
+                    .await;
+                match start {
+                    Ok(start) => started.push(start),
+                    Err(error) => {
+                        // What was written still syncs and publishes.
+                        let _ = self.sync_appended(active.session, &started);
+                        return Err(error);
+                    }
+                }
                 prepared.push((prepared_call, approval.clone()));
             }
+            self.sync_appended(active.session, &started)?;
             let mut tasks = Vec::new();
             for (prepared, approval) in prepared {
                 if prepared.prepared.is_err() {

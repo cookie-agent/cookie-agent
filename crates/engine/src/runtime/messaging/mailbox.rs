@@ -527,6 +527,40 @@ impl Engine {
         .await
     }
 
+    /// [`Self::append`] for a commit point that shares its sync with the
+    /// ones appended after it: it is written, but neither synced nor
+    /// published, until [`Self::sync_appended`], which the caller runs
+    /// before anything acts on it. A turn's tool call starts are appended
+    /// this way, so one sync covers them all before any tool runs.
+    pub(in crate::runtime) async fn append_deferring_sync(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        origin: EventOrigin,
+        event: Event,
+    ) -> Result<Arc<StoredEvent>, EngineError> {
+        self.on_actor_unreconciled(session, move |engine| {
+            engine.append_direct_with_sync(session, run, origin, event, false, false)
+        })
+        .await
+    }
+
+    /// Syncs what [`Self::append_deferring_sync`] wrote to `session`'s log,
+    /// then publishes those records, `appended`, to plugins as every other
+    /// append does once it returns.
+    pub(in crate::runtime) fn sync_appended(
+        &self,
+        session: SessionId,
+        appended: &[Arc<StoredEvent>],
+    ) -> Result<(), EngineError> {
+        off_worker(|| self.inner.store.sync_appended(session))?;
+        for envelope in appended {
+            let drops = self.inner.plugins.stream_session_event(envelope);
+            self.record_plugin_drops(session, drops);
+        }
+        Ok(())
+    }
+
     pub(crate) fn append_direct(
         &self,
         session: SessionId,
@@ -564,8 +598,22 @@ impl Engine {
         session: SessionId,
         run: Option<RunId>,
         origin: EventOrigin,
+        event: Event,
+        recovery: bool,
+    ) -> Result<Arc<StoredEvent>, EngineError> {
+        self.append_direct_with_sync(session, run, origin, event, recovery, true)
+    }
+
+    /// Appends `event`; `sync` false defers a commit point's sync, and its
+    /// publication to plugins, to [`Self::sync_appended`].
+    fn append_direct_with_sync(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        origin: EventOrigin,
         mut event: Event,
         recovery: bool,
+        sync: bool,
     ) -> Result<Arc<StoredEvent>, EngineError> {
         if let Event::ToolCallTerminated { termination } = &mut event {
             // Finalization and after-result hooks can await after the executor succeeds.
@@ -658,8 +706,12 @@ impl Engine {
             self.inner
                 .store
                 .append_recovery(session, run, origin, event)
-        } else {
+        } else if sync {
             self.inner.store.append(session, run, origin, event)
+        } else {
+            self.inner
+                .store
+                .append_deferring_sync(session, run, origin, event)
         };
         if let Some((tool_call_id, completed)) = started {
             self.settle_background_job(tool_call_id, completed && envelope.is_ok());
@@ -690,7 +742,7 @@ impl Engine {
                 let drops = self.inner.plugins.stream_session_event(durable);
                 self.record_plugin_drops(session, drops);
             }
-        } else {
+        } else if sync {
             let drops = self.inner.plugins.stream_session_event(&envelope);
             self.record_plugin_drops(session, drops);
         }

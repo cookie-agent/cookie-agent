@@ -1549,3 +1549,108 @@ async fn unconditional_tools_are_published_and_run_under_a_denying_agent() {
     assert!(requests[0].contains("\"name\":\"write\""));
     fixture.engine.shutdown().await;
 }
+
+/// A turn's tool call starts are written together and one sync covers them
+/// all before any tool runs (store locks and durability, section 4.1): a
+/// sync held by the test hook keeps every tool from starting.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_start_only_after_one_sync_covers_their_starts() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Sync order test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRun tools.\n",
+    );
+    let state = Arc::new(ParallelToolState::default());
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
+            state: Arc::clone(&state),
+            barrier: None,
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("sync-order").expect("client run ID"),
+                selection,
+                content: "run the tools".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    // Everything before the model's answer is in; the next sync is the one
+    // that covers the tool starts.
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "the model request",
+        |event| matches!(event.payload, EventPayload::ModelRequestPrepared { .. }),
+    )
+    .await;
+    let log = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .clone();
+    let (sync_reached, release_sync) = log.install_sync_hook_for_test();
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[
+                (
+                    "model-first",
+                    "parallel_read",
+                    serde_json::json!({"name":"first"}),
+                ),
+                (
+                    "model-second",
+                    "parallel_read",
+                    serde_json::json!({"name":"second"}),
+                ),
+            ]),
+        ))
+        .expect("tool batch response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("done"),
+        ))
+        .expect("completion response");
+    tokio::task::spawn_blocking(move || {
+        sync_reached
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the tool starts reached their sync");
+    })
+    .await
+    .expect("wait for the sync");
+    let starts = log
+        .events()
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::ToolCallStarted { .. }))
+        .count();
+    assert_eq!(starts, 2, "both starts are written before the one sync");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        state.started.load(Ordering::SeqCst),
+        0,
+        "no tool runs before the sync"
+    );
+    release_sync.send(()).expect("release the sync");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    assert_eq!(state.started.load(Ordering::SeqCst), 2);
+    with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("scripted server");
+    fixture.engine.shutdown().await;
+}

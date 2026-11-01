@@ -338,10 +338,12 @@ fn ownership_release_waits_for_an_append_that_already_won_serialization() {
         .expect("adopt after append and release");
 }
 
-/// Appends to different sessions do not wait for each other's sync, while
-/// a structural change (eviction) waits for the append in flight.
+/// A commit point's sync runs outside every store lock: while it is held,
+/// another session appends and is evicted, and the same session appends a
+/// record that rides along. Neither of the session's records is published
+/// before the sync ends; then both are, in append order.
 #[test]
-fn a_blocked_sync_holds_up_its_own_session_and_structural_changes_only() {
+fn a_blocked_sync_holds_no_lock_and_holds_back_later_publications() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);
@@ -350,11 +352,14 @@ fn a_blocked_sync_holds_up_its_own_session_and_structural_changes_only() {
     let other = persist_test_session(&store);
     let attempt = start_test_attempt(&store, blocked);
     let other_attempt = start_test_attempt(&store, other);
+    let (_, tail) = store
+        .subscribe_events(blocked, None, None, None, Some(super::TailOwner(1)))
+        .expect("subscribe");
+    let mut tail = tail.expect("a live tail");
     let log = store.get(blocked).expect("blocked projection").log.clone();
+    let tip = log.physical_tip_seq();
     let (syncing, release_sync) = log.install_sync_hook_for_test();
     let append_store = Arc::clone(&store);
-    // Per-attempt bookkeeping skips its sync, so the blocked append is one
-    // that syncs.
     let appending = thread::spawn(move || {
         append_store
             .append(
@@ -365,36 +370,77 @@ fn a_blocked_sync_holds_up_its_own_session_and_structural_changes_only() {
                     content: "steer".into(),
                 },
             )
-            .expect("append synced record")
+            .expect("append commit point")
             .seq
     });
     syncing.recv().expect("append reached its sync");
+    assert_eq!(log.physical_tip_seq(), tip + 1, "written before its sync");
 
-    // Another session appends while the first sync is still held.
+    // Another session appends and is evicted while the sync is held.
     let appended = append_test_in_run_record(&store, other, &other_attempt);
     assert_eq!(store.get(other).unwrap().meta.last_event_seq, appended.seq);
+    assert!(store.evict(other).expect("evict"));
 
-    let evict_store = Arc::clone(&store);
-    let (evicted, evict_observed) = mpsc::channel();
-    let evicting = thread::spawn(move || {
-        evicted
-            .send(evict_store.evict(other).expect("evict"))
-            .expect("report eviction");
-    });
-    assert!(matches!(
-        evict_observed.recv_timeout(std::time::Duration::from_millis(50)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
+    // The same session appends a record that rides along.
+    let riding = append_test_in_run_record(&store, blocked, &attempt);
+    assert!(
+        tail.try_recv().is_err(),
+        "nothing is published before the commit point's sync"
+    );
 
     release_sync.send(()).expect("release sync");
     let seq = appending.join().expect("append thread");
-    assert!(
-        evict_observed
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("eviction proceeds after the append")
-    );
-    evicting.join().expect("evict thread");
-    assert_eq!(store.get(blocked).unwrap().meta.last_event_seq, seq);
+    let published = std::iter::from_fn(|| tail.try_recv().ok())
+        .filter_map(|message| match message {
+            cookie_agent_protocol::EventSubscriptionMessage::Event { event } => Some(event.seq),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(published, [seq, riding.seq]);
+    assert_eq!(store.get(blocked).unwrap().meta.last_event_seq, riding.seq);
+}
+
+/// A record a reader's page already held is not sent to its tail again
+/// when its publication comes after the registration.
+#[test]
+fn a_tail_registered_during_a_sync_skips_what_its_page_held() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).expect("store");
+    let session = persist_test_session(&store);
+    let attempt = start_test_attempt(&store, session);
+    let log = store.get(session).expect("projection").log.clone();
+    let (syncing, release_sync) = log.install_sync_hook_for_test();
+    let append_store = Arc::clone(&store);
+    let appending = thread::spawn(move || {
+        append_store
+            .append(
+                session,
+                Some(attempt.run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::UserInputAdmitted {
+                    content: "steer".into(),
+                },
+            )
+            .expect("append commit point")
+            .seq
+    });
+    syncing.recv().expect("append reached its sync");
+    let (page, tail) = store
+        .subscribe_events(session, None, None, None, Some(super::TailOwner(1)))
+        .expect("subscribe");
+    let mut tail = tail.expect("a live tail");
+    let held = page.events.last().expect("a page").seq;
+    release_sync.send(()).expect("release sync");
+    let seq = appending.join().expect("append thread");
+    assert_eq!(held, seq, "the page held the record being synced");
+    assert!(tail.try_recv().is_err(), "not sent to the tail again");
+    let riding = append_test_in_run_record(&store, session, &attempt);
+    assert!(matches!(
+        tail.try_recv(),
+        Ok(cookie_agent_protocol::EventSubscriptionMessage::Event { event }) if event.seq == riding.seq
+    ));
 }
 
 #[test]

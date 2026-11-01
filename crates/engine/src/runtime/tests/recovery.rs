@@ -987,3 +987,151 @@ async fn an_unreadable_frozen_binding_fails_only_what_runs_it_again() {
     ));
     reopened.shutdown().await;
 }
+
+/// A crash keeps a prefix of the log (store locks and durability, section
+/// 3): cut anywhere after the last commit point before a tool started, a
+/// session reopens with every record through that commit point, and
+/// recovery ends the run as interrupted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_log_cut_after_a_commit_point_recovers_the_run_as_interrupted() {
+    let (endpoint, responses, _captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[(
+                "model-wait",
+                "parallel_read",
+                serde_json::json!({"name":"wait","wait_for_cancellation":true}),
+            )]),
+        ))
+        .expect("tool response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Crash test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRun tools.\n",
+    );
+    let state = Arc::new(ParallelToolState::default());
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
+            state: Arc::clone(&state),
+            barrier: None,
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("crash-cut").expect("client run ID"),
+                selection,
+                content: "start a tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("start run")
+        .run_id;
+    with_watchdog("the tool starts", async {
+        while state.started.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let data = fixture._directory.path().join("data");
+    let log_path = fixture
+        .engine
+        .inner
+        .store
+        .session_dir(session.session_id)
+        .join(crate::session::EVENTS_FILE);
+    let relative = log_path
+        .strip_prefix(&data)
+        .expect("log under data")
+        .to_owned();
+    let snapshot = private_tempdir();
+    copy_test_tree(&data, &snapshot.path().join("data"));
+    let records = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    let cwd = fixture._directory.path().to_owned();
+    let config = fixture.config.clone();
+    let manager = Arc::clone(&fixture.manager);
+    fixture.engine.shutdown().await;
+    drop(fixture.engine);
+
+    let bytes = fs::read(snapshot.path().join("data").join(&relative)).expect("read log");
+    let line_ends = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b'\n')
+        .map(|(index, _)| index + 1)
+        .collect::<Vec<_>>();
+    assert_eq!(line_ends.len(), records.len());
+    let turn = records
+        .iter()
+        .position(|event| matches!(event.payload, EventPayload::ModelTurnCommitted { .. }))
+        .expect("the model turn");
+    let commit = records[..turn]
+        .iter()
+        .rposition(|event| crate::events::syncs_on_append(&event.payload))
+        .expect("a commit point before the turn");
+    // Each line end after the commit point and the middle of each line.
+    let mut cuts = vec![line_ends[commit]];
+    for (start, end) in line_ends[commit..].iter().zip(&line_ends[commit + 1..]) {
+        cuts.push((start + end) / 2);
+        cuts.push(*end);
+    }
+    for length in cuts {
+        let copy = private_tempdir();
+        copy_test_tree(&snapshot.path().join("data"), &copy.path().join("data"));
+        let cut = copy.path().join("data").join(&relative);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&cut)
+            .and_then(|file| file.set_len(length as u64))
+            .expect("cut the log");
+        let reopened = Engine::open(EngineOptions {
+            data_dir: copy.path().join("data"),
+            runtimes: cookie_agent_runtime_api::RuntimeOptions::new(&cwd),
+            cwd: cwd.clone(),
+            config: config.clone(),
+            model_manager: Arc::clone(&manager),
+        })
+        .expect("reopen the cut log");
+        reopened
+            .resume(session.session_id)
+            .await
+            .expect("adopt the cut session");
+        let adopted = reopened
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("adopted projection");
+        assert_eq!(
+            adopted.runs[&run].status,
+            SessionStatus::Interrupted,
+            "cut at {length}"
+        );
+        let events = adopted.log.events();
+        for (event, record) in events.iter().zip(&records[..=commit]) {
+            assert_eq!(event.seq, record.seq, "cut at {length}");
+            assert_eq!(event.payload, record.payload, "cut at {length}");
+        }
+        assert!(events.len() > commit + 1, "cut at {length}");
+        assert!(
+            adopted.runs[&run].pending_calls.is_empty(),
+            "cut at {length}"
+        );
+        reopened.shutdown().await;
+    }
+}

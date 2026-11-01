@@ -2062,10 +2062,15 @@ fn read_only_event_log_rejects_appends() {
 fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");
-    let mut writer = EventLogWriter::open(&path).expect("open retained writer");
-    writer
+    let durability = Arc::new(super::durability::Durability::new(&path));
+    let mut writer = EventLogWriter::open(&path, &durability).expect("open retained writer");
+    let commit = writer
         .append(b"{\"record\":1}\n", true)
-        .expect("append durable record");
+        .expect("append durable record")
+        .expect("a commit point");
+    durability
+        .sync_through(commit)
+        .expect("sync durable record");
     OpenOptions::new()
         .append(true)
         .open(&path)
@@ -2136,8 +2141,11 @@ fn live_only_stream_output_is_never_appended() {
     assert_eq!(log.physical_tip_seq(), records.last().unwrap().seq);
 }
 
+/// A commit point is written, and readable in this process, before its
+/// sync; its append returns only after the sync, and the sync holds none of
+/// the log's locks.
 #[test]
-fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
+fn a_commit_point_is_written_before_its_sync_and_returns_after_it() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");
     let creation = stored_event();
@@ -2162,33 +2170,221 @@ fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
         })
     };
 
-    sync_reached.recv().expect("barrier reached sync");
+    sync_reached.recv().expect("commit point reached its sync");
     assert!(log.snapshot_lock_available_for_test());
-    assert_eq!(
-        log.event_snapshot().len(),
-        1,
-        "barrier is not published early"
-    );
+    assert_eq!(log.event_snapshot().len(), 2, "readable at once");
     assert_eq!(
         load_jsonl::<StoredEvent>(&path)
-            .expect("read durable prefix")
+            .expect("read written records")
             .len(),
-        1,
-        "barrier is not durable before sync completes"
+        2,
+        "written before its sync"
     );
-    release_sync.send(()).expect("release barrier sync");
+    assert!(!appending.is_finished(), "the append waits for its sync");
+    release_sync.send(()).expect("release sync");
     appending
         .join()
         .expect("append thread")
-        .expect("append barrier");
-
+        .expect("append commit point");
     assert_eq!(log.event_snapshot().len(), 2);
-    assert_eq!(
-        load_jsonl::<StoredEvent>(&path)
-            .expect("read durable barrier")
-            .len(),
-        2
+}
+
+/// Several commit points written before a sync starts share it, and one
+/// written while a sync is in flight waits for the next.
+#[test]
+fn commit_points_written_together_share_one_sync() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let creation = stored_event();
+    let origin = || cookie_agent_protocol::EventOrigin::new("engine:test").unwrap();
+    let log = EventLog::create(path, creation.session_id, origin(), creation.payload)
+        .expect("create event log");
+    let capability = log.write_capability.clone().expect("owned log");
+    let write = |content: &str| {
+        log.write_owned(
+            &capability,
+            None,
+            origin(),
+            EventPayload::UserInputAdmitted {
+                content: content.into(),
+            },
+        )
+        .expect("write commit point")
+        .1
+        .expect("a commit point")
+    };
+    let first = write("first");
+    let second = write("second");
+    assert!(!log.is_settled(first) && !log.is_settled(second));
+    let before = log.syncs_for_test();
+    log.sync_through(second).expect("sync both");
+    assert_eq!(log.syncs_for_test() - before, 1);
+    assert!(log.is_settled(first));
+    log.sync_through(first).expect("already synced");
+    assert_eq!(log.syncs_for_test() - before, 1, "covered by the same sync");
+
+    // A commit point written while a sync is held waits for that sync to
+    // end and then runs its own.
+    let third = write("third");
+    let (sync_reached, release_sync) = log.install_sync_hook_for_test();
+    let log = &log;
+    thread::scope(|scope| {
+        let leader = scope.spawn(move || log.sync_through(third));
+        sync_reached.recv().expect("first sync started");
+        let fourth = write("fourth");
+        let follower = scope.spawn(move || log.sync_through(fourth));
+        release_sync.send(()).expect("release sync");
+        leader.join().expect("leader").expect("leader synced");
+        follower.join().expect("follower").expect("follower synced");
+        assert!(log.is_settled(fourth));
+    });
+    assert_eq!(log.syncs_for_test() - before, 3);
+}
+
+/// Replaying a real coding session into a new log: an append syncs exactly
+/// when its record is a commit point, so a burst of model turns between two
+/// commit points adds no sync.
+#[test]
+fn a_turns_syncs_are_its_commit_points() {
+    let records = golden_coding_records();
+    let directory = tempdir().expect("temporary directory");
+    let log = EventLog::create(
+        directory.path().join("events.jsonl"),
+        records[0].session_id,
+        records[0].origin.clone().expect("origin"),
+        records[0].payload.clone(),
+    )
+    .expect("create log");
+    let mut since_commit = Vec::new();
+    let mut bursts = 0;
+    for record in &records[1..] {
+        let before = log.syncs_for_test();
+        log.append(
+            record.run_id,
+            record.origin.clone().expect("origin"),
+            record.payload.clone(),
+        )
+        .expect("append record");
+        let commit = super::syncs_on_append(&record.payload);
+        assert_eq!(
+            log.syncs_for_test() - before,
+            usize::from(commit),
+            "seq {}: {:?}",
+            record.seq,
+            record.payload
+        );
+        if commit {
+            bursts += usize::from(
+                since_commit
+                    .iter()
+                    .any(|payload| matches!(payload, EventPayload::ModelTurnCommitted { .. })),
+            );
+            since_commit.clear();
+        } else {
+            since_commit.push(record.payload.clone());
+        }
+    }
+    assert!(
+        bursts > 1,
+        "the session has model turns between commit points"
     );
+    let commit_points = records[1..]
+        .iter()
+        .filter(|record| super::syncs_on_append(&record.payload))
+        .count();
+    assert!(commit_points < records.len() - 1);
+}
+
+/// A crash keeps a prefix of the log: cut at any byte after a commit point,
+/// the log reopens with every record through that commit point and nothing
+/// out of order after it.
+#[test]
+fn a_log_cut_after_a_commit_point_reopens_with_everything_through_it() {
+    let records = golden_coding_records();
+    // The records through the second turn's first tool start: the first
+    // turn's tool ends, then a model turn that rides along, then a commit
+    // point.
+    let first_end = records
+        .iter()
+        .position(|record| matches!(record.payload, EventPayload::ToolCallTerminated { .. }))
+        .expect("a tool end");
+    let second_start = first_end
+        + records[first_end..]
+            .iter()
+            .position(|record| matches!(record.payload, EventPayload::ToolCallStarted { .. }))
+            .expect("a second turn's tool start");
+    let records = &records[..=second_start];
+    let commit = records[..second_start]
+        .iter()
+        .rposition(|record| super::syncs_on_append(&record.payload))
+        .expect("a commit point before it");
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let log = EventLog::create(
+        path.clone(),
+        records[0].session_id,
+        records[0].origin.clone().expect("origin"),
+        records[0].payload.clone(),
+    )
+    .expect("create log");
+    for record in &records[1..] {
+        log.append(
+            record.run_id,
+            record.origin.clone().expect("origin"),
+            record.payload.clone(),
+        )
+        .expect("append record");
+    }
+    drop(log);
+    let bytes = fs::read(&path).expect("read log");
+    let line_ends = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b'\n')
+        .map(|(index, _)| index + 1)
+        .collect::<Vec<_>>();
+    assert_eq!(line_ends.len(), records.len());
+    // Every line's first and last bytes and every 61st between them: a
+    // parse of every byte's cut takes a minute in a debug build.
+    let durable = line_ends[commit];
+    let mut cuts = std::collections::BTreeSet::new();
+    for (start, end) in line_ends[commit..].iter().zip(&line_ends[commit + 1..]) {
+        cuts.extend((*start..*end).step_by(61));
+        cuts.extend(*start..(*start + 3).min(*end));
+        cuts.extend(end.saturating_sub(3).max(*start)..=*end);
+    }
+    assert_eq!(cuts.first(), Some(&durable));
+    assert_eq!(cuts.last(), Some(&bytes.len()));
+    let cut_path = directory.path().join("cut.jsonl");
+    for length in cuts {
+        fs::write(&cut_path, &bytes[..length]).expect("write cut log");
+        let reopened =
+            EventLog::open(cut_path.clone(), records[0].session_id).expect("reopen cut log");
+        let kept = line_ends.iter().filter(|end| **end <= length).count();
+        let events = reopened.events();
+        assert_eq!(events.len(), kept, "cut at {length}");
+        assert!(events.len() > commit, "cut at {length}");
+        for (event, record) in events.iter().zip(records) {
+            assert_eq!(event.seq, record.seq);
+            assert_eq!(event.payload, record.payload);
+        }
+        assert_eq!(
+            fs::metadata(&cut_path).expect("cut log metadata").len(),
+            line_ends[kept - 1] as u64,
+            "the torn line is cut on open"
+        );
+    }
+}
+
+/// The records of the golden coding session (history format 1, read and
+/// converted in memory), which has several turns with parallel tool calls.
+fn golden_coding_records() -> Vec<StoredEvent> {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../engine/tests/fixtures/history/1/coding/01a152fa-2785-7822-b056-5a3ad818855f");
+    let session_id = SessionId(Uuid::parse_str("01a152fa-2785-7822-b056-5a3ad818855f").unwrap());
+    EventLog::open_read_only(directory.join("events.jsonl"), session_id)
+        .expect("open golden coding log")
+        .events()
 }
 
 #[test]

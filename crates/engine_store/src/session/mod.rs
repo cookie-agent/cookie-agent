@@ -8,6 +8,7 @@ mod dirs;
 mod fold;
 mod in_flight;
 mod layout;
+mod publication;
 mod tree_load;
 mod unread;
 
@@ -121,6 +122,10 @@ struct Tail {
     /// `None` for a tail nothing else replaces.
     owner: Option<TailOwner>,
     sender: mpsc::Sender<EventSubscriptionMessage>,
+    /// The last sequence the page that registered the tail held. A record
+    /// is in memory before it is published, so a commit point still
+    /// syncing can be in that page; its publication then skips this tail.
+    after: u64,
 }
 /// Event log file name.
 pub const EVENTS_FILE: &str = "events.jsonl";
@@ -445,6 +450,8 @@ pub struct SessionStore {
     /// older rebuild never replaces a newer one.
     index_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     subscribers: Mutex<HashMap<SessionId, SessionSubscribers>>,
+    /// Publications waiting for an earlier commit point's sync.
+    publications: publication::Publications,
     /// Daemon-wide session index changes, see [`Self::subscribe_index_changes`].
     index_changes:
         tokio::sync::broadcast::Sender<cookie_agent_protocol::SessionsChangedNotification>,
@@ -699,6 +706,7 @@ impl SessionStore {
             tree_publish_locks: Mutex::new(HashMap::new()),
             index_locks: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(HashMap::new()),
+            publications: publication::Publications::default(),
             index_changes: tokio::sync::broadcast::channel(INDEX_CHANGE_CAPACITY).0,
             live_waiting: Mutex::default(),
             unread: unread::UnreadSessions::open(data_root),
@@ -1883,6 +1891,35 @@ impl SessionStore {
         self.append_with_mode(id, run, origin, event, true)
     }
 
+    /// Appends a record without waiting for its sync: it is in the file and
+    /// in memory, but a commit point publishes only once a sync covers it.
+    /// The caller runs [`Self::sync_appended`] before acting on it, so that
+    /// several commit points written together (a turn's tool call starts)
+    /// share one sync.
+    pub fn append_deferring_sync(
+        &self,
+        id: SessionId,
+        run: Option<RunId>,
+        origin: cookie_agent_protocol::EventOrigin,
+        event: EventPayload,
+    ) -> Result<Arc<StoredEvent>, SessionError> {
+        Ok(self.write_event(id, run, origin, event, false)?.0)
+    }
+
+    /// Syncs everything written to `id`'s log so far and publishes the
+    /// records that waited for it.
+    pub fn sync_appended(&self, id: SessionId) -> Result<(), SessionError> {
+        let log = self
+            .get_resident(id)
+            .map(|session| Arc::clone(&session.log));
+        let synced = log.map_or(Ok(()), |log| log.sync_through(log.latest_commit()));
+        self.publish_settled(id);
+        Ok(synced?)
+    }
+
+    /// Appends a record. A commit point is synced after the session's slot
+    /// and the store's lock are released, and the append returns, and the
+    /// record publishes, only after that sync.
     fn append_with_mode(
         &self,
         id: SessionId,
@@ -1891,6 +1928,35 @@ impl SessionStore {
         event: EventPayload,
         recovery: bool,
     ) -> Result<Arc<StoredEvent>, SessionError> {
+        let (envelope, commit) = self.write_event(id, run, origin, event, recovery)?;
+        if let Some((log, commit)) = commit {
+            let synced = log.sync_through(commit);
+            // Published whether or not the sync succeeded, so a failure does
+            // not hold back the session's later records; the caller gets
+            // the error.
+            self.publish_settled(id);
+            synced?;
+        }
+        Ok(envelope)
+    }
+
+    /// Writes a record under the session's slot and queues its publication,
+    /// returning the sync a commit point waits for.
+    #[allow(clippy::type_complexity)]
+    fn write_event(
+        &self,
+        id: SessionId,
+        run: Option<RunId>,
+        origin: cookie_agent_protocol::EventOrigin,
+        event: EventPayload,
+        recovery: bool,
+    ) -> Result<
+        (
+            Arc<StoredEvent>,
+            Option<(Arc<EventLog>, crate::events::Commit)>,
+        ),
+        SessionError,
+    > {
         // §3.2: the tree must be complete before a session writes into it, and
         // the load cannot run under `mutation` (it installs its own), so it runs
         // here instead. Cheap once the tree is Loaded.
@@ -1911,7 +1977,7 @@ impl SessionStore {
                     | EventPayload::SkillLoaded { .. }
                     | EventPayload::AgentMdLoaded { .. }
             );
-        let envelope = log.append_owned(&capability, run, origin, event)?;
+        let (envelope, commit) = log.write_owned(&capability, run, origin, event)?;
         // The event is folded into the resident projection in place; only a
         // usage record that cannot be taken back exactly refolds the whole
         // log. The resident is updated before the
@@ -2000,18 +2066,19 @@ impl SessionStore {
         }
         #[cfg(any(test, feature = "test-support"))]
         if !reference_fold_skipped() {
-            let reference = projection_fold(log).expect("reference fold");
+            let reference = projection_fold(log.clone()).expect("reference fold");
             let resident = self.get_resident(id).expect("resident after append");
             assert_projection_equivalent(&resident, &reference);
         }
-        self.publish_stored_event(&envelope);
-        if index_changed && let Some(resident) = self.get_resident(id) {
+        let upserted = if index_changed && let Some(resident) = self.get_resident(id) {
             if resident.log.is_persisted() {
                 self.journal_root(&resident.meta);
             }
-            self.notify_upserted(&resident.meta);
-        }
-        if matches!(
+            Some(resident.meta.clone())
+        } else {
+            None
+        };
+        let approvals_changed = matches!(
             envelope.payload,
             EventPayload::ApprovalRequested { .. }
                 | EventPayload::ApprovalStep {
@@ -2022,15 +2089,18 @@ impl SessionStore {
                 }
                 | EventPayload::ApprovalFinalized { .. }
                 | EventPayload::TreeApprovalGrantCommitted { .. }
-        ) {
-            self.notify_index_change(
-                cookie_agent_protocol::SessionsChangedNotification::ApprovalsChanged {
-                    root_session_id: self.parent_root_of(id).unwrap_or(id),
-                    session_id: id,
-                },
-            );
-        }
-        Ok(envelope)
+        );
+        let commit = commit.map(|commit| (Arc::clone(&log), commit));
+        self.queue_publication(
+            id,
+            publication::Pending::Event {
+                event: Arc::clone(&envelope),
+                commit: commit.clone(),
+                upserted,
+                approvals_of: approvals_changed.then(|| self.parent_root_of(id).unwrap_or(id)),
+            },
+        );
+        Ok((envelope, commit))
     }
 
     /// Removes `id`'s events after `through_seq` (a revert) and refolds it.
@@ -2074,11 +2144,16 @@ impl SessionStore {
             }
             self.persist_subagent_index(root)?;
         }
-        self.publish_rewound(id, through_seq);
         if log.is_persisted() {
             self.journal_root(&reverted_meta);
         }
-        self.notify_upserted(&reverted_meta);
+        self.queue_publication(
+            id,
+            publication::Pending::Rewound {
+                through_seq,
+                meta: reverted_meta,
+            },
+        );
         Ok(())
     }
 
@@ -2239,7 +2314,11 @@ impl SessionStore {
                 }),
             });
         }
-        tails.senders.push(Tail { owner, sender });
+        tails.senders.push(Tail {
+            owner,
+            sender,
+            after: tails.last_seq,
+        });
         Ok((result, Some(receiver)))
     }
 
@@ -2308,13 +2387,17 @@ impl SessionStore {
     }
 
     fn publish_stored_event(&self, envelope: &Arc<StoredEvent>) {
-        // Called under the session's slot after the projection update, which
-        // keeps the session's append order.
+        // Called in the session's publication order (`publication`), which
+        // is its append order.
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.entry(envelope.session_id).or_default();
         tails.last_seq = envelope.seq;
         tails.in_flight.settle(envelope.run_id, &envelope.payload);
-        tails.senders.retain(|Tail { sender, .. }| {
+        tails.senders.retain(|Tail { sender, after, .. }| {
+            if envelope.seq <= *after {
+                // The page that registered the tail held this record.
+                return true;
+            }
             // Reserve the final slot for a gap so a slow reader can replay.
             let is_gap = sender.capacity() <= 1;
             let message = if is_gap {
@@ -2338,7 +2421,8 @@ impl SessionStore {
         };
         tails.last_seq = through_seq;
         tails.in_flight.clear();
-        tails.senders.retain(|Tail { sender, .. }| {
+        tails.senders.retain_mut(|Tail { sender, after, .. }| {
+            *after = (*after).min(through_seq);
             // The final slot reserved for a gap fits the rewind as well: it
             // makes the reader replay in full, so a tail that needed that
             // slot is dropped like one that got a gap.

@@ -29,6 +29,9 @@ use tokio::sync::mpsc;
 
 use crate::ownership::{WriteAuthority, WriteCapability};
 
+mod durability;
+pub use durability::Commit;
+
 #[derive(Debug, Error)]
 pub enum EventLogError {
     #[error("event log IO failure at {path}: {source}")]
@@ -109,6 +112,8 @@ pub struct EventLog {
     #[cfg(any(test, feature = "test-support"))]
     append_authorization_hook: Mutex<Option<AppendAuthorizationHook>>,
     writer: Mutex<Option<EventLogWriter>>,
+    /// What of the file is synced; shared with the writer.
+    durability: Arc<durability::Durability>,
 }
 
 #[derive(Clone, Copy)]
@@ -118,26 +123,14 @@ enum TornTail {
 }
 
 /// The open append handle of a persisted log. Every record is written before
-/// it is published, so nothing is buffered here. Records that matter for
-/// recovery are also synced before they are published; per-attempt
-/// bookkeeping ([`syncs_on_append`]) is synced by the next record that is, or
-/// when the handle closes.
+/// it is published, so nothing is buffered here. Syncs run outside it, on
+/// the log's [`durability::Durability`]; closing it syncs what no sync
+/// covered yet.
 #[derive(Debug)]
 struct EventLogWriter {
     path: PathBuf,
     file: fs::File,
-    directory_sync_pending: bool,
-    /// Records written since the last sync.
-    unsynced: bool,
-    #[cfg(any(test, feature = "test-support"))]
-    before_sync: Option<SyncHook>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug)]
-struct SyncHook {
-    reached: std::sync::mpsc::Sender<()>,
-    release: std::sync::mpsc::Receiver<()>,
+    durability: Arc<durability::Durability>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -787,7 +780,7 @@ fn usage_total(seq: u64, usage: &cookie_agent_protocol::Usage) -> Option<(u64, u
 }
 
 impl EventLogWriter {
-    fn open(path: &Path) -> Result<Self, EventLogError> {
+    fn open(path: &Path, durability: &Arc<durability::Durability>) -> Result<Self, EventLogError> {
         let created = !path.exists();
         let mut options = OpenOptions::new();
         options.create(true).append(true);
@@ -805,53 +798,28 @@ impl EventLogWriter {
             const FILE_SHARE_DELETE: u32 = 0x4;
             options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
         }
-        let file = options.open(path).map_err(|source| EventLogError::Io {
+        let io_error = |source| EventLogError::Io {
             path: path.to_owned(),
             source,
-        })?;
+        };
+        let file = options.open(path).map_err(io_error)?;
+        durability.attach(&file, created).map_err(io_error)?;
         Ok(Self {
             path: path.to_owned(),
             file,
-            directory_sync_pending: created,
-            unsynced: false,
-            #[cfg(any(test, feature = "test-support"))]
-            before_sync: None,
+            durability: Arc::clone(durability),
         })
     }
 
-    /// Writes one newline-terminated record and, when `sync` asks for it or
-    /// the file is new, syncs it with every record written before it (and,
-    /// after the file was created, its directory entry).
-    fn append(&mut self, record: &[u8], sync: bool) -> Result<(), EventLogError> {
-        let sync = sync || self.directory_sync_pending;
-        #[cfg(any(test, feature = "test-support"))]
-        if sync && let Some(hook) = self.before_sync.take() {
-            let _ = hook.reached.send(());
-            let _ = hook.release.recv();
-        }
+    /// Writes one newline-terminated record, unsynced. Returns the record's
+    /// [`Commit`] when `commit` asks for a sync or the file is new, whose
+    /// directory entry the sync makes durable too.
+    fn append(&mut self, record: &[u8], commit: bool) -> Result<Option<Commit>, EventLogError> {
         self.file
             .write_all(record)
             .map_err(|source| self.io_error(source))?;
-        if !sync {
-            self.unsynced = true;
-            return Ok(());
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
-        crate::timing::time(
-            crate::timing::Meter::LogSync,
-            || self.path.display().to_string(),
-            || self.file.sync_data(),
-        )
-        .map_err(|source| self.io_error(source))?;
-        self.unsynced = false;
-        if self.directory_sync_pending
-            && let Some(parent) = self.path.parent()
-        {
-            fsync_directory(parent)?;
-            self.directory_sync_pending = false;
-        }
-        Ok(())
+        let (written, new_file) = self.durability.written();
+        Ok((commit || new_file).then_some(written))
     }
 
     fn io_error(&self, source: io::Error) -> EventLogError {
@@ -863,32 +831,119 @@ impl EventLogWriter {
 }
 
 impl Drop for EventLogWriter {
-    /// Syncs bookkeeping no later record synced. A failure has no caller to
-    /// reach; those records are what a crash may drop anyway.
+    /// Syncs what no sync covered yet: records that ride along with the next
+    /// commit point, and a commit point whose sync has not run yet.
     fn drop(&mut self) {
-        if self.unsynced {
-            #[cfg(any(test, feature = "test-support"))]
-            EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
-            let _ = self.file.sync_data();
-        }
+        self.durability.close(&self.file);
     }
 }
 
-/// Whether a record is synced before it is published. Per-attempt bookkeeping
-/// is not: the model loop writes several such records per attempt, each
-/// followed soon by a turn, tool or run record that is, and that sync covers
-/// them. A system crash can therefore drop only bookkeeping at the end of the
-/// log, after the last record recovery depends on.
-fn syncs_on_append(payload: &EventPayload) -> bool {
-    !matches!(
-        payload,
+/// Whether a record is a commit point, synced before it takes effect: before
+/// its append returns and before it is published
+/// (`docs/site/specs/store-locks-and-durability.md`, section 3). What
+/// something outside the log acts on is one: a tool call's start (before
+/// the tool runs) and end (before the next model request), what a request's
+/// reply confirms, grants and approval decisions, delegation records,
+/// session creation, a run's end, and every rare kind, whose sync costs
+/// nothing. The rest rides along: written at once, synced by the next commit
+/// point or when the log closes, so a crash can drop only such records after
+/// the last commit point. Live-only kinds are never appended.
+///
+/// No catch-all: a new kind does not build until it is put in a class.
+pub fn syncs_on_append(payload: &EventPayload) -> bool {
+    match payload {
+        // Per-attempt bookkeeping, the committed turn (its tool calls'
+        // starts sync before they run), and the ACP agent's stored state.
         EventPayload::ModelAttemptStarted { .. }
-            | EventPayload::ModelToolsPublished { .. }
-            | EventPayload::ModelRequestPrepared { .. }
-            | EventPayload::ModelReplayEvaluated { .. }
-            | EventPayload::ModelOutputStarted { .. }
-            | EventPayload::ModelUsageRecorded { .. }
-    )
+        | EventPayload::ModelToolsPublished { .. }
+        | EventPayload::ModelRequestPrepared { .. }
+        | EventPayload::ModelReplayEvaluated { .. }
+        | EventPayload::ModelOutputStarted { .. }
+        | EventPayload::ModelUsageRecorded { .. }
+        | EventPayload::ModelTurnCommitted { .. }
+        | EventPayload::AcpSessionUpdated { .. } => false,
+        // Live-only output: rejected before it is written.
+        EventPayload::TextDelta { .. }
+        | EventPayload::ReasoningDelta { .. }
+        | EventPayload::InternalAgentTextDelta { .. }
+        | EventPayload::NativeCompactionStarted { .. }
+        | EventPayload::NativeCompactionFinished { .. }
+        | EventPayload::ToolCallProgress { .. } => false,
+        // Tool calls.
+        EventPayload::ToolCallStarted { .. }
+        | EventPayload::ToolCallTerminated { .. }
+        | EventPayload::ToolOutputElided { .. }
+        | EventPayload::ToolCallLinked { .. }
+        | EventPayload::ToolRoundStarted { .. } => true,
+        // Input and what a request's reply confirms.
+        EventPayload::UserInputAdmitted { .. }
+        | EventPayload::UserInputSubmitted { .. }
+        | EventPayload::UserInputTransformed { .. }
+        | EventPayload::UserInputRecalled { .. }
+        | EventPayload::UserInputApplied { .. }
+        | EventPayload::UserInputQueued { .. }
+        | EventPayload::UserInputQueueRecalled { .. }
+        | EventPayload::UserInputQueueVoided { .. }
+        | EventPayload::MessageInjected { .. }
+        | EventPayload::SessionModelSelected { .. }
+        | EventPayload::SessionTitleCommitted { .. }
+        | EventPayload::SessionProjectSet { .. }
+        | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::PermissionModeSet { .. }
+        | EventPayload::RuntimeAttached { .. }
+        | EventPayload::RuntimeDetached { .. }
+        | EventPayload::ElicitationRequested { .. }
+        | EventPayload::ElicitationResolved { .. } => true,
+        // Grants and approval decisions.
+        EventPayload::ApprovalRequested { .. }
+        | EventPayload::ApprovalStep { .. }
+        | EventPayload::ApprovalFinalized { .. }
+        | EventPayload::TreeApprovalGrantCommitted { .. } => true,
+        // Delegation.
+        EventPayload::DelegationReserved { .. }
+        | EventPayload::DelegationProgressed { .. }
+        | EventPayload::DelegationFinished { .. }
+        | EventPayload::DelegateChildTerminated { .. }
+        | EventPayload::DelegatedContextSeeded { .. }
+        | EventPayload::DelegatedAttachmentsAdded { .. } => true,
+        // Goals and producers.
+        EventPayload::GoalActivated { .. }
+        | EventPayload::GoalChecklistRevised { .. }
+        | EventPayload::GoalLifecycleChanged { .. }
+        | EventPayload::ProducerMessageAccepted { .. }
+        | EventPayload::ProducerMessageAdmitted { .. }
+        | EventPayload::ProducerMessagesClaimed { .. }
+        | EventPayload::ProducerMessagesReleased { .. }
+        | EventPayload::ProducerMessageConsumed { .. }
+        | EventPayload::ProducerMessageDiscarded { .. }
+        | EventPayload::AutomaticRunsHeld { .. }
+        | EventPayload::AutomaticRunsResumed { .. } => true,
+        // The session and its runs.
+        EventPayload::SessionCreated { .. }
+        | EventPayload::RunStarted { .. }
+        | EventPayload::RunFinished { .. }
+        | EventPayload::RecordOmitted { .. }
+        | EventPayload::AcpSessionStarted { .. } => true,
+        // Once per run or rarer: prompt, memory, skills, checkpoints,
+        // internal agents, fallbacks, abandoned attempts, diagnostics.
+        EventPayload::SkillLoaded { .. }
+        | EventPayload::SkillInvocationNoted { .. }
+        | EventPayload::AgentMdLoaded { .. }
+        | EventPayload::MemoryLoaded { .. }
+        | EventPayload::MemoryChanged { .. }
+        | EventPayload::Diagnostic { .. }
+        | EventPayload::DeferredToolsAnnounced { .. }
+        | EventPayload::PromptBlocksRecorded { .. }
+        | EventPayload::PromptBlocksAnnounced { .. }
+        | EventPayload::AttemptAbandoned { .. }
+        | EventPayload::NativeReplayCut { .. }
+        | EventPayload::ModelFallback { .. }
+        | EventPayload::InternalAgentStarted { .. }
+        | EventPayload::InternalAgentUsageRecorded { .. }
+        | EventPayload::InternalAgentFinished { .. }
+        | EventPayload::InternalAgentFallback { .. }
+        | EventPayload::ContextCheckpointCommitted { .. } => true,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -936,6 +991,7 @@ impl EventLog {
         if persisted {
             storage.lines = Some(LineIndex::default());
         }
+        let durability = Arc::new(durability::Durability::new(&path));
         let log = Arc::new(Self {
             path,
             session_id,
@@ -956,13 +1012,20 @@ impl EventLog {
             #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
+            durability,
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
         }
-        log.append_inner(None, None, origin.clone(), creation)?;
+        let mut commit = log.append_inner(None, None, origin.clone(), creation)?.1;
         for event in initial {
-            log.append_inner(None, None, origin.clone(), event)?;
+            commit = log
+                .append_inner(None, None, origin.clone(), event)?
+                .1
+                .or(commit);
+        }
+        if let Some(commit) = commit {
+            log.sync_through(commit)?;
         }
         Ok(log)
     }
@@ -1062,6 +1125,7 @@ impl EventLog {
         // The read's buffer goes here: only the lines no record reproduces
         // stay in memory.
         let raw = RawLines::from_loaded(loaded.raw, &records, &path);
+        let durability = Arc::new(durability::Durability::new(&path));
         Ok(Arc::new(Self {
             path,
             session_id,
@@ -1082,6 +1146,7 @@ impl EventLog {
             #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
+            durability,
         }))
     }
 
@@ -1154,6 +1219,7 @@ impl EventLog {
             .map_or(1, |seq| seq + 1);
         let mut storage = EventStorage::new(records);
         storage.raw = Arc::new(raw);
+        let durability = Arc::new(durability::Durability::new(&path));
         Ok(Arc::new(Self {
             path,
             session_id,
@@ -1174,6 +1240,7 @@ impl EventLog {
             #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
+            durability,
         }))
     }
 
@@ -1213,9 +1280,12 @@ impl EventLog {
             #[cfg(any(test, feature = "test-support"))]
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
+            durability: Arc::new(durability::Durability::new(&self.path)),
         }))
     }
 
+    /// Appends one record and, when it is a commit point, returns after a
+    /// sync covers it.
     pub fn append_owned(
         &self,
         capability: &WriteCapability,
@@ -1223,6 +1293,24 @@ impl EventLog {
         origin: EventOrigin,
         payload: EventPayload,
     ) -> Result<Arc<StoredEvent>, EventLogError> {
+        let (event, commit) = self.write_owned(capability, run_id, origin, payload)?;
+        if let Some(commit) = commit {
+            self.sync_through(commit)?;
+        }
+        Ok(event)
+    }
+
+    /// Appends one record without syncing it: it is in the file and in
+    /// memory at once. A commit point comes back with its [`Commit`], which
+    /// the caller passes to [`Self::sync_through`] before anything acts on
+    /// the record, outside any lock it holds.
+    pub fn write_owned(
+        &self,
+        capability: &WriteCapability,
+        run_id: Option<RunId>,
+        origin: EventOrigin,
+        payload: EventPayload,
+    ) -> Result<(Arc<StoredEvent>, Option<Commit>), EventLogError> {
         if !self
             .write_capability
             .as_ref()
@@ -1263,7 +1351,7 @@ impl EventLog {
         run_id: Option<RunId>,
         origin: EventOrigin,
         payload: EventPayload,
-    ) -> Result<Arc<StoredEvent>, EventLogError> {
+    ) -> Result<(Arc<StoredEvent>, Option<Commit>), EventLogError> {
         if self.read_only {
             return Err(EventLogError::ReadOnly(self.path.clone()));
         }
@@ -1328,27 +1416,30 @@ impl EventLog {
         let write_result = if written {
             self.write_record(&record, syncs_on_append(&event.payload))
         } else {
-            Ok(())
+            Ok(None)
         };
-        if let Err(error) = write_result {
-            let mut events = self
-                .events
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // Part of the record may have reached the file.
-            events.lines = None;
-            let mut validation = self
-                .validation
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *validation = rebuild_validation(
-                &self.path,
-                self.session_id,
-                &events.all,
-                &self.initial_taint(),
-            )?;
-            return Err(error);
-        }
+        let commit = match write_result {
+            Ok(commit) => commit,
+            Err(error) => {
+                let mut events = self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // Part of the record may have reached the file.
+                events.lines = None;
+                let mut validation = self
+                    .validation
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *validation = rebuild_validation(
+                    &self.path,
+                    self.session_id,
+                    &events.all,
+                    &self.initial_taint(),
+                )?;
+                return Err(error);
+            }
+        };
         let mut events = self
             .events
             .lock()
@@ -1359,7 +1450,29 @@ impl EventLog {
         }
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
-        Ok(event)
+        Ok((event, commit))
+    }
+
+    /// Returns once a sync covers `commit`: one sync covers every record
+    /// written before it starts. Run it outside every lock: a sync on a
+    /// busy disk takes up to seconds.
+    pub fn sync_through(&self, commit: Commit) -> Result<(), EventLogError> {
+        self.durability.sync_through(commit)
+    }
+
+    /// The last record written to the file, for [`Self::sync_through`] to
+    /// cover everything written so far.
+    #[must_use]
+    pub fn latest_commit(&self) -> Commit {
+        self.durability.latest()
+    }
+
+    /// Whether `commit` waits on no sync any more: one covering it ended,
+    /// successfully or not. Publication follows this, so a failed sync
+    /// does not hold back the session's later records.
+    #[must_use]
+    pub fn is_settled(&self, commit: Commit) -> bool {
+        self.durability.is_settled(commit)
     }
 
     /// Writes the log whole as the content of the new file at `path` (a
@@ -1806,6 +1919,7 @@ impl EventLog {
                 Some(length) => cut_event_file(&self.path, length)?,
                 None => truncate_event_file(&self.path, through_seq)?,
             }
+            self.durability.cut();
         }
         let mut events = self
             .events
@@ -1829,14 +1943,14 @@ impl EventLog {
         Ok(())
     }
 
-    /// Appends one record, synced before returning when `sync` asks for it.
-    /// The caller holds `append`.
-    fn write_record(&self, record: &[u8], sync: bool) -> Result<(), EventLogError> {
+    /// Writes one record, unsynced, returning its [`Commit`] when it has to
+    /// be synced. The caller holds `append`.
+    fn write_record(&self, record: &[u8], commit: bool) -> Result<Option<Commit>, EventLogError> {
         let mut writer = self.open_writer()?;
         writer
             .as_mut()
             .expect("event log writer initialized")
-            .append(record, sync)
+            .append(record, commit)
     }
 
     fn open_writer(
@@ -1850,27 +1964,30 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if writer.is_none() {
-            *writer = Some(EventLogWriter::open(&self.path)?);
+            *writer = Some(EventLogWriter::open(&self.path, &self.durability)?);
         }
         Ok(writer)
     }
 
-    /// Blocks the next record's sync until the returned sender releases it.
+    /// Blocks the next sync of a commit point, after its record is written,
+    /// until the returned sender releases it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_sync_hook_for_test(
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (reached, reached_receiver) = std::sync::mpsc::channel();
         let (release, release_receiver) = std::sync::mpsc::channel();
-        self.open_writer()
-            .expect("open event log writer")
-            .as_mut()
-            .expect("event log writer initialized")
-            .before_sync = Some(SyncHook {
+        self.durability.install_hook(durability::SyncHook {
             reached,
             release: release_receiver,
         });
         (reached_receiver, release)
+    }
+
+    /// Test-only: how many times this log's file was synced.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn syncs_for_test(&self) -> usize {
+        self.durability.syncs()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -3775,7 +3892,7 @@ fn observe_sequence(
 thread_local! {
     /// Test-only: event logs this thread parsed from disk.
     pub static EVENT_LOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Test-only: appends this thread synced.
+    /// Test-only: log syncs this thread ran.
     pub static EVENT_LOG_SYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
