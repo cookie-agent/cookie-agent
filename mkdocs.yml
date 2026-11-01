@@ -196,6 +196,8 @@ nav:
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
           - "Assets: files agents give the user": specs/assets.md
+          - ACP agent permissions: specs/acp-permissions.md
+          - ACP agents across several machines: specs/acp-several-runtimes.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md
           - Projects: specs/projects.md
