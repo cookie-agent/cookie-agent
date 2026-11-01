@@ -4,7 +4,10 @@ Status: **approved** (2026-10-31), with the user's decisions of
 2026-10-31 in [section 7](#7-decisions); phases 1 and 2 implemented
 (phase 2: client protocol 1.59.0, [3.4](#34-implementation-notes-2026-10-31));
 phase 3's layout, listing, and migration (4.1, 4.3, 4.4, 5) implemented with
-history format 1 ([section 5.1](#51-implementation-notes-2026-10-31)).
+history format 1 ([section 5.1](#51-implementation-notes-2026-10-31)), then
+history format 2 and `blobs/` (4.2) through the same marker
+([section 4.2.1](#421-implementation-notes-2026-11-01)); `view.json` is
+still to come.
 
 ## 1. Problem
 
@@ -342,6 +345,131 @@ The first real converter, `v1_to_v2` (`crates/engine_store/src/events/convert`):
 Expected effect: logs about 60% smaller, so every parse is faster,
 including a resume for a run.
 
+#### 4.2.1 Implementation notes (2026-11-01)
+
+History format 2 with its converter `v1_to_v2`
+([events reference](../reference/events.md#history-formats)). The wire
+carries whole values; the one protocol change is that readers take a
+`session_created` of any history format (client protocol 1.61.0; an older
+client receives format 1, which its whole values are). Where the
+implementation settles what 4.2 leaves open, or departs from it (the
+coordinator extended 4.2 on 2026-11-01 with the tool result's other large
+values and the ACP live-state rule, so the store converts once rather than
+again for a format 3):
+
+- **Records in memory stay whole.** The loader reads every value back from
+  `blobs/` as it parses a line that names one, and the writer moves them out
+  as it writes one, so everything that reads a record (model replay,
+  compaction, the approval reviewer, `event.read`, both views of
+  `events.subscribe`, plugins) is unchanged, and the display view cuts large
+  outputs as before. A log is smaller on disk, but a parse that reads it
+  whole still reads the blobs its records name: the faster parse 4.2
+  expects comes for the lines that are not moved, and for a cold view once
+  `view.json` lands. A line naming blobs is kept in memory as read (the
+  slimmed line, about 2.3 KB for a moved output), not re-read from the file,
+  so a fork copies it with its references.
+- **What moves.** An output strictly longer than 8 KiB keeps its first
+  2 KiB, floored to a character boundary, as `output`, with `output_bytes`
+  and `output_blob`; a display stored as ranges of the output stays ranges
+  of the whole output. A tool result's `display` and each part of its
+  `metadata` longer than 8 KiB of JSON (an ACP agent's `raw_output` and
+  `raw_input`, mostly) move whole, an object only once the large members
+  inside it moved and it is still that long; `moved_values` names them by
+  JSON pointer, restored last-moved first. The display view's cut is
+  unchanged: it works on the whole records in memory. The ACP lists and the
+  chains move when their JSON is
+  512 bytes or more (`<member>_blob`): a shorter one is smaller than its
+  reference. Besides `run_started`'s `agent.fallback_chain`, each internal
+  agent's `fallbacks` moves too, the bulk of a run's settings (3.4 KB each in
+  the store measured). `delegation_reserved`'s `child_agent` holds a chain
+  as well and stays as it is: 4.2 names `run_started` only.
+- **Old ACP live state** (`v1_to_v2` only; a format-2 writer stores none,
+  [store locks and durability](store-locks-and-durability.md) 4.3): an
+  `acp_session_updated` holding only a `tool_presentation`, a `context`, or
+  both is live state. A call's last presentation goes into its
+  `tool_call_terminated` as `presentation` when it differs from the start's
+  (tool identity aside), also one that arrived after the end; a call with no
+  end record keeps the record of its last presentation. Of the context,
+  the record in effect at each `model_usage_recorded` (an ACP reply's
+  footer reads the context there) and `run_finished`, and at the log's
+  end, stays: one per run alone would change earlier replies' footers in a
+  run of several prompts. Every other live-state record becomes a
+  `record_omitted` at its sequence, run, and time (without engine version
+  and origin): dropping the line would leave a hole in the sequence, which
+  the loader reports as damage. Clients show no row for such a record and
+  the display view leaves it out (`EventPayload::is_omitted_live_state`);
+  a client before this build shows a debug row for each.
+- **References are artifact URIs** (`artifact://sha256/<digest>`), so
+  artifact liveness (a fork links the blobs its history names, a revert
+  collects the ones only its dropped records named) covers blobs without a
+  change, and `blobs/` holds the tree's artifacts as well: it replaced
+  `artifacts/`. The conversion moves `artifacts/` to `blobs/` first (the
+  folder at once, or file by file into a `blobs/` that exists, so it can be
+  repeated); a tree no conversion reached, held by another process, is read
+  from `artifacts/`.
+- **Durability.** A record's blobs are written before it, unsynced, and the
+  sync that covers the record syncs them and `blobs/` first, outside every
+  lock (store locks and durability, section 4.1); a blob a sync of the log
+  covered once is not synced again for it. A record whose blob is missing
+  or does not match its digest (lost to a power cut before that sync, or
+  removed by hand) is skipped with a diagnostic, never read short. A
+  conversion and a log written whole (a fork, a buffered session's first
+  persistence) sync their blobs before the log.
+- **A root's publication** may now find `blobs/` beside `subagents/` in
+  its scaffold, when a child published first and its records named blobs;
+  the root's own `blobs/` is merged into it.
+- **The migration** converts every tree in the month folders when
+  `layout.json` records an older format (or there is none), each under its
+  lock, where it is; with a current format it retries only the pending
+  ones. The marker moves to format 2 after the last tree, so a start a
+  crash cut short converts again and finds the trees it finished current;
+  an original a crash left beside its log (`events.jsonl.v1.bak`) goes to
+  `.backup-v2/` then too. The free-space check counts the logs to convert
+  in month folders as well, and has a Windows implementation
+  (`GetDiskFreeSpaceExW`). Unlike a work-dir tree, a month-folder tree that
+  fails to convert stays listed, and is read through an in-memory
+  conversion until it converts.
+- **Golden logs** of format 2 are in `crates/engine/tests/fixtures/history/2/`;
+  the `coding` scenario now reads a 19 KB file, whose output moves.
+
+Measured on 2026-11-01 on a fresh scratch copy of this machine's store (97
+roots and 174 logs in the v2 work-dir layout, all format 1), on a machine
+with a load average of 40 to 70:
+
+| | Before | After |
+|---|---|---|
+| Logs | 281.6 MB | 215.8 MB (−23.4%) |
+| `artifacts/` / `blobs/` | 45.2 MB | 91.3 MB, 2,848 blobs |
+| Store | 327.4 MB | 307.7 MB (−6.0%) |
+| Largest log (`01a17973-…`) | 16.94 MB | 9.73 MB (−42.5%) |
+| Largest log after (`01a189ee-…`) | 13.40 MB | 11.22 MB (−16.2%) |
+
+| Conversion, release build, tmpfs | Time |
+|---|---|
+| v2 layout to layout 3 and format 2 | 97 trees in 8.5 s |
+| Layout 3 at format 1 (written by the format-1 build) to format 2 | 97 trees in 7.0 s |
+
+Every one of the 174 logs opens with no diagnostic, and every line reads
+back as the format-1 original but for the live-state rule (40,415
+`acp_session_updated` records became `record_omitted`, 11,467 calls'
+ends took their final presentation) and `history_format`. Folded through
+the client reducer, the original and the converted log give the same
+transcript rows, tool states (each call's status and displayed
+presentation), ACP view, reply metrics (footers, context), and context use
+for all 174 (158,603 events); the comparison leaves out only the process's
+revision counters and rows' cache versions, and a hash set's order.
+
+Measured earlier the same day, before the additions above: on the NVMe
+disk, syncs included, the conversion took 2.9 times as long as on tmpfs
+(18.9 s against 6.5 s); a debug start killed after 83 of 97 trees resumed
+with them current (39 ms), converted the other 14, and left no staged
+file, backup, or `.backup-v2/`; the next start read only `layout.json`.
+
+In the largest log, what is left is mostly tool results' values under
+8 KiB (5.1 MB over 1,112 results), model turns (1.4 MB), and the 4,520
+`record_omitted` lines (1.1 MB). Left for later: `delegation_reserved`'s
+agent snapshot chains.
+
 ### 4.3 Listing recent sessions
 
 Each `activity/<yyyy-mm>.jsonl` is an append-only journal of root
@@ -437,8 +565,9 @@ removed, so an older store upgrades step by step in one pass.
 ### 5.1 Implementation notes (2026-10-31)
 
 Layout version 3 with history format 1, so `view.json`, `blobs/`, and
-`v1_to_v2` are still to come. Where the implementation settles what the
-sections above leave open, or departs from them:
+`v1_to_v2` were still to come (format 2 and `blobs/`: 4.2.1). Where the
+implementation settles what the sections above leave open, or departs from
+them:
 
 - **No conversion yet, so no backups.** Each tree moves by one rename.
   `convert_tree` still runs on it under its lock, converting logs of a
