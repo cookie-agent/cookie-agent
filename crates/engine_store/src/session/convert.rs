@@ -288,8 +288,10 @@ fn commit(staged: &Staged) -> Result<(), SessionError> {
     // The backup is a second name for the original, so `events.jsonl` names
     // a complete log at every moment; a copy where links do not work.
     if fs::hard_link(&log, &backup).is_err() {
+        // Synced through a handle opened for writing: Windows refuses to
+        // flush a read-only one.
         fs::copy(&log, &backup)
-            .and_then(|_| fs::File::open(&backup)?.sync_all())
+            .and_then(|_| fs::OpenOptions::new().write(true).open(&backup)?.sync_all())
             .map_err(backup_error)?;
     }
     fsync_directory(&staged.dir)?;
