@@ -379,7 +379,10 @@ pub(super) fn append_migrated(
             source,
         };
         append_line(&path, &journal_bytes(&entries)?).map_err(io_error)?;
-        fs::File::open(&path)
+        // Opened for writing: Windows refuses to flush a read-only handle.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
             .and_then(|file| file.sync_all())
             .map_err(io_error)?;
     }
