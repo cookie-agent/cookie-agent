@@ -940,6 +940,13 @@ async fn session_picker_selection_always_runs_per_session_classification() {
     app.sessions = vec![session_meta(session)];
     app.modal = Modal::Sessions;
     app.choose_picker_entry(0).await;
+    // It shows at once; the classification answers behind it.
+    assert_eq!(app.selected, Some(session));
+    assert!(app.ownership_classifications.contains_key(&session));
+    updates_until(&mut app, |app| {
+        !app.ownership_classifications.contains_key(&session)
+    })
+    .await;
 
     assert_eq!(app.selected, Some(session));
     assert!(app.read_only_sessions.contains(&session));
@@ -1043,6 +1050,11 @@ async fn successful_sessions_picker_selection_after_delivery_handoff_uses_event_
         .await;
 
     assert_eq!(app.selected, Some(session.session_id));
+    updates_until(&mut app, |app| {
+        !app.ownership_classifications
+            .contains_key(&session.session_id)
+    })
+    .await;
     assert!(app.owned_sessions.contains(&session.session_id));
     assert!(!app.store.sessions.contains_key(&session.session_id));
 

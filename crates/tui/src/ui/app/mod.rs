@@ -1817,15 +1817,17 @@ impl App {
             .map(|session| session.session_id)
     }
 
-    /// Open a session: classify its ownership, then show it. The one
-    /// subscription it needs is issued by whichever step first finds it
-    /// idle (the owned classification, else the selection) and shared by the
-    /// other.
+    /// Open a session: show it, newest first, while its ownership is
+    /// classified. The daemon answers the subscription without the
+    /// session's subagent tree or opening it, which `session.resume`, the
+    /// classification, waits for; a session this connection does not own
+    /// yet is shown as the daemon has it, and the classification's answer
+    /// makes the subscription live. Until it answers the composer takes
+    /// input, as after a reconnect: the daemon takes the session for what
+    /// is sent, or refuses it and the message goes back to the composer.
     pub(in crate::ui) async fn open_session(&mut self, session_id: SessionId) {
-        let generation = self.begin_ownership_classification(session_id);
-        let outcome =
-            cookie_agent_client_state::ownership::classify_session(&self.client, session_id).await;
-        self.apply_ownership_classification(session_id, generation, outcome);
+        let generation = self.track_ownership_classification(session_id);
+        self.spawn_classification(session_id, generation);
         self.select_session(session_id).await;
         if self.deliveries.is_some() {
             self.drain_replay(session_id).await;
@@ -1833,7 +1835,7 @@ impl App {
         self.refresh_tree().await;
     }
 
-    /// Starts classifying a session as it opens: one this connection was
+    /// Starts classifying a watched session: one this connection was
     /// not told it owns takes no input until the daemon answers.
     fn begin_ownership_classification(&mut self, session_id: SessionId) -> u64 {
         let generation = self.track_ownership_classification(session_id);
@@ -1882,6 +1884,13 @@ impl App {
         } else {
             self.track_ownership_classification(session_id)
         };
+        self.spawn_classification(session_id, generation);
+        true
+    }
+
+    /// Asks the daemon who owns `session_id`; the answer arrives as an
+    /// [`RpcUpdate::SessionOwnershipClassified`] of `generation`.
+    fn spawn_classification(&self, session_id: SessionId, generation: u64) {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1893,7 +1902,6 @@ impl App {
                 outcome,
             });
         });
-        true
     }
 
     fn apply_ownership_classification(
@@ -2007,6 +2015,9 @@ impl App {
                 self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);
                 self.note_sessions_changed();
+                // The daemon that created it owns it: it opens live at once.
+                self.owned_sessions.insert(session_id);
+                self.read_only_sessions.remove(&session_id);
                 self.open_session(session_id).await;
                 self.new_session_draft = None;
                 self.status = format!(

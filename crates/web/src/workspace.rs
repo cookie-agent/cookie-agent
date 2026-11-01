@@ -1677,7 +1677,11 @@ impl Workspace {
                             store.install_background_listing(session_id, mark, listed.calls)
                         });
                     }
-                    SubscriptionOutcome::Established
+                    if client.subscription_is_live(session_id).await {
+                        SubscriptionOutcome::Live
+                    } else {
+                        SubscriptionOutcome::Established
+                    }
                 }
                 Err(ClientError::ReplayInProgress) => SubscriptionOutcome::ReplayInProgress,
                 Err(error) => SubscriptionOutcome::Failed(crate::errors::describe(&error)),

@@ -76,7 +76,11 @@ impl App {
                             calls: listed.calls,
                         });
                     }
-                    SubscriptionOutcome::Established
+                    if client.subscription_is_live(session_id).await {
+                        SubscriptionOutcome::Live
+                    } else {
+                        SubscriptionOutcome::Established
+                    }
                 }
                 Err(crate::ClientError::ReplayInProgress) => SubscriptionOutcome::ReplayInProgress,
                 Err(error) => SubscriptionOutcome::Failed(error.to_string()),

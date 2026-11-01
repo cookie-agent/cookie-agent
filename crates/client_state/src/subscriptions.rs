@@ -107,6 +107,11 @@ pub enum SubscribeIntent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SubscriptionOutcome {
     Established,
+    /// Established, and the daemon registered the live tail: it owns the
+    /// session (client protocol 1.64.0), so the subscription is live
+    /// whatever this client knew of its ownership, and needs no second
+    /// subscribe once the session is classified owned.
+    Live,
     /// Another replay of the session was running.
     ReplayInProgress,
     Failed(String),
@@ -237,6 +242,11 @@ impl Subscriptions {
             SubscriptionOutcome::Established => {
                 self.states
                     .insert(session_id, SubscriptionState::Live { owned });
+                None
+            }
+            SubscriptionOutcome::Live => {
+                self.states
+                    .insert(session_id, SubscriptionState::Live { owned: true });
                 None
             }
             SubscriptionOutcome::ReplayInProgress => {
@@ -451,6 +461,30 @@ mod tests {
         assert!(subscriptions.release(session));
         assert!(!subscriptions.release(session));
         assert_eq!(subscriptions.last_attempt(), 1);
+    }
+
+    #[test]
+    fn a_live_answer_before_the_ownership_is_known_needs_no_second_subscribe() {
+        let mut subscriptions = Subscriptions::default();
+        let session = SessionId::new_v7();
+        subscriptions.subscribe(session, false, SubscribeIntent::Open);
+        // The session is classified owned while the request is in flight…
+        assert_eq!(
+            subscriptions.subscribe(session, true, SubscribeIntent::Follow),
+            None
+        );
+        // …and the daemon, which owns it, registered the tail.
+        assert_eq!(
+            subscriptions.finish(session, 1, &SubscriptionOutcome::Live, true),
+            None
+        );
+        assert_eq!(
+            subscriptions.state(session),
+            Some(SubscriptionState::Live { owned: true })
+        );
+        for intent in [SubscribeIntent::Follow, SubscribeIntent::Open] {
+            assert_eq!(subscriptions.subscribe(session, true, intent), None);
+        }
     }
 
     #[test]
