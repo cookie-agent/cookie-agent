@@ -1788,3 +1788,94 @@ async fn a_tail_subscription_answers_the_newest_events_and_goes_live() {
         Some(EventSubscriptionMessage::Event { event }) if event.seq == tip + 1
     ));
 }
+
+#[tokio::test]
+async fn a_tail_subscription_answers_before_the_tree_loads() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let session_id = session.session_id;
+    let store = &fixture.engine.inner.store;
+    for payload in [
+        EventPayload::SessionPermissionOverlaySet {
+            overlay: cookie_agent_protocol::SessionPermissionOverlay::default(),
+        },
+        EventPayload::UserInputQueueVoided {},
+    ] {
+        store
+            .append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                payload,
+            )
+            .expect("direct append");
+    }
+    let tip = store
+        .get_resident(session_id)
+        .expect("resident")
+        .log
+        .last_event()
+        .expect("events")
+        .seq;
+    let evicted = fixture
+        .engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("idle janitor pass");
+    assert_eq!(evicted, vec![session_id]);
+
+    // The tree's next load waits until it is let go, also when an
+    // assertion below fails.
+    struct Release(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let (released, wake) = &*self.0;
+            *released
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            wake.notify_all();
+        }
+    }
+    let (reached, loading) = std::sync::mpsc::channel();
+    let release = Release(Arc::new((
+        std::sync::Mutex::new(false),
+        std::sync::Condvar::new(),
+    )));
+    let held = Arc::clone(&release.0);
+    store.install_tree_load_read_hook_for_test(move |_| {
+        let _ = reached.send(());
+        let (released, wake) = &*held;
+        let mut released = released.lock().unwrap();
+        while !*released {
+            released = wake.wait(released).unwrap();
+        }
+    });
+    let (tail, receiver) = with_watchdog(
+        "a tail answer without the tree",
+        fixture.engine.subscribe_tail(
+            session_id,
+            cookie_agent_protocol::EventsView::Display,
+            64 * 1024,
+            None,
+        ),
+    )
+    .await
+    .expect("tail");
+    assert!(receiver.is_some(), "an owned session goes live");
+    assert_eq!(tail.events.last().unwrap().seq, tip);
+    assert!(!store.is_resident(session_id), "a view opens nothing");
+    // The tree loads behind the answer.
+    loading
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the tree loads in the background");
+    let snapshot = fixture
+        .engine
+        .snapshot_tail(
+            session_id,
+            cookie_agent_protocol::EventsView::Display,
+            64 * 1024,
+        )
+        .expect("snapshot");
+    assert_eq!(snapshot.events, tail.events);
+    drop(release);
+}

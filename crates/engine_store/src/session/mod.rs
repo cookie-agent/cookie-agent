@@ -11,6 +11,7 @@ mod layout;
 mod publication;
 mod tree_load;
 mod unread;
+mod view;
 
 pub use activity::{ListWindow, RootList};
 pub use cache::meta_path;
@@ -38,6 +39,7 @@ pub use tree_load::TreeLoadProducts;
 pub use tree_load::TreeState;
 use tree_load::*;
 pub use tree_load::{TreeLoadObserver, TreeLoadRejection};
+pub use view::VIEW_FILE;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -467,6 +469,9 @@ pub struct SessionStore {
     unread: unread::UnreadSessions,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
+    /// Where the view cache this process last wrote for each session starts
+    /// (`view.json`).
+    views: Mutex<HashMap<SessionId, view::ViewStart>>,
     closed: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
@@ -720,6 +725,7 @@ impl SessionStore {
             live_waiting: Mutex::default(),
             unread: unread::UnreadSessions::open(data_root),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
+            views: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             eviction_transition_hook: Mutex::new(None),
@@ -1849,6 +1855,9 @@ impl SessionStore {
     }
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
+        // The next open is a cold one: it reads the view cache, brought up
+        // to the log before any lock.
+        self.refresh_resident_view(id);
         let _mutation = self.lock_mutation();
         // The evicted summary is served from memory, but other processes and
         // the next tree load read `metadata`: bring a deferred tip up to date,
@@ -2032,6 +2041,11 @@ impl SessionStore {
             // the error.
             self.publish_settled(id);
             synced?;
+        }
+        // A run's end moves the newest-first view; the cache follows it,
+        // outside every lock.
+        if matches!(envelope.payload, EventPayload::RunFinished { .. }) {
+            self.refresh_resident_view(id);
         }
         Ok(envelope)
     }
@@ -2379,10 +2393,31 @@ impl SessionStore {
             }
             result
         };
+        let receiver = self.register_tail(
+            session,
+            current_tip.map_or(0, |event| event.seq),
+            owner,
+            cursor.is_none_or(|cursor| cursor == 0),
+        );
+        Ok((result, Some(receiver)))
+    }
+
+    /// Registers `owner`'s live tail on `session`, whose reader holds its
+    /// events through `tip`, replacing the one `owner` held. The caller holds
+    /// the session's slot and checked that `tip` is the log's tip. A reader
+    /// that read `from_start` gets the output streaming now; one resuming
+    /// from a cursor its ACP agent's live state only.
+    fn register_tail(
+        &self,
+        session: SessionId,
+        tip: u64,
+        owner: Option<TailOwner>,
+        from_start: bool,
+    ) -> mpsc::Receiver<EventSubscriptionMessage> {
         let (sender, receiver) = mpsc::channel(PERSISTED_SUBSCRIBER_QUEUE_CAPACITY);
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.entry(session).or_default();
-        tails.last_seq = current_tip.map_or(0, |event| event.seq);
+        tails.last_seq = tip;
         if owner.is_some() {
             tails.senders.retain(|tail| tail.owner != owner);
         }
@@ -2391,7 +2426,7 @@ impl SessionStore {
         // A reader resuming from a cursor may already hold part of it, and
         // a second copy would append to the first; an ACP agent's live
         // state is whole values, which it gets either way.
-        let in_flight = if cursor.is_none_or(|cursor| cursor == 0) {
+        let in_flight = if from_start {
             tails.in_flight.replay()
         } else {
             tails.in_flight.acp_live_state()
@@ -2415,7 +2450,7 @@ impl SessionStore {
             sender,
             after: tails.last_seq,
         });
-        Ok((result, Some(receiver)))
+        receiver
     }
 
     /// One page of `session`'s history cut from its own log alone: no tree

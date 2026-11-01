@@ -293,6 +293,9 @@ fn commit(staged: &Staged) -> Result<(), SessionError> {
             .map_err(backup_error)?;
     }
     fsync_directory(&staged.dir)?;
+    // The view cache names lines of the old log. One left behind (a reader
+    // held it open) names an older history format, so it is not used.
+    let _ = fs::remove_file(staged.dir.join(super::VIEW_FILE));
     replace(&staged.log, &log)?;
     replace(&staged.metadata, &meta_path(&staged.dir))?;
     fsync_directory(&staged.dir)?;

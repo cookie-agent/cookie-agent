@@ -495,11 +495,80 @@ pub struct Window {
 /// The log's last event is always sent, as a forward page sends it.
 #[must_use]
 pub fn tail_window(events: &[Arc<StoredEvent>], view: EventsView, budget: usize) -> Window {
+    newest(events, None, view, budget).unwrap_or_default()
+}
+
+/// [`tail_window`] of a log read from a run boundary on: `suffix` holds its
+/// events from a `run_started` or `user_input_submitted` to its end, and
+/// `header` is [`state_events`] of every event before that one. The answer
+/// is the one [`tail_window`] gives for the whole log, or `None` when that
+/// window would reach before `suffix`, so the whole log has to be read.
+///
+/// It needs no more than `header`: [`state_events`] of `header` followed by
+/// later events is [`state_events`] of the log through them.
+#[must_use]
+pub fn tail_window_after(
+    header: &[Arc<StoredEvent>],
+    suffix: &[Arc<StoredEvent>],
+    view: EventsView,
+    budget: usize,
+) -> Option<Window> {
+    if suffix.first().is_none_or(|first| !is_run_boundary(first)) {
+        return None;
+    }
+    newest(suffix, Some(header), view, budget)
+}
+
+/// Where a cache of a log's newest-first view starts: the index of the run
+/// boundary from which [`tail_window_after`] answers every request of up to
+/// `budget` bytes, or `None` when the whole log fits in it.
+#[must_use]
+pub fn cache_start(events: &[Arc<StoredEvent>], budget: usize) -> Option<usize> {
+    let sizes = Sizes::new(events, EventsView::Display);
+    let fit = sizes.fit_before(events.len(), budget);
+    if fit == 0 {
+        return None;
+    }
+    // The window starts at a boundary at or after `fit`, or at the last one
+    // before it when the newest run does not fit: either way after the last
+    // boundary before `fit`, whose events from there on do not fit. A
+    // window in the full view, a smaller one, and a later log's window
+    // start later still.
+    (0..fit)
+        .rev()
+        .find(|&index| is_run_boundary(&events[index]))
+}
+
+/// [`tail_window`] of `events`, the whole log when `before` is `None`, else
+/// a suffix starting at a run boundary with `before` the header of what
+/// precedes it. `None` when the window would reach before such a suffix.
+fn newest(
+    events: &[Arc<StoredEvent>],
+    before: Option<&[Arc<StoredEvent>]>,
+    view: EventsView,
+    budget: usize,
+) -> Option<Window> {
     let Some(last) = events.len().checked_sub(1) else {
-        return Window::default();
+        return before.is_none().then(Window::default);
     };
+    // The settings before `events[end]`, and where older history starts.
+    let header = |end: usize| match before {
+        None => state_events(&events[..end]),
+        Some(before) => state_events(
+            &before
+                .iter()
+                .chain(&events[..end])
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
+    };
+    let older_cursor = |start: usize| (start > 0 || before.is_some()).then(|| events[start].seq);
     let sizes = Sizes::new(events, view);
     let fit = sizes.fit_before(events.len(), budget);
+    if fit == 0 && before.is_some() {
+        // Everything held fits: older runs may too.
+        return None;
+    }
     let run_start = (fit..=last).find(|&index| is_run_boundary(&events[index]));
     if fit == 0 || run_start.is_some() {
         let start = if fit == 0 {
@@ -507,7 +576,15 @@ pub fn tail_window(events: &[Arc<StoredEvent>], view: EventsView, budget: usize)
         } else {
             run_start.unwrap_or(fit)
         };
-        return whole(events, view, start, events.len(), true);
+        return Some(whole(
+            events,
+            view,
+            start,
+            events.len(),
+            true,
+            header(start),
+            older_cursor(start),
+        ));
     }
     // The newest run does not fit: its head, a gap, and its newest
     // attempts.
@@ -553,7 +630,15 @@ pub fn tail_window(events: &[Arc<StoredEvent>], view: EventsView, budget: usize)
         .unwrap_or(tail_fit)
         .min(last);
     if tail_start <= head_end {
-        return whole(events, view, run, events.len(), true);
+        return Some(whole(
+            events,
+            view,
+            run,
+            events.len(),
+            true,
+            header(run),
+            older_cursor(run),
+        ));
     }
     let skipped = &events[head_end..tail_start];
     let kept = kept_in_gap(skipped, &events[tail_start..]);
@@ -569,17 +654,17 @@ pub fn tail_window(events: &[Arc<StoredEvent>], view: EventsView, budget: usize)
         .filter(|event| view.is_full() || !leaves_out(&event.payload))
         .count()
         .saturating_sub(kept.len());
-    Window {
+    Some(Window {
         events: window_events,
         cut,
-        header: state_events(&events[..run]),
-        older_cursor: (run > 0).then(|| events[run].seq),
+        header: header(run),
+        older_cursor: older_cursor(run),
         gap: Some(HistoryGap {
             after_seq: events[head_end - 1].seq,
             before_seq: events[tail_start].seq,
             skipped: skipped_count as u64,
         }),
-    }
+    })
 }
 
 /// The newest display events of `events`, a log, before sequence `before`,
@@ -608,23 +693,33 @@ pub fn older_page(
                 )
         })
         .unwrap_or(fit);
-    whole(events, view, start, end, false)
+    whole(
+        events,
+        view,
+        start,
+        end,
+        false,
+        state_events(&events[..start]),
+        (start > 0).then(|| events[start].seq),
+    )
 }
 
-/// The window of `events[start..end]` without a gap.
+/// The window of `events[start..end]` without a gap, after `header`.
 fn whole(
     events: &[Arc<StoredEvent>],
     view: EventsView,
     start: usize,
     end: usize,
     keep_last: bool,
+    header: Vec<Arc<StoredEvent>>,
+    older_cursor: Option<u64>,
 ) -> Window {
     let (window_events, cut) = view_events(&events[start..end], view, keep_last);
     Window {
         events: window_events,
         cut,
-        header: state_events(&events[..start]),
-        older_cursor: (start > 0).then(|| events[start].seq),
+        header,
+        older_cursor,
         gap: None,
     }
 }

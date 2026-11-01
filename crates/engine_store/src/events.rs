@@ -1590,6 +1590,13 @@ impl EventLog {
         }
     }
 
+    /// Whether a read-only open converted the log from an older history
+    /// format in memory: its records and lines are not the file's.
+    #[must_use]
+    pub fn is_converted(&self) -> bool {
+        self.converted
+    }
+
     /// Whether the log takes no appends: a newer build wrote a state event
     /// this one cannot continue from, or its sequence breaks.
     #[must_use]
@@ -1702,6 +1709,18 @@ impl EventLog {
             .all
             .binary_search_by_key(&seq, |event| event.seq)
             .is_ok_and(|index| storage.all[index].timestamp == timestamp)
+    }
+
+    /// Where the line of the record at `seq` starts in the log's file, when
+    /// the log knows the file's layout.
+    #[must_use]
+    pub fn line_start(&self, seq: u64) -> Option<u64> {
+        let storage = self.storage();
+        let starts = &storage.lines.as_ref()?.starts;
+        starts
+            .binary_search_by_key(&seq, |(line, _)| *line)
+            .ok()
+            .map(|index| starts[index].1)
     }
 
     #[must_use]
@@ -4601,6 +4620,75 @@ fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<(Vec<u8>, boo
         }
     }
     Ok((bytes, torn))
+}
+
+/// The records of the event file at `path` from byte `offset` on, through
+/// its last complete line, each read as the loader reads an intact record:
+/// its values history format 2 keeps in the tree's `blobs/` read back
+/// ([`blobs::internalize`]), then typed as it is
+/// ([`StoredEvent::decode_strict`]). A torn final record is left out, as a
+/// read-only open leaves it. `None` when `offset` does not start a line, a
+/// line there does not read that way (a blob is missing, or the loader would
+/// repair or skip it), or the sequences do not increase: such a file is for
+/// the loader, which repairs, skips, and reports.
+pub fn read_records_from(
+    path: &Path,
+    offset: u64,
+) -> Result<Option<Vec<StoredEvent>>, EventLogError> {
+    use std::io::{Read as _, Seek as _};
+    let io_error = |source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let mut file = fs::File::open(path).map_err(io_error)?;
+    // The byte before `offset` ends the previous line.
+    let from = offset.saturating_sub(1);
+    file.seek(io::SeekFrom::Start(from)).map_err(io_error)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(io_error)?;
+    drop(file);
+    let bytes = if offset == 0 {
+        &bytes[..]
+    } else {
+        match bytes.split_first() {
+            Some((b'\n', rest)) => rest,
+            _ => return Ok(None),
+        }
+    };
+    let complete = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
+    let blob_dir = blobs::tree_blob_dir(path);
+    // A record whose large values are in blobs, whole, as the loader reads
+    // it back before typing it.
+    let restored = |line: &[u8]| -> Option<Vec<u8>> {
+        let mut value = serde_json::from_slice::<Value>(line).ok()?;
+        let payload = value.get_mut("payload")?;
+        blobs::internalize(payload, &mut |digest| blobs::read(&blob_dir, digest)).ok()?;
+        serde_json::to_vec(&value).ok()
+    };
+    cookie_agent_protocol::read_stored_history(|| {
+        let mut records: Vec<StoredEvent> = Vec::new();
+        for line in bytes[..complete]
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let record = if blobs::has_references(line) {
+                restored(line).and_then(|whole| StoredEvent::decode_strict(&whole))
+            } else {
+                StoredEvent::decode_strict(line)
+            };
+            let Some(record) = record else {
+                return Ok(None);
+            };
+            if records.last().is_some_and(|last| last.seq >= record.seq) {
+                return Ok(None);
+            }
+            records.push(record);
+        }
+        Ok(Some(records))
+    })
 }
 
 /// Cuts `path` at the first record whose sequence is past `through_seq` and

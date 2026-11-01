@@ -264,10 +264,13 @@ impl Engine {
 
     /// The newest-first answer to `events.subscribe` with `from: "tail"`:
     /// the newest events within `budget` bytes in `view`, the history
-    /// window before them, and the live tail, registered as an unlimited
-    /// subscription's final page registers it, so the window ends where the
-    /// tail begins. `None` for a session this process does not own: see
-    /// [`Self::snapshot_tail`].
+    /// window before them, and the live tail, registered where they end.
+    /// `SessionOwnedByAnotherProcess` for a session this process does not
+    /// own: see [`Self::snapshot_tail`].
+    ///
+    /// It waits for neither the session's tree nor its opening
+    /// ([`crate::session::SessionStore::subscribe_tail`]): the tree loads in
+    /// the background, for what the client asks next.
     pub async fn subscribe_tail(
         &self,
         session: SessionId,
@@ -281,11 +284,13 @@ impl Engine {
         ),
         EngineError,
     > {
-        // The whole log shares its events: the page copies pointers only.
-        let (log, receiver) = self
-            .subscribe_page(session, None, None, None, owner)
-            .await?;
-        Ok((off_worker(|| tail_answer(&log, view, budget)), receiver))
+        if !self.inner.store.is_owned(session) {
+            return Err(EngineError::SessionOwnedByAnotherProcess(session));
+        }
+        let store = Arc::clone(&self.inner.store);
+        let (answer, receiver) = off_worker(|| store.subscribe_tail(session, view, budget, owner))?;
+        self.load_tree_in_background(session);
+        Ok((answer, Some(receiver)))
     }
 
     /// [`Self::subscribe_tail`] for a session this process does not own: no
@@ -296,8 +301,10 @@ impl Engine {
         view: cookie_agent_protocol::EventsView,
         budget: usize,
     ) -> Result<EventsSubscribeResult, EngineError> {
-        let log = self.snapshot_events(session, None, None, None)?;
-        Ok(off_worker(|| tail_answer(&log, view, budget)))
+        let store = Arc::clone(&self.inner.store);
+        let answer = off_worker(|| store.snapshot_tail(session, view, budget))?;
+        self.load_tree_in_background(session);
+        Ok(answer)
     }
 
     /// Older history of `session` (`events.page`), cut from its own log
@@ -1678,30 +1685,6 @@ pub(in crate::runtime) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
         }
     }
     pending.into_iter().collect()
-}
-
-/// The newest-first answer for `log`, a whole log as an unlimited page
-/// returned it.
-fn tail_answer(
-    log: &EventsSubscribeResult,
-    view: cookie_agent_protocol::EventsView,
-    budget: usize,
-) -> EventsSubscribeResult {
-    if log.stale_cursor {
-        return log.clone();
-    }
-    let window = cookie_agent_protocol::display_view::tail_window(&log.events, view, budget);
-    EventsSubscribeResult {
-        events: window.events,
-        has_more: false,
-        stale_cursor: false,
-        window: Some(cookie_agent_protocol::HistoryWindow {
-            header: window.header,
-            older_cursor: window.older_cursor,
-            gap: window.gap,
-        }),
-        cut: window.cut,
-    }
 }
 
 #[cfg(test)]

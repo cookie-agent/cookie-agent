@@ -563,3 +563,166 @@ fn omitted_live_state_is_left_out_of_the_display_view() {
     assert!(leaves_out(&omitted("acp_session_updated")));
     assert!(!leaves_out(&omitted("delegation_finished")));
 }
+
+/// Every recorded root log of the golden histories.
+const FIXTURES: [&str; 7] = [
+    CODING,
+    include_str!(
+        "../../engine/tests/fixtures/history/1/delegation/01a152fa-3f63-7442-8dfc-045922599ed0/events.jsonl"
+    ),
+    include_str!(
+        "../../engine/tests/fixtures/history/1/native-compaction/01a152fa-7378-7941-8d7b-52396ad88f8e/events.jsonl"
+    ),
+    include_str!(
+        "../../engine/tests/fixtures/history/1/native-compaction-fallback/01a152fa-7bec-7cd0-ac0e-84b23de3e730/events.jsonl"
+    ),
+    include_str!(
+        "../../engine/tests/fixtures/history/1/replay/01a152fa-5dca-7581-981a-81e689dfb764/events.jsonl"
+    ),
+    include_str!(
+        "../../engine/tests/fixtures/history/1/revert-fork/01a152fa-6218-7691-aa4b-b406b1dd003d/events.jsonl"
+    ),
+    include_str!(
+        "../../engine/tests/fixtures/history/1/revert-fork/01a152fa-6aa4-7d93-a025-8bfc1f369131/events.jsonl"
+    ),
+];
+
+fn parsed(log: &str) -> Vec<Arc<StoredEvent>> {
+    log.lines()
+        .map(|line| Arc::new(serde_json::from_str(line).unwrap()))
+        .collect()
+}
+
+/// The coding history with ACP settings, a hold, and a queued input among
+/// its events: every kind of setting a header keeps.
+fn with_settings() -> Vec<Arc<StoredEvent>> {
+    let events = coding();
+    let template = events[5].as_ref().clone();
+    let call = ToolCallId::new_v7();
+    let mut mixed = Vec::new();
+    for (index, event) in events.iter().enumerate() {
+        mixed.push(event.as_ref().clone());
+        let update = match index % 23 {
+            3 => AcpSessionUpdate {
+                commands: commands(&format!("c{index}")),
+                context: context(index as u64),
+                ..AcpSessionUpdate::default()
+            },
+            9 => AcpSessionUpdate {
+                options: Some(Vec::new()),
+                tool_presentation: presentation(call, &format!("p{index}")),
+                ..AcpSessionUpdate::default()
+            },
+            15 => AcpSessionUpdate {
+                context: context(index as u64),
+                ..AcpSessionUpdate::default()
+            },
+            _ => continue,
+        };
+        mixed.push(acp_update(&template, update));
+        if index == 40 {
+            mixed.push(with_payload(
+                &template,
+                EventPayload::AutomaticRunsHeld {
+                    reason: Open::Known(crate::HeldReason::Stopped {}),
+                },
+            ));
+            mixed.push(with_payload(
+                &template,
+                serde_json::from_value(json!({
+                    "type": "user_input_queued",
+                    "content": [{"type": "text", "text": "later"}],
+                    "selection": {"agent": "primary", "model": {"model": "custom.test/group/model", "variant": null}},
+                    "client_run_id": "queued-1",
+                }))
+                .unwrap(),
+            ));
+        }
+    }
+    renumbered(mixed)
+}
+
+fn logs() -> Vec<Vec<Arc<StoredEvent>>> {
+    FIXTURES
+        .iter()
+        .map(|log| parsed(log))
+        .chain([with_settings()])
+        .collect()
+}
+
+#[test]
+fn a_header_followed_by_later_events_folds_to_the_header_after_them() {
+    for events in logs() {
+        for split in 0..=events.len() {
+            let header = state_events(&events[..split]);
+            for end in split..=events.len() {
+                let folded = header
+                    .iter()
+                    .chain(&events[split..end])
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    state_events(&folded),
+                    state_events(&events[..end]),
+                    "split {split}, end {end}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_window_read_from_a_run_start_is_the_window_of_the_whole_log() {
+    for events in logs() {
+        let total = Sizes::new(&events, EventsView::Display).sum(0, events.len());
+        for budget in [total / 9, total / 4, total / 2, total * 2] {
+            for view in [EventsView::Display, EventsView::Full] {
+                let whole = tail_window(&events, view, budget);
+                let mut answered = 0;
+                for start in (1..events.len()).filter(|&index| is_run_boundary(&events[index])) {
+                    let header = state_events(&events[..start]);
+                    if let Some(window) = tail_window_after(&header, &events[start..], view, budget)
+                    {
+                        assert_eq!(window, whole, "start {start}, budget {budget}");
+                        answered += 1;
+                    }
+                }
+                // The cache's start answers whenever the log does not fit.
+                if let Some(start) = cache_start(&events, budget) {
+                    let header = state_events(&events[..start]);
+                    assert_eq!(
+                        tail_window_after(&header, &events[start..], view, budget),
+                        Some(whole),
+                        "cache start {start}, budget {budget}"
+                    );
+                    assert!(answered > 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_window_reaching_before_the_events_read_is_not_answered() {
+    let events = coding();
+    let start = events
+        .iter()
+        .rposition(|event| is_run_boundary(event))
+        .unwrap();
+    let header = state_events(&events[..start]);
+    assert_eq!(
+        tail_window_after(
+            &header,
+            &events[start..],
+            EventsView::Display,
+            usize::MAX / 2
+        ),
+        None
+    );
+    // Nor one that does not start at a run.
+    assert_eq!(
+        tail_window_after(&header, &events[start + 1..], EventsView::Display, 1),
+        None
+    );
+    assert_eq!(cache_start(&events, usize::MAX / 2), None);
+}
