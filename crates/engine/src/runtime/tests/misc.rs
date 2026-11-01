@@ -27,6 +27,45 @@ fn scripted_matchers_ignore_only_trailing_subagent_notifications() {
     ]));
     assert!(scripted_is_auxiliary_subagent_notification(&continuation));
 
+    // A report's wake carries the engine's announcement of instructions that
+    // changed since the previous run, before or after the report.
+    let announcement =
+        "[cookie: instructions changed]\n<instructions_changed>\n</instructions_changed>";
+    for wake in [
+        [
+            serde_json::json!({"role":"user","content":"<subagent_report handle=\"h\" status=\"completed\">done</subagent_report>"}),
+            serde_json::json!({"role":"user","content":announcement}),
+        ],
+        [
+            serde_json::json!({"role":"user","content":announcement}),
+            serde_json::json!({"role":"user","content":"<subagent_report handle=\"h\" status=\"completed\">done</subagent_report>"}),
+        ],
+    ] {
+        let wake = request(serde_json::json!([
+            {"role":"user","content":"delegate"},
+            {"role":"assistant","content":"complete"},
+            wake[0],
+            wake[1]
+        ]));
+        assert!(scripted_is_auxiliary_subagent_notification(&wake));
+    }
+    // An announcement alone, or with a user's own message, is no wake.
+    for messages in [
+        serde_json::json!([
+            {"role":"assistant","content":"complete"},
+            {"role":"user","content":announcement}
+        ]),
+        serde_json::json!([
+            {"role":"assistant","content":"complete"},
+            {"role":"user","content":announcement},
+            {"role":"user","content":"next task"}
+        ]),
+    ] {
+        assert!(!scripted_is_auxiliary_subagent_notification(&request(
+            messages
+        )));
+    }
+
     for semantic in [
         "producer progress body",
         "Continue working toward the original goal.",

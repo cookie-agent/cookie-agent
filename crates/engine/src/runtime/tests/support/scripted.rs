@@ -757,17 +757,26 @@ pub(crate) fn scripted_request_messages(request: &[u8]) -> Option<Vec<serde_json
         .cloned()
 }
 
-pub(crate) fn scripted_message_is_subagent_notification(message: &serde_json::Value) -> bool {
+/// The text of a user message, its parts joined.
+fn scripted_user_text(message: &serde_json::Value) -> Option<String> {
     if message.get("role").and_then(serde_json::Value::as_str) != Some("user") {
-        return false;
+        return None;
     }
-    let text = match message.get("content") {
-        Some(serde_json::Value::String(text)) => text.clone(),
-        Some(serde_json::Value::Array(parts)) => parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
-            .collect::<String>(),
-        _ => return false,
+    match message.get("content") {
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(serde_json::Value::Array(parts)) => Some(
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+                .collect::<String>(),
+        ),
+        _ => None,
+    }
+}
+
+pub(crate) fn scripted_message_is_subagent_notification(message: &serde_json::Value) -> bool {
+    let Some(text) = scripted_user_text(message) else {
+        return false;
     };
     let text = text.trim();
     (text.starts_with("<subagent_notification>") && text.ends_with("</subagent_notification>"))
@@ -781,16 +790,28 @@ pub(crate) fn scripted_effective_last_message(request: &[u8]) -> Option<serde_js
         .find(|message| !scripted_message_is_subagent_notification(message))
 }
 
+/// Whether `message` is the engine's announcement of changed prompt blocks
+/// (frozen context spec, section 6.2), which the engine adds to whatever
+/// request follows the change, a subagent report's wake included.
+pub(crate) fn scripted_message_is_instructions_announcement(message: &serde_json::Value) -> bool {
+    scripted_user_text(message)
+        .is_some_and(|text| text.starts_with("[cookie: instructions changed]"))
+}
+
+/// Whether `request` is a wake for subagent notifications after an answer:
+/// it ends in notifications, after an assistant turn, with only the engine's
+/// instructions announcements among them.
 pub(crate) fn scripted_is_auxiliary_subagent_notification(request: &[u8]) -> bool {
     let Some(messages) = scripted_request_messages(request) else {
         return false;
     };
-    messages
-        .last()
+    let mut tail = messages
+        .iter()
+        .rev()
+        .filter(|message| !scripted_message_is_instructions_announcement(message));
+    tail.next()
         .is_some_and(scripted_message_is_subagent_notification)
-        && messages
-            .iter()
-            .rev()
+        && tail
             .find(|message| !scripted_message_is_subagent_notification(message))
             .and_then(|message| message.get("role"))
             .and_then(serde_json::Value::as_str)

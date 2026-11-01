@@ -823,6 +823,10 @@ async fn delegated_restart_after_agent_removal_falls_back_to_the_default_agent()
         .agents
         .remove(&AgentId::new("worker").expect("worker agent ID"));
     drop(fixture.engine);
+    // The reopened engine registers no `test.delegate` and knows no
+    // `worker`, so the parent's tool instructions really changed: the wake
+    // for the child's report, when it comes after the restart, announces
+    // them, and the server still answers it as a report's wake.
     let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     responses
         .send(MatchedScriptedResponse::last_message_contains(
@@ -877,6 +881,154 @@ async fn delegated_restart_after_agent_removal_falls_back_to_the_default_agent()
             .and_then(serde_json::Value::as_u64),
         Some(128)
     );
+    engine.shutdown().await;
+}
+
+/// A run whose prompt blocks did not change since the previous run announces
+/// none, on a model that does not defer tools: not the wake for a background
+/// child's report, and not a run after a restart that registers the same
+/// tools (frozen context spec, section 6.2).
+#[tokio::test]
+async fn unchanged_instructions_are_not_announced_on_a_report_wake_or_after_a_restart() {
+    const PARENT: &str = "---\ndescription: Steady parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nDelegate steady work.\n";
+    const WORKER: &str = "---\ndescription: Steady worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWork steadily.\n";
+    fn announced(engine: &crate::Engine, session: cookie_agent_protocol::SessionId) -> usize {
+        engine
+            .inner
+            .store
+            .get(session)
+            .expect("parent projection")
+            .log
+            .events()
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::PromptBlocksAnnounced { .. }))
+            .count()
+    }
+    // The report's wake is answered by the server on its own (an answer
+    // followed by a report), so it is not among the four requests.
+    let (endpoint, responses, server) = scripted_channel_server(4).await;
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            PARENT,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            Some(WORKER),
+        );
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }),
+    );
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("steady parent")
+        .session_id;
+    for response in [
+        MatchedScriptedResponse::last_message_contains(
+            "start a steady child",
+            scripted_tool_body(
+                "start-steady-child",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Steady child",
+                    "prompt":"steady child task",
+                    "background":true
+                }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_role("tool", scripted_text_body("child started")),
+    ] {
+        responses.send(response).expect("parent response");
+    }
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent,
+                client_run_id: ClientRunId::new("start-steady-child").expect("run ID"),
+                selection: selection.clone(),
+                content: "start a steady child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parent run");
+    wait_for_session_not_running(&fixture.engine, parent).await;
+    // The child answers only now, so its report wakes the idle parent.
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "steady child task",
+            scripted_text_body("steady child result"),
+        ))
+        .expect("child response");
+    await_projection(
+        &fixture.engine,
+        parent,
+        "the parent's run for the child's report ended",
+        |projection| {
+            let events = projection.log.events();
+            let Some(accepted) = events.iter().find_map(|event| {
+                matches!(event.payload, EventPayload::ProducerMessageAccepted { .. })
+                    .then_some(event.seq)
+            }) else {
+                return false;
+            };
+            projection.status != SessionStatus::Running
+                && events.iter().any(|event| {
+                    event.seq > accepted
+                        && matches!(event.payload, EventPayload::RunFinished { .. })
+                })
+        },
+    )
+    .await;
+    assert_eq!(announced(&fixture.engine, parent), 0);
+
+    fixture.engine.shutdown().await;
+    let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: engine.clone(),
+        }),
+    );
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "after the restart",
+            scripted_text_body("still steady"),
+        ))
+        .expect("restarted parent response");
+    engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent,
+                client_run_id: ClientRunId::new("after-restart").expect("run ID"),
+                selection,
+                content: "after the restart".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parent run after restart");
+    wait_for_session_not_running(&engine, parent).await;
+    let requests = with_watchdog("steady server", server)
+        .await
+        .expect("steady server");
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.contains("[cookie: instructions changed]"))
+    );
+    assert_eq!(announced(&engine, parent), 0);
     engine.shutdown().await;
 }
 
