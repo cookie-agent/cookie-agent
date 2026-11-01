@@ -57,10 +57,11 @@ created in, and never moves; its subagents live under its `subagents/`
 folder. `sessions/layout.json` records the store's layout version (3) and
 history format.
 
-The session lists of the TUI and the web client show the sessions active in
-the last 30 days, and every unread or busy one (a run going, an approval or
-a question waiting, a background call running, or a subagent that can still
-wake it) whatever its age; **Older** (Ctrl+O in `/sessions`) or **Show
+The session lists show the sessions active in the last 30 days in the TUI,
+and in the web client the last 7 days, or as far back as its filter says.
+Both also show every pinned, unread, or busy session (a run going, an
+approval or a question waiting, a background call running, a subagent that
+can still wake it, or a cron job that will) whatever its age; **Older** (Ctrl+O in `/sessions`) or **Show
 older** adds a month at a time. The daemon answers from the activity
 journals in `sessions/activity/<yyyy-mm>.jsonl`, which get a session's entry
 when its title, project, or status changes, never for every event.

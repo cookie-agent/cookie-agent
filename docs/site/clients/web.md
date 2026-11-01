@@ -186,6 +186,13 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     Showing it that way clears the dot in every client; a row's **⋮** has
     **Mark read** and **Mark unread** too. A daemon older than client
     protocol 1.51 keeps no unread sessions.
+  - **Pinned.** A row's **⋮** › **Pin** pins the session, and **Unpin**
+    lets it go. A pinned session has a pin before its title, stays at the
+    top of its list (or project section) with the sessions at work, shows
+    in a folded project section, and is listed whatever the filter's date
+    says. Pins are the daemon's, so every client shows them; a daemon
+    older than client protocol 1.66 keeps none
+    ([session pins and filters](../specs/session-pins-and-filters.md)).
   - **Badges** show machines, not runtimes. The `global` attachment never
     counts:
     - nothing else: no badge;
@@ -218,10 +225,23 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     and the composer under them (below); the first message creates the
     session with the selected cards and the agent, model, and permission
     mode in the bottom bar.
-  - **Searching.** The magnifier beside **New session** opens a search
-    box: the list shows only the sessions whose title holds what you type
-    (any case), in folded project sections too, and hides projects with
-    none. **Escape** or **×** closes it.
+  - **The tools row.** Under **New session**, a row holds the select
+    button, the magnifier, and the filter, with what the filter shows
+    beside them (**Last 7 days**, say).
+  - **Searching.** The magnifier turns the tools row into a search box,
+    which grows out of it as the other buttons fade: the list shows only
+    the sessions whose title holds what you type (any case), in folded
+    project sections too, and hides projects with none. **Escape** or
+    **×** closes it, shrinking it back into the magnifier.
+  - **Filtering.** The filter button opens the filter: in place under the
+    button on a desktop (a click outside or **Escape** closes it), and as
+    a dropdown above the list on a narrower screen. It chooses how far
+    back the list reaches (24 hours, 7 days, the default, 30 or 90 days,
+    or all time), which agents and which machines the sessions run on
+    (any while none is chosen), and, for a daemon without projects, the
+    workspace. Pinned, unread, and busy sessions always show whatever the
+    date; the agents and machines narrow them too. A dot on the button
+    says the filter differs from its default; **Reset** goes back to it.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
   - **Renaming.** Click the title in the title bar, or choose ⋮ ›
@@ -242,8 +262,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     session leaves every client's list, and a page showing it starts a new
     session. A daemon older than client protocol 1.5 cannot delete, and
     the page offers no trash.
-  - **Selecting several.** The list's select button (beside **New
-    session**) turns its header into a selection bar: a click on a root
+  - **Selecting several.** The list's select button (in the tools row)
+    turns its header into a selection bar: a click on a root
     session's row selects it or lets it go, **Shift**+click selects the
     rows from the last one clicked, and **Select all** selects every root
     row the list shows (it reads **Unselect all** once they all are). Each
@@ -255,10 +275,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     runs, changed since you selected it, or another cookie process holds
     it) is skipped and stays selected, the rest are deleted, and the
     status says what was skipped and why. **Done** leaves select mode.
-- **Older sessions.** The sidebar lists the sessions active in the last 30
-  days, and every unread or busy one whatever its age; **Show older**, at
-  the end of the list while there are older sessions, adds a month at a
-  time ([where sessions are stored](../sessions/index.md#where-sessions-are-stored)).
+- **Older sessions.** The sidebar lists the sessions active within the
+  filter's date (the last 7 days by default), and every pinned, unread, or
+  busy one whatever its age; **Show older**, at the end of the list while
+  there are older sessions, adds a month at a time ([where sessions are stored](../sessions/index.md#where-sessions-are-stored)).
 - **Projects.** The sessions sidebar has a section for each project,
   oldest project first, so a new one goes last and the others keep their
   places, then **No project** last.

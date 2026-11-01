@@ -278,20 +278,6 @@ fn search_query(workspace: Workspace) -> Option<String> {
 
 #[component]
 fn SessionList(workspace: Workspace) -> impl IntoView {
-    // Each runtime at each workspace sessions work in, under its home.
-    let places = move || {
-        workspace.runtime_homes.with(|homes| {
-            workspace.sessions.with(|sessions| {
-                let roots = sessions
-                    .iter()
-                    .filter(|session| {
-                        matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
-                    })
-                    .collect::<Vec<_>>();
-                crate::places::filter_options(&roots, homes)
-            })
-        })
-    };
     // Whether the search holds something, and the titles it looks in.
     let searching = Memo::new(move |_| search_query(workspace).is_some());
     let labels = session_rows::search_labels(workspace, searching);
@@ -308,6 +294,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                             && filter
                                 .as_deref()
                                 .is_none_or(|filter| crate::places::matches(session, filter))
+                            && workspace.filter_passes(session)
                             && session_rows::search_matches(
                                 labels,
                                 session.session_id,
@@ -315,7 +302,8 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                             )
                     })
                     .collect::<Vec<_>>();
-                // Running sessions first, then the rest; newest first in each.
+                // Running and pinned sessions first, then the rest; newest
+                // first in each.
                 cookie_agent_client_state::rows::order_sessions(&mut shown);
                 shown
                     .into_iter()
@@ -376,45 +364,13 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     workspace.picking.shown.set_value(Some(listed));
     on_cleanup(move || workspace.picking.shown.set_value(None));
     view! {
-        <div class="flex flex-col gap-2 p-3">
+        // `relative`: a desktop's filter opens over the list, under its
+        // button.
+        <div class="relative flex flex-col gap-2 p-3">
             <Show when=move || !workspace.picking.active.get() fallback=move || selection_bar(workspace, listed)>
             <div class="flex gap-1.5">
-                // No `+` here: beside the list's three buttons the label
-                // needs the room.
                 <button type="button" class=format!("{PRIMARY} min-w-0 flex-1 whitespace-nowrap") data-new-session on:click=move |_| workspace.start_new_session()>
                     <span class="truncate">"New session"</span>
-                </button>
-                // Several sessions at once: mark them read or unread, or
-                // delete them.
-                <Show when=move || workspace.keeps_unread.get() || workspace.can_delete.get()>
-                    <button
-                        type="button"
-                        class=BUTTON
-                        id="select-sessions"
-                        aria-label="Select sessions"
-                        title="Select sessions"
-                        on:click=move |_| workspace.start_selecting()
-                    >
-                        <Glyph icon=icondata::FaListCheckSolid />
-                    </button>
-                </Show>
-                <button
-                    type="button"
-                    class=BUTTON
-                    id="search-sessions"
-                    aria-label="Search sessions"
-                    title="Search sessions"
-                    aria-expanded=move || workspace.session_search.with(Option::is_some).to_string()
-                    on:click=move |_| {
-                        workspace.session_search.update(|search| {
-                            *search = match search {
-                                Some(_) => None,
-                                None => Some(String::new()),
-                            };
-                        });
-                    }
-                >
-                    <Glyph icon=icondata::FaMagnifyingGlassSolid />
                 </button>
                 <Show when=move || workspace.has_projects.get()>
                     <button
@@ -429,41 +385,9 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                     </button>
                 </Show>
             </div>
+            <SessionTools workspace=workspace />
             </Show>
-            <Show when=move || workspace.session_search.with(Option::is_some)>
-                <SessionSearch workspace=workspace />
-            </Show>
-            // A daemon without projects: the workspace filter instead of
-            // project sections.
-            <Show when=move || !workspace.has_projects.get()>
-            <label class="flex flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
-                <span>"Workspace"</span>
-                <select
-                    id="place-filter"
-                    class="min-h-11 rounded-md border border-crust bg-cream px-2 text-sm font-normal text-espresso hover:border-caramel dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple"
-                    on:change=move |event| {
-                        let value = event_target_value(&event);
-                        workspace.directory_filter.set((!value.is_empty()).then_some(value));
-                    }
-                >
-                    <option value="">"All workspaces"</option>
-                    {move || {
-                        places()
-                            .into_iter()
-                            .map(|(value, label)| {
-                                let selected = workspace.directory_filter.get().as_deref()
-                                    == Some(value.as_str());
-                                view! {
-                                    <option value=value selected=selected>
-                                        {label}
-                                    </option>
-                                }
-                            })
-                            .collect_view()
-                    }}
-                </select>
-            </label>
-            </Show>
+            <SessionFilterPanel workspace=workspace />
         </div>
         <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-x-hidden overflow-y-auto px-2 pb-3" aria-label="Sessions" node_ref=list>
             {move || {
@@ -474,13 +398,21 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                     if searching.get() {
                         return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
                     }
+                    if workspace.filter_changes() > 0 {
+                        return empty_state(icondata::FaFilterSolid, "No sessions match the filter.").into_any();
+                    }
+                    // Older sessions than the window reaches: Show older,
+                    // below, or a longer date in the filter lists them.
+                    if workspace.has_older_sessions.get() {
+                        return empty_state(icondata::FaClockRotateLeftSolid, "No sessions in this time range.").into_any();
+                    }
                     return empty_state(icondata::FaFolderOpenSolid, "No sessions yet. Start one with New session.")
                         .into_any();
                 }
                 session_rows::keyed_rows(rows, move || shown.get()).into_any()
             }}
             // Older sessions than the list's window, a month at a time; the
-            // unread and busy ones are listed whatever their age.
+            // pinned, unread, and busy ones are listed whatever their age.
             <Show when=move || workspace.has_older_sessions.get()>
                 <button
                     type="button"
@@ -497,51 +429,434 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// The session list's search box: it takes the focus as it opens, and
-/// Escape or its × closes it and shows every session again.
+/// The second row of the session list's header: Select, Search, and
+/// Filter, with what the filter lists beside them. Search turns the row
+/// into its search box, which grows out of the Search button as the other
+/// buttons fade, and shrinks back into it as they return: the box stays in
+/// the page, clipped to the button's place while closed. It takes the
+/// focus as it opens; Escape or its × closes it, shows every session again,
+/// and gives the focus back to Search.
 #[component]
-fn SessionSearch(workspace: Workspace) -> impl IntoView {
+fn SessionTools(workspace: Workspace) -> impl IntoView {
+    let row = NodeRef::<html::Div>::new();
+    let search_button = NodeRef::<html::Button>::new();
     let field = NodeRef::<html::Input>::new();
+    let searching = move || workspace.session_search.with(Option::is_some);
+    // Where Search sits in the row, measured as the box opens and closes:
+    // the box grows from and shrinks to it.
+    let origin = RwSignal::new(String::new());
+    let measure = move || {
+        if let (Some(row), Some(button)) = (row.get_untracked(), search_button.get_untracked()) {
+            let left = button.offset_left();
+            let right = (row.client_width() - left - button.offset_width()).max(0);
+            origin.set(format!(
+                "--search-left: {left}px; --search-right: {right}px"
+            ));
+        }
+    };
+    let open = move |_| {
+        measure();
+        workspace.filter_open.set(false);
+        workspace.session_search.set(Some(String::new()));
+        // Focused at once, in the tap: a phone opens its keyboard only for
+        // a focus the tap itself makes. The page shows the box open only
+        // after the tap, so it is opened here first, as it will be.
+        if let (Some(row), Some(input)) = (row.get_untracked(), field.get_untracked()) {
+            let _ = row.set_attribute("data-searching", "true");
+            if let Some(search) = row.query_selector(".session-search").ok().flatten() {
+                let _ = search.remove_attribute("inert");
+            }
+            let _ = input.focus();
+        }
+    };
+    let close = move || {
+        measure();
+        workspace.session_search.set(None);
+        // Given back at once too, the button out of its inert first.
+        if let Some(button) = search_button.get_untracked() {
+            let _ = button.remove_attribute("inert");
+            let _ = button.focus();
+        }
+    };
+    let filter_changes = Memo::new(move |_| workspace.filter_changes());
+    // The date, and how many other parts narrow the list: "Last 7 days",
+    // or, short enough for the row, "7 days · 2 filters".
+    let summary = move || {
+        let within = workspace.session_filter.with(|filter| filter.within);
+        let others = filter_changes.get()
+            - usize::from(
+                within != cookie_agent_client_state::session_filter::ActiveWithin::default(),
+            );
+        match others {
+            0 => within.summary().to_owned(),
+            1 => format!("{} · 1 filter", within.label()),
+            count => format!("{} · {count} filters", within.label()),
+        }
+    };
+    // A closed search lets go of what it held: it opens empty again.
     Effect::new(move |_| {
-        if let Some(input) = field.get() {
-            request_animation_frame(move || {
-                let _ = input.focus();
-            });
+        if !searching()
+            && let Some(input) = field.get()
+        {
+            input.set_value("");
         }
     });
+    let tool_inert = move || searching().then_some("");
     view! {
-        <div class="flex items-center gap-2">
-            <input
-                // Text, not `search`: the browser's own clear button would
-                // sit beside the ×.
-                type="text"
-                role="searchbox"
-                enterkeyhint="search"
-                id="session-search"
-                class="min-h-11 min-w-0 flex-1 rounded-md border border-crust bg-cream px-3 text-sm text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
-                aria-label="Search sessions by title"
-                placeholder="Search by title"
-                node_ref=field
-                prop:value=move || workspace.session_search.get_untracked().unwrap_or_default()
-                on:input=move |event| workspace.session_search.set(Some(event_target_value(&event)))
-                on:keydown=move |event: ev::KeyboardEvent| {
-                    if event.key() == "Escape" {
-                        event.prevent_default();
-                        event.stop_propagation();
-                        workspace.session_search.set(None);
+        <div
+            class="session-tools relative flex h-11 items-center gap-1.5"
+            data-searching=move || searching().to_string()
+            style=move || origin.get()
+            node_ref=row
+        >
+            // Several sessions at once: mark them read or unread, or
+            // delete them.
+            <Show when=move || workspace.keeps_unread.get() || workspace.can_delete.get()>
+                <button
+                    type="button"
+                    class=format!("{BUTTON} session-tool")
+                    data-tool="select"
+                    id="select-sessions"
+                    aria-label="Select sessions"
+                    title="Select sessions"
+                    inert=tool_inert
+                    on:click=move |_| {
+                        workspace.filter_open.set(false);
+                        workspace.start_selecting();
                     }
-                }
-            />
+                >
+                    <Glyph icon=icondata::FaListCheckSolid />
+                </button>
+            </Show>
             <button
                 type="button"
-                class=BUTTON
-                id="search-sessions-close"
-                aria-label="Close the search"
-                title="Close the search"
-                on:click=move |_| workspace.session_search.set(None)
+                class=format!("{BUTTON} session-tool")
+                data-tool="search"
+                id="search-sessions"
+                aria-label="Search sessions"
+                title="Search sessions"
+                aria-expanded=move || searching().to_string()
+                aria-controls="session-search"
+                inert=tool_inert
+                node_ref=search_button
+                on:click=open
             >
-                <Glyph icon=icondata::FaXmarkSolid />
+                <Glyph icon=icondata::FaMagnifyingGlassSolid />
             </button>
+            <button
+                type="button"
+                class=format!("{BUTTON} session-tool relative")
+                data-tool="filter"
+                id="filter-sessions"
+                aria-label="Filter sessions"
+                title="Filter sessions"
+                aria-haspopup="dialog"
+                aria-expanded=move || workspace.filter_open.get().to_string()
+                aria-controls="session-filter"
+                inert=tool_inert
+                on:click=move |_| workspace.filter_open.update(|open| *open = !*open)
+            >
+                <Glyph icon=icondata::FaFilterSolid />
+                // A dot while the filter narrows the list beyond its
+                // default.
+                <Show when=move || { filter_changes.get() > 0 }>
+                    <span class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-caramel ring-2 ring-parchment dark:bg-maple dark:ring-char" data-filter-dot></span>
+                </Show>
+            </button>
+            <span
+                class=format!("session-tool min-w-0 flex-1 truncate text-right {NOTE}")
+                data-tool="summary"
+                data-filter-summary
+            >
+                {summary}
+            </span>
+            <div
+                class="session-search absolute inset-0 flex items-center gap-1.5"
+                role="search"
+                inert=move || (!searching()).then_some("")
+            >
+                <label class="relative flex min-w-0 flex-1 items-center">
+                    <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-ink dark:text-sand" />
+                    <input
+                        // Text, not `search`: the browser's own clear
+                        // button would sit beside the ×.
+                        type="text"
+                        role="searchbox"
+                        enterkeyhint="search"
+                        id="session-search"
+                        class="min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream pr-3 pl-9 text-sm text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
+                        aria-label="Search sessions by title"
+                        placeholder="Search by title"
+                        node_ref=field
+                        prop:value=move || workspace.session_search.get_untracked().unwrap_or_default()
+                        on:input=move |event| workspace.session_search.set(Some(event_target_value(&event)))
+                        on:keydown=move |event: ev::KeyboardEvent| {
+                            if event.key() == "Escape" {
+                                event.prevent_default();
+                                event.stop_propagation();
+                                close();
+                            }
+                        }
+                    />
+                </label>
+                <button
+                    type="button"
+                    class=format!("{BUTTON} session-search-cancel")
+                    id="search-sessions-close"
+                    aria-label="Close the search"
+                    title="Close the search"
+                    on:click=move |_| close()
+                >
+                    <Glyph icon=icondata::FaXmarkSolid />
+                </button>
+            </div>
+        </div>
+    }
+}
+
+/// The session list's filter: how far back the list reaches, and which
+/// agents, machines, and (without projects) workspace its sessions run on.
+/// A desktop opens it in place, over the list under its button, and a
+/// click outside or Escape closes it; a narrower window drops it down
+/// above the list, which it pushes down. The date always lists the pinned,
+/// unread, and busy sessions too, whatever their age.
+#[component]
+fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
+    use cookie_agent_client_state::session_filter::{ActiveWithin, agent_options, machine_options};
+    let open = move || workspace.filter_open.get();
+    let close = move || workspace.filter_open.set(false);
+    let escape = window_event_listener(ev::keydown, move |event| {
+        if event.key() == "Escape" && workspace.filter_open.get_untracked() {
+            event.prevent_default();
+            workspace.filter_open.set(false);
+            if let Some(button) = document()
+                .get_element_by_id("filter-sessions")
+                .and_then(|button| button.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                let _ = button.focus();
+            }
+        }
+    });
+    let escape = StoredValue::new_local(Some(escape));
+    on_cleanup(move || {
+        if let Some(escape) = escape.try_update_value(Option::take).flatten() {
+            escape.remove();
+        }
+    });
+    let roots = move || {
+        workspace.sessions.with(|sessions| {
+            sessions
+                .iter()
+                .filter(|session| {
+                    matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    };
+    let agents = Memo::new(move |_| {
+        let chosen = workspace
+            .session_filter
+            .with(|filter| filter.agents.clone());
+        workspace
+            .sessions
+            .with(|sessions| agent_options(sessions, &chosen))
+    });
+    let machines = Memo::new(move |_| {
+        let chosen = workspace
+            .session_filter
+            .with(|filter| filter.machines.clone());
+        workspace.runtimes.with(|listing| {
+            workspace.sessions.with(|sessions| {
+                machine_options(
+                    sessions
+                        .iter()
+                        .filter(|session| {
+                            matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
+                        })
+                        .map(|session| {
+                            cookie_agent_client_state::badges::session_machines(
+                                session,
+                                listing.as_ref(),
+                            )
+                        }),
+                    &chosen,
+                )
+            })
+        })
+    });
+    // Each runtime at each workspace sessions work in, under its home.
+    let places = move || {
+        workspace.runtime_homes.with(|homes| {
+            let roots = roots();
+            crate::places::filter_options(&roots, homes)
+        })
+    };
+    let chip = move |label: String,
+                     chosen: Signal<bool>,
+                     toggle: Callback<()>,
+                     data: &'static str| {
+        let value = label.clone();
+        view! {
+            <button
+                type="button"
+                class=move || format!(
+                    "inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border px-3 text-sm lg:min-h-9 {}",
+                    if chosen.get() {
+                        "border-espresso bg-espresso text-cream hover:bg-caramel dark:border-latte dark:bg-latte dark:text-night dark:hover:bg-maple"
+                    } else {
+                        "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                    },
+                )
+                aria-pressed=move || chosen.get().to_string()
+                data-filter-chip=data
+                data-value=value
+                on:click=move |_| toggle.run(())
+            >
+                <Show when=move || chosen.get()>
+                    <Glyph icon=icondata::FaCheckSolid class="text-xs" />
+                </Show>
+                <span class="truncate">{label}</span>
+            </button>
+        }
+    };
+    let heading = "text-xs font-bold text-ink dark:text-sand";
+    view! {
+        // A desktop's click outside closes it.
+        <Show when=open>
+            <div class="fixed inset-0 z-30 hidden lg:block" data-filter-backdrop on:click=move |_| close()></div>
+        </Show>
+        <div
+            class="session-filter grid lg:absolute lg:top-[7rem] lg:left-3 lg:z-40 lg:w-80"
+            data-open=move || open().to_string()
+            inert=move || (!open()).then_some("")
+        >
+            <div class="min-h-0 overflow-hidden">
+                <div
+                    id="session-filter"
+                    role="dialog"
+                    aria-label="Filter sessions"
+                    class="flex flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-espresso dark:border-ember dark:bg-night dark:text-latte lg:shadow-lg"
+                >
+                    <div class="flex flex-col gap-1.5">
+                        <span class=heading id="filter-within">"Active in the last"</span>
+                        <div class="flex flex-wrap gap-1.5" role="radiogroup" aria-labelledby="filter-within">
+                            {ActiveWithin::ALL
+                                .into_iter()
+                                .map(|within| {
+                                    let chosen = Signal::derive(move || {
+                                        workspace.session_filter.with(|filter| filter.within == within)
+                                    });
+                                    view! {
+                                        <button
+                                            type="button"
+                                            role="radio"
+                                            class=move || format!(
+                                                "inline-flex min-h-11 items-center rounded-full border px-3 text-sm lg:min-h-9 {}",
+                                                if chosen.get() {
+                                                    "border-espresso bg-espresso text-cream dark:border-latte dark:bg-latte dark:text-night"
+                                                } else {
+                                                    "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                                                },
+                                            )
+                                            aria-checked=move || chosen.get().to_string()
+                                            data-within=within.id()
+                                            on:click=move |_| workspace.set_active_within(within)
+                                        >
+                                            {within.label()}
+                                        </button>
+                                    }
+                                })
+                                .collect_view()}
+                        </div>
+                        <p class=format!("flex items-center gap-1.5 {NOTE}")>
+                            <Glyph icon=icondata::FaThumbtackSolid class="text-caramel dark:text-maple" />
+                            "Pinned, unread, and busy sessions always show."
+                        </p>
+                    </div>
+                    <Show when=move || agents.with(|agents| !agents.is_empty())>
+                        <div class="flex flex-col gap-1.5">
+                            <span class=heading>"Agent"</span>
+                            <div class="flex flex-wrap gap-1.5">
+                                {move || agents.get().into_iter().map(|agent| {
+                                    let key = agent.clone();
+                                    let chosen = Signal::derive({
+                                        let key = key.clone();
+                                        move || workspace.session_filter.with(|filter| filter.agents.contains(&key))
+                                    });
+                                    let toggle = Callback::new(move |()| {
+                                        workspace.session_filter.update(|filter| filter.toggle_agent(&key));
+                                    });
+                                    chip(agent, chosen, toggle, "agent")
+                                }).collect_view()}
+                            </div>
+                        </div>
+                    </Show>
+                    <Show when=move || machines.with(|machines| !machines.is_empty())>
+                        <div class="flex flex-col gap-1.5">
+                            <span class=heading>"Machine"</span>
+                            <div class="flex flex-wrap gap-1.5">
+                                {move || machines.get().into_iter().map(|machine| {
+                                    let key = machine.clone();
+                                    let chosen = Signal::derive({
+                                        let key = key.clone();
+                                        move || workspace.session_filter.with(|filter| filter.machines.contains(&key))
+                                    });
+                                    let toggle = Callback::new(move |()| {
+                                        workspace.session_filter.update(|filter| filter.toggle_machine(&key));
+                                    });
+                                    chip(machine, chosen, toggle, "machine")
+                                }).collect_view()}
+                            </div>
+                        </div>
+                    </Show>
+                    // A daemon without projects: the workspace filter, as
+                    // project sections stand in for it.
+                    <Show when=move || !workspace.has_projects.get()>
+                        <label class="flex flex-col gap-1.5">
+                            <span class=heading>"Workspace"</span>
+                            <select
+                                id="place-filter"
+                                class="min-h-11 rounded-md border border-crust bg-cream px-2 text-sm font-normal text-espresso hover:border-caramel dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple"
+                                on:change=move |event| {
+                                    let value = event_target_value(&event);
+                                    workspace.directory_filter.set((!value.is_empty()).then_some(value));
+                                }
+                            >
+                                <option value="">"All workspaces"</option>
+                                {move || {
+                                    places()
+                                        .into_iter()
+                                        .map(|(value, label)| {
+                                            let selected = workspace.directory_filter.get().as_deref()
+                                                == Some(value.as_str());
+                                            view! {
+                                                <option value=value selected=selected>
+                                                    {label}
+                                                </option>
+                                            }
+                                        })
+                                        .collect_view()
+                                }}
+                            </select>
+                        </label>
+                    </Show>
+                    <div class="flex items-center justify-end gap-1.5 border-t border-toasted pt-2 dark:border-ember">
+                        <button
+                            type="button"
+                            class=BUTTON
+                            id="filter-reset"
+                            disabled=move || workspace.filter_changes() == 0
+                            on:click=move |_| workspace.reset_session_filter()
+                        >
+                            "Reset"
+                        </button>
+                        <button type="button" class=PRIMARY id="filter-done" on:click=move |_| close()>
+                            "Done"
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
     }
 }
@@ -701,6 +1016,7 @@ fn session_row(
     };
     let last_activity = session.last_activity;
     let unread = session.unread;
+    let pinned = session.pinned;
     // A run session of a cron job: its clock opens the job.
     let cron = session.cron.clone();
     // Where it runs, once the runtimes are known; the tooltip lists every
@@ -768,6 +1084,19 @@ fn session_row(
     let menu_items = move |revealed_row: bool| {
         move || {
             let mut items = Vec::new();
+            if workspace.keeps_pins.get() {
+                items.push(row_menu::MenuItem {
+                    id: if pinned { "unpin" } else { "pin" },
+                    label: if pinned { "Unpin" } else { "Pin" },
+                    icon: icondata::FaThumbtackSolid,
+                    act: Callback::new(move |()| {
+                        if revealed_row {
+                            revealed.set(None);
+                        }
+                        workspace.set_pinned(vec![session_id], !pinned);
+                    }),
+                });
+            }
             if workspace.has_projects.get() {
                 items.push(row_menu::MenuItem {
                     id: "move",
@@ -906,6 +1235,16 @@ fn session_row(
                             title="Unread: it finished, or asked for you, while you were away"
                         ></span>
                         <span class="sr-only">"unread"</span>
+                    })}
+                    {pinned.then(|| view! {
+                        <span
+                            class="inline-flex shrink-0 rotate-45 text-xs text-caramel dark:text-maple"
+                            data-pinned-session
+                            title="Pinned: listed with the sessions at work, whatever its age"
+                        >
+                            <Glyph icon=icondata::FaThumbtackSolid />
+                        </span>
+                        <span class="sr-only">"pinned"</span>
                     })}
                     {cron.clone().map(|cron| cron::clock_mark(workspace, cron))}
                     // The whole title on hover, as a long one is cut here.

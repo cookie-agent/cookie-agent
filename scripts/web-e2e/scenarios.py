@@ -1059,9 +1059,10 @@ def long_session(browser):
 
 
 def session_list_older(browser):
-    """The session list shows the last 30 days, and an unread session
-    whatever its age; "Show older" adds a month at a time until nothing is
-    older (docs/site/specs/session-storage-v3.md 4.3). test-web-page.sh
+    """The session list shows the last 7 days (the filter's default), and
+    an unread session whatever its age; "Show older" adds a month at a time
+    until nothing is older (docs/site/specs/session-storage-v3.md 4.3,
+    docs/site/specs/session-pins-and-filters.md). test-web-page.sh
     moved three sessions back (age-sessions.py): 45 and 80 days, read, and
     120 days, unread, each in its own month. An older session opens."""
     with open(os.path.join(HOME, "aged.json")) as file:
@@ -1071,7 +1072,7 @@ def session_list_older(browser):
     older = "#show-older-sessions"
     browser.wait("the recent and the unread sessions", lambda: count(browser, 'aside [data-session="%s"]' % HELD_SESSION) == 1 and listed("days120"))
     browser.wait("the offer of older sessions", lambda: count(browser, older) == 1)
-    assert not listed("days45") and not listed("days80"), "a session older than 30 days is listed"
+    assert not listed("days45") and not listed("days80"), "a session older than the window is listed"
     browser.click(older)
     browser.wait("the 45-day-old session", lambda: listed("days45"))
     browser.wait("the button back", lambda: count(browser, older + ":not([disabled])") == 1)
@@ -1084,7 +1085,7 @@ def session_list_older(browser):
     browser.click(older)
     browser.wait("no older sessions", lambda: count(browser, older) == 0)
     assert count(browser, row("days120")) == 1, "the unread session is listed twice"
-    print("the list shows 30 days and the unread session; Show older adds a month at a time")
+    print("the list shows 7 days and the unread session; Show older adds a month at a time")
     click_row(browser, row("days80"))
     browser.wait("the old session's transcript", lambda: "from days80 ago" in browser.text("#transcript"))
     print("a session from an older month opens")
@@ -3155,8 +3156,107 @@ def unread_and_select(browser):
     )
     browser.shot("session-search")
     browser.click("#search-sessions-close")
-    browser.wait("every session again", lambda: len(titles()) == shown and count(browser, "#session-search") == 0)
+    browser.wait(
+        "every session again",
+        lambda: len(titles()) == shown and count(browser, '.session-tools[data-searching="false"]') == 1,
+    )
     print("the search showed only the sessions titled", repr(title))
+
+
+def pins_and_filter(browser):
+    """A row's ⋮ › Pin pins the session: a pin before its title and the
+    row first in its section, until ⋮ › Unpin. The filter opens in place
+    under its button: a date other than the default's marks the button,
+    Reset goes back, Escape closes it and gives the button the focus. The
+    search box opens with the focus and Escape closes it, giving it back to
+    the search button (docs/site/specs/session-pins-and-filters.md)."""
+    made = []
+    for text in ("pin one", "pin two"):
+        new_session(browser)
+        send(browser, text)
+        idle(browser, text=text)
+        made.append(open_session_id(browser))
+    older = 'aside [data-session-row="%s"]' % made[0]
+    menu = "aside [data-row-menu-list]"
+    section_rows = (
+        "return [...document.querySelector(arguments[0]).closest('[data-project-section]')"
+        ".querySelectorAll('[data-session-row]')].map((r) => r.dataset.sessionRow)"
+    )
+
+    def choose(item):
+        hover(browser, older)
+        browser.wait("the ⋮", lambda: shown(browser, older + " [data-row-menu]"))
+        browser.click(older + " [data-row-menu]")
+        browser.wait("the row's menu", lambda: count(browser, menu) == 1)
+        browser.click(menu + " [data-menu-item=%s]" % item)
+        browser.wait("the closed menu", lambda: count(browser, menu) == 0)
+
+    choose("pin")
+    browser.wait("the pinned row", lambda: count(browser, older + " [data-pinned-session]") == 1)
+    browser.wait("the pinned row first", lambda: browser.script(section_rows, older)[0] == made[0])
+    browser.shot("pinned-session")
+    choose("unpin")
+    browser.wait("the unpinned row", lambda: count(browser, older + " [data-pinned-session]") == 0)
+    browser.wait("the newer row first", lambda: browser.script(section_rows, older)[0] == made[1])
+    print("⋮ › Pin put the older session first, and Unpin let it go")
+
+    opened = lambda: count(browser, '.session-filter[data-open="true"]') == 1
+    checked = lambda within: browser.script(
+        "return document.querySelector('[data-within=' + arguments[0] + ']').getAttribute('aria-checked')", within
+    ) == "true"
+    browser.click("#filter-sessions")
+    browser.wait("the filter", opened)
+    assert checked("week") and count(browser, "[data-filter-dot]") == 0
+    box, button = browser.script(
+        "const r = (s) => document.querySelector(s).getBoundingClientRect();"
+        "const b = r('#filter-sessions'), f = r('#session-filter');"
+        "return [[Math.round(f.top), Math.round(f.left)], [Math.round(b.bottom), Math.round(b.left)]]"
+    )
+    assert box[0] >= button[0] and box[1] <= button[1], "the filter is not under its button: %s %s" % (box, button)
+    browser.click("[data-within=month]")
+    browser.wait("thirty days", lambda: checked("month") and count(browser, "[data-filter-dot]") == 1)
+    browser.shot("session-filter")
+    browser.click("#filter-reset")
+    browser.wait("the default", lambda: checked("week") and count(browser, "[data-filter-dot]") == 0)
+    browser.type("#filter-done", ESCAPE)
+    browser.wait("the closed filter", lambda: not opened())
+    assert browser.script("return document.activeElement.id") == "filter-sessions", "the filter button lost the focus"
+    print("the filter opened under its button, marked a changed date, reset, and closed on Escape")
+
+    searching = lambda state: count(browser, '.session-tools[data-searching="%s"]' % state) == 1
+    browser.click("#search-sessions")
+    browser.wait("the search box", lambda: searching("true"))
+    assert browser.script("return document.activeElement.id") == "session-search", "the search box has no focus"
+    browser.type("#session-search", ESCAPE)
+    browser.wait("the closed search", lambda: searching("false"))
+    assert browser.script("return document.activeElement.id") == "search-sessions", "the search button lost the focus"
+    print("the search box opened with the focus and gave it back on Escape")
+
+
+def opens_on_sessions():
+    """Below a desktop's width the page opens on its sessions, over a new
+    session: an unfolded foldable as a phone; a desktop's width opens on
+    the new session beside them. The filter drops down there, with targets
+    a finger can hit."""
+    for width, height, paged in ((884, 1104, True), (1104, 884, False)):
+        page = Browser()
+        try:
+            page.phone(width, height)
+            page.go(LINK)
+            page.wait("the connection", lambda: page.text("#connected") != "")
+            page.wait("the sessions", lambda: count(page, "#sidebar [data-session-row]") > 0)
+            time.sleep(0.5)
+            assert (count(page, SESSIONS_PAGE) == 1) == paged, "%dx%d: sessions as the page %s" % (
+                width, height, count(page, SESSIONS_PAGE))
+            if paged:
+                page.click("#filter-sessions")
+                page.wait("the filter", lambda: count(page, '.session-filter[data-open="true"]') == 1)
+                time.sleep(0.4)
+                fits(page, "the dropped-down filter")
+                page.shot("foldable-filter")
+        finally:
+            page.close()
+    print("an unfolded foldable opens on its sessions; a desktop's width on the new session")
 
 
 def rows_stay_put(browser):
@@ -3828,6 +3928,8 @@ const small = [];
 for (const element of document.querySelectorAll(
     'button, select, textarea, input:not([type=hidden]):not([type=file]), summary, a[href]')) {
   if (element.closest('.markdown') || element.offsetParent === null) continue;
+  // Hidden but laid out, as a closed search box or filter is: no target.
+  if (getComputedStyle(element).visibility === 'hidden') continue;
   const rect = element.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) continue;
   // A control smaller than a finger may reach further with an invisible
@@ -4794,8 +4896,9 @@ def projects(browser):
     items = browser.script(
         "return [...document.querySelectorAll(arguments[0] + ' [role=menuitem]')].map((b) => b.innerText.trim())", menu
     )
-    # Moving it, then marking it read or unread (whichever it is not).
-    assert items[:1] == ["Move to project…"] and items[1:] in (["Mark read"], ["Mark unread"]), items
+    # Pinning it, moving it, then marking it read or unread (whichever it
+    # is not).
+    assert items[:2] == ["Pin", "Move to project…"] and items[2:] in (["Mark read"], ["Mark unread"]), items
     trigger, box = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"
         "const t = r(arguments[0]), m = r(arguments[1]);"
@@ -4803,7 +4906,7 @@ def projects(browser):
         row + " [data-row-menu]", menu,
     )
     assert box[0] >= trigger[0] and abs(box[1] - trigger[1]) <= 1, (trigger, box)
-    assert browser.script("return document.activeElement.dataset.menuItem") == "move"
+    assert browser.script("return document.activeElement.dataset.menuItem") == "pin"
     assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", row + " [data-row-menu]") == "true"
     browser.shot("project-row-menu")
     browser.type(menu + " [data-menu-item=move]", ESCAPE)
@@ -6133,6 +6236,8 @@ SCENARIOS = [
     ("draft_first_message", draft_first_message, "chat", []),
     ("session_drafts", session_drafts, "chat", []),
     ("unread_and_select", unread_and_select, "chat", []),
+    ("pins_and_filter", pins_and_filter, "chat", []),
+    ("opens_on_sessions", opens_on_sessions, "chat", ["basics"]),
     ("rows_stay_put", rows_stay_put, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
     ("open_tool_header", open_tool_header, "chat", []),

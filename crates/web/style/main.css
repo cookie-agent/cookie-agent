@@ -502,9 +502,155 @@ body {
     translate 700ms ease-in;
 }
 
+/* The session list's tools row (`SessionTools`): Search grows into the
+   search box. The box stays in the page, clipped to the Search button's
+   place (`--search-left`, `--search-right`, measured as it opens and
+   closes); opening unclips it to the whole row while the other buttons
+   shrink and fade away from it, and closing clips it back into the button
+   as it fades, the buttons returning once it has mostly gone. Its × turns
+   in once the box has room. */
+.session-tools .session-tool {
+  transition:
+    opacity 180ms ease-out 120ms,
+    scale 260ms cubic-bezier(0.22, 1, 0.36, 1) 100ms,
+    translate 260ms cubic-bezier(0.22, 1, 0.36, 1) 100ms;
+}
+
+.session-tools[data-searching="true"] .session-tool {
+  opacity: 0;
+  scale: 0.8;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease-in,
+    scale 200ms ease-in,
+    translate 200ms ease-in;
+}
+
+.session-tools[data-searching="true"] [data-tool="select"] {
+  translate: 0.75rem 0;
+}
+
+.session-tools[data-searching="true"] [data-tool="filter"],
+.session-tools[data-searching="true"] [data-tool="summary"] {
+  translate: -0.75rem 0;
+}
+
+.session-search {
+  clip-path: inset(0 var(--search-right, 100%) 0 var(--search-left, 0) round 0.375rem);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    clip-path 220ms cubic-bezier(0.4, 0, 0.6, 1),
+    opacity 130ms ease-in,
+    visibility 0s linear 220ms;
+}
+
+.session-tools[data-searching="true"] .session-search {
+  clip-path: inset(0 0 0 0 round 0.375rem);
+  opacity: 1;
+  visibility: visible;
+  transition:
+    clip-path 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 90ms ease-out,
+    visibility 0s;
+}
+
+.session-search-cancel {
+  opacity: 0;
+  rotate: -90deg;
+  scale: 0.6;
+  transition:
+    opacity 100ms ease-in,
+    rotate 160ms ease-in,
+    scale 160ms ease-in;
+}
+
+.session-tools[data-searching="true"] .session-search-cancel {
+  opacity: 1;
+  rotate: 0deg;
+  scale: 1;
+  transition:
+    opacity 160ms ease-out 140ms,
+    rotate 260ms cubic-bezier(0.34, 1.56, 0.64, 1) 120ms,
+    scale 260ms cubic-bezier(0.34, 1.56, 0.64, 1) 120ms;
+}
+
+/* The session list's filter (`SessionFilterPanel`): below desktop widths
+   it drops down above the list, its row growing from nothing; a desktop
+   opens it in place, a popover that settles in under its button. */
+.session-filter {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease-out,
+    visibility 0s linear 240ms;
+  visibility: hidden;
+}
+
+.session-filter[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    grid-template-rows 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease-out,
+    visibility 0s;
+}
+
+/* Closed, the dropdown takes no room: the header's gap goes with it. */
+.session-filter[data-open="false"] {
+  margin-top: -0.5rem;
+}
+
+@media (width >= 64rem) {
+  .session-filter,
+  .session-filter[data-open="false"] {
+    grid-template-rows: 1fr;
+    margin-top: 0;
+    transform-origin: top left;
+    translate: 0 -0.25rem;
+    scale: 0.97;
+    transition:
+      opacity 120ms ease-in,
+      translate 140ms ease-in,
+      scale 140ms ease-in,
+      visibility 0s linear 140ms;
+  }
+
+  .session-filter[data-open="true"] {
+    translate: none;
+    scale: 1;
+    transition:
+      opacity 160ms ease-out,
+      translate 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      scale 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .work-line {
     animation: none;
+  }
+
+  /* The search box and the filter still fade, but nothing moves. */
+  .session-tools .session-tool,
+  .session-tools[data-searching="true"] .session-tool,
+  .session-search,
+  .session-tools[data-searching="true"] .session-search,
+  .session-search-cancel,
+  .session-tools[data-searching="true"] .session-search-cancel,
+  .session-filter,
+  .session-filter[data-open="true"] {
+    translate: none;
+    scale: none;
+    rotate: none;
+    transition-property: opacity, visibility;
+  }
+
+  .session-search {
+    clip-path: none;
   }
 
   .status-tip,

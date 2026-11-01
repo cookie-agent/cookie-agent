@@ -319,6 +319,11 @@ pub(super) fn listed_sections(
         }
         let query = search_query(workspace);
         let searching = searching.get();
+        // A filter by agent or machine leaves out the sections it empties,
+        // as a search does.
+        let narrowed = workspace
+            .session_filter
+            .with(|filter| !filter.by_date_only());
         // The root of the session the page shows, so a subagent's
         // transcript keeps its tree's row too.
         let selected = workspace
@@ -336,10 +341,15 @@ pub(super) fn listed_sections(
                                 .sessions
                                 .into_iter()
                                 .filter(|session| {
-                                    search_matches(labels, session.session_id, query.as_deref())
+                                    workspace.filter_passes(session)
+                                        && search_matches(
+                                            labels,
+                                            session.session_id,
+                                            query.as_deref(),
+                                        )
                                 })
                                 .collect::<Vec<_>>();
-                            if searching && shown.is_empty() {
+                            if (searching || narrowed) && shown.is_empty() {
                                 return None;
                             }
                             Some(ListedSection {
@@ -367,7 +377,14 @@ pub(super) fn project_list(
     searching: Memo<bool>,
     headers: HeaderActions,
 ) -> impl IntoView {
-    let nothing_matches = Memo::new(move |_| searching.get() && sections.with(Vec::is_empty));
+    let workspace = rows.workspace;
+    let narrowed = Memo::new(move |_| {
+        workspace
+            .session_filter
+            .with(|filter| !filter.by_date_only())
+    });
+    let nothing_matches =
+        Memo::new(move |_| (searching.get() || narrowed.get()) && sections.with(Vec::is_empty));
     let keys = move || {
         sections.with(|sections| {
             sections
@@ -378,6 +395,10 @@ pub(super) fn project_list(
     };
     move || {
         if nothing_matches.get() {
+            if !searching.get() {
+                return empty_state(icondata::FaFilterSolid, "No sessions match the filter.")
+                    .into_any();
+            }
             return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
         }
         view! {
@@ -414,11 +435,12 @@ pub(super) fn listed_rows(
 }
 
 /// Whether a folded section still shows `session`'s row: at work (running,
-/// or waiting on a producer), unread, or `selected`, the root of the session
+/// or waiting on a producer), unread, pinned, or `selected`, the root of the session
 /// the page shows, so a row the user just opened stays where they clicked
 /// it.
 fn folded_shows(session: &SessionMeta, selected: Option<SessionId>) -> bool {
     session.unread
+        || session.pinned
         || selected == Some(session.session_id)
         || cookie_agent_client_state::activity::session_at_work(session)
 }

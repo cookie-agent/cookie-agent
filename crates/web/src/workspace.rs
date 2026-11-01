@@ -47,6 +47,7 @@ mod notifications;
 mod oauth;
 mod onboarding;
 mod permissions;
+mod pins;
 mod projects;
 mod provider_sign_in;
 mod reads;
@@ -175,6 +176,11 @@ pub struct Workspace {
     /// The session list's search: `None` while its box is closed, else
     /// what the box holds.
     pub session_search: RwSignal<Option<String>>,
+    /// The session list's filter: how far back it reaches, and its agents
+    /// and machines (`docs/site/specs/session-pins-and-filters.md`).
+    pub session_filter: RwSignal<cookie_agent_client_state::session_filter::SessionFilter>,
+    /// Whether the filter's panel is open.
+    pub filter_open: RwSignal<bool>,
     owned: StoredValue<HashSet<SessionId>>,
     pub read_only: RwSignal<HashSet<SessionId>>,
     ownership_classifications: StoredValue<HashMap<SessionId, u64>>,
@@ -216,8 +222,8 @@ pub struct Workspace {
     /// `session.list`'s reads, with the `sessions.changed` that came while
     /// one was on its way.
     session_list: StoredValue<crate::session_list::ListReads>,
-    /// How far back the session list reaches: the last 30 days, and a
-    /// month more for each "Show older".
+    /// How far back the session list reaches: as far as the filter's date
+    /// says, and a month more for each "Show older".
     session_window: StoredValue<cookie_agent_client_state::session_window::SessionWindow>,
     /// Whether the daemon has sessions older than the list shows.
     pub has_older_sessions: RwSignal<bool>,
@@ -304,6 +310,8 @@ pub struct Workspace {
     pub has_push: RwSignal<bool>,
     /// Whether the daemon keeps unread sessions (client protocol 1.51.0).
     pub keeps_unread: RwSignal<bool>,
+    /// Whether the daemon keeps pinned sessions (client protocol 1.66.0).
+    pub keeps_pins: RwSignal<bool>,
     /// The session list's select mode and its selection.
     pub picking: selection::Picking,
     /// `notifications.get`, once read.
@@ -466,6 +474,8 @@ impl Workspace {
             group_open: RwSignal::new(HashMap::new()),
             directory_filter: RwSignal::new(None),
             session_search: RwSignal::new(None),
+            session_filter: RwSignal::new(Default::default()),
+            filter_open: RwSignal::new(false),
             owned: StoredValue::new(HashSet::new()),
             read_only: RwSignal::new(HashSet::new()),
             ownership_classifications: StoredValue::new(HashMap::new()),
@@ -498,7 +508,11 @@ impl Workspace {
             tree_request: StoredValue::new(0),
             reads: StoredValue::new(reads::Reads::default()),
             session_list: StoredValue::new(Default::default()),
-            session_window: StoredValue::new(Default::default()),
+            session_window: StoredValue::new(
+                cookie_agent_client_state::session_window::SessionWindow::recent(
+                    cookie_agent_client_state::session_filter::ActiveWithin::default().days(),
+                ),
+            ),
             has_older_sessions: RwSignal::new(false),
             older_sessions_loading: RwSignal::new(false),
             user_menu: RwSignal::new(None),
@@ -541,6 +555,7 @@ impl Workspace {
             crons: RwSignal::new(None),
             has_push: RwSignal::new(false),
             keeps_unread: RwSignal::new(false),
+            keeps_pins: RwSignal::new(false),
             picking: selection::Picking::new(),
             notifications: RwSignal::new(None),
             push_context: RwSignal::new(crate::push::PushContext::default()),
@@ -683,6 +698,10 @@ impl Workspace {
             .set(cookie_agent_client_state::unread::daemon_keeps_unread(
                 client.daemon_version(),
             ));
+        self.keeps_pins
+            .set(cookie_agent_client_state::pins::daemon_keeps_pins(
+                client.daemon_version(),
+            ));
         // A new connection has heard nothing of what the page shows.
         self.presence_sent.set_value(None);
         self.restarting.set(None);
@@ -784,6 +803,28 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        self.read_session_list(&client).await;
+        self.refresh_projects();
+        self.poll_runtimes();
+        self.poll_crons();
+        match client.runtime_snapshot().await {
+            Ok(result) => {
+                self.runtime
+                    .update_value(|runtime| runtime.install_initial(result.snapshot));
+                self.runtime_revision.update(|revision| *revision += 1);
+                if self.draft.get_untracked().is_none() {
+                    self.draft.set(self.default_draft());
+                }
+            }
+            Err(error) => self.status.set(format!(
+                "runtime snapshot unavailable: {}",
+                crate::errors::describe(&error)
+            )),
+        }
+    }
+
+    /// Reads the session list, as far back as its window reaches.
+    async fn read_session_list(self, client: &Client) {
         let read = self.session_list.try_update_value(|list| list.begin());
         let params = self.session_window.with_value(|window| {
             window.read_params(
@@ -813,23 +854,6 @@ impl Workspace {
                     self.status.set(crate::errors::describe(&error));
                 }
             }
-        }
-        self.refresh_projects();
-        self.poll_runtimes();
-        self.poll_crons();
-        match client.runtime_snapshot().await {
-            Ok(result) => {
-                self.runtime
-                    .update_value(|runtime| runtime.install_initial(result.snapshot));
-                self.runtime_revision.update(|revision| *revision += 1);
-                if self.draft.get_untracked().is_none() {
-                    self.draft.set(self.default_draft());
-                }
-            }
-            Err(error) => self.status.set(format!(
-                "runtime snapshot unavailable: {}",
-                crate::errors::describe(&error)
-            )),
         }
     }
 
