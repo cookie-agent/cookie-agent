@@ -979,6 +979,12 @@ impl Engine {
         session: SessionId,
         command: SessionCommand,
     ) -> Result<(), EngineError> {
+        // Heavy work first, locks after (store locks and durability, section
+        // 4.4): the session's tree is completed, and a session this process
+        // paged out reopened, off the async workers before the residency
+        // lock. What fails here fails again below, under the lock, where it
+        // is reported.
+        let _ = off_worker(|| self.inner.store.prepare_write(session));
         let _residency = self.lock_residency("a command to", session).await;
         self.ensure_session_owned(session)?;
         self.spawn_actor(session)?;

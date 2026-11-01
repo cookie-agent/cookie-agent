@@ -1392,3 +1392,99 @@ fn delegation_notified(
         _ => false,
     })
 }
+
+/// A command to a session the janitor paged out reopens it, parsing and
+/// folding its log, before the command takes the residency lock or the
+/// store's mutation lock (store locks and durability, section 4.4).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_to_a_cold_session_parses_it_before_taking_any_lock() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body("hello"),
+        ))
+        .expect("text response");
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: ClientRunId::new("cold-reopen").expect("run ID"),
+                selection,
+                content: "say hello".to_owned().into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    await_projection(&fixture.engine, session, "run completion", |projection| {
+        projection.status == SessionStatus::Completed
+    })
+    .await;
+    with_watchdog("scripted server", captured)
+        .await
+        .expect("scripted server");
+    // The run's own follow-ups (its push settle check, producer
+    // reconciliation) touch the session as it ends; let them finish first,
+    // so the command below is the only one to reopen it.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let evicted = fixture
+        .engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("janitor pass");
+    assert_eq!(evicted, vec![session]);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!fixture.engine.inner.store.is_resident(session));
+
+    let (parsed, parsed_receiver) = std::sync::mpsc::channel();
+    let (release, release_receiver) = std::sync::mpsc::channel::<()>();
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    fixture
+        .engine
+        .inner
+        .store
+        .install_reopen_parsed_hook_for_test(move |id| {
+            parsed.send(id).expect("report the parse");
+            release_receiver
+                .lock()
+                .expect("release lock")
+                .recv()
+                .expect("released");
+        });
+    let engine = fixture.engine.clone();
+    let resuming = tokio::spawn(async move { engine.resume(session).await });
+    let parsed = tokio::task::spawn_blocking(move || {
+        parsed_receiver.recv_timeout(std::time::Duration::from_secs(10))
+    })
+    .await
+    .expect("wait for the parse")
+    .expect("the cold session was parsed");
+    assert_eq!(parsed, session);
+    assert!(
+        fixture
+            .engine
+            .inner
+            .sessions
+            .residency_mutation
+            .try_lock()
+            .is_ok(),
+        "the residency lock is free while the log is parsed"
+    );
+    assert!(fixture.engine.inner.store.mutation_lock_is_free_for_test());
+    release.send(()).expect("release the reopen");
+    resuming
+        .await
+        .expect("resume task")
+        .expect("resume the session");
+    assert!(fixture.engine.inner.store.is_resident(session));
+    fixture.engine.shutdown().await;
+}

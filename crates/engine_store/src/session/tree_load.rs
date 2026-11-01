@@ -430,7 +430,9 @@ pub(super) struct EvictionTransitionHook {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 #[allow(clippy::type_complexity)]
-pub(super) struct TreeLoadReadHook(std::sync::Mutex<Option<Arc<dyn Fn(SessionId) + Send + Sync>>>);
+pub(super) struct TreeLoadReadHook(
+    pub(super) std::sync::Mutex<Option<Arc<dyn Fn(SessionId) + Send + Sync>>>,
+);
 
 #[cfg(any(test, feature = "test-support"))]
 impl TreeLoadReadHook {

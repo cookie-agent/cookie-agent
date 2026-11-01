@@ -4973,3 +4973,56 @@ fn a_history_page_reads_only_the_session_log() {
 }
 
 mod layout;
+
+/// A cold reopen parses and folds its log before it takes any store lock,
+/// so another session appends, and a structural change goes ahead, while
+/// it parses (store locks and durability, section 4.4).
+#[test]
+fn a_cold_reopen_parses_before_it_takes_a_store_lock() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).expect("store");
+    let cold = persist_test_session(&store);
+    let other = persist_test_session(&store);
+    let other_attempt = start_test_attempt(&store, other);
+    assert!(store.evict(cold).expect("evict"));
+    let (parsed, parsed_receiver) = mpsc::channel();
+    let (release, release_receiver) = mpsc::channel::<()>();
+    let release_receiver = Mutex::new(release_receiver);
+    let hook_store = Arc::downgrade(&store);
+    store.install_reopen_parsed_hook_for_test(move |id| {
+        let store = hook_store.upgrade().expect("store alive");
+        parsed
+            .send((id, store.mutation_lock_is_free_for_test()))
+            .expect("report the parse");
+        release_receiver
+            .lock()
+            .expect("release lock")
+            .recv()
+            .expect("released");
+    });
+    let reopen_store = Arc::clone(&store);
+    let reopening = thread::spawn(move || reopen_store.begin_write(cold));
+    let (id, free) = parsed_receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the reopen parsed");
+    assert_eq!(id, cold);
+    assert!(free, "no store lock is held while the log is parsed");
+    assert!(!store.is_resident(cold));
+
+    // Another session appends, and is evicted, meanwhile.
+    let appended = append_test_in_run_record(&store, other, &other_attempt);
+    assert_eq!(store.get(other).unwrap().meta.last_event_seq, appended.seq);
+    assert!(store.evict(other).expect("evict another session"));
+
+    release.send(()).expect("release the reopen");
+    assert_eq!(
+        reopening
+            .join()
+            .expect("reopen thread")
+            .expect("begin write"),
+        super::WriteOpen::AlreadyOwned
+    );
+    assert!(store.is_resident(cold));
+}

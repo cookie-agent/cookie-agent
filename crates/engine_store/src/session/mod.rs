@@ -436,6 +436,9 @@ pub struct SessionStore {
     /// Serializes publication of one session directory, so the scaffold check in
     /// [`Self::publish_prepared_dir`] stays true until its entries have moved.
     publish_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
+    /// Serializes the cold reopens of one session, which parse its log
+    /// without any store lock (see [`Self::reopen_owned`]).
+    reopen_gates: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     /// Exclusive for structural changes, shared for the writes of one
     /// session; see [`Self::lock_mutation`] and [`Self::lock_session`].
     mutation: RwLock<()>,
@@ -476,6 +479,10 @@ pub struct SessionStore {
     /// verified and installed, so a test can race a write into that window (L1).
     #[cfg(any(test, feature = "test-support"))]
     tree_load_read_hook: TreeLoadReadHook,
+    /// Test-only: fires when a cold reopen parsed and folded a log, before
+    /// it takes any store lock to install it.
+    #[cfg(any(test, feature = "test-support"))]
+    reopen_parsed_hook: TreeLoadReadHook,
 }
 
 /// How many parsed read-only logs [`SessionStore::snapshot_events`] keeps.
@@ -700,6 +707,7 @@ impl SessionStore {
             ownership: Mutex::new(OwnershipState::default()),
             adoption_locks: Mutex::new(HashMap::new()),
             publish_locks: Mutex::new(HashMap::new()),
+            reopen_gates: Mutex::new(HashMap::new()),
             mutation: RwLock::new(()),
             busy_sessions: Mutex::new(HashSet::new()),
             session_released: Condvar::new(),
@@ -720,6 +728,8 @@ impl SessionStore {
             log_opens: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "test-support"))]
             tree_load_read_hook: TreeLoadReadHook::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            reopen_parsed_hook: TreeLoadReadHook::default(),
         });
         // A deletion that stopped after moving its tree aside may not have
         // journaled itself.
@@ -1174,6 +1184,18 @@ impl SessionStore {
     /// is unchanged so repeated reads of a session this process does not own
     /// parse it once.
     fn read_only_log(&self, id: SessionId, path: PathBuf) -> Result<Arc<EventLog>, SessionError> {
+        self.read_only_log_noted(id, path, true)
+    }
+
+    /// [`Self::read_only_log`]; `noted` false leaves a parse out of the
+    /// test-only open count, for one that stands in for the owned open an
+    /// adoption would otherwise do.
+    fn read_only_log_noted(
+        &self,
+        id: SessionId,
+        path: PathBuf,
+        noted: bool,
+    ) -> Result<Arc<EventLog>, SessionError> {
         let fingerprint = ReadOnlyLogFingerprint::of(&path)?;
         let cached = self
             .read_only_logs
@@ -1184,7 +1206,9 @@ impl SessionStore {
             return Ok(log);
         }
         // Parse outside the cache lock: a large log takes seconds.
-        self.note_log_open(id);
+        if noted {
+            self.note_log_open(id);
+        }
         let log = EventLog::open_read_only(path, id)?;
         self.read_only_logs
             .lock()
@@ -1241,16 +1265,17 @@ impl SessionStore {
         }
     }
 
+    /// Makes the evicted session `id`, which this process owns, resident
+    /// again. The log is parsed and folded without any store lock, so a
+    /// large log holds up no other session's writes; the session's slot is
+    /// taken only to install the result, unless another reopen installed one
+    /// meanwhile (store locks and durability, section 4.4). Cold reopens of
+    /// one session take turns, so nothing writes the file while it is
+    /// parsed: only a resident session is appended to.
     fn reopen_owned(&self, id: SessionId) -> Result<Arc<SessionProjection>, SessionError> {
-        let _mutation = self.lock_session(id);
-        if let Some(session) = self
-            .residency
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .resident
-            .get(&id)
-            .cloned()
-        {
+        let gate = keyed_gate(&self.reopen_gates, id);
+        let _reopening = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = self.get_resident(id) {
             return Ok(session);
         }
         let session_dir = self.resolve_dir(id)?;
@@ -1261,13 +1286,79 @@ impl SessionStore {
         self.note_log_open(id);
         let log = self.open_owned_log(id, session_dir.join(EVENTS_FILE), capability)?;
         let reopened = Arc::new(projection(log)?);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let hook = self
+                .reopen_parsed_hook
+                .0
+                .lock()
+                .expect("hook lock poisoned")
+                .clone();
+            if let Some(hook) = hook {
+                hook(id);
+            }
+        }
+        let _mutation = self.lock_session(id);
+        // Deleted, or released with the store, while it was parsed.
+        self.ensure_open()?;
+        self.write_capability(id, false)?;
+        if !session_dir.is_dir() {
+            return Err(SessionError::Missing(id));
+        }
         let mut residency = self
             .residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = residency.resident.get(&id) {
+            return Ok(Arc::clone(session));
+        }
         residency.resident.insert(id, reopened.clone());
         residency.evicted.remove(&id);
         Ok(reopened)
+    }
+
+    /// The heavy part of opening `id` for writing, done before any store
+    /// lock: completing its tree, reopening it when this process owns it but
+    /// evicted it, and otherwise parsing its log read-only, which the
+    /// adoption under the lock takes over while the file is unchanged. That
+    /// parse is only a head start: its failure is left to the adoption.
+    pub fn prepare_write(&self, id: SessionId) -> Result<(), SessionError> {
+        self.ensure_tree_for(id)?;
+        if self.get_resident(id).is_some() {
+            return Ok(());
+        }
+        if self.is_owned(id) {
+            return self.reopen_owned(id).map(drop);
+        }
+        if let Ok(session_dir) = self.resolve_dir(id)
+            && session_dir.is_dir()
+        {
+            // In place of the adoption's own parse, so not counted as
+            // another open.
+            let _ = self.read_only_log_noted(id, session_dir.join(EVENTS_FILE), false);
+        }
+        Ok(())
+    }
+
+    /// Test-only seam: fires when a cold reopen parsed and folded a log,
+    /// before it takes any store lock.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_reopen_parsed_hook_for_test(
+        &self,
+        hook: impl Fn(SessionId) + Send + Sync + 'static,
+    ) {
+        *self
+            .reopen_parsed_hook
+            .0
+            .lock()
+            .expect("hook lock poisoned") = Some(Arc::new(hook));
+    }
+
+    /// Test-only: whether nobody holds the store's mutation lock in either
+    /// mode.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn mutation_lock_is_free_for_test(&self) -> bool {
+        self.mutation.try_write().is_ok()
     }
 
     /// Reads and folds one session log without making it resident.
@@ -1453,12 +1544,21 @@ impl SessionStore {
     }
 
     pub fn begin_write(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
-        // The tree has to be complete before a session in it starts writing, and
-        // the load cannot run under `mutation` (it installs its own).
-        self.ensure_tree_for(id)?;
-        let _mutation = self.lock_mutation();
-        self.ensure_open()?;
-        self.begin_write_locked(id)
+        loop {
+            // The tree has to be complete before a session in it starts
+            // writing, and the load cannot run under `mutation` (it installs
+            // its own). A session this process owns is reopened, and one it
+            // does not is parsed, before the lock too.
+            self.prepare_write(id)?;
+            let _mutation = self.lock_mutation();
+            self.ensure_open()?;
+            if self.is_owned(id) && self.get_resident(id).is_none() {
+                // Evicted again since it was reopened: reopen it again
+                // outside the lock rather than parse it under the lock.
+                continue;
+            }
+            return self.begin_write_locked(id);
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1568,22 +1668,10 @@ impl SessionStore {
             .insert(root, TreeOwnership::Foreign);
     }
 
+    /// Under the exclusive lock, after [`Self::begin_write`] made an owned
+    /// session resident.
     fn begin_write_locked(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
         if self.is_owned(id) {
-            if let Some(session) = self.get_resident(id) {
-                drop(session);
-                return Ok(WriteOpen::AlreadyOwned);
-            }
-            let session_dir = self.resolve_dir(id)?;
-            let capability = self.write_capability(id, false)?;
-            let reopened =
-                projection(self.open_owned_log(id, session_dir.join(EVENTS_FILE), capability)?)?;
-            let mut residency = self
-                .residency
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            residency.resident.insert(id, Arc::new(reopened));
-            residency.evicted.remove(&id);
             return Ok(WriteOpen::AlreadyOwned);
         }
         let session_dir = self.resolve_dir(id)?;
