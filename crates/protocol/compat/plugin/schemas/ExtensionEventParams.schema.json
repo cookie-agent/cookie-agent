@@ -2680,7 +2680,7 @@
               "type": "string"
             },
             "history_format": {
-              "description": "The session log's history format: [`HISTORY_FORMAT`] for a log\nthis build wrote or converted. Readers take any (client protocol\n1.61.0); a client before 1.61.0 receives\n[`FIRST_HISTORY_FORMAT`].",
+              "description": "The session log's history format: [`HISTORY_FORMAT`] for a log\nthis build wrote or converted. Readers take any (client protocol\n1.63.0); a client before 1.63.0 receives\n[`FIRST_HISTORY_FORMAT`].",
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
@@ -4929,7 +4929,7 @@
           "type": "object"
         },
         {
-          "description": "In place of a record of type `omitted_type` that the writer\ndeliberately did not carry over, at that record's sequence, run, and\ntime: a fork writes it for each of its source's delegation records,\nwhose subagents stay the source's.",
+          "description": "In place of a record of type `omitted_type` that the writer\ndeliberately did not carry over, at that record's sequence, run, and\ntime: a fork writes it for each of its source's delegation records,\nwhose subagents stay the source's, and the conversion to history\nformat 2 for each `acp_session_updated` that held only an ACP agent's\nlive state ([`EventPayload::is_omitted_live_state`]).",
           "properties": {
             "omitted_type": {
               "description": "The type of a session event, as a snake-case label.",

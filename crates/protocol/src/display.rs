@@ -1038,9 +1038,9 @@ impl DisplayAudience {
     }
 
     /// Whether the client reads a `session_created` of any history format
-    /// (client protocol 1.61.0).
+    /// (client protocol 1.63.0).
     pub(crate) fn reads_any_history_format(&self) -> bool {
-        self.client_minor >= 61
+        self.client_minor >= 63
     }
 
     fn newer(&self, block: &DisplayBlock) -> bool {

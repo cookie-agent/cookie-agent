@@ -2703,7 +2703,7 @@ impl ApprovalFinalization {
 pub const HISTORY_FORMAT: u32 = 2;
 
 /// The history format the protocols froze with, the only one a client
-/// before client protocol 1.61.0 reads.
+/// before client protocol 1.63.0 reads.
 pub const FIRST_HISTORY_FORMAT: u32 = 1;
 
 /// The most bytes of a diagnostic's serialized `detail`.
@@ -2777,7 +2777,7 @@ pub enum EventPayload {
     SessionCreated {
         /// The session log's history format: [`HISTORY_FORMAT`] for a log
         /// this build wrote or converted. Readers take any (client protocol
-        /// 1.61.0); a client before 1.61.0 receives
+        /// 1.63.0); a client before 1.63.0 receives
         /// [`FIRST_HISTORY_FORMAT`].
         history_format: u32,
         origin: SessionOrigin,
@@ -3842,7 +3842,7 @@ impl EventPayload {
             }
             // Any `history_format` reads: the wire carries whole values,
             // whatever the log stores, and the loader judges a log's format
-            // itself (client protocol 1.61.0).
+            // itself (client protocol 1.63.0).
             Self::SessionCreated {
                 creation_selection,
                 creation_agent,
@@ -5439,7 +5439,7 @@ impl crate::DisplayAudience {
     #[must_use]
     pub fn payload(&self, payload: &EventPayload) -> Option<EventPayload> {
         match payload {
-            // A client before 1.61.0 refuses a `session_created` of any
+            // A client before 1.63.0 refuses a `session_created` of any
             // format but the first; what it receives is whole values, as
             // history format 1 stores them, so that is the format it gets.
             EventPayload::SessionCreated { history_format, .. }

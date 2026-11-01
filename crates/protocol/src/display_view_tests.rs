@@ -533,7 +533,7 @@ fn a_replay_evaluation_that_discards_history_stays() {
 }
 
 /// A reader takes a `session_created` of any history format (client
-/// protocol 1.61.0); a client before 1.61.0, which refuses any but the
+/// protocol 1.63.0); a client before 1.63.0, which refuses any but the
 /// first, receives the first, as its whole values are.
 #[test]
 fn a_session_created_of_any_format_reads_and_older_clients_get_the_first() {
@@ -546,7 +546,7 @@ fn a_session_created_of_any_format_reads_and_older_clients_get_the_first() {
             EventPayload::SessionCreated { history_format, .. } => history_format,
             _ => unreachable!(),
         };
-        let older = crate::DisplayAudience::new(crate::SemVer::new(1, 60, 0)).stored(&event);
+        let older = crate::DisplayAudience::new(crate::SemVer::new(1, 62, 0)).stored(&event);
         assert_eq!(format_of(&older), crate::FIRST_HISTORY_FORMAT);
         let current = crate::DisplayAudience::new(crate::CLIENT_PROTOCOL_VERSION).stored(&event);
         assert_eq!(format_of(&current), format);

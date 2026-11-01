@@ -350,7 +350,7 @@ including a resume for a run.
 History format 2 with its converter `v1_to_v2`
 ([events reference](../reference/events.md#history-formats)). The wire
 carries whole values; the one protocol change is that readers take a
-`session_created` of any history format (client protocol 1.61.0; an older
+`session_created` of any history format (client protocol 1.63.0; an older
 client receives format 1, which its whole values are). Where the
 implementation settles what 4.2 leaves open, or departs from it (the
 coordinator extended 4.2 on 2026-11-01 with the tool result's other large

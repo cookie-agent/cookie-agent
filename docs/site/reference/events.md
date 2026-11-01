@@ -42,8 +42,8 @@ The first record is always `session_created`. It carries `history_format`
 (currently `2`, the `HISTORY_FORMAT` constant of `cookie_agent_protocol`),
 and the optional `short_id`, the tree-unique model-facing handle. Events on
 the wire carry whole values whatever the log's format, so a client reads a
-`session_created` of any format (client protocol 1.61.0); a client before
-1.61.0, which refuses any format but 1, receives `history_format: 1`.
+`session_created` of any format (client protocol 1.63.0); a client before
+1.63.0, which refuses any format but 1, receives `history_format: 1`.
 
 ## Reading a log
 
