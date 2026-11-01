@@ -14,6 +14,7 @@ pub mod activity;
 pub mod badges;
 pub mod config;
 pub mod cron;
+pub mod daemon_status;
 pub mod elicitation;
 pub mod format;
 pub mod held;
@@ -2130,7 +2131,8 @@ impl StateStore {
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
             | ClientDelivery::NotificationsChanged(_)
-            | ClientDelivery::DaemonRestarting(_) => DeliveryOutcome::Applied,
+            | ClientDelivery::DaemonRestarting(_)
+            | ClientDelivery::DaemonStatus(_) => DeliveryOutcome::Applied,
             ClientDelivery::OnboardingChanged(_) => DeliveryOutcome::Applied,
         }
     }

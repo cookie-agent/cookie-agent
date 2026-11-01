@@ -34,7 +34,7 @@ pub(crate) enum Probe {
     /// cookie daemon.
     Unusable { url: String, reason: String },
     /// A daemon answered and the handshake succeeded.
-    Connected(LocalDaemon),
+    Connected(Box<LocalDaemon>),
 }
 
 /// A daemon found on this machine, connected and past the handshake.
@@ -95,12 +95,12 @@ pub(crate) async fn probe_within(
     })
     .await;
     match connected {
-        Ok(Ok((client, hello))) => Probe::Connected(LocalDaemon {
+        Ok(Ok((client, hello))) => Probe::Connected(Box::new(LocalDaemon {
             client,
             hello,
             url,
             token,
-        }),
+        })),
         Ok(Err(error)) => Probe::Unusable {
             url,
             reason: failure_reason(&error),
@@ -267,6 +267,7 @@ mod tests {
             origin: EventOrigin::new("user").unwrap(),
             machine_id: machine_id.map(str::to_owned),
             features: Vec::new(),
+            status: None,
         }
     }
 
@@ -387,12 +388,12 @@ mod tests {
     #[tokio::test]
     async fn a_connected_probe_leaves_no_notice() {
         let (client_stream, _server_stream) = cookie_agent_protocol::in_process_pair(1);
-        let probe = Probe::Connected(LocalDaemon {
+        let probe = Probe::Connected(Box::new(LocalDaemon {
             client: Client::connect_stream(client_stream),
             hello: hello(Some(HERE)),
             url: "ws://127.0.0.1:7419/ws".into(),
             token: Zeroizing::new(String::new()),
-        });
+        }));
         assert_eq!(probe.notice(), None);
     }
 

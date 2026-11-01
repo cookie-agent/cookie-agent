@@ -113,10 +113,7 @@ pub(super) async fn run_connect_with<I: ConnectIo>(
     provider_id: Option<String>,
     io: &mut I,
 ) -> anyhow::Result<()> {
-    client
-        .handshake_as(client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(client, client_identity("cli")).await?;
     connect_provider_flow(client, provider_id, io).await
 }
 
@@ -294,10 +291,7 @@ pub(super) async fn run_disconnect(
     )?;
     let client = Client::connect_websocket_with_token(url, token).await?;
     let mut io = StdioConnectIo;
-    client
-        .handshake_as(client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(&client, client_identity("cli")).await?;
     let runtime = runtime_snapshot(&client).await?;
     let provider = choose_provider(&runtime.snapshot.providers, provider_id, &mut io)?;
     print_provider_details(provider, runtime.snapshot.revision.as_str(), &mut io)?;

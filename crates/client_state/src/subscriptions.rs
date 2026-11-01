@@ -38,6 +38,53 @@ pub const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
 pub const RECONNECT_BACKOFF: cookie_agent_identity::Backoff =
     cookie_agent_identity::Backoff::new(Duration::from_millis(500), Duration::from_secs(10));
 
+/// How often a client redials a daemon that closed its connection to
+/// restart, for the first [`RESTART_REDIALS`] tries (30 seconds): the new
+/// daemon listens moments after the old one lets go of the port.
+pub const RESTART_REDIAL: Duration = Duration::from_millis(500);
+
+/// How many redials go at [`RESTART_REDIAL`] before [`RECONNECT_BACKOFF`]
+/// takes over.
+pub const RESTART_REDIALS: u32 = 60;
+
+/// The waits before each redial of a dropped daemon: every
+/// [`RESTART_REDIAL`] at first after a restart, then [`RECONNECT_BACKOFF`].
+#[derive(Debug)]
+pub struct RedialDelays {
+    fast: u32,
+    backoff: cookie_agent_identity::backoff::Delays,
+}
+
+impl RedialDelays {
+    /// The waits after a connection the daemon closed, `for_restart` or
+    /// not.
+    #[must_use]
+    pub fn new(for_restart: bool) -> Self {
+        Self {
+            fast: if for_restart { RESTART_REDIALS } else { 0 },
+            backoff: RECONNECT_BACKOFF.delays(),
+        }
+    }
+
+    /// The wait before the next redial.
+    pub fn next_delay(&mut self) -> Duration {
+        if self.fast > 0 {
+            self.fast -= 1;
+            return RESTART_REDIAL;
+        }
+        self.backoff.next_delay()
+    }
+}
+
+/// Whether the daemon said it is going down to restart: a client then
+/// redials at once rather than backing off ([`RedialDelays`]).
+#[must_use]
+pub fn restarting(status: Option<&cookie_agent_protocol::DaemonStatus>) -> bool {
+    status.is_some_and(|status| {
+        status.phase == cookie_agent_protocol::DaemonPhase::Stopping && status.restart
+    })
+}
+
 /// The roots of the trees viewed most recently, newest first.
 #[derive(Clone, Debug, Default)]
 pub struct RecentTrees(VecDeque<SessionId>);
@@ -675,5 +722,18 @@ mod tests {
         );
         assert!(!recent.contains(roots[1]));
         assert!(recent.contains(roots[0]));
+    }
+
+    #[test]
+    fn a_restart_is_redialed_at_once_for_a_while_then_backed_off() {
+        use crate::subscriptions::{RESTART_REDIAL, RESTART_REDIALS, RedialDelays};
+        let mut restart = RedialDelays::new(true);
+        for _ in 0..RESTART_REDIALS {
+            assert_eq!(restart.next_delay(), RESTART_REDIAL);
+        }
+        let mut dropped = RedialDelays::new(false);
+        let first = dropped.next_delay();
+        assert_eq!(restart.next_delay(), first, "then the usual back-off");
+        assert!(dropped.next_delay() > first, "which grows");
     }
 }

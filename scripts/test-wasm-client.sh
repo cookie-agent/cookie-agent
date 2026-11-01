@@ -54,8 +54,10 @@ start_daemon() {
     mkdir -p -m 700 "$home/workspace"
     (cd "$home/workspace" && HOME="$home" exec "$cookie" daemon --port 0 >"$out" 2>"$home/daemon.err") &
     pids+=("$!")
+    # The daemon takes connections at `daemon-ready` and serves them once
+    # it says it is ready.
     for _ in $(seq 1 200); do
-        if grep -q '^daemon-ready ' "$out" 2>/dev/null; then
+        if grep -q '^cookie daemon ready$' "$out" 2>/dev/null; then
             ready_json="$(sed -n 's/^daemon-ready //p' "$out" | head -n 1)"
             return
         fi

@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use cookie_agent_engine::Engine;
+use cookie_agent_engine::{Engine, status::StatusBoard};
 use cookie_agent_protocol::{MessageStream, TransportError, in_process_pair};
 use cookie_agent_protocol_transport::{Authentication, Client};
 use thiserror::Error;
@@ -30,12 +30,93 @@ pub struct Server {
     /// Set when the daemon shuts down to restart: client connections then
     /// close with code 1012 and the reason `restarting`.
     pub(crate) restarting: Arc<AtomicBool>,
+    /// Web Push notifications to the user's browsers.
+    pub(crate) push: Arc<crate::push::PushService>,
+    /// What the server shares with its listener.
+    pub(crate) shared: Arc<Shared>,
+}
+
+/// A daemon's listener, which serves clients from before the daemon has
+/// its [`Server`]: while it starts, clients connect and see its status
+/// (`docs/site/specs/daemon-startup.md`), and once [`Self::hand_over`]
+/// gives it the server, the same connections are served by it.
+#[derive(Clone)]
+pub struct DaemonListener {
+    pub(crate) shared: Arc<Shared>,
+    /// Set once the daemon is ready to serve. The server does not hold it,
+    /// so the two do not keep each other alive.
+    pub(crate) server: ServerSlot,
+}
+
+/// Where a listener finds the server it serves.
+pub(crate) type ServerSlot = Arc<std::sync::OnceLock<Arc<Server>>>;
+
+/// What a daemon's listener and its server share.
+pub(crate) struct Shared {
+    pub(crate) board: StatusBoard,
+    pub(crate) shutdown: CancellationToken,
+    /// Set when the daemon shuts down to restart: client connections then
+    /// close with code 1012 and the reason `restarting`.
+    pub(crate) restarting: Arc<AtomicBool>,
     /// Every WebSocket client connection holds a receiver of this channel
     /// until it has closed, so a shutdown can wait for each to send its
     /// close frame ([`RunningServer::wait`]).
     pub(crate) connections: Arc<tokio::sync::watch::Sender<()>>,
-    /// Web Push notifications to the user's browsers.
-    pub(crate) push: Arc<crate::push::PushService>,
+}
+
+impl DaemonListener {
+    /// A listener reporting `board`, the status the daemon's engine opens
+    /// with.
+    #[must_use]
+    pub fn new(board: StatusBoard) -> Self {
+        Self {
+            server: Arc::new(std::sync::OnceLock::new()),
+            shared: Arc::new(Shared {
+                board,
+                shutdown: CancellationToken::new(),
+                restarting: Arc::new(AtomicBool::new(false)),
+                connections: Arc::new(tokio::sync::watch::Sender::new(())),
+            }),
+        }
+    }
+
+    /// The daemon's status.
+    #[must_use]
+    pub fn board(&self) -> &StatusBoard {
+        &self.shared.board
+    }
+
+    /// The server for `engine` that this listener hands over to: it shares
+    /// the listener's shutdown.
+    #[must_use]
+    pub fn server(&self, engine: Engine) -> Server {
+        Server::with_shared(engine, Arc::clone(&self.shared))
+    }
+
+    /// Serves `server` from now on, and says the daemon is ready.
+    pub fn hand_over(&self, server: Arc<Server>) {
+        let _ = self.server.set(server);
+        self.shared.board.ready();
+    }
+
+    /// Says startup failed with `reason`, then waits until every client
+    /// connected meanwhile has been told and has closed, for at most
+    /// `wait`.
+    pub async fn fail(&self, reason: &str, wait: Duration) {
+        self.shared.board.fail(
+            cookie_agent_protocol::errors::DAEMON_START_FAILED
+                .error()
+                .detail(reason)
+                .build(),
+        );
+        let _ = tokio::time::timeout(wait, self.shared.connections.closed()).await;
+        self.shared.shutdown.cancel();
+    }
+
+    /// Stops listening.
+    pub fn shutdown(&self) {
+        self.shared.shutdown.cancel();
+    }
 }
 
 impl Server {
@@ -43,21 +124,28 @@ impl Server {
     /// engine's push notifications at once, until [`Self::shutdown`].
     #[must_use]
     pub fn new(engine: Engine) -> Self {
-        let shutdown = CancellationToken::new();
+        let board = engine.status_board().clone();
+        let listener = DaemonListener::new(board);
+        Self::with_shared(engine, listener.shared)
+    }
+
+    fn with_shared(engine: Engine, shared: Arc<Shared>) -> Self {
         let push = crate::push::PushService::new(engine.clone());
         if tokio::runtime::Handle::try_current().is_ok() {
-            push.start(shutdown.clone());
+            push.start(shared.shutdown.clone());
         }
         Self {
             engine,
-            shutdown,
-            restarting: Arc::new(AtomicBool::new(false)),
-            connections: Arc::new(tokio::sync::watch::Sender::new(())),
+            shutdown: shared.shutdown.clone(),
+            restarting: Arc::clone(&shared.restarting),
+            shared,
             push,
         }
     }
 
+    /// Stops serving: the daemon is `stopping`.
     pub fn shutdown(&self) {
+        self.engine.status_board().stopping(false);
         self.shutdown.cancel();
     }
 
@@ -83,6 +171,7 @@ impl Server {
     /// close saying the daemon is restarting
     /// ([`cookie_agent_protocol::RESTART_CLOSE_CODE`]).
     pub fn shutdown_for_restart(&self) {
+        self.engine.status_board().stopping(true);
         self.restarting.store(true, Ordering::Release);
         self.shutdown.cancel();
     }

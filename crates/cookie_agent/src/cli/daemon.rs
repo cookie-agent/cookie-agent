@@ -11,7 +11,6 @@ use cookie_agent_server::{generate_token, ready_line};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
-use super::compose::{Runtime, compose};
 use crate::{Launch, daemon_restart};
 
 /// The daemon's token: `[server] token` from its configuration, or a fresh
@@ -38,9 +37,11 @@ pub(super) fn web_page_line(client_url: &str) -> Option<String> {
         .map(|page| format!("web page at {page} (`cookie web` prints it with the token)"))
 }
 
-/// `cookie daemon`: composes the daemon over `workspace` and serves it on
-/// `port` or `listen`, over TLS with `tls` (certificate, key), until a stop
-/// signal or a restart, which `launch` then carries out.
+/// `cookie daemon`: listens on `port` or `listen`, over TLS with `tls`
+/// (certificate, key), then composes the daemon over `workspace` and serves
+/// it until a stop signal or a restart, which `launch` then carries out.
+/// Clients connect while it composes and see what it is doing
+/// (`docs/site/specs/daemon-startup.md`).
 pub(super) async fn serve(
     workspace: &Path,
     port: Option<u16>,
@@ -54,18 +55,27 @@ pub(super) async fn serve(
         }
         None => None,
     };
-    let runtime = compose(workspace).await?;
-    let token = daemon_token(runtime.token.clone(), runtime.config_path.as_deref())?;
-    if runtime.token.is_none() {
-        runtime.engine.note_served_server_token(token.as_str());
-    }
+    let configuration =
+        cookie_agent_config::load().context("load user configuration, agents, and skills")?;
+    let configured_token = configuration.runtime.server.token.clone();
+    let token = daemon_token(
+        configured_token.clone(),
+        configuration.config_paths.user.as_deref(),
+    )?;
+    let address = listen.unwrap_or_else(|| {
+        std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            port.unwrap_or(configuration.runtime.server.port),
+        ))
+    });
     let exit = run_daemon(
-        runtime,
+        workspace,
+        configuration,
         DaemonListen {
-            port,
-            listen,
+            address,
             tls,
             token,
+            token_configured: configured_token.is_some(),
         },
         launch,
     )
@@ -76,10 +86,11 @@ pub(super) async fn serve(
 
 /// Where and how `cookie daemon` listens.
 pub(super) struct DaemonListen {
-    port: Option<u16>,
-    listen: Option<std::net::SocketAddr>,
+    address: std::net::SocketAddr,
     tls: Option<cookie_agent_server::TlsConfig>,
     token: Zeroizing<String>,
+    /// The token comes from the configuration, not this start.
+    token_configured: bool,
 }
 
 /// Why the daemon stopped.
@@ -90,20 +101,22 @@ pub(super) enum DaemonExit {
     Restart,
 }
 
+/// How long a daemon whose startup failed waits for the clients connected
+/// meanwhile to hear why before it exits.
+const FAILED_START_NOTICE: Duration = Duration::from_secs(5);
+
 pub(super) async fn run_daemon(
-    mut runtime: Runtime,
+    workspace: &Path,
+    configuration: cookie_agent_config::LoadedConfiguration,
     options: DaemonListen,
     launch: &Launch,
 ) -> anyhow::Result<DaemonExit> {
     let DaemonListen {
-        port,
-        listen,
+        address,
         tls,
         token,
+        token_configured,
     } = options;
-    let address = listen.unwrap_or_else(|| {
-        std::net::SocketAddr::from(([127, 0, 0, 1], port.unwrap_or(runtime.port)))
-    });
     let scheme = if tls.is_some() { "wss" } else { "ws" };
     // A restarted daemon waits for the process it replaces to let go of the
     // port.
@@ -112,38 +125,20 @@ pub(super) async fn run_daemon(
     } else {
         Duration::ZERO
     };
-    let started = match cookie_agent_protocol::StopSignals::new() {
-        Ok(signals) => daemon_restart::bind_retrying(bind_wait, || {
-            runtime
-                .server
-                .clone()
-                .serve_on(address, token.clone(), tls.clone())
-        })
-        .await
-        .map(|listener| (signals, listener))
-        .map_err(|error| anyhow::Error::new(error).context("start WebSocket daemon")),
-        Err(error) => Err(anyhow::Error::new(error).context("listen for stop signals")),
-    };
-    let (mut signals, listener) = match started {
-        Ok(started) => started,
-        Err(error) => {
-            runtime.server.shutdown();
-            runtime.stop_catalog_refresh().await;
-            runtime.engine.shutdown().await;
-            return Err(error);
-        }
-    };
-    // Only a daemon that knows how it was started can start itself again.
-    let restart = CancellationToken::new();
-    if launch.relaunch.is_some() {
-        let restart = restart.clone();
-        runtime
-            .engine
-            .set_restart_hook(Box::new(move || restart.cancel()));
-    }
-    let url = format!("{scheme}://{}/ws", listener.address());
+    let listener = cookie_agent_server::DaemonListener::new(
+        cookie_agent_engine::status::StatusBoard::new(cookie_agent_protocol::DaemonPhase::Starting),
+    );
+    let mut signals =
+        cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;
+    let running = daemon_restart::bind_retrying(bind_wait, || {
+        listener.serve_on(address, token.clone(), tls.clone())
+    })
+    .await
+    .map_err(|error| anyhow::Error::new(error).context("start WebSocket daemon"))?;
+    let url = format!("{scheme}://{}/ws", running.address());
+    // Launchers wait for this line: the daemon takes connections from here
+    // on, and tells them it is starting until it is ready.
     println!("{}", ready_line(&url));
-    drop(token);
     println!(
         "cookie daemon listening on {url} (client protocol {}, process {})",
         cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
@@ -152,6 +147,44 @@ pub(super) async fn run_daemon(
     if let Some(line) = web_page_line(&url) {
         println!("{line}");
     }
+    let compose = async {
+        #[cfg(debug_assertions)]
+        hold_start_for_test(listener.board()).await;
+        super::compose::compose_for_daemon(workspace, configuration, &listener).await
+    };
+    let composed = tokio::select! {
+        composed = compose => composed,
+        () = signals.recv() => {
+            println!("cookie daemon stopped while starting");
+            listener.shutdown();
+            running.wait().await;
+            return Ok(DaemonExit::Stopped);
+        }
+    };
+    let mut runtime = match composed {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            listener
+                .fail(&format!("{error:#}"), FAILED_START_NOTICE)
+                .await;
+            running.wait().await;
+            return Err(error);
+        }
+    };
+    if !token_configured {
+        runtime.engine.note_served_server_token(token.as_str());
+    }
+    drop(token);
+    // Only a daemon that knows how it was started can start itself again.
+    let restart = CancellationToken::new();
+    if launch.relaunch.is_some() {
+        let restart = restart.clone();
+        runtime
+            .engine
+            .set_restart_hook(Box::new(move || restart.cancel()));
+    }
+    listener.hand_over(std::sync::Arc::clone(&runtime.server));
+    println!("cookie daemon ready");
     // Phones with push notifications hear the daemon is up again.
     runtime.server.announce_started();
     let exit = tokio::select! {
@@ -163,7 +196,7 @@ pub(super) async fn run_daemon(
         DaemonExit::Stopped => {
             runtime.server.shutdown();
             runtime.stop_catalog_refresh().await;
-            listener.wait().await;
+            running.wait().await;
             runtime.engine.shutdown().await;
         }
         DaemonExit::Restart => {
@@ -179,10 +212,37 @@ pub(super) async fn run_daemon(
             runtime.server.shutdown_for_restart();
             // Returns once every client connection sent that close frame
             // (bounded), so the relaunch does not cut it off.
-            listener.wait().await;
+            running.wait().await;
         }
     }
     Ok(exit)
+}
+
+/// Holds the start in debug builds, as a blocking task, so a test connects
+/// to a daemon that is still starting: for `COOKIE_AGENT_TEST_STARTUP_HOLD_MS`,
+/// and while the file `COOKIE_AGENT_TEST_STARTUP_HOLD_FILE` names exists,
+/// which a test creates before it restarts the daemon.
+#[cfg(debug_assertions)]
+async fn hold_start_for_test(board: &cookie_agent_engine::status::StatusBoard) {
+    let hold = std::env::var("COOKIE_AGENT_TEST_STARTUP_HOLD_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+        .map(Duration::from_millis);
+    let file = std::env::var_os("COOKIE_AGENT_TEST_STARTUP_HOLD_FILE")
+        .map(PathBuf::from)
+        .filter(|file| file.exists());
+    if hold.is_none() && file.is_none() {
+        return;
+    }
+    let _task = board.start("Holding the start for a test", true);
+    if let Some(hold) = hold {
+        tokio::time::sleep(hold).await;
+    }
+    if let Some(file) = file {
+        while file.exists() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 /// Exits at once on the next stop signal, for a graceful stop that hangs.

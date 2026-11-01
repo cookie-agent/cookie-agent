@@ -44,10 +44,7 @@ pub(crate) async fn run_machine(
     command: MachineCommand,
 ) -> anyhow::Result<()> {
     let client = Client::connect_websocket_with_token(url, token).await?;
-    client
-        .handshake_as(super::client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(&client, super::client_identity("cli")).await?;
     for line in run_machine_with(&client, command).await? {
         println!("{line}");
     }

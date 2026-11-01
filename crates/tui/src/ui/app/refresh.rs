@@ -445,6 +445,12 @@ impl App {
                     self.reconnect_error = Some(error);
                 }
             }
+            RpcUpdate::DaemonStarting(status) => {
+                if self.reconnecting {
+                    self.reconnect_error = None;
+                    self.restart.status = Some(status);
+                }
+            }
             RpcUpdate::Reconnected { .. } => {
                 // The event loop adopts the client, which needs async work.
             }
@@ -1280,6 +1286,10 @@ impl App {
         }
         if let ClientDelivery::DaemonRestarting(restarting) = &delivery {
             self.note_daemon_restarting(restarting.clone());
+            return true;
+        }
+        if let ClientDelivery::DaemonStatus(status) = &delivery {
+            self.restart.status = Some(status.clone());
             return true;
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {

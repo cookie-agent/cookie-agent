@@ -9,7 +9,7 @@ pub mod ui;
 
 pub use cookie_agent_protocol_transport::{Client, ClientDelivery, ClientError};
 pub use ui::{
-    ConnectionView, Reconnector, SessionPlacement, run_attached, run_with_client,
+    ConnectionView, Reconnector, SessionPlacement, StartupProgress, run_attached, run_with_client,
     run_with_new_session,
 };
 

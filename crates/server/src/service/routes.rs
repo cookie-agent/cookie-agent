@@ -53,6 +53,10 @@ impl ServerProtocol for Server {
         self.start_engine_event_notifications(context);
     }
 
+    fn status(&self) -> Option<tokio::sync::watch::Receiver<cookie_agent_protocol::DaemonStatus>> {
+        Some(self.engine.status_board().subscribe())
+    }
+
     fn engine_version(&self) -> String {
         cookie_agent_engine::release::version().to_owned()
     }

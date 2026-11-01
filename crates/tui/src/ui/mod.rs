@@ -10,8 +10,8 @@ mod slash;
 mod transcript;
 
 pub use app::{
-    App, ConnectionView, Reconnector, SessionPlacement, run_attached, run_with_client,
-    run_with_new_session,
+    App, ConnectionView, Reconnector, SessionPlacement, StartupProgress, run_attached,
+    run_with_client, run_with_new_session,
 };
 
 use ratatui::{

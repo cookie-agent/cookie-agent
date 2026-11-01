@@ -8,6 +8,10 @@
 //! The daemon delays every close frame (`COOKIE_AGENT_TEST_CLOSE_DELAY_MS`),
 //! so a daemon that relaunched before its close frames left would cut the
 //! connection every time instead of now and then.
+//!
+//! The daemon listens before it is ready (`docs/site/specs/daemon-startup.md`):
+//! a client that connects while it starts sees what it is doing, and keeps
+//! its connection once it is ready.
 
 use std::{
     io::{BufRead as _, BufReader},
@@ -84,6 +88,11 @@ struct Ready {
 
 impl Daemon {
     fn start(home: &Path, port: u16) -> Self {
+        Self::start_with(home, port, &[])
+    }
+
+    /// [`Self::start`] with `env` set too.
+    fn start_with(home: &Path, port: u16, env: &[(&str, &str)]) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_cookie"));
         command
             .args(["daemon", "--port", &port.to_string()])
@@ -94,6 +103,7 @@ impl Daemon {
             .env("COOKIE_AGENT_TEST_BUNDLED_CATALOG", "1")
             // Well within the second a closing connection gets to finish.
             .env("COOKIE_AGENT_TEST_CLOSE_DELAY_MS", "300")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -199,14 +209,19 @@ fn identity() -> ClientIdentity {
     ClientIdentity::generate(ClientKind::new("test").expect("client kind"))
 }
 
+/// A client of the daemon, once the daemon is ready.
 async fn connect(ready: &Ready) -> Client {
     let client = Client::connect_websocket_with_token(&ready.url, &ready.token)
         .await
         .expect("connect to the daemon");
-    client
+    let hello = client
         .handshake_as(identity())
         .await
         .expect("handshake with the daemon");
+    client
+        .wait_ready(&hello, |_| {})
+        .await
+        .expect("the daemon gets ready");
     client
 }
 
@@ -232,8 +247,10 @@ async fn the_daemon_restarts_through_the_rpc_and_clients_reconnect() {
     let closed = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             match deliveries.recv().await {
-                Some(ClientDelivery::DaemonRestarting(restarting)) => {
-                    assert_eq!(restarting.active_runs, 0);
+                Some(ClientDelivery::DaemonStatus(status))
+                    if status.phase == cookie_agent_protocol::DaemonPhase::Stopping =>
+                {
+                    assert!(status.restart, "{status:?}");
                     told = true;
                 }
                 Some(ClientDelivery::Disconnected { error }) => break Some(error),
@@ -244,7 +261,7 @@ async fn the_daemon_restarts_through_the_rpc_and_clients_reconnect() {
     })
     .await
     .expect("the daemon closes the connection");
-    assert!(told, "no daemon.restarting before the close");
+    assert!(told, "no stopping status before the close");
     let closed = closed.expect("the connection ends with an error saying why");
     assert!(closed.ends_with("the daemon is restarting"), "{closed}");
 
@@ -263,4 +280,52 @@ async fn the_daemon_restarts_through_the_rpc_and_clients_reconnect() {
     let again = connect(&second).await;
     assert!(again.runtime_snapshot().await.is_ok());
     again.shutdown();
+}
+
+/// A client that connects while the daemon starts is told so, refused
+/// anything but the status, and served on the same connection once the
+/// daemon is ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_connects_while_the_daemon_starts() {
+    let home = ScratchHome::new();
+    let port = free_port();
+    let mut daemon = Daemon::start_with(
+        home.path(),
+        port,
+        &[("COOKIE_AGENT_TEST_STARTUP_HOLD_MS", "1500")],
+    );
+    let ready = tokio::task::block_in_place(|| daemon.ready());
+    let client = Client::connect_websocket_with_token(&ready.url, &ready.token)
+        .await
+        .expect("connect while the daemon starts");
+    let hello = client
+        .handshake_as(identity())
+        .await
+        .expect("the handshake is answered at once");
+    let status = hello.status.clone().expect("the daemon's status");
+    assert_eq!(status.phase, cookie_agent_protocol::DaemonPhase::Starting);
+    assert!(
+        status
+            .tasks
+            .iter()
+            .any(|task| task.label == "Holding the start for a test" && task.blocking),
+        "{status:?}"
+    );
+    let refused = client
+        .runtime_snapshot()
+        .await
+        .expect_err("not before the daemon is ready");
+    assert_eq!(refused.error_code(), Some("daemon_starting"), "{refused}");
+
+    let mut seen = Vec::new();
+    client
+        .wait_ready(&hello, |status| seen.push(status.clone()))
+        .await
+        .expect("the daemon gets ready");
+    assert!(!seen.is_empty(), "progress while it starts");
+    assert!(
+        client.runtime_snapshot().await.is_ok(),
+        "served on the same connection"
+    );
+    client.shutdown();
 }

@@ -304,6 +304,22 @@ error_codes! {
         hint: Some("Send it again once the daemon is back; queued input waits for the restart."),
         description: "A run asked for once a `daemon.restart` is due and the daemon is going down.",
     }
+    DAEMON_STARTING {
+        code: "daemon_starting",
+        rpc: APPLICATION_ERROR,
+        fields: [required("status", "The daemon's status (`DaemonStatus`).")],
+        message: "Cookie is still starting.",
+        hint: Some("Send it again once the daemon is ready; `daemon.status` says when."),
+        description: "A request other than `handshake` and `daemon.status` while the daemon starts (client protocol 1.65.0).",
+    }
+    DAEMON_START_FAILED {
+        code: "daemon_start_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "Cookie could not start.",
+        hint: Some("Fix what the detail names, then start the daemon again."),
+        description: "The daemon's startup failed: the `error` of a `failed` status, or the answer to an older client's handshake held while the daemon started (client protocol 1.65.0).",
+    }
     RESTART_UNSUPPORTED {
         code: "restart_unsupported",
         rpc: APPLICATION_ERROR,

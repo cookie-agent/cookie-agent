@@ -4313,6 +4313,37 @@ def changed_daemon(browser):
     print("a reload after the daemon changed shows the new build at once")
 
 
+def daemon_starting(browser):
+    """A daemon that restarts and takes a while to start: the page shows
+    what it is doing while it starts, keeps the workspace on screen, and
+    goes on once it is ready, with nothing to reload."""
+    browser.wait("the page connected", lambda: browser.text("#connected") != "")
+    hold = os.path.join(HOME, "hold-start")
+    open(hold, "w").close()
+    ready_before = ready_lines()
+    restart = subprocess.Popen([COOKIE, "daemon", "restart", "--now"], env=dict(os.environ, HOME=HOME),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        browser.wait(
+            "the starting daemon",
+            lambda: "Cookie is starting: Holding the start for a test" in browser.text("#reconnecting"),
+            timeout=DAEMON_RESTART_TIMEOUT,
+        )
+        assert ready_lines() > ready_before, "the page saw the daemon start before it listened"
+        assert count(browser, "#composer") == 1, "the workspace left the screen while the daemon starts"
+        browser.shot("daemon-starting")
+        print("while the daemon starts the page says what it is doing")
+    finally:
+        os.remove(hold)
+    browser.wait(
+        "the started daemon",
+        lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    assert restart.wait(timeout=60) == 0, "cookie daemon restart failed"
+    print("once the daemon is ready the page goes on")
+
+
 def restart_daemon(browser):
     """A change that needs a restart shows the banner; its button, the
     connection panel's, and Settings → Configuration's open the
@@ -6130,6 +6161,8 @@ SCENARIOS = [
     ("session_restart", session_restart, "session_restart", []),
     # It restarts its daemon.
     ("restart_daemon", restart_daemon, "restart", []),
+    # It restarts its daemon and holds its start (test-web-page.sh).
+    ("daemon_starting", daemon_starting, "restart", []),
     ("install_prompt", install_prompt, "install", []),
     ("install_on_phones", install_on_phones, "install", []),
     ("panic_hook", panic_hook, "install", []),

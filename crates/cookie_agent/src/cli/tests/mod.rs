@@ -71,6 +71,7 @@ async fn compose_isolated<T: CatalogTransport + 'static>(
         open_catalog,
         open_provider_store,
         open_data_dir,
+        None,
     )
     .await
 }

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.64.0",
+    "protocol_version": "1.65.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,8 +22,9 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.64.0", "engine_version": "0.3.0",
-  "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
+{ "protocol_version": "1.65.0", "engine_version": "0.3.0",
+  "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
+  "status": { "phase": "ready" } }
 ```
 
 - **`protocol_version`** is the sender's semver version, a
@@ -49,6 +50,12 @@ The reply:
   so a client can tell whether it runs on the same machine.
 - **`features`** list what each side's configuration enables. None are
   defined yet; an unknown feature is ignored.
+- **`status`** (since 1.65.0) is the daemon's status when it answered; see
+  [Daemon status](#daemon-status). A daemon listens as soon as it has its
+  configuration, before its slow startup work, and answers a client of
+  1.65.0 or later at once, in phase `starting` if it is not ready yet. An
+  older client's handshake is answered once the daemon is ready, or with
+  `daemon_start_failed` if its startup fails.
 
 **Authentication.** A client authenticates with the daemon's bearer token
 (`[server] token`) in one of two places:
@@ -226,6 +233,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
+| `daemon.status` | Empty object (since 1.65.0); answered in every phase, before the daemon is ready too | The daemon's status: `phase`, `restart`, `tasks`, and `error`; see [Daemon status](#daemon-status) |
 | `daemon.restart` | Optional `when`: `idle` (default) or `now` (since 1.19.0) | `scheduled` (whether this call scheduled the restart rather than changed one already scheduled), `active_runs`, and `background_calls` (since 1.35.0, omitted when zero); a daemon that cannot relaunch itself answers `restart_unsupported` (see [Restarting the daemon](#restarting-the-daemon)) |
 | `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, and since 1.56.0 `default_agent`; an older daemon may send `small_model`), `providers_connected`, and the configured `default_model`, `small_model`, and `utility_model` (since 1.56.0) as `{ model, variant? }`. Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
 | `onboarding.preview` | Optional `source` (since 1.22.0) | Since 1.56.0 always `onboarding_kit_unavailable`: there is no starter kit, the daemon keeps the [official agents](../extend/agents.md#official-agents) itself. An older daemon previews its starter kit |
@@ -824,6 +832,46 @@ configures them.
   cannot read or write `push_unavailable`. Each subscription change sends
   `notifications.changed` to every connection.
 
+### Daemon status
+
+Since 1.65.0 the daemon reports what it accepts and what it is busy with,
+in the handshake's `status`, the `daemon.status` method, and the
+`daemon.status` notification:
+
+```json
+{ "phase": "starting",
+  "tasks": [ { "id": "3", "label": "Moving sessions to the new storage layout",
+               "detail": "2026-10", "progress": { "done": 41, "total": 97, "unit": "trees" },
+               "blocking": true, "started_at": "2026-11-01T16:05:51Z" } ] }
+```
+
+- **`phase`** says what the daemon accepts now:
+  - `starting`: the daemon listens but has not opened its engine. It
+    answers `handshake` and `daemon.status`; every other request is refused
+    at once with `daemon_starting`, whose `status` member carries the
+    status. The connection stays open and works as any other once the
+    phase becomes `ready`, with no new handshake.
+  - `ready`: everything works, whatever tasks are running.
+  - `stopping`: the daemon is going down; `restart` is `true` when it
+    relaunches. New runs are refused with `daemon_restarting`, and the
+    connections close soon after, with code 1012 for a restart.
+  - `failed`: startup failed; `error` is the registry error
+    `daemon_start_failed`, whose `detail` says why. The daemon exits once
+    the connected clients have it, within 5 seconds.
+
+  A phase a client does not know is treated as `ready`.
+- **`tasks`** are what the daemon is doing that a user would want to see,
+  oldest first: `id` (opaque, stable for the task's life), `label`, and
+  optional `detail` for people, optional `progress` (`done`, optional
+  `total` and `unit`), `blocking`, and `started_at`. A task that ends is
+  dropped from the list. A blocking task holds the daemon in `starting`; a
+  non-blocking one, such as a restart waiting for idle, changes nothing a
+  client may send. Tasks are free-form: clients show any task the same way
+  and never branch on its `id` or `label`.
+- **The notification** carries the whole status. It goes out at most once
+  every 250 ms, so a task that starts and ends within that window may
+  never be seen, but a phase change goes out at once.
+
 ### Restarting the daemon
 
 Since 1.19.0, `daemon.restart` restarts the daemon: it relaunches its own
@@ -848,8 +896,12 @@ upgraded on disk. Any client holding the token may call it.
   calls end without a report.
 - **A second call** while a restart is scheduled changes its `when`; `now`
   wins. Its `scheduled` is `false`.
-- **`daemon.restarting`** (`when`, `active_runs`, `background_calls` since
-  1.35.0, optional `reason`) reaches every connection when the restart is
+- **While it waits**, the daemon stays `ready` and lists a non-blocking
+  task for the restart, whose detail counts the runs and background calls
+  left; once the restart is due the phase is `stopping` with `restart:
+  true` (see [Daemon status](#daemon-status)). Clients before 1.65.0 get
+  **`daemon.restarting`** instead (`when`, `active_runs`,
+  `background_calls` since 1.35.0, optional `reason`) when the restart is
   scheduled and whenever either count changes while it waits.
 - **The restart** stops the daemon as a shutdown does (runs, plugins,
   runtimes, and MCP servers stop and the session logs and stores are
@@ -1413,7 +1465,8 @@ subscriptions to the deleted sessions end with them: no further
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 | `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
-| `daemon.restarting` | A restart is scheduled: `when` (`idle` or `now`), the `active_runs` and `background_calls` (since 1.35.0, omitted when zero) it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
+| `daemon.status` | The daemon's status changed (since 1.65.0): the new status, as the `daemon.status` method answers it. At most one every 250 ms, but a phase change goes at once; see [Daemon status](#daemon-status) |
+| `daemon.restarting` | Only to clients before 1.65.0, which read the restart from `daemon.status` instead. A restart is scheduled: `when` (`idle` or `now`), the `active_runs` and `background_calls` (since 1.35.0, omitted when zero) it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
 | `onboarding.changed` | `onboarding.get`'s answer changed (since 1.22.0): the new answer, after a configuration apply or reload, a provider connected or disconnected, or a model becoming available or not |
 | `provider.auth.completed` | A sign-in whose redirect the daemon caught itself ended (since 1.49.0): `provider_id`, and the `account` or the `error` |
 

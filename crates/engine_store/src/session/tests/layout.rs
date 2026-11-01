@@ -313,6 +313,59 @@ fn the_migration_moves_every_work_dir_tree_into_its_month() {
     }
 }
 
+/// The migration reports on the daemon's status board: one blocking task
+/// per step, counting every tree, and none left once the store is open.
+#[test]
+fn the_migration_reports_each_tree_on_the_status_board() {
+    use crate::status::StatusBoard;
+    use cookie_agent_protocol::DaemonPhase;
+
+    let temporary = private_tempdir();
+    let data = temporary.path().join("data");
+    let store = open_store(&data);
+    let roots = (1..=3)
+        .map(|day| {
+            persist_test_session_with_id(
+                &store,
+                id_at(at(&format!("2026-07-0{day}T10:00:00Z"))),
+                SessionOrigin::Root,
+            )
+        })
+        .collect::<Vec<_>>();
+    drop(store);
+    demote_to_v2(&data, &[("0000000000000001-home", roots)]);
+
+    let board = StatusBoard::recording(DaemonPhase::Starting);
+    let cwd = temporary.path().join("cwd");
+    fs::create_dir_all(&cwd).expect("cwd");
+    let _store = SessionStore::open_reporting(&data, &cwd, &board).expect("open");
+    let history = board.history();
+    let moving = history
+        .iter()
+        .flat_map(|status| &status.tasks)
+        .filter(|task| task.label == "Moving sessions to the new storage layout")
+        .collect::<Vec<_>>();
+    assert!(moving.iter().all(|task| task.blocking));
+    let counts = moving
+        .iter()
+        .filter_map(|task| task.progress.as_ref())
+        .map(|progress| (progress.done, progress.total))
+        .collect::<Vec<_>>();
+    for done in 0..=3 {
+        assert!(
+            counts.contains(&(done, Some(3))),
+            "{done} of 3 reported: {counts:?}"
+        );
+    }
+    assert!(
+        moving
+            .iter()
+            .any(|task| task.detail.as_deref() == Some("0000000000000001-home")),
+        "the detail names the folder a tree moves from"
+    );
+    assert!(board.status().tasks.is_empty(), "every task ended");
+}
+
 #[test]
 fn a_migrated_store_is_not_scanned_again() {
     let temporary = private_tempdir();

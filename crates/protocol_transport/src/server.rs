@@ -9,28 +9,29 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json, value::RawValue};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize as _;
 
 use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
-    ClientHello, ClientRenameId, ErrorResponse, EventOrigin, EventSubscriptionMessage,
-    EventsSubscribeParams, EventsSubscribeResult, JsonRpcError, JsonRpcId, JsonRpcVersion,
-    McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult,
-    McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
-    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
-    McpServerPersistParams, McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame,
-    Notification, NotificationRef, ProviderConnectParams, ProviderConnectResult,
-    ProviderDisconnectParams, ProviderDisconnectResult, Request, Response, RunCancelParams,
-    RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
-    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerHello, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
-    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
-    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    ClientHello, ClientRenameId, DaemonPhase, DaemonStatus, ErrorResponse, EventOrigin,
+    EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult, JsonRpcError,
+    JsonRpcId, JsonRpcVersion, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
+    McpAuthCancelResult, McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams,
+    McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
+    McpServerNameParams, McpServerPersistParams, McpServerReconnectParams,
+    McpServerSetEnabledParams, MessageFrame, Notification, NotificationRef, ProviderConnectParams,
+    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, Request, Response,
+    RunCancelParams, RunCancelResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerHello,
+    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
+    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
+    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
+    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
+    SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameChange, SessionRenameParams, SessionRenameResult,
     SessionResumeParams, SessionResumeResult, SessionRevertParams, SessionRevertResult,
@@ -103,8 +104,14 @@ impl ServerContext {
     }
 
     /// Records the handshake identity and version. A repeated handshake
-    /// keeps the first.
-    fn hello(&self, hello: &ClientHello, engine_version: String) -> ServerHello {
+    /// keeps the first. A client that reads the daemon's status gets
+    /// `status` with it.
+    fn hello(
+        &self,
+        hello: &ClientHello,
+        engine_version: String,
+        status: Option<DaemonStatus>,
+    ) -> ServerHello {
         let origin = self
             .client_origin
             .get_or_init(|| hello.client.origin())
@@ -116,6 +123,8 @@ impl ServerContext {
             origin,
             machine_id: cookie_agent_protocol::paths::machine_id(),
             features: Vec::new(),
+            status: status
+                .filter(|_| cookie_agent_protocol::reads_daemon_status(hello.protocol_version)),
         }
     }
 
@@ -291,6 +300,12 @@ pub fn test_server_context() -> (ServerContext, mpsc::Receiver<String>) {
 pub trait ServerProtocol: Send + Sync + 'static {
     /// Called after the handshake response has been sent.
     async fn connected(&self, _context: ServerContext) {}
+
+    /// The daemon's status, which the handshake, `daemon.status`, and its
+    /// notification report; `None` for a server that is always ready.
+    fn status(&self) -> Option<watch::Receiver<DaemonStatus>> {
+        None
+    }
 
     /// The daemon's own version, which the handshake reports.
     fn engine_version(&self) -> String {
@@ -1028,8 +1043,15 @@ where
     T: Transport,
     S: ServerProtocol,
 {
+    let status = server.status();
+    let engine_version = server.engine_version();
     serve_within(
-        server,
+        Gate {
+            server: Some(server),
+            pending: None,
+            status,
+            engine_version,
+        },
         transport,
         shutdown,
         authentication,
@@ -1038,8 +1060,102 @@ where
     .await
 }
 
+/// A daemon that may still be starting, as a connection serves it: the
+/// server it hands over to once ready, and its status meanwhile
+/// (`docs/site/specs/daemon-startup.md`).
+pub struct Startup<S> {
+    /// Set once the daemon is ready to serve.
+    pub server: Arc<std::sync::OnceLock<Arc<S>>>,
+    pub status: watch::Receiver<DaemonStatus>,
+    /// The daemon's version, for the handshake.
+    pub engine_version: String,
+}
+
+/// [`serve`] for a daemon that may still be starting. Until its server is
+/// set, the connection answers `handshake` (with the status, for a client
+/// that reads it), `daemon.status`, and refuses anything else with
+/// `daemon_starting`; an older client's handshake waits for the server.
+/// Once the status changes with the server set, the same connection is
+/// served as [`serve`] serves one. A daemon whose startup fails tells the
+/// connection and closes it.
+pub async fn serve_starting<T, S>(
+    startup: Startup<S>,
+    transport: T,
+    shutdown: CancellationToken,
+    authentication: Authentication,
+) -> Result<(), TransportError>
+where
+    T: Transport,
+    S: ServerProtocol,
+{
+    let server = startup.server.get().cloned();
+    serve_within(
+        Gate {
+            pending: server.is_none().then_some(startup.server),
+            server,
+            status: Some(startup.status),
+            engine_version: startup.engine_version,
+        },
+        transport,
+        shutdown,
+        authentication,
+        AUTHENTICATION_DEADLINE,
+    )
+    .await
+}
+
+/// What one connection serves.
+struct Gate<S> {
+    /// The server, once the daemon has one.
+    server: Option<Arc<S>>,
+    /// Where the server appears while the daemon starts.
+    pending: Option<Arc<std::sync::OnceLock<Arc<S>>>>,
+    status: Option<watch::Receiver<DaemonStatus>>,
+    engine_version: String,
+}
+
+/// How often a connection is sent the daemon's status at most; a phase
+/// change goes at once.
+const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The next change of `status`, or never without one. A status whose
+/// sender went away stops being watched.
+async fn status_changed(status: &mut Option<watch::Receiver<DaemonStatus>>) {
+    let Some(receiver) = status else {
+        return std::future::pending().await;
+    };
+    if receiver.changed().await.is_err() {
+        *status = None;
+        std::future::pending::<()>().await;
+    }
+}
+
+fn status_notification(status: &DaemonStatus) -> Result<String, TransportError> {
+    Ok(NotificationRef::new(cookie_agent_protocol::DAEMON_STATUS_METHOD, status).to_text()?)
+}
+
+/// `daemon_starting`, carrying `status`.
+fn daemon_starting(status: &DaemonStatus) -> ServerFault {
+    ServerFault::from_error(
+        cookie_agent_protocol::errors::DAEMON_STARTING
+            .error()
+            .field("status", status)
+            .build(),
+    )
+}
+
+/// The error a failed status carries, or `daemon_start_failed` without one.
+fn start_failed(status: &DaemonStatus) -> ServerFault {
+    ServerFault::from_error(status.error.clone().unwrap_or_else(|| {
+        cookie_agent_protocol::errors::DAEMON_START_FAILED
+            .error()
+            .build()
+    }))
+}
+
+#[allow(clippy::too_many_lines)]
 async fn serve_within<T, S>(
-    server: Arc<S>,
+    gate: Gate<S>,
     mut transport: T,
     shutdown: CancellationToken,
     authentication: Authentication,
@@ -1049,15 +1165,33 @@ where
     T: Transport,
     S: ServerProtocol,
 {
+    let Gate {
+        mut server,
+        pending,
+        mut status,
+        engine_version,
+    } = gate;
     let (outbound, mut outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     let context = ServerContext::new(outbound, shutdown);
     let _guard = ConnectionShutdown(context.shutdown());
     let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS));
     let mut permit = None;
     let mut handshaken = false;
+    // An older client's handshake, answered once the daemon is ready.
+    let mut held: Option<(JsonRpcId, ClientHello)> = None;
+    // The client reads `daemon.status`.
+    let mut reads_status = false;
+    // The phase last sent, when the status may go next, and whether a
+    // change waits for that.
+    let mut sent_phase: Option<DaemonPhase> = None;
+    let mut status_next = tokio::time::Instant::now();
+    let mut status_waiting = false;
     let mut authentication = authentication;
     let unauthenticated_until = tokio::time::sleep(deadline);
     tokio::pin!(unauthenticated_until);
+    if let Some(status) = &mut status {
+        status.mark_unchanged();
+    }
     loop {
         let authenticated = matches!(authentication, Authentication::Authenticated);
         tokio::select! {
@@ -1066,6 +1200,55 @@ where
                 return Ok(());
             }
             () = &mut unauthenticated_until, if !authenticated => return Ok(()),
+            () = status_changed(&mut status) => {
+                let Some(current) = status.as_mut().map(|status| status.borrow_and_update().clone()) else {
+                    continue;
+                };
+                if server.is_none()
+                    && let Some(ready) = pending.as_ref().and_then(|pending| pending.get().cloned())
+                {
+                    server = Some(Arc::clone(&ready));
+                    if let Some((id, hello)) = held.take() {
+                        handshaken = true;
+                        let hello = server_hello(&context, &hello, ready.engine_version(), None);
+                        transport.send(MessageFrame::Text(success_response(&id, &hello)?)).await?;
+                    }
+                    if handshaken {
+                        ready.connected(context.clone()).await;
+                    }
+                }
+                if current.phase == DaemonPhase::Failed && server.is_none() {
+                    if let Some((id, _)) = held.take() {
+                        let response = error_response(Some(id), start_failed(&current))?;
+                        transport.send(MessageFrame::Text(response)).await?;
+                    } else if handshaken && reads_status {
+                        transport.send(MessageFrame::Text(status_notification(&current)?)).await?;
+                    }
+                    finish_and_close(&mut transport, &mut outbound_rx).await;
+                    return Ok(());
+                }
+                if !(handshaken && reads_status) {
+                    continue;
+                }
+                let now = tokio::time::Instant::now();
+                if sent_phase != Some(current.phase) || now >= status_next {
+                    transport.send(MessageFrame::Text(status_notification(&current)?)).await?;
+                    sent_phase = Some(current.phase);
+                    status_next = now + STATUS_INTERVAL;
+                    status_waiting = false;
+                } else {
+                    status_waiting = true;
+                }
+            }
+            () = tokio::time::sleep_until(status_next), if status_waiting => {
+                status_waiting = false;
+                let Some(current) = status.as_ref().map(|status| status.borrow().clone()) else {
+                    continue;
+                };
+                transport.send(MessageFrame::Text(status_notification(&current)?)).await?;
+                sent_phase = Some(current.phase);
+                status_next = tokio::time::Instant::now() + STATUS_INTERVAL;
+            }
             acquired = in_flight.clone().acquire_owned(), if permit.is_none() => {
                 permit = Some(acquired.expect("the in-flight semaphore is never closed"));
             }
@@ -1090,39 +1273,87 @@ where
                     let Incoming::Request { id, method, params } = incoming else {
                         continue;
                     };
+                    let current = status.as_ref().map(|status| status.borrow().clone());
                     let (response, close) = if method != "handshake" {
-                        let fault = if authenticated {
+                        let fault = if held.is_some() {
+                            daemon_starting(&current.clone().unwrap_or_default())
+                        } else if authenticated {
                             handshake_required()
                         } else {
                             unauthenticated()
                         };
-                        (error_response(Some(id), fault)?, false)
+                        (Some(error_response(Some(id), fault)?), false)
                     } else {
                         match decode_handshake(params) {
                             Ok(hello) => match authenticate(&authentication, &hello) {
                                 Ok(()) => {
                                     authentication = Authentication::Authenticated;
-                                    handshaken = true;
-                                    let hello =
-                                        server_hello(&context, &hello, server.engine_version());
-                                    (success_response(&id, &hello)?, false)
+                                    reads_status = status.is_some()
+                                        && cookie_agent_protocol::reads_daemon_status(
+                                            hello.protocol_version,
+                                        );
+                                    if server.is_none() && !reads_status {
+                                        // An older client cannot tell a
+                                        // starting daemon: it is answered
+                                        // once the daemon is ready.
+                                        held = Some((id, hello));
+                                        (None, false)
+                                    } else {
+                                        handshaken = true;
+                                        if let Some(current) = &current {
+                                            sent_phase = Some(current.phase);
+                                        }
+                                        let hello = server_hello(
+                                            &context,
+                                            &hello,
+                                            engine_version.clone(),
+                                            current,
+                                        );
+                                        (Some(success_response(&id, &hello)?), false)
+                                    }
                                 }
-                                Err(fault) => (error_response(Some(id), fault)?, true),
+                                Err(fault) => (Some(error_response(Some(id), fault)?), true),
                             },
-                            Err(fault) => (error_response(Some(id), fault)?, false),
+                            Err(fault) => (Some(error_response(Some(id), fault)?), false),
                         }
                     };
-                    transport.send(MessageFrame::Text(response)).await?;
+                    if let Some(response) = response {
+                        transport.send(MessageFrame::Text(response)).await?;
+                    }
                     if close {
                         return Ok(());
                     }
-                    if handshaken {
+                    if handshaken && let Some(server) = &server {
                         server.connected(context.clone()).await;
                     }
                     continue;
                 }
+                let Some(server) = server.clone() else {
+                    // The daemon is starting: only its status is answered.
+                    let Incoming::Request { id, method, params } = incoming else {
+                        continue;
+                    };
+                    let current = status
+                        .as_ref()
+                        .map(|status| status.borrow().clone())
+                        .unwrap_or_default();
+                    let response = match method.as_str() {
+                        cookie_agent_protocol::DAEMON_STATUS_METHOD => {
+                            success_response(&id, &raw(&current))?
+                        }
+                        "handshake" => match decode_handshake(params) {
+                            Ok(hello) => success_response(
+                                &id,
+                                &server_hello(&context, &hello, engine_version.clone(), Some(current)),
+                            )?,
+                            Err(fault) => error_response(Some(id), fault)?,
+                        },
+                        _ => error_response(Some(id), daemon_starting(&current))?,
+                    };
+                    transport.send(MessageFrame::Text(response)).await?;
+                    continue;
+                };
                 let permit = permit.take();
-                let server = server.clone();
                 let (request_context, response_sent) = context.for_request();
                 tokio::spawn(async move {
                     let _permit = permit;
@@ -1205,8 +1436,17 @@ async fn handle<S: ServerProtocol>(
     match incoming {
         Incoming::Request { id, method, params } => {
             let result = if method == "handshake" {
-                decode_handshake(params)
-                    .map(|hello| server_hello(context, &hello, server.engine_version()))
+                decode_handshake(params).map(|hello| {
+                    let status = server.status().map(|status| status.borrow().clone());
+                    server_hello(context, &hello, server.engine_version(), status)
+                })
+            } else if method == cookie_agent_protocol::DAEMON_STATUS_METHOD {
+                decode_default::<cookie_agent_protocol::DaemonStatusParams>(params).map(|_| {
+                    raw(&server
+                        .status()
+                        .map(|status| status.borrow().clone())
+                        .unwrap_or_else(DaemonStatus::ready))
+                })
             } else {
                 dispatch(server, &method, params, context, true).await
             };
@@ -1234,9 +1474,13 @@ fn server_hello(
     context: &ServerContext,
     hello: &ClientHello,
     engine_version: String,
+    status: Option<DaemonStatus>,
 ) -> Box<RawValue> {
-    serde_json::value::to_raw_value(&context.hello(hello, engine_version))
-        .expect("server hello serializes")
+    raw(&context.hello(hello, engine_version, status))
+}
+
+fn raw<T: Serialize>(value: &T) -> Box<RawValue> {
+    serde_json::value::to_raw_value(value).expect("a protocol value serializes")
 }
 
 async fn dispatch<S: ServerProtocol>(

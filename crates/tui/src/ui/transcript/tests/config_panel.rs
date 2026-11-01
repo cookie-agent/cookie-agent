@@ -206,3 +206,40 @@ async fn the_config_panel_restarts_the_daemon_and_returns_to_the_panel() {
         "{frame}"
     );
 }
+
+/// What the daemon is busy with shows in the banner, whatever it is, and
+/// goes when it ends.
+#[tokio::test]
+async fn the_banner_shows_what_the_daemon_is_busy_with() {
+    let (_directory, server) = crate::tests::in_process_server_with_configuration();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    let mut app = App::new(client).await.expect("app");
+    let _deliveries = app.take_deliveries();
+    let busy = cookie_agent_protocol::DaemonStatus {
+        tasks: vec![cookie_agent_protocol::DaemonTask {
+            id: "1".into(),
+            label: "Restarting when idle".into(),
+            detail: Some("waiting for 1 running turn to finish".into()),
+            progress: None,
+            blocking: false,
+            started_at: jiff::Timestamp::UNIX_EPOCH,
+        }],
+        ..cookie_agent_protocol::DaemonStatus::default()
+    };
+    app.handle_delivery(cookie_agent_protocol_transport::ClientDelivery::DaemonStatus(busy))
+        .await;
+    let frame = rendered_frame(&mut app, 120, 40);
+    assert!(
+        frame.contains("Restarting when idle (waiting for 1 running turn to finish)"),
+        "{frame}"
+    );
+    app.handle_delivery(
+        cookie_agent_protocol_transport::ClientDelivery::DaemonStatus(
+            cookie_agent_protocol::DaemonStatus::ready(),
+        ),
+    )
+    .await;
+    let frame = rendered_frame(&mut app, 120, 40);
+    assert!(!frame.contains("Restarting when idle"), "{frame}");
+}

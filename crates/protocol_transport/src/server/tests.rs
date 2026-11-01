@@ -735,7 +735,12 @@ impl Connection {
         let (requests, incoming) = mpsc::unbounded_channel();
         let (outgoing, frames) = mpsc::unbounded_channel();
         tokio::spawn(serve_within(
-            server,
+            Gate {
+                engine_version: server.engine_version(),
+                server: Some(server),
+                pending: None,
+                status: None,
+            },
             ChannelTransport { incoming, outgoing },
             CancellationToken::new(),
             Authentication::Token(Arc::new(zeroize::Zeroizing::new(TOKEN.to_owned()))),
@@ -1187,3 +1192,5 @@ fn output_spans_go_to_display_view_clients_from_1_64_0_only() {
         EventsView::Full
     ));
 }
+
+mod startup;

@@ -1047,6 +1047,8 @@ pub(crate) struct Inner {
     pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
     /// A restart a client scheduled, and the hook that does it.
     pub(crate) restart: restart::RestartState,
+    /// The daemon's status, which the engine reports its slow work on.
+    pub(crate) status: crate::status::StatusBoard,
     /// The token the daemon created at start, which the started
     /// configuration lacks.
     pub(crate) served_server_token: std::sync::OnceLock<String>,
@@ -1096,11 +1098,27 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// The daemon's status, which the engine reports its slow work on and
+    /// which clients see in `daemon.status`.
+    #[must_use]
+    pub fn status_board(&self) -> &crate::status::StatusBoard {
+        &self.inner.status
+    }
+
     /// Opens an engine whose local coding runtime is called in-process
     /// ([`cookie_agent_runtime_api::LocalRuntime::InProcess`]). A local
     /// runtime behind the runtime protocol starts asynchronously; open it
     /// with [`Self::open_async`].
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
+        Self::open_reporting(options, crate::status::StatusBoard::default())
+    }
+
+    /// [`Self::open`], reporting its slow steps on `status`, which the
+    /// engine keeps ([`Self::status_board`]).
+    pub fn open_reporting(
+        options: EngineOptions,
+        status: crate::status::StatusBoard,
+    ) -> Result<Self, EngineError> {
         let local_workspace = local_workspace(&options)?;
         let local_tools = match &options.runtimes.local {
             cookie_agent_runtime_api::LocalRuntime::InProcess(tools) => Arc::clone(tools),
@@ -1133,15 +1151,25 @@ impl Engine {
             local_template,
             local,
             crate::runtimes::McpHub::new(),
+            status,
         )
     }
 
     /// Opens an engine, first starting its local coding runtime and
     /// initializing it over the runtime protocol when it runs behind it.
     pub async fn open_async(options: EngineOptions) -> Result<Self, EngineError> {
+        Self::open_async_reporting(options, crate::status::StatusBoard::default()).await
+    }
+
+    /// [`Self::open_async`], reporting its slow steps on `status`, which
+    /// the engine keeps ([`Self::status_board`]).
+    pub async fn open_async_reporting(
+        options: EngineOptions,
+        status: crate::status::StatusBoard,
+    ) -> Result<Self, EngineError> {
         let cookie_agent_runtime_api::LocalRuntime::Protocol(connector) = &options.runtimes.local
         else {
-            return Self::open(options);
+            return Self::open_reporting(options, status);
         };
         let local_workspace = local_workspace(&options)?;
         let mcp_hub = crate::runtimes::McpHub::new();
@@ -1156,6 +1184,7 @@ impl Engine {
             )
             .with_mcp_hub(Arc::clone(&mcp_hub)),
         );
+        let starting_local = status.start("Starting the local runtime", true);
         let local = crate::RuntimeTemplate::start(
             local_template.as_ref(),
             &cookie_agent_protocol::CapabilityName::coding(),
@@ -1165,7 +1194,8 @@ impl Engine {
         .map_err(|reason| {
             EngineError::Runtime(format!("runtime `local` failed to start: {reason}"))
         })?;
-        Self::open_started(options, local_template, local, mcp_hub)
+        drop(starting_local);
+        Self::open_started(options, local_template, local, mcp_hub, status)
     }
 
     fn open_started(
@@ -1173,6 +1203,7 @@ impl Engine {
         local_template: Arc<dyn crate::RuntimeTemplate>,
         local: crate::StartedRuntime,
         mcp_hub: Arc<crate::runtimes::McpHub>,
+        status: crate::status::StatusBoard,
     ) -> Result<Self, EngineError> {
         let mut provider_ids = HashSet::new();
         for provider in options.runtimes.global_tools.iter().chain(&local.providers) {
@@ -1198,7 +1229,10 @@ impl Engine {
             agent_presets,
             current_manifest,
         });
-        let store = SessionStore::open(&options.data_dir, &options.cwd)?;
+        let opening_store = status.start("Opening the session store", true);
+        let store = SessionStore::open_reporting(&options.data_dir, &options.cwd, &status)?;
+        drop(opening_store);
+        let restoring = status.start("Restoring memory, machines, projects, and cron jobs", true);
         // The first start keys off the memory folder's absence, so it runs
         // before anything can take the memory lock or move machine folders.
         let memory = crate::memory::MemoryRoot::new(&options.data_dir);
@@ -1224,6 +1258,7 @@ impl Engine {
             eprintln!("cookie-agent: projects: {error}");
         }
         let crons = Arc::new(crate::crons::CronStore::open(&options.data_dir)?);
+        drop(restoring);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
         let placement = Arc::clone(&store);
@@ -1343,6 +1378,7 @@ impl Engine {
                 crons,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
                 restart: restart::RestartState::default(),
+                status,
                 served_server_token: std::sync::OnceLock::new(),
                 provider_ids: Mutex::new(provider_ids),
                 mcp,

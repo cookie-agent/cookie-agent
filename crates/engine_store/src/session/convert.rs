@@ -341,7 +341,7 @@ pub fn upgrade_sessions(
     create_unix_session_directory_all(&sessions)?;
     #[cfg(windows)]
     create_windows_session_directory(&sessions)?;
-    super::layout::prepare(&sessions)?;
+    super::layout::prepare(&sessions, &crate::status::StatusBoard::default())?;
     let mut upgrades = Vec::new();
     for month in super::layout::month_dirs(&sessions) {
         let month_dir = sessions.join(month.to_string());

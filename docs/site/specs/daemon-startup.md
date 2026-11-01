@@ -1,7 +1,8 @@
 # Daemon startup and status
 
-Status: **approved** (2026-11-01), with the user's decisions in
-[section 9](#9-decisions).
+Status: **implemented** (2026-11-01), with the user's decisions in
+[section 9](#9-decisions); client protocol 1.65.0. Notes in
+[section 10](#10-implementation-notes).
 
 ## 1. Problem
 
@@ -99,9 +100,10 @@ DaemonTask {
 - A task that ends is removed. A failed blocking task fails startup, and its
   error is the status's `error`.
 - Updates are coalesced: at most one notification every 250 ms per
-  connection, plus one at every phase change and every task start or end.
-  Progress counters are cheap atomics, so a migration can report each tree
-  without slowing down.
+  connection, but a phase change goes at once. A task that starts and ends
+  within one window is never sent. Every change is one update of a
+  `watch` channel, so a migration can report each tree without slowing
+  down.
 
 ### 3.1 Where it lives
 
@@ -294,3 +296,71 @@ The user's decisions of 2026-11-01:
    restart is due, the phase is `stopping` with `restart: true`. Clients at this version read only that.
    `daemon.restarting` is still sent, but only to connections whose hello
    names an older protocol.
+
+## 10. Implementation notes
+
+Implemented 2026-11-01, client protocol 1.65.0 (plugin and runtime
+protocols unchanged).
+
+- **The board** is `cookie_agent_engine_store::status::StatusBoard`, a
+  `watch` channel of `DaemonStatus`. `start(label, blocking)` returns a
+  `StatusTask` that ends when dropped, with `set_total`, `advance`,
+  `set_detail`, and `set_label`. The engine keeps the one it opened with
+  (`Engine::open_reporting`, `Engine::open_async_reporting`,
+  `Engine::status_board`); `Engine::open` and `open_async` use a board of
+  their own in phase `ready`. `SessionStore::open_reporting` passes it to
+  the layout migration.
+- **The tasks reported now**, all blocking unless noted: loading the model
+  catalog, starting the local runtime, opening the session store,
+  converting sessions to history format N and moving sessions to the new
+  storage layout (each counting trees, the detail naming the folder),
+  rebuilding the activity journals, recording the new layout, restoring
+  memory, machines, projects, and cron jobs, and the non-blocking restart
+  wait ("Restarting when idle" or "Restarting now", the detail saying what
+  it waits for). A restart that is due sets `stopping` with `restart`, and
+  `Server::shutdown` sets `stopping`.
+- **The listener** is `cookie_agent_server::DaemonListener`: `serve_on`
+  binds before the server exists, `server(engine)` builds the server that
+  shares its shutdown, `hand_over(server)` serves it and sets `ready`, and
+  `fail(reason, wait)` sets `failed` and returns once every connection has
+  closed, within `wait`. The server slot lives in the listener, not in the
+  server, so the two do not keep each other alive. `Server::serve_on`
+  builds a listener whose slot is already set.
+- **Connections** go through `cookie_agent_protocol_transport::serve_starting`
+  (and `serve` for one that is ready, such as in-process): one loop that
+  answers `handshake`, `daemon.status`, and `daemon_starting` until the
+  slot is set, then calls `connected` on the same connection. The status
+  reaches a connection as `daemon.status` only when its hello names 1.65.0
+  or later; an older client's handshake is held until the handover, and
+  `daemon.restarting` goes only to older clients.
+- **`cookie daemon`** loads its configuration and token, binds, prints
+  `daemon-ready` and the listening line, then composes; it prints
+  `cookie daemon ready` after the handover. A stop signal while it
+  composes stops it. The test scripts (`test-web-page.sh`,
+  `test-wasm-client.sh`, `web-screenshots.sh`) wait for
+  `cookie daemon ready`, since they call the daemon at once.
+- **Clients:** `Client::wait_ready` (and `wait_ready_with`, which takes
+  the browser's timer) polls `daemon.status` every 250 ms while the phase
+  is `starting` and fails with the status's error when it is `failed`. The
+  CLI handshakes through `handshake_ready`, which prints the progress on
+  stderr (`StartupLines`: a line when the task changes, else at most every
+  2 seconds); `cookie daemon status` prints the phase and tasks. The TUI
+  waits before its first screen, and its `Reconnector` takes a
+  `StartupProgress` so the banner shows the restarted daemon's start; the
+  banner shows `notice_text` of the status before anything else. The web
+  client waits in `open_ready`, showing the start on the connect screen
+  (`#daemon-starting`) or in the reconnect banner, with a bar per task
+  that knows its total, and `#daemon-status` once connected. Shared wording
+  is `cookie_agent_client_state::daemon_status`.
+- **The redial after a restart** is `RedialDelays`: every 500 ms for 60
+  tries, then the usual back-off. Clients decide it from the status they
+  last had (`stopping` with `restart`) or an older daemon's
+  `daemon.restarting`, not from the close frame's text.
+- **Tests:** the board and migration progress (`engine_store`), the
+  startup connection and coalescing (`protocol_transport`), the listener
+  before the handover and a failed start (`server`), both client
+  generations hearing a restart, the real binary connected while it starts
+  (`COOKIE_AGENT_TEST_STARTUP_HOLD_MS`, debug builds), the TUI banner, and
+  the web scenario `daemon_starting`, which restarts the daemon while
+  `COOKIE_AGENT_TEST_STARTUP_HOLD_FILE` exists.
+

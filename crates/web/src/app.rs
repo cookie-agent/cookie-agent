@@ -3,8 +3,8 @@
 //! whose rail carries both instead. Where the browser can install the page
 //! as an app, the connect screen and a phone's banner offer it (spec 9).
 
-use cookie_agent_client_state::subscriptions::RECONNECT_BACKOFF;
-use cookie_agent_protocol::{ClientIdentity, ServerHello};
+use cookie_agent_client_state::{daemon_status, subscriptions::RedialDelays};
+use cookie_agent_protocol::{ClientIdentity, DaemonStatus, ServerHello};
 use cookie_agent_protocol_transport::{Client, ClientDelivery, ClientError};
 use leptos::{prelude::*, task::spawn_local};
 
@@ -74,6 +74,9 @@ pub(crate) struct Connection {
     /// The session a notification asked to open, until a connection opens
     /// it.
     pending_session: StoredValue<Option<String>>,
+    /// The daemon's status (client protocol 1.65.0): how its start goes
+    /// while the page waits for it, then what it is busy with.
+    daemon: RwSignal<Option<DaemonStatus>>,
 }
 
 impl Connection {
@@ -128,6 +131,7 @@ impl Connection {
             workspace: Workspace::new(),
             attached: RwSignal::new(false),
             pending_session: StoredValue::new(pending_session),
+            daemon: RwSignal::new(None),
         }
     }
 
@@ -190,8 +194,9 @@ impl Connection {
         self.drop_client();
         let generation = self.next_generation();
         self.phase.set(Phase::Connecting);
+        self.daemon.set(None);
         spawn_local(async move {
-            let opened = connection::open(&url, &token, self.identity.get_value()).await;
+            let opened = self.open_ready(generation, &url, &token).await;
             if !self.is_current(generation) {
                 return;
             }
@@ -206,8 +211,43 @@ impl Connection {
         });
     }
 
+    /// Connects and handshakes, then waits for a daemon that is still
+    /// starting to be ready, showing how its start goes meanwhile.
+    async fn open_ready(
+        self,
+        generation: u64,
+        url: &str,
+        token: &str,
+    ) -> Result<(Client, ServerHello), ClientError> {
+        let (client, hello) = connection::open(url, token, self.identity.get_value()).await?;
+        let waited = client
+            .wait_ready_with(
+                &hello,
+                |status| {
+                    if self.is_current(generation) {
+                        self.daemon.set(Some(status.clone()));
+                    }
+                },
+                gloo_timers::future::sleep,
+            )
+            .await;
+        if let Err(error) = waited {
+            client.shutdown();
+            return Err(error);
+        }
+        Ok((client, hello))
+    }
+
     /// Makes `client` the page's connection and watches it for a drop.
     fn adopt(self, generation: u64, url: &str, client: Client, hello: &ServerHello) {
+        // The page waited for the daemon to be ready; what it is busy with
+        // comes in its notifications from here on.
+        self.daemon.set(
+            hello
+                .status
+                .clone()
+                .filter(|status| !daemon_status::is_starting(status)),
+        );
         let deliveries = client.subscribe_deliveries();
         self.client.set_value(Some(client.clone()));
         self.workspace.adopt(client);
@@ -244,6 +284,9 @@ impl Connection {
                                 ended = Some(error.to_string());
                                 return;
                             }
+                            ClientDelivery::DaemonStatus(status) if self.is_current(generation) => {
+                                self.daemon.set(Some(status));
+                            }
                             delivery if self.is_current(generation) => {
                                 self.workspace.handle(delivery);
                             }
@@ -270,14 +313,18 @@ impl Connection {
         self.phase.set(Phase::Reconnecting { reason });
         let url = self.url.get_untracked();
         let token = self.token.get_untracked();
+        // A daemon that went down to restart listens again in moments.
+        let for_restart = cookie_agent_client_state::subscriptions::restarting(
+            self.daemon.get_untracked().as_ref(),
+        );
         spawn_local(async move {
-            let mut delays = RECONNECT_BACKOFF.delays();
+            let mut delays = RedialDelays::new(for_restart);
             loop {
                 gloo_timers::future::sleep(delays.next_delay()).await;
                 if !self.is_current(generation) {
                     return;
                 }
-                match connection::open(&url, &token, self.identity.get_value()).await {
+                match self.open_ready(generation, &url, &token).await {
                     Ok((client, hello)) if self.is_current(generation) => {
                         self.adopt(generation, &url, client, &hello);
                         return;
@@ -462,15 +509,20 @@ pub fn App() -> impl IntoView {
                             <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
                             <span class="min-w-0 flex-1">
                                 {move || {
-                                    format!(
-                                        "Connection lost ({}); reconnecting…",
-                                        reconnecting_reason.get().unwrap_or_default(),
-                                    )
+                                    match connection.daemon.get().filter(daemon_status::is_starting) {
+                                        Some(status) => daemon_status::starting_text(&status),
+                                        None => format!(
+                                            "Connection lost ({}); reconnecting…",
+                                            reconnecting_reason.get().unwrap_or_default(),
+                                        ),
+                                    }
                                 }}
                             </span>
                         </div>
+                        <StartingProgress connection=connection />
                     </Show>
                     <Show when=move || connected.get()>
+                        <DaemonNotice connection=connection />
                         <RestartBanner workspace=connection.workspace />
                         <RestartDialog workspace=connection.workspace />
                         <MediaViewer workspace=connection.workspace />
@@ -481,6 +533,63 @@ pub fn App() -> impl IntoView {
                     .into_any()
             }}
         </div>
+    }
+}
+
+/// What the daemon is busy with, once connected: a task that does not
+/// block it, such as a restart waiting for idle, or the daemon stopping.
+#[component]
+fn DaemonNotice(connection: Connection) -> impl IntoView {
+    let notice = Memo::new(move |_| {
+        connection
+            .daemon
+            .get()
+            .as_ref()
+            .and_then(daemon_status::notice_text)
+    });
+    view! {
+        <Show when=move || notice.get().is_some()>
+            <div id="daemon-status" role="status" class="flex items-center gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember">
+                <Glyph icon=icondata::FaGearsSolid class="text-caramel dark:text-maple" />
+                <span class="min-w-0 flex-1">{move || notice.get().unwrap_or_default()}</span>
+            </div>
+            <StartingProgress connection=connection />
+        </Show>
+    }
+}
+
+/// A bar for every task of the daemon that knows how far it is.
+#[component]
+fn StartingProgress(connection: Connection) -> impl IntoView {
+    let bars = move || {
+        connection
+            .daemon
+            .get()
+            .map(|status| {
+                status
+                    .tasks
+                    .iter()
+                    .filter_map(|task| {
+                        daemon_status::task_fraction(task)
+                            .map(|fraction| (daemon_status::task_text(task), fraction))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    view! {
+        {move || {
+            bars()
+                .into_iter()
+                .map(|(label, fraction)| {
+                    view! {
+                        <div class="h-1 w-full bg-crust dark:bg-smoke" role="progressbar" aria-label=label aria-valuemin="0" aria-valuemax="100" aria-valuenow=format!("{:.0}", fraction * 100.0)>
+                            <div class="h-1 bg-caramel dark:bg-maple" style=format!("width: {:.1}%", fraction * 100.0)></div>
+                        </div>
+                    }
+                })
+                .collect_view()
+        }}
     }
 }
 
@@ -902,6 +1011,10 @@ const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 py-2 
 #[component]
 fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
     let busy = matches!(phase, Phase::Connecting | Phase::Reconnecting { .. });
+    let starting = connection
+        .daemon
+        .get_untracked()
+        .filter(|status| busy && daemon_status::is_starting(status));
     let notice = match phase {
         Phase::Failed { message, hint } => Some((message, hint)),
         Phase::Reconnecting { reason } => {
@@ -954,6 +1067,23 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                         on:input=move |event| connection.token.set(event_target_value(&event))
                     />
                 </label>
+                {move || {
+                    connection
+                        .daemon
+                        .get()
+                        .filter(|status| starting.is_some() && daemon_status::is_starting(status))
+                        .map(|status| {
+                            view! {
+                                <div id="daemon-starting" role="status" class="flex flex-col gap-2 rounded-md border border-caramel bg-cream p-3 text-sm dark:border-maple dark:bg-night">
+                                    <p class="flex items-center gap-2">
+                                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-caramel dark:text-maple" />
+                                        {daemon_status::starting_text(&status)}
+                                    </p>
+                                    <StartingProgress connection=connection />
+                                </div>
+                            }
+                        })
+                }}
                 {notice
                     .map(|(message, hint)| {
                         view! {

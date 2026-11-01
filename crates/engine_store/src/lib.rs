@@ -15,6 +15,7 @@ pub mod events;
 pub mod goal_projection;
 pub mod ownership;
 pub mod session;
+pub mod status;
 #[cfg(test)]
 #[path = "../../../test-support/model_fixtures.rs"]
 mod test_support;

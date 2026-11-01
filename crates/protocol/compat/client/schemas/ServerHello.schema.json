@@ -1,4 +1,157 @@
 {
+  "$defs": {
+    "DaemonPhase": {
+      "description": "What the daemon accepts now.",
+      "oneOf": [
+        {
+          "const": "starting",
+          "description": "Starting: only `handshake` and `daemon.status` are answered; any\nother request is refused with `daemon_starting`.",
+          "type": "string"
+        },
+        {
+          "const": "ready",
+          "description": "Everything works, whatever tasks are running.",
+          "type": "string"
+        },
+        {
+          "const": "stopping",
+          "description": "Going down, for a stop or a restart that is due: new runs are\nrefused, and connections close soon.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Startup failed, as `error` says; the daemon exits.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "DaemonStatus": {
+      "description": "The daemon's phase and what it is busy with: the `daemon.status` result,\nthe `daemon.status` notification, and [`crate::ServerHello::status`].",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonRpcError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "In phase `failed`: why, as a registry error."
+        },
+        "phase": {
+          "$ref": "#/$defs/DaemonPhase"
+        },
+        "restart": {
+          "description": "In phase `stopping`: the daemon relaunches.",
+          "type": "boolean"
+        },
+        "tasks": {
+          "description": "What the daemon is doing that a user would want to see, oldest\nfirst. Free-form: clients show any task the same way.",
+          "items": {
+            "$ref": "#/$defs/DaemonTask"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "type": "object"
+    },
+    "DaemonTask": {
+      "description": "One thing the daemon is doing.",
+      "properties": {
+        "blocking": {
+          "description": "The daemon is not ready until this task ends.",
+          "type": "boolean"
+        },
+        "detail": {
+          "description": "What it is on now, for people.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Stable for the task's life; opaque.",
+          "type": "string"
+        },
+        "label": {
+          "description": "What it is, for people: \"Moving sessions to the new storage layout\".",
+          "type": "string"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "started_at"
+      ],
+      "type": "object"
+    },
+    "JsonRpcError": {
+      "properties": {
+        "code": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "data": true,
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "TaskProgress": {
+      "description": "How far a task is.",
+      "properties": {
+        "done": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "description": "Absent while the task does not know how much there is.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unit": {
+          "description": "What `done` and `total` count, for people: \"sessions\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "done"
+      ],
+      "type": "object"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "The `handshake` result.",
   "properties": {
@@ -30,6 +183,17 @@
       "description": "The daemon's [`crate::CLIENT_PROTOCOL_VERSION`]. The client sends a\nmethod or member only if this version includes it.",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
       "type": "string"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DaemonStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The daemon's status when it answered (client protocol 1.65.0), sent\nto clients of that version or later. A daemon that is still starting\nanswers with phase `starting` and keeps the connection; the\n`daemon.status` notification says when it is ready. Absent from older\ndaemons, which answer only once ready."
     }
   },
   "required": [

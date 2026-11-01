@@ -99,10 +99,7 @@ pub(crate) async fn run_memory(
         _ => {}
     }
     let client = Client::connect_websocket_with_token(url, token).await?;
-    client
-        .handshake_as(super::client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(&client, super::client_identity("cli")).await?;
     run_memory_with(&client, command, &mut StdioMemoryIo).await
 }
 

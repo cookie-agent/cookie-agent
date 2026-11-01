@@ -65,11 +65,6 @@ pub(super) fn run_catalog_transport() -> anyhow::Result<RunCatalogTransport> {
 pub(super) struct Runtime {
     pub(super) engine: Engine,
     pub(super) server: Arc<Server>,
-    pub(super) port: u16,
-    /// `[server] token`, when the configuration has one.
-    pub(super) token: Option<String>,
-    /// The user `config.toml`, where the daemon keeps a token it creates.
-    pub(super) config_path: Option<PathBuf>,
     pub(super) catalog_refresh_shutdown: CancellationToken,
     pub(super) catalog_refresh_task: Option<tokio::task::JoinHandle<()>>,
     /// The official skills' refresh loop, stopped with the catalog's.
@@ -201,6 +196,30 @@ pub(super) async fn compose_loaded(
         CatalogManager::standard,
         ProviderStore::standard,
         data_dir,
+        None,
+    )
+    .await?;
+    runtime.start_official_skills();
+    runtime.start_official_agents();
+    Ok(runtime)
+}
+
+/// [`compose_loaded`] for `cookie daemon`, which listens before it is
+/// composed: the engine reports its startup on `listener`'s status, and the
+/// server is the one `listener` hands over to.
+pub(super) async fn compose_for_daemon(
+    workspace: &Path,
+    configuration: cookie_agent_config::LoadedConfiguration,
+    listener: &cookie_agent_server::DaemonListener,
+) -> anyhow::Result<Runtime> {
+    let mut runtime = compose_with_configuration(
+        workspace,
+        configuration,
+        || HttpCatalogTransport::new().context("construct fixed catalog transport"),
+        CatalogManager::standard,
+        ProviderStore::standard,
+        data_dir,
+        Some(listener),
     )
     .await?;
     runtime.start_official_skills();
@@ -227,6 +246,7 @@ pub(super) async fn compose_with<T: CatalogTransport + 'static>(
         open_catalog,
         open_provider_store,
         open_data_dir,
+        None,
     )
     .await
 }
@@ -241,16 +261,16 @@ pub(super) async fn compose_with_configuration<T: CatalogTransport + 'static>(
         cookie_agent_models::provider_store::ProviderStoreError,
     >,
     open_data_dir: impl FnOnce() -> anyhow::Result<PathBuf>,
+    listener: Option<&cookie_agent_server::DaemonListener>,
 ) -> anyhow::Result<Runtime> {
+    let board = listener.map_or_else(Default::default, |listener| listener.board().clone());
     if configuration.runtime.server.host != "127.0.0.1" {
         anyhow::bail!("server.host must be exactly 127.0.0.1");
     }
-    let port = configuration.runtime.server.port;
-    let token = configuration.runtime.server.token.clone();
-    let config_path = configuration.config_paths.user.clone();
 
     // Startup never waits on the network: it serves the validated cache (or
     // the bundled catalog) and the refresh loop checks models.dev right away.
+    let loading_catalog = board.start("Loading the model catalog", true);
     let catalog_manager = open_catalog(open_transport()?);
     let catalog = Arc::new(
         catalog_manager
@@ -281,16 +301,23 @@ pub(super) async fn compose_with_configuration<T: CatalogTransport + 'static>(
         )
         .context("compose effective providers and current model runtime")?,
     );
-    let engine = Engine::open_async(EngineOptions {
-        data_dir: open_data_dir()?,
-        cwd: workspace.to_owned(),
-        config: configuration,
-        model_manager,
-        runtimes: cookie_agent_coding_runtime::runtime_options(workspace),
-    })
+    drop(loading_catalog);
+    let engine = Engine::open_async_reporting(
+        EngineOptions {
+            data_dir: open_data_dir()?,
+            cwd: workspace.to_owned(),
+            config: configuration,
+            model_manager,
+            runtimes: cookie_agent_coding_runtime::runtime_options(workspace),
+        },
+        board,
+    )
     .await
     .context("open manifests, rehydrate project state, and reconcile engine")?;
-    let server = Arc::new(Server::new(engine.clone()));
+    let server = Arc::new(listener.map_or_else(
+        || Server::new(engine.clone()),
+        |listener| listener.server(engine.clone()),
+    ));
     let catalog_refresh_shutdown = CancellationToken::new();
     let catalog_refresh_task = tokio::spawn(run_catalog_refresh_loop(
         catalog_manager,
@@ -305,9 +332,6 @@ pub(super) async fn compose_with_configuration<T: CatalogTransport + 'static>(
     Ok(Runtime {
         engine,
         server,
-        port,
-        token,
-        config_path,
         catalog_refresh_shutdown,
         catalog_refresh_task: Some(catalog_refresh_task),
         official_skills_task: None,

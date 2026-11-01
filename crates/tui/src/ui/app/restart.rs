@@ -24,6 +24,9 @@ pub(in crate::ui) struct RestartState {
     pub(in crate::ui) config_status: Option<ConfigStatus>,
     /// A restart the daemon announced, until the connection closes.
     pub(in crate::ui) restarting: Option<DaemonRestartingNotification>,
+    /// The daemon's status (client protocol 1.65.0): what it is busy with,
+    /// and, while a redial waits for it, how its start goes.
+    pub(in crate::ui) status: Option<cookie_agent_protocol::DaemonStatus>,
     /// The running turns the open confirmation counted.
     pub(in crate::ui) running: usize,
     /// The panel the confirmation opened over, which it returns to.
@@ -47,6 +50,14 @@ impl App {
     /// The banner's text: the waiting state once the daemon announced a
     /// restart, else what the configuration waits for.
     pub(super) fn restart_banner_text(&self) -> Option<String> {
+        if let Some(notice) = self
+            .restart
+            .status
+            .as_ref()
+            .and_then(cookie_agent_client_state::daemon_status::notice_text)
+        {
+            return Some(notice);
+        }
         if let Some(restarting) = &self.restart.restarting {
             return Some(shared::restarting_text(restarting));
         }
@@ -93,6 +104,7 @@ impl App {
     /// A new connection: the restart, if any, is over.
     pub(super) fn reset_restart_after_reconnect(&mut self) {
         self.restart.restarting = None;
+        self.restart.status = None;
         self.restart.config_status = None;
     }
 

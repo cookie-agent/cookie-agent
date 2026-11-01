@@ -89,8 +89,14 @@ impl App {
     fn lasting_status(&self) -> Vec<String> {
         let mut lasting = Vec::new();
         if self.reconnecting {
+            let starting = self
+                .restart
+                .status
+                .as_ref()
+                .is_some_and(cookie_agent_client_state::daemon_status::is_starting);
             lasting.push(match &self.reconnect_error {
                 Some(error) => format!("daemon disconnected — reconnecting ({error})"),
+                None if starting => "daemon starting — waiting until it is ready…".to_owned(),
                 None => "daemon disconnected — reconnecting…".to_owned(),
             });
         }

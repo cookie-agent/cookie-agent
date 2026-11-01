@@ -117,21 +117,25 @@ run_set() {
     start_daemon() {
         local home="$1" attempt pid
         for attempt in 1 2 3 4 5; do
-            (cd "$home/workspace" && HOME="$home" exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
+            # A scenario holds a restarted daemon's start with the file.
+            (cd "$home/workspace" && HOME="$home" COOKIE_AGENT_TEST_STARTUP_HOLD_FILE="$home/hold-start" \
+                exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
             pid="$!"
             pids+=("$pid")
             echo "$pid" >"$home/daemon.pid"
+            # The daemon takes connections at `daemon-ready` and serves
+            # them once it says it is ready.
             for _ in $(seq 1 600); do
-                grep -q '^daemon-ready ' "$home/daemon.out" 2>/dev/null && break
+                grep -q '^cookie daemon ready$' "$home/daemon.out" 2>/dev/null && break
                 kill -0 "$pid" 2>/dev/null || break
                 sleep 0.1
             done
-            grep -q '^daemon-ready ' "$home/daemon.out" && break
+            grep -q '^cookie daemon ready$' "$home/daemon.out" && break
             grep -q 'Address already in use' "$home/daemon.err" || break
             wait "$pid" 2>/dev/null || true
             sed -i "s/^port = [0-9]*$/port = $(free_port)/" "$home/.cookie-agent/config.toml"
         done
-        if ! grep -q '^daemon-ready ' "$home/daemon.out"; then
+        if ! grep -q '^cookie daemon ready$' "$home/daemon.out"; then
             echo "the daemon in $home did not get ready (attempt $attempt):" >&2
             cat "$home/daemon.err" >&2
             exit 1

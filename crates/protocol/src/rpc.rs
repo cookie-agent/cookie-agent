@@ -386,7 +386,7 @@ impl Drop for HandshakeToken {
 }
 
 /// The `handshake` result.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ServerHello {
     /// The daemon's [`crate::CLIENT_PROTOCOL_VERSION`]. The client sends a
     /// method or member only if this version includes it.
@@ -404,6 +404,13 @@ pub struct ServerHello {
     /// yet; a client ignores one it does not know.
     #[serde(default)]
     pub features: Vec<String>,
+    /// The daemon's status when it answered (client protocol 1.65.0), sent
+    /// to clients of that version or later. A daemon that is still starting
+    /// answers with phase `starting` and keeps the connection; the
+    /// `daemon.status` notification says when it is ready. Absent from older
+    /// daemons, which answer only once ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::DaemonStatus>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

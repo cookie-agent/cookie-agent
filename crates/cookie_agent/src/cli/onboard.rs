@@ -96,10 +96,7 @@ pub(crate) async fn run_onboard(url: &str, token: &str, args: OnboardArgs) -> an
         )?;
     }
     let client = Client::connect_websocket_with_token(url, token).await?;
-    client
-        .handshake_as(super::client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(&client, super::client_identity("cli")).await?;
     let mut io = super::connect::StdioConnectIo;
     run_onboard_with(&client, args, &mut io).await
 }

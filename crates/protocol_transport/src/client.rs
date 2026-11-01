@@ -46,6 +46,9 @@ use zeroize::{Zeroize, Zeroizing};
 const COMMAND_QUEUE_CAPACITY: usize = 128;
 const RECOVERY_ATTEMPTS: usize = 6;
 /// The waits between recovery attempts: 50 ms, doubling up to 5 s.
+/// How often [`Client::wait_ready`] asks a starting daemon for its status.
+pub const READY_POLL: Duration = Duration::from_millis(250);
+
 const RECOVERY_BACKOFF: cookie_agent_identity::Backoff =
     cookie_agent_identity::Backoff::new(Duration::from_millis(50), Duration::from_secs(5));
 /// How long the daemon may take to answer one replay page once its request
@@ -178,8 +181,13 @@ pub enum ClientDelivery {
     /// The push subscriptions changed; refetch `notifications.get`.
     NotificationsChanged(cookie_agent_protocol::NotificationsChangedNotification),
     /// The daemon will restart: when, and how many runs it still waits
-    /// for. The connection then closes and the client reconnects.
+    /// for. The connection then closes and the client reconnects. Only a
+    /// daemon before client protocol 1.65.0 sends it; later ones say the
+    /// same in [`Self::DaemonStatus`].
     DaemonRestarting(cookie_agent_protocol::DaemonRestartingNotification),
+    /// The daemon's status changed (client protocol 1.65.0): its phase and
+    /// what it is busy with.
+    DaemonStatus(cookie_agent_protocol::DaemonStatus),
     /// Whether the daemon is set up changed: the new `onboarding.get`
     /// answer.
     OnboardingChanged(cookie_agent_protocol::OnboardingStatus),
@@ -1658,6 +1666,59 @@ impl Client {
         .await
     }
 
+    /// The daemon's status (client protocol 1.65.0), answered while it
+    /// starts too.
+    pub async fn daemon_status(&self) -> Result<cookie_agent_protocol::DaemonStatus, ClientError> {
+        self.call(
+            cookie_agent_protocol::DAEMON_STATUS_METHOD,
+            &cookie_agent_protocol::DaemonStatusParams {},
+        )
+        .await
+    }
+
+    /// Waits until a daemon that answered the handshake with `hello` is
+    /// ready, asking for its status every 250 ms and handing each
+    /// one to `progress` meanwhile. A daemon whose startup fails is its
+    /// error; one ready already, or too old to say, returns at once.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn wait_ready(
+        &self,
+        hello: &ServerHello,
+        progress: impl FnMut(&cookie_agent_protocol::DaemonStatus),
+    ) -> Result<(), ClientError> {
+        self.wait_ready_with(hello, progress, tokio::time::sleep)
+            .await
+    }
+
+    /// [`Self::wait_ready`], waiting between asks with `sleep`, as a
+    /// browser must.
+    pub async fn wait_ready_with<F: std::future::Future<Output = ()>>(
+        &self,
+        hello: &ServerHello,
+        mut progress: impl FnMut(&cookie_agent_protocol::DaemonStatus),
+        sleep: impl Fn(Duration) -> F,
+    ) -> Result<(), ClientError> {
+        use cookie_agent_protocol::DaemonPhase;
+        let Some(mut status) = hello.status.clone() else {
+            return Ok(());
+        };
+        loop {
+            match status.phase {
+                DaemonPhase::Starting => progress(&status),
+                DaemonPhase::Failed => {
+                    return Err(ClientError::Rpc(status.error.unwrap_or_else(|| {
+                        cookie_agent_protocol::errors::DAEMON_START_FAILED
+                            .error()
+                            .build()
+                    })));
+                }
+                _ => return Ok(()),
+            }
+            sleep(READY_POLL).await;
+            status = self.daemon_status().await?;
+        }
+    }
+
     /// Whether the daemon is set up.
     pub async fn get_onboarding(
         &self,
@@ -2638,6 +2699,10 @@ async fn route_notification(
             let restarting: cookie_agent_protocol::DaemonRestartingNotification =
                 serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::DaemonRestarting(restarting));
+        }
+        cookie_agent_protocol::DAEMON_STATUS_METHOD => {
+            let status: cookie_agent_protocol::DaemonStatus = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::DaemonStatus(status));
         }
         cookie_agent_protocol::ONBOARDING_CHANGED_METHOD => {
             let changed: cookie_agent_protocol::OnboardingStatus = serde_json::from_str(params)?;

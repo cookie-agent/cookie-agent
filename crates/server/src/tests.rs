@@ -119,6 +119,15 @@ pub(crate) fn harness() -> Harness {
 }
 
 fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
+    harness_on(mcp_servers, None)
+}
+
+/// A harness whose server `listener` hands over to, its engine reporting on
+/// the listener's status, as `cookie daemon` composes them.
+fn harness_on(
+    mcp_servers: BTreeMap<String, LoadedMcpServer>,
+    listener: Option<&crate::DaemonListener>,
+) -> Harness {
     let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
     create_private_test_dir(&project);
@@ -201,15 +210,21 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
             .unwrap(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
-    let engine = Engine::open(EngineOptions {
-        data_dir: directory.path().join("data"),
-        cwd: directory.path().to_owned(),
-        config,
-        model_manager: manager,
-        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
-    })
+    let engine = Engine::open_reporting(
+        EngineOptions {
+            data_dir: directory.path().join("data"),
+            cwd: directory.path().to_owned(),
+            config,
+            model_manager: manager,
+            runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
+        },
+        listener.map_or_else(Default::default, |listener| listener.board().clone()),
+    )
     .expect("empty engine");
-    let server = Arc::new(Server::new(engine.clone()));
+    let server = Arc::new(listener.map_or_else(
+        || Server::new(engine.clone()),
+        |listener| listener.server(engine.clone()),
+    ));
     Harness {
         _directory: directory,
         engine,
@@ -2495,9 +2510,19 @@ async fn cron_jobs_are_created_listed_changed_and_deleted_through_rpc() {
 
 /// An embedded engine has no restart hook, so `daemon.restart` is refused;
 /// with one, every connection hears the restart and, once the daemon shuts
-/// down to restart, why its connection closed.
+/// down to restart, why its connection closed. A client of this version
+/// hears it in the daemon's status, an older one in `daemon.restarting`.
 #[tokio::test]
 async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
+    restart_tells_the_connection(cookie_agent_protocol::CLIENT_PROTOCOL_VERSION).await;
+}
+
+#[tokio::test]
+async fn daemon_restart_tells_an_older_client_with_daemon_restarting() {
+    restart_tells_the_connection(cookie_agent_protocol::SemVer::new(1, 64, 0)).await;
+}
+
+async fn restart_tells_the_connection(version: cookie_agent_protocol::SemVer) {
     let harness = harness();
     let token = crate::generate_token().expect("token");
     let running = Arc::clone(&harness.server)
@@ -2514,7 +2539,12 @@ async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
             .await
             .expect("connect");
     let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
-    client.handshake().await.expect("handshake");
+    let mut hello =
+        cookie_agent_protocol::ClientHello::new(cookie_agent_protocol::ClientIdentity::generate(
+            cookie_agent_protocol::ClientKind::new("test").expect("kind"),
+        ));
+    hello.protocol_version = version;
+    client.handshake_with(hello).await.expect("handshake");
 
     let refused = client
         .restart_daemon(cookie_agent_protocol::RestartWhen::Idle)
@@ -2540,18 +2570,45 @@ async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
         .await
         .expect("due in time")
         .expect("the hook ran");
-    let restarting = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if let Some(ClientDelivery::DaemonRestarting(restarting)) = deliveries.recv().await {
-                break restarting;
+    if cookie_agent_protocol::reads_daemon_status(version) {
+        let stopping = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match deliveries.recv().await {
+                    Some(ClientDelivery::DaemonStatus(status))
+                        if status.phase == cookie_agent_protocol::DaemonPhase::Stopping =>
+                    {
+                        break status;
+                    }
+                    Some(ClientDelivery::DaemonRestarting(restarting)) => {
+                        panic!(
+                            "daemon.restarting to a client that reads the status: {restarting:?}"
+                        )
+                    }
+                    _ => {}
+                }
             }
-        }
-    })
-    .await
-    .expect("daemon.restarting in time");
-    assert_eq!(restarting.when, cookie_agent_protocol::RestartWhen::Idle);
-    assert_eq!(restarting.active_runs, 0);
-    assert_eq!(restarting.reason.as_deref(), Some("restarting now"));
+        })
+        .await
+        .expect("the stopping status in time");
+        assert!(stopping.restart, "{stopping:?}");
+    } else {
+        let restarting = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match deliveries.recv().await {
+                    Some(ClientDelivery::DaemonRestarting(restarting)) => break restarting,
+                    Some(ClientDelivery::DaemonStatus(status)) => {
+                        panic!("the status to a client that predates it: {status:?}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("daemon.restarting in time");
+        assert_eq!(restarting.when, cookie_agent_protocol::RestartWhen::Idle);
+        assert_eq!(restarting.active_runs, 0);
+        assert_eq!(restarting.reason.as_deref(), Some("restarting now"));
+    }
 
     harness.engine.shutdown().await;
     harness.server.shutdown_for_restart();
@@ -2559,7 +2616,7 @@ async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
     // re-executes next has already sent the close frame saying why.
     running.wait().await;
     assert_eq!(
-        harness.server.connections.receiver_count(),
+        harness.server.shared.connections.receiver_count(),
         0,
         "a connection still open after the server stopped"
     );
@@ -2703,4 +2760,147 @@ async fn session_unread_set_checks_its_ids_and_skips_unknown_sessions() {
         json!([{ "session_id": unknown, "reason": "session_not_found" }]),
         "{skipped}"
     );
+}
+
+/// A daemon listens before it is ready: a client connects and sees it
+/// start, a dial-in runtime is told to come back, and once the server is
+/// handed over the same connection works.
+#[tokio::test]
+async fn a_client_connects_while_the_daemon_starts() {
+    use cookie_agent_engine::status::StatusBoard;
+    use cookie_agent_protocol::DaemonPhase;
+
+    let listener = crate::DaemonListener::new(StatusBoard::new(DaemonPhase::Starting));
+    let token = crate::generate_token().expect("token");
+    let running = listener
+        .serve_on(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            token.clone(),
+            None,
+        )
+        .await
+        .expect("serve");
+    let migrating = listener.board().start("Moving sessions", true);
+    let url = format!("ws://{}/ws", running.address());
+    let client =
+        cookie_agent_protocol_transport::Client::connect_websocket_with_token(&url, &token)
+            .await
+            .expect("connect");
+    let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
+    let hello = client.handshake().await.expect("handshake");
+    let status = hello.status.expect("the status");
+    assert_eq!(status.phase, DaemonPhase::Starting);
+    assert_eq!(status.tasks[0].label, "Moving sessions");
+    let refused = client
+        .list_sessions(cookie_agent_protocol::SessionListParams::default())
+        .await
+        .expect_err("starting");
+    assert_eq!(refused.error_code(), Some("daemon_starting"), "{refused}");
+
+    let mut dial_in =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!(
+            "ws://{}/runtime?id=dialer",
+            running.address()
+        ))
+        .expect("request");
+    dial_in.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", token.as_str())
+            .parse()
+            .expect("header"),
+    );
+    let tokio_tungstenite::tungstenite::Error::Http(refused) =
+        tokio_tungstenite::connect_async(dial_in)
+            .await
+            .expect_err("a starting daemon takes no runtime")
+    else {
+        panic!("an HTTP refusal");
+    };
+    assert_eq!(refused.status().as_u16(), 503);
+    assert_eq!(
+        refused
+            .headers()
+            .get("retry-after")
+            .map(|value| value.as_bytes()),
+        Some(&b"1"[..])
+    );
+
+    drop(migrating);
+    let harness = harness_on(BTreeMap::new(), Some(&listener));
+    listener.hand_over(Arc::clone(&harness.server));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(ClientDelivery::DaemonStatus(status)) = deliveries.recv().await
+                && status.phase == DaemonPhase::Ready
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("ready in time");
+    client
+        .list_sessions(cookie_agent_protocol::SessionListParams::default())
+        .await
+        .expect("served once ready");
+    let status = client.daemon_status().await.expect("status");
+    assert_eq!(status.phase, DaemonPhase::Ready);
+    assert!(status.tasks.is_empty(), "{status:?}");
+
+    harness.server.shutdown();
+    running.wait().await;
+    harness.engine.shutdown().await;
+}
+
+/// A daemon whose startup fails tells the clients connected meanwhile, and
+/// stops as soon as they have it.
+#[tokio::test]
+async fn a_failed_startup_reaches_the_connected_clients() {
+    use cookie_agent_engine::status::StatusBoard;
+    use cookie_agent_protocol::DaemonPhase;
+
+    let listener = crate::DaemonListener::new(StatusBoard::new(DaemonPhase::Starting));
+    let token = crate::generate_token().expect("token");
+    let running = listener
+        .serve_on(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            token.clone(),
+            None,
+        )
+        .await
+        .expect("serve");
+    let url = format!("ws://{}/ws", running.address());
+    let client =
+        cookie_agent_protocol_transport::Client::connect_websocket_with_token(&url, &token)
+            .await
+            .expect("connect");
+    let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
+    client.handshake().await.expect("handshake");
+
+    let started = std::time::Instant::now();
+    listener
+        .fail("the store is newer", std::time::Duration::from_secs(5))
+        .await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "stops once the client has it, not after the whole wait"
+    );
+    let failed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match deliveries.recv().await {
+                Some(ClientDelivery::DaemonStatus(status)) => break status,
+                Some(_) => {}
+                None => panic!("closed before the failure"),
+            }
+        }
+    })
+    .await
+    .expect("the failure in time");
+    assert_eq!(failed.phase, DaemonPhase::Failed);
+    let error = failed.error.expect("error");
+    assert_eq!(
+        error.data.as_ref().and_then(|data| data["detail"].as_str()),
+        Some("the store is newer")
+    );
+    running.wait().await;
 }

@@ -23,10 +23,7 @@ pub(super) enum McpCommand {
 
 pub(super) async fn run_mcp(url: &str, token: &str, command: McpCommand) -> anyhow::Result<()> {
     let client = Client::connect_websocket_with_token(url, token).await?;
-    client
-        .handshake_as(client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(&client, client_identity("cli")).await?;
     match command {
         McpCommand::List => {
             let servers = client

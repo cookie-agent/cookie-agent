@@ -332,8 +332,12 @@ impl Server {
 
     /// Tells this connection about a scheduled restart: at once when one is
     /// already scheduled, then whenever its `when` or the active runs
-    /// change.
+    /// change. Only a client from before the daemon's status, which says
+    /// the same, gets this.
     pub(super) fn start_restart_notifications(&self, context: ServerContext) {
+        if cookie_agent_protocol::reads_daemon_status(context.client_version()) {
+            return;
+        }
         let mut receiver = self.engine.subscribe_restart();
         receiver.mark_changed();
         tokio::spawn(async move {

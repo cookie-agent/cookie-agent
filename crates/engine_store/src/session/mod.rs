@@ -692,12 +692,21 @@ impl SessionStore {
     /// an older one migrated, before anything reads a session. `cwd` is
     /// where new sessions start when their creator names no directory.
     pub fn open(data_root: &Path, cwd: &Path) -> Result<Arc<Self>, SessionError> {
+        Self::open_reporting(data_root, cwd, &crate::status::StatusBoard::default())
+    }
+
+    /// [`Self::open`], reporting a migration's progress on `board`.
+    pub fn open_reporting(
+        data_root: &Path,
+        cwd: &Path,
+        board: &crate::status::StatusBoard,
+    ) -> Result<Arc<Self>, SessionError> {
         let sessions_dir = data_root.join(SESSIONS_ROOT_DIR);
         #[cfg(unix)]
         create_unix_session_directory_all(&sessions_dir)?;
         #[cfg(windows)]
         create_windows_session_directory(&sessions_dir)?;
-        let prepared = layout::prepare(&sessions_dir)?;
+        let prepared = layout::prepare(&sessions_dir, board)?;
         let store = Arc::new(Self {
             data_root: data_root.to_owned(),
             activity: activity::ActivityJournals::open(&sessions_dir),

@@ -172,10 +172,7 @@ pub(crate) async fn run_cron(url: &str, token: &str, command: CronCommand) -> an
         );
     }
     let client = Client::connect_websocket_with_token(url, token).await?;
-    client
-        .handshake_as(super::client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(&client, super::client_identity("cli")).await?;
     run_cron_with(&client, command, &mut super::memory::StdioMemoryIo).await
 }
 

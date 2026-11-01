@@ -15,7 +15,7 @@
 use super::*;
 
 use cookie_agent_client_state::subscriptions::{
-    RECONNECT_BACKOFF, SUBSCRIPTION_RETRY_DELAY, Subscribe, SubscriptionState,
+    SUBSCRIPTION_RETRY_DELAY, Subscribe, SubscriptionState,
 };
 
 impl App {
@@ -238,15 +238,24 @@ impl App {
         self.reconnecting = true;
         self.reconnect_error = None;
         self.reset_subscriptions();
+        // A daemon that went down to restart listens again in moments.
+        let for_restart = self.restart.restarting.is_some()
+            || cookie_agent_client_state::subscriptions::restarting(self.restart.status.as_ref());
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let mut delays = RECONNECT_BACKOFF.delays();
+            let mut delays =
+                cookie_agent_client_state::subscriptions::RedialDelays::new(for_restart);
             loop {
                 tokio::time::sleep(delays.next_delay()).await;
                 if updates.is_closed() {
                     return;
                 }
-                match reconnector().await {
+                let starting = updates.clone();
+                let progress: crate::ui::app::StartupProgress =
+                    std::sync::Arc::new(move |status| {
+                        let _ = starting.send(RpcUpdate::DaemonStarting(status.clone()));
+                    });
+                match reconnector(progress).await {
                     Ok(client) => {
                         let _ = updates.send(RpcUpdate::Reconnected { client });
                         return;

@@ -34,10 +34,7 @@ pub(crate) async fn run_agents(
     command: AgentsCommand,
 ) -> anyhow::Result<()> {
     let client = Client::connect_websocket_with_token(url, token).await?;
-    client
-        .handshake_as(super::client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    super::handshake_ready(&client, super::client_identity("cli")).await?;
     for line in agents_with(&client, command).await? {
         println!("{line}");
     }

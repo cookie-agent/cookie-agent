@@ -410,6 +410,13 @@ pub(crate) async fn dispatch(cli: Cli, launch: &mut Launch) -> anyhow::Result<()
             daemon_restart::run_restart(&target.url, &target.token, now).await
         }
         Some(Command::Daemon {
+            command: Some(daemon_restart::DaemonCommand::Status { url, token }),
+            ..
+        }) => {
+            let target = daemon_target(url, token)?;
+            daemon_restart::run_status(&target.url, &target.token).await
+        }
+        Some(Command::Daemon {
             command: None,
             port,
             listen,
@@ -564,6 +571,59 @@ pub(crate) fn client_identity(kind: &'static str) -> cookie_agent_protocol::Clie
     cookie_agent_protocol::ClientIdentity::generate(
         cookie_agent_protocol::ClientKind::new(kind).expect("static client kind is valid"),
     )
+}
+
+/// Handshakes as `identity`, then waits for a daemon that is still starting
+/// to be ready, printing what it is doing on stderr meanwhile
+/// (`docs/site/specs/daemon-startup.md` section 6).
+pub(crate) async fn handshake_ready(
+    client: &cookie_agent_protocol_transport::Client,
+    identity: cookie_agent_protocol::ClientIdentity,
+) -> anyhow::Result<cookie_agent_protocol::ServerHello> {
+    let hello = client
+        .handshake_as(identity)
+        .await
+        .context("handshake with daemon")?;
+    let mut lines = StartupLines::default();
+    client
+        .wait_ready(&hello, |status| {
+            if let Some(line) = lines.next(status) {
+                eprintln!("cookie: {line}");
+            }
+        })
+        .await
+        .context("wait for the daemon to start")?;
+    Ok(hello)
+}
+
+/// Prints a starting daemon's progress for a command-line client: a line
+/// when the task it is on changes, and otherwise at most every
+/// [`Self::INTERVAL`].
+#[derive(Debug, Default)]
+pub struct StartupLines {
+    last_task: Option<String>,
+    last_line: Option<std::time::Instant>,
+}
+
+impl StartupLines {
+    /// The least time between two lines about the same task.
+    pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// The line to print for `status` now, if any.
+    pub fn next(&mut self, status: &cookie_agent_protocol::DaemonStatus) -> Option<String> {
+        let task = status.blocking().last().map(|task| task.id.clone());
+        let due = self
+            .last_line
+            .is_none_or(|last| last.elapsed() >= Self::INTERVAL);
+        if task == self.last_task && !due {
+            return None;
+        }
+        self.last_task = task;
+        self.last_line = Some(std::time::Instant::now());
+        Some(cookie_agent_client_state::daemon_status::starting_text(
+            status,
+        ))
+    }
 }
 
 fn data_dir() -> anyhow::Result<PathBuf> {

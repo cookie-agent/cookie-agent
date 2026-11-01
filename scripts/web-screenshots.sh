@@ -171,11 +171,13 @@ chmod 600 "$home/.cookie-agent/config.toml"
 
 (cd "$workspace" && HOME="$home" exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
 pids+=("$!")
+# The daemon takes connections at `daemon-ready` and serves them once it
+# says it is ready.
 for _ in $(seq 1 200); do
-    grep -q '^daemon-ready ' "$home/daemon.out" 2>/dev/null && break
+    grep -q '^cookie daemon ready$' "$home/daemon.out" 2>/dev/null && break
     sleep 0.1
 done
-if ! grep -q '^daemon-ready ' "$home/daemon.out"; then
+if ! grep -q '^cookie daemon ready$' "$home/daemon.out"; then
     echo "the daemon did not get ready:" >&2
     cat "$home/daemon.err" >&2
     exit 1

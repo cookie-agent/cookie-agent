@@ -19,7 +19,7 @@ use tokio::net::{TcpListener, TcpStream};
 use yawc::{Frame, HttpWebSocket, IncomingUpgrade, OpCode, Options, close::CloseCode};
 use zeroize::Zeroizing;
 
-use super::{RunningServer, Server, ServerError};
+use super::{DaemonListener, RunningServer, Server, ServerError, ServerSlot, Shared};
 use cookie_agent_protocol::{
     MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, TransportError,
 };
@@ -310,18 +310,77 @@ pub fn load_tls(cert: &Path, key: &Path) -> Result<TlsConfig, ServerError> {
         .map_err(|error| failed(cert, error.to_string()))
 }
 
-impl Server {
-    pub fn router(self: Arc<Self>, token: Arc<Zeroizing<String>>) -> Router {
-        Router::new()
-            .route("/ws", get(websocket_upgrade))
-            .route("/runtime", get(runtime_upgrade))
-            .fallback(super::page::page)
-            .with_state(WebSocketState {
-                server: self,
-                token,
-            })
-    }
+/// The daemon's routes: clients on `/ws`, dial-in runtimes on `/runtime`,
+/// and the web page on every other path. `server` may still be empty while
+/// the daemon starts.
+fn router(shared: Arc<Shared>, server: ServerSlot, token: Arc<Zeroizing<String>>) -> Router {
+    Router::new()
+        .route("/ws", get(websocket_upgrade))
+        .route("/runtime", get(runtime_upgrade))
+        .fallback(super::page::page)
+        .with_state(WebSocketState {
+            shared,
+            server,
+            token,
+        })
+}
 
+/// Binds `address` and serves `router` there, over TLS with `tls`, until
+/// `shutdown`.
+async fn listen(
+    router: Router,
+    address: SocketAddr,
+    tls: Option<Arc<rustls::ServerConfig>>,
+    shared: &Shared,
+) -> Result<RunningServer, ServerError> {
+    let listener = TcpListener::bind(address)
+        .await
+        .map_err(ServerError::Listen)?;
+    let address = listener.local_addr().map_err(ServerError::Listen)?;
+    let shutdown = shared.shutdown.clone();
+    let task = match tls {
+        None => tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service())
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await;
+        }),
+        Some(tls) => {
+            let listener = TlsListener::start(listener, tls, shutdown.clone());
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, router.into_make_service())
+                    .with_graceful_shutdown(shutdown.cancelled_owned())
+                    .await;
+            })
+        }
+    };
+    Ok(RunningServer {
+        address,
+        task,
+        connections: Arc::clone(&shared.connections),
+    })
+}
+
+impl DaemonListener {
+    /// Serves clients (`/ws`), dial-in runtimes (`/runtime`), and the web
+    /// page on `address`, over TLS when `tls` is given, before the daemon
+    /// is ready too: see [`DaemonListener`]. Every connection presents
+    /// `token`.
+    pub async fn serve_on(
+        &self,
+        address: SocketAddr,
+        token: Zeroizing<String>,
+        tls: Option<Arc<rustls::ServerConfig>>,
+    ) -> Result<RunningServer, ServerError> {
+        let router = router(
+            Arc::clone(&self.shared),
+            Arc::clone(&self.server),
+            Arc::new(token),
+        );
+        listen(router, address, tls, &self.shared).await
+    }
+}
+
+impl Server {
     /// Serves clients on the loopback `port`.
     pub async fn serve(
         self: Arc<Self>,
@@ -347,32 +406,16 @@ impl Server {
         token: Zeroizing<String>,
         tls: Option<Arc<rustls::ServerConfig>>,
     ) -> Result<RunningServer, ServerError> {
-        let router = self.clone().router(Arc::new(token));
-        let listener = TcpListener::bind(address)
-            .await
-            .map_err(ServerError::Listen)?;
-        let address = listener.local_addr().map_err(ServerError::Listen)?;
-        let shutdown = self.shutdown.clone();
-        let task = match tls {
-            None => tokio::spawn(async move {
-                let _ = axum::serve(listener, router.into_make_service())
-                    .with_graceful_shutdown(shutdown.cancelled_owned())
-                    .await;
-            }),
-            Some(tls) => {
-                let listener = TlsListener::start(listener, tls, shutdown.clone());
-                tokio::spawn(async move {
-                    let _ = axum::serve(listener, router.into_make_service())
-                        .with_graceful_shutdown(shutdown.cancelled_owned())
-                        .await;
-                })
-            }
-        };
-        Ok(RunningServer {
+        let shared = Arc::clone(&self.shared);
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let _ = slot.set(self);
+        listen(
+            router(Arc::clone(&shared), slot, Arc::new(token)),
             address,
-            task,
-            connections: Arc::clone(&self.connections),
-        })
+            tls,
+            &shared,
+        )
+        .await
     }
 }
 
@@ -440,7 +483,8 @@ impl axum::serve::Listener for TlsListener {
 
 #[derive(Clone)]
 struct WebSocketState {
-    server: Arc<Server>,
+    shared: Arc<Shared>,
+    server: ServerSlot,
     token: Arc<Zeroizing<String>>,
 }
 
@@ -506,17 +550,28 @@ async fn websocket_upgrade(
         Ok(authentication) => authentication,
         Err(refused) => return refused.into_response(),
     };
-    let server = state.server;
+    let shared = state.shared;
     // Held until the connection has closed, from before the upgrade so a
     // shutdown also waits for a connection still upgrading.
-    let open = server.connections.subscribe();
+    let open = shared.connections.subscribe();
     let Ok((response, upgraded)) = upgrade.upgrade(socket_options()) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    let server = state.server;
     tokio::spawn(async move {
         if let Ok(socket) = upgraded.await {
-            let stream = WebSocketStream::client(socket, Arc::clone(&server.restarting));
-            let _ = server.serve_stream(stream, authentication).await;
+            let stream = WebSocketStream::client(socket, Arc::clone(&shared.restarting));
+            let _ = cookie_agent_protocol_transport::serve_starting(
+                cookie_agent_protocol_transport::Startup {
+                    server,
+                    status: shared.board.subscribe(),
+                    engine_version: cookie_agent_engine::release::version().to_owned(),
+                },
+                stream,
+                shared.shutdown.child_token(),
+                authentication,
+            )
+            .await;
         }
         drop(open);
     });
@@ -542,7 +597,17 @@ async fn runtime_upgrade(
     if let Some(refused) = refused(&headers, state.token.as_str()) {
         return refused;
     }
-    let claim = match state.server.engine.claim_dial_in_runtime(&query.id) {
+    // A daemon that is starting takes runtimes once it is ready; they dial
+    // again.
+    let Some(server) = state.server.get() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "1")],
+            "the daemon is starting",
+        )
+            .into_response();
+    };
+    let claim = match server.engine.claim_dial_in_runtime(&query.id) {
         Ok(claim) => claim,
         Err(refusal) => {
             eprintln!("cookie-agent: refused a runtime dialing in: {refusal}");

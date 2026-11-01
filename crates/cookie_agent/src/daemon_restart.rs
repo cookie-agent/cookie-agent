@@ -67,6 +67,73 @@ pub(crate) enum DaemonCommand {
         )]
         token: Option<String>,
     },
+    /// Show what the daemon is doing: whether it is starting, ready, or
+    /// stopping, and the tasks it is busy with.
+    Status {
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
+}
+
+/// `cookie daemon status`: the daemon's phase and tasks, one per line.
+pub(crate) async fn run_status(url: &str, token: &str) -> anyhow::Result<()> {
+    let client = Client::connect_websocket_with_token(url, token).await?;
+    let hello = client
+        .handshake_as(crate::cli::client_identity("cli"))
+        .await
+        .context("handshake with daemon")?;
+    let status = match hello.status {
+        Some(_) => client.daemon_status().await.context("ask the daemon")?,
+        None => {
+            println!("ready (cookie {} reports no status)", hello.engine_version);
+            return Ok(());
+        }
+    };
+    for line in status_lines(&status) {
+        println!("{line}");
+    }
+    client.shutdown();
+    Ok(())
+}
+
+/// What `cookie daemon status` prints for `status`.
+pub(crate) fn status_lines(status: &cookie_agent_protocol::DaemonStatus) -> Vec<String> {
+    use cookie_agent_protocol::DaemonPhase;
+    let phase = match status.phase {
+        DaemonPhase::Starting => "starting",
+        DaemonPhase::Ready => "ready",
+        DaemonPhase::Stopping if status.restart => "restarting",
+        DaemonPhase::Stopping => "stopping",
+        DaemonPhase::Failed => "failed",
+        DaemonPhase::Unknown => "in a phase this cookie does not know",
+    };
+    let mut lines = vec![phase.to_owned()];
+    if let Some(failed) = cookie_agent_client_state::daemon_status::failed_text(status) {
+        lines.push(format!("  {failed}"));
+    }
+    for task in &status.tasks {
+        lines.push(format!(
+            "  {}{}",
+            cookie_agent_client_state::daemon_status::task_text(task),
+            if task.blocking {
+                ""
+            } else {
+                " (in the background)"
+            }
+        ));
+    }
+    lines
 }
 
 /// How this process was started, to start it again.
@@ -228,10 +295,7 @@ pub(crate) async fn run_restart(url: &str, token: &str, now: bool) -> anyhow::Re
     let mut deliveries = client
         .subscribe_deliveries()
         .context("the connection's deliveries")?;
-    let hello = client
-        .handshake_as(crate::cli::client_identity("cli"))
-        .await
-        .context("handshake with daemon")?;
+    let hello = crate::cli::handshake_ready(&client, crate::cli::client_identity("cli")).await?;
     let when = if now {
         RestartWhen::Now
     } else {
@@ -243,6 +307,7 @@ pub(crate) async fn run_restart(url: &str, token: &str, now: bool) -> anyhow::Re
         .context("restart the daemon")?;
     println!("{}", scheduled_line(when, &result));
     let mut waiting_for_now = (result.active_runs, result.background_calls);
+    let mut notice = None;
     if waiting_for_now != (0, 0) && when == RestartWhen::Idle {
         println!(
             "Waiting; Ctrl-C stops waiting, and the restart stays scheduled \
@@ -256,6 +321,15 @@ pub(crate) async fn run_restart(url: &str, token: &str, now: bool) -> anyhow::Re
                 if now != waiting_for_now && now != (0, 0) {
                     waiting_for_now = now;
                     println!("Waiting for {}.", waiting_for(now.0, now.1));
+                }
+            }
+            ClientDelivery::DaemonStatus(status) => {
+                let now = cookie_agent_client_state::daemon_status::notice_text(&status);
+                if now.is_some() && now != notice {
+                    if let Some(line) = &now {
+                        println!("{line}");
+                    }
+                    notice = now;
                 }
             }
             ClientDelivery::Disconnected { .. } => break,
@@ -289,12 +363,10 @@ pub(crate) async fn run_restart(url: &str, token: &str, now: bool) -> anyhow::Re
     }
 }
 
-/// Connects again; the daemon's version.
+/// Connects again and waits for the daemon to be ready; its version.
 async fn reconnect(url: &str, token: &str) -> anyhow::Result<String> {
     let client = Client::connect_websocket_with_token(url, token).await?;
-    let hello = client
-        .handshake_as(crate::cli::client_identity("cli"))
-        .await?;
+    let hello = crate::cli::handshake_ready(&client, crate::cli::client_identity("cli")).await?;
     client.shutdown();
     Ok(hello.engine_version)
 }
@@ -305,7 +377,7 @@ mod tests {
 
     use cookie_agent_protocol::{DaemonRestartResult, RestartWhen};
 
-    use super::{bind_retrying, scheduled_line};
+    use super::{bind_retrying, scheduled_line, status_lines};
 
     #[test]
     fn the_answer_says_what_the_restart_waits_for() {
@@ -380,5 +452,40 @@ mod tests {
             .await
             .expect("bound once the port freed");
         release.join().expect("released");
+    }
+
+    #[test]
+    fn status_lines_name_the_phase_and_every_task() {
+        let task = |label: &str, blocking| cookie_agent_protocol::DaemonTask {
+            id: label.into(),
+            label: label.into(),
+            detail: None,
+            progress: Some(cookie_agent_protocol::TaskProgress {
+                done: 2,
+                total: Some(5),
+                unit: Some("trees".into()),
+            }),
+            blocking,
+            started_at: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let status = cookie_agent_protocol::DaemonStatus {
+            phase: cookie_agent_protocol::DaemonPhase::Starting,
+            tasks: vec![task("Moving sessions", true), task("Indexing", false)],
+            ..cookie_agent_protocol::DaemonStatus::default()
+        };
+        assert_eq!(
+            status_lines(&status),
+            [
+                "starting",
+                "  Moving sessions: 2 of 5 trees",
+                "  Indexing: 2 of 5 trees (in the background)",
+            ]
+        );
+        let restarting = cookie_agent_protocol::DaemonStatus {
+            phase: cookie_agent_protocol::DaemonPhase::Stopping,
+            restart: true,
+            ..cookie_agent_protocol::DaemonStatus::default()
+        };
+        assert_eq!(status_lines(&restarting), ["restarting"]);
     }
 }

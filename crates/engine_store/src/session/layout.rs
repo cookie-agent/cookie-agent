@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::ownership::{SessionOwnership, try_acquire};
+use crate::status::StatusBoard;
 
 /// Layout version written by this build.
 pub const LAYOUT_VERSION: u32 = 3;
@@ -216,7 +217,10 @@ pub(super) struct PreparedLayout {
 /// (or retries its pending trees), and removes what a finished migration or
 /// deletion left behind. A current store costs one read of `layout.json`
 /// and one listing of `sessions/`.
-pub(super) fn prepare(sessions_dir: &Path) -> Result<PreparedLayout, SessionError> {
+pub(super) fn prepare(
+    sessions_dir: &Path,
+    board: &StatusBoard,
+) -> Result<PreparedLayout, SessionError> {
     // A marker that does not read is treated as missing: migrating again
     // moves nothing that moved already and rebuilds the journals.
     let existing = match read_layout(sessions_dir) {
@@ -240,11 +244,12 @@ pub(super) fn prepare(sessions_dir: &Path) -> Result<PreparedLayout, SessionErro
                 eprintln!(
                     "cookie-agent: the session activity journals are missing; rebuilding them"
                 );
+                let _task = board.start("Rebuilding the session activity journals", true);
                 super::activity::rebuild_journals(sessions_dir)?;
             }
             layout
         }
-        existing => migrate(sessions_dir, existing.as_ref())?,
+        existing => migrate(sessions_dir, existing.as_ref(), board)?,
     };
     let deleted = sweep_top_level(sessions_dir, &layout.pending);
     Ok(PreparedLayout { layout, deleted })
@@ -335,6 +340,7 @@ fn old_work_dirs(sessions_dir: &Path) -> Vec<PathBuf> {
 fn migrate(
     sessions_dir: &Path,
     existing: Option<&StoreLayout>,
+    board: &StatusBoard,
 ) -> Result<StoreLayout, SessionError> {
     let started = Instant::now();
     // A store laid out before v3 has no journals yet; one retrying its
@@ -406,8 +412,23 @@ fn migrate(
             in_months.len()
         );
     }
+    let converting_task = (!in_months.is_empty()).then(|| {
+        let task = board.start(
+            format!("Converting sessions to history format {format}"),
+            true,
+        );
+        task.set_total(in_months.len() as u64, "trees");
+        task
+    });
     for tree in &in_months {
-        match convert_in_place(sessions_dir, tree) {
+        if let Some(task) = &converting_task {
+            task.set_detail(tree_detail(sessions_dir, &tree.dir));
+        }
+        let converted_one = convert_in_place(sessions_dir, tree);
+        if let Some(task) = &converting_task {
+            task.advance(1);
+        }
+        match converted_one {
             Ok(true) => converted += 1,
             Ok(false) => {}
             Err(error) => pending.push(pending_tree(sessions_dir, tree, error)),
@@ -422,9 +443,22 @@ fn migrate(
             pending.len()
         );
     }
+    drop(converting_task);
     let mut moved = Vec::new();
+    let moving_task = (!trees.is_empty()).then(|| {
+        let task = board.start("Moving sessions to the new storage layout", true);
+        task.set_total(trees.len() as u64, "trees");
+        task
+    });
     for tree in &trees {
-        match move_tree(sessions_dir, tree) {
+        if let Some(task) = &moving_task {
+            task.set_detail(tree_detail(sessions_dir, &tree.dir));
+        }
+        let moved_one = move_tree(sessions_dir, tree);
+        if let Some(task) = &moving_task {
+            task.advance(1);
+        }
+        match moved_one {
             Ok(dir) => moved.push((tree.root, dir)),
             Err(error) => pending.push(pending_tree(sessions_dir, tree, error)),
         }
@@ -444,6 +478,8 @@ fn migrate(
             moved.push((root, dir));
         }
     }
+    drop(moving_task);
+    let _finishing = board.start("Recording the new session storage layout", true);
     sync_month_dirs(sessions_dir, &moved)?;
     for work_dir in &work_dirs {
         fsync_directory(work_dir)?;
@@ -469,6 +505,18 @@ fn migrate(
         );
     }
     Ok(layout)
+}
+
+/// The folder a tree being migrated is in, relative to `sessions/`, for
+/// the task's detail.
+fn tree_detail(sessions_dir: &Path, dir: &Path) -> Option<String> {
+    Some(
+        dir.strip_prefix(sessions_dir)
+            .ok()?
+            .parent()?
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Syncs every month folder a tree moved into, and `sessions/` itself, so

@@ -372,6 +372,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(CONFIG_GET_METHOD, ToDaemon, ConfigGetParams => ConfigGetResult),
         request!(CONFIG_APPLY_METHOD, ToDaemon, ConfigApplyParams => ConfigApplyResult),
         request!(DAEMON_RESTART_METHOD, ToDaemon, DaemonRestartParams => DaemonRestartResult),
+        request!(DAEMON_STATUS_METHOD, ToDaemon, DaemonStatusParams => DaemonStatus),
         request!(ONBOARDING_GET_METHOD, ToDaemon, OnboardingGetParams => OnboardingStatus),
         request!(ONBOARDING_PREVIEW_METHOD, ToDaemon, OnboardingPreviewParams => OnboardingPreviewResult),
         request!(ONBOARDING_RUN_METHOD, ToDaemon, OnboardingRunParams => OnboardingRunResult),
@@ -452,6 +453,7 @@ fn client_methods() -> Vec<MethodSpec> {
             FromDaemon,
             DaemonRestartingNotification
         ),
+        notification!(DAEMON_STATUS_METHOD, FromDaemon, DaemonStatus),
         notification!(ONBOARDING_CHANGED_METHOD, FromDaemon, OnboardingStatus),
     ]
 }

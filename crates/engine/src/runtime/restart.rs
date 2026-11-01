@@ -218,9 +218,11 @@ impl Engine {
     }
 
     /// Publishes the restart's progress until it is due, then calls the
-    /// hook.
+    /// hook. While it waits the daemon stays ready, with a non-blocking task
+    /// saying what the restart waits for; once due, it is `stopping`.
     async fn wait_for_restart(self) {
         let restart = &self.inner.restart;
+        let task = self.inner.status.start("Restarting when idle", false);
         loop {
             let when = restart
                 .when
@@ -252,13 +254,20 @@ impl Engine {
                 changed
             });
             if due {
+                self.inner.status.stopping(true);
                 break;
             }
+            task.set_label(match when {
+                RestartWhen::Now => "Restarting now",
+                RestartWhen::Idle | RestartWhen::Unknown => "Restarting when idle",
+            });
+            task.set_detail(restart_waits_for(active_runs, background_calls));
             tokio::select! {
                 () = tokio::time::sleep(IDLE_POLL) => {}
                 () = restart.wake.notified() => {}
             }
         }
+        drop(task);
         let hook = restart
             .hook
             .lock()
@@ -268,4 +277,20 @@ impl Engine {
             hook();
         }
     }
+}
+
+/// What a waiting restart waits for, for people: "waiting for 1 running
+/// turn and 2 background calls to finish"; `None` when nothing.
+fn restart_waits_for(active_runs: u32, background_calls: u32) -> Option<String> {
+    let count = |count: u32, one: &str, many: &str| {
+        (count > 0).then(|| format!("{count} {}", if count == 1 { one } else { many }))
+    };
+    let waiting = [
+        count(active_runs, "running turn", "running turns"),
+        count(background_calls, "background call", "background calls"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    (!waiting.is_empty()).then(|| format!("waiting for {} to finish", waiting.join(" and ")))
 }

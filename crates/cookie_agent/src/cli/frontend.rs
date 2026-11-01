@@ -159,6 +159,16 @@ pub(super) async fn run_daemon_tui(
     token: &str,
     project: Option<cookie_agent_protocol::ProjectName>,
 ) -> anyhow::Result<()> {
+    // A daemon still starting says what it is doing until it is ready.
+    let mut lines = super::StartupLines::default();
+    client
+        .wait_ready(hello, |status| {
+            if let Some(line) = lines.next(status) {
+                eprintln!("cookie: {line}");
+            }
+        })
+        .await
+        .context("wait for the daemon to start")?;
     let project = match &project {
         Some(name) => Some(project::find_project(&client, name).await?),
         None => None,
@@ -191,14 +201,20 @@ pub(super) async fn run_daemon_tui(
     .collect();
     let address = local_daemon::daemon_address(url);
     let (url, token) = (url.to_owned(), token.to_owned());
-    let reconnector: cookie_agent_tui::Reconnector = std::sync::Arc::new(move || {
+    let reconnector: cookie_agent_tui::Reconnector = std::sync::Arc::new(move |progress| {
         let (url, token, identity) = (url.clone(), token.clone(), identity.clone());
         Box::pin(async move {
             let client = Client::connect_websocket_with_token(&url, &token)
                 .await
                 .map_err(|error| error.to_string())?;
-            client
+            let hello = client
                 .handshake_as(identity)
+                .await
+                .map_err(|error| error.to_string())?;
+            // A daemon that restarted may still be starting: the TUI shows
+            // how it goes and resubscribes once it is ready.
+            client
+                .wait_ready(&hello, |status| progress(status))
                 .await
                 .map_err(|error| error.to_string())?;
             Ok(client)

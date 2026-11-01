@@ -15,6 +15,7 @@ attaching clients to it.
 | [`cookie run`](#cookie-run) | Run one prompt without the TUI |
 | [`cookie daemon`](#cookie-daemon) | Serve the client protocol, the web page, and dial-in runtimes |
 | [`cookie daemon restart`](#cookie-daemon-restart) | Restart a running daemon, once idle or at once |
+| [`cookie daemon status`](#cookie-daemon-status) | Show whether the daemon is starting, ready, or stopping, and what it is busy with |
 | [`cookie attach`](#cookie-attach) | The terminal UI on a running daemon, here or elsewhere |
 | [`cookie web`](#cookie-web) | Print the daemon's web page address with its token |
 | [`cookie onboard`](#cookie-onboard) | Set up a daemon: a provider and the default, small, and utility models |
@@ -179,6 +180,33 @@ cookie daemon restart --url ws://127.0.0.1:7419/ws --token <token>
 
 A daemon not started by `cookie daemon`, such as an engine embedded in
 another program, answers `restart_unsupported`.
+
+#### `cookie daemon status`
+
+```text
+cookie daemon status [--url <URL>] [--token <TOKEN>]
+```
+
+Prints the daemon's state (`starting`, `ready`, `restarting`, `stopping`,
+or `failed` with why) and then each task it is busy with, with its
+progress, such as:
+
+```text
+starting
+  Moving sessions to the new storage layout: 41 of 97 trees (0000000000000001-home)
+```
+
+A task that does not keep the daemon from serving says *(in the
+background)*. It answers while the daemon starts too. See
+[Starting up](../daemon/persistent.md#starting-up).
+
+| Option | Meaning |
+|---|---|
+| `--url <URL>` | The daemon's client URL (see [Reaching a daemon](#reaching-a-daemon)). |
+| `--token <TOKEN>` | The daemon's token (see [Reaching a daemon](#reaching-a-daemon)). |
+
+Every other command that talks to the daemon waits for a daemon that is
+still starting and prints its progress on stderr meanwhile.
 
 ### `cookie attach`
 

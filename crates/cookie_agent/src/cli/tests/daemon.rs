@@ -34,3 +34,33 @@ fn the_daemon_names_its_page() {
     // The line carries no token.
     assert!(!line.contains("token="), "{line}");
 }
+
+fn starting_task(id: &str, label: &str) -> cookie_agent_protocol::DaemonTask {
+    cookie_agent_protocol::DaemonTask {
+        id: id.into(),
+        label: label.into(),
+        detail: None,
+        progress: None,
+        blocking: true,
+        started_at: jiff::Timestamp::UNIX_EPOCH,
+    }
+}
+
+#[test]
+fn startup_lines_follow_the_task_and_hold_back_repeats() {
+    let mut lines = crate::cli::StartupLines::default();
+    let mut status = cookie_agent_protocol::DaemonStatus {
+        phase: cookie_agent_protocol::DaemonPhase::Starting,
+        tasks: vec![starting_task("1", "Loading the catalog")],
+        ..cookie_agent_protocol::DaemonStatus::default()
+    };
+    assert!(lines.next(&status).is_some());
+    assert!(lines.next(&status).is_none(), "the same task, too soon");
+    status
+        .tasks
+        .push(starting_task("2", "Opening the session store"));
+    assert_eq!(
+        lines.next(&status).as_deref(),
+        Some("Cookie is starting: Opening the session store")
+    );
+}

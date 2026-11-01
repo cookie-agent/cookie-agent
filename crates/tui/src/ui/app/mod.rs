@@ -1105,6 +1105,8 @@ pub(in crate::ui) enum RpcUpdate {
     Notice(String),
     /// A redial of the dropped daemon connection failed; the next follows.
     ReconnectFailed(String),
+    /// The redialed daemon is starting: what it is doing.
+    DaemonStarting(cookie_agent_protocol::DaemonStatus),
     /// `config.get` answered, for the restart banner; `None` when it failed.
     ConfigStatusFetched(Option<cookie_agent_protocol::ConfigStatus>),
     /// `daemon.restart` answered.
@@ -2130,12 +2132,20 @@ impl App {
 
 /// Redials the daemon after a dropped connection and handshakes as the same
 /// client identity, so the new connection's events keep this client's
-/// origin.
+/// origin. A daemon still starting is waited for, its status handed to the
+/// [`StartupProgress`] meanwhile.
 pub type Reconnector = std::sync::Arc<
-    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Client, String>> + Send>>
+    dyn Fn(
+            StartupProgress,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Client, String>> + Send>>
         + Send
         + Sync,
 >;
+
+/// Hears a starting daemon's status while a [`Reconnector`] waits for it.
+pub type StartupProgress =
+    std::sync::Arc<dyn Fn(&cookie_agent_protocol::DaemonStatus) + Send + Sync>;
 
 /// Run the terminal UI against a connected client.
 pub async fn run_with_client(client: Client) -> anyhow::Result<()> {

@@ -26,6 +26,14 @@ stdout to a pipe, reads exactly that one line, and ignores the rest:
 daemon-ready {"url":"ws://127.0.0.1:7419/ws"}
 ```
 
+The daemon prints it as soon as it listens, before its slower startup
+work: loading the model catalog, starting the local runtime, opening the
+session store (which can take a while the first time a new build moves or
+converts it), and restoring memory, machines, projects, and cron jobs.
+Clients connect from that line on and see what the daemon is doing; see
+[Starting up](#starting-up). Once it is ready it prints
+`cookie daemon ready`.
+
 The line names no token, so the supervisor's logs hold no secret. The token
 is `[server] token` in `config.toml`, where a supervisor that connects reads
 it; the daemon writes a fresh one there at its first start when there is
@@ -58,6 +66,28 @@ A daemon on another machine listens with `--listen`; see
 port; `cookie web` prints its address with the token (see [Web](../clients/web.md)). Unlike plain `cookie`, `cookie attach` never
 falls back to an engine of its own: a daemon it cannot reach or use is an
 error.
+
+## Starting up
+
+A daemon takes connections while it starts. A client that connects then
+shows what it is doing, with progress where the daemon knows it, instead of
+a connection error:
+
+- **TUI and web client:** *Cookie is starting:* and the step, such as
+  *Moving sessions to the new storage layout: 41 of 97 trees*, with a
+  progress bar in the web client. Drafts stay; the composer sends once the
+  daemon is ready, and the session list loads then.
+- **Command line:** commands print `cookie: Cookie is starting: …` on
+  stderr while they wait, then carry on. `cookie daemon status` shows the
+  daemon's state and what it is busy with at any time.
+
+If startup fails, such as on a session store a newer build laid out, the
+connected clients show why, and the daemon exits as soon as they have it
+(within 5 seconds). After startup, longer work the daemon does in the
+background, such as a restart waiting for running turns, shows as a
+one-line notice in the TUI's banner and above the web client's workspace.
+Dial-in runtimes that dial while the daemon starts are told to try again
+(HTTP 503) and connect once it is ready.
 
 ## A daemon already running
 
@@ -127,8 +157,9 @@ waits for those turns too. Once nothing runs, the restart is due; a turn
 asked for in the moment before the daemon goes down is refused with "the
 daemon is restarting", and a cron fire due then is left for the restarted
 daemon, which runs it within `[cron] missed_grace`. Clients show
-*Restarting when idle…* until the connection closes, then reconnect as after
-any dropped connection.
+*Restarting when idle* and what it waits for until the connection closes,
+then redial every half second for up to 30 seconds, and show the restarted
+daemon's progress while it starts (see [Starting up](#starting-up)).
 
 The daemon then shuts down as on a stop signal: it ends the runs, stops its
 plugins, MCP servers, and the runtimes it started, flushes its sessions and

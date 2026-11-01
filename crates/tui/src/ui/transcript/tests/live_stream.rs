@@ -650,7 +650,7 @@ async fn a_reconnected_view_rebuilds_the_reply_it_missed_without_duplicating_it(
     let redial = Arc::clone(&server);
     let redialed = Arc::new(std::sync::Mutex::new(None));
     let redial_log = Arc::clone(&redialed);
-    app.reconnector = Some(Arc::new(move || {
+    app.reconnector = Some(Arc::new(move |_progress| {
         let (server, identity) = (Arc::clone(&redial), identity.clone());
         let redial_log = Arc::clone(&redial_log);
         Box::pin(async move {
@@ -769,7 +769,7 @@ async fn a_reconnected_view_takes_input_while_its_owner_is_asked_again() {
     let mut app = App::new(client).await.expect("app");
     let mut deliveries = app.take_deliveries();
     let redial = Arc::clone(&server);
-    app.reconnector = Some(Arc::new(move || {
+    app.reconnector = Some(Arc::new(move |_progress| {
         let (server, identity) = (Arc::clone(&redial), identity.clone());
         Box::pin(async move {
             let (client, _log, _sever) = crate::tests::connect_counting(&server);

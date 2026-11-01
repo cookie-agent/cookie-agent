@@ -172,6 +172,22 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "daemon.status",
+      "params": "DaemonStatusParams",
+      "params_role": "command",
+      "result": "DaemonStatus"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "daemon.status",
+      "params": "DaemonStatus",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "elicitation.respond",
       "params": "ElicitationRespondParams",
       "params_role": "command",

@@ -38,7 +38,7 @@ mod test_support;
 pub mod testing;
 
 // The storage layer, at the paths the engine's modules have always used.
-pub use cookie_agent_engine_store::{TailOwner, delegation_events, events, session};
+pub use cookie_agent_engine_store::{TailOwner, delegation_events, events, session, status};
 // The permission rules, likewise.
 pub use cookie_agent_engine_permissions as permissions;
 // The memory folder and its store.
