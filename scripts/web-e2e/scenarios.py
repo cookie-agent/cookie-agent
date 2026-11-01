@@ -701,27 +701,39 @@ Object.defineProperty(t, 'scrollTop', {
 });
 """
 
-# Presses the toggle of tool row `arguments[0]` with real mouse events held
-# for `arguments[1]` ms (in which a stream redraws the page many times), and
-# reports the ms from the release until the row shows itself toggled, or
-# null when it never does within a second.
+# Finds the toggle of tool row `arguments[0]` and starts timing it in the
+# page: from the mouse button's release (the mouseup's own time) until a
+# mutation shows the row toggled. Both ends are taken in the page, so the
+# WebDriver round trips that release the button and read the result, which
+# a busy CI runner stretches, are not counted.
 TIMED_TOGGLE = """
-const [call, hold, done] = arguments;
+const [call, done] = arguments;
 const row = () => document.querySelector('#transcript [data-tool="' + call + '"]');
 const before = row().dataset.expanded;
 const box = row().querySelector('[data-action=toggle-tool]').getBoundingClientRect();
-window.__toggle = {x: box.left + 24, y: box.top + box.height / 2, before};
-done(window.__toggle);
+window.__toggle = {x: box.left + 24, y: box.top + box.height / 2, before, released: null, toggled: null};
+const toggle = window.__toggle;
+addEventListener('mouseup', (event) => { toggle.released = event.timeStamp; }, {capture: true, once: true});
+const observer = new MutationObserver(() => {
+    const now = performance.now();
+    if (toggle.released !== null && row() && row().dataset.expanded !== before) {
+        toggle.toggled = now;
+        observer.disconnect();
+    }
+});
+observer.observe(document.querySelector('#transcript'), {subtree: true, childList: true, attributes: true, attributeFilter: ['data-expanded']});
+done({x: toggle.x, y: toggle.y});
 """
 
+# The ms from the release until the row showed itself toggled, or null when
+# it did not within a second.
 TOGGLE_LATENCY = """
-const [call, done] = arguments;
-const row = () => document.querySelector('#transcript [data-tool="' + call + '"]');
-const released = window.__released;
+const done = arguments[arguments.length - 1];
+const toggle = window.__toggle;
 const check = () => {
-    if (row().dataset.expanded !== window.__toggle.before) {
-        done(performance.now() - released);
-    } else if (performance.now() - released > 1000) {
+    if (toggle.toggled !== null) {
+        done(toggle.toggled - toggle.released);
+    } else if (toggle.released === null || performance.now() - toggle.released > 1000) {
         done(null);
     } else {
         requestAnimationFrame(check);
@@ -837,13 +849,13 @@ def streaming_scroll(browser):
     call = browser.script(last_tool + "r.scrollIntoView({block: 'center'}); return r.dataset.tool")
     latencies = []
     for _ in range(4):
-        spot = browser.script_async(TIMED_TOGGLE, call, 150)
+        spot = browser.script_async(TIMED_TOGGLE, call)
         top = browser.script("return document.querySelector('#transcript [data-tool=\"' + arguments[0] + '\"]').getBoundingClientRect().top", call)
+        # Held for 150 ms, in which the stream redraws the page many times.
         mouse(browser, "mousePressed", spot["x"], spot["y"])
         time.sleep(0.15)
-        browser.script("window.__released = performance.now()")
         mouse(browser, "mouseReleased", spot["x"], spot["y"])
-        latency = browser.script_async(TOGGLE_LATENCY, call)
+        latency = browser.script_async(TOGGLE_LATENCY)
         assert latency is not None, "a click on the streaming reply's call did nothing"
         latencies.append(latency)
         moved = browser.script("return document.querySelector('#transcript [data-tool=\"' + arguments[0] + '\"]').getBoundingClientRect().top", call)
