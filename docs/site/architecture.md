@@ -453,6 +453,7 @@ daemon, whatever directory it was started in (layout version 3,
   providers/store-v3.json          # durable managed connections
   catalog/                         # validated models.dev cache
   unread.json                      # the unread root sessions
+  pinned.json                      # the pinned root sessions
   sessions/
     layout.json                    # {"version":3,"history_format":2,"build":…,"pending":[]}
     activity/<yyyy-mm>.jsonl       # list entries of root sessions, by month written

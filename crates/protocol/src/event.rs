@@ -380,6 +380,13 @@ pub struct SessionMeta {
     /// daemon.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unread: bool,
+    /// Whether the user pinned the root session
+    /// (`docs/site/specs/session-pins-and-filters.md`, client protocol
+    /// 1.66.0): it is listed whatever its age, and clients show it with the
+    /// sessions at work. Never set on a delegated session; false from an
+    /// older daemon.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -439,6 +446,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             held: Option<Open<HeldReason>>,
             #[serde(default)]
             unread: bool,
+            #[serde(default)]
+            pinned: bool,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -468,6 +477,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             cron: w.cron,
             held: w.held,
             unread: w.unread,
+            pinned: w.pinned,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

@@ -8,9 +8,9 @@ mod dirs;
 mod fold;
 mod in_flight;
 mod layout;
+mod marks;
 mod publication;
 mod tree_load;
-mod unread;
 mod view;
 
 pub use activity::{ListWindow, RootList};
@@ -466,7 +466,9 @@ pub struct SessionStore {
     /// every one of them.
     live_waiting: Mutex<HashMap<SessionId, Vec<WaitingOn>>>,
     /// The unread root sessions (`<data_root>/unread.json`).
-    unread: unread::UnreadSessions,
+    unread: marks::MarkedSessions,
+    /// The pinned root sessions (`<data_root>/pinned.json`).
+    pinned: marks::MarkedSessions,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
     /// Where the view cache this process last wrote for each session starts
@@ -605,11 +607,13 @@ impl SessionStore {
 
     /// `meta` as clients see it: its `waiting_on`, the fold's active goal,
     /// with what the engine's live producers make the session wait on, in
-    /// `WaitingOn` order; and for a root, whether it is unread.
+    /// `WaitingOn` order; and for a root, whether it is unread and whether
+    /// it is pinned.
     #[must_use]
     pub fn for_clients(&self, mut meta: SessionMeta) -> SessionMeta {
-        meta.unread =
-            matches!(meta.origin, SessionOrigin::Root) && self.unread.contains(meta.session_id);
+        let root = matches!(meta.origin, SessionOrigin::Root);
+        meta.unread = root && self.unread.contains(meta.session_id);
+        meta.pinned = root && self.pinned.contains(meta.session_id);
         let live = self
             .live_waiting
             .lock()
@@ -674,9 +678,17 @@ impl SessionStore {
         self.unread.set(ids, unread, jiff::Timestamp::now())
     }
 
-    /// Forgets the unread state of deleted sessions, announcing nothing.
-    pub fn forget_unread(&self, deleted: &HashSet<SessionId>) {
+    /// Pins or unpins the root sessions `ids`, returning those whose state
+    /// changed; the caller announces them ([`Self::announce_live_waiting`]).
+    pub fn set_pinned(&self, ids: &[SessionId], pinned: bool) -> Vec<SessionId> {
+        self.pinned.set(ids, pinned, jiff::Timestamp::now())
+    }
+
+    /// Forgets whether deleted sessions were unread or pinned, announcing
+    /// nothing.
+    pub fn forget_marks(&self, deleted: &HashSet<SessionId>) {
         self.unread.forget(deleted.iter().copied());
+        self.pinned.forget(deleted.iter().copied());
     }
 
     /// Drops what deleted sessions waited on, announcing nothing.
@@ -732,7 +744,8 @@ impl SessionStore {
             publications: publication::Publications::default(),
             index_changes: tokio::sync::broadcast::channel(INDEX_CHANGE_CAPACITY).0,
             live_waiting: Mutex::default(),
-            unread: unread::UnreadSessions::open(data_root),
+            unread: marks::MarkedSessions::open(data_root, marks::UNREAD_FILE, "unread sessions"),
+            pinned: marks::MarkedSessions::open(data_root, marks::PINNED_FILE, "pinned sessions"),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             views: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),

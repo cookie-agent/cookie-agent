@@ -1126,7 +1126,9 @@ pub struct SessionListParams {
     /// Only the root sessions last active at or after this time, and every
     /// unread or busy one (a run, an approval or question, a background
     /// call, or a subagent that can wake it) whatever its age (client
-    /// protocol 1.57.0). Absent: every session, with `before` absent too.
+    /// protocol 1.57.0), and from 1.66.0 every pinned one and every one an
+    /// enabled cron job with a next fire targets. Absent: every session,
+    /// with `before` absent too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_since: Option<jiff::Timestamp>,
     /// The `older` cursor of a previous answer: only the root sessions

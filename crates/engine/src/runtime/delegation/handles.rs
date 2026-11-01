@@ -345,6 +345,7 @@ mod tests {
             delegated_attachments: Vec::new(),
             held: None,
             unread: false,
+            pinned: false,
         }
     }
 

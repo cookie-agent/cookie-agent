@@ -2904,3 +2904,36 @@ async fn a_failed_startup_reaches_the_connected_clients() {
     );
     running.wait().await;
 }
+
+#[tokio::test]
+async fn session_pin_set_checks_its_ids_and_skips_unknown_sessions() {
+    let harness = harness();
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let too_many = (0..=cookie_agent_protocol::MAX_PIN_SET_SESSIONS)
+        .map(|_| cookie_agent_protocol::SessionId::new_v7())
+        .collect::<Vec<_>>();
+    for (id, session_ids) in [(2, Vec::new()), (3, too_many)] {
+        let (refused, _) = request(
+            &mut client,
+            id,
+            "session.pin.set",
+            json!({ "session_ids": session_ids, "pinned": true }),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    }
+    let unknown = cookie_agent_protocol::SessionId::new_v7();
+    let (skipped, _) = request(
+        &mut client,
+        4,
+        "session.pin.set",
+        json!({ "session_ids": [unknown], "pinned": true }),
+    )
+    .await;
+    assert_eq!(skipped["result"]["changed"], json!([]), "{skipped}");
+    assert_eq!(
+        skipped["result"]["skipped"],
+        json!([{ "session_id": unknown, "reason": "session_not_found" }]),
+        "{skipped}"
+    );
+}

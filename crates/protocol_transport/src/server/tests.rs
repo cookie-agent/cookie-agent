@@ -532,6 +532,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::SessionUnreadSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn set_session_pinned(
+        &self,
+        _: cookie_agent_protocol::SessionPinSetParams,
+    ) -> Result<cookie_agent_protocol::SessionPinSetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: cookie_agent_protocol::PluginsListParams,

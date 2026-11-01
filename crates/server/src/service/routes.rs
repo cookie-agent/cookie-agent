@@ -974,6 +974,13 @@ impl ServerProtocol for Server {
         Ok(self.engine.set_session_unread(params))
     }
 
+    async fn set_session_pinned(
+        &self,
+        params: cookie_agent_protocol::SessionPinSetParams,
+    ) -> Result<cookie_agent_protocol::SessionPinSetResult> {
+        Ok(self.engine.set_session_pinned(params))
+    }
+
     async fn set_client_presence(
         &self,
         params: cookie_agent_protocol::ClientPresenceParams,

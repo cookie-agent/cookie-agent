@@ -1,5 +1,6 @@
 pub(super) mod delete;
 pub(super) mod history;
+pub(super) mod pins;
 pub(super) mod residency;
 pub(super) mod unread;
 use std::{
@@ -322,8 +323,9 @@ impl Engine {
     }
 
     /// [`Self::list_sessions`] for the roots last active within `window`,
-    /// with every unread or busy root whatever its age, and the cursor of
-    /// the next older page (`session.list`'s `active_since` and `before`).
+    /// with every unread, pinned, or busy root whatever its age, and the
+    /// cursor of the next older page (`session.list`'s `active_since` and
+    /// `before`). A root a cron job will wake counts as busy.
     #[must_use]
     pub fn list_sessions_in(
         &self,
@@ -333,7 +335,15 @@ impl Engine {
         let busy = if window == crate::session::ListWindow::default() {
             std::collections::HashSet::new()
         } else {
-            self.busy_roots()
+            let mut busy = self.busy_roots();
+            busy.extend(
+                self.inner
+                    .crons
+                    .waiting_targets()
+                    .into_iter()
+                    .map(|session| self.root_session_of(session)),
+            );
+            busy
         };
         let list = self.inner.store.list_roots_in(window, &busy);
         let sessions = list
@@ -641,7 +651,7 @@ impl Engine {
         self.inner.delegation_events.forget_sessions(deleted);
         self.inner.memory_seen.forget_sessions(deleted);
         self.forget_live_waiting(deleted);
-        self.inner.store.forget_unread(deleted);
+        self.inner.store.forget_marks(deleted);
         self.delete_crons_targeting(deleted);
         // A wait on a deleted subagent ends now rather than at its recheck.
         for session in deleted {

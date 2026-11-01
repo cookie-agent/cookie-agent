@@ -366,6 +366,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(NOTIFICATIONS_TEST_METHOD, ToDaemon, NotificationsTestParams => NotificationsTestResult),
         request!(CLIENT_PRESENCE_METHOD, ToDaemon, ClientPresenceParams => ClientPresenceResult),
         request!(SESSION_UNREAD_SET_METHOD, ToDaemon, SessionUnreadSetParams => SessionUnreadSetResult),
+        request!(SESSION_PIN_SET_METHOD, ToDaemon, SessionPinSetParams => SessionPinSetResult),
         request!(PLUGINS_LIST_METHOD, ToDaemon, PluginsListParams => PluginsListResult),
         request!(PLUGINS_RESTART_METHOD, ToDaemon, PluginsRestartParams => PluginsRestartResult),
         request!(CONFIG_RELOAD_METHOD, ToDaemon, ConfigReloadParams => ConfigReloadResult),

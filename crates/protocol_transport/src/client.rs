@@ -1601,6 +1601,23 @@ impl Client {
         .await
     }
 
+    /// Pins or unpins the root sessions `session_ids` (client protocol
+    /// 1.66.0).
+    pub async fn set_session_pinned(
+        &self,
+        session_ids: Vec<cookie_agent_protocol::SessionId>,
+        pinned: bool,
+    ) -> Result<cookie_agent_protocol::SessionPinSetResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SESSION_PIN_SET_METHOD,
+            &cookie_agent_protocol::SessionPinSetParams {
+                session_ids,
+                pinned,
+            },
+        )
+        .await
+    }
+
     /// The configured plugins, in the order their hooks run.
     pub async fn list_plugins(
         &self,

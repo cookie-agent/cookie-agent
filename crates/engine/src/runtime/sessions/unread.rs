@@ -26,9 +26,23 @@ impl Engine {
     /// `session.unread.set`: marks the root sessions it names, and says
     /// which it left.
     pub fn set_session_unread(&self, params: SessionUnreadSetParams) -> SessionUnreadSetResult {
+        let (roots, skipped) = self.root_sessions_among(params.session_ids);
+        SessionUnreadSetResult {
+            changed: self.set_unread_announced(&roots, params.unread),
+            skipped,
+        }
+    }
+
+    /// The root sessions among `session_ids`, and why each other one is
+    /// left: the user marks roots only (`session.unread.set`,
+    /// `session.pin.set`).
+    pub(super) fn root_sessions_among(
+        &self,
+        session_ids: Vec<SessionId>,
+    ) -> (Vec<SessionId>, Vec<SessionUnreadSkip>) {
         let mut roots = Vec::new();
         let mut skipped = Vec::new();
-        for session_id in params.session_ids {
+        for session_id in session_ids {
             match self.get_session(session_id).map(|meta| meta.origin) {
                 Ok(SessionOrigin::Delegated {
                     root_session_id, ..
@@ -45,10 +59,7 @@ impl Engine {
                 }),
             }
         }
-        SessionUnreadSetResult {
-            changed: self.set_unread_announced(&roots, params.unread),
-            skipped,
-        }
+        (roots, skipped)
     }
 
     /// Marks `roots` and tells every client of those that changed.

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.65.0",
+    "protocol_version": "1.66.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.65.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.66.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -294,6 +294,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `notifications.test` | Subscription `id` | `status` (`sent`, `gone`, or `failed`) and an optional `detail` |
 | `client.presence` | `session`: the session this connection shows the user, or `null` when the user is not there | Empty object |
 | `session.unread.set` | `session_ids` (1 to 256 root sessions) and `unread` (since 1.51.0; see [Unread sessions](#unread-sessions)) | `changed`: the sessions whose state changed, each also announced by `sessions.changed`; `skipped`: the IDs it left, each with its `reason` (`session_not_found`, or `not_a_root_session` with its `root_session_id`) |
+| `session.pin.set` | `session_ids` (1 to 256 root sessions) and `pinned` (since 1.66.0; see [Pinned sessions](#pinned-sessions)) | `changed` and `skipped`, as `session.unread.set` answers |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -454,11 +455,13 @@ Since 1.57.0 `session.list` takes a window. With `active_since`, it returns
 the root sessions last active at or after that time, and with them every
 root that is unread or busy whatever its age: its tree has a run going, an
 approval or a question waiting, a background call running, or a subagent
-that can still wake it. The answer's `older` is the cursor for what is
+that can still wake it. Since 1.66.0 these also include every pinned root,
+and every root that an enabled cron job with a next fire time targets. The answer's `older` is the cursor for what is
 older, or absent once nothing is; passing it back as `before` (without
 `active_since`) returns the sessions last active before it, back to the
 start of the newest month that holds any, with a new `older`. So a client
-lists the last 30 days and offers "Show older", one month at a time.
+lists the last few days (the TUI 30, the web page as its filter says, 7 by
+default) and offers "Show older", one month at a time.
 Without `active_since` and `before` the answer holds every root session, as
 before 1.57.0, and no `older`. The daemon answers from its
 [activity journals](../sessions/index.md#where-sessions-are-stored), which
@@ -1283,6 +1286,20 @@ log, so it moves neither `last_event_seq` nor the activity times.
 Delegated sessions are never unread. Each change sends `sessions.changed`
 `upserted`. A 1.50 daemon sends no `unread` and answers
 `session.unread.set` with `-32601`.
+
+### Pinned sessions
+
+Since 1.66.0 a root session's `SessionMeta` carries `pinned: true` (left
+out when false) while the user has it pinned
+([spec](../specs/session-pins-and-filters.md)). `session.pin.set` pins or
+unpins roots; a delegated session is skipped with `not_a_root_session`, as
+`session.unread.set` skips it. A pinned root is listed whatever
+`session.list`'s window, and clients show it with the sessions at work. The
+state lives in `<data_root>/pinned.json` and survives restarts; like
+`unread`, it is not in the session log and moves neither `last_event_seq`
+nor the activity times. Each change sends `sessions.changed` `upserted`;
+deleting a session forgets its pin. A 1.65 daemon sends no `pinned` and
+answers `session.pin.set` with `-32601`.
 
 ### Held sessions
 

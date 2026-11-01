@@ -3,7 +3,7 @@
   "additionalProperties": false,
   "properties": {
     "active_since": {
-      "description": "Only the root sessions last active at or after this time, and every\nunread or busy one (a run, an approval or question, a background\ncall, or a subagent that can wake it) whatever its age (client\nprotocol 1.57.0). Absent: every session, with `before` absent too.",
+      "description": "Only the root sessions last active at or after this time, and every\nunread or busy one (a run, an approval or question, a background\ncall, or a subagent that can wake it) whatever its age (client\nprotocol 1.57.0), and from 1.66.0 every pinned one and every one an\nenabled cron job with a next fire targets. Absent: every session,\nwith `before` absent too.",
       "format": "date-time",
       "type": [
         "string",

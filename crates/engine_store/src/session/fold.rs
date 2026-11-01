@@ -187,6 +187,7 @@ fn projection_fold_with(
         cron,
         held: None,
         unread: false,
+        pinned: false,
     };
     let mut projection = SessionProjection {
         meta,

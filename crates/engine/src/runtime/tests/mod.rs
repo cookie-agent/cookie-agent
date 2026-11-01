@@ -39,6 +39,7 @@ mod model_loop;
 mod model_policy;
 mod native_compaction;
 mod permissions;
+mod pins;
 mod plugins;
 mod producers;
 mod producers_discard;

@@ -19,6 +19,9 @@ pub const SESSION_UNREAD_SET_METHOD: &str = "session.unread.set";
 
 /// The most sessions one `session.unread.set` marks.
 pub const MAX_UNREAD_SET_SESSIONS: usize = 256;
+pub const SESSION_PIN_SET_METHOD: &str = "session.pin.set";
+/// The most sessions one `session.pin.set` pins or unpins.
+pub const MAX_PIN_SET_SESSIONS: usize = 256;
 
 /// The most characters a subscription's label may have.
 pub const PUSH_LABEL_MAX_CHARS: usize = 80;
@@ -169,4 +172,25 @@ pub struct SessionUnreadSkip {
     /// For `not_a_root_session`, its root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<SessionId>,
+}
+
+/// Pins or unpins the root sessions `session_ids` (1 to
+/// [`MAX_PIN_SET_SESSIONS`]; client protocol 1.66.0,
+/// `docs/site/specs/session-pins-and-filters.md`). A pinned root is listed
+/// whatever its age.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPinSetParams {
+    pub session_ids: Vec<SessionId>,
+    pub pinned: bool,
+}
+
+/// What `session.pin.set` did: the sessions whose state changed, each also
+/// announced by `sessions.changed`, and the IDs it left, for the reasons
+/// `session.unread.set` leaves them.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SessionPinSetResult {
+    pub changed: Vec<SessionId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SessionUnreadSkip>,
 }

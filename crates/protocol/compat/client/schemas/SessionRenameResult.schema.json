@@ -255,6 +255,10 @@
         "origin": {
           "$ref": "#/$defs/SessionOrigin"
         },
+        "pinned": {
+          "description": "Whether the user pinned the root session\n(`docs/site/specs/session-pins-and-filters.md`, client protocol\n1.66.0): it is listed whatever its age, and clients show it with the\nsessions at work. Never set on a delegated session; false from an\nolder daemon.",
+          "type": "boolean"
+        },
         "project": {
           "description": "The project the session belongs to: for a root session the fold of\nits `session_project_set` events, for a delegated one its root's\n(client protocol 1.8.0). Absent outside a project, from an older\ndaemon, and when the project no longer exists.",
           "maxLength": 64,

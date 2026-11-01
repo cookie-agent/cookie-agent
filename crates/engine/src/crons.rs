@@ -620,6 +620,18 @@ impl CronStore {
         lock(&self.jobs).iter().any(|job| job.waits_on(session))
     }
 
+    /// Every session an enabled job with a next fire targets.
+    pub(crate) fn waiting_targets(&self) -> Vec<SessionId> {
+        lock(&self.jobs)
+            .iter()
+            .filter_map(|job| {
+                job.target
+                    .session()
+                    .filter(|session| job.waits_on(*session))
+            })
+            .collect()
+    }
+
     /// Whether an enabled one-time job with a next fire targets `session`.
     pub(crate) fn waits_on_once(&self, session: SessionId) -> bool {
         lock(&self.jobs)

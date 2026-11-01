@@ -165,6 +165,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Session pins and filters: specs/session-pins-and-filters.md
           - Daemon startup and status: specs/daemon-startup.md
           - "`cookie update`: self-update by channel": specs/self-update.md
           - Full tool headers on open rows: specs/tool-header-wrap.md

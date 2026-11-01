@@ -421,7 +421,7 @@ pub struct RootList {
 
 impl SessionStore {
     /// The root sessions last active within `window`, and every root that is
-    /// unread or in `busy` whatever its age (section 4.3). Entries come from
+    /// unread, pinned, or in `busy` whatever its age (section 4.3). Entries come from
     /// the activity journals, newest month first; a root this process holds
     /// in memory answers from its projection; a pinned root no journal read
     /// so far names is read from its own `metadata`. The default window
@@ -472,6 +472,7 @@ impl SessionStore {
             .unread
             .ids()
             .into_iter()
+            .chain(self.pinned.ids())
             .chain(busy.iter().copied())
             .collect::<HashSet<_>>();
         for id in pinned {

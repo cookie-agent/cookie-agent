@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.66.0
+
+- Pinned sessions ([session pins and filters](../specs/session-pins-and-filters.md);
+  see [Pinned sessions](protocol.md#pinned-sessions)): `SessionMeta` gains
+  `pinned`, true while the user has a root session pinned, and
+  `session.pin.set` (`session_ids`, `pinned`) pins or unpins roots,
+  answering like `session.unread.set`.
+- `session.list` with `active_since` also returns every pinned root, and
+  every root that an enabled cron job with a next fire time targets,
+  whatever its age.
+
 ## 1.64.0
 
 - Less repeated history on the wire

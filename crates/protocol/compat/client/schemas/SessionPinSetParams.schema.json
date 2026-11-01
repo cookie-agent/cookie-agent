@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Pins or unpins the root sessions `session_ids` (1 to\n[`MAX_PIN_SET_SESSIONS`]; client protocol 1.66.0,\n`docs/site/specs/session-pins-and-filters.md`). A pinned root is listed\nwhatever its age.",
+  "properties": {
+    "pinned": {
+      "type": "boolean"
+    },
+    "session_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "session_ids",
+    "pinned"
+  ],
+  "title": "SessionPinSetParams",
+  "type": "object"
+}

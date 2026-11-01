@@ -744,6 +744,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::SessionUnreadSetParams,
     ) -> Result<cookie_agent_protocol::SessionUnreadSetResult, ServerFault>;
+    /// Pins or unpins root sessions.
+    async fn set_session_pinned(
+        &self,
+        params: cookie_agent_protocol::SessionPinSetParams,
+    ) -> Result<cookie_agent_protocol::SessionPinSetResult, ServerFault>;
     /// Lists the configured plugins.
     async fn list_plugins(
         &self,
@@ -1750,6 +1755,18 @@ async fn dispatch<S: ServerProtocol>(
                 )));
             }
             value(server.set_session_unread(params).await?)
+        }
+        cookie_agent_protocol::SESSION_PIN_SET_METHOD => {
+            let params: cookie_agent_protocol::SessionPinSetParams = decode(params)?;
+            if params.session_ids.is_empty()
+                || params.session_ids.len() > cookie_agent_protocol::MAX_PIN_SET_SESSIONS
+            {
+                return Err(ServerFault::invalid_params(format!(
+                    "session_ids must name 1 to {} sessions",
+                    cookie_agent_protocol::MAX_PIN_SET_SESSIONS
+                )));
+            }
+            value(server.set_session_pinned(params).await?)
         }
         cookie_agent_protocol::PLUGINS_LIST_METHOD => {
             value(server.list_plugins(decode_default(params)?).await?)

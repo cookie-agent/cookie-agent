@@ -916,6 +916,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.pin.set",
+      "params": "SessionPinSetParams",
+      "params_role": "command",
+      "result": "SessionPinSetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.producers",
       "params": "SessionProducersParams",
       "params_role": "command",
