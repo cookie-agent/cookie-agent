@@ -1,6 +1,10 @@
 # Recovering from a thinking-binding mismatch
 
-Status: **implemented** (2026-10-26; client protocol 1.33.0).
+Status: **implemented** (2026-10-26; client protocol 1.33.0). Partly
+superseded by [stale reasoning and a frozen context](frozen-context.md)
+(2026-11-01): the refusal is a typed error kind, stale reasoning is cut
+before the request on models that bind it, the cut has a `cause`, and the
+diagnostic is replaced by one quiet row.
 
 ## 1. Problem
 

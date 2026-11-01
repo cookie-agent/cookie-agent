@@ -196,7 +196,7 @@ never stored.
 | `tool_round_started`, `deferred_tools_announced` | audit | run | [Deferred tools](#deferred-tools): a tool round's eager tools, and what the model was told it can load |
 | `prompt_blocks_recorded`, `prompt_blocks_announced` | audit | run | [Prompt blocks](#prompt-blocks): where a run's prompt carries its blocks, and what changed since |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
-| `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, after a [thinking-binding mismatch](../specs/thinking-replay-recovery.md) |
+| `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, because the request before it changed since it was made; see [Stale reasoning](#stale-reasoning) |
 | `automatic_runs_held`, `automatic_runs_resumed` | state | runless | A [held session](../specs/held-sessions.md): its automatic runs stopped, and the resume that cleared it |
 | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_call_linked` | state | run | A tool call's lifecycle |
 | `delegation_reserved`, `delegation_progressed`, `delegation_finished` | state | run | A [delegation](#delegation) on the parent |
@@ -604,6 +604,30 @@ outcome }` ends an internal agent invocation the same way, with
 internal agent definitions, one per kind, and an
 `internal_agent_usage_recorded` of the run names the agent frozen for its
 kind.
+
+### Stale reasoning
+
+A model that binds its reasoning to its prefix (Claude; see
+[`reasoning_binding`](../extend/providers.md#provider-fields)) accepts a
+replayed thinking block only while everything sent before it is unchanged
+([frozen context spec](../specs/frozen-context.md)).
+
+- `model_turn_committed` has an optional `prefix_fingerprint` (client
+  protocol 1.61.0) on such a model: the SHA-256 of the system prompt, the
+  eager tools, and every earlier message the request sent. Before each
+  request the engine compares it with the request it is about to send.
+- `native_replay_cut { through_seq, cause }` stops replaying the reasoning
+  of every turn at or before `through_seq`. `cause` (1.61.0) says how the
+  change was found: `refused` (the provider refused the request, which is
+  sent again without it; the default for logs written before), `prefix_changed`
+  (found before sending), `provider_dropped` (the provider dropped a block
+  and said so), `compaction`, or `refreshed`. A value this build does not
+  know reads as `unknown`.
+- A refusal's cut is written before the `attempt_abandoned` it recovers, so
+  a client shows the cut instead of the failure. The clients show one
+  quiet row for a cut, except after a compaction or a refresh, whose rows
+  stand for it.
+- A cut turn's replay decision is `reconstructed_normalized_history`.
 
 ### Approvals
 

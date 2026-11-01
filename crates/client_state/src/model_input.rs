@@ -114,6 +114,22 @@ pub fn agent_md_turn(
     (entries, model_text::agent_md_turn(&sources))
 }
 
+/// The row of a `native_replay_cut` the clients show: earlier reasoning is
+/// no longer sent. A cut after a compaction or a refresh shows no row of its
+/// own, since that row stands for it (frozen context spec, section 7.1).
+pub fn reasoning_cut_row(cause: cookie_agent_protocol::ReplayCutCause) -> Option<&'static str> {
+    use cookie_agent_protocol::ReplayCutCause;
+    match cause {
+        ReplayCutCause::Compaction | ReplayCutCause::Refreshed => None,
+        ReplayCutCause::Refused
+        | ReplayCutCause::PrefixChanged
+        | ReplayCutCause::ProviderDropped
+        | ReplayCutCause::Unknown => Some(
+            "Earlier thinking is no longer sent to the model: the conversation before it changed.",
+        ),
+    }
+}
+
 /// The note in a reply an interrupt cut off: the marker the model reads
 /// after it from the next request on, when the reply kept content, else
 /// only that it was interrupted.

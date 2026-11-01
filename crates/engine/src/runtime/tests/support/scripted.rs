@@ -1857,6 +1857,9 @@ pub(crate) fn anthropic_thinking_body(signature: Option<&str>) -> String {
 #[derive(Clone, Copy)]
 pub(crate) enum AnthropicReplayResponse {
     Thinking(Option<&'static str>),
+    /// A signed thinking reply whose `message_start` reports the
+    /// `input_transformations` entry type given, for an earlier block.
+    ThinkingTransformed(&'static str, &'static str),
     Status400,
     /// Anthropic's refusal of a replayed thinking block whose conversation
     /// prefix changed (preserved thinking).
@@ -1918,6 +1921,15 @@ pub(crate) async fn anthropic_replay_server(
                 let body = match response {
                     AnthropicReplayResponse::Thinking(signature) => {
                         anthropic_thinking_body(signature)
+                    }
+                    AnthropicReplayResponse::ThinkingTransformed(signature, kind) => {
+                        anthropic_thinking_body(Some(signature)).replacen(
+                            "\"message\":{}",
+                            &format!(
+                                "\"message\":{{\"input_transformations\":[{{\"type\":\"{kind}\",\"path\":\"messages.1.content.0\",\"reason\":\"prefix_binding_mismatch\"}}]}}"
+                            ),
+                            1,
+                        )
                     }
                     AnthropicReplayResponse::Text(text) => anthropic_usage_body(text, 1, 0, 0),
                     AnthropicReplayResponse::TextWithInputTokens(text, input_tokens) => {

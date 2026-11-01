@@ -293,6 +293,17 @@ struct AssistantRecord<'a> {
     reasoning_cut: bool,
     /// The checkpoint tail left out one of its calls.
     tail_dropped: bool,
+    /// Where the turn was committed, and the prefix it was made in.
+    prefix: AssistantPrefix,
+}
+
+/// An assistant turn of an assembled history: where it was committed and the
+/// request prefix it was made in, when recorded (frozen context spec,
+/// section 4). A turn not from the log (a delegated seed) has neither.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AssistantPrefix {
+    pub(crate) seq: u64,
+    pub(crate) fingerprint: Option<cookie_agent_protocol::Sha256Digest>,
 }
 
 /// The raw events the latest checkpoint keeps from before it, rendered
@@ -358,6 +369,8 @@ pub(crate) struct ModelContext {
     pub(crate) history: Vec<HistoryTurn>,
     pub(crate) native_context: Option<OvenNativeContextWindow>,
     pub(crate) replay_decisions: Vec<ReplayDecision>,
+    /// One per assistant turn of `history`, in order.
+    pub(crate) assistant_prefixes: Vec<AssistantPrefix>,
 }
 
 fn latest_checkpoint<'a>(
@@ -550,6 +563,7 @@ pub(crate) fn project_summary_context<E: Borrow<StoredEvent>>(
         history: assembled.history,
         native_context: None,
         replay_decisions: assembled.replay_decisions,
+        assistant_prefixes: assembled.assistant_prefixes,
     })
 }
 
@@ -783,6 +797,7 @@ pub(crate) fn compaction_tail_candidates<E: Borrow<StoredEvent>>(events: &[E]) -
 struct AssembledHistory {
     history: Vec<HistoryTurn>,
     replay_decisions: Vec<ReplayDecision>,
+    assistant_prefixes: Vec<AssistantPrefix>,
 }
 
 /// The context a request on `binding` sends, any provider window allowed:
@@ -818,6 +833,7 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
             history: assembled.history,
             native_context: None,
             replay_decisions: assembled.replay_decisions,
+            assistant_prefixes: assembled.assistant_prefixes,
         });
     };
     if let Some((source_through_seq, native_context)) = usable_window(commit, binding, use_windows)
@@ -835,6 +851,7 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
             history: assembled.history,
             native_context: Some(native_context),
             replay_decisions: assembled.replay_decisions,
+            assistant_prefixes: assembled.assistant_prefixes,
         });
     }
     if matches!(commit.checkpoint, ContextCheckpoint::NativeWindow { .. }) {
@@ -894,6 +911,7 @@ pub(crate) fn assemble_summary_view<E: Borrow<StoredEvent>>(
                 history: assembled.history,
                 native_context: None,
                 replay_decisions: assembled.replay_decisions,
+                assistant_prefixes: assembled.assistant_prefixes,
             })
         }
     }
@@ -936,7 +954,7 @@ fn assemble_history_with_replay(
     let mut replay_cut = None::<u64>;
     for event in context_events {
         match &event.payload {
-            EventPayload::NativeReplayCut { through_seq } => {
+            EventPayload::NativeReplayCut { through_seq, .. } => {
                 replay_cut = replay_cut.max(Some(*through_seq));
             }
             EventPayload::SkillLoaded { rendered_body, .. } => {
@@ -1071,6 +1089,7 @@ fn assemble_history_with_replay(
             EventPayload::ModelTurnCommitted {
                 resolved_model,
                 turn,
+                prefix_fingerprint,
                 ..
             } => {
                 let logical_index = logical.len();
@@ -1126,6 +1145,10 @@ fn assemble_history_with_replay(
                     interrupted: turn.finish_reason == ModelFinishReason::Aborted,
                     reasoning_cut: replay_cut.is_some_and(|cut| envelope.seq <= cut),
                     tail_dropped,
+                    prefix: AssistantPrefix {
+                        seq: envelope.seq,
+                        fingerprint: prefix_fingerprint.clone(),
+                    },
                 })));
             }
             EventPayload::ToolCallStarted { start } => {
@@ -1281,6 +1304,7 @@ fn assemble_history_with_replay(
             .map(|body| HistoryTurn::user(user_text(body))),
     );
     let mut replay_decisions = Vec::new();
+    let mut assistant_prefixes = Vec::new();
     for turn in logical {
         match turn {
             LogicalTurn::System(text) => {
@@ -1295,6 +1319,7 @@ fn assemble_history_with_replay(
                     AssistantMessage::new(vec![AssistantPart::Text(TextPart::new(text))]),
                     Finish::new(oven_sdk::Usage::default(), FinishReason::Stop),
                 )));
+                assistant_prefixes.push(AssistantPrefix::default());
             }
             LogicalTurn::Assistant(mut assistant) => {
                 let retained = assistant
@@ -1338,12 +1363,11 @@ fn assemble_history_with_replay(
                     turn.content
                         .retain(|part| !matches!(part, PersistedAssistantPart::Reasoning { .. }));
                 }
+                // A cut turn is sent as its normalized history; the cut's
+                // own row said why, so later requests do not warn again
+                // (frozen context spec, section 7.1).
                 let forced_disposition = if reasoning_cut {
-                    Some(ReplayDisposition::DiscardedInvalidPayload {
-                        reason: safe_replay_reason(
-                            "reasoning before a thinking-binding mismatch is not replayed",
-                        ),
-                    })
+                    Some(ReplayDisposition::ReconstructedNormalizedHistory)
                 } else if retained.len() != original_call_count
                     && assistant.turn.native_replay.is_some()
                 {
@@ -1384,6 +1408,7 @@ fn assemble_history_with_replay(
                         });
                     }
                     history.push(HistoryTurn::assistant(restored));
+                    assistant_prefixes.push(assistant.prefix.clone());
                 }
                 let mut results = assistant
                     .calls
@@ -1441,6 +1466,7 @@ fn assemble_history_with_replay(
     Ok(AssembledHistory {
         history,
         replay_decisions,
+        assistant_prefixes,
     })
 }
 

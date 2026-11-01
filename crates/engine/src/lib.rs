@@ -23,6 +23,7 @@ mod model_snapshots;
 mod native_compaction;
 mod plugin;
 mod policy;
+mod prefix_fingerprint;
 mod preview;
 mod projects;
 pub mod release;

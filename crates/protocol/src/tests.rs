@@ -2834,6 +2834,7 @@ fn aborted_partial_model_turn_round_trips_through_the_wire_form() {
             native_replay: None,
         },
         warnings: vec![],
+        prefix_fingerprint: None,
     };
     let encoded = serde_json::to_value(&payload).unwrap();
     assert_eq!(encoded["type"], json!("model_turn_committed"));
@@ -2882,6 +2883,7 @@ fn degrading_a_large_payload_decodes_it_a_bounded_number_of_times() {
             native_replay: None,
         },
         warnings: vec![],
+        prefix_fingerprint: None,
     };
     let mut wire = serde_json::to_value(&payload).unwrap();
     wire["turn"]["usage"]["input_tokens"] = json!("many");

@@ -1315,6 +1315,7 @@ impl Turn<'_> {
                         native_replay: None,
                     },
                     warnings: Vec::new(),
+                    prefix_fingerprint: None,
                 },
             )
             .await?;

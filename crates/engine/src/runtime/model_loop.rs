@@ -1904,6 +1904,9 @@ impl Engine {
             // The one retry a thinking-binding mismatch gets, which the model
             // retry budget does not count.
             let mut replay_cut_retries = 0_u32;
+            // The one cut a model that binds its reasoning gets before a
+            // request, when the prefix of earlier reasoning changed.
+            let mut stale_reasoning_cut = false;
             loop {
                 attempts += 1;
                 let attempt_id = cookie_agent_protocol::AttemptId::new_v7();
@@ -1987,6 +1990,31 @@ impl Engine {
                     }
                     context => (request_events, context?),
                 };
+                // On a model that binds its reasoning to its prefix, reasoning
+                // made in a prefix that changed since is cut before the request
+                // is sent (frozen context spec, section 4).
+                let prefix_fingerprints =
+                    (binding.descriptor.capabilities.replay.reasoning_binding
+                        == oven_sdk::ReasoningBinding::Prefix)
+                        .then(|| {
+                            crate::prefix_fingerprint::prefix_fingerprints(&context.history, &tools)
+                        })
+                        .transpose()
+                        .map_err(|error| {
+                            EngineError::from(ModelError::invalid_request(error.to_string()))
+                        })?;
+                if let Some(fingerprints) = &prefix_fingerprints
+                    && !stale_reasoning_cut
+                    && let Some(cause) =
+                        stale_reasoning_cause(&context, fingerprints, &request_events)
+                {
+                    stale_reasoning_cut = true;
+                    drop(request_events);
+                    self.cut_native_replay(session, run, cause).await?;
+                    attempts -= 1;
+                    continue;
+                }
+                let prefix_fingerprint = prefix_fingerprints.map(|fingerprints| fingerprints.whole);
                 let input_through_seq = request_events.last().map_or(0, |event| event.seq);
                 let carries_window = context.native_context.is_some();
                 // The context is built from the snapshot alone, so it is built
@@ -2355,7 +2383,7 @@ impl Engine {
                     _ => None,
                 };
                 match result {
-                    Ok(turn) => {
+                    Ok(mut turn) => {
                         if let Some((_, reason)) =
                             deferral_retry.take_if(|(retried, _)| *retried == entry)
                         {
@@ -2376,6 +2404,8 @@ impl Engine {
                                 _ => None,
                             })
                             .collect::<HashMap<_, _>>();
+                        let reasoning_transformations =
+                            std::mem::take(&mut turn.finish.reasoning_transformations);
                         let (mut turn, warnings) =
                             persist_turn(turn, &self.inner.artifacts, session, binding)?;
                         let normalized_names = turn
@@ -2485,10 +2515,17 @@ impl Engine {
                                 input_through_seq,
                                 turn: turn.clone(),
                                 warnings,
+                                prefix_fingerprint: prefix_fingerprint.clone(),
                             },
                         )
                         .await?;
                         request_claim.release().await?;
+                        self.note_reasoning_transformations(
+                            session,
+                            run,
+                            &reasoning_transformations,
+                        )
+                        .await?;
                         self.append(
                             session,
                             Some(run),
@@ -2598,6 +2635,16 @@ impl Engine {
                             && !meaningful_output
                             && replay_cut_retries == 0 =>
                     {
+                        // The cut goes first, so a client meeting the
+                        // abandoned attempt knows it was recovered and shows
+                        // the cut instead of the refusal.
+                        replay_cut_retries = 1;
+                        self.cut_native_replay(
+                            session,
+                            run,
+                            cookie_agent_protocol::ReplayCutCause::Refused,
+                        )
+                        .await?;
                         self.append(
                             session,
                             Some(run),
@@ -2608,8 +2655,6 @@ impl Engine {
                             },
                         )
                         .await?;
-                        replay_cut_retries = 1;
-                        self.cut_native_replay(session, run).await?;
                         continue;
                     }
                     Err(error) if deferral_reason.is_some() => {
@@ -2664,6 +2709,7 @@ impl Engine {
                                     input_through_seq,
                                     turn,
                                     warnings,
+                                    prefix_fingerprint: prefix_fingerprint.clone(),
                                 },
                             )
                             .await?;
@@ -2909,11 +2955,66 @@ impl Engine {
         EngineError::PluginHookFailed(failure)
     }
 
-    /// Stops replaying the reasoning of every turn committed so far, after
-    /// the provider refused a replayed reasoning block whose conversation
-    /// prefix changed, and says so in the transcript
-    /// (`docs/site/specs/thinking-replay-recovery.md`).
-    async fn cut_native_replay(&self, session: SessionId, run: RunId) -> Result<(), EngineError> {
+    /// Acts on what the provider reported doing to replayed reasoning: a
+    /// dropped block means it saw less than the history holds, so the
+    /// reasoning of every turn so far, this one included, is cut; a block it
+    /// let through though its prefix changed is reported as drift (frozen
+    /// context spec, section 5).
+    async fn note_reasoning_transformations(
+        &self,
+        session: SessionId,
+        run: RunId,
+        transformations: &[oven_sdk::ReasoningTransformation],
+    ) -> Result<(), EngineError> {
+        use oven_sdk::ReasoningTransformationKind;
+        let count = |kind| {
+            transformations
+                .iter()
+                .filter(|transformation| transformation.kind == kind)
+                .count() as u64
+        };
+        if count(ReasoningTransformationKind::Dropped) > 0 {
+            self.cut_native_replay(
+                session,
+                run,
+                cookie_agent_protocol::ReplayCutCause::ProviderDropped,
+            )
+            .await?;
+        }
+        let allowed = count(ReasoningTransformationKind::MismatchAllowed);
+        if allowed > 0 {
+            self.append(
+                session,
+                Some(run),
+                event_origin("engine:model-loop"),
+                Event::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::engine("model-loop")
+                        .expect("static diagnostic source is valid"),
+                    kind: cookie_agent_protocol::DiagnosticKind::new("reasoning_prefix_drift")
+                        .expect("static diagnostic kind is valid"),
+                    message: "The provider let through earlier reasoning whose conversation \
+                              changed since it was made; an account that enforces the check \
+                              would have refused it."
+                        .to_owned(),
+                    count: (allowed > 1).then_some(allowed),
+                    detail: None,
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Stops replaying the reasoning of every turn committed so far: the
+    /// provider refused or dropped a replayed reasoning block whose request
+    /// prefix changed, or the engine found that it changed before sending
+    /// (`docs/site/specs/frozen-context.md`, section 4).
+    async fn cut_native_replay(
+        &self,
+        session: SessionId,
+        run: RunId,
+        cause: cookie_agent_protocol::ReplayCutCause,
+    ) -> Result<(), EngineError> {
         let through_seq = self
             .inner
             .store
@@ -2928,27 +3029,9 @@ impl Engine {
             session,
             Some(run),
             event_origin("engine:model-loop"),
-            Event::NativeReplayCut { through_seq },
+            Event::NativeReplayCut { through_seq, cause },
         )
-        .await?;
-        self.append(
-            session,
-            Some(run),
-            event_origin("engine:model-loop"),
-            Event::Diagnostic {
-                source: cookie_agent_protocol::DiagnosticSource::engine("model-loop")
-                    .expect("static diagnostic source is valid"),
-                kind: cookie_agent_protocol::DiagnosticKind::new("native_replay_cut")
-                    .expect("static diagnostic kind is valid"),
-                message: "The provider refused the earlier reasoning (its tools or system \
-                          prompt changed since); the request was sent again without it."
-                    .to_owned(),
-                count: None,
-                detail: None,
-            },
-        )
-        .await?;
-        Ok(())
+        .await
     }
 
     pub(super) async fn sleep_before_model_retry(&self, delay: std::time::Duration) {
@@ -3052,6 +3135,40 @@ impl ReplayEvaluationBase {
 fn is_overload_retry(error: &ModelError) -> bool {
     error.kind == oven_sdk::ModelErrorKind::Overload
         || (error.retryable && matches!(error.diagnostics.http_status, Some(429 | 503)))
+}
+
+/// Why the reasoning a request would replay went stale, when it did: a
+/// replayed turn's recorded prefix differs from the request's prefix before
+/// it. A turn recorded before fingerprints existed is not judged.
+fn stale_reasoning_cause(
+    context: &crate::model_history::ModelContext,
+    fingerprints: &crate::prefix_fingerprint::PrefixFingerprints,
+    events: &[Arc<cookie_agent_protocol::StoredEvent>],
+) -> Option<cookie_agent_protocol::ReplayCutCause> {
+    let earliest_stale = context
+        .history
+        .iter()
+        .filter(|turn| matches!(turn, oven_sdk::HistoryTurn::Assistant(_)))
+        .zip(&context.assistant_prefixes)
+        .zip(&fingerprints.assistant)
+        .filter(|((turn, _), _)| crate::prefix_fingerprint::carries_reasoning(turn))
+        .filter_map(|((_, recorded), now)| {
+            recorded
+                .fingerprint
+                .as_ref()
+                .is_some_and(|recorded| recorded != now)
+                .then_some(recorded.seq)
+        })
+        .min()?;
+    let compacted = events.iter().any(|event| {
+        event.seq > earliest_stale
+            && matches!(event.payload, Event::ContextCheckpointCommitted { .. })
+    });
+    Some(if compacted {
+        cookie_agent_protocol::ReplayCutCause::Compaction
+    } else {
+        cookie_agent_protocol::ReplayCutCause::PrefixChanged
+    })
 }
 
 /// Whether a model refused a replayed reasoning block because the request

@@ -952,6 +952,7 @@ fn claimed_snapshot_retains_covered_producer_input() {
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         ),
     ];
@@ -1187,6 +1188,7 @@ fn replay_turn_event(binding: &FrozenModelBinding) -> StoredEvent {
                 native_replay: Some(artifact),
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     )
 }
@@ -1288,6 +1290,7 @@ fn normalized_history_keeps_native_artifacts_for_adapter_scoped_replay() {
             input_through_seq: 1,
             turn,
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     )];
     let history =
@@ -1343,6 +1346,7 @@ fn native_replay_is_reused_across_variants_with_the_same_protocol() {
                 native_replay: Some(artifact),
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     )];
     let variant = variant_model_binding();
@@ -1420,6 +1424,7 @@ fn native_replay_with_adapter_mismatching_persisted_turn_is_discarded() {
                 native_replay: Some(artifact),
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     )];
     let context = assemble_model_context(&events, &store, &base, "System prompt.")
@@ -2330,6 +2335,7 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     ));
     events.push(event(
@@ -2488,6 +2494,7 @@ fn assembled_tool_transcript_snapshot_is_stable() {
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         ),
         event(
@@ -2534,6 +2541,7 @@ fn assembled_tool_transcript_snapshot_is_stable() {
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         ),
     ];
@@ -2678,6 +2686,7 @@ fn aborted_committed_turn_keeps_its_partial_text_and_gains_an_interrupt_marker()
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         ),
     ];
@@ -2735,6 +2744,7 @@ fn provider_cancelled_turn_gains_no_interrupt_marker() {
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         ),
     ];
@@ -2781,6 +2791,7 @@ fn aborted_reasoning_only_turn_is_skipped_without_an_interrupt_marker() {
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         ),
     ];

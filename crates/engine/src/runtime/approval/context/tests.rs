@@ -137,6 +137,7 @@ impl Log {
                     native_replay: None,
                 },
                 warnings: vec![],
+                prefix_fingerprint: None,
             },
         );
         let id = ToolCallId::new_v7();

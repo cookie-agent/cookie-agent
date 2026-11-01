@@ -633,7 +633,7 @@
           "type": "array"
         },
         "untrusted": {
-          "description": "Whether the summary comes from the source's author rather than from\ncookie, and is rendered as untrusted.",
+          "description": "Retired: never set, and nothing renders it. It marked a summary its\nsource's author wrote; it leaves at the next major version.",
           "type": "boolean"
         }
       },
@@ -4053,8 +4053,12 @@
           "type": "object"
         },
         {
-          "description": "The provider refused a request because a replayed reasoning block is\nbound to a conversation prefix that changed since (Anthropic's\nthinking-binding check: its tools or system prompt): the reasoning of\nevery turn committed at or before `through_seq` is no longer replayed\n(`docs/site/specs/thinking-replay-recovery.md`, client protocol\n1.33.0).",
+          "description": "The reasoning of every turn committed at or before `through_seq` is\nno longer replayed, because the request before it changed since it\nwas made (Anthropic's thinking-binding check;\n`docs/site/specs/thinking-replay-recovery.md`, client protocol 1.33.0,\nand `docs/site/specs/frozen-context.md`). `cause` says how the change\nwas found (client protocol 1.61.0); absent, the provider refused it.",
           "properties": {
+            "cause": {
+              "$ref": "#/$defs/ReplayCutCause",
+              "default": "refused"
+            },
             "through_seq": {
               "format": "uint64",
               "minimum": 1,
@@ -4086,6 +4090,16 @@
               "format": "uint64",
               "minimum": 1,
               "type": "integer"
+            },
+            "prefix_fingerprint": {
+              "description": "SHA-256 of the request content before this turn (system prompt,\neager tools, and every earlier message as sent), recorded for a\nmodel that binds its reasoning to its prefix, so a later request\ncan tell whether that prefix changed (frozen context spec,\nsection 4; client protocol 1.61.0). Absent on other models and in\nlogs written before.",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "resolved_model": {
               "$ref": "#/$defs/ResolvedModelRef"
@@ -7707,6 +7721,43 @@
         "len"
       ],
       "type": "object"
+    },
+    "ReplayCutCause": {
+      "description": "How a `native_replay_cut` found that earlier reasoning went stale\n(`docs/site/specs/frozen-context.md`, section 7.1). A value this build\ndoes not know reads as `unknown`, shown as a stale-reasoning cut.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "The provider refused a request that replayed it; the request was sent\nagain without it.",
+          "type": "string"
+        },
+        {
+          "const": "prefix_changed",
+          "description": "The engine found the prefix it was made in changed, before sending.",
+          "type": "string"
+        },
+        {
+          "const": "provider_dropped",
+          "description": "The provider dropped it from a request and said so.",
+          "type": "string"
+        },
+        {
+          "const": "compaction",
+          "description": "A compaction replaced the conversation before it.",
+          "type": "string"
+        },
+        {
+          "const": "refreshed",
+          "description": "A refresh composed the context before it again.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     },
     "ReplayDecision": {
       "properties": {

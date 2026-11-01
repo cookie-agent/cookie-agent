@@ -1915,6 +1915,7 @@ pub(crate) fn append_named_compaction_tool_history(
                         native_replay: None,
                     },
                     warnings: Vec::new(),
+                    prefix_fingerprint: None,
                 },
             )
             .expect("append model turn");

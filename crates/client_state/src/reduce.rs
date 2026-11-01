@@ -644,6 +644,17 @@ pub(super) fn reduce_event_from(
                 if noted.is_none() {
                     push_event(state, EventLevel::Warning, text, timestamp);
                 }
+            } else if run_id.is_some()
+                && state
+                    .reasoning_refusal_recovered
+                    .take_if(|run| Some(*run) == run_id)
+                    .is_some()
+            {
+                let text = crate::model_input::reasoning_cut_row(
+                    cookie_agent_protocol::ReplayCutCause::Refused,
+                )
+                .expect("a refusal's cut has a row");
+                push_event(state, EventLevel::Info, text.to_owned(), timestamp);
             } else {
                 let message = match &model_error {
                     Some(error) => {
@@ -1854,8 +1865,17 @@ pub(super) fn reduce_event_from(
         | EventPayload::DelegatedAttachmentsAdded { .. }
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
-        | EventPayload::NativeReplayCut { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
+        // A refusal's cut comes before the abandoned attempt it recovers,
+        // which then shows as this row; an earlier build wrote it after,
+        // with the refusal and a diagnostic, which still show.
+        EventPayload::NativeReplayCut { cause, .. } => {
+            if cause == cookie_agent_protocol::ReplayCutCause::Refused {
+                state.reasoning_refusal_recovered = run_id;
+            } else if let Some(text) = crate::model_input::reasoning_cut_row(cause) {
+                push_event(state, EventLevel::Info, text.to_owned(), timestamp);
+            }
+        }
         EventPayload::AutomaticRunsHeld { reason } => {
             push_event(
                 state,

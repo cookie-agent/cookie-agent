@@ -2411,6 +2411,29 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
     }
 }
 
+/// How a `native_replay_cut` found that earlier reasoning went stale
+/// (`docs/site/specs/frozen-context.md`, section 7.1). A value this build
+/// does not know reads as `unknown`, shown as a stale-reasoning cut.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum ReplayCutCause {
+    /// The provider refused a request that replayed it; the request was sent
+    /// again without it.
+    #[default]
+    Refused,
+    /// The engine found the prefix it was made in changed, before sending.
+    PrefixChanged,
+    /// The provider dropped it from a request and said so.
+    ProviderDropped,
+    /// A compaction replaced the conversation before it.
+    Compaction,
+    /// A refresh composed the context before it again.
+    Refreshed,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Why a session's automatic runs stopped (`docs/site/specs/held-sessions.md`).
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -3064,15 +3087,17 @@ pub enum EventPayload {
     /// A resume cleared the session's hold: `session.resume`, or its parent
     /// resuming its subagent with mail.
     AutomaticRunsResumed {},
-    /// The provider refused a request because a replayed reasoning block is
-    /// bound to a conversation prefix that changed since (Anthropic's
-    /// thinking-binding check: its tools or system prompt): the reasoning of
-    /// every turn committed at or before `through_seq` is no longer replayed
-    /// (`docs/site/specs/thinking-replay-recovery.md`, client protocol
-    /// 1.33.0).
+    /// The reasoning of every turn committed at or before `through_seq` is
+    /// no longer replayed, because the request before it changed since it
+    /// was made (Anthropic's thinking-binding check;
+    /// `docs/site/specs/thinking-replay-recovery.md`, client protocol 1.33.0,
+    /// and `docs/site/specs/frozen-context.md`). `cause` says how the change
+    /// was found (client protocol 1.61.0); absent, the provider refused it.
     NativeReplayCut {
         #[schemars(range(min = 1))]
         through_seq: u64,
+        #[serde(default)]
+        cause: ReplayCutCause,
     },
     ModelTurnCommitted {
         attempt_id: AttemptId,
@@ -3083,6 +3108,14 @@ pub enum EventPayload {
         turn: PersistedModelTurn,
         #[schemars(length(max = 256))]
         warnings: Vec<SafeErrorMessage>,
+        /// SHA-256 of the request content before this turn (system prompt,
+        /// eager tools, and every earlier message as sent), recorded for a
+        /// model that binds its reasoning to its prefix, so a later request
+        /// can tell whether that prefix changed (frozen context spec,
+        /// section 4; client protocol 1.61.0). Absent on other models and in
+        /// logs written before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix_fingerprint: Option<Sha256Digest>,
     },
     ModelUsageRecorded {
         #[schemars(range(min = 1))]

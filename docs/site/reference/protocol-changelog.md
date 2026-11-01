@@ -5,6 +5,21 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.61.0
+
+- Stale reasoning ([frozen context](../specs/frozen-context.md) sections
+  4, 5, and 7.1; see [Stale reasoning](events.md#stale-reasoning)):
+  - `model_turn_committed` has an optional `prefix_fingerprint`: the
+    SHA-256 of what the request sent before the turn, on a model that binds
+    its reasoning to its prefix.
+  - `native_replay_cut` has `cause`, an open enum: `refused` (absent means
+    this), `prefix_changed`, `provider_dropped`, `compaction`, or
+    `refreshed`.
+  - A refusal's `native_replay_cut` now comes before the
+    `attempt_abandoned` it recovers, and no `native_replay_cut` diagnostic
+    follows it.
+  - Plugin protocol 1.33.0 carries both members in events the same way.
+
 ## 1.60.0
 
 - An ACP agent's live state is no longer stored

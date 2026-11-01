@@ -3127,6 +3127,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     )
     .unwrap();
@@ -3722,6 +3723,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                             native_replay: None,
                         },
                         warnings: Vec::new(),
+                        prefix_fingerprint: None,
                     },
                 );
                 callable_owners.push(owner);
@@ -4017,6 +4019,7 @@ fn usage_rollup_after_a_usage_less_commit(
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     )
     .unwrap();
@@ -4067,6 +4070,7 @@ fn usage_rollup_after_a_usage_less_commit(
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     )
     .unwrap();
@@ -4229,6 +4233,7 @@ fn append_realistic_run(
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         );
         append(
@@ -4351,6 +4356,7 @@ fn commit_turn_without_usage_record(
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         )
         .expect("commit turn");

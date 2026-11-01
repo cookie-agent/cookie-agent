@@ -184,6 +184,7 @@ fn producer_replay_deduplicates_and_uses_commit_coverage_as_consumption() {
                     native_replay: None,
                 },
                 warnings: vec![],
+                prefix_fingerprint: None,
             },
         ),
     ];
@@ -841,6 +842,7 @@ fn committed(seq: u64, run: RunId, input_through_seq: u64) -> StoredEvent {
                 native_replay: None,
             },
             warnings: vec![],
+            prefix_fingerprint: None,
         },
     )
 }

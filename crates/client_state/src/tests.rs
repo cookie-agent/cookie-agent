@@ -332,6 +332,7 @@ fn repeated_adapter_turn_warnings_dedupe_per_run() {
                     native_replay: None,
                 },
                 warnings: vec![cookie_agent_protocol::SafeErrorMessage::new(warning).unwrap()],
+                prefix_fingerprint: None,
             },
         )
     };
@@ -403,6 +404,120 @@ fn abandoned_attempt_renders_its_model_error() {
     assert!(row.contains("model attempt abandoned"));
     assert!(row.contains("model request timed out"));
     assert!(row.contains("retryable true"));
+}
+
+fn event_rows(state: &SessionState) -> Vec<(EventLevel, String)> {
+    state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::Event { level, text, .. } => Some((*level, text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn invalid_request() -> ModelErrorSummary {
+    serde_json::from_value(serde_json::json!({"kind":"invalid_request","message":"Anthropic request failed","retryable":false,"stage":"response_body","http_status":400,"bytes_received":0,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap()
+}
+
+#[test]
+fn a_refusal_recovered_by_a_cut_shows_the_cut_instead_of_the_failure() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let events = vec![
+        stored_event(
+            session,
+            Some(run),
+            1,
+            EventPayload::NativeReplayCut {
+                through_seq: 1,
+                cause: cookie_agent_protocol::ReplayCutCause::Refused,
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            2,
+            EventPayload::AttemptAbandoned {
+                attempt_id: AttemptId::new_v7(),
+                model_error: Some(invalid_request()),
+            },
+        ),
+        // A later failure of the same run is a failure again.
+        stored_event(
+            session,
+            Some(run),
+            3,
+            EventPayload::AttemptAbandoned {
+                attempt_id: AttemptId::new_v7(),
+                model_error: Some(invalid_request()),
+            },
+        ),
+    ];
+    let rows = event_rows(&reduce_session_events(session, 0, &events));
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].0, EventLevel::Info);
+    assert_eq!(
+        Some(rows[0].1.as_str()),
+        crate::model_input::reasoning_cut_row(cookie_agent_protocol::ReplayCutCause::Refused)
+    );
+    assert_eq!(rows[1].0, EventLevel::Warning);
+}
+
+#[test]
+fn a_cut_after_its_refusal_leaves_the_failure_as_an_earlier_build_showed_it() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let events = vec![
+        stored_event(
+            session,
+            Some(run),
+            1,
+            EventPayload::AttemptAbandoned {
+                attempt_id: AttemptId::new_v7(),
+                model_error: Some(invalid_request()),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            2,
+            EventPayload::NativeReplayCut {
+                through_seq: 1,
+                cause: cookie_agent_protocol::ReplayCutCause::Refused,
+            },
+        ),
+    ];
+    let rows = event_rows(&reduce_session_events(session, 0, &events));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, EventLevel::Warning);
+}
+
+#[test]
+fn a_cut_shows_one_quiet_row_unless_a_compaction_or_refresh_stands_for_it() {
+    use cookie_agent_protocol::ReplayCutCause;
+    for (cause, rows) in [
+        (ReplayCutCause::PrefixChanged, 1),
+        (ReplayCutCause::ProviderDropped, 1),
+        (ReplayCutCause::Unknown, 1),
+        (ReplayCutCause::Compaction, 0),
+        (ReplayCutCause::Refreshed, 0),
+    ] {
+        let session = SessionId::new_v7();
+        let events = vec![stored_event(
+            session,
+            Some(RunId::new_v7()),
+            1,
+            EventPayload::NativeReplayCut {
+                through_seq: 1,
+                cause,
+            },
+        )];
+        let shown = event_rows(&reduce_session_events(session, 0, &events));
+        assert_eq!(shown.len(), rows, "{cause:?}: {shown:?}");
+        assert!(shown.iter().all(|(level, _)| *level == EventLevel::Info));
+    }
 }
 
 #[test]
@@ -522,6 +637,7 @@ fn committed_partial_turn_survives_the_abort_that_follows_it() {
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         ),
         stored_event(
@@ -664,6 +780,7 @@ fn interrupted_commit_keeps_the_previous_context_estimate() {
                     native_replay: None,
                 },
                 warnings: Vec::new(),
+                prefix_fingerprint: None,
             },
         )
     };
@@ -1441,6 +1558,7 @@ pub(crate) fn committed_turn(input_through_seq: u64) -> EventPayload {
             native_replay: None,
         },
         warnings: Vec::new(),
+        prefix_fingerprint: None,
     }
 }
 
@@ -5795,6 +5913,7 @@ fn an_assistant_block_ends_at_the_row_that_split_it_or_at_its_runs_end() {
                 input_through_seq,
                 turn,
                 warnings,
+                prefix_fingerprint: None,
             },
         )
     };

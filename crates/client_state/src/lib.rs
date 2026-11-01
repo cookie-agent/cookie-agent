@@ -1394,6 +1394,10 @@ pub struct SessionState {
     /// left, which later requests follow with the interrupt marker; true
     /// when the note quoting it went into the reply's block.
     pub interrupt_marked: HashMap<AttemptId, bool>,
+    /// The run whose next abandoned attempt a refusal of stale reasoning
+    /// ended: the cut that recovers from it comes first, so the attempt
+    /// shows as the cut's row, not as a failure.
+    pub reasoning_refusal_recovered: Option<RunId>,
     /// The memory turn the latest memory row shows; empty once memory left
     /// the model's context, `None` before any row. A snapshot that renders
     /// the same turn adds no row.

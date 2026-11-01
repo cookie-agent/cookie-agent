@@ -1,6 +1,8 @@
 # Stale reasoning and a frozen context
 
-Status: **draft** (2026-10-31), awaiting approval. Builds on
+Status: **approved** (2026-10-31); phases 1 and 2 implemented (2026-11-01;
+oven-sdk 72c6127, client protocol 1.61.0), phase 3 in progress. See
+[implementation notes](#implementation-notes). Builds on
 [thinking-replay recovery](thinking-replay-recovery.md) and
 [a stable prompt prefix](stable-prefix.md), and reverses part of each
 (section 2).
@@ -362,3 +364,36 @@ The thinking-replay recovery spec (superseded parts), the stable prefix spec
 the [system prompt reference](../reference/system-prompt.md), the
 [events reference](../reference/events.md), the protocol changelog, and the
 spec index.
+
+## Implementation notes
+
+- **Phase 1** (oven-sdk d9b8960 and 72c6127, core 0.10.0, anthropic
+  0.11.0). `block_binding` is sent by the Anthropic Messages adapter (direct
+  Anthropic and Claude Platform on AWS, and an Anthropic-compatible
+  endpoint whose model is declared `prefix`), not by Bedrock: Bedrock goes
+  through Converse, where the field would need
+  `additionalModelRequestFields`. Bedrock classifies the refusal as
+  `ReasoningPrefixMismatch`, and its models bind, so the cut before the
+  request and the retry cover it. Google Vertex in oven-sdk serves Gemini
+  only.
+- **Phase 2.** Where it differs from sections 3 to 7.1:
+  - The automatic rule keys on the model, not only the adapter: a
+    reasoning model whose ID starts `claude-`, or contains
+    `anthropic.claude-` on Bedrock, on an Anthropic, Anthropic-compatible,
+    or Bedrock adaptor. A Claude model through a gateway binds; Kimi on the
+    Anthropic adapter does not.
+  - The refusal kind is recorded in `model_error.kind` as
+    `invalid_request`, as before: a new value of the protocol's closed
+    `ModelErrorKind` would break older readers.
+  - Fingerprints are recorded only on models that bind. A turn of another
+    model carries reasoning no binding model replays (it is foreign), so
+    its fingerprint would never be read.
+  - The fingerprint is taken on the request the context builds, before
+    media fitting and plugin interception: what matters is that recording
+    and checking take it at the same point.
+  - A `provider_dropped` cut covers the new turn too: its reasoning was
+    made without the blocks the provider dropped, which a leading cut
+    cannot express, so it would be dropped on the next request anyway.
+  - A cut turn's replay decision is `reconstructed_normalized_history`, a
+    debug row, instead of a discard warning on every later run.
+

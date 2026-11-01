@@ -1365,6 +1365,7 @@ fn incremental_validation_matches_historical_reference_corpus() {
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     );
     push_run_event(
@@ -3233,6 +3234,7 @@ fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() 
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     );
     let start = event(
@@ -3596,6 +3598,7 @@ fn event_log_accepts_abandoned_attempt_after_its_committed_partial_turn() {
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     );
     push_run_event(
@@ -4018,6 +4021,7 @@ fn tool_call_records() -> (Vec<StoredEvent>, StoredEvent, StoredEvent) {
                 native_replay: None,
             },
             warnings: Vec::new(),
+            prefix_fingerprint: None,
         },
     );
     let start = event(

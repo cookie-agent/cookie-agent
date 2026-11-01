@@ -738,6 +738,7 @@ pub(crate) fn turn_committed(
                 .into_iter()
                 .map(|warning| SafeErrorMessage::new(warning).expect("warning"))
                 .collect(),
+            prefix_fingerprint: None,
         },
     )
 }

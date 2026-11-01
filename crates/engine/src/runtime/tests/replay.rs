@@ -405,16 +405,208 @@ async fn a_thinking_binding_mismatch_is_retried_once_without_the_earlier_reasoni
         run_outcomes(&events),
         ["completed", "completed", "completed"]
     );
+    // One cut, a refusal's, written before the attempt it recovers so a
+    // client shows the cut instead of the failure; no diagnostic.
     let cuts = events
         .iter()
-        .filter(|event| matches!(event.payload, EventPayload::NativeReplayCut { .. }))
-        .count();
-    assert_eq!(cuts, 1);
-    let notices = events
+        .filter_map(|event| match event.payload {
+            EventPayload::NativeReplayCut { cause, .. } => Some((event.seq, cause)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cuts.len(), 1);
+    assert_eq!(cuts[0].1, cookie_agent_protocol::ReplayCutCause::Refused);
+    let abandoned = events
         .iter()
-        .filter(|event| matches!(&event.payload, EventPayload::Diagnostic { message, .. } if message.contains("refused the earlier reasoning")))
+        .find(|event| matches!(event.payload, EventPayload::AttemptAbandoned { .. }))
+        .unwrap();
+    assert_eq!(abandoned.seq, cuts[0].0 + 1);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::Diagnostic { .. }))
+    );
+    fixture.engine.shutdown().await;
+}
+
+fn prefix_binding_fixture(endpoint: &str) -> (Fixture, cookie_agent_protocol::RunSelection) {
+    let capabilities = format!("{ANTHROPIC_REPLAY_CAPABILITIES}\nreasoning_binding = \"prefix\"");
+    custom_fixture_with_capabilities(
+        endpoint,
+        signed_replay_primary(),
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        None,
+        "anthropic-compatible",
+        Some(&capabilities),
+    )
+}
+
+fn thinking_signatures(request: &str) -> Vec<String> {
+    request_body(request)["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .filter(|block| block["type"] == "thinking")
+        .map(|block| block["signature"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+fn cut_causes(
+    events: &[cookie_agent_protocol::StoredEvent],
+) -> Vec<cookie_agent_protocol::ReplayCutCause> {
+    events
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::NativeReplayCut { cause, .. } => Some(cause),
+            _ => None,
+        })
+        .collect()
+}
+
+/// On a model that binds its reasoning, reasoning whose prefix changed since
+/// it was made is cut before the request, so the provider never refuses
+/// it; reasoning in an unchanged prefix replays (frozen context spec,
+/// section 4).
+#[tokio::test]
+async fn reasoning_whose_prefix_changed_is_cut_before_the_request() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("first")),
+        AnthropicReplayResponse::Thinking(Some("second")),
+        AnthropicReplayResponse::Text("third"),
+    ])
+    .await;
+    let (fixture, selection) = prefix_binding_fixture(&endpoint);
+    let agents_md = fixture._directory.path().join("AGENTS.md");
+    write_private_test_file(&agents_md, "rules, first version");
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "one").await;
+    // The AGENTS.md turn sits before the first turn's reasoning.
+    write_private_test_file(&agents_md, "rules, second version");
+    run_replay_test_turn(&fixture, session.session_id, &selection, "two").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "three").await;
+
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(requests.len(), 3, "no request was refused");
+    assert!(thinking_signatures(&requests[1]).is_empty());
+    assert_eq!(thinking_signatures(&requests[2]), ["second"]);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .to_vec();
+    assert_eq!(
+        cut_causes(&events),
+        [cookie_agent_protocol::ReplayCutCause::PrefixChanged]
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event.payload, EventPayload::AttemptAbandoned { .. }))
+    );
+    assert!(events.iter().all(|event| !matches!(
+        &event.payload,
+        EventPayload::ModelTurnCommitted {
+            prefix_fingerprint: None,
+            ..
+        }
+    )));
+    fixture.engine.shutdown().await;
+}
+
+/// A model that does not bind records no fingerprints and never cuts before
+/// a request.
+#[tokio::test]
+async fn a_model_that_does_not_bind_is_never_cut_before_a_request() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("first")),
+        AnthropicReplayResponse::Text("second"),
+    ])
+    .await;
+    let (fixture, selection) = binding_fixture(&endpoint);
+    let agents_md = fixture._directory.path().join("AGENTS.md");
+    write_private_test_file(&agents_md, "rules, first version");
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "one").await;
+    write_private_test_file(&agents_md, "rules, second version");
+    run_replay_test_turn(&fixture, session.session_id, &selection, "two").await;
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(thinking_signatures(&requests[1]), ["first"]);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .to_vec();
+    assert!(cut_causes(&events).is_empty());
+    assert!(events.iter().all(|event| !matches!(
+        &event.payload,
+        EventPayload::ModelTurnCommitted {
+            prefix_fingerprint: Some(_),
+            ..
+        }
+    )));
+    fixture.engine.shutdown().await;
+}
+
+/// A block the provider reports dropping cuts every turn's reasoning so far,
+/// the new turn's included; one it let through is reported as drift.
+#[tokio::test]
+async fn provider_reported_transformations_cut_or_report_drift() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("first")),
+        AnthropicReplayResponse::ThinkingTransformed("second", "thinking_dropped"),
+        AnthropicReplayResponse::ThinkingTransformed("third", "thinking_mismatch_allowed"),
+        AnthropicReplayResponse::Text("fourth"),
+    ])
+    .await;
+    let (fixture, selection) = prefix_binding_fixture(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    for input in ["one", "two", "three", "four"] {
+        run_replay_test_turn(&fixture, session.session_id, &selection, input).await;
+    }
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(requests.len(), 4);
+    assert_eq!(thinking_signatures(&requests[1]), ["first"]);
+    assert!(thinking_signatures(&requests[2]).is_empty());
+    assert_eq!(thinking_signatures(&requests[3]), ["third"]);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .to_vec();
+    assert_eq!(
+        cut_causes(&events),
+        [cookie_agent_protocol::ReplayCutCause::ProviderDropped]
+    );
+    let drift = events
+        .iter()
+        .filter(|event| matches!(&event.payload, EventPayload::Diagnostic { kind, .. } if kind.as_str() == "reasoning_prefix_drift"))
         .count();
-    assert_eq!(notices, 1);
+    assert_eq!(drift, 1);
     fixture.engine.shutdown().await;
 }
 
