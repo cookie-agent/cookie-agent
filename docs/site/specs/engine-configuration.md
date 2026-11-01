@@ -319,10 +319,13 @@ Client protocol minor, additive:
 
 ### 11.2 Behaviour
 
-- **`idle`:** the restart waits until no run is active in any session.
-  Meanwhile new runs are refused with "the daemon is restarting" (cron fires
-  are recorded as skipped for that reason), producers' messages queue as
-  usual, and clients show why.
+- **`idle`:** the restart waits until no run is active in any session and
+  no background call is pending. Meanwhile runs start as usual (client
+  starts, queued input, producer wakes, cron fires), and the restart waits
+  for them too; clients show why. Only once it is due are new runs refused
+  with "the daemon is restarting", and a cron fire due then is left for the
+  restarted daemon (since 2026-10-29; earlier daemons refused new runs for
+  the whole wait and recorded cron fires as skipped).
 - **`now`:** running turns end as interrupted, as after any stop; recovery
   closes them out when the daemon comes back.
 - **The restart:** the daemon finishes in-flight replies, flushes session

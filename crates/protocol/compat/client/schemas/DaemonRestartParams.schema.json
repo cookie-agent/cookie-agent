@@ -5,7 +5,7 @@
       "oneOf": [
         {
           "const": "idle",
-          "description": "Once no run is active in any session. New runs are refused\nmeanwhile.",
+          "description": "Once no run is active in any session and no background call is\npending. Runs keep starting meanwhile, and the restart waits for\nthem too; only once it is due are new runs refused.",
           "type": "string"
         },
         {

@@ -23,8 +23,9 @@ crate::open_enum! {
     #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
     #[serde(rename_all = "snake_case")]
     pub enum RestartWhen {
-        /// Once no run is active in any session. New runs are refused
-        /// meanwhile.
+        /// Once no run is active in any session and no background call is
+        /// pending. Runs keep starting meanwhile, and the restart waits for
+        /// them too; only once it is due are new runs refused.
         #[default]
         Idle,
         /// At once: running turns end as interrupted.

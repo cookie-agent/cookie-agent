@@ -195,6 +195,7 @@ nav:
       - Drafts and records:
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md
+          - Daemon startup and status: specs/daemon-startup.md
           - Projects: specs/projects.md
           - Delegating to runtimes: specs/runtime-delegation.md
           - Cron jobs: specs/cron.md
