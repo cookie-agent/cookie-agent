@@ -876,7 +876,7 @@ fn the_deferred_tools_prompt_and_inherited_context_show_what_the_model_reads() {
     ];
     let replayed = reduce_session_events(session, 0, &events);
     let announcement =
-        cookie_agent_protocol::model_text::deferred_tools_announcement(&[group], &[]);
+        cookie_agent_protocol::model_text::deferred_tools_announcement(&[group], &[], true);
     // The announcement is the tools row's deferred tools prompt, not a row.
     assert_eq!(
         model_inputs(&replayed),
@@ -926,9 +926,24 @@ fn every_announcement_is_kept_and_a_removal_leaves_the_groups() {
             removed: vec![group.clone()],
         },
     );
-    let both = reduce_session_events(session, 0, &[announced(1), removed]);
+    let both = reduce_session_events(session, 0, &[announced(1), removed.clone()]);
     assert_eq!(both.deferred_announcements.len(), 2);
     assert!(both.deferred_tool_groups.is_empty(), "the removal folds");
+    // Only the first announcement that adds groups explains tool_search.
+    let again = reduce_session_events(session, 0, &[announced(1), removed, announced(3)]);
+    let headers = again
+        .deferred_announcements
+        .iter()
+        .map(|text| text.lines().next().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        headers,
+        [
+            cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED,
+            cookie_agent_protocol::model_text::DEFERRED_TOOLS_REMOVED,
+            cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED_MORE,
+        ]
+    );
     let state = reduce_session_events(session, 0, &[announced(1)]);
     assert_eq!(state.deferred_tool_groups["github_issues"], "github");
 }

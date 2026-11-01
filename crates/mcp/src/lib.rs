@@ -2,8 +2,8 @@
 //! [`ToolProvider`].
 //!
 //! An [`McpRegistry`] connects every enabled server eagerly, lists its tools
-//! as `<server>_<tool>`, marks their descriptions and results as untrusted
-//! server output, retains result media as attachments, and follows each
+//! as `<server>_<tool>` with descriptions that name their server, retains
+//! result media as attachments, and follows each
 //! server through its states ([`McpServerState`]). A connected server that
 //! drops is reconnected with the shared
 //! [`ReconnectPolicy`]:
@@ -2119,7 +2119,7 @@ impl McpExecutor {
 fn convert_tool(server: &str, sanitized_server: &str, tool: Tool) -> Result<CachedTool, ToolError> {
     let generated = format!("{}_{}", sanitized_server, sanitize_name(tool.name.as_ref()));
     let description = format!(
-        "[{server}] {} (untrusted MCP output)",
+        "[{server}] {}",
         tool.description.as_deref().unwrap_or("MCP tool")
     );
     let mut schema = tool.input_schema.as_ref().clone();

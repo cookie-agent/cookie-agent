@@ -143,7 +143,7 @@ pub trait ToolProvider: Send + Sync {
 
     /// The summary of the source of `tool_name`, written by its author: an
     /// MCP server's `initialize` instructions, a plugin's declared summary.
-    /// Announcements show it, marked untrusted, under the source's group.
+    /// Announcements show it under the source's group.
     fn source_summary(&self, _tool_name: &str) -> Option<String> {
         None
     }

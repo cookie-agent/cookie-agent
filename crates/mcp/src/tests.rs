@@ -653,7 +653,7 @@ fn tool_specs_force_closed_object_schema_and_keep_defs() {
     assert_eq!(converted.spec.parameters["type"], "object");
     assert_eq!(converted.spec.parameters["additionalProperties"], false);
     assert!(converted.spec.parameters.get("$defs").is_some());
-    assert!(converted.spec.description.contains("untrusted MCP output"));
+    assert_eq!(converted.spec.description, "[git hub] Search repositories.");
 }
 
 #[tokio::test]

@@ -2952,7 +2952,7 @@ pub(crate) async fn deferred_tools_app() -> (App, SessionId) {
         name: name.into(),
         source: cookie_agent_protocol::ToolGroupSource::Mcp,
         summary: Some(format!("The {name} server.")),
-        untrusted: true,
+        untrusted: false,
         tools: tools.iter().map(|tool| (*tool).to_owned()).collect(),
     };
     let mut announced = started.clone();

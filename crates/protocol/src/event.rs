@@ -2060,8 +2060,8 @@ pub struct AnnouncedToolGroup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 4096))]
     pub summary: Option<String>,
-    /// Whether the summary comes from the source's author rather than from
-    /// cookie, and is rendered as untrusted.
+    /// Retired: never set, and nothing renders it. It marked a summary its
+    /// source's author wrote; it leaves at the next major version.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
     #[schemars(length(min = 1, max = 1024))]

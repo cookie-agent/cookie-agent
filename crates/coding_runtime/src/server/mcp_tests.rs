@@ -339,7 +339,7 @@ async fn template_servers_publish_their_tools_and_answer_calls_with_media() {
         Some(cookie_agent_protocol::PermissionAction::MCP)
     );
     assert!(
-        echo.description.contains("untrusted MCP output"),
+        echo.description.starts_with("[fixture] "),
         "{}",
         echo.description
     );

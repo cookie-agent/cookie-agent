@@ -443,7 +443,9 @@ is evaluated against its own permission map.
 `include_tools` and `exclude_tools` drop a server's tools for every agent;
 permissions choose among the published ones per agent.
 
-Each MCP description and result is treated as untrusted server output.
+The model reads each MCP tool's description as `[<server>] <description>`,
+with no trust marking, and its results as the server returns them. Review a
+server before you enable it.
 
 Media blocks in tool results (images, audio, and embedded resource blobs) are
 sniffed by content, gated on the model's capabilities and the provider's

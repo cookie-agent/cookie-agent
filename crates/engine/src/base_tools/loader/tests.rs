@@ -17,7 +17,6 @@ fn entry(name: &str, group: &str, description: &str) -> std::sync::Arc<DeferredE
             name: group.into(),
             source: ToolGroupSource::Mcp,
             summary: Some("Browser automation.".into()),
-            untrusted: true,
         },
         provider: (format!("mcp.{group}"), None),
     })

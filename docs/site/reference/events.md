@@ -700,8 +700,9 @@ defer):
 - `deferred_tools_announced`, on a model that loads deferred tools, carries
   `added` and `removed`, lists of groups:
   `name`, `source` (`mcp`, `plugin`, or `builtin`, an open set), `tools`,
-  and an optional `summary`, with `untrusted` when the summary is the
-  source's author's text. Model history renders it in place as a user turn.
+  and an optional `summary`; `untrusted` is retired and never set. Model
+  history renders it in place as a user turn; only the first one since the
+  latest checkpoint that adds groups explains `tool_search`.
 
 A checkpoint starts the round, the announcements, and the loads over. The
 first request after it records a new round, which declares the tools the

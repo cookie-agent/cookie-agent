@@ -58,8 +58,6 @@ pub(crate) struct Group {
     pub(crate) name: String,
     pub(crate) source: ToolGroupSource,
     pub(crate) summary: Option<String>,
-    /// The summary is the source author's text, not cookie's.
-    pub(crate) untrusted: bool,
 }
 
 pub(crate) fn group_of(source: &SourcedProvider, tool: &str) -> Group {
@@ -68,20 +66,17 @@ pub(crate) fn group_of(source: &SourcedProvider, tool: &str) -> Group {
             name: server,
             source: ToolGroupSource::Mcp,
             summary: source.provider.source_summary(tool),
-            untrusted: true,
         },
         Some(ProvidedToolSource::Plugin { plugin }) => Group {
             name: plugin,
             source: ToolGroupSource::Plugin,
             summary: source.provider.source_summary(tool),
-            untrusted: true,
         },
         None => match source.provider.tool_group() {
             Some(group) => Group {
                 name: group.name.to_owned(),
                 source: ToolGroupSource::Builtin,
                 summary: Some(group.summary.to_owned()),
-                untrusted: false,
             },
             None => Group {
                 name: source.attachment.as_ref().map_or_else(
@@ -93,7 +88,6 @@ pub(crate) fn group_of(source: &SourcedProvider, tool: &str) -> Group {
                 ),
                 source: ToolGroupSource::Builtin,
                 summary: None,
-                untrusted: false,
             },
         },
     }
@@ -471,8 +465,8 @@ fn announcement(
         added.push(AnnouncedToolGroup {
             name: (*name).to_owned(),
             source: group.source,
-            untrusted: group.untrusted && summary.is_some(),
             summary,
+            untrusted: false,
             tools: new,
         });
     }

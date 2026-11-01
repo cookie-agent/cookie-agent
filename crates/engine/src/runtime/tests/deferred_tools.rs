@@ -250,7 +250,7 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
         .expect("announcement turn");
     assert!(
         announcement.contains(
-            "<group name=\"chrome\" source=\"mcp\" summary=\"Browser automation.\" untrusted=\"true\">\nwrite\n</group>"
+            "<group name=\"chrome\" source=\"mcp\" summary=\"Browser automation.\">\nwrite\n</group>"
         ),
         "{announcement}"
     );

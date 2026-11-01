@@ -1801,8 +1801,15 @@ pub(super) fn reduce_event_from(
         }
         // Shown from the tools row, not as a transcript row.
         EventPayload::DeferredToolsAnnounced { added, removed } => {
+            // Only the first announcement since the checkpoint that adds
+            // groups explains tool_search, and it opens with that header.
+            let first = !state.deferred_announcements.iter().any(|text| {
+                text.starts_with(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED)
+            });
             state.deferred_announcements.push(
-                cookie_agent_protocol::model_text::deferred_tools_announcement(&added, &removed),
+                cookie_agent_protocol::model_text::deferred_tools_announcement(
+                    &added, &removed, first,
+                ),
             );
             for group in &removed {
                 for tool in &group.tools {

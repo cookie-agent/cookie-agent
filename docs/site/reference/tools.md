@@ -1015,8 +1015,7 @@ tool rounds, announcements, and compaction.
 Every tool belongs to a group: its MCP server, its plugin, or one of the
 built-in providers below. Announcements list deferred tools under their
 group, with the group's summary the first time a round announces it; an MCP
-server's summary is the `instructions` it sends when it connects, and is
-marked untrusted. A provider whose tools are all deferred sends its prompt
+server's summary is the `instructions` it sends when it connects. A provider whose tools are all deferred sends its prompt
 sections (its `<tool_instructions>`, see the
 [system prompt](system-prompt.md)) with the first load of one of its
 tools instead of in the system prompt.

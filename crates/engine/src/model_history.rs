@@ -1010,6 +1010,9 @@ fn assemble_history_with_replay(
     >::new();
     let mut engine_calls =
         HashMap::<(cookie_agent_protocol::RunId, ToolCallId), (usize, usize)>::new();
+    // Whether an announcement since the checkpoint added groups, so later
+    // ones skip the tool_search instructions it carried.
+    let mut announced_added = false;
 
     for envelope in events {
         match &envelope.payload {
@@ -1027,8 +1030,9 @@ fn assemble_history_with_replay(
             EventPayload::DeferredToolsAnnounced { .. } if tail.covers(envelope.seq) => {}
             EventPayload::DeferredToolsAnnounced { added, removed } => {
                 logical.push(LogicalTurn::User(user_text(
-                    &crate::deferred_tools::render_announcement(added, removed),
+                    &crate::deferred_tools::render_announcement(added, removed, !announced_added),
                 )));
+                announced_added |= !added.is_empty();
             }
             // As deferred tools are announced (stable prefix spec, section
             // 6.3); the first request after a checkpoint announces afresh.
