@@ -180,6 +180,48 @@ about 65, and the log about 19% smaller (the final presentations still
 travel in the end records). This replaces the ACP item of history format 2
 in [session storage v3](session-storage-v3.md) (its section 4.2).
 
+#### Implementation notes (2026-10-31)
+
+Implemented as client protocol 1.60.0 and plugin protocol 1.32.0 (plugins
+receive live-only events too). History format 1 gains only the optional
+`presentation` of `tool_call_terminated`; logs earlier builds wrote, with
+their stored presentations and context use, read as before.
+
+- `acp_live_update` is live-only (`EventPayload::is_transient`), so
+  `StoredEvent::validate` refuses it and it is never appended: an
+  exhaustive `syncs_on_append` (4.2) puts it with the other live-only
+  kinds, where it cannot occur.
+- The store's `in_flight` keeps an ACP session's newest context use until
+  its run's end, and each open call's newest presentation until the call's
+  `tool_call_terminated` or the run's end. Being whole values, they also
+  go to a subscription that resumes from a cursor, which gets no other
+  in-flight output.
+- The runner stores the context use, when it changed since the last value
+  the log holds (read from the log as the run starts), before each round's
+  end request (`PromotePendingOrComplete`, which ends the run unless input
+  waits), before a cancel's `run_finished`, and before a failed run's,
+  and never once the run has ended (a cancel from outside). A run whose
+  waiting input starts another round may store it once per round.
+- `tool_call_terminated.presentation` is set from the presentation the
+  clients last got, when it differs from the start's; a call that ends
+  with the turn (`end_open_calls`) carries it too. The display audience
+  converts its blocks, and those of `acp_live_update`, as it converts a
+  start's.
+- The client reducer applies `acp_live_update` as it applied those two
+  members of `acp_session_updated`, and a termination's `presentation`
+  before its result; held history keeps only the newest live value of
+  each.
+
+Measured on a copy of the session in section 1, the new writer simulated
+over its records: 9,813 records become 5,293, its 4,584
+`acp_session_updated` become 64 (31 context records, one per run; 1,105
+of its tool ends carry a final presentation), and 16.9 MB become 14.0 MB
+(17.6% smaller). Folded by the client reducer, both logs give the same
+presentation and status for all 1,112 calls, the same context, and the
+same transcript rows. A scripted fixture session (four turns: three late
+presentations of two calls, three context changes in two runs, an edit,
+and two commands) stores 65 records instead of 69.
+
 ### 4.4 Commands without engine-wide locks
 
 The measurement (section 5.1) found no contention on these locks, so only
