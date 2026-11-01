@@ -141,8 +141,9 @@ pub fn work_key(key: WorkKey) -> String {
 }
 
 /// The characters a live work row's line has before a streaming one shows
-/// unfinished: about what a desktop window's row fits.
-const WORK_LINE_ROOM: usize = 96;
+/// unfinished, and past which it is cut: more than a wide window's row
+/// fits, so the line's CSS cut, not this one, ends it at the row's edge.
+const WORK_LINE_ROOM: usize = 256;
 
 /// The keys opened, each as [`Expanded::toggle`] takes it.
 impl<S: AsRef<str>> FromIterator<S> for Expanded {
