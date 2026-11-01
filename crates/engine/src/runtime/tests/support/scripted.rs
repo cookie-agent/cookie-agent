@@ -39,8 +39,9 @@ pub(crate) async fn native_compaction_server(
     let address = listener.local_addr().expect("listener address");
     let task = tokio::spawn(async move {
         let mut requests = Vec::new();
-        let count = if fail_native { 3 } else { 2 };
-        for index in 0..count {
+        // The run's request, then native compaction and the summary that
+        // runs beside it, in either order.
+        for index in 0..3 {
             let (mut socket, _) = listener.accept().await.expect("native compaction accept");
             let mut request = Vec::new();
             let mut buffer = [0_u8; 8192];
@@ -74,7 +75,11 @@ pub(crate) async fn native_compaction_server(
                     expected = Some(end + 4 + length);
                 }
             }
-            let response = if index == 0 {
+            let compact = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("/compact"));
+            let response = if index == 0 && !compact {
                 let body = concat!(
                     "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-test\"}}\n\n",
                     "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[]}}\n\n",
@@ -86,9 +91,9 @@ pub(crate) async fn native_compaction_server(
                     "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 )
-            } else if fail_native && index == 1 {
+            } else if fail_native && compact {
                 "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".into()
-            } else if fail_native {
+            } else if !compact {
                 let body = concat!(
                     "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_summary\",\"model\":\"gpt-test\"}}\n\n",
                     "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_summary\",\"role\":\"assistant\",\"content\":[]}}\n\n",
