@@ -455,6 +455,13 @@ under the 64 KiB event bound.
 
 ### 7.2 When a snapshot is taken
 
+> **Since 2026-11-01** ([frozen context](frozen-context.md), section 6) the
+> rules below apply only where a run composes its context afresh: the
+> session's first run, the first after a compaction, and a refresh, which
+> always takes one. Between those points the snapshot is kept whatever
+> changed. A machine new to the session adds its memories once, where it
+> joined.
+
 **The memory prompt follows the memory tools.** A run shows the memory
 snapshot exactly when it is offered the memory tools: never when `global` is
 detached, or when the agent and session overlay have no `memory` rule. Its

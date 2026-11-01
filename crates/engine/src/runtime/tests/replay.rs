@@ -473,7 +473,7 @@ fn cut_causes(
 /// On a model that binds its reasoning, reasoning whose prefix changed since
 /// it was made is cut before the request, so the provider never refuses
 /// it; reasoning in an unchanged prefix replays (frozen context spec,
-/// section 4).
+/// section 4). Here a switch of agent preset refreshes the system prompt.
 #[tokio::test]
 async fn reasoning_whose_prefix_changed_is_cut_before_the_request() {
     let (endpoint, captured) = anthropic_replay_server(vec![
@@ -482,15 +482,25 @@ async fn reasoning_whose_prefix_changed_is_cut_before_the_request() {
         AnthropicReplayResponse::Text("third"),
     ])
     .await;
-    let (fixture, selection) = prefix_binding_fixture(&endpoint);
-    let agents_md = fixture._directory.path().join("AGENTS.md");
-    write_private_test_file(&agents_md, "rules, first version");
+    let (mut fixture, selection) = prefix_binding_fixture(&endpoint);
+    fixture.engine.shutdown().await;
+    let mut preset_agents = fixture.config.agents.clone();
+    for agent in preset_agents.values_mut() {
+        agent.body = "A preset's own prompt.\n".into();
+    }
+    fixture
+        .config
+        .agent_presets
+        .insert("other".into(), preset_agents);
+    fixture.engine = reopen_engine(&fixture);
+    let preset = cookie_agent_protocol::RunSelection {
+        preset: Some("other".into()),
+        ..selection.clone()
+    };
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     run_replay_test_turn(&fixture, session.session_id, &selection, "one").await;
-    // The AGENTS.md turn sits before the first turn's reasoning.
-    write_private_test_file(&agents_md, "rules, second version");
-    run_replay_test_turn(&fixture, session.session_id, &selection, "two").await;
-    run_replay_test_turn(&fixture, session.session_id, &selection, "three").await;
+    run_replay_test_turn(&fixture, session.session_id, &preset, "two").await;
+    run_replay_test_turn(&fixture, session.session_id, &preset, "three").await;
 
     let requests = with_watchdog("captured fixture completion", captured)
         .await
@@ -509,8 +519,21 @@ async fn reasoning_whose_prefix_changed_is_cut_before_the_request() {
         .to_vec();
     assert_eq!(
         cut_causes(&events),
-        [cookie_agent_protocol::ReplayCutCause::PrefixChanged]
+        [cookie_agent_protocol::ReplayCutCause::Refreshed]
     );
+    let refreshes = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ContextRefreshed { reason, changed } => Some((*reason, changed.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(refreshes.len(), 1);
+    assert_eq!(
+        refreshes[0].0,
+        cookie_agent_protocol::RefreshReason::AgentChanged
+    );
+    assert!(refreshes[0].1.system_prompt);
     assert!(
         events
             .iter()
@@ -523,6 +546,31 @@ async fn reasoning_whose_prefix_changed_is_cut_before_the_request() {
             ..
         }
     )));
+    fixture.engine.shutdown().await;
+}
+
+/// An edited AGENTS.md waits for the next compaction or refresh, so the
+/// prefix stays and the reasoning replays.
+#[tokio::test]
+async fn an_edited_agents_md_leaves_the_prefix_and_its_reasoning() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("first")),
+        AnthropicReplayResponse::Text("second"),
+    ])
+    .await;
+    let (fixture, selection) = prefix_binding_fixture(&endpoint);
+    let agents_md = fixture._directory.path().join("AGENTS.md");
+    write_private_test_file(&agents_md, "rules, first version");
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "one").await;
+    write_private_test_file(&agents_md, "rules, second version");
+    run_replay_test_turn(&fixture, session.session_id, &selection, "two").await;
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("binding requests");
+    assert_eq!(thinking_signatures(&requests[1]), ["first"]);
+    assert!(requests[1].contains("rules, first version"));
+    assert!(!requests[1].contains("rules, second version"));
     fixture.engine.shutdown().await;
 }
 

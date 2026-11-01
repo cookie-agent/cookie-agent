@@ -262,6 +262,8 @@ pub struct DeferralFold {
 pub struct ToolRound {
     pub tools: Vec<cookie_agent_protocol::RoundToolDefinition>,
     pub prompt_groups: Vec<String>,
+    /// The engine build that started the round, when it recorded one.
+    pub engine_build: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -277,6 +279,7 @@ impl DeferralFold {
         matches!(
             payload,
             EventPayload::ContextCheckpointCommitted { .. }
+                | EventPayload::ContextRefreshed { .. }
                 | EventPayload::ToolRoundStarted { .. }
                 | EventPayload::DeferredToolsAnnounced { .. }
         ) || matches!(
@@ -297,13 +300,21 @@ impl DeferralFold {
                     ..Self::default()
                 };
             }
+            // A refresh starts a new round; what was loaded and announced
+            // stays, since the conversation that loaded it does (frozen
+            // context spec, section 6.1).
+            EventPayload::ContextRefreshed { .. } => {
+                self.round = None;
+            }
             EventPayload::ToolRoundStarted {
                 tools,
                 prompt_groups,
+                engine_build,
             } => {
                 self.round = Some(ToolRound {
                     tools: tools.clone(),
                     prompt_groups: prompt_groups.clone(),
+                    engine_build: engine_build.clone(),
                 });
             }
             EventPayload::ToolCallTerminated { termination } => {
@@ -348,7 +359,11 @@ impl EventIndex {
             {
                 self.acp_subagent = true;
             }
-            EventPayload::MemoryLoaded { .. } => {
+            // A machine's memories added in place leave the memory turn
+            // as it was.
+            EventPayload::MemoryLoaded {
+                in_place: false, ..
+            } => {
                 self.last_memory_loaded = Some((Arc::clone(event), false));
             }
             _ => {}
@@ -936,6 +951,7 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
         | EventPayload::DeferredToolsAnnounced { .. }
         | EventPayload::PromptBlocksRecorded { .. }
         | EventPayload::PromptBlocksAnnounced { .. }
+        | EventPayload::ContextRefreshed { .. }
         | EventPayload::AttemptAbandoned { .. }
         | EventPayload::NativeReplayCut { .. }
         | EventPayload::ModelFallback { .. }

@@ -70,7 +70,7 @@ fn snapshots(fixture: &Fixture, session: SessionId) -> Vec<MemorySnapshot> {
     events(fixture, session)
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::MemoryLoaded { snapshot } => Some(snapshot.clone()),
+            EventPayload::MemoryLoaded { snapshot, .. } => Some(snapshot.clone()),
             _ => None,
         })
         .collect()
@@ -276,7 +276,7 @@ async fn a_root_run_sees_its_snapshot_after_agents_md_until_something_changes() 
 }
 
 #[tokio::test]
-async fn the_snapshot_follows_memory_access_and_write_access() {
+async fn the_snapshot_follows_memory_access_when_the_context_is_composed() {
     let (endpoint, responses, captured) = scripted_channel_server(4).await;
     // Write rules without a memory rule offer nothing.
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
@@ -299,8 +299,10 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
     run(&fixture, session, &selection, "one", "one").await;
     assert!(snapshots(&fixture, session).is_empty());
 
-    // The overlay gives memory; the agent's own write rule makes it
-    // writable.
+    // The overlay gives memory mid-session. On this model, which loads no
+    // tools deferred, the memory tools joining refresh the context, so the
+    // run takes a snapshot, writable by the agent's own write rule (frozen
+    // context spec, section 6.1).
     set_overlay(
         &fixture,
         session,
@@ -311,10 +313,16 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
     let taken = snapshots(&fixture, session);
     assert_eq!(taken.len(), 1);
     assert!(taken[0].writable);
+    assert!(events(&fixture, session).iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ContextRefreshed {
+            reason: cookie_agent_protocol::RefreshReason::ToolsChanged,
+            ..
+        }
+    )));
 
-    // Asking before reading: the same access, but the rules changed, so a
-    // new snapshot lists the categories instead of showing them
-    // (section 7.5).
+    // Asking before reading changes no tool: the memory turn waits for the
+    // next compaction or refresh.
     set_overlay(
         &fixture,
         session,
@@ -322,18 +330,27 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
     )
     .await;
     run(&fixture, session, &selection, "three", "three").await;
-    let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 2, "an overlay change takes a new snapshot");
-    assert!(taken[1].writable);
-    assert!(taken[1].user.is_empty());
-    assert!(!taken[1].user_listed.is_empty());
+    assert_eq!(snapshots(&fixture, session).len(), 1);
 
-    // Losing the rule appends an empty snapshot.
-    set_overlay(&fixture, session, Vec::new()).await;
-    run(&fixture, session, &selection, "four", "four").await;
-    let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 3);
-    assert!(taken[2].is_empty());
+    // A session that starts asking lists the categories instead of showing
+    // them (section 7.5).
+    let asking = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    set_overlay(
+        &fixture,
+        asking,
+        vec![rule(PermissionAction::MEMORY, PermissionEffect::Ask)],
+    )
+    .await;
+    run(&fixture, asking, &selection, "four", "four").await;
+    let taken = snapshots(&fixture, asking);
+    assert_eq!(taken.len(), 1);
+    assert!(taken[0].writable);
+    assert!(taken[0].user.is_empty());
+    assert!(!taken[0].user_listed.is_empty());
 
     let requests = captured.await.unwrap();
     let has_memory_turn = |request: &String| {
@@ -343,7 +360,7 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
     };
     assert!(memory_tool_names(&requests[0]).is_empty());
     assert!(!has_memory_turn(&requests[0]));
-    for request in &requests[1..3] {
+    for request in &requests[1..4] {
         assert_eq!(
             memory_tool_names(request),
             [
@@ -356,8 +373,6 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
         );
         assert!(has_memory_turn(request));
     }
-    assert!(memory_tool_names(&requests[3]).is_empty());
-    assert!(!has_memory_turn(&requests[3]));
     fixture.engine.shutdown().await;
 }
 
@@ -409,7 +424,7 @@ async fn gaining_write_access_takes_a_snapshot_and_adds_the_rubric() {
 }
 
 #[tokio::test]
-async fn detaching_global_turns_memory_off_and_attaching_it_back_on() {
+async fn detaching_and_attaching_global_keeps_the_memory_turn_until_a_compaction() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
     let (fixture, selection) =
         custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
@@ -446,11 +461,13 @@ async fn detaching_global_turns_memory_off_and_attaching_it_back_on() {
         .await
         .unwrap();
     run(&fixture, session, &selection, "three", "three").await;
+    // The memory turn stays as the session's first run composed it until
+    // the next compaction or refresh (frozen context spec, section 6.2).
     let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 3);
-    assert!(!taken[0].is_empty() && taken[1].is_empty() && !taken[2].is_empty());
+    assert_eq!(taken.len(), 1);
+    assert!(!taken[0].is_empty());
     let requests = captured.await.unwrap();
-    assert!(!requests[1].contains("# Memory"));
+    assert!(requests[1].contains("# Memory"));
     // The memory tools stay declared until the round ends (stable prefix
     // spec, section 4); a call to one is refused meanwhile.
     assert_eq!(
@@ -1329,52 +1346,56 @@ async fn the_snapshot_shows_only_what_the_memory_rules_let_the_run_read() {
     assert!(!taken[0].is_empty());
     assert!(taken[0].user.is_empty() && taken[0].user_listed.is_empty());
 
-    // The overlay lets it read the user's memories but not their
-    // preferences: a new snapshot without them.
-    set_overlay(
-        &fixture,
-        session,
-        vec![
-            PermissionRule::new(
-                PermissionAction::MEMORY,
-                WildcardPattern::new("user://*").unwrap(),
-                PermissionEffect::Allow,
-            ),
-            PermissionRule::new(
-                PermissionAction::MEMORY,
-                WildcardPattern::new("user://preferences").unwrap(),
-                PermissionEffect::Deny,
-            ),
-        ],
-    )
-    .await;
+    // An overlay change mid-session waits for the next compaction or
+    // refresh (frozen context spec, section 6.2).
+    let overlay = vec![
+        PermissionRule::new(
+            PermissionAction::MEMORY,
+            WildcardPattern::new("user://*").unwrap(),
+            PermissionEffect::Allow,
+        ),
+        PermissionRule::new(
+            PermissionAction::MEMORY,
+            WildcardPattern::new("user://preferences").unwrap(),
+            PermissionEffect::Deny,
+        ),
+    ];
+    set_overlay(&fixture, session, overlay.clone()).await;
     run(&fixture, session, &selection, "two", "two").await;
-    let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 2, "an overlay change takes a new snapshot");
+    assert_eq!(snapshots(&fixture, session).len(), 1);
+
+    // A session that starts with it reads the user's memories but not
+    // their preferences.
+    let readable = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    set_overlay(&fixture, readable, overlay).await;
+    run(&fixture, readable, &selection, "three", "three").await;
+    let taken = snapshots(&fixture, readable);
+    assert_eq!(taken.len(), 1);
     assert!(
-        taken[1]
+        taken[0]
             .user
             .iter()
             .any(|category| category.category == "feedback")
     );
     assert!(
-        taken[1]
+        taken[0]
             .user
             .iter()
             .all(|category| category.category != "preferences")
-            && !taken[1].user_omitted.contains(&"preferences".to_owned())
+            && !taken[0].user_omitted.contains(&"preferences".to_owned())
     );
-
-    // Nothing changed: the snapshot is kept.
-    run(&fixture, session, &selection, "three", "three").await;
-    assert_eq!(snapshots(&fixture, session).len(), 2);
 
     let requests = captured.await.unwrap();
     assert!(!requests[0].contains("# Memory"), "nothing to show");
     assert!(memory_tool_names(&requests[0]).contains(&"memory_read".to_owned()));
-    assert!(requests[1].contains("# Memory"));
-    assert!(requests[1].contains("keep it short"));
-    assert!(!requests[1].contains("user://preferences"));
-    assert!(!requests[1].contains("secret preference"));
+    assert!(!requests[1].contains("# Memory"));
+    assert!(requests[2].contains("# Memory"));
+    assert!(requests[2].contains("keep it short"));
+    assert!(!requests[2].contains("user://preferences"));
+    assert!(!requests[2].contains("secret preference"));
     fixture.engine.shutdown().await;
 }

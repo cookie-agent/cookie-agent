@@ -476,7 +476,17 @@ impl Engine {
                 }
             }
         }
-        let agent_md = if is_root && !acp {
+        // The context before the conversation is the previous run's until a
+        // refresh point (frozen context spec, section 6).
+        let composition = self.context_composition(
+            params.session_id,
+            &run_policy,
+            params.selection.preset.as_deref(),
+            acp,
+        )?;
+        let agent_md = if let Some(previous) = composition.frozen().filter(|_| is_root && !acp) {
+            previous.agent_md.clone()
+        } else if is_root && !acp {
             let agent_override = run_policy
                 .registry
                 .get(&run_policy.agent.agent)
@@ -490,22 +500,11 @@ impl Engine {
         } else {
             Vec::new()
         };
-        // On a model that defers tools, a run reuses the previous run's
-        // prompt blocks, whose changes are announced instead (stable prefix
-        // spec, section 6.2).
-        let reused_blocks = if !acp && self.defers_tools(&run_policy) {
-            self.reusable_prompt_blocks(params.session_id)?
-        } else {
-            None
-        };
-        let prompt_blocks_live = reused_blocks.is_none();
-        if let Some(blocks) = reused_blocks {
-            for (key, block) in blocks {
-                if super::prompt_blocks::prompt_block_fits(&run_policy, &block) {
-                    super::prompt_blocks::append_prompt_block(&mut run_policy, &key, &block);
-                }
-            }
-        } else if !acp {
+        // A frozen run takes the previous run's system prompt whole, below;
+        // what changed in its blocks since is announced instead (stable
+        // prefix spec, section 6.3).
+        let prompt_blocks_live = composition.frozen().is_none();
+        if prompt_blocks_live && !acp {
             self.compose_runtimes_prompt(&mut run_policy, params.session_id);
             self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
             self.compose_skill_listing(
@@ -614,6 +613,15 @@ impl Engine {
                     }
                 }
             }
+        }
+        // The previous run's system prompt, byte for byte; a hook's change
+        // to it waits for the next refresh point (frozen context spec,
+        // section 6.2).
+        if let Some(previous) = composition.frozen() {
+            run_policy.agent.composed_prompt = previous.composed_prompt.clone();
+            run_policy.agent.prompt_fingerprint = previous.prompt_fingerprint.clone();
+            run_policy.prompt_blocks = previous.prompt_blocks.clone();
+            prompt_replaced = false;
         }
         run_policy.internal_agents = self.freeze_internal_agent_definitions(&run_policy)?;
         let run_id = RunId::new_v7();
@@ -726,6 +734,25 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id, active.clone());
+        let agent_md_changed = match &composition {
+            super::frozen_context::ContextComposition::Refresh { previous, .. } => {
+                let turn = |loaded: &[super::agent_md::AttachmentAgentMd]| {
+                    loaded
+                        .iter()
+                        .filter(|loaded| !loaded.entries.is_empty())
+                        .map(|loaded| {
+                            (
+                                loaded.attachment.clone(),
+                                loaded.project.clone(),
+                                loaded.entries.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                turn(&agent_md) != turn(&previous.agent_md)
+            }
+            _ => false,
+        };
         for loaded in agent_md {
             if !loaded.entries.is_empty()
                 && let Err(error) = self
@@ -737,6 +764,7 @@ impl Engine {
                             entries: loaded.entries,
                             attachment: loaded.attachment.clone(),
                             project: loaded.project.clone(),
+                            in_place: false,
                         },
                     )
                     .await
@@ -763,9 +791,67 @@ impl Engine {
         }
         // An ACP agent reads memory only with the context of a session it
         // starts, which takes its snapshot then.
-        if !acp
+        // A frozen run keeps the turns before the conversation; what a client
+        // attached since the previous run joins where the model reads it.
+        if composition.frozen().is_some()
             && let Err(error) = self
-                .refresh_memory_snapshot(params.session_id, run_id, &active.policy)
+                .add_attached_context(
+                    params.session_id,
+                    run_id,
+                    params.selection.preset.as_deref(),
+                    is_root
+                        && run_policy_agent_md(&active.policy, &self.inner.config.load().runtime),
+                )
+                .await
+        {
+            return Err(self
+                .terminalize_run_setup_failure(&active, run_id, error)
+                .await);
+        }
+        let memory_mode = match &composition {
+            super::frozen_context::ContextComposition::Live => {
+                super::memory::runs::SnapshotMode::Composed
+            }
+            super::frozen_context::ContextComposition::Refresh { .. } => {
+                super::memory::runs::SnapshotMode::Refresh
+            }
+            super::frozen_context::ContextComposition::Frozen(_) => {
+                super::memory::runs::SnapshotMode::Frozen
+            }
+        };
+        let memory_changed = if acp {
+            false
+        } else {
+            match self
+                .refresh_memory_snapshot(params.session_id, run_id, &active.policy, memory_mode)
+                .await
+            {
+                Ok(changed) => changed,
+                Err(error) => {
+                    return Err(self
+                        .terminalize_run_setup_failure(&active, run_id, error)
+                        .await);
+                }
+            }
+        };
+        if let super::frozen_context::ContextComposition::Refresh {
+            reason,
+            drift,
+            previous,
+        } = composition
+            && let Err(error) = self
+                .record_refresh(
+                    params.session_id,
+                    run_id,
+                    super::frozen_context::Refresh {
+                        reason,
+                        drift,
+                        previous,
+                        agent_md: agent_md_changed,
+                        memory: memory_changed,
+                    },
+                    &active.policy,
+                )
                 .await
         {
             return Err(self
@@ -1156,9 +1242,8 @@ impl Engine {
             let composition = turn_policy
                 .is_none()
                 .then_some(&published_tools.composition);
-            if self.defers_tools(policy)
-                && let Ok(Some(announcement)) =
-                    self.prompt_blocks_announcement(active.session, &active.policy, composition)
+            if let Ok(Some(announcement)) =
+                self.prompt_blocks_announcement(active.session, &active.policy, composition)
             {
                 self.append(
                     active.session,
@@ -3137,6 +3222,19 @@ fn is_overload_retry(error: &ModelError) -> bool {
         || (error.retryable && matches!(error.diagnostics.http_status, Some(429 | 503)))
 }
 
+/// Whether a run of `policy` loads `AGENTS.md`: its agent's `agent_md`
+/// frontmatter, else `[agent_md] enabled`.
+fn run_policy_agent_md(
+    policy: &crate::policy::FrozenRunPolicy,
+    runtime: &cookie_agent_config::EngineConfig,
+) -> bool {
+    policy
+        .registry
+        .get(&policy.agent.agent)
+        .and_then(|agent| agent.document.frontmatter.agent_md)
+        .unwrap_or(runtime.agent_md.enabled)
+}
+
 /// Why the reasoning a request would replay went stale, when it did: a
 /// replayed turn's recorded prefix differs from the request's prefix before
 /// it. A turn recorded before fingerprints existed is not judged.
@@ -3160,15 +3258,20 @@ fn stale_reasoning_cause(
                 .then_some(recorded.seq)
         })
         .min()?;
-    let compacted = events.iter().any(|event| {
-        event.seq > earliest_stale
-            && matches!(event.payload, Event::ContextCheckpointCommitted { .. })
-    });
-    Some(if compacted {
-        cookie_agent_protocol::ReplayCutCause::Compaction
-    } else {
-        cookie_agent_protocol::ReplayCutCause::PrefixChanged
-    })
+    let since = |matches: fn(&Event) -> bool| {
+        events
+            .iter()
+            .any(|event| event.seq > earliest_stale && matches(&event.payload))
+    };
+    Some(
+        if since(|event| matches!(event, Event::ContextCheckpointCommitted { .. })) {
+            cookie_agent_protocol::ReplayCutCause::Compaction
+        } else if since(|event| matches!(event, Event::ContextRefreshed { .. })) {
+            cookie_agent_protocol::ReplayCutCause::Refreshed
+        } else {
+            cookie_agent_protocol::ReplayCutCause::PrefixChanged
+        },
+    )
 }
 
 /// Whether a model refused a replayed reasoning block because the request

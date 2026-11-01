@@ -61,6 +61,7 @@ mod blocking_io;
 pub(crate) mod compaction;
 pub(crate) mod configuration;
 pub(crate) mod delegation;
+mod frozen_context;
 mod helpers;
 mod internal_agents;
 mod loop_guard;
@@ -688,6 +689,9 @@ struct PublishedToolSet {
     /// included when the request defers; what else the step works out
     /// from the tool set reads it rather than composing it again.
     composition: crate::runtimes::Composition,
+    /// How the live tools moved from the round's record (frozen context
+    /// spec, section 6.1).
+    drift: crate::deferred_tools::RoundDrift,
 }
 
 #[derive(Clone, Debug)]

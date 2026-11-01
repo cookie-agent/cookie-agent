@@ -195,6 +195,7 @@ never stored.
 | `model_request_prepared`, `model_tools_published`, `model_output_started`, `model_replay_evaluated` | audit | run | Request and streaming bookkeeping |
 | `tool_round_started`, `deferred_tools_announced` | audit | run | [Deferred tools](#deferred-tools): a tool round's eager tools, and what the model was told it can load |
 | `prompt_blocks_recorded`, `prompt_blocks_announced` | audit | run | [Prompt blocks](#prompt-blocks): where a run's prompt carries its blocks, and what changed since |
+| `context_refreshed` | audit | run | [Prompt blocks](#prompt-blocks): the context before the conversation was composed again between compactions, and why |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
 | `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, because the request before it changed since it was made; see [Stale reasoning](#stale-reasoning) |
 | `automatic_runs_held`, `automatic_runs_resumed` | state | runless | A [held session](../specs/held-sessions.md): its automatic runs stopped, and the resume that cleared it |
@@ -903,13 +904,28 @@ Later runs that name no selection of their own use it.
 
 ### Prompt blocks
 
-[Frozen blocks](system-prompt.md#frozen-blocks-on-models-that-defer-tools):
+[The frozen context](system-prompt.md#the-frozen-context):
 
 - `prompt_blocks_recorded` comes before a run's first request, unless the
   run is an ACP agent's or a plugin replaced its prompt. `blocks` lists `key`
   (`runtimes`, `tool_instructions`, or `skills`), `start`, and `len`, in
   bytes of the run's `composed_prompt`; `composed_live` says whether the run
   composed them rather than copying the previous run's.
+- `context_refreshed { reason, changed }` (client protocol 1.62.0) comes
+  after a refresh run's `run_started`, before its first request, and
+  starts a new tool round. `reason` is `engine_updated`, `tools_changed`,
+  or `agent_changed`, an open enum read as `unknown`; `changed` holds
+  `system_prompt`, `agent_md`, and `memory` flags and `tools` (`added`,
+  `removed`, `changed`, by name). Skills loaded before it sit with the turns
+  before the conversation, and in-place `agent_md_loaded` and
+  `memory_loaded` before it are left out of history.
+- `agent_md_loaded` and `memory_loaded` have an optional `in_place` (1.62.0):
+  a runtime a client attached since the previous run, recorded at the next
+  run's start and rendered where it was recorded; the turns before the
+  conversation stay as they were. An in-place `memory_loaded` holds only the
+  new machines.
+- `tool_round_started` has an optional `engine_build` (1.62.0): the release
+  tag, or commit, of the engine that started the round.
 - `prompt_blocks_announced` carries `blocks`, each a `key` and its new
   `text`, or no `text` when the block no longer applies. Model history renders
   it in place as a user turn; a checkpoint leaves earlier ones out of the

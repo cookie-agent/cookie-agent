@@ -59,21 +59,6 @@ pub(crate) fn prompt_block_fits(policy: &FrozenRunPolicy, block: &str) -> bool {
 }
 
 impl Engine {
-    /// The previous run's prompt blocks, which a run on a model that defers
-    /// tools reuses unless a checkpoint lies after that run's start (stable
-    /// prefix spec, section 6.2).
-    pub(crate) fn reusable_prompt_blocks(
-        &self,
-        session: SessionId,
-    ) -> Result<Option<Vec<(String, String)>>, EngineError> {
-        let fold = self.inner.store.get(session)?.log.prompt_blocks();
-        Ok(if fold.checkpoint_since_run {
-            None
-        } else {
-            fold.run_blocks
-        })
-    }
-
     /// The prompt blocks a run of `policy` in `session` composes now, in
     /// prompt order.
     fn live_prompt_blocks(

@@ -577,6 +577,8 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 ModelInputKind::Memory => icondata::FaBrainSolid,
                 ModelInputKind::PromptBlocks => icondata::FaPenToSquareSolid,
                 ModelInputKind::InheritedContext => icondata::FaTurnDownSolid,
+                ModelInputKind::Refresh => icondata::FaArrowsRotateSolid,
+                ModelInputKind::ReasoningCut => icondata::FaScissorsSolid,
             };
             let row = collapsible(view.expanded.block(&key), &key, icon, header, None, text);
             format!("<div data-model-input=\"{}\">{row}</div>", kind.as_str())

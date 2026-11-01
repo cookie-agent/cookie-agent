@@ -1519,6 +1519,11 @@ impl Engine {
         }
         let fold = self.inner.store.get(session)?.log.deferral();
         if !defers {
+            let drift = crate::deferred_tools::round_drift(
+                fold.round.as_ref(),
+                output.iter().map(|candidate| &candidate.definition),
+                true,
+            );
             let plan = crate::deferred_tools::plan_eager(output, &fold);
             declared_defaults(&mut published, &plan.definitions, &routed_names);
             return Ok(PublishedToolSet {
@@ -1528,8 +1533,19 @@ impl Engine {
                 unloaded: HashSet::new(),
                 pending: plan.pending,
                 composition,
+                drift,
             });
         }
+        // A tool that joins mid-round is deferred, so only a changed
+        // parameter schema drifts.
+        let drift = crate::deferred_tools::round_drift(
+            fold.round.as_ref(),
+            candidates
+                .iter()
+                .map(|candidate| &candidate.definition)
+                .chain(&loaders),
+            false,
+        );
         let previous = self.deferral_view(session);
         let mut plan = crate::deferred_tools::plan_reusing(candidates, &loaders, &fold, &previous);
         let unloaded = plan
@@ -1580,6 +1596,7 @@ impl Engine {
             unloaded,
             pending: plan.pending,
             composition,
+            drift,
         })
     }
 

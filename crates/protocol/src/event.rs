@@ -2411,6 +2411,51 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
     }
 }
 
+/// Why a `context_refreshed` composed the context again (frozen context
+/// spec, section 6.1). A value this build does not know reads as
+/// `unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum RefreshReason {
+    /// An eager tool's parameters changed with the engine build.
+    EngineUpdated,
+    /// An eager tool's parameters changed otherwise, or a tool the model
+    /// cannot load deferred joined.
+    ToolsChanged,
+    /// The run's agent is not the previous run's.
+    AgentChanged,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a refresh composed differently from the context it replaced.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RefreshedParts {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub system_prompt: bool,
+    #[serde(default)]
+    pub tools: RefreshedTools,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_md: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub memory: bool,
+}
+
+/// The eager tools a refresh added, removed, and changed, by name.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RefreshedTools {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub changed: Vec<String>,
+}
+
 /// How a `native_replay_cut` found that earlier reasoning went stale
 /// (`docs/site/specs/frozen-context.md`, section 7.1). A value this build
 /// does not know reads as `unknown`, shown as a stale-reasoning cut.
@@ -2783,6 +2828,12 @@ pub enum EventPayload {
         /// first in the `AGENTS.md` turn.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<AgentMdProject>,
+        /// Loaded once for a machine attached mid-session and shown to the
+        /// model where it was recorded, instead of in the `AGENTS.md` turn
+        /// before the conversation (frozen context spec, section 6.3;
+        /// client protocol 1.62.0).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        in_place: bool,
     },
     /// The memory snapshot the session's model sees from this run on
     /// (`docs/site/specs/memory.md` section 7). An empty snapshot records
@@ -2790,6 +2841,20 @@ pub enum EventPayload {
     MemoryLoaded {
         #[serde(flatten)]
         snapshot: MemorySnapshot,
+        /// The memories of a machine attached mid-session, shown to the
+        /// model where they were recorded; the memory turn before the
+        /// conversation stays as it was (frozen context spec, section 6.3;
+        /// client protocol 1.62.0).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        in_place: bool,
+    },
+    /// The context before the conversation was composed again between
+    /// compactions: the system prompt, the tool round, the `AGENTS.md` turn,
+    /// and the memory turn (frozen context spec, section 6.1; client
+    /// protocol 1.62.0).
+    ContextRefreshed {
+        reason: RefreshReason,
+        changed: RefreshedParts,
     },
     /// A model's memory tool saved, edited, or deleted the memory at `url`
     /// (`docs/site/specs/memory.md` section 16.9.10; client protocol
@@ -3018,6 +3083,11 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[schemars(length(max = 1024))]
         prompt_groups: Vec<String>,
+        /// The engine build that started the round: its release tag, or
+        /// its git hash for a source build (client protocol 1.62.0).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(max = 256))]
+        engine_build: Option<String>,
     },
     /// The attempt began streaming a text or reasoning part: its first
     /// output, or a switch between the two. The deltas themselves are
@@ -3369,6 +3439,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "model_tools_published",
     "deferred_tools_announced",
     "tool_round_started",
+    "context_refreshed",
     "prompt_blocks_recorded",
     "prompt_blocks_announced",
     "model_turn_committed",
@@ -3523,6 +3594,9 @@ impl EventPayload {
             // it builds.
             | Self::DeferredToolsAnnounced { .. }
             | Self::ToolRoundStarted { .. }
+            // Likewise an engine that does not freeze the context composes
+            // every run afresh.
+            | Self::ContextRefreshed { .. }
             | Self::PromptBlocksRecorded { .. }
             | Self::PromptBlocksAnnounced { .. }
             | Self::ModelOutputStarted { .. }
@@ -3801,7 +3875,7 @@ impl EventPayload {
                     entry.validate()?;
                 }
             }
-            Self::MemoryLoaded { snapshot } => snapshot.validate()?,
+            Self::MemoryLoaded { snapshot, .. } => snapshot.validate()?,
             Self::ModelToolsPublished {
                 tool_names,
                 deferred_tool_names,
@@ -3850,6 +3924,7 @@ impl EventPayload {
             Self::ToolRoundStarted {
                 tools,
                 prompt_groups,
+                ..
             } if tools.len() > MAX_MODEL_TOOL_NAMES
                 || !tools
                     .iter()

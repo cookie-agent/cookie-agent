@@ -11,7 +11,7 @@ pub mod memory_snapshot;
 
 use crate::{AgentMdEntry, AnnouncedPromptBlock, AnnouncedToolGroup, ToolGroupSource};
 
-pub use memory_snapshot::snapshot_turn as memory_snapshot_turn;
+pub use memory_snapshot::{machine_memory_turn, snapshot_turn as memory_snapshot_turn};
 
 /// What opens the `AGENTS.md` turn, before the files.
 pub const AGENT_MD_PREAMBLE: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";

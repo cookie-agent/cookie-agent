@@ -118,6 +118,7 @@ fn fold_with_round(tools: &[&str]) -> DeferralFold {
                 .map(|name| round_definition(&definition(name), None))
                 .collect(),
             prompt_groups: Vec::new(),
+            engine_build: None,
         }),
         ..DeferralFold::default()
     }

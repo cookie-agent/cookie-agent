@@ -780,6 +780,8 @@ pub(super) fn model_input_layout(
         ModelInputKind::Memory => "🧠",
         ModelInputKind::PromptBlocks => "📝",
         ModelInputKind::InheritedContext => "↘",
+        ModelInputKind::Refresh => "🔄",
+        ModelInputKind::ReasoningCut => "✂",
     };
     let chevron = if text.is_empty() {
         ' '

@@ -41,6 +41,8 @@ pub(crate) fn checkpoint_retained_history<E: Borrow<StoredEvent>>(
 ) -> Vec<HistoryTurn> {
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
+    // Every skill before the coming checkpoint sits before the
+    // conversation after it.
     let pinned_skills = events
         .iter()
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
@@ -516,17 +518,52 @@ fn close_event_dependencies<'a>(events: &[&'a StoredEvent], selected: &mut Vec<&
     }
 }
 
-fn pinned_history_len(events: &[&StoredEvent]) -> usize {
+fn pinned_history_len(events: &[&StoredEvent], pin_floor: Option<u64>) -> usize {
+    let boundary = context_boundary(events).max(pin_floor);
     usize::from(!latest_agent_md_events(events).is_empty())
         + usize::from(latest_memory_turn(events).is_some())
         + events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
+            .filter(|event| pinned_skill(event, boundary))
             .count()
 }
 
-fn insert_summary(assembled: &mut AssembledHistory, events: &[&StoredEvent], summary: &str) {
-    let history_index = 1 + pinned_history_len(events);
+/// Where the context before the conversation was last composed between
+/// compactions or at one: the latest checkpoint or refresh (frozen context
+/// spec, section 6).
+fn context_boundary(events: &[&StoredEvent]) -> Option<u64> {
+    events.iter().rev().find_map(|event| {
+        matches!(
+            event.payload,
+            EventPayload::ContextCheckpointCommitted { .. } | EventPayload::ContextRefreshed { .. }
+        )
+        .then_some(event.seq)
+    })
+}
+
+/// The latest refresh, before which in-place additions are folded into the
+/// turns before the conversation.
+fn latest_refresh(events: &[&StoredEvent]) -> Option<u64> {
+    events.iter().rev().find_map(|event| {
+        matches!(event.payload, EventPayload::ContextRefreshed { .. }).then_some(event.seq)
+    })
+}
+
+/// Whether a skill sits with the turns before the conversation: one loaded
+/// before the latest checkpoint or refresh. A later one renders where it was
+/// loaded (frozen context spec, section 6.4).
+fn pinned_skill(event: &StoredEvent, boundary: Option<u64>) -> bool {
+    matches!(event.payload, EventPayload::SkillLoaded { .. })
+        && boundary.is_some_and(|boundary| event.seq < boundary)
+}
+
+fn insert_summary(
+    assembled: &mut AssembledHistory,
+    events: &[&StoredEvent],
+    summary: &str,
+    pin_floor: Option<u64>,
+) {
+    let history_index = 1 + pinned_history_len(events, pin_floor);
     assembled.history.insert(
         history_index,
         HistoryTurn::user(user_text(&framed_compaction_summary(summary))),
@@ -556,9 +593,18 @@ pub(crate) fn project_summary_context<E: Borrow<StoredEvent>>(
         true,
         CheckpointSelectionMode::InternalSummary,
     );
-    let mut assembled =
-        assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
-    insert_summary(&mut assembled, events, summary);
+    // What the summary covers sits before the conversation, whether the
+    // checkpoint is committed yet or only projected.
+    let pin_floor = Some(source_through_seq.saturating_add(1));
+    let mut assembled = assemble_history_with_replay(
+        &selected,
+        events,
+        store,
+        binding,
+        composed_prompt,
+        pin_floor,
+    )?;
+    insert_summary(&mut assembled, events, summary, pin_floor);
     Ok(ModelContext {
         history: assembled.history,
         native_context: None,
@@ -618,9 +664,9 @@ pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
     visible.sort_by_key(|event| event.seq);
     visible.dedup_by_key(|event| event.seq);
     let mut assembled =
-        assemble_history_with_replay(&visible, events, store, binding, composed_prompt)?;
+        assemble_history_with_replay(&visible, events, store, binding, composed_prompt, None)?;
     if let Some(summary) = prior_summary {
-        insert_summary(&mut assembled, events, summary);
+        insert_summary(&mut assembled, events, summary, None);
     }
     Ok(assembled.history)
 }
@@ -828,7 +874,7 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
     let events = events.as_slice();
     let Some(commit) = latest_checkpoint(events) else {
         let assembled =
-            assemble_history_with_replay(events, events, store, binding, composed_prompt)?;
+            assemble_history_with_replay(events, events, store, binding, composed_prompt, None)?;
         return Ok(ModelContext {
             history: assembled.history,
             native_context: None,
@@ -846,7 +892,7 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
             CheckpointSelectionMode::NativeWindow,
         );
         let assembled =
-            assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
+            assemble_history_with_replay(&selected, events, store, binding, composed_prompt, None)?;
         return Ok(ModelContext {
             history: assembled.history,
             native_context: Some(native_context),
@@ -905,8 +951,14 @@ pub(crate) fn assemble_summary_view<E: Borrow<StoredEvent>>(
             summary,
         ),
         None => {
-            let assembled =
-                assemble_history_with_replay(events, events, store, binding, composed_prompt)?;
+            let assembled = assemble_history_with_replay(
+                events,
+                events,
+                store,
+                binding,
+                composed_prompt,
+                None,
+            )?;
             Ok(ModelContext {
                 history: assembled.history,
                 native_context: None,
@@ -925,17 +977,23 @@ pub(crate) fn assemble_full_history<E: Borrow<StoredEvent>>(
 ) -> Result<Vec<HistoryTurn>, HistoryError> {
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
-    Ok(assemble_history_with_replay(events, events, store, binding, composed_prompt)?.history)
+    Ok(
+        assemble_history_with_replay(events, events, store, binding, composed_prompt, None)?
+            .history,
+    )
 }
 
 // Message selection must not roll back session-wide replay decisions or pinned context.
 // context_events is the full visible snapshot, before checkpoint or summary-prefix filtering.
+/// `pin_floor` is a boundary the log does not hold yet, such as a summary
+/// checkpoint being projected: skills before it sit before the conversation.
 fn assemble_history_with_replay(
     events: &[&StoredEvent],
     context_events: &[&StoredEvent],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
+    pin_floor: Option<u64>,
 ) -> Result<AssembledHistory, HistoryError> {
     // Attachments resolve in the tree of the session whose log this is.
     let store = store.for_session(
@@ -952,12 +1010,14 @@ fn assemble_history_with_replay(
     // The latest cut: reasoning of turns committed at or before it is not
     // replayed (`docs/site/specs/thinking-replay-recovery.md`).
     let mut replay_cut = None::<u64>;
+    let boundary = context_boundary(context_events).max(pin_floor);
+    let refreshed = latest_refresh(context_events);
     for event in context_events {
         match &event.payload {
             EventPayload::NativeReplayCut { through_seq, .. } => {
                 replay_cut = replay_cut.max(Some(*through_seq));
             }
-            EventPayload::SkillLoaded { rendered_body, .. } => {
+            EventPayload::SkillLoaded { rendered_body, .. } if pinned_skill(event, boundary) => {
                 loaded_skills.push(rendered_body);
             }
             EventPayload::ToolCallLinked {
@@ -1009,6 +1069,7 @@ fn assemble_history_with_replay(
                     entries,
                     attachment,
                     project,
+                    ..
                 } => Some((attachment.as_str(), project.is_some(), entries.as_slice())),
                 _ => None,
             })
@@ -1051,6 +1112,37 @@ fn assemble_history_with_replay(
                     &crate::deferred_tools::render_announcement(added, removed, !announced_added),
                 )));
                 announced_added |= !added.is_empty();
+            }
+            // A skill loaded since the latest checkpoint or refresh, where
+            // it was loaded (frozen context spec, section 6.4).
+            EventPayload::SkillLoaded { rendered_body, .. }
+                if !pinned_skill(envelope, boundary) =>
+            {
+                logical.push(LogicalTurn::User(user_text(rendered_body)));
+            }
+            // A machine attached since the latest refresh: its AGENTS.md and
+            // its memories where they were recorded (section 6.3). A refresh
+            // folds earlier ones into the turns before the conversation.
+            EventPayload::AgentMdLoaded {
+                entries,
+                attachment,
+                project,
+                in_place: true,
+            } if refreshed.is_none_or(|refreshed| envelope.seq > refreshed) => {
+                logical.push(LogicalTurn::User(user_text(&agent_md_turn(&[(
+                    attachment.as_str(),
+                    project.is_some(),
+                    entries.as_slice(),
+                )]))));
+            }
+            EventPayload::MemoryLoaded {
+                snapshot,
+                in_place: true,
+            } if refreshed.is_none_or(|refreshed| envelope.seq > refreshed) => {
+                if let Some(turn) = cookie_agent_protocol::model_text::machine_memory_turn(snapshot)
+                {
+                    logical.push(LogicalTurn::User(user_text(&turn)));
+                }
             }
             // As deferred tools are announced (stable prefix spec, section
             // 6.3); the first request after a checkpoint announces afresh.
@@ -1486,6 +1578,7 @@ fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent
             EventPayload::AgentMdLoaded {
                 attachment,
                 project,
+                in_place: false,
                 ..
             } => seen.insert((project.is_some(), attachment.as_str())),
             _ => false,
@@ -1497,11 +1590,15 @@ fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent
 
 /// The latest `memory_loaded` of the log, empty or not.
 fn latest_memory_event<'a>(events: &[&'a StoredEvent]) -> Option<&'a StoredEvent> {
-    events
-        .iter()
-        .rev()
-        .copied()
-        .find(|event| matches!(event.payload, EventPayload::MemoryLoaded { .. }))
+    events.iter().rev().copied().find(|event| {
+        matches!(
+            event.payload,
+            EventPayload::MemoryLoaded {
+                in_place: false,
+                ..
+            }
+        )
+    })
 }
 
 /// The memory turn of the latest `memory_loaded`, placed after `AGENTS.md`
@@ -1509,7 +1606,9 @@ fn latest_memory_event<'a>(events: &[&'a StoredEvent]) -> Option<&'a StoredEvent
 /// (`docs/site/specs/memory.md` section 7.3).
 fn latest_memory_turn(events: &[&StoredEvent]) -> Option<String> {
     match &latest_memory_event(events)?.payload {
-        EventPayload::MemoryLoaded { snapshot } => crate::memory::render::snapshot_turn(snapshot),
+        EventPayload::MemoryLoaded { snapshot, .. } => {
+            crate::memory::render::snapshot_turn(snapshot)
+        }
         _ => None,
     }
 }

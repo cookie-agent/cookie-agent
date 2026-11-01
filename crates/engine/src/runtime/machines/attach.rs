@@ -24,6 +24,9 @@ pub(crate) struct AttachedMachine {
     pub(crate) home: Option<String>,
     /// The workspace's `AGENTS.md` files, as a run would load them.
     pub(crate) agent_md: Vec<AgentMdEntry>,
+    /// The memories of the machine, when it is new to the session: the
+    /// memory turn's machines section, as the model reads it.
+    pub(crate) memories: Option<String>,
     /// The tools the attachment brings, sorted by name; `None` when the
     /// attaching run is gone or they cannot be listed.
     pub(crate) tools: Option<Vec<AttachedTool>>,
@@ -66,6 +69,7 @@ impl Engine {
         if let Some(connection) = instance.connection() {
             connection.retry_failed_mcp();
         }
+        let machines_before = self.machine_names(session);
         let runtime_id_owned = runtime_id.to_owned();
         let attachment = self
             .on_actor(session, move |engine| {
@@ -90,6 +94,17 @@ impl Engine {
                 Ok(attachment)
             })
             .await?;
+        // Its AGENTS.md and the memories of a machine new to the session
+        // reach the model in the tool's result, where it attached them
+        // (frozen context spec, section 6.3).
+        let memories = self
+            .attached_machine_memories(session, &machines_before)
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("cookie-agent: session {session}: machine memories not read: {error}");
+                None
+            })
+            .and_then(|snapshot| cookie_agent_protocol::model_text::machine_memory_turn(&snapshot));
         let agent_md = match self.inner.runtimes.instance(&attachment) {
             Some(instance) if attachment.workspace.is_some() => instance
                 .agent_md(preset)
@@ -124,6 +139,7 @@ impl Engine {
                 }),
             home: listing.and_then(|listing| listing.home),
             agent_md,
+            memories,
             // The attachment stands even when its tools cannot be listed.
             tools: policy.and_then(|policy| {
                 self.attachment_tools(session, policy, &attachment.name)

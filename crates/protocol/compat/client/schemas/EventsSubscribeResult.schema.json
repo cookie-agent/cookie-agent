@@ -2892,6 +2892,10 @@
               "minItems": 1,
               "type": "array"
             },
+            "in_place": {
+              "description": "Loaded once for a machine attached mid-session and shown to the\nmodel where it was recorded, instead of in the `AGENTS.md` turn\nbefore the conversation (frozen context spec, section 6.3;\nclient protocol 1.62.0).",
+              "type": "boolean"
+            },
             "project": {
               "anyOf": [
                 {
@@ -2931,6 +2935,10 @@
             },
             "delegated": {
               "description": "The snapshot was taken for a delegated run: it holds only the run's\nagent's file.",
+              "type": "boolean"
+            },
+            "in_place": {
+              "description": "The memories of a machine attached mid-session, shown to the\nmodel where they were recorded; the memory turn before the\nconversation stays as it was (frozen context spec, section 6.3;\nclient protocol 1.62.0).",
               "type": "boolean"
             },
             "machines": {
@@ -3001,6 +3009,27 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The context before the conversation was composed again between\ncompactions: the system prompt, the tool round, the `AGENTS.md` turn,\nand the memory turn (frozen context spec, section 6.1; client\nprotocol 1.62.0).",
+          "properties": {
+            "changed": {
+              "$ref": "#/$defs/RefreshedParts"
+            },
+            "reason": {
+              "$ref": "#/$defs/RefreshReason"
+            },
+            "type": {
+              "const": "context_refreshed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason",
+            "changed"
           ],
           "type": "object"
         },
@@ -3831,6 +3860,14 @@
         {
           "description": "A tool round started: the eager tools the session declares until the\nnext compaction, and the tool groups whose prompt sections the system\nprompt carries (client protocol 1.44.0).",
           "properties": {
+            "engine_build": {
+              "description": "The engine build that started the round: its release tag, or\nits git hash for a source build (client protocol 1.62.0).",
+              "maxLength": 256,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "prompt_groups": {
               "items": {
                 "type": "string"
@@ -7807,6 +7844,79 @@
         "start",
         "len"
       ],
+      "type": "object"
+    },
+    "RefreshReason": {
+      "description": "Why a `context_refreshed` composed the context again (frozen context\nspec, section 6.1). A value this build does not know reads as\n`unknown`.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "engine_updated",
+          "description": "An eager tool's parameters changed with the engine build.",
+          "type": "string"
+        },
+        {
+          "const": "tools_changed",
+          "description": "An eager tool's parameters changed otherwise, or a tool the model\ncannot load deferred joined.",
+          "type": "string"
+        },
+        {
+          "const": "agent_changed",
+          "description": "The run's agent is not the previous run's.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "RefreshedParts": {
+      "description": "What a refresh composed differently from the context it replaced.",
+      "properties": {
+        "agent_md": {
+          "type": "boolean"
+        },
+        "memory": {
+          "type": "boolean"
+        },
+        "system_prompt": {
+          "type": "boolean"
+        },
+        "tools": {
+          "$ref": "#/$defs/RefreshedTools",
+          "default": {}
+        }
+      },
+      "type": "object"
+    },
+    "RefreshedTools": {
+      "description": "The eager tools a refresh added, removed, and changed, by name.",
+      "properties": {
+        "added": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "type": "array"
+        },
+        "changed": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "type": "array"
+        },
+        "removed": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "ReplayCutCause": {

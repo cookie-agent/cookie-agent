@@ -203,12 +203,17 @@ runtime and machine, and the agent's working directory.
 
 ## AGENTS.md context turn
 
-At each root run start where AGENTS.md loading is on (the run agent's
-`agent_md` frontmatter, else `[agent_md] enabled`), each coding runtime the
-session is attached to discovers the applicable `AGENTS.md` files in its own
-workspace, and Cookie Agent stores their bounded content in one
-`agent_md_loaded` event per attachment that returned a file, naming the
-attachment. Files larger than 2 MiB are skipped and surfaced as
+At a root run start where AGENTS.md loading is on (the run agent's
+`agent_md` frontmatter, else `[agent_md] enabled`) and the context is
+composed afresh (see [the frozen context](#the-frozen-context)), each coding
+runtime the session is attached to discovers the applicable `AGENTS.md`
+files in its own workspace, and Cookie Agent stores their bounded content in
+one `agent_md_loaded` event per attachment that returned a file, naming the
+attachment. Any other root run records the previous run's turn again,
+without reading the files, so an edited `AGENTS.md` reaches the session at
+its next compaction or refresh. A runtime a client attached since the
+previous run adds its own `AGENTS.md` once, at the next run's start, as an
+`agent_md_loaded` with `in_place`: a turn of its own where it was recorded. Files larger than 2 MiB are skipped and surfaced as
 `AgentMdSkipped` warning events. History replays the latest run's entries, the
 latest event per attachment, as one user turn, wrapped in a
 `<system-reminder>` block with each file delimited as:
@@ -248,16 +253,21 @@ changes, which is the intended invalidation.
 A run that has memory (the session has the `global` runtime attached and the
 run's merged rules, the agent's and the session overlay's, hold an `allow` or `ask` rule for `memory`; a root
 run defaults to every memory, a delegated one to its own agent's file) sees a snapshot of it as one user turn right after
-the AGENTS.md turn. The snapshot is taken at run admission and recorded as a
-`memory_loaded` event only when something it depends on changed: the session
-has none yet, a compaction finished since the latest one, the session's
-machines, the session's project or its name, the run's agent, its `memory`
-rules, whether memory is available, or whether the run may write it. History
-renders the latest event only, and compaction pins the turn like the AGENTS.md
-turn. Writes during the session, and edits the user makes from a client,
-change the files but not the turn until the next of those points, so the
-prompt cache survives them. When memory stops being available, an empty
-`memory_loaded` removes the turn.
+the AGENTS.md turn. The snapshot is taken at run admission, only when the
+context is composed afresh (see [the frozen context](#the-frozen-context)):
+at a refresh always, and otherwise, as a `memory_loaded` event, when
+something it depends on changed: the session has none yet, a compaction
+finished since the latest one, the session's machines, the session's project
+or its name, the run's agent, its `memory` rules, whether memory is
+available, or whether the run may write it. History renders the latest event
+only, and compaction pins the turn like the AGENTS.md turn. Writes during the
+session, edits the user makes from a client, and those changes between
+refresh points change the files but not the turn, so the prompt cache
+survives them. When memory stops being available at such a point, an empty
+`memory_loaded` removes the turn. A machine new to the session adds its
+memories once where it joined: in `attach_machine`'s result, or for a runtime
+a client attached, as a `memory_loaded` with `in_place` at the next run's
+start.
 
 The turn holds the notes and one line of background. How to search and what
 to save is not in it: that is the memory provider's [system-prompt
@@ -411,21 +421,39 @@ The approval reviewer receives part B and the write's content when a
 `memory_write` rule asks, and rejects a write that fails it in auto-approve
 mode.
 
-## Frozen blocks on models that defer tools
+## The frozen context
 
-Three parts of the prompt come from the session's state rather than the
-agent: the [runtimes block](#runtimes) (`runtimes`), the tool providers'
-`<tool_instructions>` sections (`tool_instructions`), and the skills listing
-(`skills`). Every run records where they sit in its prompt
-(`prompt_blocks_recorded`).
+The context before the conversation (the system prompt, the AGENTS.md turn,
+and the memory turn) stays as one run composed it until the next refresh
+point, on every model ([frozen context spec](../specs/frozen-context.md)).
 
-On a model that loads [deferred tools](tools.md#deferred-tools), a run
-copies these blocks from the previous run, unless a compaction lies after
-that run's start, so attaching a runtime, adding a skill or a subagent, or
-moving the session to another project no longer rewrites the prompt and the
-cached conversation after it. What changed is told to the model in place,
-before the next request, as a user turn, and the clients show it word for
-word:
+**It is composed afresh** at the session's first run, at the first run after
+a compaction, after a run whose prompt a plugin replaced, and at a
+**refresh**, which records `context_refreshed { reason, changed }` and starts
+a new tool round:
+
+- an eager tool's parameter schema changed since the round started
+  (`engine_updated` when the engine build that started the round differs,
+  else `tools_changed`); a changed description alone waits;
+- on a model that does not load deferred tools, a tool joined
+  (`tools_changed`);
+- the run's agent or agent preset is not the previous run's
+  (`agent_changed`).
+
+A change of the session's project is no refresh: the runtimes block
+announces it, and its `AGENTS.md` and project memory arrive at the next
+compaction. The clients show a refresh as one row naming its reason and what
+it composed again.
+
+**Otherwise a run copies the previous run's system prompt byte for byte**,
+its blocks, plugin composition, and agent body included. Three parts of the
+prompt come from the session's state rather than the agent: the [runtimes
+block](#runtimes) (`runtimes`), the tool providers' `<tool_instructions>`
+sections (`tool_instructions`), and the skills listing (`skills`). Every run
+records where they sit in its prompt (`prompt_blocks_recorded`, with
+`composed_live` false for a copied prompt). What changed in them is told to
+the model in place, before the next request, as a user turn, and the clients
+show it word for word:
 
 ```text
 [cookie: instructions changed]
@@ -438,9 +466,12 @@ Machine: labpc (linux)
 Each block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.
 ```
 
-After a compaction, the next run composes the blocks afresh. On a model that
-does not defer tools, every run composes them afresh, as above. A plugin that
-replaces the system prompt turns the reuse off for that run's successor.
+A plugin's system-prompt hook changes take effect at the next point the
+context is composed afresh; its injected messages apply to every run.
+
+**Skills** loaded since the latest compaction or refresh render where they
+were loaded; at the next one they join the pinned skills after the memory
+turn.
 
 ## Cache breakpoints
 

@@ -233,6 +233,17 @@ pub(crate) fn snapshot_change(
     }
 }
 
+/// When a run takes a memory snapshot (frozen context spec, section 6).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum SnapshotMode {
+    /// The context is composed afresh: section 7.2's rules decide.
+    Composed,
+    /// A refresh: always, while memory is available.
+    Refresh,
+    /// The context is the previous run's: never.
+    Frozen,
+}
+
 /// The snapshot of the `memory_loaded` record `latest`, and whether a
 /// compaction finished after it.
 fn latest_snapshot(
@@ -240,7 +251,7 @@ fn latest_snapshot(
 ) -> Option<(&MemorySnapshot, bool)> {
     let (event, compacted) = latest?;
     match &event.payload {
-        Event::MemoryLoaded { snapshot } => Some((snapshot, *compacted)),
+        Event::MemoryLoaded { snapshot, .. } => Some((snapshot, *compacted)),
         _ => None,
     }
 }
@@ -379,20 +390,27 @@ impl Engine {
     }
 
     /// Appends the run's `memory_loaded` at its admission when section 7.2
-    /// asks for one. A snapshot that cannot be read is reported and left
-    /// out, keeping the latest one.
+    /// asks for one, which a frozen context never does and a refresh always
+    /// does (frozen context spec, section 6). A snapshot that cannot be read
+    /// is reported and left out, keeping the latest one. Says whether the
+    /// memory turn the model reads changed.
     pub(in crate::runtime) async fn refresh_memory_snapshot(
         &self,
         session: SessionId,
         run: RunId,
         policy: &FrozenRunPolicy,
-    ) -> Result<(), EngineError> {
+        mode: SnapshotMode,
+    ) -> Result<bool, EngineError> {
         let projection = self.inner.store.get(session)?;
         // An ACP agent's own subagent gets what its agent gives it, never a
         // snapshot of cookie's: none is recorded as though it had.
         if projection.log.is_acp_subagent() {
-            return Ok(());
+            return Ok(false);
         }
+        if mode == SnapshotMode::Frozen {
+            return Ok(false);
+        }
+        let latest = projection.log.last_memory_loaded();
         let delegated = matches!(projection.meta.origin, SessionOrigin::Delegated { .. });
         let access = memory_access(
             self.global_attached(session),
@@ -424,9 +442,14 @@ impl Engine {
             project,
             rules: memory_rules_fingerprint(&policy.agent, &projection.permission_overlay),
         };
-        let latest = projection.log.last_memory_loaded();
-        let snapshot = match snapshot_change(latest_snapshot(latest.as_ref()), &facts) {
-            SnapshotChange::Keep => return Ok(()),
+        let shown = latest_snapshot(latest.as_ref())
+            .and_then(|(snapshot, _)| crate::memory::render::snapshot_turn(snapshot));
+        let change = match mode {
+            SnapshotMode::Refresh if access.available => SnapshotChange::Take,
+            _ => snapshot_change(latest_snapshot(latest.as_ref()), &facts),
+        };
+        let snapshot = match change {
+            SnapshotChange::Keep => return Ok(false),
             SnapshotChange::Clear => MemorySnapshot::unavailable(),
             SnapshotChange::Take => {
                 let caller = MemoryCaller {
@@ -462,22 +485,128 @@ impl Engine {
                     }
                     Ok(Err(error)) => {
                         eprintln!("cookie-agent: memory snapshot of session {session}: {error}");
-                        return Ok(());
+                        return Ok(false);
                     }
                     Err(error) => {
                         eprintln!("cookie-agent: memory snapshot of session {session}: {error}");
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
             }
         };
+        let changed = crate::memory::render::snapshot_turn(&snapshot) != shown;
         self.append(
             session,
             Some(run),
             event_origin("engine:memory"),
-            Event::MemoryLoaded { snapshot },
+            Event::MemoryLoaded {
+                snapshot,
+                in_place: false,
+            },
         )
+        .await?;
+        Ok(changed)
+    }
+
+    /// The memories of the machines `session` has now that `before` lacked,
+    /// when the session's model reads memory and they hold any: a snapshot
+    /// of those machines only.
+    pub(in crate::runtime) async fn attached_machine_memories(
+        &self,
+        session: SessionId,
+        before: &[MachineName],
+    ) -> Result<Option<MemorySnapshot>, EngineError> {
+        let projection = self.inner.store.get(session)?;
+        if projection.log.is_acp_subagent()
+            || matches!(projection.meta.origin, SessionOrigin::Delegated { .. })
+            || !projection
+                .log
+                .last_memory_loaded()
+                .is_some_and(|(event, _)| {
+                    matches!(&event.payload, Event::MemoryLoaded { snapshot, .. } if snapshot.agent.is_some())
+                })
+        {
+            return Ok(None);
+        }
+        let Some(agent) =
+            projection
+                .log
+                .event_snapshot()
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    Event::RunStarted { agent, .. } => Some((**agent).clone()),
+                    _ => None,
+                })
+        else {
+            return Ok(None);
+        };
+        let access = memory_access(
+            self.global_attached(session),
+            &agent,
+            Some(&projection.permission_overlay),
+        );
+        if !access.available {
+            return Ok(None);
+        }
+        let machines = self
+            .session_machines(session)
+            .into_iter()
+            .filter(|(machine, _)| !before.contains(machine))
+            .collect::<Vec<_>>();
+        if machines.is_empty() {
+            return Ok(None);
+        }
+        let rules = memory_rules_fingerprint(&agent, &projection.permission_overlay);
+        let caller = MemoryCaller {
+            agent: agent.clone(),
+            overlay: projection.permission_overlay.clone(),
+            related: RelatedMemory::default(),
+        };
+        let request = SnapshotRequest {
+            agent: agent.agent.clone(),
+            delegated: false,
+            writable: access.writable,
+            machines,
+            project: None,
+            limits: self.memory_limits(),
+            now: jiff::Timestamp::now(),
+            read: ReadRules::new(move |url| caller.visibility(url)),
+            rules: Some(rules),
+        };
+        let root = self.memory_root().clone();
+        let now = request.now;
+        let taken = match tokio::task::spawn_blocking(move || {
+            let taken = root.snapshot(&request)?;
+            root.record_reads(taken.shown.iter().map(|(url, _)| url), now);
+            Ok::<_, crate::memory::MemoryError>(taken)
+        })
         .await
+        {
+            Ok(Ok(taken)) => taken,
+            Ok(Err(error)) => {
+                eprintln!("cookie-agent: machine memories of session {session}: {error}");
+                return Ok(None);
+            }
+            Err(error) => {
+                eprintln!("cookie-agent: machine memories of session {session}: {error}");
+                return Ok(None);
+            }
+        };
+        for (url, revision) in taken.shown {
+            self.inner.memory_seen.saw(session, url, revision);
+        }
+        // Only the machines: the rest of the memory turn stands.
+        let mut snapshot = taken.snapshot;
+        snapshot.user.clear();
+        snapshot.user_omitted.clear();
+        snapshot.user_listed.clear();
+        snapshot.project = None;
+        Ok(
+            cookie_agent_protocol::model_text::machine_memory_turn(&snapshot)
+                .is_some()
+                .then_some(snapshot),
+        )
     }
 
     /// The run `run` as the memory tools see it. Blocking: it reads the

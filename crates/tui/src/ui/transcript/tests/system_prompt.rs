@@ -943,6 +943,7 @@ fn agent_md_loaded(content: &str) -> EventPayload {
             content: content.into(),
             byte_length: content.len() as u64,
         }],
+        in_place: false,
     }
 }
 
@@ -1084,6 +1085,7 @@ fn multi_file_agent_md_shows_the_turn_the_model_reads_when_expanded() {
                     entry("/repo/AGENTS.md", "repo rule"),
                     entry("/repo/app/AGENTS.md", "app rule\napp detail"),
                 ],
+                in_place: false,
             },
         ),
     ] {
@@ -1164,6 +1166,7 @@ fn agent_md_rows_compare_each_attachment_with_its_own_previous_run() {
             content: content.into(),
             byte_length: content.len() as u64,
         }],
+        in_place: false,
     };
     let [first, second, third] = [run_id(), run_id(), run_id()];
     let events = [
@@ -1313,7 +1316,15 @@ fn the_memory_snapshot_renders_as_an_expandable_row_of_the_models_turn() {
     let events = [
         session_created(session, 1),
         run_started_with_suffix(session, 2, run, vec![resolved_model(None)]),
-        event(session, 3, run, EventPayload::MemoryLoaded { snapshot }),
+        event(
+            session,
+            3,
+            run,
+            EventPayload::MemoryLoaded {
+                snapshot,
+                in_place: false,
+            },
+        ),
     ];
     let mut store = StateStore::default();
     for event in events {

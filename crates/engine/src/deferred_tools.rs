@@ -17,7 +17,7 @@ use cookie_agent_protocol::{
 use cookie_agent_runtime_api::ProvidedToolSource;
 use oven_sdk::{JsonSchema, ToolDefinition};
 
-use crate::events::DeferralFold;
+use crate::events::{DeferralFold, ToolRound};
 use crate::runtimes::SourcedProvider;
 
 pub(crate) mod record;
@@ -177,6 +177,69 @@ pub(crate) struct DeferralPlan {
     pub(crate) deferred_providers: BTreeSet<ProviderKey>,
 }
 
+/// How the live tools moved from a round's record, by name (frozen context
+/// spec, section 6.1).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RoundDrift {
+    /// Round tools whose live parameter schema differs from the record's.
+    pub(crate) changed: Vec<String>,
+    /// Live tools the round does not declare; counted only on a model that
+    /// cannot defer them.
+    pub(crate) added: Vec<String>,
+    /// Round tools no longer live.
+    pub(crate) removed: Vec<String>,
+}
+
+impl RoundDrift {
+    /// Whether the drift calls for a refresh: a changed parameter schema, or
+    /// a tool joined that the model could not load deferred.
+    pub(crate) fn refreshes(&self) -> bool {
+        !self.changed.is_empty() || !self.added.is_empty()
+    }
+}
+
+/// The drift of `live` from `round`; `joins` says whether a tool the round
+/// lacks counts (a model that does not defer). A changed description alone
+/// is no drift: the round's stays until its end.
+pub(crate) fn round_drift<'a>(
+    round: Option<&ToolRound>,
+    live: impl IntoIterator<Item = &'a ToolDefinition>,
+    joins: bool,
+) -> RoundDrift {
+    let Some(round) = round else {
+        return RoundDrift::default();
+    };
+    let live = live
+        .into_iter()
+        .map(|definition| (definition.name.as_str(), definition))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut drift = RoundDrift::default();
+    for tool in &round.tools {
+        match live.get(tool.name.as_str()) {
+            Some(definition) if definition.input_schema.as_value() != &tool.parameters => {
+                drift.changed.push(tool.name.clone());
+            }
+            Some(_) => {}
+            None if !is_loader(&tool.name) => drift.removed.push(tool.name.clone()),
+            None => {}
+        }
+    }
+    if joins {
+        let declared = round
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<HashSet<_>>();
+        drift.added = live
+            .keys()
+            .filter(|name| !declared.contains(*name))
+            .map(|name| (*name).to_owned())
+            .collect();
+        drift.added.sort();
+    }
+    drift
+}
+
 fn round_definition(
     definition: &ToolDefinition,
     source: Option<&RoundToolSource>,
@@ -252,6 +315,7 @@ pub(crate) fn plan_reusing(
             pending.push(EventPayload::ToolRoundStarted {
                 tools: tools.clone(),
                 prompt_groups,
+                engine_build: crate::release::build_id(),
             });
             Cow::Owned(tools)
         }
@@ -292,6 +356,11 @@ pub(crate) fn plan_reusing(
                 .as_ref()
                 .map(|round| round.prompt_groups.clone())
                 .unwrap_or_default(),
+            // The same round, so the same build.
+            engine_build: fold
+                .round
+                .as_ref()
+                .and_then(|round| round.engine_build.clone()),
         });
     }
     let mut definitions = Vec::with_capacity(round.len() + deferred.len());
@@ -389,6 +458,7 @@ pub(crate) fn plan_eager(candidates: Vec<EagerCandidate>, fold: &DeferralFold) -
             pending.push(EventPayload::ToolRoundStarted {
                 tools: tools.clone(),
                 prompt_groups,
+                engine_build: crate::release::build_id(),
             });
             Cow::Owned(tools)
         }

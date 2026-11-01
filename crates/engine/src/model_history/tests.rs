@@ -565,6 +565,7 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
                     content: "pinned AGENTS.md context".into(),
                     byte_length: 22,
                 }],
+                in_place: false,
             },
         ),
         skill_event(2, "one", "first pinned body"),
@@ -609,7 +610,7 @@ fn agent_md_turn_uses_system_reminder_with_contents_blocks() {
 }
 
 #[test]
-fn replay_orders_agent_md_then_skills_then_delegated_seed() {
+fn replay_orders_agent_md_then_the_conversation_with_skills_in_place() {
     let run = RunId::new_v7();
     let mut delegated = event(
         1,
@@ -648,6 +649,7 @@ fn replay_orders_agent_md_then_skills_then_delegated_seed() {
                     content: "AGENTS.md context body".into(),
                     byte_length: 20,
                 }],
+                in_place: false,
             },
         ),
     ];
@@ -661,8 +663,10 @@ fn replay_orders_agent_md_then_skills_then_delegated_seed() {
         .collect::<Vec<_>>();
     assert!(rendered[0].contains("system prompt"));
     assert!(rendered[1].contains("AGENTS.md context body"));
-    assert!(rendered[2].contains("loaded skill body"));
-    assert!(rendered[3].contains("delegated seed"));
+    // With no checkpoint or refresh yet, the skill sits where it was loaded
+    // (frozen context spec, section 6.4).
+    assert!(rendered[2].contains("delegated seed"));
+    assert!(rendered[3].contains("loaded skill body"));
 }
 
 #[test]
@@ -2111,6 +2115,7 @@ fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
                     content: content.into(),
                     byte_length: content.len() as u64,
                 }],
+                in_place: false,
             },
         )
     };
@@ -2190,6 +2195,7 @@ fn summary_projection_orders_and_deduplicates_pinned_context() {
                     content: "pinned agent rules".into(),
                     byte_length: 18,
                 }],
+                in_place: false,
             },
         ),
         event(
@@ -2827,6 +2833,7 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
                     content: content.into(),
                     byte_length: content.len() as u64,
                 }],
+                in_place: false,
             },
         )
     };
@@ -2887,7 +2894,14 @@ fn memory_event(seq: u64, run: RunId, body: Option<&str>) -> StoredEvent {
         },
         None => cookie_agent_protocol::MemorySnapshot::unavailable(),
     };
-    event(seq, run, EventPayload::MemoryLoaded { snapshot })
+    event(
+        seq,
+        run,
+        EventPayload::MemoryLoaded {
+            snapshot,
+            in_place: false,
+        },
+    )
 }
 
 fn agent_md_event(seq: u64, run: RunId, content: &str) -> StoredEvent {
@@ -2902,6 +2916,7 @@ fn agent_md_event(seq: u64, run: RunId, content: &str) -> StoredEvent {
                 content: content.into(),
                 byte_length: content.len() as u64,
             }],
+            in_place: false,
         },
     )
 }
@@ -3290,4 +3305,88 @@ fn run_started_revisions(binding: &FrozenModelBinding) -> cookie_agent_protocol:
         unreachable!("run_started_event records revisions")
     };
     revisions
+}
+
+fn placed_agent_md_event(seq: u64, run: RunId, content: &str, in_place: bool) -> StoredEvent {
+    event(
+        seq,
+        run,
+        EventPayload::AgentMdLoaded {
+            project: None,
+            attachment: cookie_agent_protocol::AttachmentName::new(if in_place {
+                "attached"
+            } else {
+                "local"
+            })
+            .unwrap(),
+            entries: vec![AgentMdEntry {
+                source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
+                content: content.into(),
+                byte_length: content.len() as u64,
+            }],
+            in_place,
+        },
+    )
+}
+
+fn skill_event(seq: u64, run: RunId, body: &str) -> StoredEvent {
+    event(
+        seq,
+        run,
+        EventPayload::SkillLoaded {
+            name: format!("skill-{seq}"),
+            rendered_body: body.into(),
+            source_path: format!("/skill-{seq}/SKILL.md"),
+            args: String::new(),
+            base_dir: format!("/skill-{seq}"),
+            supporting_files: Vec::new(),
+        },
+    )
+}
+
+/// Between refresh points, a skill and an attached machine's AGENTS.md sit
+/// where they were loaded, so nothing before them moves; a refresh folds
+/// the skill into the turns before the conversation and leaves the earlier
+/// in-place AGENTS.md to the turn it composed (frozen context spec,
+/// sections 6.3 and 6.4).
+#[test]
+fn in_place_context_sits_where_it_was_loaded_until_a_refresh() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+    let run = RunId::new_v7();
+    let mut events = vec![placed_agent_md_event(1, run, "top rules", false)];
+    events.extend(user_events(2, run, "hello"));
+    events.push(skill_event(4, run, "early skill"));
+    events.push(placed_agent_md_event(5, run, "attached rules", true));
+    let texts = |events: &[StoredEvent]| {
+        assemble_model_context(events, &store, &binding(), "system")
+            .unwrap()
+            .history
+            .iter()
+            .map(|turn| serde_json::to_string(turn).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let before = texts(&events);
+    assert_eq!(before.len(), 5, "{before:#?}");
+    assert!(before[1].contains("top rules"));
+    assert!(before[2].contains("hello"));
+    assert!(before[3].contains("early skill"));
+    assert!(before[4].contains("attached rules"));
+
+    events.push(event(
+        6,
+        run,
+        EventPayload::ContextRefreshed {
+            reason: cookie_agent_protocol::RefreshReason::ToolsChanged,
+            changed: Default::default(),
+        },
+    ));
+    events.push(skill_event(7, run, "late skill"));
+    let after = texts(&events);
+    assert_eq!(after.len(), 5, "{after:#?}");
+    assert!(after[1].contains("top rules"));
+    assert!(after[2].contains("early skill"));
+    assert!(after[3].contains("hello"));
+    assert!(after[4].contains("late skill"));
+    assert!(after.iter().all(|turn| !turn.contains("attached rules")));
 }

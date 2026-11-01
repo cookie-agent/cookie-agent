@@ -140,7 +140,7 @@ fn snapshots(fixture: &Fixture, session: SessionId) -> Vec<MemorySnapshot> {
     events(fixture, session)
         .into_iter()
         .filter_map(|event| match event.payload {
-            EventPayload::MemoryLoaded { snapshot } => Some(snapshot),
+            EventPayload::MemoryLoaded { snapshot, .. } => Some(snapshot),
             _ => None,
         })
         .collect()
@@ -381,7 +381,7 @@ async fn a_delegated_session_belongs_to_its_roots_project_and_cannot_move() {
 }
 
 #[tokio::test]
-async fn moving_a_running_session_takes_effect_at_its_next_root_admission() {
+async fn moving_a_session_announces_its_project_and_leaves_its_memory_turn() {
     let (endpoint, responses, captured) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent());
     let web = create(&fixture, "web", None).await;
@@ -445,45 +445,21 @@ async fn moving_a_running_session_takes_effect_at_its_next_root_admission() {
     run(&fixture, session, &selection, "fifth", "fifth").await;
     let requests = captured.await.unwrap();
 
+    // A project change is no refresh point: the memory turn keeps the
+    // snapshot the session's first run took until the next compaction, and
+    // the machines block's change is announced in place (frozen context
+    // spec, section 6.2).
     let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 4, "{taken:#?}");
+    assert_eq!(taken.len(), 1, "{taken:#?}");
     assert_eq!(taken[0].project, None);
-    let in_web = taken[1].project.as_ref().unwrap();
-    assert_eq!(in_web.project.as_str(), "web");
-    let overview = in_web.overview.as_ref().unwrap();
-    assert_eq!(overview.body, "A web shop in Rust.\n");
-    assert_eq!(
-        overview.description,
-        "Overview of the `web` project, loaded in full into its sessions"
-    );
-    assert_eq!(
-        in_web
-            .memories
-            .iter()
-            .map(|memory| memory.url.as_str())
-            .collect::<Vec<_>>(),
-        ["project://web/release"]
-    );
-    assert_eq!(taken[2].project.as_ref().unwrap().project.as_str(), "shop");
-    assert_eq!(
-        taken[2].project.as_ref().unwrap().memories[0].url,
-        "project://shop/release"
-    );
-    assert_eq!(taken[3].project, None);
 
     // What the model read.
     assert!(!requests[0].contains("## Project"));
-    assert!(!requests[0].contains("Project: "));
-    assert!(requests[1].contains("## Project web"));
-    assert!(requests[1].contains("This session belongs to the web project."));
-    assert!(requests[1].contains("A web shop in Rust."));
-    // The system prompt names the project too (memory spec section 16.9.2).
-    // A session with `global` names it on its machines block.
+    assert!(!requests[0].contains("<machines project="));
+    assert!(requests[1].contains("[cookie: instructions changed]"));
     assert!(requests[1].contains("<machines project=\\\"web\\\">"));
+    assert!(!requests[1].contains("## Project web"));
     assert!(requests[2].contains("<machines project=\\\"shop\\\">"));
-    assert!(!requests[4].contains("<machines project="));
-    assert!(requests[1].contains("- project://web/release: How releases are cut"));
-    assert!(requests[2].contains("## Project shop"));
     assert!(!requests[4].contains("## Project"));
     fixture.engine.shutdown().await;
 }
@@ -526,6 +502,7 @@ async fn a_projects_agents_md_comes_first_in_the_agents_md_turn() {
                 entries,
                 attachment,
                 project,
+                ..
             } => Some((attachment, project, entries)),
             _ => None,
         })

@@ -417,6 +417,21 @@ fn event_rows(state: &SessionState) -> Vec<(EventLevel, String)> {
         .collect()
 }
 
+fn cut_rows(state: &SessionState) -> Vec<String> {
+    state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::ModelInput {
+                kind: crate::model_input::ModelInputKind::ReasoningCut,
+                text,
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn invalid_request() -> ModelErrorSummary {
     serde_json::from_value(serde_json::json!({"kind":"invalid_request","message":"Anthropic request failed","retryable":false,"stage":"response_body","http_status":400,"bytes_received":0,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap()
 }
@@ -455,14 +470,19 @@ fn a_refusal_recovered_by_a_cut_shows_the_cut_instead_of_the_failure() {
             },
         ),
     ];
-    let rows = event_rows(&reduce_session_events(session, 0, &events));
-    assert_eq!(rows.len(), 2, "{rows:?}");
-    assert_eq!(rows[0].0, EventLevel::Info);
+    let state = reduce_session_events(session, 0, &events);
     assert_eq!(
-        Some(rows[0].1.as_str()),
-        crate::model_input::reasoning_cut_row(cookie_agent_protocol::ReplayCutCause::Refused)
+        cut_rows(&state),
+        [
+            crate::model_input::reasoning_cut_row(cookie_agent_protocol::ReplayCutCause::Refused)
+                .unwrap()
+                .1
+                .to_owned()
+        ]
     );
-    assert_eq!(rows[1].0, EventLevel::Warning);
+    let rows = event_rows(&state);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, EventLevel::Warning);
 }
 
 #[test]
@@ -489,7 +509,9 @@ fn a_cut_after_its_refusal_leaves_the_failure_as_an_earlier_build_showed_it() {
             },
         ),
     ];
-    let rows = event_rows(&reduce_session_events(session, 0, &events));
+    let state = reduce_session_events(session, 0, &events);
+    assert!(cut_rows(&state).is_empty());
+    let rows = event_rows(&state);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].0, EventLevel::Warning);
 }
@@ -514,9 +536,9 @@ fn a_cut_shows_one_quiet_row_unless_a_compaction_or_refresh_stands_for_it() {
                 cause,
             },
         )];
-        let shown = event_rows(&reduce_session_events(session, 0, &events));
-        assert_eq!(shown.len(), rows, "{cause:?}: {shown:?}");
-        assert!(shown.iter().all(|(level, _)| *level == EventLevel::Info));
+        let state = reduce_session_events(session, 0, &events);
+        assert_eq!(cut_rows(&state).len(), rows, "{cause:?}");
+        assert!(event_rows(&state).is_empty());
     }
 }
 
@@ -926,7 +948,10 @@ fn a_memory_snapshot_shows_the_turn_the_model_reads_when_it_changes() {
             session,
             Some(RunId::new_v7()),
             seq,
-            EventPayload::MemoryLoaded { snapshot },
+            EventPayload::MemoryLoaded {
+                snapshot,
+                in_place: false,
+            },
         )
     };
     let events = vec![
@@ -1154,7 +1179,15 @@ fn an_acp_agents_context_shows_as_its_system_prompt_and_its_memory_once() {
         },
     };
     let events = vec![
-        stored_event(session, run, 1, EventPayload::MemoryLoaded { snapshot }),
+        stored_event(
+            session,
+            run,
+            1,
+            EventPayload::MemoryLoaded {
+                snapshot,
+                in_place: false,
+            },
+        ),
         stored_event(session, run, 2, started),
         stored_event(session, run, 3, given),
     ];
@@ -6353,4 +6386,115 @@ fn a_replayed_sessions_busy_counts_match_its_projection() {
     edited.recount_busy();
     assert_eq!(busy_counted(&edited), busy_scanned(&edited));
     assert_eq!(edited.waiting_producers(), 1);
+}
+
+#[test]
+fn a_refresh_shows_one_row_with_its_reason_and_what_changed() {
+    let session = SessionId::new_v7();
+    let events = vec![stored_event(
+        session,
+        Some(RunId::new_v7()),
+        1,
+        EventPayload::ContextRefreshed {
+            reason: cookie_agent_protocol::RefreshReason::EngineUpdated,
+            changed: cookie_agent_protocol::RefreshedParts {
+                system_prompt: true,
+                tools: cookie_agent_protocol::RefreshedTools {
+                    changed: vec!["memory_write".into()],
+                    ..Default::default()
+                },
+                agent_md: false,
+                memory: true,
+            },
+        },
+    )];
+    let state = reduce_session_events(session, 0, &events);
+    let rows = state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::ModelInput {
+                kind, header, text, ..
+            } => Some((*kind, header.clone(), text.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    let (kind, header, text) = &rows[0];
+    assert_eq!(*kind, crate::model_input::ModelInputKind::Refresh);
+    let (expected_header, expected_text) = crate::model_input::refresh_row(
+        cookie_agent_protocol::RefreshReason::EngineUpdated,
+        &cookie_agent_protocol::RefreshedParts {
+            system_prompt: true,
+            tools: cookie_agent_protocol::RefreshedTools {
+                changed: vec!["memory_write".into()],
+                ..Default::default()
+            },
+            agent_md: false,
+            memory: true,
+        },
+    );
+    assert_eq!(header, &expected_header);
+    assert_eq!(text, &expected_text);
+    assert!(text.contains("memory_write"));
+}
+
+#[test]
+fn refresh_row_parts_name_only_what_changed() {
+    let (header, _) = crate::model_input::refresh_row(
+        cookie_agent_protocol::RefreshReason::AgentChanged,
+        &cookie_agent_protocol::RefreshedParts::default(),
+    );
+    let (with_parts, _) = crate::model_input::refresh_row(
+        cookie_agent_protocol::RefreshReason::AgentChanged,
+        &cookie_agent_protocol::RefreshedParts {
+            system_prompt: true,
+            agent_md: true,
+            ..Default::default()
+        },
+    );
+    assert!(with_parts.starts_with(&header));
+    assert!(with_parts.len() > header.len());
+}
+
+#[test]
+fn an_in_place_agents_md_gets_its_own_row_and_leaves_the_turns_before_the_conversation() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let load = |seq, content: &str, in_place| {
+        stored_event(
+            session,
+            Some(run),
+            seq,
+            EventPayload::AgentMdLoaded {
+                entries: vec![cookie_agent_protocol::AgentMdEntry {
+                    source: cookie_agent_protocol::SafeDisplayText::new("/w/AGENTS.md").unwrap(),
+                    content: content.into(),
+                    byte_length: content.len() as u64,
+                }],
+                attachment: cookie_agent_protocol::AttachmentName::new(if in_place {
+                    "labpc"
+                } else {
+                    "local"
+                })
+                .unwrap(),
+                project: None,
+                in_place,
+            },
+        )
+    };
+    let events = vec![load(1, "local rules", false), load(2, "labpc rules", true)];
+    let state = reduce_session_events(session, 0, &events);
+    let rows = state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::AgentMd { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].contains("local rules") && !rows[0].contains("labpc rules"));
+    assert!(rows[1].contains("labpc rules") && !rows[1].contains("local rules"));
+    assert_eq!(state.agent_md_sources.len(), 1);
 }

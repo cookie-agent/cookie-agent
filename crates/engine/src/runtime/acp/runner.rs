@@ -3265,7 +3265,13 @@ impl Engine {
         runtime: &str,
         cwd: &str,
     ) -> Result<Vec<String>, EngineError> {
-        self.refresh_memory_snapshot(session, run, policy).await?;
+        self.refresh_memory_snapshot(
+            session,
+            run,
+            policy,
+            crate::runtime::memory::runs::SnapshotMode::Composed,
+        )
+        .await?;
         let events = self.inner.store.log(session)?.event_snapshot();
         let hide = document
             .frontmatter
@@ -3297,7 +3303,10 @@ impl Engine {
                 .iter()
                 .rev()
                 .find_map(|event| match &event.payload {
-                    Event::MemoryLoaded { snapshot } => Some(snapshot),
+                    Event::MemoryLoaded {
+                        snapshot,
+                        in_place: false,
+                    } => Some(snapshot),
                     _ => None,
                 })
                 .and_then(crate::memory::render::snapshot_turn),

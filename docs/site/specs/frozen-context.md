@@ -1,8 +1,8 @@
 # Stale reasoning and a frozen context
 
-Status: **approved** (2026-10-31); phases 1 and 2 implemented (2026-11-01;
-oven-sdk 72c6127, client protocol 1.61.0), phase 3 in progress. See
-[implementation notes](#implementation-notes). Builds on
+Status: **implemented** (2026-11-01; oven-sdk 72c6127, client protocol
+1.61.0 and 1.62.0). See [implementation notes](#implementation-notes).
+Builds on
 [thinking-replay recovery](thinking-replay-recovery.md) and
 [a stable prompt prefix](stable-prefix.md), and reverses part of each
 (section 2).
@@ -396,4 +396,29 @@ spec index.
     cannot express, so it would be dropped on the next request anyway.
   - A cut turn's replay decision is `reconstructed_normalized_history`, a
     debug row, instead of a discard warning on every later run.
+- **Phase 3.** Where it differs from sections 6 and 7.2:
+  - **A refresh is decided at a run's admission**, not before each request:
+    the system prompt is frozen into `run_started`. A tool that joins
+    mid-run on a model that cannot defer it is sent up front at once, as
+    before, and the next run refreshes.
+  - **An agent preset change refreshes too** (`agent_changed`): a preset
+    swaps the agent's body.
+  - **On a model that defers, a joining tool never refreshes**: it is
+    deferred, as before. Only a changed parameter schema of a round tool
+    does.
+  - **`engine_updated` needs a stamped build.** A source build records no
+    `engine_build`, so its refreshes read `tools_changed`.
+  - **What a client attaches between runs** is added at the next run's
+    admission: `agent_md_loaded` and `memory_loaded` are run-scoped, so they
+    cannot be recorded between runs. A machine the agent attaches itself
+    with `attach_machine` gets its memories in the tool's result, beside its
+    `AGENTS.md`, since a turn between a call and its result is invalid.
+  - **The memory turn is frozen strictly**: detaching `global` or a rule
+    that hides memory leaves the turn the model read until the next
+    compaction or refresh, while the memory tools refuse calls. A
+    permission change that brings eager tools on a model that does not
+    defer is a refresh.
+  - **The refresh row** is a model-input row in both clients, its body
+    listing the tools by name; the composed parts show on their own rows
+    (the `AGENTS.md` and memory rows), so the row does not repeat them.
 

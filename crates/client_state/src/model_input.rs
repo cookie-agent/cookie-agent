@@ -21,6 +21,12 @@ pub enum ModelInputKind {
     PromptBlocks,
     /// The parent's conversation a subagent starts from.
     InheritedContext,
+    /// The context before the conversation composed again between
+    /// compactions (frozen context spec, section 7.2).
+    Refresh,
+    /// Earlier reasoning the model is no longer sent (frozen context spec,
+    /// section 7.1).
+    ReasoningCut,
 }
 
 impl ModelInputKind {
@@ -30,6 +36,8 @@ impl ModelInputKind {
             Self::Memory => "memory",
             Self::PromptBlocks => "prompt-blocks",
             Self::InheritedContext => "inherited-context",
+            Self::Refresh => "refresh",
+            Self::ReasoningCut => "reasoning-cut",
         }
     }
 }
@@ -114,20 +122,84 @@ pub fn agent_md_turn(
     (entries, model_text::agent_md_turn(&sources))
 }
 
-/// The row of a `native_replay_cut` the clients show: earlier reasoning is
-/// no longer sent. A cut after a compaction or a refresh shows no row of its
-/// own, since that row stands for it (frozen context spec, section 7.1).
-pub fn reasoning_cut_row(cause: cookie_agent_protocol::ReplayCutCause) -> Option<&'static str> {
-    use cookie_agent_protocol::ReplayCutCause;
-    match cause {
-        ReplayCutCause::Compaction | ReplayCutCause::Refreshed => None,
-        ReplayCutCause::Refused
-        | ReplayCutCause::PrefixChanged
-        | ReplayCutCause::ProviderDropped
-        | ReplayCutCause::Unknown => Some(
-            "Earlier thinking is no longer sent to the model: the conversation before it changed.",
-        ),
+/// The refresh row: its heading, with the reason, and its body, the parts
+/// composed again and what that costs (frozen context spec, section 7.2).
+pub fn refresh_row(
+    reason: cookie_agent_protocol::RefreshReason,
+    changed: &cookie_agent_protocol::RefreshedParts,
+) -> (String, String) {
+    use cookie_agent_protocol::RefreshReason;
+    let reason = match reason {
+        RefreshReason::EngineUpdated => "cookie was updated",
+        RefreshReason::ToolsChanged => "tools changed",
+        RefreshReason::AgentChanged => "the agent changed",
+        RefreshReason::Unknown => "the context changed",
+    };
+    let mut parts = Vec::new();
+    if changed.system_prompt {
+        parts.push("system prompt".to_owned());
     }
+    let tools = &changed.tools;
+    let tool_count = tools.added.len() + tools.removed.len() + tools.changed.len();
+    if tool_count > 0 {
+        parts.push(format!(
+            "tools ({tool_count} {})",
+            if tool_count == 1 { "change" } else { "changes" }
+        ));
+    }
+    if changed.agent_md {
+        parts.push("AGENTS.md".to_owned());
+    }
+    if changed.memory {
+        parts.push("memory".to_owned());
+    }
+    let header = if parts.is_empty() {
+        format!("context refreshed · {reason}")
+    } else {
+        format!("context refreshed · {reason} · {}", parts.join(" · "))
+    };
+    let mut body = Vec::new();
+    for (label, names) in [
+        ("added", &tools.added),
+        ("removed", &tools.removed),
+        ("changed", &tools.changed),
+    ] {
+        if !names.is_empty() {
+            body.push(format!("tools {label}: {}", names.join(", ")));
+        }
+    }
+    body.push(
+        "The context before the conversation was composed again: the prompt cache is written \
+         again from the start, and earlier thinking is no longer sent."
+            .to_owned(),
+    );
+    (header, body.join("\n"))
+}
+
+/// The row of a `native_replay_cut` the clients show, its heading and its
+/// body: earlier reasoning is no longer sent. A cut after a compaction or a
+/// refresh shows no row of its own, since that row stands for it (frozen
+/// context spec, section 7.1).
+pub fn reasoning_cut_row(
+    cause: cookie_agent_protocol::ReplayCutCause,
+) -> Option<(&'static str, &'static str)> {
+    use cookie_agent_protocol::ReplayCutCause;
+    let why = match cause {
+        ReplayCutCause::Compaction | ReplayCutCause::Refreshed => return None,
+        ReplayCutCause::Refused => {
+            "The provider refused the earlier thinking, because the conversation before it changed \
+             since it was made; the request was sent again without it."
+        }
+        ReplayCutCause::PrefixChanged | ReplayCutCause::Unknown => {
+            "The conversation before the earlier thinking changed since it was made, so the \
+             provider would refuse it."
+        }
+        ReplayCutCause::ProviderDropped => {
+            "The provider dropped the earlier thinking, because the conversation before it changed \
+             since it was made."
+        }
+    };
+    Some(("earlier thinking no longer sent", why))
 }
 
 /// The note in a reply an interrupt cut off: the marker the model reads

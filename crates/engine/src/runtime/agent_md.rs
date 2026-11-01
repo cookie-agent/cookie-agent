@@ -4,6 +4,7 @@ use super::{Engine, EngineError};
 
 /// The `AGENTS.md` files one coding-runtime attachment returned, or the
 /// session's project's `AGENTS.md`.
+#[derive(Clone)]
 pub(crate) struct AttachmentAgentMd {
     pub(crate) attachment: cookie_agent_protocol::AttachmentName,
     pub(crate) entries: Vec<AgentMdEntry>,

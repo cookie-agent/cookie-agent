@@ -5,6 +5,24 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.62.0
+
+- The frozen context ([frozen context](../specs/frozen-context.md) section
+  6; see [Prompt blocks](events.md#prompt-blocks)):
+  - The audit event `context_refreshed { reason, changed }`: a run composed
+    the system prompt, the `AGENTS.md` turn, and the memory turn again
+    between compactions, and started a new tool round. `reason` is an open
+    enum (`engine_updated`, `tools_changed`, `agent_changed`).
+  - `agent_md_loaded` and `memory_loaded` have an optional `in_place`: the
+    context of a runtime attached between runs, rendered where it was
+    recorded.
+  - `tool_round_started` has an optional `engine_build`.
+  - A run copies the previous run's system prompt and `AGENTS.md` turn
+    until a compaction or refresh, on every model, so
+    `prompt_blocks_recorded.composed_live` is false on most runs and
+    `prompt_blocks_announced` appears on models that do not defer tools too.
+  - Plugin protocol 1.34.0 carries the event and the members the same way.
+
 ## 1.61.0
 
 - Stale reasoning ([frozen context](../specs/frozen-context.md) sections

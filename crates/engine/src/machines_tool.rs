@@ -505,6 +505,10 @@ fn attached_text(attached: &crate::runtime::machines::attach::AttachedMachine) -
             entry.source, entry.content
         ));
     }
+    if let Some(memories) = &attached.memories {
+        text.push_str("\n\n");
+        text.push_str(memories);
+    }
     text
 }
 
@@ -544,6 +548,7 @@ mod tests {
             platform: Some("linux".into()),
             home: None,
             agent_md: Vec::new(),
+            memories: None,
             tools,
         }
     }

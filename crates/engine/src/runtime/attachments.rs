@@ -567,6 +567,17 @@ impl Engine {
         Ok(attachment)
     }
 
+    /// The names of `session`'s machines now.
+    pub(crate) fn machine_names(
+        &self,
+        session: SessionId,
+    ) -> Vec<cookie_agent_protocol::MachineName> {
+        self.session_machines(session)
+            .into_iter()
+            .map(|(machine, _)| machine)
+            .collect()
+    }
+
     /// Removes the attachment `name` from `session`. Rejected while the
     /// session has an active run.
     pub async fn detach_runtime(

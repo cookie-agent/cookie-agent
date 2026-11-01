@@ -650,11 +650,18 @@ pub(super) fn reduce_event_from(
                     .take_if(|run| Some(*run) == run_id)
                     .is_some()
             {
-                let text = crate::model_input::reasoning_cut_row(
+                let (header, text) = crate::model_input::reasoning_cut_row(
                     cookie_agent_protocol::ReplayCutCause::Refused,
                 )
                 .expect("a refusal's cut has a row");
-                push_event(state, EventLevel::Info, text.to_owned(), timestamp);
+                push_model_input(
+                    state,
+                    timestamp,
+                    sequence,
+                    crate::model_input::ModelInputKind::ReasoningCut,
+                    header.to_owned(),
+                    text.to_owned(),
+                );
             } else {
                 let message = match &model_error {
                     Some(error) => {
@@ -1458,7 +1465,26 @@ pub(super) fn reduce_event_from(
         // The snapshot reaches the model as a pinned turn: a row shows the
         // turn whenever it differs from the one shown last, and says so
         // when memory leaves the model's context.
-        EventPayload::MemoryLoaded { snapshot } => {
+        // A machine attached mid-session: its memories reach the model
+        // where they were recorded, and the memory turn stays as it was.
+        EventPayload::MemoryLoaded {
+            snapshot,
+            in_place: true,
+        } => {
+            let text = cookie_agent_protocol::model_text::machine_memory_turn(&snapshot)
+                .unwrap_or_default();
+            if !text.is_empty() {
+                push_model_input(
+                    state,
+                    timestamp,
+                    sequence,
+                    crate::model_input::ModelInputKind::Memory,
+                    crate::model_input::memory_header(&text),
+                    text,
+                );
+            }
+        }
+        EventPayload::MemoryLoaded { snapshot, .. } => {
             let text = cookie_agent_protocol::model_text::memory_snapshot_turn(&snapshot)
                 .unwrap_or_default();
             let shown = state.memory_turn.as_deref().unwrap_or_default();
@@ -1713,10 +1739,34 @@ pub(super) fn reduce_event_from(
                 input: user_content_text(&content),
             })
         }
+        // A machine attached mid-session: its AGENTS.md reaches the model
+        // where it was recorded, on a row of its own.
         EventPayload::AgentMdLoaded {
             entries,
             attachment,
             project,
+            in_place: true,
+        } => {
+            let source = crate::AgentMdSourceState {
+                key: attachment.as_str().to_owned(),
+                attachment: attachment.as_str().to_owned(),
+                project: project.is_some(),
+                entries,
+            };
+            let (entries, text) = crate::model_input::agent_md_turn(std::slice::from_ref(&source));
+            push_item(state, timestamp, |id| TranscriptItem::AgentMd {
+                id,
+                version: 0,
+                seq: sequence,
+                entries,
+                text,
+            });
+        }
+        EventPayload::AgentMdLoaded {
+            entries,
+            attachment,
+            project,
+            ..
         } => {
             // Every root run reloads AGENTS.md, one event per attachment and
             // one for the session's project; a row appears only when a
@@ -1866,14 +1916,32 @@ pub(super) fn reduce_event_from(
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
+        EventPayload::ContextRefreshed { reason, changed } => {
+            let (header, text) = crate::model_input::refresh_row(reason, &changed);
+            push_model_input(
+                state,
+                timestamp,
+                sequence,
+                crate::model_input::ModelInputKind::Refresh,
+                header,
+                text,
+            );
+        }
         // A refusal's cut comes before the abandoned attempt it recovers,
         // which then shows as this row; an earlier build wrote it after,
         // with the refusal and a diagnostic, which still show.
         EventPayload::NativeReplayCut { cause, .. } => {
             if cause == cookie_agent_protocol::ReplayCutCause::Refused {
                 state.reasoning_refusal_recovered = run_id;
-            } else if let Some(text) = crate::model_input::reasoning_cut_row(cause) {
-                push_event(state, EventLevel::Info, text.to_owned(), timestamp);
+            } else if let Some((header, text)) = crate::model_input::reasoning_cut_row(cause) {
+                push_model_input(
+                    state,
+                    timestamp,
+                    sequence,
+                    crate::model_input::ModelInputKind::ReasoningCut,
+                    header.to_owned(),
+                    text.to_owned(),
+                );
             }
         }
         EventPayload::AutomaticRunsHeld { reason } => {

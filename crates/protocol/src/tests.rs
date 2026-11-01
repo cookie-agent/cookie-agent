@@ -1114,6 +1114,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
                 byte_length: 13,
             }],
             project: None,
+            in_place: false,
         },
     };
     let value = serde_json::to_value(&event).unwrap();
@@ -1133,6 +1134,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
                 id: crate::ProjectId::new("0199a1b2-c3d4").unwrap(),
                 name: crate::ProjectName::new("web").unwrap(),
             }),
+            in_place: false,
         },
         ..event.clone()
     };
@@ -1149,6 +1151,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
             attachment: crate::AttachmentName::new("local").unwrap(),
             entries: Vec::new(),
             project: None,
+            in_place: false,
         },
         ..event
     };
@@ -1258,7 +1261,10 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
         run_id: Some(RunId::new_v7()),
         seq: 1,
         timestamp: jiff::Timestamp::now(),
-        payload: EventPayload::MemoryLoaded { snapshot },
+        payload: EventPayload::MemoryLoaded {
+            snapshot,
+            in_place: false,
+        },
     };
     let stored = event(root.clone());
     assert!(!stored.payload.is_audit());

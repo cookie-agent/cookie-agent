@@ -96,6 +96,7 @@ impl Log {
                 }],
                 attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 project: None,
+                in_place: false,
             },
         );
     }

@@ -14,6 +14,16 @@ pub const GIT_HASH: &str = env!("COOKIE_GIT_HASH");
 /// archive.
 pub const TARGET: &str = env!("COOKIE_TARGET");
 
+/// Which build this is, for telling one engine build from another: the
+/// release tag, else the commit; `None` for a build the release workflow did
+/// not stamp.
+pub fn build_id() -> Option<String> {
+    [RELEASE_TAG, GIT_HASH]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 /// Where a build comes from, and so which releases it updates to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Channel {

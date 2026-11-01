@@ -96,6 +96,23 @@ pub fn snapshot_turn(snapshot: &MemorySnapshot) -> Option<String> {
     ))
 }
 
+/// The memories of machines attached mid-session, as the model reads them
+/// where they were recorded (`memory_loaded` with `in_place`; frozen
+/// context spec, section 6.3), or `None` when they hold none.
+pub fn machine_memory_turn(snapshot: &MemorySnapshot) -> Option<String> {
+    if !snapshot
+        .machines
+        .iter()
+        .any(|machine| !machine.memories.is_empty() || machine.omitted > 0)
+    {
+        return None;
+    }
+    Some(format!(
+        "<system-reminder>\n# Memory\n{}\n</system-reminder>",
+        machines_section(&snapshot.machines, snapshot.taken_at)
+    ))
+}
+
 /// `## About the user`: one element per category with a body, then the
 /// empty and the omitted categories by URL, then the categories the run's
 /// rules ask before reading, listed.

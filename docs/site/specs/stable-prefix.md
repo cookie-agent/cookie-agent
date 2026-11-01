@@ -38,6 +38,11 @@ What still moves the cached prefix:
 composing the system prompt at every run, as today: their tool list moves
 anyway, so freezing their prompt buys nothing.
 
+> **Since 2026-11-01** ([frozen context](frozen-context.md)) every model
+> keeps the previous run's whole system prompt until a compaction or
+> refresh, not only models that defer, reversing the decision above that
+> models without deferral compose it at every run.
+
 ## 2. One loader tool
 
 **`tool_search` replaces `tool_search` and `tool_load`** (this reverses

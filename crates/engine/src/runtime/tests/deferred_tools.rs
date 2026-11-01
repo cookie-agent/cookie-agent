@@ -765,12 +765,11 @@ fn instructions_changed(request: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// On a model that defers tools, the system prompt keeps the run's prompt
-/// blocks and a change is announced in place; on one that does not, the
-/// next run's system prompt carries the change (stable prefix spec,
-/// section 6).
+/// The system prompt keeps the run's prompt blocks and a change is
+/// announced in place, whether the model defers tools or not (stable prefix
+/// spec, section 6; frozen context spec, section 6.2).
 #[tokio::test]
-async fn a_changed_prompt_block_is_announced_on_a_model_that_defers() {
+async fn a_changed_prompt_block_is_announced_whether_the_model_defers_or_not() {
     for defers in [true, false] {
         let (endpoint, responses, captured) = scripted_channel_server(2).await;
         for input in ["one", "two"] {
@@ -825,18 +824,15 @@ async fn a_changed_prompt_block_is_announced_on_a_model_that_defers() {
             .collect::<Vec<_>>();
         assert!(system_text(&requests[0]).contains("Section one."));
         assert!(instructions_changed(&requests[0]).is_none());
-        if defers {
-            assert_eq!(system_text(&requests[1]), system_text(&requests[0]));
-            let announcement = instructions_changed(&requests[1]).expect("announced");
-            assert!(
-                announcement.contains("<block name=\"tool_instructions\">\n"),
-                "{announcement}"
-            );
-            assert!(announcement.contains("Section two."), "{announcement}");
-        } else {
-            assert!(system_text(&requests[1]).contains("Section two."));
-            assert!(instructions_changed(&requests[1]).is_none());
-        }
+        // Every model keeps its system prompt until a refresh point
+        // (frozen context spec, section 6.2).
+        assert_eq!(system_text(&requests[1]), system_text(&requests[0]));
+        let announcement = instructions_changed(&requests[1]).expect("announced");
+        assert!(
+            announcement.contains("<block name=\"tool_instructions\">\n"),
+            "{announcement}"
+        );
+        assert!(announcement.contains("Section two."), "{announcement}");
         let recorded = fixture
             .engine
             .inner
@@ -851,7 +847,7 @@ async fn a_changed_prompt_block_is_announced_on_a_model_that_defers() {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(recorded, [true, !defers]);
+        assert_eq!(recorded, [true, false], "defers: {defers}");
         fixture.engine.shutdown().await;
     }
 }
@@ -903,5 +899,283 @@ async fn a_deferred_tool_called_before_it_is_loaded_is_refused() {
         "{result}"
     );
     assert!(!executed.is_set(), "the unloaded tool never ran");
+    fixture.engine.shutdown().await;
+}
+
+/// An eager tool whose description and parameters a test changes between
+/// runs.
+struct Shaped(Arc<std::sync::Mutex<(String, serde_json::Value)>>);
+
+#[async_trait]
+impl ToolProvider for Shaped {
+    fn provider_id(&self) -> &'static str {
+        "test.shaped"
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        let (description, parameters) = self.0.lock().unwrap().clone();
+        Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
+            collision: Default::default(),
+            output: Default::default(),
+            concurrency: Default::default(),
+            result_truncation: Default::default(),
+            name: "shaped".into(),
+            permission_name: Some("read".into()),
+            description,
+            parameters,
+        }])
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(Some("read"))
+    }
+
+    fn get_permission_resource(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Ok((None, None))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Ok(String::new())
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        _call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        Err(ToolError::execution("the shaped tool is listing-only"))
+    }
+}
+
+fn shaped_parameters(field: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { field: { "type": "string" } }
+    })
+}
+
+fn tool<'a>(request: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    request["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["function"]["name"] == name)
+        .map(|tool| &tool["function"])
+        .expect("declared tool")
+}
+
+/// A changed description of an eager tool waits for the next refresh point;
+/// a changed parameter schema is one: the run composes the context afresh,
+/// starts a new tool round, and records why (frozen context spec, section
+/// 6.1).
+#[tokio::test]
+async fn a_changed_parameter_schema_refreshes_and_a_changed_description_does_not() {
+    for defers in [true, false] {
+        let (endpoint, responses, captured) = scripted_channel_server(3).await;
+        for input in ["one", "two", "three"] {
+            responses
+                .send(MatchedScriptedResponse::last_message_contains(
+                    input,
+                    scripted_text_body("done"),
+                ))
+                .expect("scripted reply");
+        }
+        let capabilities = if defers {
+            NATIVE_CAPABILITIES.to_owned()
+        } else {
+            NATIVE_CAPABILITIES.replace(
+                "deferred_tools = \"native\"",
+                "deferred_tools = \"unsupported\"",
+            )
+        };
+        let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
+            &endpoint,
+            "---\ndescription: Frozen context test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\n---\nWork.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            64_000,
+            None,
+            "openai-compatible",
+            Some(&capabilities),
+            None,
+        );
+        fixture.engine.register_base_layer().expect("base layer");
+        let shape = Arc::new(std::sync::Mutex::new((
+            "Shaped, first.".to_owned(),
+            shaped_parameters("first"),
+        )));
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(Shaped(Arc::clone(&shape))),
+        );
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("frozen context session");
+        run(&fixture, session.session_id, &selection, "frozen-1", "one").await;
+        shape.lock().unwrap().0 = "Shaped, described again.".to_owned();
+        run(&fixture, session.session_id, &selection, "frozen-2", "two").await;
+        shape.lock().unwrap().1 = shaped_parameters("second");
+        run(
+            &fixture,
+            session.session_id,
+            &selection,
+            "frozen-3",
+            "three",
+        )
+        .await;
+        let requests = with_watchdog("captured frozen context requests", captured)
+            .await
+            .expect("captured requests")
+            .iter()
+            .map(|request| body(request))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tool(&requests[1], "shaped")["description"],
+            "Shaped, first."
+        );
+        let field = |request, name: &str| {
+            tool(request, "shaped")["parameters"]["properties"]
+                .get(name)
+                .is_some()
+        };
+        assert!(field(&requests[1], "first") && !field(&requests[1], "second"));
+        assert!(field(&requests[2], "second") && !field(&requests[2], "first"));
+        assert_eq!(
+            tool(&requests[2], "shaped")["description"],
+            "Shaped, described again."
+        );
+        let events = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events();
+        let refreshes = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ContextRefreshed { reason, changed } => {
+                    Some((*reason, changed.tools.changed.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            refreshes,
+            [(
+                cookie_agent_protocol::RefreshReason::ToolsChanged,
+                vec!["shaped".to_owned()]
+            )],
+            "defers: {defers}"
+        );
+        let rounds = events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ToolRoundStarted { .. }))
+            .count();
+        assert_eq!(rounds, 2, "defers: {defers}");
+        fixture.engine.shutdown().await;
+    }
+}
+
+/// A machine a client attaches between runs adds its workspace's AGENTS.md
+/// where it was attached, as a turn of its own; nothing before it moves and
+/// the system prompt stays (frozen context spec, section 6.3).
+#[tokio::test]
+async fn a_machine_attached_between_runs_adds_its_agents_md_in_place() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    for input in ["one", "two"] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                input,
+                scripted_text_body("done"),
+            ))
+            .expect("scripted reply");
+    }
+    let (fixture, selection, _, _) = deferral_fixture(&endpoint);
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+            "labpc",
+            Arc::new(|_| Vec::new()),
+        ))
+        .expect("register labpc");
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("attach session")
+        .session_id;
+    run(&fixture, session, &selection, "attach-1", "one").await;
+    let workspace = fixture._directory.path().join("labpc");
+    create_private_test_dir(&workspace);
+    write_private_test_file(&workspace.join("AGENTS.md"), "labpc workspace rules");
+    fixture
+        .engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(workspace),
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("attach labpc");
+    run(&fixture, session, &selection, "attach-2", "two").await;
+    let requests = with_watchdog("captured attach requests", captured)
+        .await
+        .expect("captured requests")
+        .iter()
+        .map(|request| body(request))
+        .collect::<Vec<_>>();
+    assert_eq!(system_text(&requests[1]), system_text(&requests[0]));
+    let messages = |request: &serde_json::Value| {
+        request["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .map(|message| message.to_string())
+            .collect::<Vec<_>>()
+    };
+    let first = messages(&requests[0]);
+    let second = messages(&requests[1]);
+    // What the first request sent is a prefix of the second.
+    assert_eq!(second[..first.len()], first[..]);
+    let rules = second
+        .iter()
+        .position(|message| message.contains("labpc workspace rules"))
+        .expect("attached AGENTS.md");
+    assert!(rules >= first.len());
+    let loaded = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .log
+        .events()
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::AgentMdLoaded { in_place: true, .. }
+            )
+        })
+        .count();
+    assert_eq!(loaded, 1);
     fixture.engine.shutdown().await;
 }

@@ -91,7 +91,9 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
         snapshots[0].prompt_fingerprint,
         snapshots[1].prompt_fingerprint
     );
-    assert_ne!(
+    // The system prompt stays the previous run's until a refresh point; the
+    // changed section is announced instead (frozen context spec, 6.2).
+    assert_eq!(
         snapshots[1].prompt_fingerprint,
         snapshots[2].prompt_fingerprint
     );
@@ -113,8 +115,17 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
     let first_request = request_body(&requests[0]).to_string();
     assert!(first_request.contains("First section\\nnormalized."));
     assert!(first_request.contains("Second section."));
-    let changed_request = request_body(&requests[2]).to_string();
-    assert!(changed_request.contains("Changed second section."));
+    let changed_request = request_body(&requests[2]);
+    assert!(
+        !changed_request["system"]
+            .to_string()
+            .contains("Changed second section.")
+    );
+    assert!(
+        changed_request["messages"]
+            .to_string()
+            .contains("Changed second section.")
+    );
     fixture.engine.shutdown().await;
     let reopened = reopen_engine(&fixture);
     let replayed = reopened.inner.store.get(session.session_id).unwrap();
@@ -672,7 +683,7 @@ async fn agent_document_can_opt_out_of_agent_md() {
 }
 
 #[tokio::test]
-async fn consecutive_root_runs_reload_agent_md() {
+async fn consecutive_root_runs_keep_the_agent_md_they_started_with() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     responses
         .send(MatchedScriptedResponse::last_message_contains(
@@ -726,10 +737,12 @@ async fn consecutive_root_runs_reload_agent_md() {
         .await
         .unwrap();
     assert_eq!(requests.len(), 2);
+    // An edited AGENTS.md waits for the next compaction or refresh point;
+    // each root run records the turn it sends (frozen context spec, 6.2).
     assert!(requests[0].contains("run one AGENTS.md context"));
     assert!(!requests[0].contains("run two AGENTS.md context"));
-    assert!(requests[1].contains("run two AGENTS.md context"));
-    assert!(!requests[1].contains("run one AGENTS.md context"));
+    assert!(requests[1].contains("run one AGENTS.md context"));
+    assert!(!requests[1].contains("run two AGENTS.md context"));
 
     let contexts = fixture
         .engine
@@ -751,7 +764,7 @@ async fn consecutive_root_runs_reload_agent_md() {
         contexts,
         vec![
             (first.run_id, "run one AGENTS.md context".into()),
-            (second.run_id, "run two AGENTS.md context".into()),
+            (second.run_id, "run one AGENTS.md context".into()),
         ]
     );
     fixture.engine.shutdown().await;
