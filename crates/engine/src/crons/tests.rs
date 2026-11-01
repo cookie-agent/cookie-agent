@@ -183,6 +183,154 @@ fn a_local_time_the_clock_repeats_fires_once() {
     );
 }
 
+/// Every fire of `expression` in New York after `after` up to and including
+/// `until`.
+fn fires_between(expression: &str, after: &str, until: &str) -> Vec<String> {
+    let expr = CronExpr::parse(expression).expect("expression");
+    let (zone, until) = (new_york(), at(until));
+    let mut fires = Vec::new();
+    let mut cursor = at(after);
+    while let Some(next) = expr.next_after(cursor, &zone).filter(|next| *next <= until) {
+        fires.push(next.to_string());
+        cursor = next;
+    }
+    fires
+}
+
+#[test]
+fn a_job_at_set_hours_fires_once_in_the_repeated_hour() {
+    // New York falls back at 02:00 EDT on 2026-11-01 to 01:00 EST: 01:00 to
+    // 01:59 happen at 05:00Z to 05:59Z and again at 06:00Z to 06:59Z.
+    assert_eq!(
+        fires_between(
+            "*/30 1-2 * * *",
+            "2026-11-01T04:00:00Z",
+            "2026-11-01T08:00:00Z"
+        ),
+        [
+            "2026-11-01T05:00:00Z",
+            "2026-11-01T05:30:00Z",
+            "2026-11-01T07:00:00Z",
+            "2026-11-01T07:30:00Z",
+        ]
+    );
+    // Asked during the second 01:00 hour, the next fire is 02:00 EST.
+    assert_eq!(
+        next("30 1 * * *", "2026-11-01T06:10:00Z", &new_york()).to_string(),
+        "2026-11-02T06:30:00Z"
+    );
+}
+
+#[test]
+fn a_job_that_runs_every_hour_keeps_running_through_the_repeated_hour() {
+    // Hourly: every real hour, the repeated 01:00 included.
+    assert_eq!(
+        fires_between("0 * * * *", "2026-11-01T03:30:00Z", "2026-11-01T07:00:00Z"),
+        [
+            "2026-11-01T04:00:00Z",
+            "2026-11-01T05:00:00Z",
+            "2026-11-01T06:00:00Z",
+            "2026-11-01T07:00:00Z",
+        ]
+    );
+    // Every minute: 01:31 EDT follows 01:30 EDT, and 01:00 EST follows 01:59
+    // EDT, so none of the three hours' 180 minutes is skipped or doubled.
+    let zone = new_york();
+    assert_eq!(
+        next("* * * * *", "2026-11-01T05:30:00Z", &zone).to_string(),
+        "2026-11-01T05:31:00Z"
+    );
+    assert_eq!(
+        next("* * * * *", "2026-11-01T05:59:00Z", &zone).to_string(),
+        "2026-11-01T06:00:00Z"
+    );
+    assert_eq!(
+        next("* * * * *", "2026-11-01T06:59:00Z", &zone).to_string(),
+        "2026-11-01T07:00:00Z"
+    );
+    let every_minute = fires_between("* * * * *", "2026-11-01T04:00:00Z", "2026-11-01T07:00:00Z");
+    assert_eq!(every_minute.len(), 180);
+    assert!(every_minute.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn a_job_that_runs_every_hour_neither_doubles_nor_skips_across_the_gap() {
+    // New York springs forward at 02:00 EST on 2026-03-08 to 03:00 EDT
+    // (07:00Z): 02:00 maps onto 03:00 EDT, which fires once.
+    assert_eq!(
+        fires_between("0 * * * *", "2026-03-08T04:30:00Z", "2026-03-08T08:00:00Z"),
+        [
+            "2026-03-08T05:00:00Z",
+            "2026-03-08T06:00:00Z",
+            "2026-03-08T07:00:00Z",
+            "2026-03-08T08:00:00Z",
+        ]
+    );
+    let every_minute = fires_between("* * * * *", "2026-03-08T06:00:00Z", "2026-03-08T08:00:00Z");
+    assert_eq!(every_minute.len(), 120);
+    assert!(every_minute.windows(2).all(|pair| pair[0] < pair[1]));
+    // A job at a time the gap skips fires where it lands, asked before the
+    // gap or inside the hour it jumps to.
+    for after in ["2026-03-08T06:59:00Z", "2026-03-08T07:10:00Z"] {
+        assert_eq!(
+            next("30 2 * * *", after, &new_york()).to_string(),
+            "2026-03-08T07:30:00Z",
+            "after {after}"
+        );
+    }
+}
+
+#[test]
+fn fires_missed_across_a_clock_change_are_counted_in_real_hours() {
+    let zone = new_york();
+    let hourly = StoredSchedule::Cron("0 * * * *".into());
+    let every_minute = StoredSchedule::Cron("* * * * *".into());
+    // Down from 00:00 EDT to 01:30 EST: three hourly fires missed, the
+    // first and the two after it.
+    assert_eq!(
+        1 + hourly.count_between(
+            at("2026-11-01T04:00:00Z"),
+            at("2026-11-01T06:30:00Z"),
+            &zone,
+            1000
+        ),
+        3
+    );
+    // Down from 01:00 EST to 01:30 EST: every minute between is missed, and
+    // the latest within the grace is caught up.
+    assert_eq!(
+        every_minute.count_between(
+            at("2026-11-01T06:00:00Z"),
+            at("2026-11-01T06:30:00Z"),
+            &zone,
+            1000
+        ),
+        30
+    );
+    assert_eq!(
+        every_minute
+            .caught_up(
+                at("2026-11-01T06:00:00Z"),
+                at("2026-11-01T06:30:00Z"),
+                std::time::Duration::from_secs(5 * 60),
+                &zone,
+                1000
+            )
+            .map(|fire| fire.to_string()),
+        Some("2026-11-01T06:30:00Z".to_owned())
+    );
+    // Down across the spring gap, from 01:00 EST to 04:00 EDT: three.
+    assert_eq!(
+        hourly.count_between(
+            at("2026-03-08T06:00:00Z"),
+            at("2026-03-08T08:00:00Z"),
+            &zone,
+            1000
+        ) + 1,
+        3
+    );
+}
+
 #[test]
 fn the_caught_up_fire_is_the_latest_missed_one_within_the_grace() {
     let hourly = StoredSchedule::Cron("0 * * * *".into());

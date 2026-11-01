@@ -34,9 +34,11 @@ A schedule is one of:
   at once, and the job fires once.
 
 Cron times are the **daemon host's local time**. Daylight saving time is
-handled as it comes: a time skipped by the spring change fires at the moment
-the clock jumps to, and a time that occurs twice in autumn fires the first
-time only.
+handled as it comes: a time skipped by the spring change fires as much later
+as the clock jumped (02:30 at 03:30), and once only where that is a time the
+job runs anyway. A time that occurs twice in autumn fires the first time
+only, unless the job runs every hour: then it runs through the repeated hour
+too, so `0 * * * *` still runs once an hour.
 
 The clients read a schedule plainly beside the expression: `every day at
 03:00`, `every Monday to Friday at 09:00`, `every 15 minutes`, `on the 1st of

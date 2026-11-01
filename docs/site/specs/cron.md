@@ -609,12 +609,17 @@ Decisions taken where the spec left room, and deviations:
   counts a failure.
 - **Schedules.** Cron fields accept the three-letter month and day names
   and 7 for Sunday besides numbers. `a/n` runs from `a` to the field's end.
-  A spring-forward gap fires at the instant it jumps to; a fall-back fold
-  fires at the first occurrence only. An expression is refused when no
-  month has one of its days (`0 0 30 2 *`); restricting the day of week too
-  makes it reachable (Vixie OR). `crons.create` and `crons.update` also
-  take `{at}`, which must be in the future; `max_runs` other than 1 with a
-  one-shot schedule is refused.
+  A spring-forward gap fires as much later as the clock jumps (jiff's
+  compatible disambiguation), once where that lands on a time the job also
+  matches; a fall-back fold fires at the first occurrence only, and also at
+  the second for a job whose hour field covers every hour (2026-11-01: an
+  hourly or every-minute job otherwise went a whole real hour without a
+  fire). A day with a clock change compares all its fires by instant, so a
+  query inside the jumped-to hour still finds the gap's fire. An expression
+  is refused when no month has one of its days (`0 0 30 2 *`); restricting
+  the day of week too makes it reachable (Vixie OR). `crons.create` and
+  `crons.update` also take `{at}`, which must be in the future; `max_runs`
+  other than 1 with a one-shot schedule is refused.
 - **Validation details.** A name is trimmed, non-blank, at most 80
   characters, without control characters; a prompt is non-blank and at most
   32 KiB. `delivery` on a new-session job and `permission_mode` on an

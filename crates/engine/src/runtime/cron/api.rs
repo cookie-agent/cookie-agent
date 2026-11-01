@@ -39,9 +39,16 @@ impl CronRequester {
     }
 }
 
-/// The time zone schedules are evaluated in: the daemon host's.
+/// The time zone schedules are evaluated in: the daemon host's. The
+/// engine's tests use UTC, whatever the machine's zone, so that a test that
+/// counts fires from the current time never meets a clock change; the
+/// schedule tests cross those in a zone they name (`crons/tests.rs`).
 pub(crate) fn host_zone() -> TimeZone {
-    TimeZone::system()
+    if cfg!(test) {
+        TimeZone::UTC
+    } else {
+        TimeZone::system()
+    }
 }
 
 /// A job's definition after its checks: what a create sets and an update

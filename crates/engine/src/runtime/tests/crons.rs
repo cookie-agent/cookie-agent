@@ -16,7 +16,7 @@ use super::support::*;
 use crate::{
     Engine,
     crons::{StoredDisabled, StoredFire, StoredJob, StoredOutcome, StoredSchedule, StoredSkip},
-    runtime::cron::api::CronRequester,
+    runtime::cron::api::{CronRequester, host_zone},
 };
 
 /// What `session` waits on as a listing shows it, without loading it.
@@ -559,9 +559,10 @@ async fn without_a_grace_fires_missed_while_the_daemon_was_down_are_recorded_and
         .await
         .unwrap();
     // The hourly job's next fire was two hours before the current hour;
-    // the one-shots' times passed too.
+    // the one-shots' times passed too. The engine's tests evaluate
+    // schedules in UTC, so no clock change lies between.
     let hour = Timestamp::now()
-        .to_zoned(jiff::tz::TimeZone::UTC)
+        .to_zoned(host_zone())
         .with()
         .minute(0)
         .second(0)
@@ -672,7 +673,7 @@ async fn the_latest_fire_missed_within_the_grace_fires_at_start() {
         .await
         .unwrap();
     let minute = Timestamp::now()
-        .to_zoned(jiff::tz::TimeZone::UTC)
+        .to_zoned(host_zone())
         .with()
         .second(0)
         .subsec_nanosecond(0)

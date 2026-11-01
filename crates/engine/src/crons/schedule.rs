@@ -9,15 +9,18 @@
 //! Vixie cron: when both fields are restricted (neither starts with `*`), a
 //! day matches when either matches; otherwise both must.
 //!
-//! Local times that do not exist (a spring-forward gap) fire at the
-//! instant the gap jumps to, as `jiff`'s compatible disambiguation maps
-//! them; local times that occur twice (a fall-back fold) fire once, at the
-//! first occurrence.
+//! Local times that do not exist (a spring-forward gap) fire as much later
+//! as the clock jumps (02:30 at 03:30 across a one-hour gap), as `jiff`'s
+//! compatible disambiguation maps them, and only once where that lands on a
+//! time the job also matches. Local times that occur twice (a fall-back
+//! fold) fire at the first occurrence; a job that runs every hour fires at
+//! the second too, so it keeps running through the repeated hour, while a
+//! job at set hours does not fire twice.
 
 use jiff::{
     Span, Timestamp, ToSpan,
     civil::{Date, DateTime, Time},
-    tz::TimeZone,
+    tz::{AmbiguousOffset, TimeZone},
 };
 
 /// The longest a one-shot delay may be, in days.
@@ -225,9 +228,16 @@ impl CronExpr {
             .ok()?
             .checked_add(1.minute())
             .ok()?;
-        let mut date = start.date();
-        for day in 0..SEARCH_DAYS {
+        let mut date = local.date();
+        for _ in 0..SEARCH_DAYS {
             if self.day_matches(date) {
+                // On a day the clock changes, local times and instants are
+                // out of order (a gap's times land among the times after it,
+                // a fold's second occurrences after the first of later
+                // times), so its fires are all looked at; on any other day
+                // the first local time from `start` is the earliest.
+                let steady = !clock_changes_on(date, zone)?;
+                let mut earliest: Option<Timestamp> = None;
                 for hour in 0..24_i8 {
                     if self.hours & (1 << hour) == 0 {
                         continue;
@@ -238,22 +248,47 @@ impl CronExpr {
                         }
                         let candidate =
                             DateTime::from_parts(date, Time::constant(hour, minute, 0, 0));
-                        if day == 0 && candidate < start {
+                        if steady && candidate < start {
                             continue;
                         }
-                        let Ok(zoned) = zone.to_ambiguous_zoned(candidate).compatible() else {
-                            continue;
-                        };
-                        let instant = zoned.timestamp();
-                        if instant > after {
-                            return Some(instant);
+                        for instant in self.instants(candidate, zone).into_iter().flatten() {
+                            if instant > after && earliest.is_none_or(|known| instant < known) {
+                                earliest = Some(instant);
+                            }
+                        }
+                        if steady && earliest.is_some() {
+                            return earliest;
                         }
                     }
+                }
+                if earliest.is_some() {
+                    return earliest;
                 }
             }
             date = date.tomorrow().ok()?;
         }
         None
+    }
+
+    /// Whether the hour field matches every hour.
+    const fn every_hour(&self) -> bool {
+        self.hours == (1 << 24) - 1
+    }
+
+    /// The instants local time `local` fires at in `zone`: once, where a
+    /// gap maps it; and in a fold, at the first occurrence, and at the
+    /// second too for a job that runs every hour.
+    fn instants(&self, local: DateTime, zone: &TimeZone) -> [Option<Timestamp>; 2] {
+        let ambiguous = zone.to_ambiguous_timestamp(local);
+        match ambiguous.offset() {
+            AmbiguousOffset::Fold { after, .. } => [
+                ambiguous.earlier().ok(),
+                self.every_hour()
+                    .then(|| after.to_timestamp(local).ok())
+                    .flatten(),
+            ],
+            _ => [ambiguous.compatible().ok(), None],
+        }
     }
 
     /// Every match after `after` up to and including `until`, counted, up
@@ -301,6 +336,21 @@ impl CronExpr {
         }
         latest
     }
+}
+
+/// Whether `zone`'s offset changes during local date `date`; none past the
+/// dates `jiff` represents.
+fn clock_changes_on(date: Date, zone: &TimeZone) -> Option<bool> {
+    let first = zone.to_ambiguous_timestamp(date.to_datetime(Time::midnight()));
+    let next = zone.to_ambiguous_timestamp(date.tomorrow().ok()?.to_datetime(Time::midnight()));
+    // A minute either side, so that a change at either midnight counts.
+    let from = first.earlier().ok()?.checked_sub(1.minute()).ok()?;
+    let until = next.later().ok()?.checked_add(1.minute()).ok()?;
+    Some(
+        zone.following(from)
+            .next()
+            .is_some_and(|transition| transition.timestamp() < until),
+    )
 }
 
 /// Parses a one-shot delay: a whole number with `s`, `m`, `h`, or `d`, from
