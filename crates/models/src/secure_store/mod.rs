@@ -120,6 +120,12 @@ impl SecureDirectory {
     /// grants the same exclusive-create temporary plus atomic rename semantics
     /// without acquiring or holding any cross-process lock.
     pub(crate) fn atomic_replace(&self, name: &str, bytes: &[u8]) -> Result<(), SecureStoreError> {
+        self.replace(name, bytes, true)
+    }
+
+    /// Replaces one private file atomically, syncing the file and the
+    /// directory when `durable` asks.
+    fn replace(&self, name: &str, bytes: &[u8], durable: bool) -> Result<(), SecureStoreError> {
         validate_name(name)?;
         #[cfg(unix)]
         {
@@ -129,10 +135,14 @@ impl SecureDirectory {
             let mut file = create_file(&self.directory, &temporary)?;
             let result = (|| {
                 file.write_all(bytes).map_err(SecureStoreError::Io)?;
-                file.sync_all().map_err(SecureStoreError::Io)?;
+                if durable {
+                    file.sync_all().map_err(SecureStoreError::Io)?;
+                }
                 rustix::fs::renameat(&self.directory, temporary.as_str(), &self.directory, name)
                     .map_err(io_error)?;
-                rustix::fs::fsync(&self.directory).map_err(io_error)?;
+                if durable {
+                    rustix::fs::fsync(&self.directory).map_err(io_error)?;
+                }
                 Ok(())
             })();
             if result.is_err() {
@@ -147,7 +157,7 @@ impl SecureDirectory {
         #[cfg(windows)]
         {
             windows::validate_leaf_name(name)?;
-            windows::atomic_replace(self, name, bytes)
+            windows::atomic_replace(self, name, bytes, durable)
         }
     }
 
@@ -255,6 +265,16 @@ impl SecureDirectoryLock<'_> {
             return Err(SecureStoreError::UnsafePath);
         }
         self.directory.atomic_replace(name, bytes)
+    }
+
+    /// Replaces one private file atomically without syncing it or the
+    /// directory: for a cache, where a crash may leave the previous version.
+    pub fn replace_unsynced(&self, name: &str, bytes: &[u8]) -> Result<(), SecureStoreError> {
+        validate_name(name)?;
+        if name == self.lock_name {
+            return Err(SecureStoreError::UnsafePath);
+        }
+        self.directory.replace(name, bytes, false)
     }
 
     /// Removes an optional private file and fsyncs the directory.

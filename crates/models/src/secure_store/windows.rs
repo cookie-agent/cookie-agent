@@ -913,6 +913,7 @@ pub(super) fn atomic_replace(
     directory: &SecureDirectory,
     name: &str,
     bytes: &[u8],
+    durable: bool,
 ) -> Result<(), SecureStoreError> {
     let temporary_name = format!(".{name}.tmp-{}", Uuid::now_v7());
     let temporary = directory.path.join(&temporary_name);
@@ -920,7 +921,9 @@ pub(super) fn atomic_replace(
     let mut file = create_file(&temporary)?;
     let result = (|| {
         file.write_all(bytes).map_err(SecureStoreError::Io)?;
-        file.sync_all().map_err(SecureStoreError::Io)?;
+        if durable {
+            file.sync_all().map_err(SecureStoreError::Io)?;
+        }
         replace_path(&temporary, &target).map_err(SecureStoreError::Io)?;
         Ok(())
     })();

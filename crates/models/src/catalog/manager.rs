@@ -374,7 +374,9 @@ impl<T: CatalogTransport> CatalogManager<T> {
     /// Rewrites only the metadata for a body that is already installed (a 304,
     /// or serving the cache after a failed refresh), instead of rewriting the
     /// multi-megabyte body. The metadata on disk must still name the same body,
-    /// so one atomic replace keeps the pair consistent.
+    /// so one atomic replace keeps the pair consistent. The metadata is a
+    /// cache and is not synced: a crash may leave the previous metadata,
+    /// which loading checks against the body like any other.
     fn commit_meta(&self, meta: &CatalogCacheMeta) -> Result<(), CatalogError> {
         let meta_bytes = encode_meta(meta)?;
         let directory = self.cache.as_ref().map_err(Clone::clone)?;
@@ -395,14 +397,14 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 "catalog cache body changed before its metadata could be updated",
             ));
         }
-        lock.atomic_replace(CATALOG_META_FILE, &meta_bytes)
+        lock.replace_unsynced(CATALOG_META_FILE, &meta_bytes)
             .map_err(CatalogError::from_store)
     }
 
     /// Installs a body, then the metadata naming it, each by one atomic
     /// replace under the cache lock. `meta` was derived from parsing `body`.
-    /// A crash between the two replaces leaves metadata naming the previous
-    /// body; loading rejects that pair, so startup falls back to the bootstrap
+    /// A crash between the two replaces, or before the unsynced metadata
+    /// reached the disk, leaves metadata naming the previous body; loading rejects that pair, so startup falls back to the bootstrap
     /// and the next refresh (sent without an ETag) installs a matching pair.
     fn commit_cache(&self, body: &[u8], meta: &CatalogCacheMeta) -> Result<(), CatalogError> {
         let meta_bytes = encode_meta(meta)?;
@@ -412,7 +414,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
             .map_err(CatalogError::from_store)?;
         lock.atomic_replace(CATALOG_BODY_FILE, body)
             .map_err(CatalogError::from_store)?;
-        lock.atomic_replace(CATALOG_META_FILE, &meta_bytes)
+        lock.replace_unsynced(CATALOG_META_FILE, &meta_bytes)
             .map_err(CatalogError::from_store)?;
         for name in STALE_TRANSACTION_FILES {
             // Best effort: the installed pair is already consistent.

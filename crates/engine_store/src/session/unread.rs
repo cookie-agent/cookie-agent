@@ -142,6 +142,9 @@ fn read(path: &Path) -> io::Result<BTreeMap<SessionId, Timestamp>> {
         .collect())
 }
 
+/// Replaces the file atomically but without a sync: a crash may lose the
+/// latest change, which marks a session read again or unread again
+/// (store locks and durability, section 4.5).
 fn write(path: &Path, file: &UnreadFile) -> io::Result<()> {
     let directory = path.parent().expect("the data root is a folder");
     fs::create_dir_all(directory)?;
@@ -150,7 +153,6 @@ fn write(path: &Path, file: &UnreadFile) -> io::Result<()> {
     let result = (|| {
         let mut output = fs::File::create(&temporary)?;
         io::Write::write_all(&mut output, &bytes)?;
-        output.sync_all()?;
         drop(output);
         fs::rename(&temporary, path)
     })();

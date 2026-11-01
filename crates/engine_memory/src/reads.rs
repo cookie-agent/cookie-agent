@@ -5,14 +5,14 @@
 //!
 //! The times are advisory: the file is read once, kept in memory, and
 //! rewritten through a temporary file after each change, without the
-//! memory lock. Two daemons sharing a data root can each drop the other's
+//! memory lock and without a sync: a crash may roll the times back. Two daemons sharing a data root can each drop the other's
 //! latest times, and a URL whose memory moves or goes keeps its entry.
 
 use std::{collections::BTreeMap, fs};
 
 use jiff::Timestamp;
 
-use super::{MemoryRoot, READS_FILE, file::to_second, store::write_file, url::MemoryUrl};
+use super::{MemoryRoot, READS_FILE, file::to_second, store::write_file_unsynced, url::MemoryUrl};
 
 /// The last-read times, loaded from the file on first use.
 #[derive(Debug, Default)]
@@ -48,7 +48,7 @@ impl MemoryRoot {
         });
         if let Some(text) = text
             && self.root.is_dir()
-            && let Err(error) = write_file(&self.root.join(READS_FILE), &text)
+            && let Err(error) = write_file_unsynced(&self.root.join(READS_FILE), &text)
         {
             eprintln!("cookie-agent: memory read times: {error}");
         }

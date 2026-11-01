@@ -988,6 +988,19 @@ pub(super) fn write_file_unsynced_folder(
     path: &Path,
     bytes: &[u8],
 ) -> Result<MemoryRevision, MemoryError> {
+    replace_file(path, bytes, true)
+}
+
+/// Replaces `path` atomically, like [`write_file`], but syncs neither the
+/// file nor its folder: for bookkeeping a crash may roll back to an older
+/// version (store locks and durability, section 4.5).
+pub(super) fn write_file_unsynced(path: &Path, bytes: &[u8]) -> Result<(), MemoryError> {
+    replace_file(path, bytes, false).map(drop)
+}
+
+/// Writes `bytes` to a temporary file beside `path`, synced when `durable`
+/// asks, and renames it over `path`.
+fn replace_file(path: &Path, bytes: &[u8], durable: bool) -> Result<MemoryRevision, MemoryError> {
     let directory = path.parent().expect("memory files have a folder");
     fs::create_dir_all(directory).map_err(io_error(directory))?;
     let file_name = path
@@ -998,7 +1011,9 @@ pub(super) fn write_file_unsynced_folder(
     let result = (|| {
         let mut output = fs::File::create(&temporary)?;
         io::Write::write_all(&mut output, bytes)?;
-        output.sync_all()?;
+        if durable {
+            output.sync_all()?;
+        }
         drop(output);
         fs::rename(&temporary, path)
     })();
