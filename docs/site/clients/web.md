@@ -101,13 +101,16 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 
 ## Layout
 
-- **The rail.** An icon strip on the far left switches between six views;
+- **The rail.** An icon strip on the far left switches between eight
+  views (a window too short for them all scrolls it);
   each icon names itself in a tooltip, and the view shown is marked by a
   bar at the rail's edge:
   - **Chat** (the default): the sessions sidebar and the transcript;
   - **Agents**: the agent documents and their presets, in a sidebar beside
     the one open;
-  - **Settings**: **Set up Cookie** (see [Setting up a daemon](#setting-up-a-daemon)), `config.toml`, providers, MCP servers, plugins, and this
+  - **Skills** (the book): the skills sessions can use;
+  - **MCP servers** (the plug): every runtime's MCP servers;
+  - **Settings**: **Set up Cookie** (see [Setting up a daemon](#setting-up-a-daemon)), `config.toml`, providers, plugins, and this
     browser's preferences;
   - **Machines & runtimes**: the daemon's machines and its runtime
     registry;
@@ -773,7 +776,17 @@ closes the sheet in the others. On a phone the sheet fills the screen.
       takes the real one. A page that keeps no token shows a placeholder.
     - **Guides:** links to the runtimes, ssh, dial-in, remote access, and
       service guides of the released documentation.
-- **MCP servers.** Settings › MCP servers lists every runtime's servers with their state,
+- **Skills.** The rail's **Skills** view lists the skills every session
+  can use: yours (`~/.cookie-agent/skills/`), then the official ones the
+  daemon keeps, each with how to run it (`/greet <name>`), what it does and
+  when, its version, where it lives, and whether a skill of the same name
+  overrides it, it is for the agent only, it is hidden from the model, or
+  its permission asks first or denies. With a session open, **This
+  session's** lists that session's skills instead, its workspace's
+  included. The search narrows them by name and description, and **Update
+  official skills** refreshes the official ones now (`skills.update`) and
+  says what changed.
+- **MCP servers.** The rail's **MCP servers** view lists every runtime's servers with their state,
   tools (with how many its `include_tools` and `exclude_tools` left out),
   and last error. The global runtime's servers can be added, edited,
   enabled or disabled, removed, and kept in your `config.toml`; a coding
@@ -946,8 +959,8 @@ changes (`crons.changed`), from any client or agent.
 - **List first.** A view with a list shows the list when you choose it
   on the rail, and opens an item only when you choose it there: Chat's
   sessions, the agents, the Settings sections, the memories, and the
-  scheduled prompts. Machines & runtimes has no list: it opens at once,
-  beside the rail.
+  scheduled prompts. Skills, MCP servers, and Machines & runtimes have no
+  list: each opens at once, beside the rail.
 - **Agents:** the agent open fills the screen; the sidebar button shows
   the agents with the rail, and browser Back returns to the agent.
 - **Other views** fill the screen under the same title bar. A Settings
@@ -1115,8 +1128,8 @@ the daemon makes its own key, kept in `push/` in its data directory.
 
 ## Signing in to MCP servers
 
-A remote MCP server that wants OAuth shows `needs_auth` in Settings › MCP
-servers, with **Sign in**. The page is its own redirect: the authorization
+A remote MCP server that wants OAuth shows `needs_auth` in the MCP servers
+view, with **Sign in**. The page is its own redirect: the authorization
 server sends the browser back to the page's address with `?oauth=callback`,
 for example `https://<host>.<tailnet>.ts.net/?oauth=callback`. The daemon
 keeps the PKCE verifier and exchanges the code; the tokens never reach the
@@ -1131,7 +1144,7 @@ run `cookie mcp auth <server>` instead.
   the tab that started the sign-in and closes. That tab finishes the
   sign-in and says "Signed in to `<server>`" or what went wrong. With no
   such tab open, the tab that came back finishes the sign-in itself and
-  opens Settings › MCP servers.
+  opens the MCP servers view.
 - **Paste the address you landed on.** While a sign-in waits, the MCP
   servers show it with a field for the address the browser ended on. Use
   it when the sign-in ends somewhere the page cannot continue from: on an

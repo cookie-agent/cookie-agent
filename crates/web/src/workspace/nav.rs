@@ -20,6 +20,8 @@ impl Workspace {
         match view {
             View::Chat => {}
             View::Agents => self.open_config(),
+            View::Skills => self.poll_skill_list(),
+            View::Mcp => self.poll_mcp(),
             View::Settings => self.open_section(section),
             View::Machines => self.poll_runtimes(),
             View::Memory => self.open_memory(),
@@ -43,7 +45,6 @@ impl Workspace {
     pub fn open_section(self, section: Option<SettingsSection>) {
         match section {
             None | Some(SettingsSection::Configuration) => self.open_config(),
-            Some(SettingsSection::Mcp) => self.poll_mcp(),
             Some(SettingsSection::Plugins) => self.poll_plugins(),
             Some(SettingsSection::Notifications) => self.poll_notifications(),
             Some(
@@ -69,7 +70,6 @@ impl Workspace {
             View::Agents => self.poll_config(),
             View::Settings => match untrack(|| self.shown_section()) {
                 None | Some(SettingsSection::Configuration) => self.poll_config(),
-                Some(SettingsSection::Mcp) => self.poll_mcp(),
                 Some(SettingsSection::Plugins) => self.poll_plugins(),
                 Some(SettingsSection::Notifications) => self.poll_notifications(),
                 Some(
@@ -80,6 +80,8 @@ impl Workspace {
                 ) => {}
             },
             View::Memory => self.poll_memory(),
+            View::Skills => self.poll_skill_list(),
+            View::Mcp => self.poll_mcp(),
             View::Chat | View::Machines | View::Cron => {}
         }
         match self.panel.get_untracked() {
@@ -141,8 +143,8 @@ impl Workspace {
         }
     }
 
-    /// Whether the open view shows its first level: its list (Machines,
-    /// which has none, at once). A phone shows the rail beside the first
+    /// Whether the open view shows its first level: its list (Skills, MCP
+    /// servers, and Machines, which have none, at once). A phone shows the rail beside the first
     /// level only; an item open fills its screen, and the sidebar button
     /// goes back up.
     pub fn at_list(self) -> bool {
@@ -154,7 +156,7 @@ impl Workspace {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
             }
             View::Cron => self.cron_form.with(Option::is_none),
-            View::Machines => true,
+            View::Skills | View::Mcp | View::Machines => true,
         }
     }
 
@@ -175,7 +177,7 @@ impl Workspace {
                 self.memory_edit.with(Option::is_some) || self.memory_pending.with(Option::is_some)
             }
             View::Cron => self.cron_form.with(Option::is_some),
-            View::Chat | View::Machines => false,
+            View::Chat | View::Skills | View::Mcp | View::Machines => false,
         };
         if editing {
             layers.push(Layer::Editor);

@@ -36,6 +36,8 @@ pub(super) struct Reads {
     pub permission_modes: HashMap<SessionId, Latest>,
     /// `/skills`'s listing, of the session it opened on.
     pub skills: Latest,
+    /// The Skills view's listing.
+    pub skill_list: Latest,
     /// The `/usage` panel's figures, of the session it opened on.
     pub usage: Latest,
     /// The estimated costs, by session.

@@ -288,7 +288,7 @@ Agent does not silently retry token requests or open a browser flow.
 ### Signing in from the web client
 
 The [web client](../clients/web.md#signing-in-to-mcp-servers) signs in with
-**Sign in** in Settings › MCP servers. A page cannot listen on a loopback
+**Sign in** in the MCP servers view. A page cannot listen on a loopback
 port, so its redirect is the page's own address with `?oauth=callback`,
 such as `https://<host>.<tailnet>.ts.net/?oauth=callback`. The page catches
 the browser there and hands the address to the daemon as the TUI does with

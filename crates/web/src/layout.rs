@@ -11,6 +11,11 @@ pub enum View {
     Chat,
     /// The agent documents and their presets.
     Agents,
+    /// The skills the daemon offers, and the open session's
+    /// (`skills.list`).
+    Skills,
+    /// Every runtime's MCP servers.
+    Mcp,
     /// `config.toml`, providers, MCP servers, plugins, and this browser's
     /// preferences.
     Settings,
@@ -24,9 +29,11 @@ pub enum View {
 impl View {
     /// The rail's order.
     /// The rail's order: Settings comes after every other view.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Chat,
         Self::Agents,
+        Self::Skills,
+        Self::Mcp,
         Self::Machines,
         Self::Memory,
         Self::Cron,
@@ -38,6 +45,8 @@ impl View {
         match self {
             Self::Chat => "Chat",
             Self::Agents => "Agents",
+            Self::Skills => "Skills",
+            Self::Mcp => "MCP servers",
             Self::Settings => "Settings",
             Self::Machines => "Machines & runtimes",
             Self::Memory => "Memory",
@@ -57,12 +66,13 @@ impl View {
     /// on its rail button shows before any of its items: Chat's sessions
     /// in its sidebar, shown as the page; the agents, the Settings
     /// sections, the memories, and the cron jobs as the page itself until
-    /// one opens. Machines has no list.
+    /// one opens. Skills, MCP servers, and Machines have no list: each is
+    /// one page.
     pub const fn phone_list(self) -> Option<PhoneList> {
         match self {
             Self::Chat => Some(PhoneList::Sidebar),
             Self::Agents | Self::Settings | Self::Memory | Self::Cron => Some(PhoneList::Page),
-            Self::Machines => None,
+            Self::Skills | Self::Mcp | Self::Machines => None,
         }
     }
 
@@ -81,6 +91,8 @@ impl View {
         match self {
             Self::Chat => "chat",
             Self::Agents => "agents",
+            Self::Skills => "skills",
+            Self::Mcp => "mcp",
             Self::Settings => "settings",
             Self::Machines => "machines",
             Self::Memory => "memory",
@@ -105,7 +117,6 @@ pub enum SettingsSection {
     Configuration,
     /// The model providers (`/connect`).
     Providers,
-    Mcp,
     Plugins,
     /// Push notifications: this browser's, and every device the daemon
     /// pushes to.
@@ -123,10 +134,9 @@ pub enum SettingsSection {
 
 impl SettingsSection {
     /// The order the section list shows.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Configuration,
         Self::Providers,
-        Self::Mcp,
         Self::Plugins,
         Self::Notifications,
         Self::Display,
@@ -138,7 +148,6 @@ impl SettingsSection {
         match self {
             Self::Configuration => "Configuration",
             Self::Providers => "Providers",
-            Self::Mcp => "MCP servers",
             Self::Plugins => "Plugins",
             Self::Notifications => "Notifications",
             Self::Display => "Display",
@@ -152,7 +161,6 @@ impl SettingsSection {
         match self {
             Self::Configuration => "the daemon's config.toml",
             Self::Providers => "connect or disconnect a model provider",
-            Self::Mcp => "every runtime's MCP servers",
             Self::Plugins => "plugin status and restarts",
             Self::Notifications => "push notifications on this browser and your devices",
             Self::Display => "how the transcript shows agent work and diagnostics",
@@ -166,7 +174,6 @@ impl SettingsSection {
         match self {
             Self::Configuration => "configuration",
             Self::Providers => "providers",
-            Self::Mcp => "mcp",
             Self::Plugins => "plugins",
             Self::Notifications => "notifications",
             Self::Display => "display",
@@ -393,6 +400,8 @@ mod tests {
         );
         for view in [
             View::Agents,
+            View::Skills,
+            View::Mcp,
             View::Settings,
             View::Memory,
             View::Cron,
@@ -410,7 +419,9 @@ mod tests {
             assert_eq!(reconcile(&[], &[detail]), HistoryStep::Push(vec![detail]));
             assert_eq!(reconcile(&[detail], &[]), HistoryStep::Back(1));
         }
-        assert_eq!(View::Machines.phone_list(), None);
+        for view in [View::Skills, View::Mcp, View::Machines] {
+            assert_eq!(view.phone_list(), None, "{view:?}");
+        }
     }
 
     #[test]

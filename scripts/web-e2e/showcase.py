@@ -236,8 +236,8 @@ CLICKS = [
     ("sessions", "main [data-sidebar-toggle]"),
 ]
 # The rail's views, and the Settings sections.
-VIEWS = ["agents", "settings", "machines", "memory"]
-SECTIONS = ["configuration", "providers", "mcp", "plugins", "browser"]
+VIEWS = ["agents", "skills", "mcp", "settings", "machines", "memory"]
+SECTIONS = ["configuration", "providers", "plugins", "browser"]
 
 
 def view(name):

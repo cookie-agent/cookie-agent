@@ -6,11 +6,7 @@ use cookie_agent_protocol::{McpAuthBeginParams, McpAuthCancelParams, McpAuthComp
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
-use crate::{
-    browser,
-    layout::{SettingsSection, View},
-    oauth,
-};
+use crate::{browser, layout::View, oauth};
 
 impl Workspace {
     /// Reads the sign-ins still waiting from the browser's storage.
@@ -75,7 +71,7 @@ impl Workspace {
                 .set_value(Some((server, callback_url, state)));
             return;
         };
-        self.open_view(View::Settings, Some(SettingsSection::Mcp));
+        self.open_view(View::Mcp, None);
         self.sign_in_outcome.set(None);
         spawn_local(async move {
             let completed = client

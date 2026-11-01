@@ -37,6 +37,8 @@ pub fn view_icon(view: View) -> crate::icons::Icon {
     match view {
         View::Chat => icondata::FaCommentsSolid,
         View::Agents => icondata::FaRobotSolid,
+        View::Skills => icondata::FaBookOpenSolid,
+        View::Mcp => icondata::FaPlugSolid,
         View::Settings => icondata::FaGearSolid,
         View::Machines => icondata::FaServerSolid,
         View::Memory => icondata::FaBrainSolid,
@@ -45,6 +47,7 @@ pub fn view_icon(view: View) -> crate::icons::Icon {
 }
 
 /// The rail: the views, then the connection and the theme at its foot.
+/// A window too short for them all (a phone on its side) scrolls it.
 #[component]
 pub fn Rail(
     workspace: Workspace,
@@ -94,7 +97,7 @@ pub fn Rail(
     view! {
         <nav
             aria-label="Views"
-            class="rail flex w-14 shrink-0 flex-col items-center gap-1 border-r border-toasted bg-parchment py-2 dark:border-ember dark:bg-char"
+            class="rail flex w-14 shrink-0 flex-col items-center gap-1 border-r border-toasted bg-parchment py-2 dark:border-ember dark:bg-char short:overflow-y-auto"
             data-rail="primary"
         >
             <img src="icons/icon.svg" alt="" class="mb-1 h-7 w-7 short:hidden" />
@@ -212,6 +215,8 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                                 View::Machines => machines_page(workspace).into_any(),
                                 View::Memory => memory_sheet(workspace).into_any(),
                                 View::Cron => cron_page(workspace).into_any(),
+                                View::Skills => super::skills::skills_page(workspace).into_any(),
+                                View::Mcp => mcp_sheet(workspace).into_any(),
                                 View::Chat | View::Settings | View::Agents => ().into_any(),
                             }}
                         </div>
@@ -279,7 +284,6 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                             {match section {
                                 SettingsSection::Configuration => config_sheet(workspace).into_any(),
                                 SettingsSection::Providers => connect_sheet(workspace).into_any(),
-                                SettingsSection::Mcp => mcp_sheet(workspace).into_any(),
                                 SettingsSection::Plugins => plugins_sheet(workspace).into_any(),
                                 SettingsSection::Notifications => super::notifications::notifications_section(workspace, connection).into_any(),
                                 SettingsSection::Display => display_section(workspace).into_any(),

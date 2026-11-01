@@ -2039,7 +2039,7 @@ def management(browser):
     close_sheet(browser)
 
     # An MCP server that cannot start: added, disabled, removed.
-    open_section(browser, "settings", "mcp")
+    open_section(browser, "mcp")
     browser.wait("the MCP panel", lambda: count(browser, "#mcp-new") == 1)
     browser.click("#mcp-new")
     browser.type("#mcp-name", "broken")
@@ -3259,6 +3259,34 @@ def opens_on_sessions():
     print("an unfolded foldable opens on its sessions; a desktop's width on the new session")
 
 
+def skills_view(browser):
+    """The rail's Skills view lists the daemon's skills by where they come
+    from, each with how to invoke it; its search narrows them, and its
+    button refreshes the official skills and says how that went. MCP
+    servers are a view of their own, no longer a Settings section."""
+    view(browser, "skills")
+    greet = '#page [data-skill-group="user"] [data-skill="greet"]'
+    browser.wait("the user's skill", lambda: count(browser, greet) == 1)
+    assert "/greet <name>" in browser.text(greet), browser.text(greet)
+    browser.shot("skills")
+    browser.type("#skills-search", "no such skill")
+    browser.wait("no match", lambda: count(browser, "#page [data-skill]") == 0)
+    browser.script(
+        "const f = document.querySelector('#skills-search'); f.value = 'GREET'; f.dispatchEvent(new Event('input'))"
+    )
+    browser.wait("the match again", lambda: count(browser, greet) == 1)
+    browser.click("#skills-update")
+    browser.wait("the refresh's outcome", lambda: count(browser, "#page [data-skills-update-note]") == 1, timeout=60)
+    assert count(browser, "#skills-update:not([disabled])") == 1, "the update button stayed busy"
+    print("Skills lists greet under the user's skills, searches, and refreshes the official ones")
+    open_section(browser, "settings")
+    assert count(browser, "#page [data-section=mcp]") == 0, "Settings still has an MCP section"
+    open_section(browser, "mcp")
+    browser.wait("the MCP servers", lambda: count(browser, "#mcp-new") == 1)
+    print("MCP servers open from the rail, not from Settings")
+    view(browser, "chat")
+
+
 def rows_stay_put(browser):
     """Opening a session lower in the list leaves its row where it was:
     the open row's subagent tree, empty, takes no room above it."""
@@ -3982,14 +4010,14 @@ SHEETS = [
 ]
 SCRIPTED = [
     ("view-%s" % name, ["[data-rail=primary] [data-view=%s]" % name])
-    for name in ("agents", "settings", "machines", "memory", "cron")
+    for name in ("agents", "skills", "mcp", "settings", "machines", "memory", "cron")
 ] + [
     ("cron-form", ["[data-rail=primary] [data-view=cron]", "#cron-new"]),
 ] + [
     ("new-session-cards", ["[data-new-session]"]),
 ] + [
     ("settings-%s" % section, ["[data-rail=primary] [data-view=settings]", "[data-section=%s]" % section])
-    for section in ("configuration", "providers", "mcp", "plugins", "notifications", "display", "browser", "about")
+    for section in ("configuration", "providers", "plugins", "notifications", "display", "browser", "about")
 ] + [
     ("editor-config", [
         "[data-rail=primary] [data-view=settings]", "[data-section=configuration]",
@@ -5188,7 +5216,7 @@ def mcp_sign_in(browser):
     page = LINK.split("#")[0]
     redirect = page + "?oauth=callback"
     browser.resize(1280, 900)
-    open_section(browser, "settings", "mcp")
+    open_section(browser, "mcp")
     for server in ("oauth-tab", "oauth-same", "oauth-paste"):
         browser.wait("%s to need a sign-in" % server, lambda: mcp_state(browser, server) == "needs_auth", timeout=40)
     browser.wait("the sign-in buttons", lambda: count(browser, "#page [data-mcp-sign-in]") == 3)
@@ -5212,7 +5240,7 @@ def mcp_sign_in(browser):
     browser.script("window.open = () => null")
     browser.click('#page [data-server="oauth-same"] [data-mcp-sign-in]')
     browser.wait("the page to come back", lambda: browser.script("return document.readyState") == "complete"
-                 and count(browser, "#page [data-section-body=mcp]") == 1, timeout=40)
+                 and count(browser, '#page[data-view="mcp"]') == 1, timeout=40)
     address_is_clean(browser)
     signed_in(browser, "oauth-same")
     address_is_clean(browser)
@@ -5281,7 +5309,7 @@ def mcp_sign_in(browser):
     browser.click("#oauth-landing-close")
     browser.wait("the dismissed banner", lambda: count(browser, "#oauth-landing") == 0)
     for server in ("oauth-tab", "oauth-same", "oauth-paste"):
-        open_section(browser, "settings", "mcp")
+        open_section(browser, "mcp")
         browser.wait("%s still connected" % server, lambda: mcp_state(browser, server) == "connected")
     print("stale and unknown callbacks are refused and leave the address bar")
     http_warning()
@@ -5299,7 +5327,7 @@ def http_warning():
         browser.resize(1280, 900)
         browser.go(LINK.replace("127.0.0.1", host))
         browser.wait("the connection", lambda: browser.text("#connected") != "")
-        open_section(browser, "settings", "mcp")
+        open_section(browser, "mcp")
         browser.wait("the MCP panel", lambda: count(browser, "#mcp-new") == 1)
         browser.click("#mcp-new")
         browser.type("#mcp-name", "oauth-http")
@@ -6238,6 +6266,7 @@ SCENARIOS = [
     ("unread_and_select", unread_and_select, "chat", []),
     ("pins_and_filter", pins_and_filter, "chat", []),
     ("opens_on_sessions", opens_on_sessions, "chat", ["basics"]),
+    ("skills_view", skills_view, "chat", []),
     ("rows_stay_put", rows_stay_put, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
     ("open_tool_header", open_tool_header, "chat", []),

@@ -53,6 +53,7 @@ mod restart;
 mod row_menu;
 mod session_rows;
 mod shell;
+mod skills;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
 pub(crate) use media_viewer::MediaViewer;

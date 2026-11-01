@@ -140,9 +140,7 @@ impl Workspace {
                     self.poll_memory();
                 }
             }
-            ClientDelivery::McpChanged(_)
-                if runtimes || self.showing(View::Settings, Some(SettingsSection::Mcp)) =>
-            {
+            ClientDelivery::McpChanged(_) if runtimes || self.showing(View::Mcp, None) => {
                 self.poll_mcp();
             }
             ClientDelivery::MemoryChanged(_) if self.showing(View::Memory, None) => {

@@ -1,6 +1,8 @@
 //! `/skills`: the session's skills (`skills.list`), searched, and run with
 //! their arguments: `skills.get` checks the skill, then the encoded skill
-//! submission is sent as the TUI sends it.
+//! submission is sent as the TUI sends it. And the Skills view: the
+//! daemon's skills, or the open session's, and refreshing the official
+//! ones (`skills.update`).
 
 use cookie_agent_protocol::{InputDelivery, SkillsGetParams, SkillsListParams};
 use leptos::{prelude::*, task::spawn_local};
@@ -85,6 +87,60 @@ impl Workspace {
                     crate::errors::describe(&error)
                 )),
             }
+        });
+    }
+}
+
+impl Workspace {
+    /// Reads what the Skills view lists: the open session's skills when it
+    /// asks for them and a session is open, else the daemon's own.
+    pub fn poll_skill_list(self) {
+        let read = self.begin_read(|reads| &mut reads.skill_list);
+        let Some(client) = self.client() else {
+            return;
+        };
+        let session_id = self
+            .skill_list_session
+            .get_untracked()
+            .then(|| self.selected.get_untracked())
+            .flatten();
+        spawn_local(async move {
+            let result = client
+                .list_skills(SkillsListParams { session_id })
+                .await
+                .map(|result| result.skills)
+                .map_err(|error| crate::errors::describe_full(&error));
+            if self.read_is_current(|reads| &mut reads.skill_list, read) {
+                self.skill_list.set(Some(result));
+            }
+        });
+    }
+
+    /// Lists the open session's skills, or the daemon's.
+    pub fn list_session_skills(self, session: bool) {
+        self.skill_list_session.set(session);
+        self.skill_list.set(None);
+        self.poll_skill_list();
+    }
+
+    /// Refreshes the official skills now, then reads the list again.
+    pub fn update_official_skills(self) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        if self.skills_updating.get_untracked() {
+            return;
+        }
+        self.skills_updating.set(true);
+        self.skills_update_note.set(None);
+        spawn_local(async move {
+            let note = match client.update_skills().await {
+                Ok(result) => cookie_agent_client_state::skills::update_summary(&result),
+                Err(error) => (crate::errors::describe(&error), true),
+            };
+            self.skills_update_note.set(Some(note));
+            self.skills_updating.set(false);
+            self.poll_skill_list();
         });
     }
 }

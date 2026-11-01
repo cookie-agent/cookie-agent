@@ -233,6 +233,18 @@ pub struct Workspace {
     pub goal_draft: RwSignal<String>,
     pub skills: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
     pub skill_query: RwSignal<String>,
+    /// The Skills view's listing: the daemon's skills, or with
+    /// [`Self::skill_list_session`] the open session's, its workspace's
+    /// included.
+    pub skill_list: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
+    /// Whether the Skills view lists the open session's skills.
+    pub skill_list_session: RwSignal<bool>,
+    /// The Skills view's search.
+    pub skill_list_query: RwSignal<String>,
+    /// What the last refresh of the official skills did, and whether it
+    /// failed; `None` while one is on its way or before any.
+    pub skills_update_note: RwSignal<Option<(String, bool)>>,
+    pub skills_updating: RwSignal<bool>,
     pub skill_pick: RwSignal<Option<cookie_agent_protocol::SkillDescriptor>>,
     pub skill_args: RwSignal<String>,
     /// The `/permissions` table's rules: the viewed session's, or the new
@@ -519,6 +531,11 @@ impl Workspace {
             goal_draft: RwSignal::new(String::new()),
             skills: RwSignal::new(None),
             skill_query: RwSignal::new(String::new()),
+            skill_list: RwSignal::new(None),
+            skill_list_session: RwSignal::new(false),
+            skill_list_query: RwSignal::new(String::new()),
+            skills_update_note: RwSignal::new(None),
+            skills_updating: RwSignal::new(false),
             skill_pick: RwSignal::new(None),
             skill_args: RwSignal::new(String::new()),
             permissions: RwSignal::new(None),
