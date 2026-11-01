@@ -1,7 +1,10 @@
 # Session store locks and durability
 
 Status: **approved** (2026-10-31), with the user's decisions of 2026-10-31
-in [section 8](#8-decisions). Follows
+in [section 8](#8-decisions). The measurement step shipped and its findings
+are in [section 5.1](#51-what-the-measurement-found-2026-10-31); 4.1, 4.2,
+4.3, 4.4's heavy work before locks, and 4.5 in progress, the rest of 4.4
+shelved. Follows
 [responsive session loading](session-storage-v3.md), whose phase 1 removed
 the tree load from a replay's history pages but left the locks below in
 every session command's path.
@@ -179,16 +182,20 @@ in [session storage v3](session-storage-v3.md) (its section 4.2).
 
 ### 4.4 Commands without engine-wide locks
 
-- **Fast path.** If the session is owned, resident, and has an actor,
+The measurement (section 5.1) found no contention on these locks, so only
+the last item, heavy work before locks, is built now. The other three are
+shelved until the timing shows waits for them to remove.
+
+- **Shelved: fast path.** If the session is owned, resident, and has an actor,
   `send_command` sends to it directly. `begin_write` checks owned and
   resident before it takes the mutation lock, and returns `AlreadyOwned`
   without it.
-- **Retired actors.** Eviction marks an actor retired, under its tree's
+- **Shelved: retired actors.** Eviction marks an actor retired, under its tree's
   residency lock, before draining it. A retired actor answers every
   command it receives with `Retired`, and the sender retries through the
   locked path, which reopens the session. So a command can never run on an
   evicted session.
-- **One residency lock per tree.** `residency_mutation` becomes a lock per
+- **Shelved: one residency lock per tree.** `residency_mutation` becomes a lock per
   root, taken by the four places that take it today (`send_command`'s slow
   path, delegate recovery, and the two janitor passes), each of which knows
   the session's root. Eviction is already per tree: a tree goes whole or
@@ -217,6 +224,27 @@ takes, and logs any wait or sync over 250 ms with the session and the
 lock. A run of the user's daemon on a busy machine then shows how much of
 the stall each lock causes, and the same counters prove the change after.
 
+### 5.1 What the measurement found (2026-10-31)
+
+Four hours of the user's daemon (16:39 to 20:49, 25 summaries, the build
+of `5a44ac557`, before session storage v3's phases 2 and 3):
+
+| Meter | Per 10 minutes | Typical | Worst |
+|---|---|---|---|
+| residency lock wait | 14 to 738 | 0 ms | 3 ms in all; never slow |
+| store lock wait, shared, and session slot wait | 11 to 708 | 0 ms | 2 ms |
+| store lock wait, exclusive | 17 to 747 | 0 to 16 ms | 192 ms, once |
+| residency lock hold | as the waits | under 1 ms | 275 ms and 525 ms, once each: commands that opened a cold session under the lock |
+| log sync | 10 to 545 | 15 to 45 ms on average | about 65 over 250 ms, up to 1,699 ms; up to 7.9 s of syncs in 10 minutes |
+
+The locks are not where the time goes: in four hours no command waited
+for the residency lock or a session slot. The disk is. On a busy disk one
+`fdatasync` takes 250 ms to 1.7 s, and the slow ones come in bursts on the
+session that is working (nine of 270 to 495 ms in two minutes on one log),
+each holding that agent's next record back. Hence the order of work in
+section 7: fewer syncs and syncs outside the locks first; of 4.4 only the
+heavy work before locks, for the two slow holds.
+
 ## 6. Tests
 
 - Sync counts (`EVENT_LOG_SYNCS`): a turn's syncs are its commit points; a
@@ -232,19 +260,21 @@ the stall each lock causes, and the same counters prove the change after.
   log shows the final presentation from `tool_call_terminated` and the
   context stored before `run_finished`; no `acp_session_updated` is stored
   for presentations or for context mid-run.
-- Locks: a command to tree B completes while tree A's residency lock is
-  held; a command racing an eviction is answered `Retired` and retried,
-  never run on the evicted session (the janitor's pre-barrier hook); a
-  cold reopen does not delay another session's appends.
+- Locks: a cold reopen parses its log and completes its tree before it
+  takes the residency lock and the mutation lock, and does not delay
+  another session's appends. (The shelved items of 4.4 bring their own
+  tests: a command to tree B completing while tree A's lock is held, and
+  a command racing an eviction answered `Retired` and retried.)
 
 ## 7. Order of work
 
-1. Measurement (section 5).
+1. Measurement (section 5): shipped as `5a44ac557`; findings in 5.1.
 2. Syncs outside locks (4.1) and the commit-point classes (4.2).
 3. ACP live state (4.3).
-4. The command fast path and retired actors (4.4), then per-tree locks and
-   heavy work before locks.
+4. Heavy work before locks (the last item of 4.4).
 5. Other files (4.5).
+
+The rest of 4.4 is shelved (section 5.1).
 
 ## 8. Decisions
 
@@ -266,3 +296,6 @@ User decisions of 2026-10-31:
    runs on the user's machine for a few days before the rest is built.
 7. This spec comes before phase 2 of
    [session storage v3](session-storage-v3.md).
+8. (2026-10-31, after the measurement in 5.1) Build 4.1, 4.2, 4.3, the
+   heavy work before locks of 4.4, and 4.5; shelve 4.4's fast path,
+   retired actors, and per-tree residency locks.
