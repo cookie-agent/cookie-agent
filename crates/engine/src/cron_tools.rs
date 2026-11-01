@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Engine,
-    runtime::{Inner, cron::api::CronRequester},
+    runtime::{Inner, cron::api::CronRequester, delegation::runtimes::CapabilityArg},
 };
 
 /// The provider's ID.
@@ -49,7 +49,7 @@ pub(crate) const RUN: &str = "cron_run";
 
 const SCHEDULE_NOTES: &str = "Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.";
 
-const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's handle (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for=\"cron\").";
+const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's handle (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for=\"cron\").";
 
 fn create_description() -> String {
     format!(
@@ -110,7 +110,7 @@ struct NewArg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     permission_rules: Option<Vec<PermissionRule>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    runtimes: Option<Vec<ProjectRuntime>>,
+    capabilities: Option<Vec<CapabilityArg>>,
     /// A project's name or ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
@@ -198,13 +198,8 @@ fn target_schema(description: &str) -> serde_json::Value {
                                 "resource": {"type": "string"},
                                 "effect": {"type": "string", "enum": ["allow", "ask", "deny"]}
                             }}},
-                    "runtimes": {"type": "array", "description": "Runtimes besides global, as list_runtimes names them; this session's when omitted",
-                        "items": {"type": "object", "required": ["runtime_id"], "additionalProperties": false,
-                            "properties": {
-                                "runtime_id": {"type": "string"},
-                                "capability": {"type": "string"},
-                                "workspace": {"type": "string"}
-                            }}},
+                    "capabilities": {"type": "array", "description": "The runtime capabilities each new session works through, as delegate_subagent takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+                        "items": CapabilityArg::item_schema()},
                     "project": {"type": "string", "description": "A project's name; this session's project when omitted"}
                 }
              }}}
@@ -459,8 +454,19 @@ impl Engine {
                 let global = attachments
                     .iter()
                     .any(|attachment| attachment.runtime_id.as_str() == RuntimeId::GLOBAL);
-                let runtimes = new.runtimes.unwrap_or_else(|| {
-                    attachments
+                let runtimes = match new.capabilities {
+                    Some(items) => items
+                        .iter()
+                        .map(|item| {
+                            item.parse().map(|parsed| ProjectRuntime {
+                                runtime_id: parsed.runtime_id,
+                                capability: Some(parsed.capability),
+                                workspace: parsed.workspace,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(refused)?,
+                    None => attachments
                         .iter()
                         .filter(|attachment| attachment.runtime_id.as_str() != RuntimeId::GLOBAL)
                         .map(|attachment| ProjectRuntime {
@@ -468,8 +474,8 @@ impl Engine {
                             capability: Some(attachment.capability.clone()),
                             workspace: attachment.workspace.clone(),
                         })
-                        .collect()
-                });
+                        .collect(),
+                };
                 let project = match new.project {
                     Some(name) => Some(self.project_by_name(&name)?),
                     None => crate::blocking::off_worker(|| self.session_project(caller.session))
@@ -541,6 +547,23 @@ impl Engine {
                         .get(project)
                         .map_or_else(|_| project.to_string(), |project| project.name.to_string());
                     text.push_str(&format!(", project {name}"));
+                }
+                if let Some(runtimes) = template.runtimes.as_ref().filter(|r| !r.is_empty()) {
+                    let capabilities = runtimes
+                        .iter()
+                        .map(|runtime| {
+                            let mut item = runtime.runtime_id.to_string();
+                            if let Some(capability) = &runtime.capability {
+                                item.push_str(&format!("/{capability}"));
+                            }
+                            if let Some(workspace) = &runtime.workspace {
+                                item.push_str(&format!(" at {workspace}"));
+                            }
+                            item
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    text.push_str(&format!(", capabilities {capabilities}"));
                 }
                 text.push(')');
                 text

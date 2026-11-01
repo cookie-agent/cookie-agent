@@ -11,7 +11,7 @@ use cookie_agent_runtime_api::{
 use serde::{Deserialize, Serialize};
 
 use super::{base_presentation, prepared_operation, prepared_resource};
-use crate::runtime::delegation::runtimes::{CapabilitiesParam, parse_capability};
+use crate::runtime::delegation::runtimes::{CapabilitiesParam, CapabilityArg};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
@@ -42,15 +42,6 @@ struct DelegateArgs {
     /// The runtime capabilities the child works through; a root only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     capabilities: Option<Vec<CapabilityArg>>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CapabilityArg {
-    /// `<runtime_id>/<capability_id>`.
-    capability: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    workspace: Option<String>,
 }
 
 /// What each `capabilities` item does and how to write it.
@@ -117,15 +108,7 @@ impl DelegateToolProvider {
                 "type":"array",
                 "minItems":1,
                 "description":format!("{when} {CAPABILITY_ITEMS}"),
-                "items":{
-                    "type":"object",
-                    "additionalProperties":false,
-                    "required":["capability"],
-                    "properties":{
-                        "capability":{"type":"string","description":"`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`"},
-                        "workspace":{"type":"string","description":"Directory on that runtime's machine; required when the capability takes a workspace"}
-                    }
-                }
+                "items":CapabilityArg::item_schema()
             });
         }
         vec![
@@ -254,7 +237,7 @@ impl DelegateToolProvider {
         }
         let capabilities = items
             .iter()
-            .map(|item| parse_capability(&item.capability, item.workspace.clone()))
+            .map(CapabilityArg::parse)
             .collect::<Result<Vec<_>, _>>()
             .map_err(ToolError::execution)?;
         self.engine

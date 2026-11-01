@@ -294,7 +294,7 @@ The cron provider, `builtin.cron`, offers five tools, each gated by
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `cron_create` | `prompt`, `schedule` (`{cron}` or `{in}`), `max_runs?`, `name?`, `target?` (`"self"`, the default; a session handle; or `{new: {agent?, permission_rules?, runtimes?, project?}}`), `delivery?` | The job: id, next fire time in local time and UTC |
+| `cron_create` | `prompt`, `schedule` (`{cron}` or `{in}`), `max_runs?`, `name?`, `target?` (`"self"`, the default; a session handle; or `{new: {agent?, permission_rules?, capabilities?, project?}}`, where `capabilities` items are `{capability: "<runtime_id>/<capability_id>", workspace?}` as `delegate_subagent` and `attach_machine` take them), `delivery?` | The job: id, next fire time in local time and UTC |
 | `cron_list` | `target?` (a kind, to filter) | Each job the rules let it see: id, name, schedule, next fire, target, enabled, the last fire's outcome |
 | `cron_update` | `id`, any field of `cron_create`, `enabled?` | The updated job |
 | `cron_delete` | `id` | Confirmation |

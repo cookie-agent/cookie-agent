@@ -1205,6 +1205,36 @@ async fn agents_target_only_themselves_and_sessions_below_them() {
             .count()
     );
     assert_eq!(template.project, None);
+
+    // `capabilities` take delegate_subagent's `<runtime_id>/<capability_id>`
+    // form, which `global` and a bare runtime are not.
+    let CronTarget::New(template) = engine
+        .cron_target_for_test(
+            root,
+            serde_json::json!({"new": {"capabilities": [
+                {"capability": "labpc/coding", "workspace": "~/api"}
+            ]}}),
+        )
+        .unwrap()
+    else {
+        panic!("a new-session target");
+    };
+    let runtimes = template.runtimes.unwrap();
+    assert_eq!(runtimes.len(), 1);
+    assert_eq!(runtimes[0].runtime_id.as_str(), "labpc");
+    assert_eq!(
+        runtimes[0].capability.as_ref().map(|name| name.as_str()),
+        Some("coding")
+    );
+    assert_eq!(runtimes[0].workspace.as_deref(), Some("~/api"));
+    for capability in ["global/global", "labpc"] {
+        engine
+            .cron_target_for_test(
+                root,
+                serde_json::json!({"new": {"capabilities": [{"capability": capability}]}}),
+            )
+            .expect_err("not a nameable capability");
+    }
 }
 
 /// `list_agents` for a primary agent with declared keys, a `subagent`

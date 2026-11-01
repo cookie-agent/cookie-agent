@@ -2400,7 +2400,7 @@ cron_create(delivery?: "queue" | "steer", max_runs?: integer, name?: string, pro
 Description sent to the model:
 
 ```text
-Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
+Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
@@ -2485,6 +2485,27 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
                       "description": "The agent each new session runs; this session's agent when omitted",
                       "type": "string"
                     },
+                    "capabilities": {
+                      "description": "The runtime capabilities each new session works through, as delegate_subagent takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "capability": {
+                            "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+                            "type": "string"
+                          },
+                          "workspace": {
+                            "description": "Directory on that runtime's machine; required when the capability takes a workspace",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "capability"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "permission_rules": {
                       "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
                       "items": {
@@ -2519,28 +2540,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
                     "project": {
                       "description": "A project's name; this session's project when omitted",
                       "type": "string"
-                    },
-                    "runtimes": {
-                      "description": "Runtimes besides global, as list_runtimes names them; this session's when omitted",
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "capability": {
-                            "type": "string"
-                          },
-                          "runtime_id": {
-                            "type": "string"
-                          },
-                          "workspace": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "runtime_id"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
                     }
                   },
                   "type": "object"
@@ -2708,6 +2707,27 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
                       "description": "The agent each new session runs; this session's agent when omitted",
                       "type": "string"
                     },
+                    "capabilities": {
+                      "description": "The runtime capabilities each new session works through, as delegate_subagent takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "capability": {
+                            "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+                            "type": "string"
+                          },
+                          "workspace": {
+                            "description": "Directory on that runtime's machine; required when the capability takes a workspace",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "capability"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "permission_rules": {
                       "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
                       "items": {
@@ -2742,28 +2762,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
                     "project": {
                       "description": "A project's name; this session's project when omitted",
                       "type": "string"
-                    },
-                    "runtimes": {
-                      "description": "Runtimes besides global, as list_runtimes names them; this session's when omitted",
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "capability": {
-                            "type": "string"
-                          },
-                          "runtime_id": {
-                            "type": "string"
-                          },
-                          "workspace": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "runtime_id"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
                     }
                   },
                   "type": "object"

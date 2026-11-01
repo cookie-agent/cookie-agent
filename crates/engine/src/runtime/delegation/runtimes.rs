@@ -31,6 +31,38 @@ pub(crate) fn has_global(attachments: &[RuntimeAttachment]) -> bool {
         .any(|attachment| attachment.runtime_id.as_str() == RuntimeId::GLOBAL)
 }
 
+/// One runtime capability a tool call names, as `delegate_subagent`'s
+/// `capabilities`, `cron_create`'s `runtimes`, and `attach_machine` take
+/// it.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CapabilityArg {
+    /// `<runtime_id>/<capability_id>`.
+    pub(crate) capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) workspace: Option<String>,
+}
+
+impl CapabilityArg {
+    /// The capability checked by [`parse_capability`].
+    pub(crate) fn parse(&self) -> Result<DelegatedCapability, String> {
+        parse_capability(&self.capability, self.workspace.clone())
+    }
+
+    /// The JSON schema of one item.
+    pub(crate) fn item_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type":"object",
+            "additionalProperties":false,
+            "required":["capability"],
+            "properties":{
+                "capability":{"type":"string","description":"`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`"},
+                "workspace":{"type":"string","description":"Directory on that runtime's machine; required when the capability takes a workspace"}
+            }
+        })
+    }
+}
+
 /// `<runtime_id>/<capability_id>`, as `delegate_subagent` takes it.
 pub(crate) fn parse_capability(
     capability: &str,
@@ -47,7 +79,7 @@ pub(crate) fn parse_capability(
         .map_err(|_| format!("`{name}` in `{capability}` is not a capability name"))?;
     if runtime_id.as_str() == RuntimeId::GLOBAL {
         return Err(format!(
-            "`{capability}` cannot be listed: `global` follows this session's root, so the subagent has it exactly when the root does"
+            "`{capability}` cannot be named: `global` follows this session's root, attached exactly when the root has it"
         ));
     }
     if workspace

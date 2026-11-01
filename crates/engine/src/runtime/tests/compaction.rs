@@ -484,7 +484,7 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: auto compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  attach: deny\n  asset: deny\n---\nTest auto compaction.\n",
+            "---\ndescription: auto compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  attach: deny\n  asset: deny\n  cron: deny\n---\nTest auto compaction.\n",
             Some((
                 "compaction.md",
                 "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize.\n",
