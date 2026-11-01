@@ -868,7 +868,8 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
         | EventPayload::InternalAgentTextDelta { .. }
         | EventPayload::NativeCompactionStarted { .. }
         | EventPayload::NativeCompactionFinished { .. }
-        | EventPayload::ToolCallProgress { .. } => false,
+        | EventPayload::ToolCallProgress { .. }
+        | EventPayload::AcpLiveUpdate { .. } => false,
         // Tool calls.
         EventPayload::ToolCallStarted { .. }
         | EventPayload::ToolCallTerminated { .. }

@@ -4,7 +4,8 @@ Status: **approved** (2026-10-31), with the user's decisions of 2026-10-31
 in [section 8](#8-decisions). The measurement step shipped and its findings
 are in [section 5.1](#51-what-the-measurement-found-2026-10-31). 4.1,
 4.2, 4.4's heavy work before locks, and 4.5 are implemented (2026-10-31;
-notes in [section 9](#9-implementation-notes)); 4.3 is in progress; the
+notes in [section 9](#9-implementation-notes)), and so is 4.3 (client
+protocol 1.60.0, plugin protocol 1.32.0; notes at the end of 4.3); the
 rest of 4.4 is shelved. Follows
 [responsive session loading](session-storage-v3.md), whose phase 1 removed
 the tree load from a replay's history pages but left the locks below in
