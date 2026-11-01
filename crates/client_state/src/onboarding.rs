@@ -2,11 +2,14 @@
 //! (`docs/site/specs/default-models-and-onboarding.md` section 9, and
 //! `docs/site/specs/machines-on-demand.md` section 2.2): the four steps,
 //! which are done, the model lists the pickers show, the variant each picker
-//! preselects, why Finish is disabled, and the summary of a run.
+//! preselects, the fallback lists a model step builds
+//! (`docs/site/specs/model-fallback-lists.md` section 6), why Finish is
+//! disabled, and the summary of a run.
 
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, ModelKey, OnboardingModelInput, OnboardingModelTable,
-    OnboardingRequirement, OnboardingRunResult, OnboardingStatus, ProviderId, VariantId,
+    AvailableModelDescriptor, ConfiguredVariantRef, ModelKey, OnboardingModelEntry,
+    OnboardingModelField, OnboardingRequirement, OnboardingRunResult, OnboardingStatus, ProviderId,
+    VariantId,
 };
 
 /// The steps of onboarding, in order. The small and utility models are
@@ -46,8 +49,10 @@ impl OnboardingStep {
         match self {
             Self::Provider => !missing(OnboardingRequirement::Provider),
             Self::DefaultModel => !missing(OnboardingRequirement::DefaultModel),
-            Self::SmallModel => status.small_model.is_some(),
-            Self::UtilityModel => status.utility_model.is_some(),
+            Self::SmallModel => status.small_model_list.is_some() || status.small_model.is_some(),
+            Self::UtilityModel => {
+                status.utility_model_list.is_some() || status.utility_model.is_some()
+            }
         }
     }
 
@@ -210,44 +215,164 @@ pub fn utility_model_variant(model: &AvailableModelDescriptor) -> Option<Variant
     variants(model).into_iter().next()
 }
 
-/// A picker's choice as `onboarding.run` takes it: a bare key when the
-/// variant is the model's default, else `{ model, variant }`.
+/// One entry a model step chose for its field's fallback list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModelChoice {
+    /// A model the picker chose, in a variant (`None`: the model has none).
+    Model {
+        model: ModelKey,
+        variant: Option<VariantId>,
+    },
+    /// "Same as" another field: its models in this entry's place.
+    Field(OnboardingModelField),
+}
+
+/// The field's name in `config.toml`: `default_model`, `small_model`, or
+/// `utility_model`.
 #[must_use]
-pub fn model_input(
-    model: &AvailableModelDescriptor,
-    variant: Option<&VariantId>,
-) -> OnboardingModelInput {
-    match variant {
-        Some(variant) if model.default_variant.as_ref() != Some(variant) => {
-            OnboardingModelInput::Table(OnboardingModelTable {
-                model: model.key.clone(),
-                variant: Some(cookie_agent_protocol::ConfiguredVariantRef::Named(
-                    variant.clone(),
-                )),
-            })
-        }
-        _ => OnboardingModelInput::Key(model.key.clone()),
+pub const fn field_name(field: OnboardingModelField) -> &'static str {
+    match field {
+        OnboardingModelField::DefaultModel => "default_model",
+        OnboardingModelField::SmallModel => "small_model",
+        OnboardingModelField::UtilityModel => "utility_model",
+        OnboardingModelField::Unknown => "another field",
     }
 }
 
-/// Parses `key[:variant]`, as `cookie onboard --default-model` takes it.
-pub fn parse_model_flag(text: &str) -> Result<OnboardingModelInput, String> {
+/// A picker's choice as a list entry: no variant when it is the model's
+/// default, else the variant.
+#[must_use]
+pub fn model_entry(
+    model: &AvailableModelDescriptor,
+    variant: Option<&VariantId>,
+) -> OnboardingModelEntry {
+    OnboardingModelEntry {
+        model: Some(model.key.clone()),
+        field: None,
+        variant: variant
+            .filter(|variant| model.default_variant.as_ref() != Some(*variant))
+            .map(|variant| ConfiguredVariantRef::Named(variant.clone())),
+    }
+}
+
+/// The entry naming `field`.
+#[must_use]
+pub const fn field_entry(field: OnboardingModelField) -> OnboardingModelEntry {
+    OnboardingModelEntry {
+        model: None,
+        field: Some(field),
+        variant: None,
+    }
+}
+
+/// `choices` as `onboarding.run` takes them, models looked up by
+/// `descriptor` (a model no longer available is left out); `None` when
+/// nothing is left.
+pub fn choice_entries<'a>(
+    choices: &[ModelChoice],
+    descriptor: impl Fn(&ModelKey) -> Option<&'a AvailableModelDescriptor>,
+) -> Option<Vec<OnboardingModelEntry>> {
+    let entries = choices
+        .iter()
+        .filter_map(|choice| match choice {
+            ModelChoice::Model { model, variant } => {
+                descriptor(model).map(|descriptor| model_entry(descriptor, variant.as_ref()))
+            }
+            ModelChoice::Field(field) => Some(field_entry(*field)),
+        })
+        .collect::<Vec<_>>();
+    (!entries.is_empty()).then_some(entries)
+}
+
+/// A choice as a short label: `provider/model (variant)`, or `same as
+/// default_model`.
+#[must_use]
+pub fn choice_label(choice: &ModelChoice) -> String {
+    match choice {
+        ModelChoice::Model { model, variant } => match variant {
+            Some(variant) => format!("{model} ({variant})"),
+            None => model.to_string(),
+        },
+        ModelChoice::Field(field) => format!("same as {}", field_name(*field)),
+    }
+}
+
+/// A list entry as a short label: `provider/model (variant)`, or `same as
+/// default_model (variant)`.
+#[must_use]
+pub fn entry_label(entry: &OnboardingModelEntry) -> String {
+    let base = match (&entry.model, entry.field) {
+        (Some(model), _) => model.to_string(),
+        (None, Some(field)) => format!("same as {}", field_name(field)),
+        (None, None) => "?".into(),
+    };
+    match &entry.variant {
+        Some(ConfiguredVariantRef::Named(variant)) => format!("{base} ({variant})"),
+        Some(ConfiguredVariantRef::Base) => format!("{base} (base)"),
+        None => base,
+    }
+}
+
+/// A field's entries as one label, in fallback order: `a, then b`.
+#[must_use]
+pub fn list_label(entries: &[OnboardingModelEntry]) -> String {
+    entries
+        .iter()
+        .map(entry_label)
+        .collect::<Vec<_>>()
+        .join(", then ")
+}
+
+/// How a status shows `field`: its list as configured, else the one model a
+/// daemon older than client protocol 1.69.0 reports; `None` when unset.
+#[must_use]
+pub fn configured_label(status: &OnboardingStatus, field: OnboardingModelField) -> Option<String> {
+    let (list, single) = match field {
+        OnboardingModelField::DefaultModel => (&status.default_model_list, &status.default_model),
+        OnboardingModelField::SmallModel => (&status.small_model_list, &status.small_model),
+        OnboardingModelField::UtilityModel => (&status.utility_model_list, &status.utility_model),
+        OnboardingModelField::Unknown => return None,
+    };
+    list.as_deref()
+        .map(list_label)
+        .or_else(|| single.as_ref().map(model_label))
+}
+
+/// Parses `key[:variant]`, or a field's name such as `default_model`, as
+/// `cookie onboard --default-model` takes it. Model keys always hold a `/`,
+/// so the two never meet.
+pub fn parse_model_flag(text: &str) -> Result<OnboardingModelEntry, String> {
+    for field in [
+        OnboardingModelField::DefaultModel,
+        OnboardingModelField::SmallModel,
+        OnboardingModelField::UtilityModel,
+    ] {
+        let name = field_name(field);
+        if text == name
+            || text
+                .strip_prefix("${")
+                .and_then(|rest| rest.strip_suffix('}'))
+                == Some(name)
+        {
+            return Ok(field_entry(field));
+        }
+    }
     let (key, variant) = match text.rsplit_once(':') {
         Some((key, variant)) => (key, Some(variant)),
         None => (text, None),
     };
     let model = key
         .parse::<ModelKey>()
-        .map_err(|error| format!("`{key}` is not a model key: {error}"))?;
-    Ok(match variant {
-        None => OnboardingModelInput::Key(model),
-        Some(variant) => OnboardingModelInput::Table(OnboardingModelTable {
-            model,
-            variant: Some(
+        .map_err(|error| format!("`{key}` is not a model key or a model field: {error}"))?;
+    Ok(OnboardingModelEntry {
+        model: Some(model),
+        field: None,
+        variant: variant
+            .map(|variant| {
                 serde_json::from_value(serde_json::Value::String(variant.to_owned()))
-                    .map_err(|error| format!("`{variant}` is not a variant: {error}"))?,
-            ),
-        }),
+                    .map_err(|error| format!("`{variant}` is not a variant: {error}"))
+            })
+            .transpose()?,
     })
 }
 
@@ -285,16 +410,18 @@ pub fn model_label(model: &cookie_agent_protocol::OnboardingModel) -> String {
 pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
     let mut lines = Vec::new();
     for setting in &result.settings {
-        let value = match setting.as_str() {
-            "default_model" => result.status.default_model.as_ref(),
-            "small_model" => result.status.small_model.as_ref(),
-            "utility_model" => result.status.utility_model.as_ref(),
+        let field = match setting.as_str() {
+            "default_model" => Some(OnboardingModelField::DefaultModel),
+            "small_model" => Some(OnboardingModelField::SmallModel),
+            "utility_model" => Some(OnboardingModelField::UtilityModel),
             _ => None,
         };
-        lines.push(match value {
-            Some(value) => format!("Set {setting} to {}", model_label(value)),
-            None => format!("Set {setting}"),
-        });
+        lines.push(
+            match field.and_then(|field| configured_label(&result.status, field)) {
+                Some(value) => format!("Set {setting} to {value}"),
+                None => format!("Set {setting}"),
+            },
+        );
     }
     if lines.is_empty() {
         lines.push("Nothing to change.".into());
@@ -305,12 +432,12 @@ pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{
-        AvailableModelDescriptor, OnboardingModelInput, OnboardingRequirement, OnboardingStatus,
+        AvailableModelDescriptor, OnboardingModelField, OnboardingRequirement, OnboardingStatus,
     };
 
     use super::{
-        OnboardingStep, finish_refusal, first_step, model_groups, model_input, parse_model_flag,
-        small_model_variant, utility_model_variant,
+        ModelChoice, OnboardingStep, choice_entries, finish_refusal, first_step, model_entry,
+        model_groups, parse_model_flag, small_model_variant, utility_model_variant,
     };
 
     fn status(missing: &[OnboardingRequirement]) -> OnboardingStatus {
@@ -321,6 +448,9 @@ mod tests {
             default_model: None,
             small_model: None,
             utility_model: None,
+            default_model_list: None,
+            small_model_list: None,
+            utility_model_list: None,
         }
     }
 
@@ -416,18 +546,34 @@ mod tests {
     }
 
     #[test]
-    fn a_choice_of_the_default_variant_is_a_bare_key() {
+    fn a_choice_of_the_default_variant_carries_no_variant() {
         let listed = model("a/m", &["low", "high"], Some("high"));
         let high = super::variants(&listed)[1].clone();
-        assert!(matches!(
-            model_input(&listed, Some(&high)),
-            OnboardingModelInput::Key(_)
-        ));
+        assert_eq!(model_entry(&listed, Some(&high)).variant, None);
         let low = super::variants(&listed)[0].clone();
-        assert!(matches!(
-            model_input(&listed, Some(&low)),
-            OnboardingModelInput::Table(_)
-        ));
+        assert!(model_entry(&listed, Some(&low)).variant.is_some());
+    }
+
+    #[test]
+    fn choices_become_entries_in_order_without_models_gone() {
+        let listed = model("a/m", &[], None);
+        let choices = [
+            ModelChoice::Field(OnboardingModelField::DefaultModel),
+            ModelChoice::Model {
+                model: "a/gone".parse().unwrap(),
+                variant: None,
+            },
+            ModelChoice::Model {
+                model: "a/m".parse().unwrap(),
+                variant: None,
+            },
+        ];
+        let entries = choice_entries(&choices, |key| (key == &listed.key).then_some(&listed))
+            .expect("entries");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].field, Some(OnboardingModelField::DefaultModel));
+        assert_eq!(entries[1].model.as_ref(), Some(&listed.key));
+        assert_eq!(choice_entries(&choices[1..2], |_| None), None);
     }
 
     #[test]
@@ -467,16 +613,19 @@ mod tests {
     }
 
     #[test]
-    fn model_flags_take_an_optional_variant() {
-        assert!(matches!(
-            parse_model_flag("openai/gpt-test").unwrap(),
-            OnboardingModelInput::Key(_)
-        ));
-        let OnboardingModelInput::Table(table) = parse_model_flag("openai/gpt-test:high").unwrap()
-        else {
-            panic!("a table");
-        };
-        assert_eq!(table.model.to_string(), "openai/gpt-test");
+    fn model_flags_take_an_optional_variant_or_name_a_field() {
+        let plain = parse_model_flag("openai/gpt-test").unwrap();
+        assert_eq!(plain.variant, None);
+        let table = parse_model_flag("openai/gpt-test:high").unwrap();
+        assert_eq!(table.model.unwrap().to_string(), "openai/gpt-test");
+        assert!(table.variant.is_some());
+        for field in ["default_model", "${default_model}"] {
+            assert_eq!(
+                parse_model_flag(field).unwrap().field,
+                Some(OnboardingModelField::DefaultModel)
+            );
+        }
         assert!(parse_model_flag("not a key").is_err());
+        assert!(parse_model_flag("parent_model").is_err());
     }
 }

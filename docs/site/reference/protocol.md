@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.68.0",
+    "protocol_version": "1.69.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.68.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.69.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -240,9 +240,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
 | `daemon.status` | Empty object (since 1.65.0); answered in every phase, before the daemon is ready too | The daemon's status: `phase`, `restart`, `tasks`, and `error`; see [Daemon status](#daemon-status) |
 | `daemon.restart` | Optional `when`: `idle` (default) or `now` (since 1.19.0) | `scheduled` (whether this call scheduled the restart rather than changed one already scheduled), `active_runs`, and `background_calls` (since 1.35.0, omitted when zero); a daemon that cannot relaunch itself answers `restart_unsupported` (see [Restarting the daemon](#restarting-the-daemon)) |
-| `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, and since 1.56.0 `default_agent`; an older daemon may send `small_model`), `providers_connected`, and the configured `default_model`, `small_model`, and `utility_model` (since 1.56.0) as `{ model, variant? }`. Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
+| `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, and since 1.56.0 `default_agent`; an older daemon may send `small_model`), `providers_connected`, and the configured `default_model`, `small_model`, and `utility_model` (since 1.56.0) as `{ model, variant? }`, each the first model the field reaches; since 1.69.0 also `default_model_list`, `small_model_list`, and `utility_model_list`, each field as configured: 1 to 32 entries of `{ model?, field?, variant? }` with exactly one of `model` and `field` (another field, `default_model`, `small_model`, or `utility_model`), absent when unset ([fallback lists](../specs/model-fallback-lists.md)). Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
 | `onboarding.preview` | Optional `source` (since 1.22.0) | Since 1.56.0 always `onboarding_kit_unavailable`: there is no starter kit, the daemon keeps the [official agents](../extend/agents.md#official-agents) itself. An older daemon previews its starter kit |
-| `onboarding.run` | `install_kit`, optional `source`, optional `default_model`, `small_model`, and `utility_model` (since 1.56.0) (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0) | The configuration `settings` set and the new `status`; `written`, `skipped`, and `written_new` are empty since 1.56.0, which ignores `install_kit` and `source`. When the default agent is missing it fetches the official agents first. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
+| `onboarding.run` | `install_kit`, optional `source`, optional `default_model`, `small_model`, and `utility_model` (since 1.56.0) (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0); since 1.69.0 optional `default_model_list`, `small_model_list`, and `utility_model_list`, a field's fallback list in the entries `onboarding.get` reports, `invalid_params` beside the same field's single value or when an entry has not exactly one of `model` and `field` | The configuration `settings` set and the new `status`; `written`, `skipped`, and `written_new` are empty since 1.56.0, which ignores `install_kit` and `source`. When the default agent is missing it fetches the official agents first. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)), optional `agent_options` (since 1.26.0; see [ACP agents](#acp-agents)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
 | `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0), optional `active_since` and `before` timestamps (since 1.57.0; see [Listing recent sessions](#listing-recent-sessions)) | Root session metadata list with skipped-event diagnostics, and since 1.57.0 the `older` cursor |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |

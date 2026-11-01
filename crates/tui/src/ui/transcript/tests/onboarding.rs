@@ -1,8 +1,8 @@
 //! Onboarding: the notice while the daemon is not set up, "Not now", and
 //! the `/onboard` panel's steps, model choices, and Finish.
 
-use cookie_agent_client_state::onboarding::OnboardingStep;
-use cookie_agent_protocol::OnboardingRequirement;
+use cookie_agent_client_state::onboarding::{ModelChoice, OnboardingStep};
+use cookie_agent_protocol::{OnboardingModelField, OnboardingRequirement};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ui::app::onboarding::{ModelSlot, OnboardingAction, sample_status};
@@ -92,7 +92,7 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     app.choose_picker_entry(0).await;
     assert_eq!(app.modal, Modal::Onboarding);
     assert_eq!(app.onboarding.step, Some(OnboardingStep::SmallModel));
-    assert!(app.onboarding.default_choice.is_some());
+    assert_eq!(app.onboarding.default_choice.len(), 1);
     // The optional models: the small one is skipped, the utility one set.
     assert_eq!(app.onboarding_finish_refusal(), None);
     app.handle_key(key(KeyCode::Right)).await;
@@ -101,7 +101,23 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     assert_eq!(app.onboarding.picking, Some(ModelSlot::Utility));
     app.choose_picker_entry(0).await;
     assert_eq!(app.modal, Modal::Onboarding);
-    assert!(app.onboarding.utility_choice.is_some());
+    assert_eq!(app.onboarding.utility_choice.len(), 1);
+    // A fallback after it: the same models as the default model, stays on
+    // the step; removing it leaves the first model.
+    assert_eq!(app.onboarding.step, Some(OnboardingStep::UtilityModel));
+    app.handle_key(key(KeyCode::Char('d'))).await;
+    assert_eq!(
+        app.onboarding.utility_choice.last(),
+        Some(&ModelChoice::Field(OnboardingModelField::DefaultModel))
+    );
+    assert!(
+        !app.onboarding_actions()
+            .contains(&OnboardingAction::SameAsDefault),
+        "the list names the default model once"
+    );
+    app.handle_key(key(KeyCode::Char('x'))).await;
+    assert_eq!(app.onboarding.utility_choice.len(), 1);
+    app.handle_key(key(KeyCode::Char('d'))).await;
 
     app.handle_key(key(KeyCode::Char('f'))).await;
     pump_until(&mut app, |app| app.onboarding.summary.is_some()).await;
@@ -113,6 +129,11 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
             .iter()
             .any(|line| line.starts_with("Set default_model")),
         "{summary:?}"
+    );
+    assert_eq!(
+        status.utility_model_list.as_ref().map(|list| list[1].field),
+        Some(Some(OnboardingModelField::DefaultModel)),
+        "{status:?}"
     );
     assert!(!app.onboarding_notice_visible());
     // `primary`, the default agent, runs on the default model now: the

@@ -128,7 +128,7 @@ starting with `{` or `[` needs them. Any other entry shape, such as a number
 or a mapping with unknown keys, is an error.
 
 `model` is a model key or one of four variables, which carry a model and its
-variant together:
+variant together, or a field's whole fallback list:
 
 | Variable | Names | Allowed in |
 |---|---|---|
@@ -140,9 +140,14 @@ variant together:
 The `variant` field is optional. For a model key, omitted selects the model's
 configured default variant, the string `"base"` selects the base variant
 explicitly, and any other string selects that named variant. Beside a
-variable, a `variant` overrides the variant the variable carries; without one
-the variable's variant applies, and a variable that carries none means the
-model's default variant.
+variable, a `variant` applies to each of the field's models that has no
+variant of its own and has a variant of that name; the others keep the
+variant the field gives them, and a model given none runs on its default
+variant ([default models](../engine/configuration.md#default-models)).
+
+A field holding a fallback list puts all of its models at the variable's
+place in the chain, and a model already earlier in the chain is not added
+again.
 
 The variables resolve when the agents compile: at start and on every
 configuration reload, so changing `default_model` retargets every agent that

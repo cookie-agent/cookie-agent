@@ -33,6 +33,10 @@ pub enum ConfigError {
     },
     #[error("{0}")]
     HeaderOwnership(#[source] cookie_agent_models::authoring::AuthoringError),
+    #[error("model fields refer to each other in a cycle: {0}")]
+    ModelFieldCycle(String),
+    #[error("`{field}` names `{entry}` more than once")]
+    ModelFieldDuplicate { field: &'static str, entry: String },
     #[error("invalid runtime setting: {0}")]
     InvalidRuntime(&'static str),
     #[error("MCP server `{server}` is invalid: {reason}")]

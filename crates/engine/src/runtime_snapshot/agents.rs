@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use cookie_agent_config::ConfiguredModel;
 use cookie_agent_config::{
     AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
     AgentModelFallback, AgentModelRef, AgentRegistry as ConfigAgentRegistry,
     BUILT_IN_COMPACTION_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
 };
+use cookie_agent_config::{ConfiguredModelRef, ConfiguredModels, ModelField};
 use cookie_agent_identity::{AgentId as IdentityAgentId, ConfiguredVariantRef, ModelKey};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
 use cookie_agent_protocol::{AgentDescriptor, AgentId, ModelSelection};
@@ -158,9 +158,17 @@ pub(crate) enum ResolvedAgentFallback {
 /// `${utility_model}`: the configuration's fields of those names.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ModelVariables<'a> {
-    pub default_model: Option<&'a ConfiguredModel>,
-    pub small_model: Option<&'a ConfiguredModel>,
-    pub utility_model: Option<&'a ConfiguredModel>,
+    pub default_model: Option<&'a ConfiguredModels>,
+    pub small_model: Option<&'a ConfiguredModels>,
+    pub utility_model: Option<&'a ConfiguredModels>,
+}
+
+/// One model of a model field's expansion, its variant as configured
+/// (`None`: the model's default variant).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExpandedModel {
+    pub model: ModelKey,
+    pub variant: Option<ConfiguredVariantRef>,
 }
 
 impl<'a> ModelVariables<'a> {
@@ -172,12 +180,102 @@ impl<'a> ModelVariables<'a> {
         }
     }
 
-    fn get(&self, model: &AgentModelRef) -> Option<&'a ConfiguredModel> {
-        match model {
-            AgentModelRef::DefaultModel => self.default_model,
-            AgentModelRef::SmallModel => self.small_model,
-            AgentModelRef::UtilityModel => self.utility_model,
-            AgentModelRef::Model(_) | AgentModelRef::ParentModel => None,
+    fn field(&self, field: ModelField) -> Option<&'a ConfiguredModels> {
+        match field {
+            ModelField::Default => self.default_model,
+            ModelField::Small => self.small_model,
+            ModelField::Utility => self.utility_model,
+        }
+    }
+
+    /// The models of `field` in order, with `variant` (an entry's override)
+    /// applied by `docs/site/specs/model-fallback-lists.md` section 4, each
+    /// model once. The fields found unset on the way are added to `unset`.
+    pub(crate) fn expand(
+        &self,
+        models: &CompiledModelRuntime,
+        field: ModelField,
+        variant: Option<&ConfiguredVariantRef>,
+        unset: &mut Vec<&'static str>,
+    ) -> Vec<ExpandedModel> {
+        let mut expanded = self.expand_field(models, field, &mut Vec::new(), unset);
+        apply_variant_override(models, &mut expanded, variant);
+        expanded
+    }
+
+    /// [`Self::expand`] as selections, each variant resolved.
+    pub(crate) fn selections(
+        &self,
+        models: &CompiledModelRuntime,
+        field: ModelField,
+        variant: Option<&ConfiguredVariantRef>,
+        unset: &mut Vec<&'static str>,
+    ) -> Vec<ModelSelection> {
+        self.expand(models, field, variant, unset)
+            .into_iter()
+            .map(|expanded| ModelSelection {
+                variant: resolve_variant(models, &expanded.model, expanded.variant.as_ref()),
+                model: expanded.model,
+            })
+            .collect()
+    }
+
+    fn expand_field(
+        &self,
+        models: &CompiledModelRuntime,
+        field: ModelField,
+        stack: &mut Vec<ModelField>,
+        unset: &mut Vec<&'static str>,
+    ) -> Vec<ExpandedModel> {
+        // The configuration refuses cycles; one reached anyway adds nothing.
+        if stack.contains(&field) {
+            return Vec::new();
+        }
+        let Some(configured) = self.field(field) else {
+            unset.push(field.name());
+            return Vec::new();
+        };
+        stack.push(field);
+        let mut expanded = Vec::new();
+        for entry in configured.entries() {
+            match &entry.model {
+                ConfiguredModelRef::Model(model) => expanded.push(ExpandedModel {
+                    model: model.clone(),
+                    variant: entry.variant.clone(),
+                }),
+                ConfiguredModelRef::Field(named) => {
+                    let mut inner = self.expand_field(models, *named, stack, unset);
+                    apply_variant_override(models, &mut inner, entry.variant.as_ref());
+                    expanded.extend(inner);
+                }
+            }
+        }
+        stack.pop();
+        let mut seen = std::collections::BTreeSet::new();
+        expanded.retain(|expanded| seen.insert(expanded.model.clone()));
+        expanded
+    }
+}
+
+/// Gives `variant` to each model of `expanded` that has no variant of its
+/// own and has a variant of that name (`base` every model has).
+fn apply_variant_override(
+    models: &CompiledModelRuntime,
+    expanded: &mut [ExpandedModel],
+    variant: Option<&ConfiguredVariantRef>,
+) {
+    let Some(variant) = variant else {
+        return;
+    };
+    for model in expanded.iter_mut().filter(|model| model.variant.is_none()) {
+        let has_variant = match variant {
+            ConfiguredVariantRef::Base => true,
+            ConfiguredVariantRef::Named(id) => models
+                .model(&model.model)
+                .is_some_and(|compiled| compiled.model.variants.contains_key(id)),
+        };
+        if has_variant {
+            model.variant = Some(variant.clone());
         }
     }
 }
@@ -195,23 +293,6 @@ fn resolve_variant(
             .and_then(|model| model.model.default_variant.clone()),
         Some(ConfiguredVariantRef::Base) => None,
         Some(ConfiguredVariantRef::Named(id)) => Some(id.clone()),
-    }
-}
-
-/// The selection `${default_model}` or `${small_model}` resolves to, with
-/// `variant` (an entry's override) in place of the configured one.
-pub(crate) fn configured_selection(
-    models: &CompiledModelRuntime,
-    configured: &ConfiguredModel,
-    variant: Option<&ConfiguredVariantRef>,
-) -> ModelSelection {
-    ModelSelection {
-        model: configured.model.clone(),
-        variant: resolve_variant(
-            models,
-            &configured.model,
-            variant.or(configured.variant.as_ref()),
-        ),
     }
 }
 
@@ -343,21 +424,23 @@ impl AgentRegistry {
                     variable @ (AgentModelRef::DefaultModel
                     | AgentModelRef::SmallModel
                     | AgentModelRef::UtilityModel) => {
-                        match variables.get(variable) {
-                            Some(configured) => {
-                                resolved_fallback.push(ResolvedAgentFallback::Selection {
-                                    selection: configured_selection(
-                                        models,
-                                        configured,
-                                        fallback.variant.as_ref(),
-                                    ),
+                        // The field's models in its place; an unset field
+                        // adds none, and the agent reports it to set.
+                        let field = variable.field().expect("a model field's variable");
+                        resolved_fallback.extend(
+                            variables
+                                .selections(
+                                    models,
+                                    field,
+                                    fallback.variant.as_ref(),
+                                    &mut unset_models,
+                                )
+                                .into_iter()
+                                .map(|selection| ResolvedAgentFallback::Selection {
+                                    selection,
                                     cache: fallback.cache.clone(),
-                                });
-                            }
-                            // The entry is skipped; the agent reports the
-                            // field to set.
-                            None => unset_models.extend(variable.config_field()),
-                        }
+                                }),
+                        );
                     }
                 }
             }
@@ -403,10 +486,11 @@ impl AgentRegistry {
         #[cfg(any(test, feature = "test-support"))]
         if !agents.values().any(|agent| agent.runnable_as_root) {
             // `${default_model}` first, then the first available model.
+            let mut unset_models = Vec::new();
             let configured = variables
-                .default_model
-                .map(|configured| configured_selection(models, configured, None))
-                .filter(|selection| selection_available(models, selection));
+                .selections(models, ModelField::Default, None, &mut unset_models)
+                .into_iter()
+                .find(|selection| selection_available(models, selection));
             let first = first_available_selection(models)
                 .filter(|first| configured.as_ref().is_none_or(|c| c.model != first.model));
             let resolved_fallback = configured
@@ -425,11 +509,7 @@ impl AgentRegistry {
                     ResolvedAgent {
                         document,
                         resolved_fallback,
-                        unset_models: if variables.default_model.is_none() {
-                            vec!["default_model"]
-                        } else {
-                            Vec::new()
-                        },
+                        unset_models,
                         runnable_as_root: true,
                         acp: None,
                     },

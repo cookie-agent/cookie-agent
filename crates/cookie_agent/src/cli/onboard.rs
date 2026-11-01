@@ -9,12 +9,12 @@
 use anyhow::Context as _;
 use clap::Args;
 use cookie_agent_client_state::onboarding::{
-    self as rules, ModelGroup, default_model_variant, model_groups, model_input, model_label,
-    parse_model_flag, small_model_variant, utility_model_variant,
+    self as rules, ModelGroup, configured_label, default_model_variant, entry_label, field_entry,
+    model_entry, model_groups, parse_model_flag, small_model_variant, utility_model_variant,
 };
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, OnboardingModelInput, OnboardingRequirement, OnboardingRunParams,
-    OnboardingStatus, VariantId,
+    AvailableModelDescriptor, OnboardingModelEntry, OnboardingModelField, OnboardingRequirement,
+    OnboardingRunParams, OnboardingStatus, VariantId,
 };
 use cookie_agent_protocol_transport::Client;
 
@@ -28,17 +28,20 @@ pub(crate) struct OnboardArgs {
     /// given.
     #[arg(long)]
     pub(crate) yes: bool,
-    /// The default model, `provider/model` or `provider/model:variant`.
+    /// The default model, `provider/model` or `provider/model:variant`;
+    /// repeat it for a fallback list, in order.
     #[arg(long, value_name = "KEY[:VARIANT]")]
-    pub(crate) default_model: Option<String>,
+    pub(crate) default_model: Vec<String>,
     /// The small model, for subagents that carry out work,
-    /// `provider/model` or `provider/model:variant`.
-    #[arg(long, value_name = "KEY[:VARIANT]")]
-    pub(crate) small_model: Option<String>,
+    /// `provider/model`, `provider/model:variant`, or `default_model`;
+    /// repeat it for a fallback list, in order.
+    #[arg(long, value_name = "KEY[:VARIANT]|FIELD")]
+    pub(crate) small_model: Vec<String>,
     /// The utility model, for approvals and session titles,
-    /// `provider/model` or `provider/model:variant`.
-    #[arg(long, value_name = "KEY[:VARIANT]")]
-    pub(crate) utility_model: Option<String>,
+    /// `provider/model`, `provider/model:variant`, `default_model`, or
+    /// `small_model`; repeat it for a fallback list, in order.
+    #[arg(long, value_name = "KEY[:VARIANT]|FIELD")]
+    pub(crate) utility_model: Vec<String>,
 }
 
 /// Which model field a question is for.
@@ -50,6 +53,26 @@ enum Slot {
 }
 
 impl Slot {
+    /// The fields an entry of this field may name: the ones asked before it.
+    const fn earlier(self) -> &'static [(char, OnboardingModelField)] {
+        match self {
+            Self::Default => &[],
+            Self::Small => &[('d', OnboardingModelField::DefaultModel)],
+            Self::Utility => &[
+                ('d', OnboardingModelField::DefaultModel),
+                ('s', OnboardingModelField::SmallModel),
+            ],
+        }
+    }
+
+    const fn wire(self) -> OnboardingModelField {
+        match self {
+            Self::Default => OnboardingModelField::DefaultModel,
+            Self::Small => OnboardingModelField::SmallModel,
+            Self::Utility => OnboardingModelField::UtilityModel,
+        }
+    }
+
     const fn field(self) -> &'static str {
         match self {
             Self::Default => "default_model",
@@ -107,27 +130,18 @@ pub(crate) async fn run_onboard_with(
     args: OnboardArgs,
     io: &mut impl ConnectIo,
 ) -> anyhow::Result<()> {
-    let default_flag = args
-        .default_model
-        .as_deref()
-        .map(parse_model_flag)
-        .transpose()
-        .map_err(anyhow::Error::msg)
-        .context("--default-model")?;
-    let small_flag = args
-        .small_model
-        .as_deref()
-        .map(parse_model_flag)
-        .transpose()
-        .map_err(anyhow::Error::msg)
-        .context("--small-model")?;
-    let utility_flag = args
-        .utility_model
-        .as_deref()
-        .map(parse_model_flag)
-        .transpose()
-        .map_err(anyhow::Error::msg)
-        .context("--utility-model")?;
+    let flags = |values: &[String], flag: &str| {
+        values
+            .iter()
+            .map(|value| parse_model_flag(value))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::msg)
+            .context(flag.to_owned())
+            .map(|entries| (!entries.is_empty()).then_some(entries))
+    };
+    let default_flag = flags(&args.default_model, "--default-model")?;
+    let small_flag = flags(&args.small_model, "--small-model")?;
+    let utility_flag = flags(&args.utility_model, "--utility-model")?;
     let mut status = client.get_onboarding().await.context("onboarding.get")?;
     describe_status(&status, io)?;
 
@@ -161,9 +175,12 @@ pub(crate) async fn run_onboard_with(
         .run_onboarding(OnboardingRunParams {
             install_kit: false,
             source: None,
-            default_model,
-            small_model,
-            utility_model,
+            default_model: None,
+            small_model: None,
+            utility_model: None,
+            default_model_list: default_model,
+            small_model_list: small_model,
+            utility_model_list: utility_model,
         })
         .await
         .context("onboarding.run")?;
@@ -190,14 +207,11 @@ fn describe_status(status: &OnboardingStatus, io: &mut impl ConnectIo) -> anyhow
             .join(", ")
     };
     io.write_line(&format!("Connected providers: {connected}"))?;
-    for (field, value) in [
-        ("default_model", &status.default_model),
-        ("small_model", &status.small_model),
-        ("utility_model", &status.utility_model),
-    ] {
+    for slot in [Slot::Default, Slot::Small, Slot::Utility] {
         io.write_line(&format!(
-            "{field}: {}",
-            value.as_ref().map_or_else(|| "not set".into(), model_label)
+            "{}: {}",
+            slot.field(),
+            configured_label(status, slot.wire()).unwrap_or_else(|| "not set".into())
         ))?;
     }
     if status.ready {
@@ -223,16 +237,16 @@ fn confirm(io: &mut impl ConnectIo, prompt: &str, default: bool) -> anyhow::Resu
     })
 }
 
-/// The value to set for `slot`: the flag, else the user's choice, else
+/// The list to set for `slot`: the flags, else the user's choices, else
 /// nothing (keep what is set).
 fn choose_model(
     slot: Slot,
-    flag: Option<OnboardingModelInput>,
+    flag: Option<Vec<OnboardingModelEntry>>,
     status: &OnboardingStatus,
     models: &[AvailableModelDescriptor],
     args: &OnboardArgs,
     io: &mut impl ConnectIo,
-) -> anyhow::Result<Option<OnboardingModelInput>> {
+) -> anyhow::Result<Option<Vec<OnboardingModelEntry>>> {
     if flag.is_some() {
         return Ok(flag);
     }
@@ -254,31 +268,65 @@ fn choose_model(
         anyhow::bail!("no connected provider offers a model yet");
     }
     let number = slot.number();
-    let current = match slot {
-        Slot::Default => status.default_model.as_ref(),
-        Slot::Small => status.small_model.as_ref(),
-        Slot::Utility => status.utility_model.as_ref(),
-    };
+    let current = configured_label(status, slot.wire());
+    let same_as = slot
+        .earlier()
+        .iter()
+        .map(|(key, field)| format!(", `{key}` for the same as {}", rules::field_name(*field)))
+        .collect::<String>();
     io.write_line(&format!(
-        "{number}. {} ({}): choose by number, `/text` to search{}.",
+        "{number}. {} ({}): choose by number, `/text` to search{same_as}{}.",
         slot.field(),
         slot.about(),
-        match (current, missing) {
-            (Some(current), false) => format!(", Enter keeps {}", model_label(current)),
+        match (&current, missing) {
+            (Some(current), false) => format!(", Enter keeps {current}"),
             _ => String::new(),
         }
     ))?;
+    let mut chosen: Vec<OnboardingModelEntry> = Vec::new();
     let mut query = String::new();
     loop {
         let groups = model_groups(models, &query);
         let listed = list_models(&groups, io)?;
-        let answer = io.read_public(&format!("{} number: ", slot.field()))?;
+        let prompt = if chosen.is_empty() {
+            format!("{} number: ", slot.field())
+        } else {
+            format!(
+                "Fallback {} after {} (number, Enter to finish): ",
+                chosen.len() + 1,
+                chosen
+                    .iter()
+                    .map(entry_label)
+                    .collect::<Vec<_>>()
+                    .join(", then ")
+            )
+        };
+        let answer = io.read_public(&prompt)?;
         let answer = answer.trim();
-        if answer.is_empty() && !missing && (current.is_some() || !slot.required()) {
-            return Ok(None);
+        if answer.is_empty() {
+            if !chosen.is_empty() {
+                return Ok(Some(chosen));
+            }
+            if !missing && (current.is_some() || !slot.required()) {
+                return Ok(None);
+            }
+            continue;
         }
         if let Some(search) = answer.strip_prefix('/') {
             query = search.to_owned();
+            continue;
+        }
+        if let Some((_, field)) = slot
+            .earlier()
+            .iter()
+            .find(|(key, _)| answer.len() == 1 && answer.starts_with(*key))
+        {
+            let entry = field_entry(*field);
+            if chosen.contains(&entry) {
+                io.write_line("Already in the list.")?;
+            } else {
+                chosen.push(entry);
+            }
             continue;
         }
         let Some(model) = answer
@@ -290,13 +338,23 @@ fn choose_model(
             io.write_line("Not a listed number.")?;
             continue;
         };
+        if chosen
+            .iter()
+            .any(|entry| entry.model.as_ref() == Some(&model.key))
+        {
+            io.write_line("Already in the list.")?;
+            continue;
+        }
         let preselected = match slot {
             Slot::Default => default_model_variant(model),
             Slot::Small => small_model_variant(model),
             Slot::Utility => utility_model_variant(model),
         };
         let variant = choose_variant(model, preselected, io)?;
-        return Ok(Some(model_input(model, variant.as_ref())));
+        chosen.push(model_entry(model, variant.as_ref()));
+        if chosen.len() == cookie_agent_protocol::MAX_ONBOARDING_MODEL_ENTRIES {
+            return Ok(Some(chosen));
+        }
     }
 }
 

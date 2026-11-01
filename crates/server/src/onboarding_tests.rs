@@ -134,6 +134,9 @@ async fn a_plain_client_onboards_through_the_daemon() {
             },
         )),
         utility_model: None,
+        default_model_list: None,
+        small_model_list: None,
+        utility_model_list: None,
     };
     let refused = client
         .run_onboarding(models.clone())
@@ -175,6 +178,95 @@ async fn a_plain_client_onboards_through_the_daemon() {
     assert_eq!(
         serde_json::to_value(&changed.small_model).unwrap(),
         serde_json::json!({"model": "custom.test/a-model", "variant": "low"})
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn onboarding_sets_and_reports_fallback_lists() {
+    use cookie_agent_protocol::{OnboardingModelEntry, OnboardingModelField};
+    let fixture = fixture();
+    let root = fixture.directory.path().join(".cookie-agent");
+    std::fs::create_dir_all(root.join("agents")).unwrap();
+    std::fs::write(root.join("agents/primary.md"), AGENT).unwrap();
+    fixture.engine.reload_configuration().await.expect("reload");
+    let client = Arc::clone(&fixture.server).connect_in_process();
+    client.handshake().await.expect("handshake");
+    let model = |key: &str| OnboardingModelEntry {
+        model: Some(key.parse().unwrap()),
+        field: None,
+        variant: None,
+    };
+    let default_field = OnboardingModelEntry {
+        model: None,
+        field: Some(OnboardingModelField::DefaultModel),
+        variant: Some(serde_json::from_value(serde_json::json!("low")).unwrap()),
+    };
+    let params = OnboardingRunParams {
+        install_kit: false,
+        source: None,
+        default_model: None,
+        small_model: None,
+        utility_model: None,
+        default_model_list: Some(vec![
+            model("custom.test/gone"),
+            model("custom.test/a-model"),
+        ]),
+        small_model_list: Some(vec![default_field.clone()]),
+        utility_model_list: None,
+    };
+
+    for refused in [
+        OnboardingRunParams {
+            default_model: Some(OnboardingModelInput::Key(
+                "custom.test/a-model".parse().unwrap(),
+            )),
+            ..params.clone()
+        },
+        OnboardingRunParams {
+            small_model_list: Some(vec![OnboardingModelEntry {
+                model: Some("custom.test/a-model".parse().unwrap()),
+                ..default_field.clone()
+            }]),
+            ..params.clone()
+        },
+        OnboardingRunParams {
+            small_model_list: Some(Vec::new()),
+            ..params.clone()
+        },
+    ] {
+        let error = client.run_onboarding(refused).await.expect_err("refused");
+        assert!(
+            error.is(&cookie_agent_protocol::errors::BAD_PARAMS),
+            "{error:?}"
+        );
+    }
+
+    let result = client.run_onboarding(params).await.expect("onboarding.run");
+    assert!(
+        result.status.ready,
+        "a later model of the list is available"
+    );
+    assert_eq!(
+        result.status.default_model_list,
+        Some(vec![
+            model("custom.test/gone"),
+            model("custom.test/a-model")
+        ])
+    );
+    assert_eq!(result.status.small_model_list, Some(vec![default_field]));
+    // The single fields report the first model each field reaches.
+    assert_eq!(
+        result
+            .status
+            .small_model
+            .map(|model| model.model.to_string()),
+        Some("custom.test/gone".into())
+    );
+    let config = std::fs::read_to_string(root.join("config.toml")).expect("config");
+    assert!(
+        config.contains("${default_model}"),
+        "the reference is written as the field's variable: {config}"
     );
     fixture.engine.shutdown().await;
 }

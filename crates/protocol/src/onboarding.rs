@@ -44,6 +44,41 @@ pub enum OnboardingRequirement {
     Unknown,
 }
 
+/// One of the model fields, as an entry of another field names it (client
+/// protocol 1.69.0). A value this build does not know reads as `unknown`;
+/// `onboarding.run` refuses it.
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum OnboardingModelField {
+    DefaultModel,
+    SmallModel,
+    UtilityModel,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One entry of a model field's fallback list (client protocol 1.69.0):
+/// exactly one of `model`, a model key, and `field`, another model field
+/// whose models the entry stands for. `variant` absent means the model's
+/// default variant; beside `field`, it applies to each of that field's
+/// models that has no variant of its own and has a variant of that name
+/// (`docs/site/specs/model-fallback-lists.md`).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OnboardingModelEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<OnboardingModelField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<ConfiguredVariantRef>,
+}
+
+/// The most entries a model field's list holds.
+pub const MAX_ONBOARDING_MODEL_ENTRIES: usize = 32;
+
 /// A model and its variant as the configuration holds them: `variant`
 /// absent means the model's default variant, `base` its base variant.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -72,6 +107,20 @@ pub struct OnboardingStatus {
     /// `utility_model` (client protocol 1.56.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utility_model: Option<OnboardingModel>,
+    /// `default_model` as configured, a list of one for a single model, its
+    /// references to other fields kept; absent when unset (client protocol
+    /// 1.69.0). `default_model` above is the first model it reaches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 32))]
+    pub default_model_list: Option<Vec<OnboardingModelEntry>>,
+    /// `small_model` as configured, like `default_model_list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 32))]
+    pub small_model_list: Option<Vec<OnboardingModelEntry>>,
+    /// `utility_model` as configured, like `default_model_list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 32))]
+    pub utility_model_list: Option<Vec<OnboardingModelEntry>>,
 }
 
 /// `onboarding.get`.
@@ -180,6 +229,20 @@ pub struct OnboardingRunParams {
     /// `utility_model` (client protocol 1.56.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utility_model: Option<OnboardingModelInput>,
+    /// `default_model` as a fallback list, in order (client protocol
+    /// 1.69.0); refused beside `default_model`. A list of one is written as
+    /// the entry alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 32))]
+    pub default_model_list: Option<Vec<OnboardingModelEntry>>,
+    /// `small_model` as a fallback list, like `default_model_list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 32))]
+    pub small_model_list: Option<Vec<OnboardingModelEntry>>,
+    /// `utility_model` as a fallback list, like `default_model_list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 32))]
+    pub utility_model_list: Option<Vec<OnboardingModelEntry>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

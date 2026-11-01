@@ -1231,7 +1231,8 @@ impl ServerProtocol for Server {
         &self,
         params: cookie_agent_protocol::OnboardingRunParams,
     ) -> Result<cookie_agent_protocol::OnboardingRunResult> {
-        let request = crate::onboarding::request_from_wire(params);
+        let request =
+            crate::onboarding::request_from_wire(params).map_err(ServerFault::invalid_params)?;
         let outcome = self
             .engine
             .run_onboarding(request)

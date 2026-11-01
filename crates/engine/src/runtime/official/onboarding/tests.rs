@@ -144,6 +144,56 @@ async fn a_run_that_would_not_be_ready_writes_nothing() {
 }
 
 #[tokio::test]
+async fn a_default_model_list_is_ready_when_any_of_its_models_is_available() {
+    let fixture = fixture();
+    official_agents(&fixture).await;
+    let outcome = fixture
+        .engine
+        .run_onboarding(OnboardingRequest {
+            default_model: Some(serde_json::json!([
+                "custom.test/gone",
+                "custom.test/a-model"
+            ])),
+            small_model: Some(serde_json::json!("${default_model}")),
+            utility_model: None,
+        })
+        .await
+        .expect("a later model is available");
+    assert!(outcome.state.ready());
+    let default = outcome.state.default_model.expect("default_model");
+    assert_eq!(default.configured.entries().len(), 2);
+    assert_eq!(
+        default.first.map(|(model, _)| model.to_string()),
+        Some("custom.test/gone".into())
+    );
+    // `small_model` reports what it reaches through `${default_model}`.
+    assert_eq!(
+        outcome
+            .state
+            .small_model
+            .and_then(|field| field.first)
+            .map(|(model, _)| model.to_string()),
+        Some("custom.test/gone".into())
+    );
+
+    let before = std::fs::read(root(&fixture).join("config.toml")).expect("config");
+    let error = fixture
+        .engine
+        .run_onboarding(OnboardingRequest {
+            default_model: Some(serde_json::json!(["${small_model}", "custom.test/a-model"])),
+            ..OnboardingRequest::default()
+        })
+        .await
+        .expect_err("a cycle");
+    assert!(error.to_string().contains("cycle"), "{error}");
+    assert_eq!(
+        std::fs::read(root(&fixture).join("config.toml")).expect("config"),
+        before
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_run_without_official_agents_reachable_is_refused() {
     let fixture = fixture();
     // An address nothing listens on.
@@ -187,7 +237,8 @@ async fn a_run_fetches_the_official_agents_and_sets_the_models() {
         state
             .utility_model
             .as_ref()
-            .map(|model| model.model.to_string()),
+            .and_then(|field| field.first.as_ref())
+            .map(|(model, _)| model.to_string()),
         Some("custom.test/z-model".into())
     );
     fixture.engine.shutdown().await;

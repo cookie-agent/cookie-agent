@@ -12,9 +12,10 @@ mod tests;
 use std::sync::Arc;
 
 use cookie_agent_config::{
-    AgentMode, ConfigTree, ConfiguredModel, LoadedConfiguration, load_from_tree, write_tree,
+    AgentMode, ConfigTree, ConfiguredModels, LoadedConfiguration, ModelField, load_from_tree,
+    write_tree,
 };
-use cookie_agent_identity::ProviderId;
+use cookie_agent_identity::{ConfiguredVariantRef, ModelKey, ProviderId};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
 
 use crate::runtime::configuration::config_error;
@@ -39,9 +40,19 @@ pub struct OnboardingState {
     pub missing: Vec<OnboardingRequirement>,
     /// The providers that offer at least one available model, sorted.
     pub providers_connected: Vec<ProviderId>,
-    pub default_model: Option<ConfiguredModel>,
-    pub small_model: Option<ConfiguredModel>,
-    pub utility_model: Option<ConfiguredModel>,
+    pub default_model: Option<OnboardingField>,
+    pub small_model: Option<OnboardingField>,
+    pub utility_model: Option<OnboardingField>,
+}
+
+/// A set model field as onboarding reports it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OnboardingField {
+    /// The field as configured, its references to other fields kept.
+    pub configured: ConfiguredModels,
+    /// The first model the field reaches and that model's variant as
+    /// configured; `None` when it reaches none (it names only unset fields).
+    pub first: Option<(ModelKey, Option<ConfiguredVariantRef>)>,
 }
 
 impl OnboardingState {
@@ -129,31 +140,40 @@ pub(crate) fn onboarding_state(
         .collect::<Vec<_>>();
     providers_connected.sort();
     providers_connected.dedup();
-    let available = |configured: Option<&ConfiguredModel>| {
-        configured.is_some_and(|configured| {
-            crate::runtime_snapshot::selection_available(
-                models,
-                &crate::runtime_snapshot::configured_selection(models, configured, None),
-            )
-        })
-    };
+    let variables = crate::runtime_snapshot::ModelVariables::of(&config.runtime);
     let runtime = &config.runtime;
     let mut missing = Vec::new();
     if providers_connected.is_empty() {
         missing.push(OnboardingRequirement::Provider);
     }
-    if !available(runtime.default_model.as_ref()) {
+    if !variables
+        .selections(models, ModelField::Default, None, &mut Vec::new())
+        .iter()
+        .any(|selection| crate::runtime_snapshot::selection_available(models, selection))
+    {
         missing.push(OnboardingRequirement::DefaultModel);
     }
     if !default_agent_present(config) {
         missing.push(OnboardingRequirement::DefaultAgent);
     }
+    let field = |field: ModelField| {
+        runtime
+            .model_field(field)
+            .map(|configured| OnboardingField {
+                configured: configured.clone(),
+                first: variables
+                    .expand(models, field, None, &mut Vec::new())
+                    .into_iter()
+                    .next()
+                    .map(|first| (first.model, first.variant)),
+            })
+    };
     OnboardingState {
         missing,
         providers_connected,
-        default_model: runtime.default_model.clone(),
-        small_model: runtime.small_model.clone(),
-        utility_model: runtime.utility_model.clone(),
+        default_model: field(ModelField::Default),
+        small_model: field(ModelField::Small),
+        utility_model: field(ModelField::Utility),
     }
 }
 

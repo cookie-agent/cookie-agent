@@ -28,11 +28,11 @@ async fn cookie_onboard_sets_the_models() {
     );
 
     // Interactively: keep the provider, pick A Model (its default variant
-    // preselected), skip the small model, then search for Z Model as the
-    // utility model.
+    // preselected) and no fallback, skip the small model, then search for
+    // Z Model as the utility model.
     let mut io = ScriptedConnectIo {
         public: VecDeque::from(
-            ["n", "1", "", "", "/z-model", "1"]
+            ["n", "1", "", "", "", "/z-model", "1", ""]
                 .map(str::to_owned)
                 .to_vec(),
         ),
@@ -65,7 +65,7 @@ async fn cookie_onboard_sets_the_models() {
         &client,
         OnboardArgs {
             yes: true,
-            small_model: Some("custom.test/a-model:low".into()),
+            small_model: vec!["custom.test/a-model:low".into()],
             ..OnboardArgs::default()
         },
         &mut io,
@@ -76,6 +76,57 @@ async fn cookie_onboard_sets_the_models() {
         io.output
             .iter()
             .any(|line| line == "Set small_model to custom.test/a-model (low)"),
+        "{:?}",
+        io.output
+    );
+
+    // Repeated flags make a fallback list; a field's name refers to it.
+    let mut io = ScriptedConnectIo::default();
+    run_onboard_with(
+        &client,
+        OnboardArgs {
+            yes: true,
+            default_model: vec!["custom.test/z-model".into(), "custom.test/a-model".into()],
+            small_model: vec!["default_model".into()],
+            ..OnboardArgs::default()
+        },
+        &mut io,
+    )
+    .await
+    .expect("lists");
+    for line in [
+        "Set default_model to custom.test/z-model, then custom.test/a-model",
+        "Set small_model to same as default_model",
+    ] {
+        assert!(
+            io.output.iter().any(|output| output == line),
+            "{line}: {:?}",
+            io.output
+        );
+    }
+    let config = std::fs::read_to_string(root.join("config.toml")).unwrap();
+    assert!(
+        config.contains("small_model = \"${default_model}\""),
+        "{config}"
+    );
+
+    // Interactively, `d` makes the small model the same as the default
+    // model, then a fallback follows it.
+    let mut io = ScriptedConnectIo {
+        public: VecDeque::from(
+            ["n", "", "d", "/z-model", "1", "", ""]
+                .map(str::to_owned)
+                .to_vec(),
+        ),
+        ..ScriptedConnectIo::default()
+    };
+    run_onboard_with(&client, OnboardArgs::default(), &mut io)
+        .await
+        .expect("onboard");
+    assert!(
+        io.output.iter().any(
+            |line| line == "Set small_model to same as default_model, then custom.test/z-model"
+        ),
         "{:?}",
         io.output
     );

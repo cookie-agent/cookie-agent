@@ -1,24 +1,24 @@
 //! The first-run sheet (`docs/site/specs/default-models-and-onboarding.md`
 //! section 9): a four-step stepper over the daemon's onboarding API. The
 //! provider step is Settings' connect form; the three model steps are
-//! searchable lists with variant chips, the small and utility models
-//! optional. There is no starter kit: the daemon keeps the official agents
+//! searchable lists with variant chips that build each field's fallback list
+//! (`docs/site/specs/model-fallback-lists.md` section 6), the small and
+//! utility models optional. There is no starter kit: the daemon keeps the official agents
 //! itself. Full screen on a phone.
 
 use cookie_agent_client_state::onboarding::{
-    OnboardingStep, default_model_variant, finish_refusal, first_step, model_groups, model_input,
-    model_label, run_summary, small_model_variant, utility_model_variant, variants,
+    ModelChoice, OnboardingStep, choice_entries, choice_label, configured_label,
+    default_model_variant, field_name, finish_refusal, first_step, model_groups, run_summary,
+    small_model_variant, utility_model_variant, variants,
 };
-use cookie_agent_protocol::{
-    AvailableModelDescriptor, ModelKey, OnboardingRunParams, OnboardingStatus, VariantId,
-};
+use cookie_agent_protocol::{AvailableModelDescriptor, OnboardingModelField, OnboardingRunParams};
 use leptos::prelude::*;
 
 use super::{BUTTON, ERROR, NOTE, PRIMARY, ROW, manage::FIELD};
 use crate::{icons::Glyph, workspace::Workspace};
 
-/// A model picker's choice: the model and the variant chosen for it.
-type Choice = Option<(ModelKey, Option<VariantId>)>;
+/// A model step's fallback list, in order; empty keeps what is configured.
+type Choice = Vec<ModelChoice>;
 
 /// Which model a model step chooses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +26,28 @@ enum Slot {
     Default,
     Small,
     Utility,
+}
+
+impl Slot {
+    const fn field(self) -> OnboardingModelField {
+        match self {
+            Self::Default => OnboardingModelField::DefaultModel,
+            Self::Small => OnboardingModelField::SmallModel,
+            Self::Utility => OnboardingModelField::UtilityModel,
+        }
+    }
+
+    /// The fields an entry of this one may name: the steps before it.
+    const fn earlier(self) -> &'static [OnboardingModelField] {
+        match self {
+            Self::Default => &[],
+            Self::Small => &[OnboardingModelField::DefaultModel],
+            Self::Utility => &[
+                OnboardingModelField::DefaultModel,
+                OnboardingModelField::SmallModel,
+            ],
+        }
+    }
 }
 
 /// The sheet, while it is open.
@@ -49,30 +71,30 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
             .with_untracked(|status| status.as_ref().map(first_step))
             .unwrap_or(OnboardingStep::Provider),
     );
-    let default_choice = RwSignal::new(None::<(ModelKey, Option<VariantId>)>);
-    let small_choice = RwSignal::new(None::<(ModelKey, Option<VariantId>)>);
-    let utility_choice = RwSignal::new(None::<(ModelKey, Option<VariantId>)>);
+    let default_choice = RwSignal::new(Choice::new());
+    let small_choice = RwSignal::new(Choice::new());
+    let utility_choice = RwSignal::new(Choice::new());
     let status = move || onboarding.status.get();
     let refusal = move || {
-        status().and_then(|status| finish_refusal(&status, default_choice.with(Option::is_some)))
+        status().and_then(|status| {
+            finish_refusal(&status, default_choice.with(|choice| !choice.is_empty()))
+        })
     };
     let finish = move || {
         let models = workspace.models();
-        let input = |choice: Choice| {
-            choice.and_then(|(key, variant)| {
-                models
-                    .iter()
-                    .find(|model| model.key == key)
-                    .map(|model| model_input(model, variant.as_ref()))
-            })
+        let list = |choice: Choice| {
+            choice_entries(&choice, |key| models.iter().find(|model| model.key == *key))
         };
         // The daemon fetches the official agents first when it has none.
         workspace.run_onboarding(OnboardingRunParams {
             install_kit: false,
             source: None,
-            default_model: input(default_choice.get_untracked()),
-            small_model: input(small_choice.get_untracked()),
-            utility_model: input(utility_choice.get_untracked()),
+            default_model: None,
+            small_model: None,
+            utility_model: None,
+            default_model_list: list(default_choice.get_untracked()),
+            small_model_list: list(small_choice.get_untracked()),
+            utility_model_list: list(utility_choice.get_untracked()),
         });
     };
     view! {
@@ -103,9 +125,9 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                     let current = move || step.get() == each;
                                     let done = move || {
                                         status().is_some_and(|status| each.done(&status))
-                                            || (each == OnboardingStep::DefaultModel && default_choice.with(Option::is_some))
-                                            || (each == OnboardingStep::SmallModel && small_choice.with(Option::is_some))
-                                            || (each == OnboardingStep::UtilityModel && utility_choice.with(Option::is_some))
+                                            || (each == OnboardingStep::DefaultModel && default_choice.with(|choice| !choice.is_empty()))
+                                            || (each == OnboardingStep::SmallModel && small_choice.with(|choice| !choice.is_empty()))
+                                            || (each == OnboardingStep::UtilityModel && utility_choice.with(|choice| !choice.is_empty()))
                                     };
                                     view! {
                                         <button
@@ -250,44 +272,101 @@ fn provider_step(workspace: Workspace) -> impl IntoView {
 }
 
 /// A searchable list of the connected providers' models with variant
-/// chips.
+/// chips: choosing a model adds it to the end of the field's fallback list,
+/// choosing it again takes it out; the small and utility models may also
+/// take the models of a field before them.
 fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> impl IntoView {
     let search = RwSignal::new(String::new());
-    let field = match slot {
-        Slot::Default => "default_model",
-        Slot::Small => "small_model",
-        Slot::Utility => "utility_model",
-    };
+    let field = field_name(slot.field());
     let current = move || {
         workspace
             .onboarding
             .status
             .get()
-            .and_then(|status: OnboardingStatus| match slot {
-                Slot::Default => status.default_model,
-                Slot::Small => status.small_model,
-                Slot::Utility => status.utility_model,
-            })
+            .and_then(|status| configured_label(&status, slot.field()))
+    };
+    let position = move |chosen: &Choice, key: &cookie_agent_protocol::ModelKey| {
+        chosen
+            .iter()
+            .position(|entry| matches!(entry, ModelChoice::Model { model, .. } if model == key))
     };
     let pick = move |model: &AvailableModelDescriptor| {
-        let variant = match slot {
-            Slot::Default => default_model_variant(model),
-            Slot::Small => small_model_variant(model),
-            Slot::Utility => utility_model_variant(model),
-        };
-        choice.set(Some((model.key.clone(), variant)));
+        choice.update(|chosen| {
+            if let Some(index) = position(chosen, &model.key) {
+                chosen.remove(index);
+            } else if chosen.len() < cookie_agent_protocol::MAX_ONBOARDING_MODEL_ENTRIES {
+                let variant = match slot {
+                    Slot::Default => default_model_variant(model),
+                    Slot::Small => small_model_variant(model),
+                    Slot::Utility => utility_model_variant(model),
+                };
+                chosen.push(ModelChoice::Model {
+                    model: model.key.clone(),
+                    variant,
+                });
+            }
+        });
     };
+    let same_as = slot
+        .earlier()
+        .iter()
+        .map(|earlier| {
+            let earlier = *earlier;
+            let entry = ModelChoice::Field(earlier);
+            let on = {
+                let entry = entry.clone();
+                move || choice.with(|chosen| chosen.contains(&entry))
+            };
+            let toggle = move |_| {
+                choice.update(|chosen| {
+                    if let Some(index) = chosen.iter().position(|each| *each == entry) {
+                        chosen.remove(index);
+                    } else {
+                        chosen.push(entry.clone());
+                    }
+                });
+            };
+            view! {
+                <button
+                    type="button"
+                    class=BUTTON
+                    class:bg-toasted=on.clone()
+                    class:dark:bg-ember=on.clone()
+                    aria-pressed=move || on().to_string()
+                    data-same-as=field_name(earlier)
+                    on:click=toggle
+                >
+                    {match earlier {
+                        OnboardingModelField::DefaultModel => "Same as the default model",
+                        _ => "Same as the small model",
+                    }}
+                </button>
+            }
+        })
+        .collect_view();
     view! {
         <p class="text-sm">
             {match slot {
-                Slot::Default => "The default model runs your agents.",
-                Slot::Small => "Optional: the model of subagents that carry out work, such as the worker and the explorer. Without it they use the default model.",
-                Slot::Utility => "Optional: a fast, cheap model for approvals and session titles. Without it they use the session's own model.",
+                Slot::Default => "The default model runs your agents. Choose more for fallbacks: the first available one runs, and the next take over when it fails.",
+                Slot::Small => "Optional: the models of subagents that carry out work, such as the worker and the explorer. Without them they use the default model.",
+                Slot::Utility => "Optional: fast, cheap models for approvals and session titles. Without them they use the session's own model.",
             }}
         </p>
         {move || current().map(|current| view! {
-            <p class=NOTE data-current-model>{format!("{field} is {}; choosing another replaces it.", model_label(&current))}</p>
+            <p class=NOTE data-current-model>{format!("{field} is {current}; choosing models replaces it.")}</p>
         })}
+        {(!slot.earlier().is_empty()).then(|| view! { <div class="flex flex-wrap gap-2">{same_as}</div> })}
+        {move || {
+            let chosen = choice.get();
+            (!chosen.is_empty()).then(|| view! {
+                <p class="text-sm" data-chosen-list>
+                    {format!(
+                        "In fallback order: {}",
+                        chosen.iter().map(choice_label).collect::<Vec<_>>().join(", then ")
+                    )}
+                </p>
+            })
+        }}
         <input
             type="search"
             class=FIELD
@@ -315,10 +394,14 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                         .models
                         .into_iter()
                         .map(|model| {
-                            let selected = chosen.as_ref().is_some_and(|(key, _)| *key == model.key);
+                            let index = position(&chosen, &model.key);
+                            let selected = index.is_some();
                             let picked = model.clone();
-                            let chips = selected.then(|| {
-                                let chosen_variant = chosen.as_ref().and_then(|(_, variant)| variant.clone());
+                            let chips = index.map(|index| {
+                                let chosen_variant = match &chosen[index] {
+                                    ModelChoice::Model { variant, .. } => variant.clone(),
+                                    ModelChoice::Field(_) => None,
+                                };
                                 variants(model)
                                     .into_iter()
                                     .map(|variant| {
@@ -333,7 +416,14 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                                                 class:dark:bg-ember=on
                                                 aria-pressed=on.to_string()
                                                 data-variant=variant.to_string()
-                                                on:click=move |_| choice.set(Some((key.clone(), Some(value.clone()))))
+                                                on:click=move |_| choice.update(|chosen| {
+                                                    if let Some(index) = position(chosen, &key) {
+                                                        chosen[index] = ModelChoice::Model {
+                                                            model: key.clone(),
+                                                            variant: Some(value.clone()),
+                                                        };
+                                                    }
+                                                })
                                             >
                                                 {variant.to_string()}
                                             </button>
@@ -350,11 +440,14 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                                         class:dark:bg-ember=selected
                                         aria-pressed=selected.to_string()
                                         data-model=model.key.to_string()
+                                        data-position=index.map(|index| (index + 1).to_string())
                                         on:click=move |_| pick(&picked)
                                     >
                                         <span class="flex w-full items-center gap-2">
                                             <span class="min-w-0 flex-1 truncate text-sm font-bold">{model.display_name.clone()}</span>
-                                            {selected.then(|| view! { <Glyph icon=icondata::FaCheckSolid /> })}
+                                            {index.map(|index| view! {
+                                                <span class="inline-flex size-5 items-center justify-center rounded-full border border-current text-xs" title="Place in the fallback list">{index + 1}</span>
+                                            })}
                                         </span>
                                         {(model.display_name.as_str() != model.key.to_string()).then(|| view! {
                                             <span class=format!("font-mono break-all {NOTE}") data-doc-id>{model.key.to_string()}</span>

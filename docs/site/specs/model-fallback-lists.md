@@ -1,6 +1,6 @@
 # Fallback lists for `default_model`, `small_model`, and `utility_model`
 
-Status: **approved** (2026-11-01), being implemented. The user's decisions
+Status: **implemented** (2026-11-01, client protocol 1.69.0). The user's decisions
 are in section 8.
 
 ## 1. Problem
@@ -100,7 +100,7 @@ and a reference form in the onboarding inputs (section 6).
 Onboarding can set each field to a fallback list, and the optional fields
 to a reference.
 
-### 6.1 Protocol (additive, client protocol 1.x)
+### 6.1 Protocol (additive, client protocol 1.69.0)
 
 - `OnboardingModelEntry`: `{ model, variant? }` or `{ field, variant? }`,
   where `field` is `default_model`, `small_model`, or `utility_model`.
@@ -111,22 +111,25 @@ to a reference.
   the first model of the field's expansion, so older clients keep working.
 - `OnboardingRunParams` gains the same three `*_list` fields as
   `Vec<OnboardingModelEntry>`. Giving both `default_model` and
-  `default_model_list` is refused with `invalid_params`; a cycle or an
-  empty list is refused with `onboarding_incomplete`, writing nothing.
+  `default_model_list` is refused with `invalid_params`, as are an empty
+  list and an entry without exactly one of `model` and `field`; a cycle is
+  refused as `config.apply` refuses it, writing nothing.
 - `OnboardingRequirement::DefaultModel` is missing when no model of
   `default_model`'s expansion is available (today: when its one model is
   not).
 
 ### 6.2 Clients
 
-- **TUI and web model steps** become an ordered list: choosing a model sets
-  the first entry, "Add fallback" appends another chosen from the same
-  picker (models already in the list hidden), and each row can be removed
-  or moved up and down. A field already holding a list is shown as that
-  list; a single model is a list of one.
-- **The small and utility steps** offer "Same as default model" (writes
-  `${default_model}`), and the utility step also "Same as small model".
-  "Skip" still leaves the field unset.
+- **TUI model steps**: Enter (choose) sets the list to one model and moves
+  on, as before; "add fallback" (`a`) appends the next model from the same
+  picker and stays on the step; "remove last" (`x`) drops the last entry.
+  The panel lists the chosen entries in fallback order beside what is
+  configured.
+- **Web model steps**: choosing a model adds it at the end of the list and
+  choosing it again takes it out; each chosen row shows its place and its
+  variant chips, and a line above the list reads the whole list in order.
+- Neither client reorders entries in place: taking one out and adding it
+  again moves it to the end.
 - **`cookie onboard`**: `--default-model`, `--small-model`, and
   `--utility-model` may be repeated, in fallback order; a value is
   `provider/model[:variant]` or a field name (`default_model`), which is
@@ -156,3 +159,15 @@ to a reference.
 - **D2** (user, 2026-11-01): the fields may refer to each other; a cycle
   is a configuration error and there is no hop limit (section 5).
 - **D3** (user, 2026-11-01): onboarding can pick a fallback list.
+
+## 9. Implementation notes
+
+- A list naming the same model or field twice is refused when the file
+  loads, as an agent's `models` refuses repeats compared as written.
+- D1 also changes a single model: an entry such as
+  `{ model: "${small_model}", variant: "max" }` used to replace the variant
+  `small_model` configured; it now applies only when `small_model` gives
+  its model no variant.
+- An agent entry's `cache` beside a variable applies to each of the field's
+  models; a shape for another provider family leaves that model without a
+  structural cache strategy, as it would on a key of that model.

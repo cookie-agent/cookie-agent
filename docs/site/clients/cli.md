@@ -235,8 +235,9 @@ macOS, `start` on Windows, `xdg-open` elsewhere). See [Web](web.md).
 ### `cookie onboard`
 
 ```text
-cookie onboard [--yes] [--default-model <KEY[:VARIANT]>]
-               [--small-model <KEY[:VARIANT]>] [--utility-model <KEY[:VARIANT]>]
+cookie onboard [--yes] [--default-model <KEY[:VARIANT]>]...
+               [--small-model <KEY[:VARIANT]|FIELD>]...
+               [--utility-model <KEY[:VARIANT]|FIELD>]...
                [--url <URL>] [--token <TOKEN>]
 ```
 
@@ -256,11 +257,17 @@ The steps, as numbered questions:
    session titles; Enter skips it. Its variant question preselects the
    model's first listed variant, the cheapest.
 
+Each model question builds a [fallback list](../engine/configuration.md#default-models):
+after a model, it asks for the next fallback, and Enter finishes the list.
+The small model's question also takes `d` for the same models as the
+default model, and the utility model's `d` or `s` (the small model's).
+
 There is no starter kit: the daemon fetches its
 [official agents](../extend/agents.md#official-agents) as it finishes, when
 its default agent is missing. `--default-model`, `--small-model`, and
-`--utility-model` answer those questions (`provider/model`, or
-`provider/model:variant`); `--yes` answers the rest with their defaults
+`--utility-model` answer those questions (`provider/model`,
+`provider/model:variant`, or a field asked before, such as `default_model`),
+repeated for a fallback list in order; `--yes` answers the rest with their defaults
 (keep what is set, skip the optional models) and refuses rather than guess a
 default model or connect a provider. Without `--yes` it needs an
 interactive terminal. Running it again on a set-up daemon shows the current

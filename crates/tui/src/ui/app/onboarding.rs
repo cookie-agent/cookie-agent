@@ -2,20 +2,23 @@
 //! 9): the notice offered while the daemon is not set up, and the
 //! `/onboard` panel with its four steps. Step 1 hands over to the provider
 //! connect panel and steps 2 to 4 to the model picker; each returns to the
-//! panel when it closes. Everything the panel does is a daemon call:
-//! `onboarding.get`, `onboarding.run`, and `provider.connect`. There is no
-//! starter kit: the daemon keeps the official agents itself.
+//! panel when it closes. A model step builds its field's fallback list
+//! (`docs/site/specs/model-fallback-lists.md` section 6). Everything the
+//! panel does is a daemon call: `onboarding.get`, `onboarding.run`, and
+//! `provider.connect`. There is no starter kit: the daemon keeps the
+//! official agents itself.
 
 use std::path::PathBuf;
 
 use cookie_agent_client_state::onboarding::{
-    self as rules, OnboardingStep, default_model_variant, finish_refusal, first_step, model_input,
-    model_label, run_summary, small_model_variant, utility_model_variant,
+    self as rules, ModelChoice, OnboardingStep, choice_entries, choice_label, configured_label,
+    default_model_variant, finish_refusal, first_step, run_summary, small_model_variant,
+    utility_model_variant,
 };
 use cookie_agent_client_state::refresh::{Latest, Ticket};
 use cookie_agent_protocol::{
-    AgentId, ModelKey, OnboardingRequirement, OnboardingRunParams, OnboardingRunResult,
-    OnboardingStatus, VariantId,
+    AgentId, ModelKey, OnboardingModelField, OnboardingRequirement, OnboardingRunParams,
+    OnboardingRunResult, OnboardingStatus, VariantId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -40,6 +43,25 @@ pub(in crate::ui) enum ModelSlot {
     Utility,
 }
 
+impl ModelSlot {
+    const fn field(self) -> OnboardingModelField {
+        match self {
+            Self::Default => OnboardingModelField::DefaultModel,
+            Self::Small => OnboardingModelField::SmallModel,
+            Self::Utility => OnboardingModelField::UtilityModel,
+        }
+    }
+
+    const fn of(step: OnboardingStep) -> Option<Self> {
+        match step {
+            OnboardingStep::DefaultModel => Some(Self::Default),
+            OnboardingStep::SmallModel => Some(Self::Small),
+            OnboardingStep::UtilityModel => Some(Self::Utility),
+            OnboardingStep::Provider => None,
+        }
+    }
+}
+
 /// A button of the notice or of the panel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::ui) enum OnboardingAction {
@@ -50,8 +72,16 @@ pub(in crate::ui) enum OnboardingAction {
     NotNow,
     /// Step 1: the provider connect panel.
     Connect,
-    /// Steps 2 to 4: the model picker.
+    /// Steps 2 to 4: the model picker, for the list's first model.
     ChooseModel,
+    /// Steps 2 to 4: the model picker, for the next fallback.
+    AddFallback,
+    /// Steps 2 to 4: drops the list's last entry.
+    RemoveLast,
+    /// Steps 3 and 4: the same models as the default model.
+    SameAsDefault,
+    /// Step 4: the same models as the small model.
+    SameAsSmall,
     Back,
     Next,
     Finish,
@@ -67,6 +97,10 @@ impl OnboardingAction {
             Self::NotNow => "Not now",
             Self::Connect => "connect a provider",
             Self::ChooseModel => "choose",
+            Self::AddFallback => "add fallback",
+            Self::RemoveLast => "remove last",
+            Self::SameAsDefault => "same as default",
+            Self::SameAsSmall => "same as small",
             Self::Back => "back",
             Self::Next => "next",
             Self::Finish => "finish",
@@ -79,6 +113,10 @@ impl OnboardingAction {
         match self {
             Self::SetUp | Self::Connect | Self::ChooseModel | Self::StartSession => "enter",
             Self::NotNow => "n",
+            Self::AddFallback => "a",
+            Self::RemoveLast => "x",
+            Self::SameAsDefault => "d",
+            Self::SameAsSmall => "s",
             Self::Back => "←",
             Self::Next => "→",
             Self::Finish => "f",
@@ -116,9 +154,11 @@ pub(in crate::ui) struct OnboardingState {
     /// What the daemon missed when "Not now" was chosen.
     pub(in crate::ui) not_now: Option<Vec<OnboardingRequirement>>,
     pub(in crate::ui) step: Option<OnboardingStep>,
-    pub(in crate::ui) default_choice: Option<(ModelKey, Option<VariantId>)>,
-    pub(in crate::ui) small_choice: Option<(ModelKey, Option<VariantId>)>,
-    pub(in crate::ui) utility_choice: Option<(ModelKey, Option<VariantId>)>,
+    /// The fallback list each model step chose, in order; empty keeps
+    /// what is configured.
+    pub(in crate::ui) default_choice: Vec<ModelChoice>,
+    pub(in crate::ui) small_choice: Vec<ModelChoice>,
+    pub(in crate::ui) utility_choice: Vec<ModelChoice>,
     pub(in crate::ui) running: bool,
     pub(in crate::ui) summary: Option<Vec<String>>,
     pub(in crate::ui) error: Option<String>,
@@ -126,6 +166,8 @@ pub(in crate::ui) struct OnboardingState {
     pub(in crate::ui) resume: bool,
     /// The model picker is choosing this model for the panel.
     pub(in crate::ui) picking: Option<ModelSlot>,
+    /// The picker's model is the next fallback rather than the first model.
+    pub(in crate::ui) appending: bool,
 }
 
 impl OnboardingState {
@@ -169,11 +211,19 @@ impl OnboardingState {
         self.step.unwrap_or(OnboardingStep::Provider)
     }
 
-    fn choice(&self, slot: ModelSlot) -> Option<&(ModelKey, Option<VariantId>)> {
+    pub(in crate::ui) fn choice(&self, slot: ModelSlot) -> &[ModelChoice] {
         match slot {
-            ModelSlot::Default => self.default_choice.as_ref(),
-            ModelSlot::Small => self.small_choice.as_ref(),
-            ModelSlot::Utility => self.utility_choice.as_ref(),
+            ModelSlot::Default => &self.default_choice,
+            ModelSlot::Small => &self.small_choice,
+            ModelSlot::Utility => &self.utility_choice,
+        }
+    }
+
+    fn choice_mut(&mut self, slot: ModelSlot) -> &mut Vec<ModelChoice> {
+        match slot {
+            ModelSlot::Default => &mut self.default_choice,
+            ModelSlot::Small => &mut self.small_choice,
+            ModelSlot::Utility => &mut self.utility_choice,
         }
     }
 }
@@ -252,6 +302,7 @@ impl App {
         if self.onboarding.resume && self.modal == Modal::None {
             self.onboarding.resume = false;
             self.onboarding.picking = None;
+            self.onboarding.appending = false;
             self.modal = Modal::Onboarding;
             self.poll_onboarding();
         }
@@ -276,7 +327,7 @@ impl App {
         if self.onboarding.running {
             return Some("Setting up…".into());
         }
-        finish_refusal(status, self.onboarding.default_choice.is_some())
+        finish_refusal(status, !self.onboarding.default_choice.is_empty())
     }
 
     fn finish_onboarding(&mut self) {
@@ -284,18 +335,20 @@ impl App {
             self.status = reason;
             return;
         }
-        let input = |choice: Option<&(ModelKey, Option<VariantId>)>| {
-            choice.and_then(|(model, variant)| {
+        let list = |slot| {
+            choice_entries(self.onboarding.choice(slot), |model| {
                 self.model_descriptor(model)
-                    .map(|descriptor| model_input(descriptor, variant.as_ref()))
             })
         };
         let params = OnboardingRunParams {
             install_kit: false,
             source: None,
-            default_model: input(self.onboarding.choice(ModelSlot::Default)),
-            small_model: input(self.onboarding.choice(ModelSlot::Small)),
-            utility_model: input(self.onboarding.choice(ModelSlot::Utility)),
+            default_model: None,
+            small_model: None,
+            utility_model: None,
+            default_model_list: list(ModelSlot::Default),
+            small_model_list: list(ModelSlot::Small),
+            utility_model_list: list(ModelSlot::Utility),
         };
         self.onboarding.running = true;
         self.onboarding.error = None;
@@ -380,23 +433,36 @@ impl App {
         self.status = "Search providers, then press Down or Tab to choose one.".into();
     }
 
-    /// Hands steps 2 and 3 over to the model picker.
-    fn choose_model_from_onboarding(&mut self, slot: ModelSlot) {
+    /// Hands steps 2 to 4 over to the model picker: for the list's first
+    /// model, or with `appending` for its next fallback.
+    fn choose_model_from_onboarding(&mut self, slot: ModelSlot, appending: bool) {
         if self.models.is_empty() {
             self.status = "Connect a provider first: no model is available yet.".into();
             return;
         }
         self.onboarding.resume = true;
         self.onboarding.picking = Some(slot);
+        self.onboarding.appending = appending;
         self.model_search.reset();
         self.model_then_variant = true;
         self.picker_state.select(Some(0));
         self.modal = Modal::Models;
-        self.status = match slot {
-            ModelSlot::Default => "Choose the default model.".into(),
-            ModelSlot::Small => "Choose the small model.".into(),
-            ModelSlot::Utility => "Choose the utility model.".into(),
+        self.status = match (slot, appending) {
+            (_, true) => "Choose the next fallback.".into(),
+            (ModelSlot::Default, false) => "Choose the default model.".into(),
+            (ModelSlot::Small, false) => "Choose the small model.".into(),
+            (ModelSlot::Utility, false) => "Choose the utility model.".into(),
         };
+    }
+
+    /// Adds the entry naming `field` at the end of `slot`'s list, unless the
+    /// list has it.
+    fn same_as_from_onboarding(&mut self, slot: ModelSlot, field: OnboardingModelField) {
+        let entry = ModelChoice::Field(field);
+        let list = self.onboarding.choice_mut(slot);
+        if !list.contains(&entry) {
+            list.push(entry);
+        }
     }
 
     /// The variant the picker highlights for an onboarding choice: the
@@ -415,24 +481,34 @@ impl App {
         }
     }
 
-    /// The picker chose `model` in `variant` for the panel.
+    /// The picker chose `model` in `variant` for the panel: the list's
+    /// first model, which moves on to the next step, or its next fallback.
     pub(in crate::ui) fn finish_onboarding_model(
         &mut self,
         slot: ModelSlot,
         model: ModelKey,
         variant: Option<VariantId>,
     ) {
-        match slot {
-            ModelSlot::Default => self.onboarding.default_choice = Some((model, variant)),
-            ModelSlot::Small => self.onboarding.small_choice = Some((model, variant)),
-            ModelSlot::Utility => self.onboarding.utility_choice = Some((model, variant)),
+        let appending = std::mem::take(&mut self.onboarding.appending);
+        let list = self.onboarding.choice_mut(slot);
+        let choice = ModelChoice::Model { model, variant };
+        if appending {
+            list.retain(|chosen| {
+                !matches!((chosen, &choice), (
+                    ModelChoice::Model { model: a, .. },
+                    ModelChoice::Model { model: b, .. },
+                ) if a == b)
+            });
+            list.push(choice);
+        } else {
+            *list = vec![choice];
         }
         self.model_search.reset();
         self.model_then_variant = false;
         self.variant_step_model = None;
         self.modal = Modal::None;
         self.resume_onboarding();
-        if let Some(next) = self.onboarding.step().next() {
+        if !appending && let Some(next) = self.onboarding.step().next() {
             self.go_to_step(next);
         }
     }
@@ -442,16 +518,31 @@ impl App {
             OnboardingAction::SetUp => self.open_onboarding_panel(),
             OnboardingAction::NotNow => self.not_now(),
             OnboardingAction::Connect => self.connect_from_onboarding(),
-            OnboardingAction::ChooseModel => match self.onboarding.step() {
-                OnboardingStep::DefaultModel => {
-                    self.choose_model_from_onboarding(ModelSlot::Default)
+            OnboardingAction::ChooseModel => {
+                if let Some(slot) = ModelSlot::of(self.onboarding.step()) {
+                    self.choose_model_from_onboarding(slot, false);
                 }
-                OnboardingStep::SmallModel => self.choose_model_from_onboarding(ModelSlot::Small),
-                OnboardingStep::UtilityModel => {
-                    self.choose_model_from_onboarding(ModelSlot::Utility)
+            }
+            OnboardingAction::AddFallback => {
+                if let Some(slot) = ModelSlot::of(self.onboarding.step()) {
+                    self.choose_model_from_onboarding(slot, true);
                 }
-                OnboardingStep::Provider => {}
-            },
+            }
+            OnboardingAction::RemoveLast => {
+                if let Some(slot) = ModelSlot::of(self.onboarding.step()) {
+                    self.onboarding.choice_mut(slot).pop();
+                }
+            }
+            OnboardingAction::SameAsDefault => {
+                if let Some(slot) = ModelSlot::of(self.onboarding.step()) {
+                    self.same_as_from_onboarding(slot, OnboardingModelField::DefaultModel);
+                }
+            }
+            OnboardingAction::SameAsSmall => {
+                if let Some(slot) = ModelSlot::of(self.onboarding.step()) {
+                    self.same_as_from_onboarding(slot, OnboardingModelField::SmallModel);
+                }
+            }
             OnboardingAction::Back => {
                 if let Some(step) = self.onboarding.step().previous() {
                     self.go_to_step(step);
@@ -479,11 +570,30 @@ impl App {
             return actions;
         }
         let step = self.onboarding.step();
-        let mut actions = match step {
-            OnboardingStep::Provider => vec![OnboardingAction::Connect],
-            OnboardingStep::DefaultModel
-            | OnboardingStep::SmallModel
-            | OnboardingStep::UtilityModel => vec![OnboardingAction::ChooseModel],
+        let mut actions = match ModelSlot::of(step) {
+            None => vec![OnboardingAction::Connect],
+            Some(slot) => {
+                let chosen = self.onboarding.choice(slot);
+                let mut actions = vec![OnboardingAction::ChooseModel];
+                let same_as = |field| chosen.contains(&ModelChoice::Field(field));
+                if !chosen.is_empty()
+                    && chosen.len() < cookie_agent_protocol::MAX_ONBOARDING_MODEL_ENTRIES
+                {
+                    actions.push(OnboardingAction::AddFallback);
+                }
+                if matches!(slot, ModelSlot::Small | ModelSlot::Utility)
+                    && !same_as(OnboardingModelField::DefaultModel)
+                {
+                    actions.push(OnboardingAction::SameAsDefault);
+                }
+                if slot == ModelSlot::Utility && !same_as(OnboardingModelField::SmallModel) {
+                    actions.push(OnboardingAction::SameAsSmall);
+                }
+                if !chosen.is_empty() {
+                    actions.push(OnboardingAction::RemoveLast);
+                }
+                actions
+            }
         };
         if step.previous().is_some() {
             actions.push(OnboardingAction::Back);
@@ -522,6 +632,10 @@ impl App {
                 )
             }),
             KeyCode::Char('n') if key.modifiers.is_empty() => Some(OnboardingAction::NotNow),
+            KeyCode::Char('a') if key.modifiers.is_empty() => Some(OnboardingAction::AddFallback),
+            KeyCode::Char('x') if key.modifiers.is_empty() => Some(OnboardingAction::RemoveLast),
+            KeyCode::Char('d') if key.modifiers.is_empty() => Some(OnboardingAction::SameAsDefault),
+            KeyCode::Char('s') if key.modifiers.is_empty() => Some(OnboardingAction::SameAsSmall),
             KeyCode::Char('f') if key.modifiers == KeyModifiers::NONE => {
                 if let Some(reason) = self.onboarding_finish_refusal() {
                     self.status = reason;
@@ -594,7 +708,8 @@ impl App {
                 Constraint::Length(2),
                 Constraint::Min(3),
                 Constraint::Length(1),
-                Constraint::Length(1),
+                // The model steps' actions may take a second line.
+                Constraint::Length(2),
             ])
             .areas(inner);
         // The tabs, a check on each done step.
@@ -638,32 +753,35 @@ impl App {
                 reason_area,
             );
         }
-        let mut spans = Vec::new();
-        let mut x = actions_area.x;
+        // The actions, wrapped onto the next line where one does not fit.
+        let mut lines = vec![Vec::new()];
+        let (mut x, mut y) = (actions_area.x, actions_area.y);
         for action in self.onboarding_actions() {
             let label = format!(" {} ({}) ", action.label(), action.key_label());
             let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
-            if x.saturating_add(width) <= actions_area.right() {
-                hits.actions
-                    .push((Rect::new(x, actions_area.y, width, 1), action));
+            if x > actions_area.x && x.saturating_add(width) > actions_area.right() {
+                lines.push(Vec::new());
+                (x, y) = (actions_area.x, y.saturating_add(1));
             }
-            spans.push(Span::styled(label, self.theme.link()));
-            spans.push(Span::raw(" "));
+            if x.saturating_add(width) <= actions_area.right() && y < actions_area.bottom() {
+                hits.actions.push((Rect::new(x, y, width, 1), action));
+            }
+            let line = lines.last_mut().expect("a line");
+            line.push(Span::styled(label, self.theme.link()));
+            line.push(Span::raw(" "));
             x = x.saturating_add(width + 1);
         }
-        frame.render_widget(Paragraph::new(Line::from(spans)), actions_area);
+        frame.render_widget(
+            Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>()),
+            actions_area,
+        );
         let notice = std::mem::take(&mut self.hit_map.onboarding.notice);
         self.hit_map.onboarding = OnboardingHits { notice, ..hits };
     }
 
     /// Whether the panel has a choice of its own for `step`.
     fn chosen_for(&self, step: OnboardingStep) -> bool {
-        match step {
-            OnboardingStep::DefaultModel => self.onboarding.default_choice.is_some(),
-            OnboardingStep::SmallModel => self.onboarding.small_choice.is_some(),
-            OnboardingStep::UtilityModel => self.onboarding.utility_choice.is_some(),
-            OnboardingStep::Provider => false,
-        }
+        ModelSlot::of(step).is_some_and(|slot| !self.onboarding.choice(slot).is_empty())
     }
 
     fn onboarding_body(&self, step: OnboardingStep) -> Vec<Line<'static>> {
@@ -709,21 +827,18 @@ impl App {
             OnboardingStep::DefaultModel
             | OnboardingStep::SmallModel
             | OnboardingStep::UtilityModel => {
-                let (slot, configured, about) = match step {
+                let (slot, about) = match step {
                     OnboardingStep::DefaultModel => (
                         ModelSlot::Default,
-                        status.default_model.as_ref(),
-                        "The model root agents reach as ${default_model}.",
+                        "The models root agents reach as ${default_model}: the first available one runs, the next ones are its fallbacks.",
                     ),
                     OnboardingStep::SmallModel => (
                         ModelSlot::Small,
-                        status.small_model.as_ref(),
-                        "Optional: the model subagents that carry out work, such as the official worker and explorer, reach as ${small_model}. Without it they use the default model.",
+                        "Optional: the models subagents that carry out work, such as the official worker and explorer, reach as ${small_model}. Without them they use the default model.",
                     ),
                     _ => (
                         ModelSlot::Utility,
-                        status.utility_model.as_ref(),
-                        "Optional: a fast, cheap model for approvals and session titles, reached as ${utility_model}. Without it they use the session's own model.",
+                        "Optional: fast, cheap models for approvals and session titles, reached as ${utility_model}. Without them they use the session's own model.",
                     ),
                 };
                 lines.push(Line::styled(about, body));
@@ -731,24 +846,23 @@ impl App {
                 lines.push(Line::styled(
                     format!(
                         "Configured: {}",
-                        configured.map_or_else(|| "not set".into(), model_label)
+                        configured_label(status, slot.field()).unwrap_or_else(|| "not set".into())
                     ),
                     body,
                 ));
-                if let Some((model, variant)) = self.onboarding.choice(slot) {
-                    lines.push(Line::styled(
-                        format!(
-                            "Chosen: {model}{}",
-                            variant
-                                .as_ref()
-                                .map_or_else(String::new, |variant| format!(" ({variant})"))
-                        ),
-                        self.theme.tool_success(),
-                    ));
+                let chosen = self.onboarding.choice(slot);
+                if !chosen.is_empty() {
+                    lines.push(Line::styled("Chosen, in fallback order:", body));
+                    for (index, choice) in chosen.iter().enumerate() {
+                        lines.push(Line::styled(
+                            format!("  {}. {}", index + 1, choice_label(choice)),
+                            self.theme.tool_success(),
+                        ));
+                    }
                 }
                 lines.push(Line::raw(""));
                 lines.push(Line::styled(
-                    "Enter opens the model list: type to search, then pick a variant.",
+                    "Enter opens the model list for the first model: type to search, then pick a variant. Add fallback appends the next one.",
                     muted,
                 ));
             }
@@ -766,5 +880,8 @@ pub(in crate::ui) fn sample_status(missing: &[OnboardingRequirement]) -> Onboard
         default_model: None,
         small_model: None,
         utility_model: None,
+        default_model_list: None,
+        small_model_list: None,
+        utility_model_list: None,
     }
 }

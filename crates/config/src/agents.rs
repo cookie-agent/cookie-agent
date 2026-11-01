@@ -241,10 +241,20 @@ impl AgentModelRef {
     /// `${parent_model}`.
     #[must_use]
     pub const fn config_field(&self) -> Option<&'static str> {
+        match self.field() {
+            Some(field) => Some(field.name()),
+            None => None,
+        }
+    }
+
+    /// The model field a variable names; `None` for a model key and
+    /// `${parent_model}`.
+    #[must_use]
+    pub const fn field(&self) -> Option<crate::ModelField> {
         match self {
-            Self::DefaultModel => Some("default_model"),
-            Self::SmallModel => Some("small_model"),
-            Self::UtilityModel => Some("utility_model"),
+            Self::DefaultModel => Some(crate::ModelField::Default),
+            Self::SmallModel => Some(crate::ModelField::Small),
+            Self::UtilityModel => Some(crate::ModelField::Utility),
             Self::Model(_) | Self::ParentModel => None,
         }
     }

@@ -38,9 +38,9 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 
 | Key | Canonical settings page |
 |---|---|
-| `default_model` | [Default models](#default-models): the model agents reach as `${default_model}` |
-| `small_model` | [Default models](#default-models): the model agents reach as `${small_model}`, for subagents that carry out work |
-| `utility_model` | [Default models](#default-models): the model agents reach as `${utility_model}`, for the internal approval and title agents |
+| `default_model` | [Default models](#default-models): the model, or fallback list, agents reach as `${default_model}` |
+| `small_model` | [Default models](#default-models): the model, or fallback list, agents reach as `${small_model}`, for subagents that carry out work |
+| `utility_model` | [Default models](#default-models): the model, or fallback list, agents reach as `${utility_model}`, for the internal approval and title agents |
 | `server` | [Server](server.md): where the daemon listens, its token, and the daemon clients on this machine use |
 | `tool_output` | [Tool Output](tool_output.md) |
 | `subagent_output` | [Subagent Output](subagent_output.md) |
@@ -79,18 +79,42 @@ top-level field and fails strict validation.
 `default_model`, `small_model`, and `utility_model` name the models agent
 documents reach as `${default_model}`, `${small_model}`, and
 `${utility_model}`, so one edit retargets every agent that uses them. Each
-is a model key, which means the model's default variant, or a table
-`{ model, variant }`; all three are optional, and unknown keys in the table
-fail. Being top-level values, they go before the first table:
+is one entry or a fallback list of entries, in order. An entry is a model
+key, which means the model's default variant, or a table
+`{ model, variant }`; all three fields are optional, and unknown keys in the
+table fail. Being top-level values, they go before the first table:
 
 ```toml
-default_model = { model = "anthropic/claude-opus-5-5", variant = "high" }
+default_model = [
+  { model = "anthropic/claude-opus-5-5", variant = "high" },
+  "openai/gpt-6",                                   # when Opus is unavailable
+]
 small_model   = { model = "deepseek/deepseek-flash", variant = "max" }
-utility_model = { model = "deepseek/deepseek-flash", variant = "off" }
+utility_model = [{ model = "${small_model}", variant = "off" }, "openai/gpt-6-luna"]
 
 [model_retry]
 standard_retries = 1
 ```
+
+A list holds 1 to 32 entries and names each model or field once; a list of
+one is the same as the entry alone. An entry's `model` may also be another
+field's variable, `${default_model}`, `${small_model}`, or
+`${utility_model}`, which stands for that field's models in its place. A
+field that reaches itself through the fields it names fails to load
+(`model fields refer to each other in a cycle: `default_model` →
+`small_model` → `default_model``); a field named but unset adds no model and
+is reported as below. A model reached twice keeps its first place.
+
+A `variant` beside a variable applies to each of that field's models that
+has no variant of its own and has a variant of that name; the others keep
+theirs, or their default variant. With the example above, `utility_model`
+runs DeepSeek Flash on `max`, the variant `small_model` gives it, and
+`openai/gpt-6-luna` on its default variant. An agent entry such as
+`{ model: "${default_model}", variant: "low" }` follows the same rule.
+
+Agents fall back through a field's models as through the rest of their
+[`models` chain](../extend/agents.md#models): the first available one runs,
+and the next ones take over when it fails.
 
 The [official agents](../extend/agents.md#official-agents) use them in tiers:
 
@@ -110,7 +134,8 @@ cheap ([the reviewer's cache](approval.md#the-reviewers-cache)).
 for approvals and titles still loads, and then runs the subagents: rename it
 to `utility_model`.
 
-Only the key's grammar is checked when the file loads. Whether the model is
+Only the keys' grammar and the fields' references are checked when the
+file loads. Whether a model is
 available is a runtime matter: a model whose provider is disconnected loads
 fine, and the agent entries naming it are skipped until it is available
 again. See [agents](../extend/agents.md#models) for how documents use them

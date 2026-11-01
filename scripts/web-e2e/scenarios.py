@@ -5531,7 +5531,8 @@ def onboarding(browser):
     four steps (a provider and the default, small, and utility models; there
     is no starter kit), the connected providers, and the model lists; "Not
     now" closes it for good in this browser, and Settings reopens it. A
-    daemon that is set up offers nothing."""
+    daemon that is set up offers nothing; its sheet's model steps build
+    fallback lists."""
     browser.resize(1280, 900)
     view(browser, "settings")
     browser.wait("the set-up daemon's onboarding answer", lambda: count(browser, "#settings-onboard") == 1)
@@ -5578,6 +5579,31 @@ def onboarding(browser):
     browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
     print("Settings' Set up Cookie reopens the sheet")
     connect(browser)
+
+    # A model step builds a fallback list: the same models as the default
+    # model, then a model, each in its place.
+    view(browser, "settings")
+    browser.wait("Settings' Set up Cookie", lambda: count(browser, "#settings-onboard") == 1)
+    browser.click("#settings-onboard")
+    browser.wait("the sheet on the set-up daemon", lambda: count(browser, "#onboarding") == 1)
+    browser.click("#onboarding [data-step=small-model]")
+    browser.wait("the small model step", lambda: count(browser, "#onboarding [data-model]") > 0)
+    assert "small_model is custom.local/test" in browser.text("#onboarding [data-current-model]")
+    browser.click("#onboarding [data-same-as=default_model]")
+    browser.click("#onboarding [data-model]")
+    browser.wait("the list", lambda: count(browser, "#onboarding [data-chosen-list]") == 1)
+    assert browser.text("#onboarding [data-chosen-list]") == (
+        "In fallback order: same as default_model, then custom.local/test"
+    ), browser.text("#onboarding [data-chosen-list]")
+    assert browser.script(
+        "return document.querySelector('#onboarding [data-model]').dataset.position"
+    ) == "2", "the model is second in the list"
+    browser.shot("onboarding-fallback-list-desktop")
+    browser.click("#onboarding [data-model]")
+    browser.wait("the model taken out", lambda: "custom.local/test" not in browser.text("#onboarding [data-chosen-list]"))
+    browser.click("#onboarding-not-now")
+    browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
+    print("a model step builds a fallback list")
 
 
 def panic_hook():

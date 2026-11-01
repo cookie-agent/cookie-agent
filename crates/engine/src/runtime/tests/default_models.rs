@@ -1,6 +1,6 @@
 //! `${default_model}`, `${small_model}`, and `${parent_model}` resolved
-//! against the configuration, the built-in agents' chains, and reload
-//! retargeting.
+//! against the configuration (fallback lists and fields naming fields
+//! included), the built-in agents' chains, and reload retargeting.
 
 use cookie_agent_protocol::{AgentDescriptor, AgentId, InternalAgentKind, RunSelection};
 
@@ -112,7 +112,7 @@ async fn variables_resolve_with_their_variants_and_entry_overrides() {
     );
 
     // A bare key means the model's default variant; the entry's variant
-    // overrides the one the variable carries.
+    // applies to a model the field gives no variant.
     set(
         &fixture,
         "default_model",
@@ -150,6 +150,95 @@ async fn variables_resolve_with_their_variants_and_entry_overrides() {
         ],
         "changing the field retargets the agent without touching it"
     );
+    fixture.engine.shutdown().await;
+}
+
+const HELPER: &str = "---\ndescription: Helper\nmode: subagent\nmodels:\n  - { model: \"${small_model}\", variant: zeta }\npermissions: {}\n---\nHelp.\n";
+
+#[tokio::test]
+async fn fallback_lists_expand_in_place_with_entry_variants_where_they_apply() {
+    let fixture = fixture_with(Some(PRIMARY));
+    write_agent(&fixture, "helper.md", HELPER).await;
+    set(
+        &fixture,
+        "default_model",
+        serde_json::json!(["custom.test/z-model", "custom.test/a-model"]),
+    )
+    .await;
+    set(
+        &fixture,
+        "small_model",
+        serde_json::json!(["${default_model}"]),
+    )
+    .await;
+    // `zeta` goes to `a-model`, which has it; `z-model` has no variants.
+    assert_eq!(
+        chain(&descriptor(&fixture, "helper")),
+        [
+            pair("custom.test/z-model", None),
+            pair("custom.test/a-model", Some("zeta")),
+        ]
+    );
+    // The primary's `${default_model}` brings both; its `${small_model}`
+    // entry then adds nothing new.
+    assert_eq!(
+        chain(&descriptor(&fixture, "primary")),
+        [
+            pair("custom.test/z-model", None),
+            pair("custom.test/a-model", Some("precise")),
+        ]
+    );
+
+    // A variant the field assigns is kept, also when assigned by a
+    // reference's own entry.
+    set(
+        &fixture,
+        "default_model",
+        serde_json::json!([{"model": "custom.test/a-model", "variant": "alpha"}, "custom.test/z-model"]),
+    )
+    .await;
+    assert_eq!(
+        chain(&descriptor(&fixture, "helper")),
+        [
+            pair("custom.test/a-model", Some("alpha")),
+            pair("custom.test/z-model", None),
+        ]
+    );
+    set(
+        &fixture,
+        "default_model",
+        serde_json::json!(["custom.test/a-model", "custom.test/z-model"]),
+    )
+    .await;
+    set(
+        &fixture,
+        "small_model",
+        serde_json::json!([{"model": "${default_model}", "variant": "alpha"}]),
+    )
+    .await;
+    assert_eq!(
+        chain(&descriptor(&fixture, "helper")),
+        [
+            pair("custom.test/a-model", Some("alpha")),
+            pair("custom.test/z-model", None),
+        ]
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_field_naming_an_unset_field_reports_it_and_keeps_its_other_models() {
+    let fixture = fixture_with(Some(PRIMARY));
+    write_agent(&fixture, "helper.md", HELPER).await;
+    set(
+        &fixture,
+        "small_model",
+        serde_json::json!(["${utility_model}", "custom.test/z-model"]),
+    )
+    .await;
+    let helper = descriptor(&fixture, "helper");
+    assert_eq!(chain(&helper), [pair("custom.test/z-model", None)]);
+    assert_eq!(helper.unset_models, ["utility_model"]);
     fixture.engine.shutdown().await;
 }
 

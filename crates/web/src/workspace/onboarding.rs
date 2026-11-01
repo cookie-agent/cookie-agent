@@ -182,6 +182,9 @@ mod tests {
             default_model: None,
             small_model: None,
             utility_model: None,
+            default_model_list: None,
+            small_model_list: None,
+            utility_model_list: None,
         }
     }
 

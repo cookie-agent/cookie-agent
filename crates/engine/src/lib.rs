@@ -84,7 +84,7 @@ pub use runtime::official::agents::{
     OFFICIAL_AGENTS_REFRESH, OFFICIAL_AGENTS_URL, OfficialAgentsReport,
 };
 pub use runtime::official::onboarding::{
-    OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
+    OnboardingField, OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
 };
 pub use runtime::official::skills::{
     OFFICIAL_SKILLS_REFRESH, OFFICIAL_SKILLS_URL, OfficialSkillsReport, UserSkillRoots,

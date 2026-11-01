@@ -1,11 +1,13 @@
-//! `default_model` and `small_model`, the `${default_model}`,
+//! `default_model`, `small_model`, and `utility_model` (one entry or a
+//! fallback list, entries naming other fields), the `${default_model}`,
 //! `${small_model}`, and `${parent_model}` variables in `models` entries,
 //! and plain-string entries.
 
 use std::{fs, path::Path};
 
 use cookie_agent_config::{
-    AgentModelRef, ConfigError, ConfiguredModel, LoadedConfiguration, load_from_user_root,
+    AgentModelRef, ConfigError, ConfiguredModel, ConfiguredModelRef, ConfiguredModels,
+    LoadedConfiguration, MAX_CONFIGURED_MODELS, ModelField, load_from_user_root,
 };
 use cookie_agent_identity::{AgentId, ConfiguredVariantRef, VariantId};
 
@@ -25,6 +27,17 @@ fn load(root: &tempfile::TempDir) -> Result<LoadedConfiguration, ConfigError> {
     load_from_user_root(Some(root.path()))
 }
 
+fn entry(model: &str, variant: Option<ConfiguredVariantRef>) -> ConfiguredModel {
+    ConfiguredModel {
+        model: model.parse().expect("entry"),
+        variant,
+    }
+}
+
+fn one(model: &str, variant: Option<ConfiguredVariantRef>) -> Option<ConfiguredModels> {
+    Some(ConfiguredModels::single(entry(model, variant)))
+}
+
 fn named(variant: &str) -> Option<ConfiguredVariantRef> {
     Some(ConfiguredVariantRef::Named(
         VariantId::new(variant).expect("variant"),
@@ -39,36 +52,151 @@ fn both_fields_take_a_key_or_a_table() {
     .expect("fields");
     assert_eq!(
         loaded.runtime.default_model,
-        Some(ConfiguredModel {
-            model: "anthropic/claude-test".parse().unwrap(),
-            variant: named("high"),
-        })
+        one("anthropic/claude-test", named("high"))
     );
     assert_eq!(
         loaded.runtime.small_model,
-        Some(ConfiguredModel {
-            model: "deepseek/deepseek-flash".parse().unwrap(),
-            variant: None,
-        })
+        one("deepseek/deepseek-flash", None)
     );
 
     let table_without_variant =
         load(&root("small_model = { model = \"openai/gpt-test\" }\n")).expect("table");
     assert_eq!(
         table_without_variant.runtime.small_model,
-        Some(ConfiguredModel {
-            model: "openai/gpt-test".parse().unwrap(),
-            variant: None,
-        })
+        one("openai/gpt-test", None)
     );
     let base = load(&root(
         "default_model = { model = \"openai/gpt-test\", variant = \"base\" }\n",
     ))
     .expect("base variant");
     assert_eq!(
-        base.runtime.default_model.unwrap().variant,
-        Some(ConfiguredVariantRef::Base)
+        base.runtime.default_model,
+        one("openai/gpt-test", Some(ConfiguredVariantRef::Base))
     );
+}
+
+#[test]
+fn the_fields_take_a_fallback_list_in_order() {
+    let loaded = load(&root(
+        "default_model = [{ model = \"anthropic/claude-test\", variant = \"high\" }, \"openai/gpt-test\"]\nutility_model = [\"deepseek/deepseek-flash\"]\n",
+    ))
+    .expect("lists");
+    assert_eq!(
+        loaded.runtime.default_model.as_ref().unwrap().entries(),
+        [
+            entry("anthropic/claude-test", named("high")),
+            entry("openai/gpt-test", None),
+        ]
+    );
+    // A list of one is the entry alone.
+    assert_eq!(
+        loaded.runtime.utility_model,
+        one("deepseek/deepseek-flash", None)
+    );
+}
+
+#[test]
+fn a_list_of_one_serializes_as_the_entry() {
+    let single = one("openai/gpt-test", None).unwrap();
+    assert_eq!(serde_json::to_value(&single).unwrap(), "openai/gpt-test");
+    let table = one("openai/gpt-test", named("high")).unwrap();
+    assert_eq!(
+        serde_json::to_value(&table).unwrap(),
+        serde_json::json!({ "model": "openai/gpt-test", "variant": "high" })
+    );
+    let list = ConfiguredModels::new(vec![
+        entry("${small_model}", named("low")),
+        entry("openai/gpt-test", None),
+    ])
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        serde_json::json!([{ "model": "${small_model}", "variant": "low" }, "openai/gpt-test"])
+    );
+}
+
+#[test]
+fn list_length_is_bounded() {
+    assert!(ConfiguredModels::new(Vec::new()).is_none());
+    let entries = |count: usize| {
+        (0..count)
+            .map(|index| format!("\"openai/gpt-{index}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    load(&root(&format!(
+        "default_model = [{}]\n",
+        entries(MAX_CONFIGURED_MODELS)
+    )))
+    .expect("a full list");
+    assert!(
+        load(&root(&format!(
+            "default_model = [{}]\n",
+            entries(MAX_CONFIGURED_MODELS + 1)
+        )))
+        .is_err()
+    );
+}
+
+#[test]
+fn entries_may_name_other_fields() {
+    let loaded = load(&root(
+        "default_model = \"openai/gpt-test\"\nsmall_model = \"${default_model}\"\nutility_model = [{ model = \"${small_model}\", variant = \"low\" }, \"deepseek/deepseek-flash\"]\n",
+    ))
+    .expect("references");
+    assert_eq!(
+        loaded.runtime.small_model.as_ref().unwrap().entries()[0].model,
+        ConfiguredModelRef::Field(ModelField::Default)
+    );
+    assert_eq!(
+        loaded.runtime.utility_model.as_ref().unwrap().entries()[0],
+        ConfiguredModel {
+            model: ConfiguredModelRef::Field(ModelField::Small),
+            variant: named("low"),
+        }
+    );
+    // A field named but unset is a runtime matter.
+    load(&root("small_model = [\"${default_model}\"]\n")).expect("an unset field named");
+}
+
+#[test]
+fn fields_referring_to_each_other_in_a_cycle_are_refused() {
+    for config in [
+        "default_model = \"${default_model}\"\n",
+        "default_model = [\"openai/gpt-test\", \"${small_model}\"]\nsmall_model = \"${default_model}\"\n",
+        "default_model = \"${utility_model}\"\nsmall_model = \"${default_model}\"\nutility_model = [\"${small_model}\"]\n",
+    ] {
+        assert!(
+            matches!(load(&root(config)), Err(ConfigError::ModelFieldCycle(_))),
+            "{config:?} must be refused"
+        );
+    }
+    // Two hops without a cycle load.
+    load(&root(
+        "default_model = \"openai/gpt-test\"\nsmall_model = \"${default_model}\"\nutility_model = \"${small_model}\"\n",
+    ))
+    .expect("a chain of references");
+}
+
+#[test]
+fn a_list_naming_a_model_or_field_twice_is_refused() {
+    for config in [
+        "default_model = [\"openai/gpt-test\", { model = \"openai/gpt-test\", variant = \"high\" }]\n",
+        "default_model = \"openai/gpt-test\"\nsmall_model = [\"${default_model}\", \"${default_model}\"]\n",
+    ] {
+        assert!(
+            matches!(
+                load(&root(config)),
+                Err(ConfigError::ModelFieldDuplicate { .. })
+            ),
+            "{config:?} must be refused"
+        );
+    }
+    // A field and a model it reaches may both appear.
+    load(&root(
+        "default_model = \"openai/gpt-test\"\nsmall_model = [\"${default_model}\", \"openai/gpt-test\"]\n",
+    ))
+    .expect("overlap through a reference");
 }
 
 #[test]
@@ -85,8 +213,13 @@ fn the_fields_are_strict() {
         "default_model = { variant = \"high\" }\n",
         "small_model = \"not a model key\"\n",
         "small_model = 3\n",
-        "small_model = [\"openai/gpt-test\"]\n",
         "default_model = { model = \"openai/gpt-test\", variant = \"\" }\n",
+        "small_model = []\n",
+        "small_model = [[\"openai/gpt-test\"]]\n",
+        "small_model = [3]\n",
+        "small_model = \"${parent_model}\"\n",
+        "small_model = \"${unknown_model}\"\n",
+        "small_model = [{ model = \"${parent_model}\", variant = \"low\" }]\n",
     ] {
         assert!(load(&root(config)).is_err(), "{config:?} must be refused");
     }

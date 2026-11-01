@@ -384,16 +384,134 @@ impl McpServerConfig {
     }
 }
 
-/// A model and an optional variant, as `default_model`, `small_model`, and
-/// `utility_model` take them: a model key string (`"provider/model"`, its default variant),
-/// or a table `{ model, variant }`. Whether the model is available is a
-/// runtime matter; only the key's grammar is checked here.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// One of the model fields: `default_model`, `small_model`, or
+/// `utility_model` (`docs/site/specs/model-fallback-lists.md`).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ModelField {
+    Default,
+    Small,
+    Utility,
+}
+
+impl ModelField {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Small, Self::Utility];
+
+    /// The field's name in `config.toml`: `default_model`, `small_model`, or
+    /// `utility_model`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default_model",
+            Self::Small => "small_model",
+            Self::Utility => "utility_model",
+        }
+    }
+
+    /// The variable naming the field: `${default_model}`, `${small_model}`,
+    /// or `${utility_model}`.
+    #[must_use]
+    pub const fn expression(self) -> &'static str {
+        match self {
+            Self::Default => crate::agents::DEFAULT_MODEL_EXPRESSION,
+            Self::Small => crate::agents::SMALL_MODEL_EXPRESSION,
+            Self::Utility => crate::agents::UTILITY_MODEL_EXPRESSION,
+        }
+    }
+
+    /// The field named `name` (`default_model`, ...).
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.name() == name)
+    }
+
+    fn from_expression(expression: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|field| field.expression() == expression)
+    }
+}
+
+/// The model of a model field's entry: a model key, or another model field
+/// by its variable (`${small_model}`), whose models it stands for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfiguredModelRef {
+    Model(ModelKey),
+    Field(ModelField),
+}
+
+impl std::str::FromStr for ConfiguredModelRef {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if let Some(field) = ModelField::from_expression(value) {
+            return Ok(Self::Field(field));
+        }
+        if value == crate::agents::PARENT_MODEL_EXPRESSION {
+            return Err(format!(
+                "`{value}` names a model only in an agent document's `models`"
+            ));
+        }
+        if value.starts_with("${") {
+            return Err(format!(
+                "unknown variable `{value}`; expected a model key, `${{default_model}}`, `${{small_model}}`, or `${{utility_model}}`"
+            ));
+        }
+        value
+            .parse::<ModelKey>()
+            .map(Self::Model)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl std::fmt::Display for ConfiguredModelRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Model(model) => model.fmt(formatter),
+            Self::Field(field) => formatter.write_str(field.expression()),
+        }
+    }
+}
+
+/// One entry of a model field: a model key string (`"provider/model"`, its
+/// default variant) or a field's variable, or a table `{ model, variant }`.
+/// Whether a model is available is a runtime matter; only the key's grammar
+/// is checked here.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfiguredModel {
-    pub model: ModelKey,
+    pub model: ConfiguredModelRef,
     /// `None` means the model's default variant; `base` its base variant.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// On a field's variable, the variant of each of its models that has
+    /// none of its own and has a variant of this name.
     pub variant: Option<ConfiguredVariantRef>,
+}
+
+impl ConfiguredModel {
+    /// `model` with its default variant.
+    #[must_use]
+    pub const fn model(model: ModelKey) -> Self {
+        Self {
+            model: ConfiguredModelRef::Model(model),
+            variant: None,
+        }
+    }
+}
+
+impl Serialize for ConfiguredModel {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match &self.variant {
+            None => serializer.collect_str(&self.model),
+            Some(variant) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("model", &self.model.to_string())?;
+                map.serialize_entry("variant", variant)?;
+                map.end()
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for ConfiguredModel {
@@ -401,44 +519,146 @@ impl<'de> Deserialize<'de> for ConfiguredModel {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Table {
-            model: ModelKey,
-            #[serde(default)]
-            variant: Option<ConfiguredVariantRef>,
-        }
+        deserializer.deserialize_any(ConfiguredModelVisitor)
+    }
+}
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfiguredModelTable {
+    model: String,
+    #[serde(default)]
+    variant: Option<ConfiguredVariantRef>,
+}
+
+impl ConfiguredModelTable {
+    fn decode<E: serde::de::Error>(self) -> Result<ConfiguredModel, E> {
+        Ok(ConfiguredModel {
+            model: self.model.parse().map_err(E::custom)?,
+            variant: self.variant,
+        })
+    }
+}
+
+struct ConfiguredModelVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ConfiguredModelVisitor {
+    type Value = ConfiguredModel;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a model key, a model field's variable, or a table { model, variant }")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(ConfiguredModel {
+            model: value.parse().map_err(E::custom)?,
+            variant: None,
+        })
+    }
+
+    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        ConfiguredModelTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?
+            .decode()
+    }
+}
+
+/// The most entries a model field's list may hold.
+pub const MAX_CONFIGURED_MODELS: usize = 32;
+
+/// The value of `default_model`, `small_model`, or `utility_model`: one
+/// entry, or a nonempty fallback list of them, in order
+/// (`docs/site/specs/model-fallback-lists.md`). A list of one is written
+/// back as the entry alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfiguredModels(Vec<ConfiguredModel>);
+
+impl ConfiguredModels {
+    /// `entries` as a field's value; `None` when empty or longer than
+    /// [`MAX_CONFIGURED_MODELS`].
+    #[must_use]
+    pub fn new(entries: Vec<ConfiguredModel>) -> Option<Self> {
+        (!entries.is_empty() && entries.len() <= MAX_CONFIGURED_MODELS).then_some(Self(entries))
+    }
+
+    /// The one entry `entry`.
+    #[must_use]
+    pub fn single(entry: ConfiguredModel) -> Self {
+        Self(vec![entry])
+    }
+
+    /// The entries in order; never empty.
+    #[must_use]
+    pub fn entries(&self) -> &[ConfiguredModel] {
+        &self.0
+    }
+}
+
+impl Serialize for ConfiguredModels {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0.as_slice() {
+            [entry] => entry.serialize(serializer),
+            entries => entries.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ConfiguredModels {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
         struct Visitor;
         impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = ConfiguredModel;
+            type Value = ConfiguredModels;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a model key or a table { model, variant }")
+                formatter.write_str(
+                    "a model key, a model field's variable, a table { model, variant }, or a nonempty list of them",
+                )
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                value
-                    .parse::<ModelKey>()
-                    .map(|model| ConfiguredModel {
-                        model,
-                        variant: None,
-                    })
-                    .map_err(E::custom)
+                ConfiguredModelVisitor
+                    .visit_str(value)
+                    .map(ConfiguredModels::single)
             }
 
             fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
             where
                 A: serde::de::MapAccess<'de>,
             {
-                let table = Table::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(ConfiguredModel {
-                    model: table.model,
-                    variant: table.variant,
-                })
+                ConfiguredModelVisitor
+                    .visit_map(map)
+                    .map(ConfiguredModels::single)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut entries = Vec::new();
+                while let Some(entry) = seq.next_element::<ConfiguredModel>()? {
+                    if entries.len() == MAX_CONFIGURED_MODELS {
+                        return Err(serde::de::Error::custom(format!(
+                            "a model list holds at most {MAX_CONFIGURED_MODELS} entries"
+                        )));
+                    }
+                    entries.push(entry);
+                }
+                ConfiguredModels::new(entries)
+                    .ok_or_else(|| serde::de::Error::custom("a model list must not be empty"))
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -452,18 +672,18 @@ impl<'de> Deserialize<'de> for ConfiguredModel {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
-    /// `default_model`: the model and variant agent documents reach as
+    /// `default_model`: the models agent documents reach as
     /// `${default_model}`.
     #[serde(default)]
-    pub default_model: Option<ConfiguredModel>,
-    /// `small_model`: the model and variant agent documents reach as
+    pub default_model: Option<ConfiguredModels>,
+    /// `small_model`: the models agent documents reach as
     /// `${small_model}`, for subagents that carry out work.
     #[serde(default)]
-    pub small_model: Option<ConfiguredModel>,
-    /// `utility_model`: the model and variant agent documents reach as
+    pub small_model: Option<ConfiguredModels>,
+    /// `utility_model`: the models agent documents reach as
     /// `${utility_model}`, for the internal approval and title agents.
     #[serde(default)]
-    pub utility_model: Option<ConfiguredModel>,
+    pub utility_model: Option<ConfiguredModels>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -521,12 +741,24 @@ pub struct EngineConfig {
     pub providers: BTreeMap<ProviderId, ProviderDefinition>,
 }
 
+impl EngineConfig {
+    /// The value of the model field `field`, when set.
+    #[must_use]
+    pub const fn model_field(&self, field: ModelField) -> Option<&ConfiguredModels> {
+        match field {
+            ModelField::Default => self.default_model.as_ref(),
+            ModelField::Small => self.small_model.as_ref(),
+            ModelField::Utility => self.utility_model.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawRuntimeLayer {
-    pub(crate) default_model: Option<ConfiguredModel>,
-    pub(crate) small_model: Option<ConfiguredModel>,
-    pub(crate) utility_model: Option<ConfiguredModel>,
+    pub(crate) default_model: Option<ConfiguredModels>,
+    pub(crate) small_model: Option<ConfiguredModels>,
+    pub(crate) utility_model: Option<ConfiguredModels>,
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) subagent_output: Option<SubagentOutputConfig>,
@@ -1749,7 +1981,61 @@ fn kept_lines_empty((head, tail): (usize, usize)) -> bool {
     head + tail == 0
 }
 
+/// The model fields' structure (`docs/site/specs/model-fallback-lists.md`
+/// sections 2 and 5): no list names a model or a field twice, and no field
+/// reaches itself through the fields it names. Fields named but unset are a
+/// runtime matter, reported by the agents that reach them.
+fn validate_model_fields(runtime: &EngineConfig) -> Result<(), ConfigError> {
+    for field in ModelField::ALL {
+        let Some(models) = runtime.model_field(field) else {
+            continue;
+        };
+        for (index, entry) in models.entries().iter().enumerate() {
+            if models.entries()[..index]
+                .iter()
+                .any(|earlier| earlier.model == entry.model)
+            {
+                return Err(ConfigError::ModelFieldDuplicate {
+                    field: field.name(),
+                    entry: entry.model.to_string(),
+                });
+            }
+        }
+    }
+    fn visit(
+        runtime: &EngineConfig,
+        field: ModelField,
+        stack: &mut Vec<ModelField>,
+    ) -> Result<(), ConfigError> {
+        if let Some(start) = stack.iter().position(|seen| *seen == field) {
+            let cycle = stack[start..]
+                .iter()
+                .chain(std::iter::once(&field))
+                .map(|field| format!("`{}`", field.name()))
+                .collect::<Vec<_>>()
+                .join(" → ");
+            return Err(ConfigError::ModelFieldCycle(cycle));
+        }
+        let Some(models) = runtime.model_field(field) else {
+            return Ok(());
+        };
+        stack.push(field);
+        for entry in models.entries() {
+            if let ConfiguredModelRef::Field(named) = entry.model {
+                visit(runtime, named, stack)?;
+            }
+        }
+        stack.pop();
+        Ok(())
+    }
+    for field in ModelField::ALL {
+        visit(runtime, field, &mut Vec::new())?;
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError> {
+    validate_model_fields(runtime)?;
     validate_header_ownership(&runtime.headers, "global").map_err(ConfigError::HeaderOwnership)?;
     validate_header_limits(&runtime.headers).map_err(|_| {
         ConfigError::InvalidRuntime("headers exceed the header count or size limits")

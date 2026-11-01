@@ -24,6 +24,51 @@
       ],
       "type": "object"
     },
+    "OnboardingModelEntry": {
+      "description": "One entry of a model field's fallback list (client protocol 1.69.0):\nexactly one of `model`, a model key, and `field`, another model field\nwhose models the entry stands for. `variant` absent means the model's\ndefault variant; beside `field`, it applies to each of that field's\nmodels that has no variant of its own and has a variant of that name\n(`docs/site/specs/model-fallback-lists.md`).",
+      "properties": {
+        "field": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnboardingModelField"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9._-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "OnboardingModelField": {
+      "description": "One of the model fields, as an entry of another field names it (client\nprotocol 1.69.0). A value this build does not know reads as `unknown`;\n`onboarding.run` refuses it.",
+      "enum": [
+        "default_model",
+        "small_model",
+        "utility_model",
+        "unknown"
+      ],
+      "type": "string",
+      "x-open": true
+    },
     "OnboardingRequirement": {
       "description": "What onboarding still needs. A value this build does not know reads as\n`unknown`: something the daemon needs that a client cannot name, which\nkeeps Finish disabled.",
       "oneOf": [
@@ -69,6 +114,18 @@
             }
           ]
         },
+        "default_model_list": {
+          "description": "`default_model` as configured, a list of one for a single model, its\nreferences to other fields kept; absent when unset (client protocol\n1.69.0). `default_model` above is the first model it reaches.",
+          "items": {
+            "$ref": "#/$defs/OnboardingModelEntry"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "missing": {
           "items": {
             "$ref": "#/$defs/OnboardingRequirement"
@@ -101,6 +158,18 @@
             }
           ]
         },
+        "small_model_list": {
+          "description": "`small_model` as configured, like `default_model_list`.",
+          "items": {
+            "$ref": "#/$defs/OnboardingModelEntry"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "utility_model": {
           "anyOf": [
             {
@@ -111,6 +180,18 @@
             }
           ],
           "description": "`utility_model` (client protocol 1.56.0)."
+        },
+        "utility_model_list": {
+          "description": "`utility_model` as configured, like `default_model_list`.",
+          "items": {
+            "$ref": "#/$defs/OnboardingModelEntry"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [

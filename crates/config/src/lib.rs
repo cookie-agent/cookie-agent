@@ -40,15 +40,15 @@ pub use prompt_template::{
 };
 pub use runtime::{
     AcpConfig, AgentMdConfig, AgentsConfig, ApprovalCacheTtl, ApprovalConfig, ConfiguredModel,
-    ContextCompactionConfig, ContextCompactionTrigger, CronConfig, DEFAULT_ROOT_AGENT_ID,
-    DEFERRED_BUILTIN_GROUPS, DeferredToolsConfig, DelegationConfig, EngineConfig,
-    LoopWarningConfig, McpConfig, McpOAuthConfig, McpOAuthSettings, McpServerConfig,
-    McpServerScope, MemoryConfig, MessagingConfig, ModelPricing, ModelRetryConfig,
-    NotificationPreview, NotificationsConfig, PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion,
-    PluginConfig, PluginsConfig, PricingConfig, ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES,
-    ServerConfig, SessionTitleConfig, ShellEnvironmentConfig, ShellEnvironmentOverride,
-    SkillsConfig, SubagentOutputConfig, ToolOutputConfig, TransferConfig, valid_daemon_token,
-    valid_daemon_url, valid_page_url,
+    ConfiguredModelRef, ConfiguredModels, ContextCompactionConfig, ContextCompactionTrigger,
+    CronConfig, DEFAULT_ROOT_AGENT_ID, DEFERRED_BUILTIN_GROUPS, DeferredToolsConfig,
+    DelegationConfig, EngineConfig, LoopWarningConfig, MAX_CONFIGURED_MODELS, McpConfig,
+    McpOAuthConfig, McpOAuthSettings, McpServerConfig, McpServerScope, MemoryConfig,
+    MessagingConfig, ModelField, ModelPricing, ModelRetryConfig, NotificationPreview,
+    NotificationsConfig, PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion, PluginConfig, PluginsConfig,
+    PricingConfig, ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig, SessionTitleConfig,
+    ShellEnvironmentConfig, ShellEnvironmentOverride, SkillsConfig, SubagentOutputConfig,
+    ToolOutputConfig, TransferConfig, valid_daemon_token, valid_daemon_url, valid_page_url,
 };
 pub use runtime_templates::{AcpAgentConfig, RuntimeTemplateConfig};
 pub use skills::{

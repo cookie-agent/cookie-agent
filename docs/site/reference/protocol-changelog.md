@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.69.0
+
+- Fallback lists for the model fields
+  ([fallback lists](../specs/model-fallback-lists.md)): `OnboardingStatus`
+  gains `default_model_list`, `small_model_list`, and `utility_model_list`,
+  each field as configured, entries `OnboardingModelEntry`
+  (`{ model?, field?, variant? }`, exactly one of `model` and `field`,
+  `field` an open `OnboardingModelField`); `default_model`, `small_model`,
+  and `utility_model` there are the first model each field reaches.
+  `onboarding.run` takes the same three lists, refused with
+  `invalid_params` beside the same field's single value.
 ## 1.68.0
 
 - ACP agents' own permission options on approvals

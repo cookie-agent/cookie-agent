@@ -161,7 +161,10 @@ fn utility_model_is_a_model_value_agents_reach_as_a_variable() {
     );
     let loaded = load_from_user_root(Some(directory.path())).expect("loads");
     let utility = loaded.runtime.utility_model.expect("utility_model");
-    assert_eq!(utility.model.to_string(), "deepseek/deepseek-flash");
+    assert_eq!(
+        utility.entries()[0].model.to_string(),
+        "deepseek/deepseek-flash"
+    );
     assert!(loaded.runtime.small_model.is_some());
     let models = &loaded.agents[&id("title")].frontmatter.models;
     assert_eq!(models[0].model, AgentModelRef::UtilityModel);
