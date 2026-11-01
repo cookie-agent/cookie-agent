@@ -31,6 +31,9 @@ enum Reach {
     Since(Timestamp),
     /// Every session.
     All,
+    /// The sessions last active from the first time to before the second:
+    /// a range of days the user chose, with nothing older to offer.
+    Between(Timestamp, Timestamp),
 }
 
 /// The session list's window, and whether the daemon has older sessions.
@@ -62,8 +65,19 @@ impl SessionWindow {
         }
     }
 
+    /// The sessions last active from `low` to before `high`, and every
+    /// pinned, unread, and busy one; it offers nothing older.
+    #[must_use]
+    pub fn between(low: Timestamp, high: Timestamp) -> Self {
+        Self {
+            reach: Reach::Between(low, high),
+            days: None,
+            older: None,
+        }
+    }
+
     /// How many days the window reaches back before older pages came in;
-    /// `None`: every session.
+    /// `None`: every session, or a range.
     #[must_use]
     pub fn days(&self) -> Option<i64> {
         self.days
@@ -85,14 +99,18 @@ impl SessionWindow {
                     .and_then(|days| now.checked_sub(SignedDuration::from_hours(24 * days)).ok()),
                 Reach::Since(since) => Some(since),
                 Reach::All => None,
+                Reach::Between(low, high) => {
+                    params.before = Some(high);
+                    Some(low)
+                }
             };
         }
         params
     }
 
-    /// Records a full read's `older` cursor.
+    /// Records a full read's `older` cursor; a range has none to offer.
     pub fn read(&mut self, older: Option<Timestamp>) {
-        self.older = older;
+        self.older = older.filter(|_| !matches!(self.reach, Reach::Between(..)));
     }
 
     /// The parameters of the next older page, when the daemon has one.
@@ -116,9 +134,13 @@ impl SessionWindow {
         self.older = older;
     }
 
-    /// Back to the window's recent days, as for another daemon.
+    /// Back to the window's recent days, or its range, as for another
+    /// daemon.
     pub fn reset(&mut self) {
-        *self = Self::recent(self.days);
+        *self = match self.reach {
+            Reach::Between(low, high) => Self::between(low, high),
+            _ => Self::recent(self.days),
+        };
     }
 }
 
@@ -197,6 +219,36 @@ mod tests {
 
         window.reset();
         assert_eq!(window, SessionWindow::default());
+    }
+
+    #[test]
+    fn a_range_asks_for_its_two_ends_and_offers_nothing_older() {
+        let (low, high) = (at("2026-09-03T00:00:00Z"), at("2026-09-11T00:00:00Z"));
+        let mut range = SessionWindow::between(low, high);
+        let params = range.read_params(
+            SessionListParams::default(),
+            WINDOWED,
+            at("2026-10-31T12:00:00Z"),
+        );
+        assert_eq!(
+            (params.active_since, params.before),
+            (Some(low), Some(high))
+        );
+        // The daemon says September holds older sessions: not for a range.
+        range.read(Some(low));
+        assert!(!range.has_older());
+        assert_eq!(range.older_params(SessionListParams::default()), None);
+        range.reset();
+        assert_eq!(range, SessionWindow::between(low, high));
+        // A daemon before windows lists everything, a range too.
+        assert_eq!(
+            range.read_params(
+                SessionListParams::default(),
+                Some(SemVer::new(1, 56, 0)),
+                low
+            ),
+            SessionListParams::default()
+        );
     }
 
     #[test]

@@ -489,9 +489,15 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                 within != cookie_agent_client_state::session_filter::ActiveWithin::default(),
             );
         match others {
-            0 => within.summary().to_owned(),
-            1 => format!("{} · 1 filter", within.label()),
-            count => format!("{} · {count} filters", within.label()),
+            0 => within.summary(crate::workspace::local_today()),
+            1 => format!(
+                "{} · 1 filter",
+                within.short(crate::workspace::local_today())
+            ),
+            count => format!(
+                "{} · {count} filters",
+                within.short(crate::workspace::local_today())
+            ),
         }
     };
     // A closed search lets go of what it held: it opens empty again.
@@ -568,6 +574,7 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                 class=format!("session-tool min-w-0 flex-1 truncate text-right {NOTE}")
                 data-tool="summary"
                 data-filter-summary
+                title=summary
             >
                 {summary}
             </span>
@@ -623,7 +630,9 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
 /// unread, and busy sessions too, whatever their age.
 #[component]
 fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
-    use cookie_agent_client_state::session_filter::{ActiveWithin, agent_options, machine_options};
+    use cookie_agent_client_state::session_filter::{
+        ActiveWithin, DateRange, agent_options, machine_options,
+    };
     let open = move || workspace.filter_open.get();
     let close = move || workspace.filter_open.set(false);
     let escape = window_event_listener(ev::keydown, move |event| {
@@ -722,6 +731,49 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
         }
     };
     let heading = "text-xs font-bold text-ink dark:text-sand";
+    // The range the filter lists, while it lists one.
+    let range = move || {
+        workspace.session_filter.with(|filter| match filter.within {
+            ActiveWithin::Between(range) => Some(range),
+            _ => None,
+        })
+    };
+    let ranged = move || range().is_some();
+    // A range's first or last day, as a date field: a change keeps the
+    // other end, unless it passes it, which then moves to the same day.
+    let date_field = move |label: &'static str, id: &'static str, first: bool| {
+        let value = move || {
+            range()
+                .map(|range| if first { range.from } else { range.to }.to_string())
+                .unwrap_or_default()
+        };
+        view! {
+            <label class="flex min-w-36 flex-1 flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
+                <span>{label}</span>
+                <input
+                    type="date"
+                    id=id
+                    class="min-h-11 w-full rounded-md border border-crust bg-cream px-2 text-sm font-normal text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
+                    max=move || crate::workspace::local_today().to_string()
+                    prop:value=value
+                    on:change=move |event| {
+                        let (Ok(day), Some(current)) =
+                            (event_target_value(&event).parse::<jiff::civil::Date>(), range())
+                        else {
+                            return;
+                        };
+                        // The other end follows a day past it.
+                        let range = if first {
+                            DateRange::new(day, current.to.max(day))
+                        } else {
+                            DateRange::new(current.from.min(day), day)
+                        };
+                        workspace.set_active_within(ActiveWithin::Between(range));
+                    }
+                />
+            </label>
+        }
+    };
     view! {
         // A desktop's click outside closes it.
         <Show when=open>
@@ -740,7 +792,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                     class="flex flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-espresso dark:border-ember dark:bg-night dark:text-latte lg:shadow-lg"
                 >
                     <div class="flex flex-col gap-1.5">
-                        <span class=heading id="filter-within">"Active in the last"</span>
+                        <span class=heading id="filter-within">"Last active"</span>
                         <div class="flex flex-wrap gap-1.5" role="radiogroup" aria-labelledby="filter-within">
                             {ActiveWithin::ALL
                                 .into_iter()
@@ -769,7 +821,40 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                                     }
                                 })
                                 .collect_view()}
+                            // A range of days: the last week to start with,
+                            // its dates below.
+                            <button
+                                type="button"
+                                role="radio"
+                                class=move || format!(
+                                    "inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-sm lg:min-h-9 {}",
+                                    if ranged() {
+                                        "border-espresso bg-espresso text-cream dark:border-latte dark:bg-latte dark:text-night"
+                                    } else {
+                                        "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                                    },
+                                )
+                                aria-checked=move || ranged().to_string()
+                                data-within="between"
+                                on:click=move |_| {
+                                    if !ranged() {
+                                        workspace.set_active_within(ActiveWithin::Between(DateRange::ending(
+                                            crate::workspace::local_today(),
+                                            7,
+                                        )));
+                                    }
+                                }
+                            >
+                                <Glyph icon=icondata::FaCalendarDaysSolid />
+                                "Dates…"
+                            </button>
                         </div>
+                        <Show when=ranged>
+                            <div class="flex flex-wrap gap-2" data-date-range>
+                                {date_field("From", "filter-from", true)}
+                                {date_field("To", "filter-to", false)}
+                            </div>
+                        </Show>
                         <p class=format!("flex items-center gap-1.5 {NOTE}")>
                             <Glyph icon=icondata::FaThumbtackSolid class="text-caramel dark:text-maple" />
                             "Pinned, unread, and busy sessions always show."

@@ -240,7 +240,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     button on a desktop (a click outside or **Escape** closes it), and as
     a dropdown above the list on a narrower screen. It chooses how far
     back the list reaches (24 hours, 7 days, the default, 30 or 90 days,
-    or all time), which agents and which machines the sessions run on
+    all time, or **Dates…**: the days from one date to another, both
+    included, in the browser's time zone, with no **Show older**), which agents and which machines the sessions run on
     (any while none is chosen), and, for a daemon without projects, the
     workspace. Pinned, unread, and busy sessions always show whatever the
     date; the agents and machines narrow them too. A dot on the button

@@ -22,8 +22,7 @@ The user asked for three changes on 2026-11-01:
    both clients and is listed whatever the date.
 
 Out of scope: pinning subagents (a tree is pinned by its root, as it is
-marked unread), a custom date range (the window is a number of days, as
-the daemon's listing takes it), and a filter in the TUI, whose picker keeps
+marked unread), and a filter in the TUI, whose picker keeps
 its 30 days, its directory scope, and its project filter.
 
 ## 2. Widths
@@ -89,9 +88,10 @@ the rail's Chat button there shows the sessions too
   gone. Escape or × closes it and gives the focus back to the search
   button. With reduced motion, only opacity changes.
 - **Filter.** A panel with the date (24 hours, 7 days, 30 days, 90 days,
-  all time), the agents and the machines of the listed sessions as chips
-  (none chosen: any), and the workspace for a daemon without projects
-  (the select that stood under the buttons before). On a desktop it
+  all time, or a range of dates; see section 5), the agents and the
+  machines of the listed sessions as chips (none chosen: any), and the
+  workspace for a daemon without projects (the select that stood under
+  the buttons before). On a desktop it
   opens in place, a popover under the button that a click outside or
   Escape closes. Narrower, it drops down above the list, pushing it down.
   A dot on the filter button says the filter differs from its default;
@@ -112,7 +112,15 @@ Made while implementing, for the user to revisit:
 
 - The TUI keeps its 30-day window and gains no filter; the request named
   the web page.
-- The date presets are fixed; no custom range.
+- A range of dates (added 2026-11-01 at the user's request): **Dates…**
+  starts with the last 7 days and shows From and To date fields; a day
+  past the other end moves it to the same day. The days are the
+  browser's, from the first day's start to the end of the last.
+  `session.list` takes both ends already (`active_since` and `before`,
+  client protocol 1.57.0), so a range needs no protocol change; it offers
+  no **Show older**, and the page also leaves out a session announced
+  since whose last activity is past the range, unless it is pinned,
+  unread, or busy.
 - Agent and machine filters apply to pinned sessions too: only the date
   is exempted.
 - The web's selection bar gains no Pin/Unpin; `session.pin.set` takes many

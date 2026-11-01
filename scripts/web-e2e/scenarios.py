@@ -3218,6 +3218,26 @@ def pins_and_filter(browser):
     browser.shot("session-filter")
     browser.click("#filter-reset")
     browser.wait("the default", lambda: checked("week") and count(browser, "[data-filter-dot]") == 0)
+    # A range of days in the past: the sessions made now leave the list,
+    # and nothing older is offered; Reset brings them back.
+    browser.click("[data-within=between]")
+    browser.wait("the dates", lambda: checked("between") and count(browser, "#filter-from") == 1)
+    # A last day before the first pulls the first back to it.
+    for field, day in (("#filter-to", "2020-01-02"), ("#filter-from", "2020-01-01")):
+        browser.script(
+            "const f = document.querySelector(arguments[0]); f.value = arguments[1];"
+            "f.dispatchEvent(new Event('change', {bubbles: true}))",
+            field, day,
+        )
+    rows_of = lambda: count(browser, 'aside [data-session-row="%s"]' % made[0]) + count(
+        browser, 'aside [data-session-row="%s"]' % made[1])
+    browser.wait("a range in the past", lambda: rows_of() == 0 and browser.script(
+        "return [document.querySelector('#filter-from').value, document.querySelector('#filter-to').value]"
+    ) == ["2020-01-01", "2020-01-02"])
+    assert count(browser, "#show-older-sessions") == 0, "a range offers older sessions"
+    browser.shot("session-filter-range")
+    browser.click("#filter-reset")
+    browser.wait("the sessions back", lambda: checked("week") and rows_of() == 2)
     browser.type("#filter-done", ESCAPE)
     browser.wait("the closed filter", lambda: not opened())
     assert browser.script("return document.activeElement.id") == "filter-sessions", "the filter button lost the focus"

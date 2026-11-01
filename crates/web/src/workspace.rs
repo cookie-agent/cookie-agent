@@ -68,6 +68,7 @@ pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL
 pub(crate) use notifications::release_push;
 pub use onboarding::Onboarding;
 pub use permissions::RuleRef;
+pub(crate) use pins::local_today;
 pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 pub use selection::{PickState, Picked};

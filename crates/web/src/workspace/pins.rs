@@ -31,14 +31,14 @@ impl Workspace {
 
     /// Lists the sessions active `within`, with every pinned, unread, and
     /// busy one: the window starts over there, and the list is read again.
+    /// A range's days are the browser's.
     pub fn set_active_within(self, within: ActiveWithin) {
         if self.session_filter.with_untracked(|filter| filter.within) == within {
             return;
         }
         self.session_filter.update(|filter| filter.within = within);
-        self.session_window.set_value(
-            cookie_agent_client_state::session_window::SessionWindow::recent(within.days()),
-        );
+        self.session_window
+            .set_value(within.window(&crate::cron::zone_at(jiff::Timestamp::now())));
         let Some(client) = self.client() else {
             return;
         };
@@ -64,10 +64,18 @@ impl Workspace {
             + usize::from(self.directory_filter.with(Option::is_some))
     }
 
-    /// Whether the filter's agents and machines leave `session` in the
-    /// list; tracks the filter, and the runtimes once a machine is chosen.
+    /// Whether the filter leaves `session` in the list: a range's days (the
+    /// daemon's answer holds only those, but a session announced since may
+    /// be newer), and its agents and machines; tracks the filter, and the
+    /// runtimes once a machine is chosen.
     pub fn filter_passes(self, session: &SessionMeta) -> bool {
         self.session_filter.with(|filter| {
+            if let ActiveWithin::Between(range) = filter.within
+                && let Some(bounds) = range.bounds(&crate::cron::zone_at(jiff::Timestamp::now()))
+                && !cookie_agent_client_state::session_filter::in_range(session, bounds)
+            {
+                return false;
+            }
             if filter.by_date_only() {
                 return true;
             }
@@ -81,4 +89,10 @@ impl Workspace {
             filter.matches(session, &machines)
         })
     }
+}
+
+/// The browser's date today.
+pub(crate) fn local_today() -> jiff::civil::Date {
+    let now = jiff::Timestamp::now();
+    now.to_zoned(crate::cron::zone_at(now)).date()
 }
