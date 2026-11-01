@@ -314,10 +314,12 @@ def composer_text(browser):
 
 
 # Records from now on whether any of the page's composers was disabled
-# (window.__composerDisabled), the ones a reconnect mounts included. A
-# disabled textarea loses the focus, so what is typed or the Enter pressed
-# while it is disabled goes nowhere.
+# (window.__composerDisabled), any mounted later included, and which one
+# the page has now (window.__composer). A disabled textarea loses the
+# focus, so what is typed or the Enter pressed while it is disabled goes
+# nowhere.
 WATCH_COMPOSER = """
+window.__composer = document.querySelector('#composer');
 window.__composerDisabled = 0;
 const note = (e) => { if (e.id === 'composer' && e.disabled) window.__composerDisabled += 1; };
 if (window.__composerWatch) window.__composerWatch.disconnect();
@@ -337,6 +339,18 @@ def composer_stayed_enabled(browser, what):
     """Ends WATCH_COMPOSER, failing when a composer was disabled since."""
     disabled = browser.script("window.__composerWatch.disconnect(); return window.__composerDisabled")
     assert disabled == 0, "the open session's composer was disabled %d time(s) %s" % (disabled, what)
+
+
+def composer_kept_focus(browser, what, focused=True):
+    """Fails unless the composer WATCH_COMPOSER found is still the page's
+    and, when `focused`, has the focus: a page that mounted its views again
+    lost both."""
+    kept, has_focus = browser.script(
+        "const c = document.querySelector('#composer');"
+        "return [c === window.__composer, document.activeElement === window.__composer]"
+    )
+    assert kept, "the page mounted a new composer %s" % what
+    assert has_focus or not focused, "the composer lost the focus %s" % what
 
 
 def send_after_reconnect(browser, text, timeout=60):
@@ -3993,10 +4007,10 @@ window.removeEventListener = (type, ...rest) => {
 
 
 def reconnects():
-    """The connected page remounts with every reconnection; its browser
-    listeners must go with it. After several reconnections the page has
-    no more popstate listeners than before, and Back moves exactly one
-    step: from an agent to the agents' list, not further."""
+    """The page's browser listeners do not pile up across reconnections.
+    After several reconnections the page has no more popstate listeners
+    than before, and Back moves exactly one step: from an agent to the
+    agents' list, not further."""
     phone = Browser()
     try:
         phone.go(LINK)
@@ -4041,17 +4055,16 @@ def reconnects():
 def suspended_tab(browser):
     """A phone suspends a background tab; when it shows again the page
     checks its connection. A daemon that stopped answering (here, paused)
-    is reconnected to once it answers again. Removing the focused composer
-    with the page does not panic, and a sheet opened meanwhile reads its
-    figures once the page has reconnected."""
+    is reconnected to once it answers again. The page stays mounted, and a
+    sheet opened meanwhile stays open and reads its figures once the page
+    has reconnected."""
     with open(os.path.join(HOME, "daemon.pid")) as file:
         daemon = int(file.read())
     visibility = (
         "Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => arguments[0]});"
         "document.dispatchEvent(new Event('visibilitychange'))"
     )
-    # The reconnect remounts the page, the focused composer with it.
-    browser.script("document.querySelector('#composer').focus()")
+    browser.script(WATCH_COMPOSER)
     os.kill(daemon, signal.SIGSTOP)
     try:
         browser.script(visibility, "hidden")
@@ -4062,11 +4075,15 @@ def suspended_tab(browser):
         # nothing on the closed connection and says why.
         menu(browser, "usage")
         browser.wait("the usage sheet", lambda: "Reading usage" in browser.text("#sheet"))
+        browser.script("window.__sheet = document.querySelector('#sheet')")
     finally:
         os.kill(daemon, signal.SIGCONT)
     browser.wait("the reconnection", lambda: browser.text("#connected") != "", timeout=60)
     browser.wait("the restored session", lambda: count(browser, "#reconnecting") == 0, timeout=30)
     cache_hit_rate(browser)
+    # The sheet took the focus; the page kept it and the composer mounted.
+    composer_kept_focus(browser, "while the tab reconnected", focused=False)
+    assert browser.script("return document.querySelector('#sheet') === window.__sheet"), "the open sheet was mounted again"
     close_sheet(browser)
     print("a tab shown again after the daemon stopped answering reconnects, and reads the open sheet again")
     # The open session follows the new connection: a message sent now
@@ -5420,7 +5437,10 @@ def acp_reconnect(browser):
     finally:
         os.kill(daemon, signal.SIGCONT)
     browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
-    # The status line no longer says the page is not connected.
+    # The page stayed mounted: the composer the message was typed into
+    # keeps the focus, and the status line no longer says the page is
+    # not connected.
+    composer_kept_focus(browser, "while the page reconnected")
     status = browser.script("return document.querySelector('#status').textContent").strip()
     assert status == "", "the status line kept what it said before the reconnect: %r" % status
     browser.type("#composer", ENTER)
@@ -5481,8 +5501,10 @@ def session_restart(browser):
     ready_before = ready_lines()
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
+    browser.script("document.querySelector('#composer').focus()")
     browser.script(WATCH_COMPOSER)
     wait_reconnected(browser, ready_before)
+    composer_kept_focus(browser, "while the page reconnected to the restarted daemon")
     send_after_reconnect(browser, "after the restart")
     composer_stayed_enabled(browser, "while the page reconnected to the restarted daemon")
     browser.wait("the reply after the restart", lambda: answers(browser) > before, timeout=60)

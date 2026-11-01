@@ -432,44 +432,53 @@ pub fn App() -> impl IntoView {
         connection.connect();
     }
 
+    let connected = Memo::new(move |_| matches!(connection.phase.get(), Phase::Connected { .. }));
+    let reconnecting_reason = Memo::new(move |_| match connection.phase.get() {
+        Phase::Reconnecting { reason } if connection.attached.get() => Some(reason),
+        _ => None,
+    });
+    let shows_workspace =
+        Memo::new(move |_| connected.get() || reconnecting_reason.with(Option::is_some));
     view! {
         <div class="app-frame flex flex-col overflow-hidden bg-cream text-espresso dark:bg-night dark:text-latte">
             <OAuthLanding landing=landing />
             {move || {
-                let phase = connection.phase.get();
-                let attached = connection.attached.get();
-                match phase {
-                    Phase::Connected { .. } => {
-                        view! {
-                            <RestartBanner workspace=connection.workspace />
-                            <RestartDialog workspace=connection.workspace />
-                            <MediaViewer workspace=connection.workspace />
-                            <InstallBanner />
-                            <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
-                        }
-                            .into_any()
+                // Only a change of screen remounts what the page shows: the
+                // workspace stays mounted while the page reconnects, so the
+                // composer's focus, the scroll positions, and open panels
+                // outlive a dropped connection.
+                if !shows_workspace.get() {
+                    return view! {
+                        <Header connection=connection theme=theme />
+                        <main class="flex flex-1 items-start justify-center overflow-y-auto px-4 py-10">
+                            {move || view! { <ConnectScreen connection=connection phase=connection.phase.get() /> }}
+                        </main>
                     }
-                    Phase::Reconnecting { reason } if attached => {
-                        view! {
-                            <div id="reconnecting" role="status" class="flex items-center gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember">
-                                <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
-                                <span class="min-w-0 flex-1">{format!("Connection lost ({reason}); reconnecting…")}</span>
-                            </div>
-                            <InstallBanner />
-                            <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
-                        }
-                            .into_any()
-                    }
-                    phase => {
-                        view! {
-                            <Header connection=connection theme=theme />
-                            <main class="flex flex-1 items-start justify-center overflow-y-auto px-4 py-10">
-                                <ConnectScreen connection=connection phase=phase />
-                            </main>
-                        }
-                            .into_any()
-                    }
+                        .into_any();
                 }
+                view! {
+                    <Show when=move || reconnecting_reason.get().is_some()>
+                        <div id="reconnecting" role="status" class="flex items-center gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember">
+                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
+                            <span class="min-w-0 flex-1">
+                                {move || {
+                                    format!(
+                                        "Connection lost ({}); reconnecting…",
+                                        reconnecting_reason.get().unwrap_or_default(),
+                                    )
+                                }}
+                            </span>
+                        </div>
+                    </Show>
+                    <Show when=move || connected.get()>
+                        <RestartBanner workspace=connection.workspace />
+                        <RestartDialog workspace=connection.workspace />
+                        <MediaViewer workspace=connection.workspace />
+                    </Show>
+                    <InstallBanner />
+                    <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
+                }
+                    .into_any()
             }}
         </div>
     }

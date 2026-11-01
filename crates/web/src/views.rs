@@ -142,7 +142,8 @@ pub fn WorkspaceView(
     connection: Connection,
     theme: RwSignal<ThemePreference>,
 ) -> impl IntoView {
-    // The view remounts with every connection, so its listeners go with it.
+    // The view mounts again only when the page comes back from the connect
+    // screen (another daemon, say), so its listeners go with it.
     let phone = crate::browser::on_media_change(crate::browser::PHONE_QUERY, move |narrow| {
         workspace.narrow.set(narrow);
     });
@@ -3035,8 +3036,8 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         // Later, so a tap on a button lands before the bar
                         // reappears and moves it. The tap may take the
                         // composer away (New session), `blurred` with it.
-                        // Removing the focused composer with its view (a
-                        // reconnect remounts the page) blurs it once
+                        // Removing the focused composer with its view (the
+                        // page leaving for the connect screen) blurs it once
                         // `blurred` is gone.
                         let Some(current) = blurred.try_update_value(|blurred| {
                             *blurred += 1;
@@ -3348,8 +3349,8 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
 /// Keeps [`Workspace::status_live`]: set by every status message, and
 /// cleared [`STATUS_LIVE`] later, when [`StatusTip`] fades it out. A message
 /// set again, such as the same error twice, shows again for as long.
-/// The page calls it once: the views remount with every reconnection, a
-/// message they would have to show among it.
+/// The page calls it once: the views remount when the page comes back
+/// from the connect screen, a message they would have to show among it.
 pub(crate) fn follow_status(workspace: Workspace) {
     let generation = StoredValue::new(0_u64);
     Effect::new(move |previous: Option<()>| {
