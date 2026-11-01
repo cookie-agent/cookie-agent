@@ -326,9 +326,12 @@ fn old_work_dirs(sessions_dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Moves every root folder of every v2 work-dir folder into its month, as
-/// one step per tree, then writes the activity journals, moves the runtime
-/// revision index up, and commits by writing `layout.json`.
+/// Converts every tree in a month folder an older history format wrote (or,
+/// for a store of this format, the pending ones), moves every root folder
+/// of every v2 work-dir folder into its month, converting it too, each tree
+/// one step, then writes the activity journals, moves the runtime revision
+/// index up, and commits by writing `layout.json`. A step a crash cut short
+/// is repeated at the next start, which finds the trees it finished current.
 fn migrate(
     sessions_dir: &Path,
     existing: Option<&StoreLayout>,
@@ -349,6 +352,43 @@ fn migrate(
                 })
         })
         .collect::<Vec<_>>();
+    // The trees in month folders an older history format wrote are
+    // converted where they are, every one of them once; a retry converts
+    // the pending ones only.
+    let format = cookie_agent_protocol::HISTORY_FORMAT;
+    let older_format = existing.is_none_or(|layout| layout.history_format < format);
+    let in_months = if older_format {
+        month_dirs(sessions_dir)
+            .into_iter()
+            .flat_map(|month| {
+                let month_dir = sessions_dir.join(month.to_string());
+                month_root_ids(sessions_dir, month)
+                    .into_iter()
+                    .map(move |root| OldTree {
+                        root,
+                        dir: month_dir.join(root.to_string()),
+                    })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        existing
+            .map(|layout| layout.pending.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .filter(|tree| {
+                Path::new(&tree.path)
+                    .components()
+                    .next()
+                    .and_then(|first| Month::parse(first.as_os_str().to_str()?))
+                    .is_some()
+            })
+            .map(|tree| OldTree {
+                root: tree.root_session_id,
+                dir: sessions_dir.join(&tree.path),
+            })
+            .filter(|tree| tree.dir.is_dir())
+            .collect()
+    };
     // A new store has nothing to move and says nothing.
     if !trees.is_empty() {
         eprintln!(
@@ -356,29 +396,37 @@ fn migrate(
             trees.len()
         );
     }
-    check_free_space(sessions_dir, &trees)?;
+    check_free_space(sessions_dir, trees.iter().chain(&in_months))?;
     let mut pending = Vec::new();
+    let converting = Instant::now();
+    let mut converted = 0;
+    if !in_months.is_empty() {
+        eprintln!(
+            "cookie-agent: converting {} session tree(s) to history format {format}",
+            in_months.len()
+        );
+    }
+    for tree in &in_months {
+        match convert_in_place(sessions_dir, tree) {
+            Ok(true) => converted += 1,
+            Ok(false) => {}
+            Err(error) => pending.push(pending_tree(sessions_dir, tree, error)),
+        }
+    }
+    if !in_months.is_empty() {
+        eprintln!(
+            "cookie-agent: history format {format}: converted {converted} of {} tree(s) in \
+             {:.1?}, {} pending",
+            in_months.len(),
+            converting.elapsed(),
+            pending.len()
+        );
+    }
     let mut moved = Vec::new();
     for tree in &trees {
         match move_tree(sessions_dir, tree) {
             Ok(dir) => moved.push((tree.root, dir)),
-            Err(error) => {
-                let path = tree
-                    .dir
-                    .strip_prefix(sessions_dir)
-                    .unwrap_or(&tree.dir)
-                    .to_string_lossy()
-                    .into_owned();
-                eprintln!(
-                    "cookie-agent: session tree {} stays in {path}: {error}",
-                    tree.root
-                );
-                pending.push(PendingTree {
-                    root_session_id: tree.root,
-                    path,
-                    error,
-                });
-            }
+            Err(error) => pending.push(pending_tree(sessions_dir, tree, error)),
         }
     }
     // A tree an earlier start moved before a crash kept it from recording
@@ -469,6 +517,44 @@ fn first_event_time(path: &Path) -> Option<Timestamp> {
         .ok()
 }
 
+/// A tree a migration step failed for, which stays where it is until a
+/// later start retries it.
+fn pending_tree(sessions_dir: &Path, tree: &OldTree, error: String) -> PendingTree {
+    let path = tree
+        .dir
+        .strip_prefix(sessions_dir)
+        .unwrap_or(&tree.dir)
+        .to_string_lossy()
+        .into_owned();
+    eprintln!(
+        "cookie-agent: session tree {} stays in {path}: {error}",
+        tree.root
+    );
+    PendingTree {
+        root_session_id: tree.root,
+        path,
+        error,
+    }
+}
+
+/// One conversion step for a tree already in its month folder: takes the
+/// tree's lock, converts its logs to this build's history format, and backs
+/// up the originals. Returns whether anything changed; an error leaves the
+/// tree as it was.
+fn convert_in_place(sessions_dir: &Path, tree: &OldTree) -> Result<bool, String> {
+    let _lock = match try_acquire(&tree.dir) {
+        Ok(SessionOwnership::Owned(lock)) => lock,
+        Ok(SessionOwnership::Foreign) => {
+            return Err("another cookie process holds the tree".to_owned());
+        }
+        Err(error) => return Err(format!("its lock does not open: {error}")),
+    };
+    let conversion =
+        convert::convert_tree(tree.root, &tree.dir).map_err(|error| error.to_string())?;
+    back_up_converted(sessions_dir, tree);
+    Ok(!conversion.converted.is_empty() || conversion.artifacts_moved)
+}
+
 /// One migration step: takes the tree's lock, converts its logs to this
 /// build's history format, backs up the originals, and renames the root
 /// folder into its month. An error leaves the tree where it was.
@@ -486,9 +572,8 @@ fn move_tree(sessions_dir: &Path, tree: &OldTree) -> Result<PathBuf, String> {
         }
         Err(error) => return Err(format!("its lock does not open: {error}")),
     };
-    let conversion =
-        convert::convert_tree(tree.root, &tree.dir).map_err(|error| error.to_string())?;
-    back_up_converted(sessions_dir, tree, &conversion);
+    convert::convert_tree(tree.root, &tree.dir).map_err(|error| error.to_string())?;
+    back_up_converted(sessions_dir, tree);
     // Windows refuses to rename a folder with an open file; the tree is
     // this process's alone until the daemon accepts connections.
     drop(lock);
@@ -504,37 +589,57 @@ fn move_tree(sessions_dir: &Path, tree: &OldTree) -> Result<PathBuf, String> {
     Ok(destination)
 }
 
-/// Moves the originals of the logs `conversion` replaced into
-/// `sessions/.backup-v2/<root-id>/`, which the migration deletes once it
-/// commits. One that does not move stays beside its log.
-fn back_up_converted(sessions_dir: &Path, tree: &OldTree, conversion: &convert::TreeConversion) {
-    for (id, format) in &conversion.converted {
-        let relative = if *id == tree.root {
-            PathBuf::new()
-        } else {
-            Path::new(SUBAGENTS_DIR).join(id.to_string())
+/// Moves the originals of the tree's converted logs (each member's
+/// `events.jsonl.v<N>.bak`, also one a conversion a crash cut short left)
+/// into `sessions/.backup-v2/<root-id>/`, which the migration deletes once
+/// it commits. One that does not move stays beside its log.
+fn back_up_converted(sessions_dir: &Path, tree: &OldTree) {
+    let mut members = vec![PathBuf::new()];
+    members.extend(
+        session_dir_ids(&tree.dir.join(SUBAGENTS_DIR))
+            .into_iter()
+            .map(|child| Path::new(SUBAGENTS_DIR).join(child.to_string())),
+    );
+    for relative in members {
+        let Ok(entries) = fs::read_dir(tree.dir.join(&relative)) else {
+            continue;
         };
-        let name = format!("{EVENTS_FILE}.v{format}.bak");
-        let original = tree.dir.join(&relative).join(&name);
-        let backup = sessions_dir
-            .join(BACKUP_DIR)
-            .join(tree.root.to_string())
-            .join(&relative);
-        let moved =
-            fs::create_dir_all(&backup).and_then(|()| fs::rename(&original, backup.join(&name)));
-        if let Err(error) = moved {
-            eprintln!(
-                "cookie-agent: the original of {} stays beside it: {error}",
-                original.display()
-            );
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let is_backup = name.to_str().is_some_and(|name| {
+                name.strip_prefix(&format!("{EVENTS_FILE}.v"))
+                    .and_then(|rest| rest.strip_suffix(".bak"))
+                    .is_some_and(|format| format.parse::<u32>().is_ok())
+            });
+            if !is_backup {
+                continue;
+            }
+            let original = entry.path();
+            let backup = sessions_dir
+                .join(BACKUP_DIR)
+                .join(tree.root.to_string())
+                .join(&relative);
+            let moved = fs::create_dir_all(&backup)
+                .and_then(|()| fs::rename(&original, backup.join(&name)));
+            if let Err(error) = moved {
+                eprintln!(
+                    "cookie-agent: the original of {} stays beside it: {error}",
+                    original.display()
+                );
+            }
         }
     }
 }
 
-/// Refuses to migrate when the disk cannot hold the logs it converts.
-fn check_free_space(sessions_dir: &Path, trees: &[OldTree]) -> Result<(), SessionError> {
+/// Refuses to migrate when the disk cannot hold the logs it converts: a
+/// converted log and the blobs it names take about what the original does,
+/// which stays until the migration commits.
+fn check_free_space<'a>(
+    sessions_dir: &Path,
+    trees: impl IntoIterator<Item = &'a OldTree>,
+) -> Result<(), SessionError> {
     let needed = trees
-        .iter()
+        .into_iter()
         .flat_map(|tree| {
             let mut logs = vec![tree.dir.join(EVENTS_FILE)];
             logs.extend(
@@ -589,12 +694,30 @@ fn available_space(path: &Path) -> Option<u64> {
     Some(u64::from(stats.f_bavail).saturating_mul(u64::from(stats.f_frsize)))
 }
 
-/// Windows has no free-space query without another dependency; the
-/// migration's renames need none, and a conversion that runs out of space
-/// fails its tree, which stays pending.
+/// Bytes the calling user can still use on the volume of `path`.
 #[cfg(windows)]
-fn available_space(_path: &Path) -> Option<u64> {
-    None
+fn available_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
+    let mut available = 0_u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call, which writes
+    // only the one counter asked for; the others may be null.
+    let succeeded = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (succeeded != 0).then_some(available)
 }
 
 /// The list entry of the root in `dir`: its `metadata`, or a fold of its

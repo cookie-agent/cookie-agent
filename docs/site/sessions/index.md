@@ -108,11 +108,18 @@ still reconciles its own interrupted work the first time it is written.
 ## History formats
 
 A session log records its history format. A build that reads a newer format
-cannot open the session and asks for a newer cookie. A build that reads an
-older one converts it the first time it takes the session's tree for
-writing, keeping each original log beside the new one as
-`events.jsonl.v<N>.bak`; a read-only view converts in memory only. To convert
-every session up front instead:
+cannot open the session and asks for a newer cookie. A daemon of a newer
+format converts every stored session once as it starts, before it accepts
+connections, and records the format in `sessions/layout.json`, so later
+starts skip the scan; the originals are deleted once every tree converted.
+A session another cookie process held then is converted the first time this
+one takes its tree for writing, keeping each original log beside the new one
+as `events.jsonl.v<N>.bak`; until then a read-only view converts in memory
+only. Format 2 keeps a tool result's large output, display, and metadata,
+an ACP agent's option and command lists, and a run's model settings chains
+in the tree's `blobs/` folder, and stores no ACP live state an older log
+held ([History formats](../reference/events.md#history-formats)). To convert
+every session without starting a daemon:
 
 ```sh
 cookie sessions upgrade

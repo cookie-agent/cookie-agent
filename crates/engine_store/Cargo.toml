@@ -31,6 +31,9 @@ uuid.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support"] }
 cookie_agent_models = { version = "=0.4.0", path = "../models", features = ["test-support"] }

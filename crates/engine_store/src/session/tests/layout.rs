@@ -783,3 +783,196 @@ fn a_store_without_journals_or_a_readable_marker_is_checked_again() {
             .is_some_and(|layout| layout.version == LAYOUT_VERSION)
     );
 }
+
+/// Rewrites the tree at `root_dir` as history format 1 wrote it: whole
+/// values in every log, the artifacts in `artifacts/`, no `blobs/`.
+fn demote_to_format_one(root_dir: &Path) {
+    use crate::events::blobs::{self, BLOBS_DIR, LEGACY_ARTIFACTS_DIR};
+    let blob_dir = root_dir.join(BLOBS_DIR);
+    let mut logs = vec![root_dir.join(EVENTS_FILE)];
+    if let Ok(children) = fs::read_dir(root_dir.join(SUBAGENTS_DIR)) {
+        logs.extend(
+            children
+                .flatten()
+                .map(|child| child.path().join(EVENTS_FILE))
+                .filter(|log| log.is_file()),
+        );
+    }
+    for log in logs {
+        let lines = fs::read_to_string(&log)
+            .expect("read log")
+            .lines()
+            .map(|line| {
+                let mut value = serde_json::from_str::<serde_json::Value>(line).expect("line");
+                blobs::internalize(&mut value["payload"], &mut |digest| {
+                    blobs::read(&blob_dir, digest)
+                })
+                .expect("whole");
+                if value["payload"]["type"] == "session_created" {
+                    value["payload"]["history_format"] = serde_json::json!(1);
+                }
+                serde_json::to_string(&value).expect("line") + "\n"
+            })
+            .collect::<String>();
+        fs::write(&log, lines).expect("write format 1");
+    }
+    if blob_dir.is_dir() {
+        fs::rename(&blob_dir, root_dir.join(LEGACY_ARTIFACTS_DIR)).expect("artifacts/");
+    } else {
+        create_private_test_dir_all(&root_dir.join(LEGACY_ARTIFACTS_DIR));
+    }
+}
+
+fn first_line_format(log: &Path) -> serde_json::Value {
+    let first = fs::read_to_string(log)
+        .expect("log")
+        .lines()
+        .next()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("line"))
+        .expect("first line");
+    first["payload"]["history_format"].clone()
+}
+
+/// A store already in layout 3 with history format 1 converts every tree
+/// once at startup, where it is: the marker records the new format only
+/// after the last tree, a tree another process holds stays pending and is
+/// retried, and the originals go once the marker is written.
+#[test]
+fn a_format_one_store_converts_every_tree_once_at_startup() {
+    use crate::events::blobs::{self, BLOBS_DIR, LEGACY_ARTIFACTS_DIR};
+
+    let temporary = private_tempdir();
+    let data = temporary.path().join("data");
+    let store = open_store(&data);
+    let free = persist_test_session(&store);
+    let held = persist_test_session(&store);
+    let commands = (0..20)
+        .map(|index| cookie_agent_protocol::AcpCommand {
+            name: format!("command-{index}"),
+            description: "a command the agent offers".into(),
+            input_hint: None,
+        })
+        .collect::<Vec<_>>();
+    for session in [free, held] {
+        store
+            .append(
+                session,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::AcpSessionUpdated {
+                    update: cookie_agent_protocol::AcpSessionUpdate {
+                        commands: Some(commands.clone()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .expect("commands");
+    }
+    drop(store);
+    let sessions_dir = sessions(&data);
+    let artifact = b"an artifact of format 1".to_vec();
+    for root in [free, held] {
+        let dir = root_dir_in(&sessions_dir, root);
+        demote_to_format_one(&dir);
+        fs::write(
+            dir.join(LEGACY_ARTIFACTS_DIR)
+                .join(blobs::digest(&artifact)),
+            &artifact,
+        )
+        .expect("an artifact");
+    }
+    fs::write(
+        sessions_dir.join(LAYOUT_MARKER_FILE),
+        r#"{"version": 3, "history_format": 1, "pending": []}"#,
+    )
+    .expect("a format-1 marker");
+    let held_dir = root_dir_in(&sessions_dir, held);
+    let lock = match crate::ownership::try_acquire(&held_dir).expect("lock") {
+        crate::ownership::SessionOwnership::Owned(lock) => lock,
+        crate::ownership::SessionOwnership::Foreign => panic!("the tree is free"),
+    };
+
+    let store = open_store(&data);
+    let free_dir = root_dir_in(&sessions_dir, free);
+    assert_eq!(
+        first_line_format(&free_dir.join(EVENTS_FILE)),
+        serde_json::json!(cookie_agent_protocol::HISTORY_FORMAT)
+    );
+    assert!(
+        fs::read_to_string(free_dir.join(EVENTS_FILE))
+            .expect("log")
+            .contains("\"commands_blob\":\"artifact://sha256/")
+    );
+    assert!(!free_dir.join(LEGACY_ARTIFACTS_DIR).exists());
+    assert_eq!(
+        fs::read(free_dir.join(BLOBS_DIR).join(blobs::digest(&artifact))).expect("moved"),
+        artifact
+    );
+    assert!(
+        !free_dir.join(format!("{EVENTS_FILE}.v1.bak")).exists(),
+        "the original went to the backups, removed after the commit point"
+    );
+    assert!(!sessions_dir.join(super::super::layout::BACKUP_DIR).exists());
+    let pending = store.pending_trees().to_vec();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].root_session_id, held);
+    assert_eq!(sessions_dir.join(&pending[0].path), held_dir);
+    assert_eq!(first_line_format(&held_dir.join(EVENTS_FILE)), 1);
+    let layout = read_layout(&sessions_dir).expect("layout").expect("marker");
+    assert_eq!(layout.history_format, cookie_agent_protocol::HISTORY_FORMAT);
+    assert_eq!(layout.pending, pending);
+    // The converted session reads whole.
+    let read = store.get(free).expect("the converted root");
+    assert!(read.log.event_snapshot().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::AcpSessionUpdated { update } if update.commands.as_ref() == Some(&commands)
+    )));
+    drop(read);
+    drop(store);
+
+    drop(lock);
+    let store = open_store(&data);
+    assert!(store.pending_trees().is_empty());
+    assert_eq!(
+        first_line_format(&held_dir.join(EVENTS_FILE)),
+        serde_json::json!(cookie_agent_protocol::HISTORY_FORMAT)
+    );
+    assert!(!held_dir.join(LEGACY_ARTIFACTS_DIR).exists());
+    assert_eq!(listed_ids(&store.list_roots()), sorted(vec![free, held]));
+}
+
+/// A conversion a crash cut short, its original still beside the converted
+/// log, goes on at the next start, which backs up and removes the original.
+#[test]
+fn a_conversion_cut_short_by_a_crash_goes_on_at_the_next_start() {
+    let temporary = private_tempdir();
+    let data = temporary.path().join("data");
+    let store = open_store(&data);
+    let root = persist_test_session(&store);
+    drop(store);
+    let sessions_dir = sessions(&data);
+    let dir = root_dir_in(&sessions_dir, root);
+    demote_to_format_one(&dir);
+    let original = fs::read(dir.join(EVENTS_FILE)).expect("format 1");
+    // The tree converted, but the marker was not written before the crash.
+    super::super::convert::convert_tree(root, &dir).expect("convert");
+    assert!(dir.join(format!("{EVENTS_FILE}.v1.bak")).is_file());
+    fs::write(
+        sessions_dir.join(LAYOUT_MARKER_FILE),
+        r#"{"version": 3, "history_format": 1, "pending": []}"#,
+    )
+    .expect("a format-1 marker");
+    let converted = fs::read(dir.join(EVENTS_FILE)).expect("format 2");
+    assert_ne!(converted, original);
+
+    drop(open_store(&data));
+    assert_eq!(fs::read(dir.join(EVENTS_FILE)).expect("log"), converted);
+    assert!(!dir.join(format!("{EVENTS_FILE}.v1.bak")).exists());
+    assert_eq!(
+        read_layout(&sessions_dir)
+            .expect("layout")
+            .expect("marker")
+            .history_format,
+        cookie_agent_protocol::HISTORY_FORMAT
+    );
+}

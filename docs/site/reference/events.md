@@ -134,8 +134,13 @@ each a function from the old log's JSON lines to the new one's:
 - [`cookie sessions upgrade`](../sessions/index.md#history-formats) converts
   the trees on disk up front.
 
-Backups are kept until you delete them. The format bumps only for a change
-that cannot follow the additive rules below.
+A daemon's start converts the whole store once, before it accepts
+connections, and records the format in `sessions/layout.json`; those
+backups go once the record is written ([Session storage
+layout](../architecture.md#session-storage-layout)). Backups a later conversion
+makes, when a tree another process held at that start is taken, are kept
+until you delete them. The format bumps only for a change that cannot follow
+the additive rules below.
 
 The formats:
 

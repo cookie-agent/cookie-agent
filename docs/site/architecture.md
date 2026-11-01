@@ -491,6 +491,21 @@ convert) stays where it was, is listed in `pending` with the error, named in
 the startup log and the configuration diagnostics, and retried at every
 start; it is not listed until it moves.
 
+A store whose `layout.json` records an older history format converts every
+tree in its month folders the same way, where it is, under the tree's lock:
+each tree's artifacts move to `blobs/`, the blobs its logs' large values
+move to are written and synced, then each converted log and its `metadata`,
+and only then does each original step aside
+([History formats](reference/events.md#history-formats)). The marker records
+the new format after the last tree, so a start a crash cut short converts
+again, finding the trees it finished current. A tree that does not convert
+(another process holds it, or a log is damaged) stays as it was, listed in
+`pending` and retried at every start; it stays listed, and is read through
+an in-memory conversion. Before converting, the start checks that the disk
+has room for the logs it converts (`statvfs` on Unix,
+`GetDiskFreeSpaceExW` on Windows) and refuses with the space it needs. The
+originals go to `sessions/.backup-v2/`, deleted once the marker is written.
+
 Directories and files are created private (`0o700` / `0o600` on Unix).
 
 ### Listing from activity journals, and lazy trees
