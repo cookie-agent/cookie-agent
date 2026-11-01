@@ -1782,7 +1782,7 @@ impl Engine {
         {
             result.output.push_str(&warning);
         }
-        self.submit_tool_result_status(active.session, run, id, result, cancelled)
+        self.submit_tool_result_status(active.session, run, id, result, cancelled, None)
             .await?;
         Ok(())
     }

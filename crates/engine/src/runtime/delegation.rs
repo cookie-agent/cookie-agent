@@ -372,6 +372,7 @@ impl Engine {
                             code: safe_code("parent_terminal"),
                             message: safe_error("parent run was already terminal"),
                         }),
+                        presentation: None,
                     },
                 },
             )
@@ -1540,6 +1541,7 @@ impl Engine {
                         code: safe_code("delegate_failed"),
                         message: safe_error("delegated run failed"),
                     }),
+                    presentation: None,
                 },
             },
         )?;

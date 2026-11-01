@@ -1973,6 +1973,7 @@ pub(crate) fn append_named_compaction_tool_history(
                     outcome: ToolTerminationOutcome::Completed,
                     result: Some(result),
                     error: None,
+                    presentation: None,
                 },
             },
         )

@@ -137,6 +137,7 @@ fn orphan_termination(tool_call_id: ToolCallId) -> EventPayload {
                 code: SafeCode::new("orphan").expect("safe code"),
                 message: SafeErrorMessage::new("orphan termination").expect("safe error"),
             }),
+            presentation: None,
         },
     }
 }
@@ -3073,6 +3074,7 @@ fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() 
                     code: SafeCode::new("failed").expect("safe code"),
                     message: SafeErrorMessage::new("failed").expect("safe error"),
                 }),
+                presentation: None,
             },
         },
     );
@@ -3857,6 +3859,7 @@ fn tool_call_records() -> (Vec<StoredEvent>, StoredEvent, StoredEvent) {
                     code: SafeCode::new("failed").expect("safe code"),
                     message: SafeErrorMessage::new("failed").expect("safe error"),
                 }),
+                presentation: None,
             },
         },
     );

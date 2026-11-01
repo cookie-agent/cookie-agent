@@ -3,10 +3,13 @@
 //! a fragment. Each piece leaves when the durable event that supersedes it
 //! is published: a committed or abandoned attempt, a terminated tool call,
 //! a finished internal agent, or the run's end.
+//!
+//! An ACP agent's live state is kept as its newest values: the context use
+//! and each open call's presentation, until the run's end and the call's.
 
 use cookie_agent_protocol::{
-    AttemptId, DisplayDelta, EventPayload, InternalAgentInvocationId, LiveDisplay, Open, RunId,
-    SafeDisplayText, ToolCallId,
+    AcpContextUsage, AcpLiveUpdate, AcpToolPresentation, AttemptId, DisplayDelta, EventPayload,
+    InternalAgentInvocationId, LiveDisplay, Open, RunId, SafeDisplayText, ToolCallId,
 };
 
 #[derive(Debug, Default)]
@@ -16,6 +19,11 @@ pub(super) struct InFlightOutput {
     internal_agents: Vec<InFlightInternalAgent>,
     /// The `native_compaction_started` of a provider call still running.
     native_compaction: Option<(Option<RunId>, EventPayload)>,
+    /// An ACP agent's newest context use.
+    acp_context: Option<(Option<RunId>, AcpContextUsage)>,
+    /// The newest presentation of each of an ACP agent's open calls, in the
+    /// order they first changed.
+    acp_presentations: Vec<(Option<RunId>, AcpToolPresentation)>,
 }
 
 #[derive(Debug)]
@@ -101,6 +109,21 @@ impl InFlightOutput {
                 self.native_compaction = Some((run_id, payload.clone()));
             }
             EventPayload::NativeCompactionFinished { .. } => self.native_compaction = None,
+            EventPayload::AcpLiveUpdate { update } => {
+                if let Some(context) = update.context {
+                    self.acp_context = Some((run_id, context));
+                }
+                if let Some(presented) = &update.tool_presentation {
+                    match self
+                        .acp_presentations
+                        .iter_mut()
+                        .find(|(_, held)| held.tool_call_id == presented.tool_call_id)
+                    {
+                        Some((_, held)) => held.clone_from(presented),
+                        None => self.acp_presentations.push((run_id, presented.clone())),
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -116,6 +139,8 @@ impl InFlightOutput {
             EventPayload::ToolCallTerminated { termination } => {
                 self.tools
                     .retain(|tool| tool.tool_call_id != termination.tool_call_id);
+                self.acp_presentations
+                    .retain(|(_, held)| held.tool_call_id != termination.tool_call_id);
             }
             EventPayload::InternalAgentFinished { invocation_id, .. } => {
                 self.internal_agents
@@ -177,6 +202,36 @@ impl InFlightOutput {
                 },
             ));
         }
+        replay.extend(self.acp_live_state());
+        replay
+    }
+
+    /// An ACP agent's live state, its newest values: each a whole value, so
+    /// a reader that already holds some of it may get it again.
+    pub(super) fn acp_live_state(&self) -> Vec<(Option<RunId>, EventPayload)> {
+        let mut replay = Vec::new();
+        for (run_id, presented) in &self.acp_presentations {
+            replay.push((
+                *run_id,
+                EventPayload::AcpLiveUpdate {
+                    update: AcpLiveUpdate {
+                        tool_presentation: Some(presented.clone()),
+                        context: None,
+                    },
+                },
+            ));
+        }
+        if let Some((run_id, context)) = self.acp_context {
+            replay.push((
+                run_id,
+                EventPayload::AcpLiveUpdate {
+                    update: AcpLiveUpdate {
+                        tool_presentation: None,
+                        context: Some(context),
+                    },
+                },
+            ));
+        }
         replay
     }
 
@@ -197,6 +252,15 @@ impl InFlightOutput {
         {
             self.native_compaction = None;
         }
+        // The run's end stored the context use it ended with.
+        if self
+            .acp_context
+            .as_ref()
+            .is_some_and(|(owner, _)| !other_run(owner))
+        {
+            self.acp_context = None;
+        }
+        self.acp_presentations.retain(|(owner, _)| other_run(owner));
     }
 
     fn append_chunk(
@@ -314,6 +378,88 @@ mod tests {
             },
         );
         assert_eq!(in_flight.replay().len(), 1);
+        in_flight.settle(
+            Some(run),
+            &EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
+                reason: None,
+            }),
+        );
+        assert!(in_flight.replay().is_empty());
+    }
+
+    #[test]
+    fn an_acp_agents_live_state_keeps_its_newest_values_until_their_ends() {
+        use cookie_agent_protocol::{
+            AcpContextUsage, AcpLiveUpdate, AcpToolPresentation, PreparedPresentation,
+        };
+        let run = RunId::new_v7();
+        let (first, second) = (ToolCallId::new_v7(), ToolCallId::new_v7());
+        let presented = |call, title: &str| AcpToolPresentation {
+            tool_call_id: call,
+            presentation: PreparedPresentation::new(SafeDisplayText::new(title).unwrap(), None),
+        };
+        let live = |update: AcpLiveUpdate| EventPayload::AcpLiveUpdate { update };
+        let context = |used| AcpContextUsage { used, size: None };
+        let mut in_flight = InFlightOutput::default();
+        for update in [
+            AcpLiveUpdate {
+                tool_presentation: Some(presented(first, "Read")),
+                context: Some(context(1)),
+            },
+            AcpLiveUpdate {
+                tool_presentation: Some(presented(second, "Edit")),
+                context: None,
+            },
+            AcpLiveUpdate {
+                tool_presentation: Some(presented(first, "Read notes.txt")),
+                context: None,
+            },
+            AcpLiveUpdate {
+                tool_presentation: None,
+                context: Some(context(2)),
+            },
+        ] {
+            in_flight.record(Some(run), &live(update));
+        }
+        let presentation = |call, title| {
+            (
+                Some(run),
+                live(AcpLiveUpdate {
+                    tool_presentation: Some(presented(call, title)),
+                    context: None,
+                }),
+            )
+        };
+        let newest_context = (
+            Some(run),
+            live(AcpLiveUpdate {
+                tool_presentation: None,
+                context: Some(context(2)),
+            }),
+        );
+        assert_eq!(
+            in_flight.replay(),
+            [
+                presentation(first, "Read notes.txt"),
+                presentation(second, "Edit"),
+                newest_context.clone(),
+            ]
+        );
+        assert_eq!(in_flight.acp_live_state(), in_flight.replay());
+        let termination: EventPayload = serde_json::from_value(serde_json::json!({
+            "type": "tool_call_terminated",
+            "tool_call_id": first,
+            "owner": {"model_turn_seq": 1, "content_index": 0, "model_call_id": "call", "provider_item_id": null},
+            "outcome": "completed",
+            "result": {"title": "Read", "output": "", "display": [], "metadata": null, "attachments": []},
+            "error": null,
+        }))
+        .unwrap();
+        in_flight.settle(Some(run), &termination);
+        assert_eq!(
+            in_flight.replay(),
+            [presentation(second, "Edit"), newest_context]
+        );
         in_flight.settle(
             Some(run),
             &EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {

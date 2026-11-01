@@ -431,7 +431,7 @@ impl Engine {
             code: ToolCallFailureCode::ExecutionFailed,
             message,
         });
-        self.submit_tool_result_status(session, run, tool_call_id, result, false)
+        self.submit_tool_result_status(session, run, tool_call_id, result, false, None)
             .await
             .and_then(|committed| {
                 committed
@@ -440,6 +440,9 @@ impl Engine {
             })
     }
 
+    /// Commits a tool call's end: its `result`, cancelled when `cancelled`,
+    /// with `presentation`, the call's final one, when it differs from the
+    /// one its start stored.
     pub(in crate::runtime) async fn submit_tool_result_status(
         &self,
         session: SessionId,
@@ -447,6 +450,7 @@ impl Engine {
         tool_call_id: ToolCallId,
         result: Result<ToolResult, ToolFailure>,
         cancelled: bool,
+        presentation: Option<cookie_agent_protocol::PreparedPresentation>,
     ) -> Result<bool, EngineError> {
         // A tool termination touches nothing producer reconciliation reads.
         self.on_actor_unreconciled(session, move |engine| {
@@ -478,6 +482,7 @@ impl Engine {
                                     ),
                                     message: safe_error("tool call cancelled after it started"),
                                 }),
+                                presentation,
                             },
                         },
                         Err(failure) => Event::ToolCallTerminated {
@@ -494,6 +499,7 @@ impl Engine {
                                     code: failure.code.safe_code(),
                                     message: safe_error(&failure.message),
                                 }),
+                                presentation,
                             },
                         },
                     };

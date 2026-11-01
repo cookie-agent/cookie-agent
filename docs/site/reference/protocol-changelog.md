@@ -5,6 +5,27 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.60.0
+
+- An ACP agent's live state is no longer stored
+  ([store locks and durability](../specs/store-locks-and-durability.md)
+  section 4.3; see [Live-only stream
+  output](events.md#live-only-stream-output)):
+  - The live-only event `acp_live_update` carries a running call's newest
+    `tool_presentation`, the agent's `context` use, or both, each the
+    whole new value, as `acp_session_updated` carried them. A subscription
+    gets the newest of each when it starts, from a cursor too.
+  - `tool_call_terminated` has an optional `presentation`: the call's
+    final title, hint, primary argument, arguments, and preview, when they
+    differ from those `tool_call_started` stored. It replaces them; the
+    tool identity stays.
+  - The daemon stores no `acp_session_updated` with `tool_presentation`,
+    and one with `context` only before a run's `run_finished`, when it
+    changed since the last stored. A client that does not know
+    `acp_live_update` drops it, and sees a call's refined presentation when
+    the call ends and the context use once per run.
+  - Plugin protocol 1.32.0 carries both in events the same way.
+
 ## 1.59.0
 
 - Newest-first session history

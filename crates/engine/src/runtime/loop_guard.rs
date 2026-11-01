@@ -250,6 +250,7 @@ mod tests {
                     outcome: ToolTerminationOutcome::Completed,
                     result: Some(result(output)),
                     error: None,
+                    presentation: None,
                 },
             });
         }
@@ -361,6 +362,7 @@ mod tests {
                         code: SafeCode::new("execution_failed").unwrap(),
                         message: cookie_agent_protocol::diagnostics::headline("no such file"),
                     }),
+                    presentation: None,
                 },
             });
         }

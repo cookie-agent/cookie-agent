@@ -210,6 +210,7 @@ impl Log {
                             .unwrap(),
                         }
                     }),
+                    presentation: None,
                 },
             },
         );

@@ -347,3 +347,79 @@ fn live_events_after_a_window_survive_a_fold() {
         events.last().unwrap().seq
     );
 }
+
+/// Held live state keeps only the newest value of each: a call's
+/// presentation until its end, the context use until the run's end.
+#[test]
+fn held_live_state_keeps_the_newest_of_each_until_its_end() {
+    use cookie_agent_protocol::{
+        AcpContextUsage, AcpLiveUpdate, AcpToolPresentation, PreparedPresentation, RunId,
+        SafeDisplayText, ToolCallId, TransientEvent,
+    };
+    let session_id = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let (first, second) = (ToolCallId::new_v7(), ToolCallId::new_v7());
+    let live = |update: AcpLiveUpdate| TransientEvent {
+        session_id,
+        run_id: Some(run),
+        after_seq: 1,
+        timestamp: jiff::Timestamp::UNIX_EPOCH,
+        payload: EventPayload::AcpLiveUpdate { update },
+    };
+    let presentation = |call, title: &str| AcpLiveUpdate {
+        tool_presentation: Some(AcpToolPresentation {
+            tool_call_id: call,
+            presentation: PreparedPresentation::new(SafeDisplayText::new(title).unwrap(), None),
+        }),
+        context: None,
+    };
+    let context = |used| AcpLiveUpdate {
+        tool_presentation: None,
+        context: Some(AcpContextUsage { used, size: None }),
+    };
+    let mut held = HeldHistory::default();
+    for update in [
+        presentation(first, "Read"),
+        context(1),
+        presentation(second, "Edit"),
+        presentation(first, "Read notes.txt"),
+        context(2),
+    ] {
+        let event = live(update);
+        held.settle_transient(&event.payload);
+        held.hold_transient(event);
+    }
+    let kept = |held: &HeldHistory| {
+        held.in_flight
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AcpLiveUpdate { update } => Some(update.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        kept(&held),
+        [
+            presentation(second, "Edit"),
+            presentation(first, "Read notes.txt"),
+            context(2)
+        ]
+    );
+    let terminated: EventPayload = serde_json::from_value(serde_json::json!({
+        "type": "tool_call_terminated",
+        "tool_call_id": first,
+        "owner": {"model_turn_seq": 1, "content_index": 0, "model_call_id": "call", "provider_item_id": null},
+        "outcome": "completed",
+        "result": {"title": "Read", "output": "", "display": [], "metadata": null, "attachments": []},
+        "error": null,
+    }))
+    .unwrap();
+    held.settle(Some(run), &terminated);
+    assert_eq!(kept(&held), [presentation(second, "Edit"), context(2)]);
+    held.settle(
+        Some(run),
+        &EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled { reason: None }),
+    );
+    assert!(kept(&held).is_empty());
+}

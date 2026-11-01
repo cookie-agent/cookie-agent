@@ -369,8 +369,26 @@ pub struct AcpContextUsage {
     pub size: Option<u64>,
 }
 
+/// The payload of `acp_live_update` (client protocol 1.60.0): the agent's
+/// live state, each member the whole new value. It is never stored: a
+/// call's `tool_call_terminated` carries its final presentation, and an
+/// `acp_session_updated` before the run's end the context use it ended
+/// with.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct AcpLiveUpdate {
+    /// A running tool call's newest presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_presentation: Option<AcpToolPresentation>,
+    /// The agent's context use, when it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<AcpContextUsage>,
+}
+
 /// The payload of `acp_session_updated`: what changed, each member the
-/// whole new value.
+/// whole new value. From client protocol 1.60.0 a writer stores no
+/// `tool_presentation` (an `acp_live_update` carries it, and the call's
+/// `tool_call_terminated` the final one) and `context` only as a run ends;
+/// both are still read from logs that earlier builds wrote.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct AcpSessionUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]

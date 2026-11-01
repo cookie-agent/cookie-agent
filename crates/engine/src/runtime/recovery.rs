@@ -121,6 +121,7 @@ impl Engine {
                                     code: failure.code.safe_code(),
                                     message: safe_error(&failure.message),
                                 }),
+                                presentation: None,
                             },
                         },
                     )?;

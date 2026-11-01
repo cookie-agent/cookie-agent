@@ -2372,6 +2372,7 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
                     loaded_tools: Vec::new(),
                 }),
                 error: None,
+                presentation: None,
             },
         },
     ));
@@ -2450,6 +2451,7 @@ fn assembled_tool_transcript_snapshot_is_stable() {
             outcome: ToolTerminationOutcome::Completed,
             result: Some(result),
             error: None,
+            presentation: None,
         },
     };
     let mut events = vec![

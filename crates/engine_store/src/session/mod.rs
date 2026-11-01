@@ -2218,11 +2218,12 @@ impl SessionStore {
         // A reader that replayed from the start of the log first gets the
         // output streaming now, coalesced, positioned after the durable tip.
         // A reader resuming from a cursor may already hold part of it, and
-        // a second copy would append to the first.
+        // a second copy would append to the first; an ACP agent's live
+        // state is whole values, which it gets either way.
         let in_flight = if cursor.is_none_or(|cursor| cursor == 0) {
             tails.in_flight.replay()
         } else {
-            Vec::new()
+            tails.in_flight.acp_live_state()
         };
         for (run_id, payload) in in_flight {
             if sender.capacity() <= 1 {

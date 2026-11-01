@@ -60,6 +60,17 @@ pub(super) fn reduce_transient(
             return true;
         }
         EventPayload::NativeCompactionFinished { .. } => return remove_native_compacting(state),
+        // An ACP agent's live state, as `acp_session_updated` carried it
+        // before client protocol 1.60.0.
+        EventPayload::AcpLiveUpdate { update } => {
+            if let Some(context) = update.context {
+                apply_acp_context(state, context);
+            }
+            if let Some(presented) = update.tool_presentation {
+                apply_tool_presentation(state, presented.tool_call_id, presented.presentation);
+            }
+            return true;
+        }
         _ => return false,
     };
     // Empty deltas (some providers emit an initial empty content chunk)
@@ -583,7 +594,8 @@ pub(super) fn reduce_event_from(
         | EventPayload::InternalAgentTextDelta { .. }
         | EventPayload::NativeCompactionStarted { .. }
         | EventPayload::NativeCompactionFinished { .. }
-        | EventPayload::ToolCallProgress { .. } => {}
+        | EventPayload::ToolCallProgress { .. }
+        | EventPayload::AcpLiveUpdate { .. } => {}
         // The attempt has visible output from here on, so a later input
         // boundary no longer moves it; its deltas themselves are live-only.
         EventPayload::ModelOutputStarted { attempt_id, kind } => {
@@ -937,6 +949,11 @@ pub(super) fn reduce_event_from(
         }
         EventPayload::ToolCallTerminated { termination } => {
             let tool_call_id = termination.tool_call_id;
+            // The final presentation of a call whose presentation changed
+            // after it started.
+            if let Some(presentation) = termination.presentation.clone() {
+                apply_tool_presentation(state, tool_call_id, presentation);
+            }
             let status = match termination.outcome {
                 ToolTerminationOutcome::Completed => ToolStatus::Completed,
                 ToolTerminationOutcome::Failed => ToolStatus::Failed,
@@ -1489,8 +1506,7 @@ pub(super) fn reduce_event_from(
                 state.acp.options = options;
             }
             if let Some(context) = update.context {
-                state.context_tokens = Some(context.used);
-                state.context_window = context.size;
+                apply_acp_context(state, context);
             }
             if let Some(starting) = update.starting_options {
                 state.acp.starting_options = starting;
@@ -1568,18 +1584,9 @@ pub(super) fn reduce_event_from(
                     }
                 }
             }
+            // A log an earlier build wrote stores each new presentation.
             if let Some(presented) = update.tool_presentation {
-                let tool_call_id = presented.tool_call_id;
-                if let Some(tool) = state.tools.get_mut(&tool_call_id) {
-                    let presentation = presented.presentation;
-                    tool.presentation.title = presentation.title;
-                    tool.presentation.hint = presentation.hint;
-                    tool.presentation.primary_argument = presentation.primary_argument;
-                    tool.presentation.arguments = presentation.arguments;
-                    tool.presentation.preview = presentation.preview;
-                    tool.revision = next_tool_revision();
-                }
-                bump_tool_item(state, tool_call_id);
+                apply_tool_presentation(state, presented.tool_call_id, presented.presentation);
             }
         }
         // What a writer left out changes nothing; the debug view names it.
@@ -3284,6 +3291,30 @@ pub(super) fn assistant_segment_target(
         return Some(attempt.item_id);
     }
     split_assistant_if_pending(state, attempt_id, timestamp)
+}
+
+/// An ACP agent's context use: the session's context.
+fn apply_acp_context(state: &mut SessionState, context: cookie_agent_protocol::AcpContextUsage) {
+    state.context_tokens = Some(context.used);
+    state.context_window = context.size;
+}
+
+/// A call's new presentation: its title, hint, primary argument, arguments,
+/// and preview; its tool identity stays.
+fn apply_tool_presentation(
+    state: &mut SessionState,
+    tool_call_id: ToolCallId,
+    presentation: cookie_agent_protocol::PreparedPresentation,
+) {
+    if let Some(tool) = state.tools.get_mut(&tool_call_id) {
+        tool.presentation.title = presentation.title;
+        tool.presentation.hint = presentation.hint;
+        tool.presentation.primary_argument = presentation.primary_argument;
+        tool.presentation.arguments = presentation.arguments;
+        tool.presentation.preview = presentation.preview;
+        tool.revision = next_tool_revision();
+    }
+    bump_tool_item(state, tool_call_id);
 }
 
 pub(super) fn bump_tool_item(state: &mut SessionState, tool_call_id: ToolCallId) {

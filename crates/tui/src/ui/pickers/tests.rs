@@ -520,6 +520,7 @@ fn assistant_and_tool_result_events_do_not_resort_siblings() {
                     loaded_tools: Vec::new(),
                 }),
                 error: None,
+                presentation: None,
             },
         },
     )));

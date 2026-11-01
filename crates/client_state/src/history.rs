@@ -193,6 +193,16 @@ impl HeldHistory {
                     EventPayload::ToolCallProgress { tool_call_id, .. },
                 ) => termination.tool_call_id != *tool_call_id,
                 (
+                    EventPayload::ToolCallTerminated { termination },
+                    EventPayload::AcpLiveUpdate { update },
+                ) => {
+                    update.context.is_some()
+                        || update
+                            .tool_presentation
+                            .as_ref()
+                            .is_none_or(|held| held.tool_call_id != termination.tool_call_id)
+                }
+                (
                     EventPayload::InternalAgentFinished { invocation_id, .. },
                     EventPayload::InternalAgentTextDelta {
                         invocation_id: held,
@@ -205,12 +215,27 @@ impl HeldHistory {
     }
 
     /// The output a live-only event ends: a finished compaction drops the
-    /// started one it follows.
+    /// started one it follows, and an ACP agent's live state the values it
+    /// replaces.
     pub(crate) fn settle_transient(&mut self, payload: &EventPayload) {
-        if matches!(payload, EventPayload::NativeCompactionFinished { .. }) {
-            self.in_flight.retain(|held| {
+        match payload {
+            EventPayload::NativeCompactionFinished { .. } => self.in_flight.retain(|held| {
                 !matches!(held.payload, EventPayload::NativeCompactionStarted { .. })
-            });
+            }),
+            EventPayload::AcpLiveUpdate { update } => self.in_flight.retain(|held| {
+                let EventPayload::AcpLiveUpdate { update: held } = &held.payload else {
+                    return true;
+                };
+                let context = held.context.is_some() && update.context.is_none();
+                let presentation = held.tool_presentation.as_ref().is_some_and(|held| {
+                    update
+                        .tool_presentation
+                        .as_ref()
+                        .is_none_or(|new| new.tool_call_id != held.tool_call_id)
+                });
+                context || presentation
+            }),
+            _ => {}
         }
     }
 

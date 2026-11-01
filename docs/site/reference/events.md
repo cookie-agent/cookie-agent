@@ -169,7 +169,7 @@ never stored.
 | `session_project_set` | state | runless | The root session's [project](#projects) |
 | `permission_mode_set` | state | runless | The root session tree's [permission mode](../concepts/permissions.md#modes-and-approvals), restored when the tree loads |
 | `acp_session_started` | state | either | The ACP session the session's [ACP agent](../specs/acp-agents.md) talks in: new, resumed, or loaded |
-| `acp_session_updated` | state | either | What the ACP agent reported of its session: its commands, options, or plan; a notice; input steered into its turn; a tool call's new presentation; or the starting options the session was created with |
+| `acp_session_updated` | state | either | What the ACP agent reported of its session: its commands, options, or plan; a notice; input steered into its turn; the starting options the session was created with; the context use a run ended with; or, in a log a build before client protocol 1.60.0 wrote, a tool call's new presentation and every change of its context use |
 | `elicitation_requested` | state | run | An agent of the run asks the user a question, a form or a URL (see [Questions](protocol.md#questions)) |
 | `elicitation_resolved` | state | run | How the question was answered: accept, decline, or cancel, by whom, and an accepted form's values |
 | `delegated_attachments_added` | state | runless | The attachments a root's subagent brought that the root did not record yet ([delegated attachments](#delegated-attachments)) |
@@ -205,34 +205,56 @@ never stored.
 | `approval_step` | state; audit for `doom_loop` | run | An approval step |
 | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_finished`, `internal_agent_fallback` | state | run | An internal agent invocation |
 | `context_checkpoint_committed` | state | run | A [compaction checkpoint](#compaction-checkpoints) |
-| `text_delta`, `reasoning_delta`, `internal_agent_text_delta`, `native_compaction_started`, `native_compaction_finished`, `tool_call_progress` | live-only | run | [Stream output](#live-only-stream-output) |
+| `text_delta`, `reasoning_delta`, `internal_agent_text_delta`, `native_compaction_started`, `native_compaction_finished`, `tool_call_progress`, `acp_live_update` | live-only | run | [Stream output](#live-only-stream-output) |
 
 ## Live-only stream output
 
 `text_delta`, `reasoning_delta`, `internal_agent_text_delta`,
-`native_compaction_started`, `native_compaction_finished`, and
-`tool_call_progress` are live-only. The engine delivers them to event
-subscribers and plugins as they stream but never appends them to
-`events.jsonl` or to a session's in-memory log, and a stored record carrying
-one fails validation. Their durable record is the committed turn
-(`model_turn_committed`), the tool termination (`tool_call_terminated`, with its
-retained output), and the internal agent's terminal event. A replay or a reload
-therefore sees finished turns only.
+`native_compaction_started`, `native_compaction_finished`,
+`tool_call_progress`, and `acp_live_update` are live-only. The engine
+delivers them to event subscribers and plugins as they stream but never
+appends them to `events.jsonl` or to a session's in-memory log, and a stored
+record carrying one fails validation. Their durable record is the committed
+turn (`model_turn_committed`), the tool termination (`tool_call_terminated`,
+with its retained output and, for an ACP agent's call, its final
+presentation), the internal agent's terminal event, and the context use an
+ACP run stores before its end. A replay or a reload therefore sees finished
+turns only.
 
 A view that attaches while output streams does not start from a fragment: the
 daemon keeps each session's output still in flight in memory, and a tail
 registered by a subscription without a cursor (one that replayed the whole log)
 first receives it as live-only messages positioned after the durable tip it
 replayed to. A subscription that resumes from a cursor does not, since its
-reader may already hold part of that output; its later deltas continue it. Each open attempt's text and reasoning arrive as
+reader may already hold part of that output; its later deltas continue it.
+It gets only an ACP agent's live state, whose values are whole. Each open attempt's text and reasoning arrive as
 one `text_delta` or `reasoning_delta` per uninterrupted run of a kind, in
 order; each running tool as one `tool_call_progress` carrying its latest
 `message` and its live display so far as one `replace` delta (within the
 64 KiB budget); a running provider-native
 compaction as its `native_compaction_started`; and a streaming compaction
-summary as one `internal_agent_text_delta`. Later deltas append as usual, and
-the durable record replaces it all as before. Output a daemon restart cut off
-is not kept.
+summary as one `internal_agent_text_delta`; an ACP agent's live state as
+one `acp_live_update` per open call's newest presentation and one with its
+newest context use. Later deltas append as usual, and the durable record
+replaces it all as before. Output a daemon restart cut off is not kept.
+
+`acp_live_update` (since client protocol 1.60.0;
+[store locks and durability](../specs/store-locks-and-durability.md)
+section 4.3) carries an ACP agent's live state, each member the whole new
+value: `tool_presentation` (`tool_call_id`, `presentation`), a running
+call's newest title, hint, primary argument, arguments, and preview, which
+replace the call's own (its tool identity stays); and `context` (`used`,
+and `size` when the agent reports its window), its context use. A client
+applies it as it applied those members of `acp_session_updated` before.
+The call's `tool_call_terminated` stores its final `presentation` when it
+differs from the one `tool_call_started` stored, and the run stores one
+`acp_session_updated` with the `context` it ended with, before its
+`run_finished`, when that changed since the last stored. Being whole
+values, the daemon also sends a subscription that resumes from a cursor
+the newest of each, and keeps a call's until its end and the context use
+until its run's end. A client that does not know the event drops it, and
+sees a call's refined presentation when the call ends and the context use
+once per run.
 
 `internal_agent_text_delta` (`invocation_id`, `text`) streams the compaction
 agent's summary text. Other internal agents do not stream.
@@ -730,6 +752,11 @@ argument. It also records the single/named output declaration, including
 arbitrary named streams, and `background: true` when the call's tool supports
 the background, so a client may offer to move the running call there
 (`run.tool_background`); the field is absent otherwise.
+`tool_call_terminated` may carry `presentation` (since client protocol
+1.60.0): the call's final title, hint, primary argument, arguments, and
+preview, when they changed after its start (an ACP agent's call whose title,
+kind, or arguments arrived later); they replace the start's, and its tool
+identity stays.
 `tool_call_progress` is live-only. It contains a control-free status `message`
 and an optional UI-only `display` delta, tagged by `type`:
 
@@ -1030,7 +1057,8 @@ event `after_seq`: it never advances the cursor, is never stored, and is
 never a reason to recover. A subscriber that starts from the beginning (no
 cursor, or `0`) first receives the output streaming at that moment, coalesced
 into `transient` messages after the durable tip; one resuming from a cursor
-does not, since it may already hold part of it. The shared client delivers one only when its
+does not, since it may already hold part of it, except an ACP agent's live
+state (`acp_live_update`), whose values are whole. The shared client delivers one only when its
 `after_seq` equals the subscription cursor, including output buffered while a
 replay is in flight; anything else is stale or outruns a durable event the view
 has not seen, and is dropped. The engine drops transient output for a

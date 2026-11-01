@@ -230,6 +230,7 @@ impl Grower<'_> {
                             loaded_tools: Vec::new(),
                         }),
                         error: None,
+                        presentation: None,
                     },
                 },
             )

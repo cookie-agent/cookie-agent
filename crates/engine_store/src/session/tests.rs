@@ -3764,6 +3764,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                                     code: SafeCode::new("fuzz_failed").expect("code"),
                                     message: SafeErrorMessage::new("fuzz failed").expect("message"),
                                 }),
+                                presentation: None,
                             },
                         },
                     );
@@ -4237,6 +4238,7 @@ fn append_realistic_run(
                             loaded_tools: Vec::new(),
                         }),
                         error: None,
+                        presentation: None,
                     },
                 },
             );

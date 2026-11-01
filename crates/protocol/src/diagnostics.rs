@@ -390,6 +390,7 @@ mod tests {
                 code: crate::SafeCode::new("execution_failed").unwrap(),
                 message,
             }),
+            presentation: None,
         };
         let persisted: crate::ToolCallTermination =
             serde_json::from_value(serde_json::to_value(termination).unwrap()).unwrap();

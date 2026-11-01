@@ -953,6 +953,7 @@ pub(crate) fn tool_terminated(
                     code: SafeCode::new("exit_failure").expect("error code"),
                     message: SafeErrorMessage::new("command failed").expect("error message"),
                 }),
+                presentation: None,
             },
         },
     )

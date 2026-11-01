@@ -52,6 +52,10 @@ Each prompt's last text block is a command:
   late-input             a tool call whose title, kind, and raw input arrive in a
                          later update (as Claude Code's adapter sends them), with
                          text, image, and resource-link content and raw output
+  late-input-wait <w>    a tool call whose presentation changes twice after it
+                         starts, then context use reported twice (700, then 900
+                         tokens), then waits for <w> (see "Waits" below) before
+                         the call completes and it answers "read"
   notices                a warning notice, then a compaction with a streamed
                          summary
   steer-wait [<s>]       says "waiting", then waits (up to <s>, else 10 s) for a message
@@ -792,6 +796,23 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
                 {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}},
                 {"type": "content", "content": {"type": "resource_link", "uri": "file:///work/notes.txt", "name": "notes.txt"}},
             ],
+            "rawOutput": "one",
+        })
+        say(session_id, "read")
+    elif word == "late-input-wait":
+        tool_call(session_id, {
+            "toolCallId": "call-late", "name": "Read", "title": "Tool", "kind": "other", "status": "pending",
+        })
+        tool_call(session_id, {"toolCallId": "call-late", "title": "Read", "kind": "read"})
+        tool_call(session_id, {
+            "toolCallId": "call-late", "title": "Read notes.txt", "rawInput": {"file_path": "/work/notes.txt"},
+        })
+        update(session_id, {"sessionUpdate": "usage_update", "used": 700, "size": 200000})
+        update(session_id, {"sessionUpdate": "usage_update", "used": 900, "size": 200000})
+        wait_out(session_id, rest)
+        tool_call(session_id, {
+            "toolCallId": "call-late", "status": "completed",
+            "content": [{"type": "content", "content": {"type": "text", "text": "one"}}],
             "rawOutput": "one",
         })
         say(session_id, "read")

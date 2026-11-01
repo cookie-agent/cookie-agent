@@ -4319,6 +4319,17 @@
             "owner": {
               "$ref": "#/$defs/AssistantToolCallRef"
             },
+            "presentation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PreparedPresentation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The call's final presentation, when it differs from the one\n`tool_call_started` stored (client protocol 1.60.0): an ACP agent's\ncall whose title, kind, or arguments arrived after it started. It\nreplaces the call's title, hint, primary argument, arguments, and\npreview; its tool identity stays."
+            },
             "result": {
               "anyOf": [
                 {
@@ -5151,6 +5162,41 @@
             },
             "type": {
               "const": "acp_session_updated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Live-only: the ACP agent's live state changed, a running tool call's\nnewest presentation or its context use (client protocol 1.60.0;\n`docs/site/specs/store-locks-and-durability.md` section 4.3).\nDelivered as a [`TransientEvent`] and never persisted: the call's\n`tool_call_terminated` is the durable record of its final\npresentation, and an `acp_session_updated` before the run's end of\nits context use.",
+          "properties": {
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpContextUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent's context use, when it changed."
+            },
+            "tool_presentation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpToolPresentation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A running tool call's newest presentation."
+            },
+            "type": {
+              "const": "acp_live_update",
               "type": "string"
             }
           },

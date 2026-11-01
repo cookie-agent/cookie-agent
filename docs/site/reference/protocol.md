@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.59.0",
+    "protocol_version": "1.60.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.59.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.60.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -919,7 +919,11 @@ over the Agent Client Protocol (see the
   delivered into the running turn, which clients mark on the message; and
   `tool_presentation` (`tool_call_id`, `presentation`): a new title, hint,
   primary argument, arguments, and preview for one of the agent's tool
-  calls, which replace the call's own (its tool identity stays).
+  calls, which replace the call's own (its tool identity stays). Since
+  1.60.0 the daemon stores no `tool_presentation`: the live-only
+  `acp_live_update` carries it, and the call's `tool_call_terminated` its
+  final `presentation` (see [Live-only stream
+  output](events.md#live-only-stream-output)).
 - Since 1.41.0, `acp_session_updated` may carry `compaction`
   (`compaction_id`, `state` `in_progress`/`completed`/`failed`/`cancelled`,
   and `summary` when it completed with one): a compaction of the agent's
@@ -952,7 +956,9 @@ over the Agent Client Protocol (see the
   `size` when the agent reports its window): the agent's context use from
   its latest `usage_update`, recorded as it changes. The agent's turns
   report no usage, so clients show `used` as the session's context, of a
-  window of `size` tokens, until a model's turn reports its own.
+  window of `size` tokens, until a model's turn reports its own. Since
+  1.60.0 `acp_live_update` carries it as it changes, and the session
+  stores it once per run, before the run's end, when it changed.
 - Since 1.23.0, an option of `options` may have `kind: boolean` (left out
   for a select): an on/off option whose `current_value` is `true` or
   `false` and whose `values` are `true` (On) and `false` (Off), so a client

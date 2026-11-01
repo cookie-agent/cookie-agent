@@ -82,6 +82,7 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                         )
                         .unwrap(),
                     }),
+                    presentation: None,
                 },
             },
         );
@@ -170,6 +171,7 @@ fn tool_failure_without_tool_item_surfaces_an_event_row() {
                     )
                     .unwrap(),
                 }),
+                presentation: None,
             },
         },
     );
@@ -1118,6 +1120,7 @@ fn a_tool_row_shows_what_its_result_sent_the_model_beyond_its_output() {
                         loaded_tools: Vec::new(),
                     }),
                     error: None,
+                    presentation: None,
                 },
             },
         ),
@@ -1284,6 +1287,7 @@ impl OldMemoryCall {
                         loaded_tools: Vec::new(),
                     }),
                     error: None,
+                    presentation: None,
                 },
             },
         )
@@ -3462,6 +3466,7 @@ fn tool_termination_replaces_the_live_display_with_the_result_display() {
                     loaded_tools: Vec::new(),
                 }),
                 error: None,
+                presentation: None,
             },
         },
     );
@@ -3521,6 +3526,7 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
                 additional_messages: Vec::new(),
                 loaded_tools: Vec::new(),
             }),
+            presentation: None,
         },
     };
     let mut live = SessionState::default();
@@ -3693,6 +3699,7 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
                         loaded_tools: Vec::new(),
                     }),
                     error: None,
+                    presentation: None,
                 },
             },
         ),
@@ -4921,6 +4928,145 @@ fn an_acp_sessions_steering_notices_and_late_tool_presentations_fold_from_its_ev
     assert_ne!(tool.revision, revision);
 }
 
+/// An ACP agent's live state shows as it changes, and its stored end shows
+/// the same on a reload: a call's final presentation from its end, the
+/// context use from the record before the run's end.
+#[test]
+fn an_acp_agents_live_state_shows_live_and_its_stored_end_on_reload() {
+    use cookie_agent_protocol::{
+        AcpContextUsage, AcpLiveUpdate, AcpSessionUpdate, AcpToolPresentation, BoundedDisplayText,
+        PreparedPresentation, SafeDisplayText,
+    };
+    let session_id = SessionId::new_v7();
+    let call = ToolCallId::new_v7();
+    let owner = AssistantToolCallRef {
+        model_turn_seq: 1,
+        content_index: 0,
+        model_call_id: cookie_agent_protocol::ModelCallId::new("call-late").unwrap(),
+        provider_item_id: None,
+    };
+    let started = || {
+        let mut state = SessionState::default();
+        state.tools.insert(
+            call,
+            ToolCallState::started(
+                call,
+                owner.clone(),
+                base_presentation(PreparedPresentation::new(
+                    SafeDisplayText::new("Tool").unwrap(),
+                    None,
+                )),
+                "{}".into(),
+            ),
+        );
+        state
+    };
+    let refined = PreparedPresentation::new(
+        SafeDisplayText::new("Read notes.txt").unwrap(),
+        Some(BoundedDisplayText::new("/work/notes.txt").unwrap()),
+    );
+    let context = AcpContextUsage {
+        used: 900,
+        size: Some(200_000),
+    };
+    let termination = EventPayload::ToolCallTerminated {
+        termination: cookie_agent_protocol::ToolCallTermination {
+            tool_call_id: call,
+            owner: owner.clone(),
+            outcome: ToolTerminationOutcome::Completed,
+            result: Some(cookie_agent_protocol::PersistedToolResult {
+                title: SafeDisplayText::new("Read notes.txt").unwrap(),
+                output: "one".into(),
+                display: cookie_agent_protocol::text_display("one"),
+                background: None,
+                retained_output: None,
+                metadata: serde_json::Value::Null,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+                loaded_tools: Vec::new(),
+            }),
+            error: None,
+            presentation: Some(refined.clone()),
+        },
+    };
+    let shown = |state: &SessionState| {
+        let tool = &state.tools[&call];
+        (
+            tool.presentation.title.as_str().to_owned(),
+            tool.presentation
+                .primary_argument
+                .as_ref()
+                .map(|text| text.as_str().to_owned()),
+            tool.presentation.tool.name.clone(),
+        )
+    };
+    let refined_shown = (
+        "Read notes.txt".to_owned(),
+        Some("/work/notes.txt".to_owned()),
+        "Tool".to_owned(),
+    );
+
+    // Live.
+    let mut state = started();
+    let revision = state.tools[&call].revision;
+    assert!(reduce_transient(
+        &mut state,
+        jiff::Timestamp::now(),
+        EventPayload::AcpLiveUpdate {
+            update: AcpLiveUpdate {
+                tool_presentation: Some(AcpToolPresentation {
+                    tool_call_id: call,
+                    presentation: refined.clone(),
+                }),
+                context: Some(context),
+            },
+        },
+    ));
+    assert_eq!(shown(&state), refined_shown);
+    assert_ne!(
+        state.tools[&call].revision, revision,
+        "the call draws again"
+    );
+    assert_eq!(state.context_tokens, Some(900));
+    assert_eq!(state.context_window, Some(200_000));
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        2,
+        jiff::Timestamp::now(),
+        termination.clone(),
+    );
+    assert_eq!(shown(&state), refined_shown);
+
+    // A reload: the log holds the start, the end, and the context.
+    let mut state = started();
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        2,
+        jiff::Timestamp::now(),
+        termination,
+    );
+    assert_eq!(shown(&state), refined_shown);
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        3,
+        jiff::Timestamp::now(),
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                context: Some(context),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    assert_eq!(state.context_tokens, Some(900));
+    assert_eq!(state.context_window, Some(200_000));
+}
+
 fn background_call(job: &str) -> cookie_agent_protocol::BackgroundCall {
     serde_json::from_value(serde_json::json!({
         "job": job,
@@ -6029,6 +6175,7 @@ fn a_sessions_busy_counts_follow_its_calls_compactions_and_producer_messages() {
                 outcome: ToolTerminationOutcome::Completed,
                 result: None,
                 error: None,
+                presentation: None,
             },
         },
     );

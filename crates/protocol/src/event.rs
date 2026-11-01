@@ -1009,6 +1009,13 @@ pub struct ToolCallTermination {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<SafeToolError>", required)]
     pub error: Option<SafeToolError>,
+    /// The call's final presentation, when it differs from the one
+    /// `tool_call_started` stored (client protocol 1.60.0): an ACP agent's
+    /// call whose title, kind, or arguments arrived after it started. It
+    /// replaces the call's title, hint, primary argument, arguments, and
+    /// preview; its tool identity stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<crate::PreparedPresentation>,
 }
 impl ToolCallTermination {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
@@ -1025,6 +1032,11 @@ impl ToolCallTermination {
         }
         if let Some(result) = &self.result {
             result.validate()?;
+        }
+        if let Some(presentation) = &self.presentation {
+            validate_display(&presentation.arguments)
+                .and_then(|()| validate_display(&presentation.preview))
+                .map_err(|_| EventSchemaError::InvalidDisplay)?;
         }
         Ok(())
     }
@@ -1047,6 +1059,8 @@ impl<'de> Deserialize<'de> for ToolCallTermination {
             result: Option<PersistedToolResult>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             error: Option<SafeToolError>,
+            #[serde(default)]
+            presentation: Option<crate::PreparedPresentation>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -1055,6 +1069,7 @@ impl<'de> Deserialize<'de> for ToolCallTermination {
             outcome: w.outcome,
             result: w.result,
             error: w.error,
+            presentation: w.presentation,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -3247,6 +3262,17 @@ pub enum EventPayload {
         #[serde(flatten)]
         update: crate::AcpSessionUpdate,
     },
+    /// Live-only: the ACP agent's live state changed, a running tool call's
+    /// newest presentation or its context use (client protocol 1.60.0;
+    /// `docs/site/specs/store-locks-and-durability.md` section 4.3).
+    /// Delivered as a [`TransientEvent`] and never persisted: the call's
+    /// `tool_call_terminated` is the durable record of its final
+    /// presentation, and an `acp_session_updated` before the run's end of
+    /// its context use.
+    AcpLiveUpdate {
+        #[serde(flatten)]
+        update: crate::AcpLiveUpdate,
+    },
     /// An agent of the run asks the user a question: a form or a URL
     /// (client protocol 1.25.0). The run waits for `elicitation_resolved`.
     ElicitationRequested {
@@ -3270,6 +3296,7 @@ pub enum EventPayload {
 // Plugins receive events as `Open<EventPayload>`: an event type a plugin
 // does not know reaches it as `Unknown`.
 crate::open_enum!(tagged EventPayload, tag = "type", tags = [
+    "acp_live_update",
     "acp_session_started",
     "acp_session_updated",
     "agent_md_loaded",
@@ -3473,6 +3500,7 @@ impl EventPayload {
             | Self::NativeCompactionStarted { .. }
             | Self::NativeCompactionFinished { .. }
             | Self::ToolCallProgress { .. }
+            | Self::AcpLiveUpdate { .. }
             | Self::MemoryChanged { .. }
             | Self::RecordOmitted { .. } => true,
             // The approval projection ignores the doom-loop step; an unknown
@@ -3560,7 +3588,8 @@ impl EventPayload {
     /// Whether this payload is live-only stream output: delivered to
     /// subscribers as a [`TransientEvent`] and never appended to a session
     /// log. The committed model turn and the tool termination are the durable
-    /// record of what these streamed.
+    /// record of what these streamed; for an ACP agent's live state, the
+    /// tool termination and the context use stored as the run ends.
     #[must_use]
     pub fn is_transient(&self) -> bool {
         matches!(
@@ -3571,6 +3600,7 @@ impl EventPayload {
                 | Self::NativeCompactionStarted { .. }
                 | Self::NativeCompactionFinished { .. }
                 | Self::ToolCallProgress { .. }
+                | Self::AcpLiveUpdate { .. }
         )
     }
 
@@ -5298,12 +5328,34 @@ impl crate::DisplayAudience {
                 Some(EventPayload::ToolCallStarted { start })
             }
             EventPayload::ToolCallTerminated { termination } => {
-                let display = self.blocks(&termination.result.as_ref()?.display)?;
+                let display = termination
+                    .result
+                    .as_ref()
+                    .and_then(|result| self.blocks(&result.display));
+                let presentation = termination
+                    .presentation
+                    .as_ref()
+                    .and_then(|presentation| self.presentation(presentation));
+                if display.is_none() && presentation.is_none() {
+                    return None;
+                }
                 let mut termination = termination.clone();
-                if let Some(result) = termination.result.as_mut() {
+                if let (Some(result), Some(display)) = (termination.result.as_mut(), display) {
                     result.display = display;
                 }
+                if presentation.is_some() {
+                    termination.presentation = presentation;
+                }
                 Some(EventPayload::ToolCallTerminated { termination })
+            }
+            EventPayload::AcpLiveUpdate { update } => {
+                let presented = update.tool_presentation.as_ref()?;
+                let presentation = self.presentation(&presented.presentation)?;
+                let mut update = update.clone();
+                if let Some(presented) = update.tool_presentation.as_mut() {
+                    presented.presentation = presentation;
+                }
+                Some(EventPayload::AcpLiveUpdate { update })
             }
             EventPayload::ToolCallProgress {
                 tool_call_id,
@@ -5318,6 +5370,27 @@ impl crate::DisplayAudience {
             }),
             _ => None,
         }
+    }
+
+    /// What the client receives of a presentation's arguments and preview;
+    /// `None` when that is `presentation` unchanged.
+    fn presentation(
+        &self,
+        presentation: &crate::PreparedPresentation,
+    ) -> Option<crate::PreparedPresentation> {
+        let arguments = self.blocks(&presentation.arguments);
+        let preview = self.blocks(&presentation.preview);
+        if arguments.is_none() && preview.is_none() {
+            return None;
+        }
+        let mut presentation = presentation.clone();
+        if let Some(arguments) = arguments {
+            presentation.arguments = arguments;
+        }
+        if let Some(preview) = preview {
+            presentation.preview = preview;
+        }
+        Some(presentation)
     }
 
     /// What the client receives of a stored event; the same event, shared,

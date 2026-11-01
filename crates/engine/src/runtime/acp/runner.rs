@@ -1011,7 +1011,9 @@ struct TerminalRoute {
 struct ShownCall {
     tool_call_id: ToolCallId,
     fields: ToolCallFields,
-    /// The presentation the session last recorded for it.
+    /// The presentation its `tool_call_started` stored.
+    started: PreparedPresentation,
+    /// The presentation the clients last got for it, live.
     presented: PreparedPresentation,
     terminated: bool,
     /// The output it streams, when the agent runs a command for it.
@@ -1019,6 +1021,14 @@ struct ShownCall {
     /// Where the call's live display shows the terminal, which output
     /// appends to; `None` until a replacement of the display shows it.
     terminal_index: Option<u32>,
+}
+
+impl ShownCall {
+    /// The presentation its end stores: the last the clients got, when it
+    /// is not the one its start stored.
+    fn final_presentation(&self) -> Option<PreparedPresentation> {
+        (self.presented != self.started).then(|| self.presented.clone())
+    }
 }
 
 /// The agent's own call of one of cookie's tools through the bridge. The
@@ -1068,8 +1078,11 @@ struct Turn<'a> {
     /// The claim on the round's input, released at its first commit.
     claim: Option<crate::runtime::messaging::claims::ClaimedPrompt>,
     usage_update: Option<Value>,
-    /// The context use the session last recorded in this run.
+    /// The agent's context use as it last reported it, live.
     context: Option<cookie_agent_protocol::AcpContextUsage>,
+    /// The context use the session's log last stored, which the run's end
+    /// stores again only when it changed.
+    stored_context: Option<cookie_agent_protocol::AcpContextUsage>,
     home: Option<String>,
     /// The operating system the agent's runtime reported, whose paths its
     /// permission requests name.
@@ -1522,6 +1535,45 @@ impl Turn<'_> {
             .await
     }
 
+    /// Sends the agent's live state to the clients: not stored, as a
+    /// call's end and the run's end store what it ended as.
+    fn publish_live(&self, update: cookie_agent_protocol::AcpLiveUpdate) {
+        self.engine
+            .publish_transient(self.session(), self.run, Event::AcpLiveUpdate { update });
+    }
+
+    /// Stores the agent's context use as the run ends, when it changed
+    /// since the log last stored it, so a reload shows it. Nothing once the
+    /// run has ended, which a cancel from outside may have done.
+    async fn store_context(&mut self) -> Result<(), EngineError> {
+        let Some(context) = self
+            .context
+            .filter(|context| self.stored_context != Some(*context))
+        else {
+            return Ok(());
+        };
+        let running =
+            self.engine
+                .inner
+                .store
+                .get(self.session())
+                .is_ok_and(|projection| {
+                    projection.runs.get(&self.run).is_some_and(|run| {
+                        run.status == cookie_agent_protocol::SessionStatus::Running
+                    })
+                });
+        if !running {
+            return Ok(());
+        }
+        self.record_update(AcpSessionUpdate {
+            context: Some(context),
+            ..AcpSessionUpdate::default()
+        })
+        .await?;
+        self.stored_context = Some(context);
+        Ok(())
+    }
+
     /// Handles one `session/update` of the round.
     async fn update(&mut self, update: Value) -> Result<(), EngineError> {
         let kind = update
@@ -1797,20 +1849,20 @@ impl Turn<'_> {
                 Ok(())
             }
             // The agent's context use: what the clients show as the
-            // session's context, recorded as it changes.
+            // session's context, live as it changes; the run's end stores
+            // the last.
             "usage_update" => {
                 self.usage_update = Some(update.clone());
-                match context_of(update).filter(|context| self.context != Some(*context)) {
-                    Some(context) => {
-                        self.context = Some(context);
-                        self.record_update(AcpSessionUpdate {
-                            context: Some(context),
-                            ..AcpSessionUpdate::default()
-                        })
-                        .await
-                    }
-                    None => Ok(()),
+                if let Some(context) =
+                    context_of(update).filter(|context| self.context != Some(*context))
+                {
+                    self.context = Some(context);
+                    self.publish_live(cookie_agent_protocol::AcpLiveUpdate {
+                        context: Some(context),
+                        ..Default::default()
+                    });
                 }
+                Ok(())
             }
             // The session notices RFD: an advisory line for the user.
             "notice" => {
@@ -2046,18 +2098,18 @@ impl Turn<'_> {
             let fields = shown.fields.clone();
             let tool_call_id = shown.tool_call_id;
             // Its title, kind, or raw input can arrive after it started
-            // (Claude Code's adapter sends the raw input in an update).
+            // (Claude Code's adapter sends the raw input in an update):
+            // live, and stored with the call's end.
             let presentation = presentation_of(&fields);
             if presentation != shown.presented {
                 shown.presented = presentation.clone();
-                self.record_update(AcpSessionUpdate {
+                self.publish_live(cookie_agent_protocol::AcpLiveUpdate {
                     tool_presentation: Some(cookie_agent_protocol::AcpToolPresentation {
                         tool_call_id,
                         presentation,
                     }),
-                    ..AcpSessionUpdate::default()
-                })
-                .await?;
+                    ..Default::default()
+                });
             }
             let appends = self
                 .feed_terminal(&fields.tool_call_id, terminal_meta)
@@ -2148,6 +2200,7 @@ impl Turn<'_> {
             ShownCall {
                 tool_call_id,
                 fields: fields.clone(),
+                started: presented.clone(),
                 presented,
                 terminated: false,
                 terminal: None,
@@ -2289,6 +2342,7 @@ impl Turn<'_> {
         }
         let title = display_text(shown.fields.title.as_deref().unwrap_or("ACP tool call"));
         let tool_call_id = shown.tool_call_id;
+        let presentation = shown.final_presentation();
         let mut result = PersistedToolResult {
             title,
             output: truncate(&text, PersistedToolResult::MAX_OUTPUT_BYTES),
@@ -2337,7 +2391,14 @@ impl Turn<'_> {
             })
         };
         self.engine
-            .submit_tool_result_status(self.session(), self.run, tool_call_id, outcome, false)
+            .submit_tool_result_status(
+                self.session(),
+                self.run,
+                tool_call_id,
+                outcome,
+                false,
+                presentation,
+            )
             .await?;
         if let Some((terminal, tool_call_id, tool, display)) = backgrounded {
             self.engine
@@ -2357,8 +2418,10 @@ impl Turn<'_> {
         for (acp_id, tool_call_id) in open {
             let mut partial_output = None;
             let mut backgrounded = None;
+            let mut presentation = None;
             if let Some(call) = self.calls.get_mut(&acp_id) {
                 call.terminated = true;
+                presentation = call.final_presentation();
                 // A command the turn left running runs on (Codex keeps it
                 // after a cancel, and reports its exit when it ends).
                 backgrounded = running_command(call);
@@ -2398,6 +2461,7 @@ impl Turn<'_> {
                         partial_output,
                     }),
                     cancelled,
+                    presentation,
                 )
                 .await?;
             if let Some((terminal, tool_call_id, tool, display)) = backgrounded {
@@ -2577,7 +2641,14 @@ impl Turn<'_> {
             };
             let cancelled = active.cancellation.is_cancelled();
             let _ = engine
-                .submit_tool_result_status(active.session, run, tool_call_id, result, cancelled)
+                .submit_tool_result_status(
+                    active.session,
+                    run,
+                    tool_call_id,
+                    result,
+                    cancelled,
+                    None,
+                )
                 .await;
             let _ = reply.send(answer);
         }));
@@ -2746,6 +2817,7 @@ impl Engine {
             claim: None,
             usage_update: None,
             context: None,
+            stored_context: self.stored_acp_context(active.session),
             home,
             platform,
             bridged: Vec::new(),
@@ -2758,6 +2830,37 @@ impl Engine {
             compactions: HashMap::new(),
             published_tools,
         };
+        let ended = self
+            .acp_rounds(run_id, &active, &document, &process, &mut turn)
+            .await;
+        // A run that fails still stores the context use it ended with.
+        if ended.is_err() {
+            let _ = turn.store_context().await;
+        }
+        ended
+    }
+
+    /// The context use `session`'s log stored last.
+    fn stored_acp_context(
+        &self,
+        session: SessionId,
+    ) -> Option<cookie_agent_protocol::AcpContextUsage> {
+        let events = self.inner.store.log(session).ok()?.event_snapshot();
+        events.iter().rev().find_map(|event| match &event.payload {
+            Event::AcpSessionUpdated { update } => update.context,
+            _ => None,
+        })
+    }
+
+    /// The prompt rounds of `turn`'s run, until it ends.
+    async fn acp_rounds(
+        &self,
+        run_id: RunId,
+        active: &Arc<ActiveRun>,
+        document: &cookie_agent_config::AgentDocument,
+        process: &Arc<AgentProcess>,
+        turn: &mut Turn<'_>,
+    ) -> Result<(), EngineError> {
         loop {
             if active.cancellation.is_cancelled() {
                 // A stop before the round still reaches the agent: a wake's
@@ -2771,8 +2874,9 @@ impl Engine {
                         },
                     )
                     .await;
+                let _ = turn.store_context().await;
                 self.drop_stopped_acp_wakes(active.session).await?;
-                self.append_run_cancelled_once(&active, run_id, None)?;
+                self.append_run_cancelled_once(active, run_id, None)?;
                 return Ok(());
             }
             let context = if turn.live.first_prompt {
@@ -2780,7 +2884,7 @@ impl Engine {
                     active.session,
                     run_id,
                     &active.policy,
-                    &document,
+                    document,
                     turn.live.agent.runtime.as_str(),
                     &turn.live.cwd,
                 )
@@ -2806,7 +2910,7 @@ impl Engine {
                 )
                 .await?;
             }
-            let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, &process);
+            let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, process);
             // The agent's own subagent works only on what its parent gives
             // it: cookie has no prompt to send it.
             if !prompt.is_empty() && super::is_acp_subagent(&claim.events) {
@@ -2820,7 +2924,7 @@ impl Engine {
             turn.last_text.clear();
             turn.last_turn_seq = None;
             turn.usage_update = None;
-            let end = self.acp_round(&mut turn, prompt).await?;
+            let end = self.acp_round(turn, prompt).await?;
             // A cancel accepted while the agent was finishing its turn ends
             // the run as cancelled, as it does a model run's, rather than
             // completing it or taking more input.
@@ -2833,7 +2937,7 @@ impl Engine {
                     // A title is a nicety: a failure leaves the session
                     // untitled, as a model run's does.
                     let _ = self
-                        .acp_fallback_title(&active, run_id, turn.input_through_seq)
+                        .acp_fallback_title(active, run_id, turn.input_through_seq)
                         .await;
                     // Once the agent has replied in a session, its process
                     // can be asked whether its fork takes a fork point.
@@ -2843,6 +2947,9 @@ impl Engine {
                     // Input the agent did not take into its turn goes with
                     // the next round.
                     let unsteered = std::mem::take(&mut turn.unsteered);
+                    // The run ends here unless input is waiting: its last
+                    // context use goes on the record before its end.
+                    turn.store_context().await?;
                     let promoted = self
                         .request(active.session, |reply| {
                             SessionCommand::PromotePendingOrComplete {
@@ -2861,8 +2968,9 @@ impl Engine {
                     if let Some(claim) = turn.claim.as_mut() {
                         claim.release().await?;
                     }
+                    let _ = turn.store_context().await;
                     self.drop_stopped_acp_wakes(active.session).await?;
-                    self.append_run_cancelled_once(&active, run_id, None)?;
+                    self.append_run_cancelled_once(active, run_id, None)?;
                     return Ok(());
                 }
                 RoundEnd::Failed(reason)

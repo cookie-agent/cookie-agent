@@ -20,6 +20,7 @@ use super::support::*;
 mod background;
 mod compaction;
 mod lifecycle;
+mod live_state;
 mod rounds;
 mod subagents;
 mod titles;
@@ -384,7 +385,8 @@ async fn a_turn_renders_chunks_thoughts_tool_calls_a_plan_and_usage() {
     assert_eq!(usage.0.input_tokens, Some(10));
     assert_eq!(usage.0.output_tokens, Some(5));
     assert_eq!(usage.1, Some(500_000_000_000));
-    // The agent's context use, recorded once although reported twice.
+    // The agent's context use, stored once as the run ended although
+    // reported twice.
     let contexts = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -2009,33 +2011,32 @@ async fn a_tool_calls_late_input_updates_its_presentation_and_its_content_render
     assert_eq!(start.presentation.title.as_str(), "Tool");
     assert!(start.presentation.arguments.is_empty());
     assert_eq!(start.presentation.tool.published_name, "Read");
-    let presented = events
+    // The new presentation is stored with the call's end.
+    let presentation = events
         .iter()
         .find_map(|event| match &event.payload {
-            EventPayload::AcpSessionUpdated { update } => update.tool_presentation.clone(),
+            EventPayload::ToolCallTerminated { termination }
+                if termination.tool_call_id == start.tool_call_id =>
+            {
+                termination.presentation.clone()
+            }
             _ => None,
         })
         .expect("the new presentation");
-    assert_eq!(presented.tool_call_id, start.tool_call_id);
-    assert_eq!(presented.presentation.title.as_str(), "Read notes.txt");
+    assert_eq!(presentation.title.as_str(), "Read notes.txt");
     assert_eq!(
-        presented
-            .presentation
+        presentation
             .primary_argument
             .as_ref()
             .map(|text| text.as_str()),
         Some("/work/notes.txt")
     );
     assert_eq!(
-        presented
-            .presentation
-            .hint
-            .as_ref()
-            .map(|hint| hint.rendered()),
+        presentation.hint.as_ref().map(|hint| hint.rendered()),
         Some(cookie_agent_protocol::ToolHint::FILE_READ)
     );
     // The path is the header's: nothing else to show.
-    assert_eq!(presented.presentation.arguments, []);
+    assert_eq!(presentation.arguments, []);
     let result = events
         .iter()
         .find_map(|event| match &event.payload {

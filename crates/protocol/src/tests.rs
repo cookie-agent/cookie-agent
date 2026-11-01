@@ -3350,6 +3350,7 @@ fn events_reach_each_client_with_the_display_blocks_its_version_reads() {
             vec![Open::Known(code_block()), from_the_future()],
         )),
         error: None,
+        presentation: None,
     };
     let event = std::sync::Arc::new(StoredEvent {
         engine_version: None,
