@@ -184,12 +184,15 @@ impl Durability {
     }
 
     /// The writer closes: syncs, on its own descriptor, whatever no sync has
-    /// covered yet. A failure has no caller to reach; those records are what
-    /// a crash may drop anyway, and a commit point among them is still
-    /// synced by the append waiting on it.
+    /// covered yet, then lets go of the duplicate descriptor, which on
+    /// Windows would keep the file and its session folder from being deleted.
+    /// A failure has no caller to reach; those records are what a crash may
+    /// drop anyway, and a commit point among them is still synced by the
+    /// append waiting on it, so the duplicate stays for that sync.
     pub(super) fn close(&self, file: &File) {
         let mut state = self.state();
         if state.synced >= state.written {
+            state.file = None;
             return;
         }
         let target = state.written;
@@ -205,6 +208,9 @@ impl Durability {
             Ok(()) => {
                 state.synced = state.synced.max(target);
                 state.settled = state.settled.max(target);
+                if state.synced >= state.written {
+                    state.file = None;
+                }
             }
             Err(_) => {
                 if state.directory.is_none() {
@@ -233,5 +239,41 @@ impl Durability {
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn syncs(&self) -> usize {
         self.state().syncs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    use super::Durability;
+
+    /// Closing the writer lets go of the duplicate descriptor once nothing is
+    /// left to sync, so a deletion right after a run can remove the session's
+    /// folder on Windows, where an open descriptor keeps it.
+    #[test]
+    fn closing_lets_go_of_the_duplicate_descriptor() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let path = directory.path().join("events.jsonl");
+        let mut file = std::fs::File::create(&path).expect("a log");
+        let durability = Durability::new(&path);
+        durability.attach(&file, false).expect("a duplicate");
+        file.write_all(b"{}\n").expect("a record");
+        let (commit, _) = durability.written();
+        durability.sync_through(commit).expect("a sync");
+        assert!(
+            durability.state().file.is_some(),
+            "kept while the writer is open"
+        );
+        durability.close(&file);
+        assert!(durability.state().file.is_none(), "nothing left to sync");
+
+        // A record no sync covered yet is synced on close, then let go too.
+        durability.attach(&file, false).expect("a duplicate");
+        file.write_all(b"{}\n").expect("a record");
+        let _ = durability.written();
+        durability.close(&file);
+        assert!(durability.state().file.is_none(), "synced on close");
+        assert!(durability.is_settled(durability.latest()));
     }
 }
