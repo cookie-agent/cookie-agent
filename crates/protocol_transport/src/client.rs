@@ -91,7 +91,12 @@ pub struct ReplayWindow {
 #[derive(Clone, Debug)]
 pub struct EventsPage {
     pub events: Vec<ClientEvent>,
+    /// What [`Self::header_kind`] says of the page's header.
     pub header: Vec<cookie_agent_protocol::StoredEvent>,
+    /// What the daemon was asked for of the header: the request's `header`,
+    /// or `full` from a daemon older than
+    /// [`cookie_agent_protocol::HISTORY_DELTA_SINCE`], which sends it whole.
+    pub header_kind: cookie_agent_protocol::PageHeader,
     pub older_cursor: Option<u64>,
     pub cut: Vec<cookie_agent_protocol::CutOutput>,
 }
@@ -380,6 +385,9 @@ struct PendingCommand {
 
 #[derive(Default)]
 struct Subscription {
+    /// The last replay's final page registered the live tail (client
+    /// protocol 1.64.0).
+    live: bool,
     cursor: u64,
     /// Timestamp of the event at `cursor`, when this view received it. A
     /// replay from `cursor` sends it so the server can tell whether a revert
@@ -947,9 +955,13 @@ impl Client {
 
     /// Older history of a session, newest first (`events.page`, client
     /// protocol 1.59.0).
+    ///
+    /// The request's `header` goes only to a daemon of
+    /// [`cookie_agent_protocol::HISTORY_DELTA_SINCE`] or later; an older one
+    /// is asked for the whole header, as the answer's `header_kind` says.
     pub async fn events_page(
         &self,
-        params: cookie_agent_protocol::EventsPageParams,
+        mut params: cookie_agent_protocol::EventsPageParams,
     ) -> Result<EventsPage, ClientError> {
         #[derive(Deserialize)]
         struct Wire {
@@ -959,7 +971,10 @@ impl Client {
             older_cursor: Option<u64>,
             #[serde(default)]
             cut: Vec<cookie_agent_protocol::CutOutput>,
+            #[serde(default)]
+            spans: Vec<cookie_agent_protocol::OutputSpan>,
         }
+        params.header = page_header_for(self.daemon_version(), params.header);
         let wire: Wire = self
             .call(cookie_agent_protocol::EVENTS_PAGE_METHOD, &params)
             .await
@@ -968,9 +983,10 @@ impl Client {
             events: wire
                 .events
                 .iter()
-                .filter_map(|event| serde_json::from_str::<ClientEvent>(event.get()).ok())
+                .filter_map(|event| read_event(event, &wire.spans).ok())
                 .collect(),
             header: read_known(&wire.header),
+            header_kind: params.header,
             older_cursor: wire.older_cursor,
             cut: wire.cut,
         })
@@ -1767,6 +1783,17 @@ impl Client {
         .map_err(|_| ClientError::Closed)?
     }
 
+    /// Whether the last replay [`Self::subscribe_events`] finished for
+    /// `session_id` registered the live tail: the daemon owns the session
+    /// (client protocol 1.64.0; `false` from an older daemon).
+    pub async fn subscription_is_live(&self, session_id: SessionId) -> bool {
+        self.subscriptions
+            .lock()
+            .await
+            .get(&session_id)
+            .is_some_and(|subscription| subscription.live)
+    }
+
     /// End this connection's live tail for `session_id`
     /// (`events.unsubscribe`). Messages still in flight for it are dropped,
     /// and recovery leaves it alone until [`Self::subscribe_events`] is
@@ -2459,6 +2486,9 @@ async fn handle_frame(
                         }
                         Ok(result) => {
                             let has_more = result.has_more;
+                            if !has_more {
+                                note_live(replay, result.live, subscriptions).await;
+                            }
                             let page = result.read(replay.session_id, deliveries);
                             let (page, cut, window) = if has_more {
                                 match hold_replay_page(replay, page, subscriptions).await {
@@ -2631,6 +2661,10 @@ struct ReplayPageWire {
     window: Option<ReplayWindowWire>,
     #[serde(default)]
     cut: Vec<cookie_agent_protocol::CutOutput>,
+    #[serde(default)]
+    spans: Vec<cookie_agent_protocol::OutputSpan>,
+    #[serde(default)]
+    live: bool,
 }
 
 #[derive(Deserialize)]
@@ -2673,7 +2707,7 @@ impl ReplayPageWire {
             .iter()
             .enumerate()
             .filter_map(|(index, event)| {
-                match serde_json::from_str::<ClientEvent>(event.get()) {
+                match read_event(event, &self.spans) {
                     Ok(event) => {
                         if index + 1 == count {
                             last_seq = Some(event.seq);
@@ -2707,6 +2741,48 @@ impl ReplayPageWire {
             }),
         }
     }
+}
+
+/// The `header` an `events.page` request sends to a daemon of `daemon`:
+/// `asked` from [`cookie_agent_protocol::HISTORY_DELTA_SINCE`] on, else
+/// none, which an older daemon answers with the whole header.
+fn page_header_for(
+    daemon: Option<cookie_agent_protocol::SemVer>,
+    asked: cookie_agent_protocol::PageHeader,
+) -> cookie_agent_protocol::PageHeader {
+    if daemon.is_some_and(|version| version >= cookie_agent_protocol::HISTORY_DELTA_SINCE) {
+        asked
+    } else {
+        cookie_agent_protocol::PageHeader::Full
+    }
+}
+
+/// One event of a history answer, with the display texts `spans`, the
+/// answer's, names put back.
+fn read_event(
+    event: &RawValue,
+    spans: &[cookie_agent_protocol::OutputSpan],
+) -> Result<ClientEvent, String> {
+    let seq = if spans.is_empty() {
+        None
+    } else {
+        event_seq(event)
+    };
+    let own = match seq {
+        Some(seq) => spans
+            .iter()
+            .filter(|span| span.seq == seq)
+            .copied()
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    if own.is_empty() {
+        return serde_json::from_str(event.get()).map_err(|error| error.to_string());
+    }
+    let mut value = serde_json::from_str::<serde_json::Value>(event.get())
+        .map_err(|error| error.to_string())?;
+    cookie_agent_protocol::display_view::restore_output_spans(&mut value, &own)?;
+    serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
 /// The sequence of an event this client could not read, when its envelope
@@ -2800,6 +2876,17 @@ async fn take_replay_pages(
             std::mem::take(&mut subscription.replay_cut),
         ),
         _ => (Vec::new(), Vec::new()),
+    }
+}
+
+/// Records whether the final page of `replay` registered the live tail.
+async fn note_live(
+    replay: ReplayRequest,
+    live: bool,
+    subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
+) {
+    if let Some(subscription) = subscriptions.lock().await.get_mut(&replay.session_id) {
+        subscription.live = live;
     }
 }
 

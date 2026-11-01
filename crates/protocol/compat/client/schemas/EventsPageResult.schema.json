@@ -6610,6 +6610,50 @@
       ],
       "type": "object"
     },
+    "OutputSpan": {
+      "description": "A display text a display-view answer sent as a range of its tool\nresult's `output` (client protocol 1.64.0, to a client of 1.64.0 or\nnewer): the text in the event is empty, and the client puts\n`output[start..end]` in its place. In a `file_excerpt` the range holds\nthe block's `lines`, one per line, each after its line number and `\": \"`,\nand the event's `lines` is empty. `event.read` returns the event whole.",
+      "properties": {
+        "block": {
+          "description": "The block of the result's `display`, by index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment": {
+          "description": "The segment of a `terminal` block, by index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "The `tool_call_terminated` event's sequence.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "The byte range of `output`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "block",
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
     "PermissionEffect": {
       "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
       "enum": [
@@ -9647,7 +9691,7 @@
       "type": "array"
     },
     "header": {
-      "description": "As [`HistoryWindow::header`], for the page's first event.",
+      "description": "As [`HistoryWindow::header`], for the page's first event, or what\nthe request's `header` asked for of it.",
       "items": {
         "$ref": "#/$defs/StoredEvent"
       },
@@ -9661,6 +9705,13 @@
         "integer",
         "null"
       ]
+    },
+    "spans": {
+      "description": "As [`EventsSubscribeResult::spans`].",
+      "items": {
+        "$ref": "#/$defs/OutputSpan"
+      },
+      "type": "array"
     }
   },
   "required": [

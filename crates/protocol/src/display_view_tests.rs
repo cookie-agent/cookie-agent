@@ -726,3 +726,136 @@ fn a_window_reaching_before_the_events_read_is_not_answered() {
     );
     assert_eq!(cache_start(&events, usize::MAX / 2), None);
 }
+
+#[test]
+fn a_header_delta_merged_into_the_held_header_is_the_older_header() {
+    for events in logs() {
+        let starts = (0..events.len()).collect::<Vec<_>>();
+        for &older in &starts {
+            let new = state_events(&events[..older]);
+            for &held_at in starts.iter().filter(|&&held_at| held_at > older) {
+                let held = state_events(&events[..held_at]);
+                let delta = header_delta(&held, new.clone());
+                let cursor = (older > 0).then(|| events[older].seq);
+                assert_eq!(
+                    merge_header(held.clone(), delta, cursor),
+                    if cursor.is_some() {
+                        new.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    "older {older}, held {held_at}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_header_delta_leaves_out_what_the_client_holds() {
+    let events = with_settings();
+    let last = events.len() - 1;
+    let held = state_events(&events[..last]);
+    let older = state_events(&events[..last - 1]);
+    let delta = header_delta(&held, older.clone());
+    assert!(
+        delta.len() < older.len(),
+        "{} of {}",
+        delta.len(),
+        older.len()
+    );
+}
+
+fn result_event(output: &str, display: Vec<DisplayBlock>) -> StoredEvent {
+    let template = coding()
+        .into_iter()
+        .find(|event| {
+            matches!(&event.payload, EventPayload::ToolCallTerminated { termination }
+                if termination.result.is_some())
+        })
+        .unwrap();
+    let EventPayload::ToolCallTerminated { termination } = &template.payload else {
+        unreachable!()
+    };
+    let mut termination = termination.clone();
+    let result = termination.result.as_mut().unwrap();
+    result.output = output.to_owned();
+    result.display = display.into_iter().map(Open::Known).collect();
+    with_payload(&template, EventPayload::ToolCallTerminated { termination })
+}
+
+/// `event` as a client of 1.64.0 reads it: spanned, sent, and restored.
+fn round_trip(event: &StoredEvent) -> (StoredEvent, usize) {
+    let Some((sent, spans)) = output_spans(event) else {
+        return (event.clone(), 0);
+    };
+    let mut value = serde_json::to_value(&sent).unwrap();
+    restore_output_spans(&mut value, &spans).unwrap();
+    (serde_json::from_value(value).unwrap(), spans.len())
+}
+
+#[test]
+fn display_text_that_repeats_the_output_is_sent_once_and_read_back_whole() {
+    let line = "x".repeat(80);
+    let output =
+        format!("[stdout]\n{line}\nmore\n[stderr]\n{line}!\n1: {line}\n2: second {line}\ntail");
+    let event = result_event(
+        &output,
+        vec![
+            serde_json::from_value(json!({
+                "type": "terminal",
+                "segments": [
+                    {"stream": "stdout", "text": format!("{line}\nmore")},
+                    {"stream": "stderr", "text": format!("{line}!")},
+                    {"stream": "stderr", "text": "short"},
+                ],
+            }))
+            .unwrap(),
+            serde_json::from_value(json!({
+                "type": "file_excerpt", "path": "a.rs", "start_line": 1,
+                "lines": [line.clone(), format!("second {line}")]
+            }))
+            .unwrap(),
+            DisplayBlock::text("not in the output, and long enough to be worth a span here"),
+        ],
+    );
+    let (sent, spans) = output_spans(&event).expect("spans");
+    assert_eq!(spans.len(), 3);
+    assert!(
+        serde_json::to_string(&sent).unwrap().len() < serde_json::to_string(&event).unwrap().len()
+    );
+    assert_eq!(round_trip(&event), (event, 3));
+}
+
+#[test]
+fn every_recorded_result_reads_back_whole() {
+    let mut spanned = 0;
+    for events in logs() {
+        for event in events {
+            let (read, spans) = round_trip(&event);
+            assert_eq!(read, *event);
+            spanned += spans;
+        }
+    }
+    assert!(spanned > 0);
+}
+
+#[test]
+fn a_span_outside_the_output_fails() {
+    let event = result_event("short", vec![DisplayBlock::text("")]);
+    let mut value = serde_json::to_value(&event).unwrap();
+    let span = OutputSpan {
+        seq: event.seq,
+        block: 0,
+        segment: None,
+        start: 0,
+        end: 99,
+    };
+    assert!(restore_output_spans(&mut value, &[span]).is_err());
+    let span = OutputSpan {
+        block: 3,
+        end: 2,
+        ..span
+    };
+    assert!(restore_output_spans(&mut value, &[span]).is_err());
+}

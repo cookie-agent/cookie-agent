@@ -322,11 +322,23 @@ impl Engine {
                 params.view,
                 cookie_agent_protocol::history_window_bytes(params.max_bytes),
             );
+            let header = match params.header {
+                cookie_agent_protocol::PageHeader::Full => page.header,
+                cookie_agent_protocol::PageHeader::None => Vec::new(),
+                // The client holds the header of what starts at `before`.
+                cookie_agent_protocol::PageHeader::Delta => {
+                    let held = cookie_agent_protocol::display_view::state_events(
+                        &events[..events.partition_point(|event| event.seq < params.before)],
+                    );
+                    cookie_agent_protocol::display_view::header_delta(&held, page.header)
+                }
+            };
             Ok(cookie_agent_protocol::EventsPageResult {
                 events: page.events,
-                header: page.header,
+                header,
                 older_cursor: page.older_cursor,
                 cut: page.cut,
+                spans: Vec::new(),
             })
         })
     }

@@ -84,6 +84,16 @@ fn load(
         .expect("the history is not loaded");
     assert_eq!(params.before, before);
     let page = display_view::older_page(events, before, EventsView::Display, budget);
+    let header = match params.header {
+        PageHeader::Full => page.header,
+        PageHeader::None => Vec::new(),
+        PageHeader::Delta => display_view::header_delta(
+            &display_view::state_events(
+                &events[..events.partition_point(|event| event.seq < before)],
+            ),
+            page.header,
+        ),
+    };
     store.apply_history_page(
         session_id,
         before,
@@ -93,7 +103,8 @@ fn load(
                 .iter()
                 .map(|event| (**event).clone().into())
                 .collect(),
-            header: page.header.iter().map(|event| (**event).clone()).collect(),
+            header: header.iter().map(|event| (**event).clone()).collect(),
+            header_kind: params.header,
             older_cursor: page.older_cursor,
             cut: page.cut,
         }),

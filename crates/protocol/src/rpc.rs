@@ -2082,6 +2082,16 @@ pub struct EventsSubscribeResult {
     /// The tool results among `events` the display view cut.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cut: Vec<CutOutput>,
+    /// The display texts among `events` sent as ranges of their tool
+    /// result's output (client protocol 1.64.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<OutputSpan>,
+    /// The answer registered the live tail (client protocol 1.64.0): the
+    /// daemon owns the session, so live events follow. Absent from a page
+    /// that is not the final one, from a snapshot of a session the daemon
+    /// does not own, and from a daemon before 1.64.0.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub live: bool,
 }
 
 impl EventsSubscribeResult {
@@ -2094,6 +2104,8 @@ impl EventsSubscribeResult {
             stale_cursor: true,
             window: None,
             cut: Vec::new(),
+            spans: Vec::new(),
+            live: false,
         }
     }
 
@@ -2106,6 +2118,8 @@ impl EventsSubscribeResult {
             stale_cursor: false,
             window: None,
             cut: Vec::new(),
+            spans: Vec::new(),
+            live: false,
         }
     }
 }
@@ -2162,6 +2176,54 @@ pub struct CutOutput {
     pub bytes: u64,
 }
 
+/// The client protocol from which a display-view answer sends a tool
+/// result's display text that repeats its output as an [`OutputSpan`], and
+/// `events.page` takes `header`.
+pub const HISTORY_DELTA_SINCE: crate::SemVer = crate::SemVer::new(1, 64, 0);
+
+/// A display text a display-view answer sent as a range of its tool
+/// result's `output` (client protocol 1.64.0, to a client of 1.64.0 or
+/// newer): the text in the event is empty, and the client puts
+/// `output[start..end]` in its place. In a `file_excerpt` the range holds
+/// the block's `lines`, one per line, each after its line number and `": "`,
+/// and the event's `lines` is empty. `event.read` returns the event whole.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OutputSpan {
+    /// The `tool_call_terminated` event's sequence.
+    pub seq: u64,
+    /// The block of the result's `display`, by index.
+    pub block: u32,
+    /// The segment of a `terminal` block, by index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment: Option<u32>,
+    /// The byte range of `output`.
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Which header an `events.page` answer carries (client protocol 1.64.0).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageHeader {
+    /// The whole header of the page's first event.
+    #[default]
+    Full,
+    /// Only what the client lacks of it: the client holds the header of the
+    /// window or page whose first event is `before`, and keeps those of its
+    /// events before the page's `older_cursor` that the answer holds no
+    /// event of the same sequence for.
+    Delta,
+    /// None: the client reads into a gap and keeps the header it holds.
+    None,
+}
+
+impl PageHeader {
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        *self == Self::Full
+    }
+}
+
 pub const EVENTS_PAGE_METHOD: &str = "events.page";
 /// Older history of a session, newest first, without a live tail (client
 /// protocol 1.59.0).
@@ -2177,6 +2239,9 @@ pub struct EventsPageParams {
     /// As `events.subscribe`'s `max_bytes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<std::num::NonZeroU32>,
+    /// Which header the answer carries (client protocol 1.64.0).
+    #[serde(default, skip_serializing_if = "PageHeader::is_full")]
+    pub header: PageHeader,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct EventsPageResult {
@@ -2184,7 +2249,8 @@ pub struct EventsPageResult {
     /// order; at least one while any precede `before`. The page starts at a
     /// run or a model attempt when one fits.
     pub events: Vec<std::sync::Arc<StoredEvent>>,
-    /// As [`HistoryWindow::header`], for the page's first event.
+    /// As [`HistoryWindow::header`], for the page's first event, or what
+    /// the request's `header` asked for of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub header: Vec<std::sync::Arc<StoredEvent>>,
     /// The sequence just before the page's first event; `null` at the start
@@ -2195,6 +2261,9 @@ pub struct EventsPageResult {
     /// The tool results among `events` the display view cut.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cut: Vec<CutOutput>,
+    /// As [`EventsSubscribeResult::spans`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<OutputSpan>,
 }
 
 pub const EVENT_READ_METHOD: &str = "event.read";

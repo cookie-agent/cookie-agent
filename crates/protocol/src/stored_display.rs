@@ -121,7 +121,7 @@ fn encode_block(
     }
 }
 
-fn numbered_lines(start_line: u64, lines: &[String]) -> String {
+pub(crate) fn numbered_lines(start_line: u64, lines: &[String]) -> String {
     let mut numbered = String::new();
     for (number, line) in (start_line..).zip(lines) {
         if !numbered.is_empty() {

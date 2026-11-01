@@ -1886,3 +1886,16 @@ async fn an_older_daemon_replays_the_whole_history_from_the_start() {
         Some(ClientDelivery::ReplayStart { history: None, .. })
     ));
 }
+
+#[test]
+fn a_page_header_is_asked_for_only_from_a_daemon_of_1_64_0() {
+    use cookie_agent_protocol::{PageHeader, SemVer};
+    for asked in [PageHeader::Delta, PageHeader::None] {
+        assert_eq!(
+            page_header_for(Some(SemVer::new(1, 63, 0)), asked),
+            PageHeader::Full
+        );
+        assert_eq!(page_header_for(None, asked), PageHeader::Full);
+        assert_eq!(page_header_for(Some(SemVer::new(1, 64, 0)), asked), asked);
+    }
+}

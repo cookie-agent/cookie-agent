@@ -142,6 +142,8 @@ pub(super) fn newest_first(window: display_view::Window) -> EventsSubscribeResul
             gap: window.gap,
         }),
         cut: window.cut,
+        spans: Vec::new(),
+        live: false,
     }
 }
 

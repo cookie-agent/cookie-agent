@@ -19,8 +19,8 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
-    CutOutput, EventPayload, EventReadParams, EventsPageParams, EventsView, HistoryGap, SessionId,
-    StoredEvent, ToolCallId, TransientEvent,
+    CutOutput, EventPayload, EventReadParams, EventsPageParams, EventsView, HistoryGap, PageHeader,
+    SessionId, StoredEvent, ToolCallId, TransientEvent,
 };
 use cookie_agent_protocol_transport::{EventsPage, ReplayWindow};
 
@@ -261,7 +261,14 @@ impl HeldHistory {
         self.joined_at = Some(before);
         if self.older_cursor == Some(before) {
             self.older_cursor = page.older_cursor;
-            self.header = page.header;
+            self.header = match page.header_kind {
+                PageHeader::Delta => cookie_agent_protocol::display_view::merge_header(
+                    std::mem::take(&mut self.header),
+                    page.header,
+                    page.older_cursor,
+                ),
+                PageHeader::Full | PageHeader::None => page.header,
+            };
         } else if let Some(gap) = self.gap.filter(|gap| gap.before_seq == before) {
             // The page reached the run's start, or the log's: nothing is
             // left out between them any more.
@@ -469,11 +476,19 @@ impl StateStore {
         state.history.loading = Some(before);
         state.history.failed = None;
         bump_history_row(state, before);
+        // Older history replaces the header this holds, which the answer
+        // needs to send only what changes of; a gap's page leaves it.
+        let header = if held.older_cursor == Some(before) {
+            PageHeader::Delta
+        } else {
+            PageHeader::None
+        };
         Some(EventsPageParams {
             session_id,
             before,
             view: EventsView::Display,
             max_bytes: None,
+            header,
         })
     }
 

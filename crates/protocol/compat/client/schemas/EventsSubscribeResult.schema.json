@@ -6675,6 +6675,50 @@
       ],
       "type": "object"
     },
+    "OutputSpan": {
+      "description": "A display text a display-view answer sent as a range of its tool\nresult's `output` (client protocol 1.64.0, to a client of 1.64.0 or\nnewer): the text in the event is empty, and the client puts\n`output[start..end]` in its place. In a `file_excerpt` the range holds\nthe block's `lines`, one per line, each after its line number and `\": \"`,\nand the event's `lines` is empty. `event.read` returns the event whole.",
+      "properties": {
+        "block": {
+          "description": "The block of the result's `display`, by index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment": {
+          "description": "The segment of a `terminal` block, by index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "The `tool_call_terminated` event's sequence.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "The byte range of `output`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "block",
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
     "PermissionEffect": {
       "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
       "enum": [
@@ -9714,6 +9758,17 @@
     "has_more": {
       "description": "This is one page of a limited request and more events follow it.",
       "type": "boolean"
+    },
+    "live": {
+      "description": "The answer registered the live tail (client protocol 1.64.0): the\ndaemon owns the session, so live events follow. Absent from a page\nthat is not the final one, from a snapshot of a session the daemon\ndoes not own, and from a daemon before 1.64.0.",
+      "type": "boolean"
+    },
+    "spans": {
+      "description": "The display texts among `events` sent as ranges of their tool\nresult's output (client protocol 1.64.0).",
+      "items": {
+        "$ref": "#/$defs/OutputSpan"
+      },
+      "type": "array"
     },
     "stale_cursor": {
       "description": "`cursor_timestamp` no longer matches the event at `cursor`: nothing is\nreturned and no tail is registered. The caller replays from the start.",

@@ -1089,14 +1089,40 @@ and goes live like a final page. Its `window` holds:
   settings above, an approval or question not answered, an input admitted
   but not applied, and a tool call still running.
 
-`events.page { session_id, before, view, max_bytes }` returns the newest
-events before `before` within the budget, starting at a run or a model
-attempt when one fits and holding at least one event while any precede
-`before`, with the `header` and `older_cursor` for its first event. It
-reads the session's own log, registers no tail, and loads no subagent. A
+`events.page { session_id, before, view, max_bytes, header }` returns the
+newest events before `before` within the budget, starting at a run or a
+model attempt when one fits and holding at least one event while any
+precede `before`, with the `header` and `older_cursor` for its first event.
+It reads the session's own log, registers no tail, and loads no subagent. A
 client that holds a gap reads into it with its `before_seq`, and older
 history with its `older_cursor`; it folds again everything it holds when a
 page arrives.
+
+Since 1.64.0 `header` says which header the page carries: `full` (the
+default) the whole of it; `none` none, for a page read into a gap; and
+`delta`, for a client that holds the header of what starts at `before`
+(older history read with its `older_cursor`), only the events of the new
+header it lacks or holds differently. The client keeps the events of its
+header before the page's `older_cursor` that the answer holds no event of
+the same sequence for, and adds the answer's: every other event of the
+newer header is the same in the older one. A new header comes whole when
+the page starts at the log's beginning (`older_cursor` `null`): it is
+empty.
+
+To a client of 1.64.0 or newer, the display view sends a tool result's
+display text that repeats its `output` once: the text of a `text`,
+`markdown`, or `code` block or of a `terminal` segment, or the `lines` of a
+`file_excerpt`, is empty in the event, and the answer's `spans` lists
+`{seq, block, segment, start, end}` for it: `output[start..end]`, in bytes,
+is the text, and for a `file_excerpt` its lines, one per line, each after
+its line number and `": "`. `segment` is present for a `terminal` block.
+Live events and `event.read` are sent whole.
+
+Since 1.64.0 the answer that registers the live tail, a final page or a
+`from: "tail"` answer for a session the daemon owns, says `live: true`. A
+client that subscribes a session before `session.resume` has answered (to
+show it at once) knows from it whether it already follows the tail or has
+a snapshot to subscribe again once the session is its own.
 
 `events.unsubscribe` ends the connection's live tail for a session: no further
 `events.subscription` or `events.plugin` notification for it is sent, and the

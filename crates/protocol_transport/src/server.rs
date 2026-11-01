@@ -1327,7 +1327,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         "run.cancel" => value(server.cancel_run(decode(params)?, context).await?),
         "events.subscribe" => {
-            let mut page = server.subscribe_events(decode(params)?, context).await?;
+            let params: cookie_agent_protocol::EventsSubscribeParams = decode(params)?;
+            let view = params.view;
+            let mut page = server.subscribe_events(params, context).await?;
             let audience = context.display_audience();
             for event in &mut page.events {
                 *event = audience.stored(event);
@@ -1337,13 +1339,21 @@ async fn dispatch<S: ServerProtocol>(
                     *event = audience.stored(event);
                 }
             }
+            if sends_output_spans(context, view) {
+                page.spans = take_output_spans(&mut page.events);
+            }
             value(page)
         }
         cookie_agent_protocol::EVENTS_PAGE_METHOD => {
-            let mut page = server.events_page(decode(params)?).await?;
+            let params: cookie_agent_protocol::EventsPageParams = decode(params)?;
+            let view = params.view;
+            let mut page = server.events_page(params).await?;
             let audience = context.display_audience();
             for event in page.events.iter_mut().chain(&mut page.header) {
                 *event = audience.stored(event);
+            }
+            if sends_output_spans(context, view) {
+                page.spans = take_output_spans(&mut page.events);
             }
             value(page)
         }
@@ -1660,6 +1670,37 @@ fn rename_invalid_title(raw: &RawSessionRenameParams) -> ServerFault {
             .field("session_id", raw.session_id)
             .build(),
     )
+}
+
+/// Whether a history answer in `view` sends the display texts that repeat
+/// their tool result's output as ranges of it: in the display view, to a
+/// client of [`cookie_agent_protocol::HISTORY_DELTA_SINCE`] or newer.
+fn sends_output_spans(context: &ServerContext, view: cookie_agent_protocol::EventsView) -> bool {
+    output_spans_for(context.client_version(), view)
+}
+
+fn output_spans_for(
+    client: cookie_agent_protocol::SemVer,
+    view: cookie_agent_protocol::EventsView,
+) -> bool {
+    !view.is_full() && client.minor() >= cookie_agent_protocol::HISTORY_DELTA_SINCE.minor()
+}
+
+/// Leaves the display texts of `events` that repeat their tool result's
+/// output empty, and returns the spans that name them.
+fn take_output_spans(
+    events: &mut [std::sync::Arc<cookie_agent_protocol::StoredEvent>],
+) -> Vec<cookie_agent_protocol::OutputSpan> {
+    let mut spans = Vec::new();
+    for event in events {
+        if let Some((spanned, event_spans)) =
+            cookie_agent_protocol::display_view::output_spans(event)
+        {
+            *event = std::sync::Arc::new(spanned);
+            spans.extend(event_spans);
+        }
+    }
+    spans
 }
 
 /// A result serialized once, to the text its response frame embeds.

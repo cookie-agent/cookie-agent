@@ -5,6 +5,27 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.64.0
+
+- Less repeated history on the wire
+  ([session storage v3](../specs/session-storage-v3.md) section 3.4; see
+  [Newest first](events.md#newest-first)):
+  - `events.page` takes an optional `header`: `full` (the default), as
+    before; `delta`, for a client that holds the header of what starts at
+    `before`, which then gets only the header events it lacks or holds
+    differently; or `none`, for a page read into a gap, whose header the
+    client does not use.
+  - To a client of 1.64.0 or newer, a display-view answer
+    (`events.subscribe` with `view: "display"`, `events.page`) sends the
+    display text of a tool result that repeats its output as a range of
+    it: the text in the event is empty, and the answer's `spans` lists each
+    (`seq`, `block`, `segment` of a `terminal` block, `start`, `end`). A
+    `file_excerpt`'s range holds its numbered lines. Live events and
+    `event.read` stay whole.
+- `events.subscribe`'s answer has `live: true` when it registered the
+  live tail, the daemon owning the session; a client then needs no second
+  subscribe once `session.resume` says it owns the session.
+
 ## 1.63.0
 
 - History format 2 ([session storage v3](../specs/session-storage-v3.md)

@@ -14,6 +14,26 @@
           "type": "string"
         }
       ]
+    },
+    "PageHeader": {
+      "description": "Which header an `events.page` answer carries (client protocol 1.64.0).",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "The whole header of the page's first event.",
+          "type": "string"
+        },
+        {
+          "const": "delta",
+          "description": "Only what the client lacks of it: the client holds the header of the\nwindow or page whose first event is `before`, and keeps those of its\nevents before the page's `older_cursor` that the answer holds no\nevent of the same sequence for.",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "None: the client reads into a gap and keeps the header it holds.",
+          "type": "string"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -25,6 +45,10 @@
       "format": "uint64",
       "minimum": 1,
       "type": "integer"
+    },
+    "header": {
+      "$ref": "#/$defs/PageHeader",
+      "description": "Which header the answer carries (client protocol 1.64.0)."
     },
     "max_bytes": {
       "description": "As `events.subscribe`'s `max_bytes`.",

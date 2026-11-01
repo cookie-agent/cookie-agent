@@ -1758,6 +1758,7 @@ async fn a_tail_subscription_answers_the_newest_events_and_goes_live() {
                 before,
                 view: cookie_agent_protocol::EventsView::Display,
                 max_bytes: std::num::NonZeroU32::new(2_500),
+                header: cookie_agent_protocol::PageHeader::Full,
             })
             .expect("older page");
         assert!(page.events.last().unwrap().seq < before);

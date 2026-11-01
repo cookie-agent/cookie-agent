@@ -37,7 +37,7 @@ use std::{
 
 use crate::{
     ApprovalId, CutOutput, DisplayBlock, ElicitationId, EventPayload, EventsView, HistoryGap, Open,
-    QueuedInputs, ReplayDisposition, StoredEvent, ToolCallId,
+    OutputSpan, QueuedInputs, ReplayDisposition, StoredEvent, ToolCallId,
 };
 
 /// A tool result larger than this, output, display, and metadata
@@ -702,6 +702,192 @@ pub fn older_page(
         state_events(&events[..start]),
         (start > 0).then(|| events[start].seq),
     )
+}
+
+/// What a client that holds `held`, the header of a window or page, lacks
+/// of `header`, the header of an older page: its events that `held` holds
+/// no identical event of the same sequence for (`events.page` with
+/// `header: "delta"`, client protocol 1.64.0). [`merge_header`] puts them
+/// together again.
+#[must_use]
+pub fn header_delta(
+    held: &[Arc<StoredEvent>],
+    header: Vec<Arc<StoredEvent>>,
+) -> Vec<Arc<StoredEvent>> {
+    header
+        .into_iter()
+        .filter(|event| {
+            event_at(held, event.seq)
+                .is_none_or(|held| !Arc::ptr_eq(held, event) && **held != **event)
+        })
+        .collect()
+}
+
+/// The header of an older page from `held`, the header the client held,
+/// and `delta`, what the page's answer sent of the new one
+/// ([`header_delta`]): the held events before `older_cursor`, the page's
+/// first sequence, that `delta` holds no event of the same sequence for,
+/// with `delta`'s, in sequence order. Every event of the older header
+/// before `older_cursor` is in the newer one as it stands, or is sent, so
+/// this is the page's whole header.
+#[must_use]
+pub fn merge_header<E: std::borrow::Borrow<StoredEvent>>(
+    held: Vec<E>,
+    delta: Vec<E>,
+    older_cursor: Option<u64>,
+) -> Vec<E> {
+    let Some(start) = older_cursor else {
+        return Vec::new();
+    };
+    let sent = delta
+        .iter()
+        .map(|event| event.borrow().seq)
+        .collect::<HashSet<_>>();
+    let mut merged = held
+        .into_iter()
+        .filter(|event| {
+            let seq = event.borrow().seq;
+            seq < start && !sent.contains(&seq)
+        })
+        .chain(delta)
+        .collect::<Vec<_>>();
+    merged.sort_by_key(|event| event.borrow().seq);
+    merged
+}
+
+/// Display texts shorter than this stay in the event: a span would not be
+/// much smaller.
+const MIN_SPAN_BYTES: usize = 64;
+
+/// A tool result's event with the display texts that repeat its output
+/// left empty, and the [`OutputSpan`]s that name them (client protocol
+/// 1.64.0); `None` when no text repeats it.
+#[must_use]
+pub fn output_spans(event: &StoredEvent) -> Option<(StoredEvent, Vec<OutputSpan>)> {
+    let EventPayload::ToolCallTerminated { termination } = &event.payload else {
+        return None;
+    };
+    let result = termination.result.as_ref()?;
+    let output = result.output.as_str();
+    let found = |text: &str, from: usize| -> Option<(usize, usize)> {
+        if text.len() < MIN_SPAN_BYTES {
+            return None;
+        }
+        let start = from + output.get(from..)?.find(text)?;
+        Some((start, start + text.len()))
+    };
+    let span = |block: usize, segment: Option<usize>, (start, end): (usize, usize)| OutputSpan {
+        seq: event.seq,
+        block: block as u32,
+        segment: segment.map(|segment| segment as u32),
+        start: start as u64,
+        end: end as u64,
+    };
+    let mut display = result.display.clone();
+    let mut spans = Vec::new();
+    // A stream's segments occur in `output` in order.
+    let mut cursors = HashMap::<String, usize>::new();
+    for (index, block) in display.iter_mut().enumerate() {
+        let Open::Known(block) = block else {
+            continue;
+        };
+        match block {
+            DisplayBlock::Text { text, .. }
+            | DisplayBlock::Markdown { text, .. }
+            | DisplayBlock::Code { text, .. } => {
+                if let Some(range) = found(text, 0) {
+                    spans.push(span(index, None, range));
+                    text.clear();
+                }
+            }
+            DisplayBlock::Terminal { segments, .. } => {
+                for (number, segment) in segments.iter_mut().enumerate() {
+                    let cursor = cursors.entry(format!("{:?}", segment.stream)).or_default();
+                    if let Some(range) = found(&segment.text, *cursor) {
+                        *cursor = range.1;
+                        spans.push(span(index, Some(number), range));
+                        segment.text.clear();
+                    }
+                }
+            }
+            DisplayBlock::FileExcerpt {
+                start_line, lines, ..
+            } => {
+                if lines.is_empty() || lines.iter().any(|line| line.contains('\n')) {
+                    continue;
+                }
+                let numbered = crate::stored_display::numbered_lines(*start_line, lines);
+                if let Some(range) = found(&numbered, 0) {
+                    spans.push(span(index, None, range));
+                    lines.clear();
+                }
+            }
+            _ => {}
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let mut termination = termination.clone();
+    if let Some(result) = termination.result.as_mut() {
+        result.display = display;
+    }
+    Some((
+        with_payload(event, EventPayload::ToolCallTerminated { termination }),
+        spans,
+    ))
+}
+
+/// Puts back the display texts [`output_spans`] left empty in `event`, a
+/// `tool_call_terminated` event as JSON, from `spans`, those of its
+/// sequence. Fails when a span is not a range of the output or names a
+/// block or segment the display does not hold.
+pub fn restore_output_spans(
+    event: &mut serde_json::Value,
+    spans: &[OutputSpan],
+) -> Result<(), &'static str> {
+    const NOT_A_RESULT: &str = "an output span names no tool result's display";
+    let result = event
+        .get_mut("payload")
+        .and_then(|payload| payload.get_mut("result"))
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or(NOT_A_RESULT)?;
+    let output = result
+        .get("output")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(NOT_A_RESULT)?
+        .to_owned();
+    let display = result
+        .get_mut("display")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or(NOT_A_RESULT)?;
+    // Each span becomes the session log's encoding of the same text, which
+    // decoding expands.
+    for span in spans {
+        let block = display
+            .get_mut(span.block as usize)
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or(NOT_A_RESULT)?;
+        let file_excerpt =
+            block.get("type").and_then(serde_json::Value::as_str) == Some("file_excerpt");
+        let target = match span.segment {
+            Some(segment) => block
+                .get_mut("segments")
+                .and_then(|segments| segments.get_mut(segment as usize))
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(NOT_A_RESULT)?,
+            None => block,
+        };
+        let (field, member) = if file_excerpt {
+            ("lines", "lines_span")
+        } else {
+            ("text", "text_span")
+        };
+        target.remove(field);
+        target.insert(member.to_owned(), serde_json::json!([span.start, span.end]));
+    }
+    crate::stored_display::decode(&output, display)
+        .map_err(|_| "an output span is not a range of its result's output")
 }
 
 /// The window of `events[start..end]` without a gap, after `header`.

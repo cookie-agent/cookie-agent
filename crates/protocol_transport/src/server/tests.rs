@@ -1170,3 +1170,20 @@ async fn shutting_down_sends_what_is_queued_then_closes() {
     assert_eq!(connection.next().await["id"], 1);
     assert!(connection.closed().await);
 }
+
+#[test]
+fn output_spans_go_to_display_view_clients_from_1_64_0_only() {
+    use cookie_agent_protocol::{EventsView, SemVer};
+    assert!(!super::output_spans_for(
+        SemVer::new(1, 63, 0),
+        EventsView::Display
+    ));
+    assert!(super::output_spans_for(
+        SemVer::new(1, 64, 0),
+        EventsView::Display
+    ));
+    assert!(!super::output_spans_for(
+        SemVer::new(1, 64, 0),
+        EventsView::Full
+    ));
+}
