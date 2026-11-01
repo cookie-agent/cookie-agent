@@ -107,6 +107,27 @@ pub fn runtime_machine(
         .map(|machine| machine.as_str().to_owned())
 }
 
+/// The machines `session` works on, each once in the order its badges
+/// name them: a runtime's machine when `runtimes.list` knows it, else the
+/// runtime itself. `global` counts for none.
+#[must_use]
+pub fn session_machines(
+    session: &SessionMeta,
+    listing: Option<&RuntimesListResult>,
+) -> Vec<String> {
+    let mut machines = Vec::<String>::new();
+    for placed in counted(session) {
+        let name = match placed.place(listing) {
+            Place::Machine(name) => name,
+            Place::Runtime(runtime_id) => runtime_id.to_string(),
+        };
+        if !machines.contains(&name) {
+            machines.push(name);
+        }
+    }
+    machines
+}
+
 /// The operating system of `machine`: the first of its runtimes that
 /// reported one.
 fn machine_platform(listing: Option<&RuntimesListResult>, machine: &str) -> Option<String> {

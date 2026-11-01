@@ -161,7 +161,8 @@ impl SessionSearchRow {
 
 /// Search sessions by title and group matching rows by their local activity day.
 /// Callers pass the sessions the picker may offer (root sessions only).
-/// The picker's rows: day headers over sessions, newest first. With
+/// The picker's rows: the pinned sessions first under a header of their
+/// own, then day headers over the rest, each newest first. With
 /// `homes` (the picker lists every directory's sessions) each row also names
 /// its session's directory, under the home of its runtime (`~/…`).
 pub(crate) fn session_search_rows<'a>(
@@ -178,18 +179,25 @@ pub(crate) fn session_search_rows<'a>(
         .into_iter()
         .filter(|session| session_matches(session, query))
         .collect::<Vec<_>>();
-    // By the user's last activity, so a busy session keeps its place.
+    // Pinned first; by the user's last activity, so a busy session keeps
+    // its place.
     sessions.sort_by_key(|session| {
-        std::cmp::Reverse(cookie_agent_client_state::rows::ordering_activity(session))
+        (
+            !session.pinned,
+            std::cmp::Reverse(cookie_agent_client_state::rows::ordering_activity(session)),
+        )
     });
 
     let mut rows = Vec::new();
     let mut current_date = None;
+    if sessions.first().is_some_and(|session| session.pinned) {
+        rows.push(SessionSearchRow::Header(PINNED_HEADER.to_owned()));
+    }
     for session in sessions {
         let date = cookie_agent_client_state::rows::ordering_activity(session)
             .to_zoned(time_zone.clone())
             .date();
-        if current_date != Some(date) {
+        if !session.pinned && current_date != Some(date) {
             rows.push(SessionSearchRow::Header(session_day_label(
                 date, today, yesterday,
             )));
@@ -218,18 +226,23 @@ pub(crate) fn session_search_rows<'a>(
                     )
                 })
                 .unwrap_or_default();
-        // A session a cron job started leads with a clock, and an unread
-        // one with a dot before it.
+        // A session a cron job started leads with a clock, a pinned one
+        // with a pin before it, and an unread one with a dot before that.
         let cron = if session.cron.is_some() {
             format!("{} ", crate::ui::app::cron_panel::CRON_RUN_MARK)
         } else {
             String::new()
         };
         let unread = if session.unread { "● " } else { "" };
+        let pin = if session.pinned {
+            format!("{PIN_MARK} ")
+        } else {
+            String::new()
+        };
         rows.push(SessionSearchRow::Session {
             session_id: session.session_id,
             label: format!(
-                "{unread}{cron}{title}{degraded}{}  ({project}{} · {}{directory})",
+                "{unread}{pin}{cron}{title}{degraded}{}  ({project}{} · {}{directory})",
                 activity_marker(session),
                 session.creation_selection.agent,
                 short_id(session)
@@ -238,6 +251,12 @@ pub(crate) fn session_search_rows<'a>(
     }
     rows
 }
+
+/// The header over the pinned sessions, which lead the picker.
+pub(crate) const PINNED_HEADER: &str = "Pinned";
+
+/// What leads a pinned session's row.
+pub(crate) const PIN_MARK: &str = "📌";
 
 /// The marker a session row carries after its title: `⏳` while a run is
 /// going, `⏸` while its automatic runs are held, `⏰` while nothing runs but

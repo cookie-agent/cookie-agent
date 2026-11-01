@@ -65,6 +65,7 @@ async fn picker_app(version: &str) -> (App, SessionId, SessionId, Arc<Mutex<Vec<
         }})),
         "session.delete" => Ok(json!({ "deleted": [params["session_id"]] })),
         "session.unread.set" => Ok(json!({ "changed": params["session_ids"] })),
+        "session.pin.set" => Ok(json!({ "changed": params["session_ids"] })),
         "session.list" => Ok(json!({ "sessions": [] })),
         _ => Err(json!({"code": -32601, "message": "not scripted"})),
     });
@@ -311,6 +312,70 @@ async fn an_unread_session_shows_a_dot_and_ctrl_k_marks_it_read() {
         requests(&recorded, "session.unread.set"),
         [json!({ "session_ids": [other], "unread": false })]
     );
+}
+
+/// Ctrl+T pins the highlighted session, and unpins a pinned one, which
+/// leads the picker under a header of its own
+/// (`docs/site/specs/session-pins-and-filters.md`).
+#[tokio::test]
+async fn ctrl_t_pins_the_highlighted_session_and_a_pinned_one_leads() {
+    let (mut app, viewed, other, recorded) = picker_app("1.66.0").await;
+    highlight(&mut app, other);
+    app.status.clear();
+    app.handle_key(ctrl('t')).await;
+    while app.status.is_empty() {
+        next_update(&mut app).await;
+    }
+    assert_eq!(
+        requests(&recorded, "session.pin.set"),
+        [json!({ "session_ids": [other], "pinned": true })]
+    );
+
+    // The daemon's announcement pins it here too.
+    app.sessions
+        .iter_mut()
+        .find(|session| session.session_id == other)
+        .expect("other")
+        .pinned = true;
+    app.note_sessions_changed();
+    let rows = app.current_session_search_rows().to_vec();
+    assert_eq!(
+        rows[0],
+        crate::ui::pickers::SessionSearchRow::Header(crate::ui::pickers::PINNED_HEADER.into())
+    );
+    assert_eq!(rows[1].session_id(), Some(other));
+    assert!(rows[2..].iter().any(|row| row.session_id() == Some(viewed)));
+    let frame = frame_rows(&mut app, 120, 30);
+    let pinned_row = frame
+        .iter()
+        .find(|line| line.contains("other session"))
+        .expect("the pinned row");
+    assert!(
+        pinned_row.contains(crate::ui::pickers::PIN_MARK),
+        "{pinned_row}"
+    );
+
+    highlight(&mut app, other);
+    app.status.clear();
+    app.handle_key(ctrl('t')).await;
+    while app.status.is_empty() {
+        next_update(&mut app).await;
+    }
+    assert_eq!(
+        requests(&recorded, "session.pin.set")[1],
+        json!({ "session_ids": [other], "pinned": false })
+    );
+}
+
+#[tokio::test]
+async fn an_older_daemon_offers_no_pin_toggle() {
+    let (mut app, _, other, recorded) = picker_app("1.65.0").await;
+    highlight(&mut app, other);
+    let frame = frame_rows(&mut app, 120, 30).join("\n");
+    assert!(!frame.contains("ctrl+t"), "{frame}");
+    app.handle_key(ctrl('t')).await;
+    assert!(app.status.contains("keeps no pinned"), "{}", app.status);
+    assert!(requests(&recorded, "session.pin.set").is_empty());
 }
 
 #[tokio::test]

@@ -1,8 +1,9 @@
 //! How far back a client's session list reaches
 //! (`docs/site/specs/session-storage-v3.md` section 4.3): the last 30 days
-//! at first, then a month further each time the user asks for older
-//! sessions. Unread and busy sessions come with every answer whatever
-//! their age.
+//! at first, or as many as the client's date filter says
+//! (`docs/site/specs/session-pins-and-filters.md`), then a month further
+//! each time the user asks for older sessions. Unread, pinned, and busy
+//! sessions come with every answer whatever their age.
 
 use cookie_agent_protocol::{SemVer, SessionListParams, SessionMeta};
 use jiff::{SignedDuration, Timestamp};
@@ -10,7 +11,8 @@ use jiff::{SignedDuration, Timestamp};
 /// The first client protocol whose daemons list sessions by activity.
 pub const LIST_WINDOW_SINCE: SemVer = SemVer::new(1, 57, 0);
 
-/// How many days a session list shows before the user asks for more.
+/// How many days a session list shows before the user asks for more,
+/// unless the client says otherwise ([`SessionWindow::recent`]).
 pub const RECENT_DAYS: i64 = 30;
 
 /// Whether the daemon, speaking `version`, takes `session.list`'s window.
@@ -22,7 +24,7 @@ pub fn daemon_lists_by_activity(version: Option<SemVer>) -> bool {
 /// How far back the list reaches.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Reach {
-    /// The last [`RECENT_DAYS`] days, counted when the list is read.
+    /// The window's recent days, counted when the list is read.
     #[default]
     Recent,
     /// Back to this time, after older pages came in.
@@ -32,14 +34,40 @@ enum Reach {
 }
 
 /// The session list's window, and whether the daemon has older sessions.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SessionWindow {
     reach: Reach,
+    /// How many days [`Reach::Recent`] reaches back; `None`: every
+    /// session.
+    days: Option<i64>,
     /// The `older` cursor of the newest answer.
     older: Option<Timestamp>,
 }
 
+impl Default for SessionWindow {
+    /// The last [`RECENT_DAYS`] days.
+    fn default() -> Self {
+        Self::recent(Some(RECENT_DAYS))
+    }
+}
+
 impl SessionWindow {
+    /// A window of the last `days` days, or of every session for `None`.
+    #[must_use]
+    pub fn recent(days: Option<i64>) -> Self {
+        Self {
+            reach: Reach::Recent,
+            days,
+            older: None,
+        }
+    }
+
+    /// How many days the window reaches back before older pages came in;
+    /// `None`: every session.
+    #[must_use]
+    pub fn days(&self) -> Option<i64> {
+        self.days
+    }
     /// `params` with the window a full read of the list asks for at `now`.
     /// A daemon older than [`LIST_WINDOW_SINCE`] gets none, and lists
     /// everything.
@@ -52,9 +80,9 @@ impl SessionWindow {
     ) -> SessionListParams {
         if daemon_lists_by_activity(version) {
             params.active_since = match self.reach {
-                Reach::Recent => now
-                    .checked_sub(SignedDuration::from_hours(24 * RECENT_DAYS))
-                    .ok(),
+                Reach::Recent => self
+                    .days
+                    .and_then(|days| now.checked_sub(SignedDuration::from_hours(24 * days)).ok()),
                 Reach::Since(since) => Some(since),
                 Reach::All => None,
             };
@@ -88,9 +116,9 @@ impl SessionWindow {
         self.older = older;
     }
 
-    /// Back to the last [`RECENT_DAYS`] days, as for another daemon.
+    /// Back to the window's recent days, as for another daemon.
     pub fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self::recent(self.days);
     }
 }
 
@@ -169,6 +197,27 @@ mod tests {
 
         window.reset();
         assert_eq!(window, SessionWindow::default());
+    }
+
+    #[test]
+    fn a_window_reaches_back_its_own_days_or_to_everything() {
+        let now = at("2026-10-31T12:00:00Z");
+        let mut week = SessionWindow::recent(Some(7));
+        assert_eq!(
+            week.read_params(SessionListParams::default(), WINDOWED, now)
+                .active_since,
+            Some(at("2026-10-24T12:00:00Z"))
+        );
+        // Older pages, then a reset: the week again, not thirty days.
+        week.paged(Some(at("2026-09-01T00:00:00Z")));
+        week.reset();
+        assert_eq!(week, SessionWindow::recent(Some(7)));
+
+        let every = SessionWindow::recent(None);
+        let params = every.read_params(SessionListParams::default(), WINDOWED, now);
+        assert_eq!(params.active_since, None);
+        assert_eq!(params.before, None);
+        assert_eq!(every.days(), None);
     }
 
     fn session(title: &str) -> SessionMeta {

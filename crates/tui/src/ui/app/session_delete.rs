@@ -1,6 +1,6 @@
 //! The `/sessions` picker's session deletion, its action row (rename,
-//! delete, mark read or unread), and its choice between this directory's
-//! sessions and every directory's.
+//! delete, mark read or unread, pin or unpin), and its choice between this
+//! directory's sessions and every directory's.
 
 use cookie_agent_client_state::session_delete::{
     self, DAEMON_TOO_OLD_TO_DELETE, SessionDeleteOutcome,
@@ -18,6 +18,9 @@ pub(in crate::ui) enum SessionPickerAction {
     /// Marks the highlighted session read, or unread when it is read
     /// (Ctrl+K; `docs/site/specs/unread-sessions.md`).
     ToggleRead,
+    /// Pins the highlighted session, or unpins it when pinned (Ctrl+T;
+    /// `docs/site/specs/session-pins-and-filters.md`).
+    TogglePin,
     /// Switches between this directory's sessions and every directory's
     /// (Ctrl+A).
     ToggleScope,
@@ -29,12 +32,14 @@ pub(in crate::ui) enum SessionPickerAction {
 }
 
 impl SessionPickerAction {
-    fn label(self, all_directories: bool, project: &str, unread: bool) -> String {
+    fn label(self, all_directories: bool, project: &str, (unread, pinned): (bool, bool)) -> String {
         match self {
             Self::Rename => " Rename (ctrl+r) ".to_owned(),
             Self::Delete => " Delete (ctrl+d) ".to_owned(),
             Self::ToggleRead if unread => " Mark read (ctrl+k) ".to_owned(),
             Self::ToggleRead => " Mark unread (ctrl+k) ".to_owned(),
+            Self::TogglePin if pinned => " Unpin (ctrl+t) ".to_owned(),
+            Self::TogglePin => " Pin (ctrl+t) ".to_owned(),
             Self::ToggleScope if all_directories => " This directory (ctrl+a) ".to_owned(),
             Self::ToggleScope => " All directories (ctrl+a) ".to_owned(),
             Self::CycleProject => format!(" {project} (ctrl+p) "),
@@ -110,6 +115,32 @@ impl App {
                 Ok(result) => RpcUpdate::Notice(cookie_agent_client_state::unread::marked_message(
                     result.changed.len(),
                     unread,
+                )),
+                Err(error) => RpcUpdate::failure(&error),
+            };
+            let _ = updates.send(update);
+        });
+    }
+
+    /// Ctrl+T or the button: pins the highlighted session, or unpins it
+    /// when pinned. The daemon announces the change to every client.
+    pub(in crate::ui) fn toggle_session_pin(&mut self) {
+        if !cookie_agent_client_state::pins::daemon_keeps_pins(self.client.daemon_version()) {
+            self.status = "This daemon keeps no pinned sessions; update it.".into();
+            return;
+        }
+        let Some(session) = self.highlighted_session() else {
+            self.status = "There is no session to pin.".into();
+            return;
+        };
+        let (session_id, pinned) = (session.session_id, !session.pinned);
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let update = match client.set_session_pinned(vec![session_id], pinned).await {
+                Ok(result) => RpcUpdate::Notice(cookie_agent_client_state::pins::pinned_message(
+                    result.changed.len(),
+                    pinned,
                 )),
                 Err(error) => RpcUpdate::failure(&error),
             };
@@ -264,11 +295,13 @@ impl App {
         let mut spans = Vec::new();
         let mut x = row.x;
         let project = self.session_project_filter_label();
-        let unread = self
+        let marks = self
             .highlighted_session()
-            .is_some_and(|session| session.unread);
+            .map_or((false, false), |session| (session.unread, session.pinned));
         let keeps_unread =
             cookie_agent_client_state::unread::daemon_keeps_unread(self.client.daemon_version());
+        let keeps_pins =
+            cookie_agent_client_state::pins::daemon_keeps_pins(self.client.daemon_version());
         let has_projects = self.daemon_has_projects();
         // Older sessions lead while there are any: the row is cut at the
         // picker's width, and they are what the list is missing.
@@ -277,18 +310,20 @@ impl App {
             SessionPickerAction::Rename,
             SessionPickerAction::Delete,
             SessionPickerAction::ToggleRead,
+            SessionPickerAction::TogglePin,
             SessionPickerAction::ToggleScope,
             SessionPickerAction::CycleProject,
         ]
         .into_iter()
         .filter(|action| match action {
             SessionPickerAction::ToggleRead => keeps_unread,
+            SessionPickerAction::TogglePin => keeps_pins,
             SessionPickerAction::CycleProject => has_projects,
             SessionPickerAction::ShowOlder => self.session_window.has_older(),
             _ => true,
         });
         for action in shown {
-            let label = action.label(self.session_scope_all, &project, unread);
+            let label = action.label(self.session_scope_all, &project, marks);
             let width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
             if x.saturating_add(width) <= row.right() {
                 self.hit_map
@@ -368,6 +403,7 @@ impl App {
             SessionPickerAction::Rename => self.begin_session_rename(),
             SessionPickerAction::Delete => self.begin_session_delete(),
             SessionPickerAction::ToggleRead => self.toggle_session_read(),
+            SessionPickerAction::TogglePin => self.toggle_session_pin(),
             SessionPickerAction::ToggleScope => self.toggle_session_scope().await,
             SessionPickerAction::CycleProject => self.cycle_session_project_filter(),
             SessionPickerAction::ShowOlder => self.show_older_sessions().await,

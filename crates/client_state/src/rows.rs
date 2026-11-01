@@ -156,17 +156,24 @@ pub fn session_is_active(session: &SessionMeta) -> bool {
     )
 }
 
-/// Orders a session list: the active sessions first, then the rest, each
-/// group newest [`ordering_activity`] first; sessions that tie keep their
-/// order. It knows nothing of how a list is grouped, so a client orders each
-/// group (each project's sessions, say) on its own.
+/// Whether a session list shows a session in its first group: it is
+/// active ([`session_is_active`]), or the user pinned it.
+pub fn listed_first(session: &SessionMeta) -> bool {
+    session.pinned || session_is_active(session)
+}
+
+/// Orders a session list: the [`listed_first`] sessions (active or
+/// pinned), then the rest, each group newest [`ordering_activity`] first;
+/// sessions that tie keep their order. It knows nothing of how a list is
+/// grouped, so a client orders each group (each project's sessions, say)
+/// on its own.
 /// The sessions may be held or borrowed: a client orders references to the
 /// ones it lists without copying them.
 pub fn order_sessions<S: std::borrow::Borrow<SessionMeta>>(sessions: &mut [S]) {
     sessions.sort_by_key(|session| {
         let session = session.borrow();
         (
-            !session_is_active(session),
+            !listed_first(session),
             std::cmp::Reverse(ordering_activity(session)),
         )
     });
@@ -664,6 +671,12 @@ mod tests {
                 waiting.waiting_on = vec![cookie_agent_protocol::WaitingOn::Goal];
                 waiting
             },
+            {
+                // So does a pinned one, whatever its status.
+                let mut pinned = session("old-pinned", "completed", "2026-10-20T06:30:00Z");
+                pinned.pinned = true;
+                pinned
+            },
         ];
         order_sessions(&mut sessions);
         let names = sessions
@@ -675,6 +688,7 @@ mod tests {
             [
                 "new-running",
                 "old-running",
+                "old-pinned",
                 "old-waiting",
                 "new-failed",
                 "tie-a",

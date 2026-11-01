@@ -289,7 +289,7 @@ event); type to filter them by title, and press
 Enter or click a row to open one.
 
 - The picker lists the sessions active in the last 30 days, and every
-  unread or busy one whatever its age. **Ctrl+O**, or the **Older**
+  pinned, unread, or busy one whatever its age. **Ctrl+O**, or the **Older**
   button that leads the row while there are older sessions, adds a month
   at a time ([where sessions are stored](../sessions/index.md#where-sessions-are-stored)).
 - **Ctrl+A**, or the **All directories** button, lists every directory's
@@ -309,6 +309,12 @@ Enter or click a row to open one.
 - **Ctrl+K**, or the **Mark read** / **Mark unread** button, marks the
   highlighted session read, or unread when it is read (with a daemon of
   client protocol 1.51 or later).
+- **Ctrl+T**, or the **Pin** / **Unpin** button, pins the highlighted
+  session, or unpins it when it is pinned (with a daemon of client
+  protocol 1.66 or later). Pinned sessions lead the picker under a
+  **Pinned** heading, each with 📌 before its title, and are listed
+  whatever their age. A pin shows in every client
+  ([session pins and filters](../specs/session-pins-and-filters.md)).
 - **Ctrl+R**, or the **Rename** button, renames the highlighted session:
   a field holding its title opens over the search. See
   [Renaming](#renaming).
