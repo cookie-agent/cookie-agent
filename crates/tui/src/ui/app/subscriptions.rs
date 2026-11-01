@@ -265,6 +265,10 @@ impl App {
         self.client = client;
         self.reconnecting = false;
         self.reconnect_error = None;
+        // The status message came before this connection: an error of a
+        // request the old one dropped. What is said from here on is about
+        // this one.
+        self.status.clear();
         self.reset_presence();
         self.reset_restart_after_reconnect();
         self.reset_subscriptions();

@@ -5420,6 +5420,9 @@ def acp_reconnect(browser):
     finally:
         os.kill(daemon, signal.SIGCONT)
     browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    # The status line no longer says the page is not connected.
+    status = browser.script("return document.querySelector('#status').textContent").strip()
+    assert status == "", "the status line kept what it said before the reconnect: %r" % status
     browser.type("#composer", ENTER)
     browser.wait("the kept message after the reconnect", lambda: "say meanwhile" in browser.text("#transcript"), timeout=30)
     # The session took input before the connection dropped, and keeps

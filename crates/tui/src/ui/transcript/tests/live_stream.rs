@@ -748,7 +748,8 @@ async fn a_reconnected_view_rebuilds_the_reply_it_missed_without_duplicating_it(
 
 /// After a reconnect the open session is asked again who owns it. It keeps
 /// taking input meanwhile: what the user types before the answer comes lands
-/// in the composer, where a read-only snapshot's would refuse every key.
+/// in the composer, where a read-only snapshot's would refuse every key. The
+/// status message of the old connection goes with it.
 #[tokio::test]
 async fn a_reconnected_view_takes_input_while_its_owner_is_asked_again() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -802,7 +803,11 @@ async fn a_reconnected_view_takes_input_while_its_owner_is_asked_again() {
     })
     .await
     .expect("reconnected");
+    // An error a request on the old connection left behind.
+    let stale = "runtimes unavailable: the connection closed";
+    app.status = stale.into();
     app.finish_reconnect(client).await;
+    assert_ne!(app.status, stale, "the old connection's error outlived it");
 
     // The daemon has not answered yet: its answer waits among the updates
     // nothing has handled.

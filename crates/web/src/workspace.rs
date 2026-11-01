@@ -644,6 +644,13 @@ impl Workspace {
     pub fn adopt(self, client: Client) {
         let reconnected = self.connection.get_value() > 0;
         self.connection.update_value(|connection| *connection += 1);
+        // What the status line says now came before this connection: an
+        // error of a request the old one dropped, or that the page was not
+        // connected. Requests on the old connection all failed as it
+        // closed, so what is said from here on is about this one.
+        if reconnected && self.status.with_untracked(|status| !status.is_empty()) {
+            self.status.set(String::new());
+        }
         self.can_delete.set(
             cookie_agent_client_state::session_delete::daemon_can_delete_sessions(
                 client.daemon_version(),
