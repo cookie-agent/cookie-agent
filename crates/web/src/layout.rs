@@ -24,13 +24,16 @@ pub enum View {
     Memory,
     /// The daemon's cron jobs (client protocol 1.15).
     Cron,
+    /// A project's assets (client protocol 1.67.0).
+    Assets,
 }
 
 impl View {
     /// The rail's order.
     /// The rail's order: Settings comes after every other view.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Chat,
+        Self::Assets,
         Self::Agents,
         Self::Skills,
         Self::Mcp,
@@ -51,6 +54,7 @@ impl View {
             Self::Machines => "Machines & runtimes",
             Self::Memory => "Memory",
             Self::Cron => "Scheduled prompts",
+            Self::Assets => "Assets",
         }
     }
 
@@ -72,7 +76,7 @@ impl View {
         match self {
             Self::Chat => Some(PhoneList::Sidebar),
             Self::Agents | Self::Settings | Self::Memory | Self::Cron => Some(PhoneList::Page),
-            Self::Skills | Self::Mcp | Self::Machines => None,
+            Self::Skills | Self::Mcp | Self::Machines | Self::Assets => None,
         }
     }
 
@@ -97,6 +101,7 @@ impl View {
             Self::Machines => "machines",
             Self::Memory => "memory",
             Self::Cron => "cron",
+            Self::Assets => "assets",
         }
     }
 }

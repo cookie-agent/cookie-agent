@@ -21,6 +21,7 @@ impl Workspace {
             View::Chat => {}
             View::Agents => self.open_config(),
             View::Skills => self.poll_skill_list(),
+            View::Assets => self.open_assets(),
             View::Mcp => self.poll_mcp(),
             View::Settings => self.open_section(section),
             View::Machines => self.poll_runtimes(),
@@ -81,6 +82,7 @@ impl Workspace {
             },
             View::Memory => self.poll_memory(),
             View::Skills => self.poll_skill_list(),
+            View::Assets => self.poll_assets(),
             View::Mcp => self.poll_mcp(),
             View::Chat | View::Machines | View::Cron => {}
         }
@@ -144,7 +146,7 @@ impl Workspace {
     }
 
     /// Whether the open view shows its first level: its list (Skills, MCP
-    /// servers, and Machines, which have none, at once). A phone shows the rail beside the first
+    /// servers, Machines, and Assets, which have none, at once). A phone shows the rail beside the first
     /// level only; an item open fills its screen, and the sidebar button
     /// goes back up.
     pub fn at_list(self) -> bool {
@@ -156,7 +158,7 @@ impl Workspace {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
             }
             View::Cron => self.cron_form.with(Option::is_none),
-            View::Skills | View::Mcp | View::Machines => true,
+            View::Skills | View::Mcp | View::Machines | View::Assets => true,
         }
     }
 
@@ -177,7 +179,7 @@ impl Workspace {
                 self.memory_edit.with(Option::is_some) || self.memory_pending.with(Option::is_some)
             }
             View::Cron => self.cron_form.with(Option::is_some),
-            View::Chat | View::Skills | View::Mcp | View::Machines => false,
+            View::Chat | View::Skills | View::Mcp | View::Machines | View::Assets => false,
         };
         if editing {
             layers.push(Layer::Editor);

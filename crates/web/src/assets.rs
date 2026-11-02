@@ -18,7 +18,7 @@
 use std::{cell::RefCell, collections::HashMap};
 
 use cookie_agent_protocol::{Asset, AssetId, AssetStore};
-use leptos::task::spawn_local;
+use leptos::{prelude::Set as _, task::spawn_local};
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 
 use crate::{render::escape, workspace::Workspace};
@@ -626,6 +626,36 @@ fn blob_url(bytes: &[u8], media_type: &str) -> Result<String, JsValue> {
     });
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)?;
     web_sys::Url::create_object_url_with_blob(&blob)
+}
+
+/// Saves `asset`'s current content as a file: read, then handed to the
+/// browser's download.
+pub fn download(workspace: Workspace, asset: Asset) {
+    spawn_local(async move {
+        let url = match CONTENTS.with(|contents| contents.borrow().get(&asset.sha256).cloned()) {
+            Some(content) => content.url,
+            None => match content(&asset, workspace).await {
+                Ok(content) => content.url,
+                Err(error) => {
+                    workspace
+                        .status
+                        .set(format!("{} could not be read: {error}", asset.title));
+                    return;
+                }
+            },
+        };
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        let Ok(link) = document.create_element("a") else {
+            return;
+        };
+        let _ = link.set_attribute("href", &url);
+        let _ = link.set_attribute("download", &download_name(&asset));
+        if let Some(link) = link.dyn_ref::<web_sys::HtmlElement>() {
+            link.click();
+        }
+    });
 }
 
 #[cfg(test)]

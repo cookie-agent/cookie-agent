@@ -38,6 +38,7 @@ pub fn view_icon(view: View) -> crate::icons::Icon {
         View::Chat => icondata::FaCommentsSolid,
         View::Agents => icondata::FaRobotSolid,
         View::Skills => icondata::FaBookOpenSolid,
+        View::Assets => icondata::FaImagesSolid,
         View::Mcp => icondata::FaPlugSolid,
         View::Settings => icondata::FaGearSolid,
         View::Machines => icondata::FaServerSolid,
@@ -216,6 +217,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                                 View::Memory => memory_sheet(workspace).into_any(),
                                 View::Cron => cron_page(workspace).into_any(),
                                 View::Skills => super::skills::skills_page(workspace).into_any(),
+                                View::Assets => super::assets::assets_page(workspace).into_any(),
                                 View::Mcp => mcp_sheet(workspace).into_any(),
                                 View::Chat | View::Settings | View::Agents => ().into_any(),
                             }}

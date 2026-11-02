@@ -37,6 +37,7 @@ use crate::{
 };
 
 mod agents;
+mod assets;
 mod cards;
 mod cron;
 mod depth;

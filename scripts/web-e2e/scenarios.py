@@ -1335,6 +1335,54 @@ def asset_figures(browser):
     print("a link to a figure opens its session and shows it")
 
 
+def assets_tab(browser):
+    """The Assets tab lists the assets kept for the project (here the
+    shared store of sessions in no project), not a session's own; filters
+    and searches them, opens one as a figure, renames it, and deletes it
+    after asking."""
+    new_session(browser)
+    send(browser, "save a project report")
+    idle(browser, "the saving call")
+    view(browser, "assets")
+    row = "#assets-page [data-asset-row]"
+    browser.wait("the project's asset", lambda: "Shared report" in browser.text("#assets-page"), timeout=60)
+    # Only what was kept for the project: a session's own assets stay out.
+    titles = lambda: browser.script(
+        "return [...document.querySelectorAll('#assets-page [data-asset-row-title]')].map((e) => e.innerText)"
+    )
+    assert titles() == ["Shared report"], titles()
+    assert "1 asset" in browser.text("[data-assets-total]")
+    browser.click("#assets-page [data-asset-kind='Images']")
+    browser.wait("the kind filter", lambda: count(browser, row) == 0)
+    browser.click("#assets-page [data-asset-kind='Documents']")
+    browser.wait("documents", lambda: count(browser, row) == 1)
+    browser.type("#assets-search", "nothing like it")
+    browser.wait("the search", lambda: count(browser, row) == 0)
+    browser.script("const e = document.querySelector('#assets-search'); e.value = ''; e.dispatchEvent(new Event('input', {bubbles: true}))")
+    browser.wait("the row back", lambda: count(browser, row) == 1)
+    # Opened, it shows as a figure does.
+    browser.click(row + " [data-asset-action='open']")
+    browser.wait("the opened document", lambda: "All good." in browser.text(row + " [data-asset-preview]"), timeout=30)
+    browser.shot("assets-tab")
+    if SCREENSHOTS:
+        browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "dark"}]})
+        browser.shot("assets-tab-dark")
+        browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "light"}]})
+    # Renamed, the row and the listing follow.
+    browser.click(row + " [data-asset-action='rename']")
+    browser.wait("the rename form", lambda: count(browser, "#asset-rename-title") == 1)
+    browser.script("const e = document.querySelector('#asset-rename-title'); e.value = 'Renamed report'; e.dispatchEvent(new Event('input', {bubbles: true}))")
+    browser.click("#asset-rename-save")
+    browser.wait("the new title", lambda: titles() == ["Renamed report"])
+    # Deleted after asking.
+    browser.click(row + " [data-asset-action='delete']")
+    browser.wait("the confirmation", lambda: count(browser, "#asset-delete-confirm") == 1)
+    browser.click("#asset-delete-confirm")
+    browser.wait("the empty tab", lambda: count(browser, row) == 0 and "No assets here yet" in browser.text("#assets-page"))
+    view(browser, "chat")
+    print("the Assets tab lists, filters, opens, renames, and deletes a project's assets")
+
+
 def session_depth(browser):
     """Subagents, history edits, goals, background calls, media, skills, and
     permission overrides."""
@@ -6483,6 +6531,7 @@ SCENARIOS = [
     ("rows_stay_put", rows_stay_put, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
     ("asset_figures", asset_figures, "chat", []),
+    ("assets_tab", assets_tab, "chat", []),
     ("open_tool_header", open_tool_header, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),

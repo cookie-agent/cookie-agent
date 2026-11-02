@@ -34,6 +34,7 @@ use leptos::{prelude::*, task::spawn_local};
 use crate::{browser, connect::EVENT_LEVEL_KEY};
 
 mod acp;
+mod assets;
 mod attachments;
 mod background;
 mod cards;
@@ -243,6 +244,18 @@ pub struct Workspace {
     pub skill_list_session: RwSignal<bool>,
     /// The Skills view's search.
     pub skill_list_query: RwSignal<String>,
+    /// The Assets tab's store, once it was opened.
+    pub asset_store: RwSignal<Option<cookie_agent_protocol::AssetStore>>,
+    /// The Assets tab's listing.
+    pub asset_list: RwSignal<Option<Result<Vec<cookie_agent_protocol::Asset>, String>>>,
+    /// The Assets tab's search, and the kind it shows.
+    pub asset_query: RwSignal<String>,
+    pub asset_kind: RwSignal<Option<cookie_agent_client_state::assets::AssetKind>>,
+    /// The asset the tab shows open, the one renamed and its title, and the
+    /// one whose deletion waits for its confirmation.
+    pub asset_open: RwSignal<Option<cookie_agent_protocol::AssetId>>,
+    pub asset_renaming: RwSignal<Option<(cookie_agent_protocol::AssetId, String)>>,
+    pub asset_deleting: RwSignal<Option<cookie_agent_protocol::AssetId>>,
     /// What the last refresh of the official skills did, and whether it
     /// failed; `None` while one is on its way or before any.
     pub skills_update_note: RwSignal<Option<(String, bool)>>,
@@ -536,6 +549,13 @@ impl Workspace {
             skill_list: RwSignal::new(None),
             skill_list_session: RwSignal::new(false),
             skill_list_query: RwSignal::new(String::new()),
+            asset_store: RwSignal::new(None),
+            asset_list: RwSignal::new(None),
+            asset_query: RwSignal::new(String::new()),
+            asset_kind: RwSignal::new(None),
+            asset_open: RwSignal::new(None),
+            asset_renaming: RwSignal::new(None),
+            asset_deleting: RwSignal::new(None),
             skills_update_note: RwSignal::new(None),
             skills_updating: RwSignal::new(false),
             skill_pick: RwSignal::new(None),
@@ -935,6 +955,9 @@ impl Workspace {
             }
             ClientDelivery::AssetsChanged(_) => {
                 crate::assets::refresh(self);
+                if self.asset_store.get_untracked().is_some() {
+                    self.poll_assets();
+                }
                 return;
             }
             ClientDelivery::McpChanged(_)

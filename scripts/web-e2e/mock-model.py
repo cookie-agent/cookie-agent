@@ -34,6 +34,8 @@ otherwise the last user text decides.
 - containing "show a figure": a `write_asset` of `figure.html`, shown; containing
   "show a report": one of `report.md`, shown; containing "replace the figure"
   and an asset's handle: a `write_asset` of `report.md` over that asset;
+  containing "save a project report": a `write_asset` of `report.md` kept
+  for the project, titled "Shared report";
 - containing "remember": a `memory_write` of `user://e2e-build`; containing
   "revise": a `memory_edit` of it; containing "forget": a `memory_delete`
   of it;
@@ -228,6 +230,8 @@ def reply(request):
     if "replace the figure" in text:
         handle = re.search(r"asset_[0-9a-f]{8}", text)
         return tool_reply("write_asset", {"path": "report.md", "asset": handle.group(0) if handle else ""})
+    if "save a project report" in text:
+        return tool_reply("write_asset", {"path": "report.md", "scope": "project", "title": "Shared report"})
     if "show a report" in text:
         return tool_reply("write_asset", {"path": "report.md", "show": True})
     if "remember" in text:
