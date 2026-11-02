@@ -1,17 +1,21 @@
-//! Assets shown as figures (`docs/site/specs/assets.md` section 8): each
-//! `asset` block of a transcript is a placeholder this fills with the asset
-//! as it is now, read with `asset.get` and `asset.read`:
+//! Assets on the page (`docs/site/specs/assets.md` section 8): each asset
+//! placeholder (`data-asset`) is filled with the asset as it is now, read
+//! with `asset.get` and `asset.read`, in the way its `data-asset-view`
+//! names:
 //!
-//! - images, SVG, video, and audio as the media blocks show them, opening
-//!   in the media viewer;
-//! - a Markdown document rendered by the transcript's own renderer, cut to
-//!   480 px until *Show all*;
-//! - an HTML page in a sandboxed frame of `viewer.html` (section 8.2), which
-//!   gets the page by `postMessage` with a token and reports its height
-//!   back with it;
-//! - anything else as a download card.
+//! - `figure`, an `asset` block shown whole: images, SVG, video, and audio
+//!   as the media blocks show them, a Markdown document rendered by the
+//!   transcript's own renderer and cut to 480 px until *Show all*, an HTML
+//!   page in a sandboxed frame of `viewer.html` (section 8.2), which gets
+//!   the page by `postMessage` with a token and reports its height back
+//!   with it, anything else as a download card;
+//! - the shelf's cards (`crate::render::shelf`): `thumb` in a deck, `page`
+//!   a live thumbnail, `doc` the first lines, `audio` a player, and `file`
+//!   only the asset's state;
+//! - the side panel's `panel` (the asset whole, the page filling it) and
+//!   `source` (its text).
 //!
-//! `assets.changed` makes every shown figure read its asset again: one whose
+//! `assets.changed` makes every one shown read its asset again: one whose
 //! content changed is filled anew and says when it was updated, one deleted
 //! says so.
 
@@ -25,6 +29,8 @@ use crate::{render::escape, workspace::Workspace};
 
 /// The most bytes of a Markdown document shown inline.
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
+/// How much of a document its card shows.
+const EXCERPT_CHARS: usize = 1500;
 /// An HTML frame's height before its page reports one, and its bounds.
 const FRAME_START: f64 = 480.0;
 const FRAME_MIN: f64 = 120.0;
@@ -52,12 +58,14 @@ struct Content {
     media_type: String,
 }
 
-/// What a placeholder names: the asset, and what it was when shown.
+/// What a placeholder names: the asset, what it was when shown, and how
+/// it shows.
 struct Placeholder {
     store: AssetStore,
     asset: AssetId,
     shown_sha: String,
     title: String,
+    view: String,
 }
 
 fn placeholder(element: &web_sys::Element) -> Option<Placeholder> {
@@ -69,7 +77,58 @@ fn placeholder(element: &web_sys::Element) -> Option<Placeholder> {
         title: element
             .get_attribute("data-asset-title")
             .unwrap_or_default(),
+        view: element
+            .get_attribute("data-asset-view")
+            .unwrap_or_else(|| "figure".to_owned()),
     })
+}
+
+/// An asset open in the side panel: which, and what it was when the card
+/// that opened it showed it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenAsset {
+    pub store: AssetStore,
+    pub asset: AssetId,
+    pub handle: String,
+    pub title: String,
+    pub media_type: String,
+    pub shown_sha: String,
+}
+
+impl OpenAsset {
+    /// The asset the placeholder `element` shows.
+    pub fn of(element: &web_sys::Element) -> Option<Self> {
+        let shown = placeholder(element)?;
+        Some(Self {
+            store: shown.store,
+            asset: shown.asset,
+            handle: element
+                .get_attribute("data-asset-handle")
+                .unwrap_or_default(),
+            title: shown.title,
+            media_type: element.get_attribute("data-asset-type").unwrap_or_default(),
+            shown_sha: shown.shown_sha,
+        })
+    }
+
+    /// Whether it has text to show as its source: a page or a document.
+    pub fn has_source(&self) -> bool {
+        self.media_type == "text/html" || self.media_type == "text/markdown"
+    }
+
+    /// The side panel's placeholder of it: shown whole, or its `source`.
+    pub fn placeholder_html(&self, source: bool) -> String {
+        let view = if source { "source" } else { "panel" };
+        format!(
+            "<div class=\"flex min-h-full flex-col\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\" data-asset-type=\"{}\" data-asset-view=\"{view}\"><div class=\"flex min-h-0 flex-1 flex-col\" data-asset-body><span class=\"p-3 {NOTE}\">Loading…</span></div></div>",
+            escape(&self.asset.to_string()),
+            escape(&serde_json::to_string(&self.store).unwrap_or_default()),
+            escape(&self.shown_sha),
+            escape(&self.handle),
+            escape(&self.title),
+            escape(&self.media_type),
+        )
+    }
 }
 
 /// Fills every asset placeholder under `root` not filled yet.
@@ -93,27 +152,23 @@ pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
     }
 }
 
-/// Brings the newest figure of the asset `handle` into view, and shows it
-/// full screen when it can be, as a `#…&asset=` link asks; it waits up to
-/// 30 s for the session's transcript to show it.
-pub fn reveal(handle: String) {
+/// Brings the newest card of the asset `handle` into view and opens it as
+/// a click does, as a `#…&asset=` link asks; else its newest figure, shown
+/// full screen when it can be. It waits up to 30 s for the session's
+/// transcript to show it.
+pub fn reveal(handle: String, workspace: Workspace) {
     spawn_local(async move {
+        let handle = handle.replace(['"', '\\'], "");
         for _ in 0..120 {
             gloo_timers::future::sleep(std::time::Duration::from_millis(250)).await;
-            let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            if let Some(card) = card_of(&handle) {
+                card.scroll_into_view();
+                open_card(&card, None, workspace);
                 return;
-            };
-            let selector = format!(
-                "#transcript [data-asset-handle=\"{}\"][data-shown=\"yes\"]",
-                handle.replace(['"', '\\'], "")
-            );
-            let Ok(figures) = document.query_selector_all(&selector) else {
-                return;
-            };
-            let Some(figure) = figures
-                .item(figures.length().saturating_sub(1))
-                .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
-            else {
+            }
+            let Some(figure) = last(&format!(
+                "#transcript [data-asset-handle=\"{handle}\"][data-asset-view=\"figure\"][data-shown=\"yes\"]"
+            )) else {
                 continue;
             };
             figure.scroll_into_view();
@@ -130,6 +185,205 @@ pub fn reveal(handle: String) {
                 media.click();
             }
             return;
+        }
+    });
+}
+
+/// The last element on the page `selector` finds.
+fn last(selector: &str) -> Option<web_sys::Element> {
+    let document = web_sys::window()?.document()?;
+    let found = document.query_selector_all(selector).ok()?;
+    found
+        .item(found.length().checked_sub(1)?)
+        .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+}
+
+/// The newest shelf card of the asset `handle`, once filled.
+fn card_of(handle: &str) -> Option<web_sys::Element> {
+    last(&format!(
+        "#transcript [data-shelf] [data-asset][data-asset-handle=\"{}\"][data-shown]:not([data-shown=\"loading\"])",
+        handle.replace(['"', '\\'], "")
+    ))
+}
+
+/// Runs a click on an asset's control, `target` the element whose
+/// `data-action` it is and `clicked` the element clicked:
+///
+/// - a figure's: `asset-full` shows it over the page and back,
+///   `asset-reload` runs its page again, `asset-show-all` uncuts its
+///   document;
+/// - a card's: `asset-panel` opens it in the side panel, `asset-deck` opens
+///   the deck in the media viewer at the card clicked, `asset-download`
+///   saves it, `asset-copy` copies its handle;
+/// - `asset-chip`, a handle in a reply, opens the newest card of its asset.
+pub fn act(
+    target: &web_sys::Element,
+    clicked: Option<&web_sys::Element>,
+    action: &str,
+    workspace: Workspace,
+) {
+    let card = || target.closest("[data-asset]").ok().flatten();
+    match action {
+        "asset-full" => {
+            if let Some(figure) = card() {
+                full_screen(&figure);
+            }
+        }
+        "asset-reload" => {
+            if let Some(figure) = card()
+                && let Ok(Some(frame)) = figure.query_selector("[data-asset-frame]")
+            {
+                // Loading the viewer again sends it the page again.
+                let _ = frame.set_attribute("src", "viewer.html");
+            }
+        }
+        "asset-show-all" => {
+            if let Some(figure) = card()
+                && let Ok(Some(document)) = figure.query_selector("[data-asset-document]")
+            {
+                uncut(&document);
+            }
+            target.remove();
+        }
+        "asset-panel" => {
+            if let Some(card) = card() {
+                open_card(&card, None, workspace);
+            }
+        }
+        "asset-deck" => {
+            let index = clicked
+                .and_then(|clicked| clicked.closest("[data-index]").ok().flatten())
+                .and_then(|card| card.get_attribute("data-index"))
+                .and_then(|index| index.parse().ok())
+                .unwrap_or(0);
+            open_deck(target, index, workspace);
+        }
+        "asset-download" => {
+            if let Some(card) = card()
+                && let Some(shown) = placeholder(&card)
+            {
+                download_stored(workspace, shown.store, shown.asset);
+            }
+        }
+        "asset-copy" => {
+            if let Some(handle) = target.get_attribute("data-asset-handle") {
+                copy_handle(handle, workspace);
+            }
+        }
+        "asset-chip" => match target
+            .get_attribute("data-asset-handle")
+            .and_then(|handle| card_of(&handle))
+        {
+            Some(card) => open_card(&card, None, workspace),
+            None => workspace.status.set("that asset is not shown here".into()),
+        },
+        _ => {}
+    }
+}
+
+/// Opens the card `card` as a click on it does: a deck's at the card, a
+/// page or a document in the side panel; any other comes into view.
+fn open_card(card: &web_sys::Element, index: Option<usize>, workspace: Workspace) {
+    if card.get_attribute("data-shown").as_deref() == Some("deleted") {
+        workspace.status.set("that asset was deleted".into());
+        return;
+    }
+    match card.get_attribute("data-asset-view").as_deref() {
+        Some("thumb") => {
+            let index = index
+                .or_else(|| card.get_attribute("data-index")?.parse().ok())
+                .unwrap_or(0);
+            if let Ok(Some(deck)) = card.closest("[data-deck]") {
+                open_deck(&deck, index, workspace);
+            }
+        }
+        Some("page" | "doc") => workspace.asset_panel.set(OpenAsset::of(card)),
+        _ => {
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Center);
+            card.scroll_into_view_with_scroll_into_view_options(&options);
+        }
+    }
+}
+
+/// Opens the deck `deck` in the media viewer at its card `index`, to step
+/// through every card filled.
+fn open_deck(deck: &web_sys::Element, index: usize, workspace: Workspace) {
+    let Ok(cards) = deck.query_selector_all("[data-asset][data-index]") else {
+        return;
+    };
+    let mut group = Vec::new();
+    let mut start = 0;
+    for at in 0..cards.length() {
+        let Some(card) = cards
+            .item(at)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let content = card
+            .get_attribute("data-asset-current")
+            .filter(|_| card.get_attribute("data-shown").as_deref() == Some("yes"))
+            .and_then(|sha| CONTENTS.with(|contents| contents.borrow().get(&sha).cloned()));
+        let Some(content) = content else {
+            continue;
+        };
+        let card_index: usize = card
+            .get_attribute("data-index")
+            .and_then(|index| index.parse().ok())
+            .unwrap_or(0);
+        group.push((
+            card_index,
+            crate::media::Viewing {
+                url: content.url,
+                media_type: content.media_type,
+                alt: card.get_attribute("data-asset-title").unwrap_or_default(),
+                handle: card.get_attribute("data-asset-handle"),
+            },
+        ));
+    }
+    // Drawn back to front: in the order shown again.
+    group.sort_by_key(|(card_index, _)| *card_index);
+    if let Some(at) = group
+        .iter()
+        .position(|(card_index, _)| *card_index == index)
+    {
+        start = at;
+    }
+    let group = group
+        .into_iter()
+        .map(|(_, viewing)| viewing)
+        .collect::<Vec<_>>();
+    let Some(first) = group.get(start).cloned() else {
+        workspace.status.set("the deck is still loading".into());
+        return;
+    };
+    workspace.media_group.set(group);
+    workspace.media_viewer.set(Some(first));
+}
+
+/// Copies the handle `handle`, for the user to give an agent; where the
+/// browser cannot copy, the status line says it.
+pub fn copy_handle(handle: String, workspace: Workspace) {
+    spawn_local(async move {
+        let copied = crate::browser::copy_text(&handle).await;
+        workspace.status.set(if copied {
+            format!("copied {handle}")
+        } else {
+            format!("copying needs a secure page; the handle is {handle}")
+        });
+    });
+}
+
+/// Saves the asset `asset` of `store` as a file, as it is now.
+pub fn download_stored(workspace: Workspace, store: AssetStore, asset: AssetId) {
+    spawn_local(async move {
+        match workspace.get_asset(store, asset).await {
+            Ok(Some(asset)) => download(workspace, asset),
+            Ok(None) => workspace.status.set("that asset was deleted".into()),
+            Err(error) => workspace
+                .status
+                .set(format!("the asset could not be read: {error}")),
         }
     });
 }
@@ -172,48 +426,193 @@ pub fn refresh(workspace: Workspace) {
 }
 
 async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspace) {
+    let figure = shown.view == "figure";
+    let failed = |element: &web_sys::Element, error: String| {
+        body(element).set_text_content(Some(&format!("the asset could not be read: {error}")));
+        let _ = element.set_attribute("data-shown", "failed");
+    };
     let asset = match workspace.get_asset(shown.store.clone(), shown.asset).await {
         Ok(Some(asset)) => asset,
-        Ok(None) => {
+        Ok(None) if figure => {
             gone(&element, &shown);
             return;
         }
-        Err(error) => {
-            body(&element).set_text_content(Some(&format!("the asset could not be read: {error}")));
-            let _ = element.set_attribute("data-shown", "failed");
+        Ok(None) => {
+            card_gone(&element);
             return;
         }
+        Err(error) => return failed(&element, error.to_string()),
     };
+    // A file's chip shows what the asset is, not what it holds.
+    if shown.view == "file" {
+        let _ = element.set_attribute("data-asset-current", &asset.sha256);
+        card_state(&element, &asset, &shown);
+        let _ = element.set_attribute("data-shown", "yes");
+        return;
+    }
     let content = match content(&asset, workspace).await {
         Ok(content) => content,
-        Err(error) => {
-            body(&element).set_text_content(Some(&format!("the asset could not be read: {error}")));
-            let _ = element.set_attribute("data-shown", "failed");
-            return;
-        }
+        Err(error) => return failed(&element, error),
     };
     let _ = element.set_attribute("data-asset-current", &asset.sha256);
-    set_head(&element, &asset, &shown);
     let target = body(&element);
     target.set_inner_html("");
     let _ = target.remove_attribute("data-shown");
+    match shown.view.as_str() {
+        "thumb" => thumb(&target, &content, &asset),
+        "page" => match &content.text {
+            Some(text) => frame(&target, text, Some(Fixed::Thumbnail)),
+            None => target.set_text_content(Some(&asset.title)),
+        },
+        "doc" => match &content.text {
+            Some(text) => excerpt(&target, text),
+            None => target.set_text_content(Some("too large to show")),
+        },
+        "audio" => crate::media::show(&target, &content.url, &content.media_type, &asset.title),
+        "panel" => panel(&target, &content, &asset),
+        "source" => {
+            let text = content
+                .text
+                .as_deref()
+                .unwrap_or("This file has no text to show.");
+            target.set_inner_html(&format!(
+                "<pre class=\"m-0 p-3 font-mono text-xs whitespace-pre-wrap wrap-anywhere\" data-asset-source>{}</pre>",
+                escape(text)
+            ));
+        }
+        _ => {
+            set_head(&element, &asset, &shown);
+            figure_body(&target, &content, &asset);
+        }
+    }
+    if !figure {
+        card_state(&element, &asset, &shown);
+    }
+    let _ = element.set_attribute("data-shown", "yes");
+}
+
+/// A figure's body: the asset whole, as its type shows.
+fn figure_body(target: &web_sys::Element, content: &Content, asset: &Asset) {
     let media = &content.media_type;
     if media.starts_with("image/") || media.starts_with("video/") || media.starts_with("audio/") {
-        crate::media::show(&target, &content.url, media, &asset.title);
+        crate::media::show(target, &content.url, media, &asset.title);
     } else if media == "text/markdown" {
         match &content.text {
-            Some(text) if text.len() <= MAX_DOCUMENT_BYTES => document(&target, text),
-            _ => download_card(&target, &asset, &content.url, Some("too large to show")),
+            Some(text) if text.len() <= MAX_DOCUMENT_BYTES => document(target, text),
+            _ => download_card(target, asset, &content.url, Some("too large to show")),
         }
     } else if media == "text/html" {
         match &content.text {
-            Some(text) => frame(&target, text),
-            None => download_card(&target, &asset, &content.url, None),
+            Some(text) => frame(target, text, None),
+            None => download_card(target, asset, &content.url, None),
         }
     } else {
-        download_card(&target, &asset, &content.url, None);
+        download_card(target, asset, &content.url, None);
     }
-    let _ = element.set_attribute("data-shown", "yes");
+}
+
+/// The side panel's body: a page filling it, a whole document, media as
+/// the transcript shows it, or a download.
+fn panel(target: &web_sys::Element, content: &Content, asset: &Asset) {
+    match (content.media_type.as_str(), &content.text) {
+        ("text/html", Some(text)) => frame(target, text, Some(Fixed::Filling)),
+        ("text/markdown", Some(text)) => {
+            target.set_inner_html(&format!(
+                "<div class=\"markdown mx-auto w-full max-w-3xl p-4\" data-asset-document>{}</div>",
+                crate::render::markdown::markdown_html(text)
+            ));
+            crate::highlight::highlight_within(target);
+        }
+        _ => {
+            let _ = target.set_attribute("class", "flex min-h-0 flex-1 flex-col items-center p-3");
+            figure_body(target, content, asset);
+        }
+    }
+}
+
+/// A deck card's picture: the image, or a video's first frame.
+fn thumb(target: &web_sys::Element, content: &Content, asset: &Asset) {
+    let video = content.media_type.starts_with("video/");
+    let fit = if content.media_type == "image/svg+xml" {
+        "object-contain bg-white"
+    } else {
+        "object-cover"
+    };
+    let picture = if video {
+        format!(
+            "<video preload=\"metadata\" muted playsinline src=\"{}\" class=\"pointer-events-none h-full w-full object-cover\"></video><span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\">{}</span>",
+            escape(&content.url),
+            crate::icons::svg(
+                icondata::FaCirclePlaySolid,
+                "text-4xl text-white/90 drop-shadow"
+            )
+        )
+    } else {
+        format!(
+            "<img src=\"{}\" alt=\"{}\" draggable=\"false\" class=\"pointer-events-none h-full w-full {fit}\">",
+            escape(&content.url),
+            escape(&asset.title)
+        )
+    };
+    target.set_inner_html(&picture);
+    let _ = target.set_attribute("class", "absolute inset-0");
+}
+
+/// A document card's first lines.
+fn excerpt(target: &web_sys::Element, text: &str) {
+    let cut = text
+        .char_indices()
+        .nth(EXCERPT_CHARS)
+        .map_or(text, |(at, _)| &text[..at]);
+    target.set_inner_html(&format!(
+        "<div class=\"markdown pointer-events-none\">{}</div><div class=\"pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-linear-to-t from-cream dark:from-char\"></div>",
+        crate::render::markdown::markdown_html(cut)
+    ));
+}
+
+/// A card's title as the asset's is now, and a mark when it was replaced
+/// since the card showed it.
+fn card_state(element: &web_sys::Element, asset: &Asset, shown: &Placeholder) {
+    if shown.view != "file"
+        && let Ok(Some(title)) = element.query_selector("[data-asset-title]")
+    {
+        title.set_text_content(Some(&asset.title));
+    }
+    let _ = element.set_attribute("data-asset-title", &asset.title);
+    if let Ok(Some(mark)) = element.query_selector(":scope > [data-asset-updated]") {
+        mark.remove();
+    }
+    if asset.sha256 != shown.shown_sha {
+        let _ = element.insert_adjacent_html(
+            "beforeend",
+            &format!(
+                "<span class=\"pointer-events-none absolute top-1.5 left-1.5 z-20 rounded-full bg-caramel px-1.5 text-[0.6875rem] text-cream dark:bg-maple dark:text-night\" title=\"updated {} ago\" data-asset-updated>updated</span>",
+                escape(&cookie_agent_protocol::memory_age(
+                    asset.updated.at,
+                    jiff::Timestamp::now()
+                ))
+            ),
+        );
+    }
+}
+
+/// A card whose asset is gone: it says so and opens nothing.
+fn card_gone(element: &web_sys::Element) {
+    if element
+        .query_selector(":scope > [data-asset-deleted]")
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        let _ = element.insert_adjacent_html(
+            "beforeend",
+            "<span class=\"pointer-events-none absolute top-1.5 left-1.5 z-20 rounded-full bg-ink px-1.5 text-[0.6875rem] text-cream dark:bg-sand dark:text-night\" data-asset-deleted>deleted</span>",
+        );
+    }
+    if let Ok(Some(mark)) = element.query_selector(":scope > [data-asset-updated]") {
+        mark.remove();
+    }
+    let _ = element.set_attribute("data-shown", "deleted");
 }
 
 /// The figure's body, where the asset shows.
@@ -340,9 +739,19 @@ fn uncut(document: &web_sys::Element) {
     }
 }
 
+/// A frame whose size its page does not set.
+#[derive(Clone, Copy)]
+enum Fixed {
+    /// A card's thumbnail: the page laid out at 960 px wide, shown at a
+    /// quarter of its size, taking no input.
+    Thumbnail,
+    /// Filling the side panel.
+    Filling,
+}
+
 /// An HTML page in a frame of `viewer.html`, which gets the page once it
 /// loads, with this frame's token.
-fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>) {
+fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>, fixed: Option<Fixed>) {
     let Some(document) = target.owner_document() else {
         return;
     };
@@ -350,19 +759,39 @@ fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>) {
         return;
     };
     let token = uuid::Uuid::now_v7().simple().to_string();
+    let start = format!("height: {FRAME_START}px");
+    let (class, style) = match fixed {
+        None => (
+            "block w-full rounded border border-toasted bg-white dark:border-ember",
+            start.as_str(),
+        ),
+        Some(Fixed::Thumbnail) => (
+            "pointer-events-none block border-0 bg-white",
+            "width: 960px; height: 528px; transform: scale(0.25); transform-origin: 0 0",
+        ),
+        Some(Fixed::Filling) => (
+            "block min-h-0 w-full flex-1 border-0 bg-white",
+            "height: 100%",
+        ),
+    };
     for (name, value) in [
         ("sandbox", "allow-scripts allow-popups"),
         ("referrerpolicy", "no-referrer"),
         ("src", "viewer.html"),
         ("title", "HTML page"),
         ("data-asset-frame", token.as_str()),
-        (
-            "class",
-            "block w-full rounded border border-toasted bg-white dark:border-ember",
-        ),
-        ("style", &format!("height: {FRAME_START}px")),
+        ("class", class),
+        ("style", style),
     ] {
         let _ = iframe.set_attribute(name, value);
+    }
+    if let Some(fixed) = fixed {
+        let _ = iframe.set_attribute("data-fixed", "");
+        if matches!(fixed, Fixed::Thumbnail) {
+            let _ = iframe.set_attribute("tabindex", "-1");
+            let _ = iframe.set_attribute("aria-hidden", "true");
+            let _ = iframe.set_attribute("loading", "lazy");
+        }
     }
     let html = std::rc::Rc::clone(text);
     let sent = token.clone();
@@ -455,8 +884,8 @@ pub fn frame_height(reported: f64, current: f64, window_height: f64) -> Option<f
 }
 
 fn size_frame(frame: &web_sys::Element, reported: f64) {
-    // A frame shown full screen fills it.
-    if frame.closest("#asset-full").ok().flatten().is_some() {
+    // A frame shown full screen fills it, and a fixed one keeps its size.
+    if frame.has_attribute("data-fixed") || frame.closest("#asset-full").ok().flatten().is_some() {
         return;
     }
     let Some(element) = frame.dyn_ref::<web_sys::HtmlElement>() else {
@@ -471,31 +900,6 @@ fn size_frame(frame: &web_sys::Element, reported: f64) {
         let _ = element
             .style()
             .set_property("height", &format!("{height}px"));
-    }
-}
-
-/// Runs a click on a figure's button: `asset-full` shows the figure over
-/// the page and back, `asset-reload` runs its page again, `asset-show-all`
-/// uncuts its document.
-pub fn act(target: &web_sys::Element, action: &str) {
-    let Some(figure) = target.closest("[data-asset]").ok().flatten() else {
-        return;
-    };
-    match action {
-        "asset-full" => full_screen(&figure),
-        "asset-reload" => {
-            if let Ok(Some(frame)) = figure.query_selector("[data-asset-frame]") {
-                // Loading the viewer again sends it the page again.
-                let _ = frame.set_attribute("src", "viewer.html");
-            }
-        }
-        "asset-show-all" => {
-            if let Ok(Some(document)) = figure.query_selector("[data-asset-document]") {
-                uncut(&document);
-            }
-            target.remove();
-        }
-        _ => {}
     }
 }
 
@@ -539,7 +943,7 @@ fn full_screen(figure: &web_sys::Element) {
     ));
     let body = body(&overlay);
     if content.media_type == "text/html" {
-        frame(&body, &text);
+        frame(&body, &text, None);
         if let Ok(Some(iframe)) = body.query_selector("iframe")
             && let Some(iframe) = iframe.dyn_ref::<web_sys::HtmlElement>()
         {

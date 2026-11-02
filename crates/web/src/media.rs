@@ -180,6 +180,8 @@ pub struct Viewing {
     pub media_type: String,
     /// The file's label; empty when it has none.
     pub alt: String,
+    /// The asset it is, when it is one.
+    pub handle: Option<String>,
 }
 
 impl Viewing {

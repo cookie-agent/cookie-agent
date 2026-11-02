@@ -265,7 +265,7 @@ impl Connection {
         {
             self.workspace.open_notified_session(&session);
             if let Some(handle) = self.pending_asset.try_update_value(Option::take).flatten() {
-                crate::assets::reveal(handle);
+                crate::assets::reveal(handle, self.workspace);
             }
         }
         self.attached.set(true);

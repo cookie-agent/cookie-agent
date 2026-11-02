@@ -37,6 +37,7 @@ use crate::{
 };
 
 mod agents;
+mod asset_panel;
 mod assets;
 mod cards;
 mod cron;
@@ -197,6 +198,7 @@ pub fn WorkspaceView(
                     <SessionList workspace=workspace />
                 </aside>
                 <ChatView workspace=workspace />
+                <asset_panel::AssetPanel workspace=workspace />
             </div>
             <Show when=move || !chat()>
                 <PageView workspace=workspace connection=connection />
@@ -2472,15 +2474,20 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             "deferred-prompt" => workspace.panel.set(Some(Panel::DeferredPrompt)),
-            "asset-full" | "asset-reload" | "asset-show-all" => {
-                crate::assets::act(&target, &action);
+            action if action.starts_with("asset-") => {
+                let clicked = event
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
+                crate::assets::act(&target, clicked.as_ref(), action, workspace);
             }
             "open-media" => {
                 if let Some(url) = target.get_attribute("data-src") {
+                    workspace.media_group.set(Vec::new());
                     workspace.media_viewer.set(Some(crate::media::Viewing {
                         url,
                         media_type: target.get_attribute("data-media-type").unwrap_or_default(),
                         alt: target.get_attribute("data-alt").unwrap_or_default(),
+                        handle: None,
                     }));
                 }
             }
@@ -2555,6 +2562,16 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             on:keydown=move |event: ev::KeyboardEvent| match event.key().as_str() {
+                // A deck or a chip is a button the keyboard presses too.
+                "Enter" | " " if pressable(&event) => {
+                    event.prevent_default();
+                    if let Some(target) = event
+                        .target()
+                        .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+                    {
+                        target.click();
+                    }
+                }
                 "ArrowUp" | "PageUp" | "Home" => back(),
                 " " if event.shift_key() => back(),
                 "ArrowDown" | "PageDown" | "End" | " " => forward(),
@@ -3102,6 +3119,18 @@ fn ReplyPart(
         drawn.update_value(|drawn| draw_blocks(&element, drawn, &blocks));
     });
     view! { <div class="markdown" data-part data-work-in=work node_ref=node></div> }.into_any()
+}
+
+/// Whether `event` is a key on an element that acts as a button without
+/// being one (`role="button"`).
+fn pressable(event: &ev::KeyboardEvent) -> bool {
+    event
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .is_some_and(|target| {
+            target.get_attribute("role").as_deref() == Some("button")
+                && target.has_attribute("data-action")
+        })
 }
 
 /// Brings `node`, drawn with `first`, in step with each later `html` in

@@ -417,6 +417,11 @@ pub struct Workspace {
     pub restart_confirm: RwSignal<bool>,
     /// The image or video open in the media viewer.
     pub media_viewer: RwSignal<Option<crate::media::Viewing>>,
+    /// The files the media viewer steps through with the one it shows: a
+    /// shelf's deck; empty for a file alone.
+    pub media_group: RwSignal<Vec<crate::media::Viewing>>,
+    /// The asset the side panel shows beside the chat.
+    pub asset_panel: RwSignal<Option<crate::assets::OpenAsset>>,
     /// A restart the daemon scheduled, as the page says it, until the
     /// connection closes.
     pub restarting: RwSignal<Option<String>>,
@@ -632,6 +637,8 @@ impl Workspace {
             config_status: RwSignal::new(None),
             restart_confirm: RwSignal::new(false),
             media_viewer: RwSignal::new(None),
+            media_group: RwSignal::new(Vec::new()),
+            asset_panel: RwSignal::new(None),
             restarting: RwSignal::new(None),
             onboarding: Onboarding::default(),
         }

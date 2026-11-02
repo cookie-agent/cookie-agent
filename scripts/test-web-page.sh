@@ -216,15 +216,17 @@ argument-hint: <name>
 ---
 Say hello to $ARGUMENTS.
 SKILL
-    # A 48×32 PNG the scripted model reads, whose result is a media block.
-    python3 -I - "$allowing/workspace/dot.png" <<'PY'
+    # A 48×32 PNG the scripted model reads, whose result is a media block,
+    # and two it shows as assets, in other colours.
+    python3 -I - "$allowing/workspace" <<'PY'
 import struct, sys, zlib
 def chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-rows = b"".join(b"\0" + b"\xc0\x80\x40" * 48 for _ in range(32))
-png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 32, 8, 2, 0, 0, 0))
-png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
-open(sys.argv[1], "wb").write(png)
+for name, colour in [("dot", b"\xc0\x80\x40"), ("one", b"\x40\x80\xc0"), ("two", b"\x40\xc0\x80")]:
+    rows = b"".join(b"\0" + colour * 48 for _ in range(32))
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 32, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+    open(sys.argv[1] + "/" + name + ".png", "wb").write(png)
 PY
     # The pages the scripted agent saves as assets: one that probes its
     # sandbox, and a Markdown report.

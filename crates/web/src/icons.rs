@@ -113,6 +113,18 @@ pub fn hint_icon(hint: Option<&str>) -> Icon {
     }
 }
 
+/// An asset kind's icon.
+pub fn asset_icon(kind: cookie_agent_client_state::assets::AssetKind) -> Icon {
+    use cookie_agent_client_state::assets::AssetKind;
+    match kind {
+        AssetKind::Image => icondata::FaImageSolid,
+        AssetKind::Page => icondata::FaCodeSolid,
+        AssetKind::Document => icondata::FaFileLinesSolid,
+        AssetKind::Media => icondata::FaFilmSolid,
+        AssetKind::Other => icondata::FaFileSolid,
+    }
+}
+
 /// How a status shows: its icon, its name, the colour classes, and whether
 /// the icon turns while the thing runs.
 #[derive(Clone, Copy, Debug, PartialEq)]

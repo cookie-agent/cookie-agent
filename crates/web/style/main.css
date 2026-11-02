@@ -327,6 +327,51 @@ body {
 
 /* Terminal output: stderr, and the 16 standard SGR colours, readable on
    both palettes. Other colours arrive inline. */
+/* A shelf's deck (render/shelf.rs): its first three cards stacked, the
+   first on top, fanned out while the pointer is over it or it has the
+   focus. */
+.asset-deck-card {
+  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.asset-deck[data-deck="2"] .asset-deck-card[data-layer="1"],
+.asset-deck .asset-deck-card[data-layer="2"] {
+  transform: rotate(-6deg) translate(-6px, 4px);
+}
+.asset-deck .asset-deck-card[data-layer="1"] {
+  transform: rotate(4deg) translate(6px, 2px);
+}
+.asset-deck:is(:hover, :focus-visible) .asset-deck-card[data-layer="0"] {
+  transform: translateY(-8px);
+}
+.asset-deck:is(:hover, :focus-visible) .asset-deck-card[data-layer="1"] {
+  transform: rotate(10deg) translate(48px, 6px);
+}
+.asset-deck:is(:hover, :focus-visible) .asset-deck-card[data-layer="2"],
+.asset-deck[data-deck="2"]:is(:hover, :focus-visible) .asset-deck-card[data-layer="1"] {
+  transform: rotate(-10deg) translate(-48px, 8px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .asset-deck-card {
+    transition: none;
+  }
+}
+/* A card whose asset was deleted. */
+[data-asset][data-shown="deleted"]:not([data-asset-view="figure"]) {
+  opacity: 0.6;
+}
+[data-asset][data-shown="deleted"] [data-asset-title] {
+  text-decoration: line-through;
+}
+/* A document card's first lines, small. */
+.asset-excerpt .markdown {
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.asset-excerpt .markdown :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 0.8125rem;
+  margin: 0;
+}
+
 .terminal .stderr {
   color: #a3361f;
 }

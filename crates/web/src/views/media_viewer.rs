@@ -5,7 +5,8 @@
 //! a frame back or forward (`,` and `.`), five seconds back or forward
 //! (Left and Right), a seek bar, its speed, and its sound. The bar on top
 //! names the file and its size in pixels. Escape, ✕, or a click beside the
-//! file closes it.
+//! file closes it. A shelf's deck opens as a group the viewer steps
+//! through: its arrows, Left and Right on an image, and its filmstrip.
 
 use std::collections::HashMap;
 
@@ -41,6 +42,35 @@ pub(crate) fn MediaViewer(workspace: Workspace) -> impl IntoView {
 #[component]
 fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
     let close = move || workspace.media_viewer.set(None);
+    // The deck it steps through, and where it is in it.
+    let group = workspace.media_group.get_untracked();
+    let at = group.iter().position(|shown| *shown == viewing);
+    let stepping = group.len() > 1 && at.is_some();
+    let count = group.len();
+    let go = move |to: usize| {
+        let Some(next) = workspace
+            .media_group
+            .with_untracked(|group| group.get(to).cloned())
+        else {
+            return;
+        };
+        workspace.media_viewer.set(Some(next));
+        // The viewer drawn anew takes the focus, for its keys.
+        request_animation_frame(|| {
+            if let Some(viewer) = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id("media-viewer"))
+                .and_then(|viewer| viewer.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                let _ = viewer.focus();
+            }
+        });
+    };
+    let turn = move |by: isize| {
+        if let Some(at) = at.filter(|_| stepping) {
+            go((at as isize + by).rem_euclid(count as isize) as usize);
+        }
+    };
     let zoom = RwSignal::new(Zoom::default());
     let root = NodeRef::<html::Div>::new();
     let stage = NodeRef::<html::Div>::new();
@@ -292,6 +322,14 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
             }
             "." if is_video => {
                 step(FRAME);
+                true
+            }
+            "ArrowLeft" if stepping && !is_video => {
+                turn(-1);
+                true
+            }
+            "ArrowRight" if stepping && !is_video => {
+                turn(1);
                 true
             }
             "ArrowLeft" if is_video && !in_field => {
@@ -546,6 +584,11 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
             <div class="flex shrink-0 items-center gap-1 px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-1">
                 <span class="flex min-w-0 flex-1 items-baseline gap-2 px-2 text-sm">
                     <span id="media-viewer-title" class="min-w-0 truncate">{title}</span>
+                    {at.filter(|_| stepping).map(|at| view! {
+                        <span id="media-viewer-position" class="shrink-0 font-mono text-xs text-white/70 tabular-nums">
+                            {format!("{} / {count}", at + 1)}
+                        </span>
+                    })}
                     <span id="media-viewer-size" class="shrink-0 font-mono text-xs text-white/70 tabular-nums">
                         {move || size.get().map(|(width, height)| format!("{width}×{height}"))}
                     </span>
@@ -580,6 +623,18 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                 >
                     <Glyph icon=icondata::FaMagnifyingGlassPlusSolid />
                 </button>
+                {viewing.handle.clone().map(|handle| view! {
+                    <button
+                        type="button"
+                        id="media-viewer-copy"
+                        class=BAR_BUTTON
+                        aria-label="Copy the handle"
+                        title=format!("Copy {handle}")
+                        on:click=move |_| crate::assets::copy_handle(handle.clone(), workspace)
+                    >
+                        <Glyph icon=icondata::FaCopyRegular />
+                    </button>
+                })}
                 <a
                     id="media-viewer-download"
                     class=BAR_BUTTON
@@ -614,6 +669,60 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
             >
                 {file}
             </div>
+            {stepping.then(|| view! {
+                <button
+                    type="button"
+                    id="media-viewer-previous"
+                    class=format!("{BAR_BUTTON} absolute top-1/2 left-2 z-10 -translate-y-1/2 rounded-full bg-white/10")
+                    aria-label="Previous"
+                    title="Previous (←)"
+                    on:click=move |_| turn(-1)
+                >
+                    <Glyph icon=icondata::FaChevronLeftSolid />
+                </button>
+                <button
+                    type="button"
+                    id="media-viewer-next"
+                    class=format!("{BAR_BUTTON} absolute top-1/2 right-2 z-10 -translate-y-1/2 rounded-full bg-white/10")
+                    aria-label="Next"
+                    title="Next (→)"
+                    on:click=move |_| turn(1)
+                >
+                    <Glyph icon=icondata::FaChevronRightSolid />
+                </button>
+                <div id="media-viewer-strip" class="flex shrink-0 justify-center gap-2 overflow-x-auto px-2 pb-2">
+                    {group
+                        .iter()
+                        .enumerate()
+                        .map(|(index, shown)| {
+                            let current = Some(index) == at;
+                            let picture = if shown.is_video() {
+                                view! { <Glyph icon=icondata::FaFilmSolid /> }.into_any()
+                            } else {
+                                view! {
+                                    <img src=shown.url.clone() alt="" draggable="false" class="h-full w-full object-cover" />
+                                }
+                                    .into_any()
+                            };
+                            view! {
+                                <button
+                                    type="button"
+                                    class="flex h-10 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border-2 bg-white/10"
+                                    class:border-white=current
+                                    class:border-transparent=!current
+                                    class:opacity-50=!current
+                                    aria-label=shown.title().to_owned()
+                                    aria-current=current.then_some("true")
+                                    title=shown.title().to_owned()
+                                    on:click=move |_| go(index)
+                                >
+                                    {picture}
+                                </button>
+                            }
+                        })
+                        .collect_view()}
+                </div>
+            })}
             {controls}
         </div>
     }

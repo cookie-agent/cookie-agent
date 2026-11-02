@@ -753,10 +753,10 @@ fn a_refreshed_fold_plan_plans_a_stretch_a_removed_row_moved_back() {
     assert_eq!(*plan, FoldPlan::of(&state));
 }
 
-/// A call whose hint is `figure` shows the user something: it stays out of
-/// its block's fold, as media does, while the work around it folds.
+/// A call whose hint is `figure` folds with the work around it: what it
+/// shows goes on a shelf, not in its row.
 #[test]
-fn a_figure_shows_outside_the_fold_of_the_work_around_it() {
+fn a_figure_folds_with_the_work_around_it() {
     let mut state = transcript(Vec::new(), &[(1, 0)]);
     let before = call(&mut state, "bash", crate::ToolStatus::Completed);
     let figure = call(&mut state, "show_asset", crate::ToolStatus::Completed);
@@ -786,9 +786,146 @@ fn a_figure_shows_outside_the_fold_of_the_work_around_it() {
             vec![
                 work(1, 0, true),
                 work(1, 0, false),
-                ChildFold::Shown,
+                work(1, 0, false),
                 ChildFold::Shown
             ]
         )
+    );
+}
+
+/// A figure call in `state` that showed `assets` with `caption`.
+fn figure(
+    state: &mut SessionState,
+    caption: Option<&str>,
+    assets: &[&cookie_agent_protocol::AssetBlock],
+) -> AssistantChild {
+    let child = call(state, "show_asset", crate::ToolStatus::Completed);
+    let AssistantChild::Tool { call_id } = &child else {
+        unreachable!("a call");
+    };
+    let tool = state.tools.get_mut(call_id).expect("the call");
+    tool.presentation.hint = Some(
+        cookie_agent_protocol::ToolHint::new(cookie_agent_protocol::ToolHint::FIGURE)
+            .expect("hint"),
+    );
+    tool.display = caption
+        .map(cookie_agent_protocol::DisplayBlock::text)
+        .into_iter()
+        .chain(
+            assets
+                .iter()
+                .map(|block| cookie_agent_protocol::DisplayBlock::Asset((*block).clone())),
+        )
+        .map(cookie_agent_protocol::Open::Known)
+        .collect();
+    child
+}
+
+fn asset_block(title: &str, sha: char) -> cookie_agent_protocol::AssetBlock {
+    cookie_agent_protocol::AssetBlock {
+        store: cookie_agent_protocol::AssetStore::Shared,
+        asset: cookie_agent_protocol::AssetId::new_v7(),
+        handle: cookie_agent_protocol::AssetHandle::random(),
+        title: title.into(),
+        media_type: "image/png".into(),
+        byte_length: 1,
+        sha256: sha.to_string().repeat(64),
+        filename: None,
+    }
+}
+
+/// A shelf as the tests compare it: its block, where it sits, and its
+/// assets' titles and captions.
+type Shelved = (u64, Option<usize>, Vec<(String, Option<String>)>);
+
+/// What each block's shelves hold.
+fn shelved(state: &SessionState) -> Vec<Shelved> {
+    let mut shelves = crate::assets::shelves(state)
+        .into_iter()
+        .flat_map(|(id, shelves)| {
+            shelves.into_iter().map(move |shelf| {
+                (
+                    id,
+                    shelf.after,
+                    shelf
+                        .entries
+                        .into_iter()
+                        .map(|entry| (entry.block.title, entry.caption))
+                        .collect(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    shelves.sort_by_key(|(id, after, _)| (*id, *after));
+    shelves
+}
+
+/// A figure's assets go under the first text after it, in its run, though
+/// a later block holds the text; before any text follows, under the run's
+/// latest block.
+#[test]
+fn a_figures_assets_go_under_the_next_text_its_run_writes() {
+    let loss = asset_block("Loss", 'a');
+    let accuracy = asset_block("Accuracy", 'b');
+    let mut state = transcript(Vec::new(), &[(1, 0), (3, 0)]);
+    let first = figure(&mut state, Some("Curves"), &[&loss, &accuracy]);
+    let other = call(&mut state, "bash", crate::ToolStatus::Completed);
+    state.transcript = vec![
+        block(1, vec![thinking("**Plot**"), first, other, text("…")]),
+        event(2, EventLevel::Info),
+        block(3, vec![tool()]),
+    ];
+    let pending = vec![
+        ("Loss".to_owned(), Some("Curves".to_owned())),
+        ("Accuracy".to_owned(), None),
+    ];
+    // Filler is not the text that comes out of the work.
+    assert_eq!(shelved(&state), [(3, None, pending.clone())]);
+    let TranscriptItem::Assistant { children, .. } = &mut state.transcript[2] else {
+        unreachable!("a block");
+    };
+    children.extend([text("Here they are."), text(" More.")]);
+    assert_eq!(shelved(&state), [(3, Some(2), pending)]);
+}
+
+/// Each text that follows figures takes the ones before it; an asset shown
+/// twice before the same text is there once, where it first showed, as
+/// the latest call showed it; blocks of another run have their own.
+#[test]
+fn each_text_takes_the_figures_before_it_once_each() {
+    let loss = asset_block("Loss", 'a');
+    let replaced = cookie_agent_protocol::AssetBlock {
+        sha256: "c".repeat(64),
+        ..loss.clone()
+    };
+    let report = asset_block("Report", 'b');
+    let mut state = transcript(Vec::new(), &[(1, 0), (2, 1)]);
+    let shown = figure(&mut state, None, &[&loss]);
+    let again = figure(&mut state, Some("Fixed"), &[&replaced, &report]);
+    let later = figure(&mut state, None, &[&report]);
+    let elsewhere = figure(&mut state, None, &[&loss]);
+    state.transcript = vec![
+        block(
+            1,
+            vec![shown, again, text("First."), later, text("Second.")],
+        ),
+        block(2, vec![elsewhere]),
+    ];
+    let shelves = crate::assets::shelves(&state);
+    assert_eq!(shelves[&1][0].entries[0].block.sha256, replaced.sha256);
+    assert_eq!(
+        shelved(&state),
+        [
+            (
+                1,
+                Some(2),
+                vec![
+                    ("Loss".to_owned(), Some("Fixed".to_owned())),
+                    ("Report".to_owned(), None)
+                ]
+            ),
+            (1, Some(4), vec![("Report".to_owned(), None)]),
+            (2, None, vec![("Loss".to_owned(), None)]),
+        ]
     );
 }

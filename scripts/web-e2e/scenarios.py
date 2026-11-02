@@ -70,6 +70,7 @@ COOKIE = os.environ.get("COOKIE", "cookie")
 MADE = {}
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 ENTER, ALT, ESCAPE, NULL = "", "", "", ""
+ARROW_RIGHT = ""
 
 
 def call(method, path, body=None):
@@ -1255,20 +1256,48 @@ def media_viewer(browser):
 
 
 def asset_figures(browser):
-    """A figure of an HTML asset: shown in the transcript outside a folded
-    turn, run in a sandboxed frame whose scripts run but reach neither the
-    page's storage nor the page itself, sized to its content, and not moved
-    by a message that does not come from its own frame."""
+    """Assets a run shows: its calls fold as any do, and the assets show as
+    cards on a shelf under the text that follows them. An HTML page's card
+    is a live thumbnail that opens in the side panel, where the page runs
+    sandboxed, its scripts running but reaching neither the page's storage
+    nor the page itself; a Markdown document's card shows its first lines;
+    images are a deck the media viewer steps through. The reply's handles
+    are chips that open their asset; a replaced asset's card says so, and a
+    link opens the asset."""
+    choose_transcript(browser, "reduced")
     new_session(browser)
     send(browser, "show a figure")
     idle(browser, "the figure's call")
-    frame = "#transcript iframe[data-asset-frame]"
-    browser.wait("the figure's frame", lambda: count(browser, frame) == 1, timeout=60)
-    # The page reports its height: about 300 px of content, well under the
-    # 480 px the frame starts at.
+    card = "#transcript [data-shelf] [data-asset-view='page']"
+    browser.wait("the page's card", lambda: count(browser, card + "[data-shown='yes']") == 1, timeout=60)
+    # The call folded into the work row; the shelf is under the reply.
+    works, tools = count(browser, "#transcript [data-work]"), count(browser, "#transcript [data-tool]")
+    assert works >= 1 and tools == 0, (works, tools)
+    order = browser.script(
+        "const shelf = document.querySelector('#transcript [data-shelf]');"
+        "const reply = [...document.querySelectorAll('#transcript .markdown')].find((e) => e.innerText.includes('Saved it as'));"
+        "return reply && (reply.compareDocumentPosition(shelf) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0"
+    )
+    assert order, "the shelf follows the reply"
+    assert count(browser, card + " iframe[data-asset-frame][data-fixed]") == 1
+    handle = browser.script("return document.querySelector(arguments[0]).dataset.assetHandle", card)
+    # The reply named it: a chip, which copies as the handle.
+    chip = "#transcript [data-action='asset-chip'][data-asset-handle='%s']" % handle
+    assert count(browser, chip) == 1
+    assert handle in browser.script("return document.querySelector(arguments[0]).textContent", chip)
+    browser.shot("asset-shelf")
+    # Its handle copies from the card.
+    browser.script(
+        "document.querySelector(arguments[0]).click()", card + " [data-action='asset-copy']"
+    )
+    browser.wait("the copied handle", lambda: handle in browser.text("#status"))
+    # Opened, it runs in the side panel.
+    browser.click(card + " [data-action='asset-panel']")
+    frame = "#asset-panel iframe[data-asset-frame]"
+    browser.wait("the page in the panel", lambda: count(browser, frame) == 1, timeout=30)
     height = lambda: browser.script("return document.querySelector(arguments[0]).offsetHeight", frame)
-    browser.wait("the frame sized to its page", lambda: 250 < height() < 420)
-    # Inside: the viewer, then the agent's page.
+    browser.wait("the page filling the panel", lambda: height() > 300)
+    assert handle in browser.text("#asset-panel-handle")
     element = browser.find(frame)
     call("POST", browser.path("/frame"), {"id": {ELEMENT: element}})
     inner = call("POST", browser.path("/element"), {"using": "css selector", "value": "iframe"})[ELEMENT]
@@ -1280,74 +1309,89 @@ def asset_figures(browser):
         call("POST", browser.path("/frame"), {"id": None})
     assert "storage-blocked" in state, state
     assert "page-blocked" in state, state
-    # The page asked to be 9999 px tall from outside its frame's channel:
-    # the frame kept its content's height.
-    time.sleep(1.5)
-    assert 250 < height() < 420, height()
-    # A message the page posts as the frame would, without its token, moves
-    # nothing either.
-    browser.script(
-        "window.postMessage({type: 'cookie-asset-height', token: 'guess', height: 2000}, '*')"
-    )
-    time.sleep(0.5)
-    assert 250 < height() < 420, height()
-    # The figure's own buttons: full screen and back.
-    browser.click("#transcript [data-asset] [data-action='asset-full']")
-    browser.wait("the full-screen figure", lambda: count(browser, "#asset-full iframe[data-asset-frame]") == 1)
-    full = lambda: browser.script("return document.querySelector('#asset-full iframe').offsetHeight")
-    browser.wait("the page filling the screen", lambda: full() > 500)
-    browser.shot("asset-figure-full")
-    browser.click("#asset-full-close")
-    browser.wait("the figure back in place", lambda: count(browser, "#asset-full") == 0)
-    assert 250 < height() < 420, height()
-    print("an HTML figure runs sandboxed, sizes to its page, and ignores messages from outside it")
+    browser.shot("asset-panel")
+    # Its source, full screen, and closed with Escape.
+    browser.click("#asset-panel-source")
+    browser.wait("the page's source", lambda: "cookie-asset-height" in browser.text("#asset-panel [data-asset-source]"))
+    browser.click("#asset-panel-full")
+    browser.wait("the panel full screen", lambda: browser.script("return document.querySelector('#asset-panel').dataset.full") == "true")
+    browser.type("#asset-panel", ESCAPE)
+    browser.wait("the panel beside the chat", lambda: browser.script("return document.querySelector('#asset-panel').dataset.full") == "false")
+    browser.type("#asset-panel", ESCAPE)
+    browser.wait("the closed panel", lambda: count(browser, "#asset-panel") == 0)
+    # The chip opens it too.
+    browser.click(chip)
+    browser.wait("the panel from the chip", lambda: count(browser, frame) == 1, timeout=30)
+    browser.click("#asset-panel-close")
+    browser.wait("the closed panel", lambda: count(browser, "#asset-panel") == 0)
+    print("a page's card runs it sandboxed in the side panel, and the reply's chip opens it")
 
-    # A Markdown asset reads as a document.
+    # A Markdown asset's card shows its first lines and reads in the panel.
     send(browser, "show a report")
     idle(browser, "the report's call")
+    document = "#transcript [data-shelf] [data-asset-view='doc']"
     browser.wait(
-        "the rendered report",
-        lambda: "All good." in browser.text("#transcript [data-asset-document]"),
+        "the report's card",
+        lambda: "All good." in browser.text(document + " [data-asset-body]"),
         timeout=60,
     )
-    assert count(browser, "#transcript [data-asset-document] h1") >= 1
-    # A short document shows whole, without Show all.
-    assert count(browser, "#transcript [data-action='asset-show-all']") == 0
-    browser.shot("asset-report")
+    browser.click(document + " [data-action='asset-panel']")
+    browser.wait(
+        "the report in the panel",
+        lambda: count(browser, "#asset-panel [data-asset-document] h1") == 1,
+        timeout=30,
+    )
+    browser.click("#asset-panel-close")
+    print("a Markdown asset's card shows its first lines and opens as a document")
+
+    # Two images are one deck, which the viewer steps through.
+    send(browser, "show two images")
+    idle(browser, "the images' calls")
+    deck = "#transcript [data-shelf] [data-deck='2']"
+    browser.wait(
+        "the deck",
+        lambda: count(browser, deck + " [data-asset][data-shown='yes']") == 2,
+        timeout=60,
+    )
+    browser.shot("asset-deck")
     if SCREENSHOTS:
         browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "dark"}]})
-        browser.script("document.querySelector('#transcript [data-figure]').scrollIntoView({block: 'start'})")
-        browser.shot("asset-figures-dark")
+        browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", deck)
+        browser.shot("asset-shelf-dark")
         browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "light"}]})
-    print("a Markdown asset is a rendered document")
+    browser.click(deck)
+    browser.wait("the viewer at the first", lambda: browser.text("#media-viewer-position") == "1 / 2")
+    assert browser.text("#media-viewer-title") == "First image"
+    browser.type("#media-viewer", ARROW_RIGHT)
+    browser.wait("the second image", lambda: browser.text("#media-viewer-position") == "2 / 2")
+    assert browser.text("#media-viewer-title") == "Second image"
+    browser.click("#media-viewer-close")
+    browser.wait("the closed viewer", lambda: count(browser, "#media-viewer") == 0)
+    print("images are a deck the viewer steps through")
 
-    # Written over, the asset's figures show its new content at once, and
-    # say they were updated.
-    handle = browser.script(
-        "return document.querySelector('#transcript [data-asset-handle]').dataset.assetHandle"
-    )
+    # Written over, the page's card shows the new content and says it was
+    # updated.
     send(browser, "replace the figure %s" % handle)
     idle(browser, "the replacing call")
-    first = "#transcript [data-asset-handle='%s']" % handle
     browser.wait(
-        "the figure updated in place",
-        lambda: count(browser, first + " [data-asset-updated]") >= 1
-        and "All good." in browser.text(first + " [data-asset-document]"),
+        "the card updated in place",
+        lambda: count(browser, card + " [data-asset-updated]") >= 1,
         timeout=60,
     )
-    print("a replaced asset's figures show its new content")
+    print("a replaced asset's card says so")
 
-    # The TUI's link to a figure opens its session and shows it full screen.
+    # The TUI's link to it opens its session and its card's asset.
     session = browser.script("return document.querySelector('aside [data-session][aria-current=true]').dataset.session")
     # As a new tab opens it: a load of its own, not a change of fragment.
     browser.go("about:blank")
     browser.go(LINK.split("#")[0] + "#session=%s&asset=%s" % (session, handle))
     # It is a Markdown document since it was replaced.
-    browser.wait("the linked figure full screen", lambda: "All good." in browser.text("#asset-full"), timeout=60)
-    browser.type("#asset-full", ESCAPE)
-    browser.wait("the closed figure", lambda: count(browser, "#asset-full") == 0)
+    browser.wait("the linked asset in the panel", lambda: "All good." in browser.text("#asset-panel"), timeout=60)
+    browser.type("#asset-panel", ESCAPE)
+    browser.wait("the closed panel", lambda: count(browser, "#asset-panel") == 0)
     assert "asset=" not in browser.script("return location.hash")
-    print("a link to a figure opens its session and shows it")
+    print("a link to an asset opens its session and the asset")
+    choose_transcript(browser, "full")
 
 
 def assets_tab(browser):

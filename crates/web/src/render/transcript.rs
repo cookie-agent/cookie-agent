@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 
+use cookie_agent_client_state::assets::Shelf;
 use cookie_agent_client_state::transcript_mode::{
     self, BlockFold, ChildFold, FoldPlan, ItemFold, TranscriptMode, WorkKey,
 };
@@ -165,6 +166,12 @@ struct Pass<'a, 'v> {
     waiting: FastSet<ToolCallId>,
     /// The reduced mode's folds; none in the full mode.
     folds: Arc<FoldPlan>,
+    /// The transcript's shelves, by the block each shows in.
+    shelves: HashMap<u64, Vec<Shelf>>,
+    /// Every shelved asset by handle, which the replies' chips name, and a
+    /// hash of them.
+    handles: HashMap<String, cookie_agent_protocol::AssetBlock>,
+    handles_key: u64,
 }
 
 impl<'a, 'v> Pass<'a, 'v> {
@@ -183,7 +190,64 @@ impl<'a, 'v> Pass<'a, 'v> {
                 TranscriptMode::Reduced => view.state.fold_plan(),
                 TranscriptMode::Full => Arc::default(),
             },
+            shelves: HashMap::new(),
+            handles: HashMap::new(),
+            handles_key: 0,
         }
+        .with_shelves()
+    }
+
+    fn with_shelves(mut self) -> Self {
+        self.shelves = cookie_agent_client_state::assets::shelves(self.view.state);
+        self.handles = super::shelf::shelved_handles(self.shelves.values().flatten());
+        let mut handles = self
+            .handles
+            .iter()
+            .map(|(handle, block)| {
+                (
+                    handle.as_str(),
+                    block.title.as_str(),
+                    block.media_type.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        handles.sort_unstable();
+        self.handles_key = foldhash::fast::FixedState::default().hash_one(handles);
+        self
+    }
+
+    /// The shelves the block `item_id` shows.
+    fn shelves_of(&self, item_id: u64) -> &[Shelf] {
+        self.shelves.get(&item_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// A text's markdown blocks as HTML, each handle a shelf shows that
+    /// it names a chip.
+    fn text_html(
+        &self,
+        markdown: &cookie_agent_client_state::markdown::MarkdownDocument,
+    ) -> PartHtml {
+        PartHtml::Markdown(
+            markdown
+                .blocks()
+                .map(|block| {
+                    let html = block_html(block);
+                    match super::shelf::with_chips(&html, &self.handles) {
+                        Some(chips) => Arc::from(chips),
+                        None => html,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether `markdown` may name a shelved asset, so its HTML depends on
+    /// the shelves.
+    fn names_assets(
+        &self,
+        markdown: &cookie_agent_client_state::markdown::MarkdownDocument,
+    ) -> bool {
+        !self.handles.is_empty() && markdown.as_str().contains("asset_")
     }
 
     /// Whether the work row of the fold `key` is open.
@@ -314,6 +378,9 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
         }
     }
     if let TranscriptItem::Assistant { id, children, .. } = item {
+        for shelf in pass.shelves_of(*id) {
+            shelf.hash_shown(&mut hasher);
+        }
         // The footer's inputs: metrics can land after the reply settles.
         view.state.assistant_metrics.get(id).hash(&mut hasher);
         view.state
@@ -923,7 +990,16 @@ fn part_key(pass: &Pass<'_, '_>, item_id: u64, child: &AssistantChild) -> u64 {
         }
         AssistantChild::Tool { call_id } => pass.hash_tool(call_id, &mut hasher),
         // The rest show what they hold, which does not change.
-        AssistantChild::Text { id, version, .. } => (id, version).hash(&mut hasher),
+        AssistantChild::Text {
+            id,
+            version,
+            markdown,
+        } => {
+            (id, version).hash(&mut hasher);
+            if pass.names_assets(markdown) {
+                pass.handles_key.hash(&mut hasher);
+            }
+        }
         AssistantChild::CommittedTool {
             turn_seq,
             content_index,
@@ -1088,39 +1164,38 @@ fn reply_parts(
                 PartHtml::Html(Arc::from(row)),
             ));
         }
-        if !shown(index, child) {
-            continue;
+        if shown(index, child) {
+            parts.push({
+                let mut id = part_id(child, index);
+                if !seen.insert(id) {
+                    id = foldhash::fast::FixedState::default().hash_one((id, index));
+                    seen.insert(id);
+                }
+                if let ChildFold::Work { key, .. } = place(index)
+                    && pass.open(key)
+                {
+                    work.insert(id, Arc::from(work_key(key)));
+                }
+                let key = part_key(pass, item_id, child);
+                let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
+                    Some(html) => html.clone(),
+                    None => match child {
+                        // Each block is drawn once, and kept with its block.
+                        AssistantChild::Text { markdown, .. } => pass.text_html(markdown),
+                        _ => {
+                            cache.drawn += 1;
+                            PartHtml::Html(Arc::from(child_html(pass.view, item_id, child)))
+                        }
+                    },
+                };
+                used.insert(key, html.clone());
+                keys.push(key);
+                (id, html)
+            });
         }
-        parts.push({
-            let mut id = part_id(child, index);
-            if !seen.insert(id) {
-                id = foldhash::fast::FixedState::default().hash_one((id, index));
-                seen.insert(id);
-            }
-            if let ChildFold::Work { key, .. } = place(index)
-                && pass.open(key)
-            {
-                work.insert(id, Arc::from(work_key(key)));
-            }
-            let key = part_key(pass, item_id, child);
-            let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
-                Some(html) => html.clone(),
-                None => match child {
-                    // Each block is drawn once, and kept with its block.
-                    AssistantChild::Text { markdown, .. } => {
-                        PartHtml::Markdown(markdown.blocks().map(block_html).collect())
-                    }
-                    _ => {
-                        cache.drawn += 1;
-                        PartHtml::Html(Arc::from(child_html(pass.view, item_id, child)))
-                    }
-                },
-            };
-            used.insert(key, html.clone());
-            keys.push(key);
-            (id, html)
-        });
+        push_shelves(pass, item_id, Some(index), &mut parts);
     }
+    push_shelves(pass, item_id, None, &mut parts);
     // Drawn with its row, whose key holds what it shows; folded, only on a
     // fold's last block.
     if let Some(footer) = fold
@@ -1137,6 +1212,26 @@ fn reply_parts(
         parts: parts.into(),
         work,
         keys,
+    }
+}
+
+/// Adds the shelves of the block `item_id` that show after its child
+/// `after` (after its last, `None`) to `parts`. A shelf's part is named by
+/// its first call, so it keeps its node as it moves from under the work to
+/// under the text that follows.
+fn push_shelves(
+    pass: &Pass<'_, '_>,
+    item_id: u64,
+    after: Option<usize>,
+    parts: &mut Vec<(u64, PartHtml)>,
+) {
+    for shelf in pass.shelves_of(item_id) {
+        if shelf.after == after {
+            parts.push((
+                foldhash::fast::FixedState::default().hash_one((9u8, shelf.first_call())),
+                PartHtml::Html(Arc::from(super::shelf::shelf_html(shelf))),
+            ));
+        }
     }
 }
 
@@ -1686,31 +1781,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     if let Some(delegate) = view.delegates.get(&tool.id) {
         html.push_str(&delegate_html(delegate, tool.status == ToolStatus::Running));
     }
-    // A figure shows what it shows, folded or open (assets spec 8.1).
-    let figure = is_figure(tool) && !tool.shown_display().is_empty();
-    if figure {
-        html.push_str("<div class=\"flex flex-col gap-2 px-2 pb-2\" data-figure>");
-        for (index, block) in tool.shown_display().iter().enumerate() {
-            match block {
-                // The caption is a line of text, not output.
-                cookie_agent_protocol::Open::Known(cookie_agent_protocol::DisplayBlock::Text {
-                    text,
-                    ..
-                }) => html.push_str(&format!(
-                    "<p class=\"text-sm text-ink dark:text-sand\" data-figure-caption>{}</p>",
-                    escape(text)
-                )),
-                block => {
-                    html.push_str(&display_html(std::slice::from_ref(block), |_| BlockPlace {
-                        call_id: Some(&id),
-                        index,
-                        full: tool.full_content(index),
-                    }))
-                }
-            }
-        }
-        html.push_str("</div>");
-    }
+    let figure = is_figure(tool);
     if expanded {
         html.push_str("<div class=\"flex flex-col gap-1 border-t border-toasted px-2 pt-1 pb-2 dark:border-ember\" data-tool-body>");
         let arguments = tool.shown_arguments();
@@ -1743,7 +1814,9 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         let all_key = all_output_key(&id);
         let all = view.expanded.all_output(&tool.id);
         let budget = if all { ALL_OUTPUT_LINES } else { OUTPUT_LINES };
+        // A figure's assets show on its shelf: here, a line each.
         let (shown, omitted) = if figure {
+            html.push_str(&figure_lines_html(tool.shown_display()));
             (Vec::new(), 0)
         } else {
             within_budget(tool.shown_display(), budget)
@@ -1772,6 +1845,36 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         html.push_str("</div>");
     }
     html.push_str("</div>");
+    html
+}
+
+/// What a figure call showed, open: its caption, and a line for each asset,
+/// which its shelf shows.
+fn figure_lines_html(
+    display: &[cookie_agent_protocol::Open<cookie_agent_protocol::DisplayBlock>],
+) -> String {
+    use cookie_agent_protocol::{DisplayBlock, Open};
+    let mut html = String::new();
+    for block in display {
+        match block {
+            Open::Known(DisplayBlock::Text { text, .. }) => html.push_str(&format!(
+                "<p class=\"text-sm\" data-figure-caption>{}</p>",
+                escape(text)
+            )),
+            Open::Known(DisplayBlock::Asset(asset)) => html.push_str(&format!(
+                "<div class=\"flex min-w-0 items-center gap-2 text-sm\" data-asset-line=\"{}\">{}<span class=\"min-w-0 truncate\">{}</span><span class=\"shrink-0 {NOTE}\">{} · {} · shown below</span></div>",
+                escape(asset.handle.as_str()),
+                svg(
+                    icons::asset_icon(cookie_agent_client_state::assets::AssetKind::of(&asset.media_type)),
+                    "shrink-0 text-caramel dark:text-maple"
+                ),
+                escape(&asset.title),
+                escape(&super::shelf::type_label(asset)),
+                escape(&cookie_agent_protocol::human_bytes(asset.byte_length)),
+            )),
+            block => html.push_str(&display_html(std::slice::from_ref(block), BlockPlace::plain)),
+        }
+    }
     html
 }
 
@@ -2939,6 +3042,95 @@ mod tests {
             panic!("the thinking block is not HTML")
         };
         assert!(std::sync::Arc::ptr_eq(old, new));
+    }
+
+    /// A figure call's assets show on a shelf after the text that follows
+    /// the call, the text's handle of one a chip, and both draw again when
+    /// the shelf changes.
+    #[test]
+    fn a_figures_assets_show_on_a_shelf_after_the_text_that_follows() {
+        use cookie_agent_client_state::AssistantChild;
+        let (mut state, call_id) = streaming_reply();
+        let block = cookie_agent_protocol::AssetBlock {
+            store: cookie_agent_protocol::AssetStore::Shared,
+            asset: cookie_agent_protocol::AssetId::new_v7(),
+            handle: cookie_agent_protocol::AssetHandle::new("asset_3f9a1c2e").expect("handle"),
+            title: "Run explorer".into(),
+            media_type: "text/html".into(),
+            byte_length: 42,
+            sha256: "a".repeat(64),
+            filename: Some("runs.html".into()),
+        };
+        let tool = state.tools.get_mut(&call_id).expect("the call");
+        tool.status = cookie_agent_client_state::ToolStatus::Completed;
+        tool.presentation.hint = Some(
+            cookie_agent_protocol::ToolHint::new(cookie_agent_protocol::ToolHint::FIGURE)
+                .expect("hint"),
+        );
+        tool.display = vec![cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::DisplayBlock::Asset(block.clone()),
+        )];
+        tool.revision += 1;
+        let TranscriptItem::Assistant { children, .. } = &mut state.transcript[0] else {
+            unreachable!()
+        };
+        let mut markdown = cookie_agent_client_state::markdown::MarkdownDocument::default();
+        markdown.append("See `asset_3f9a1c2e`.");
+        children[2] = AssistantChild::Text {
+            id: 3,
+            version: 0,
+            markdown,
+        };
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let draw = |state: &SessionState| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded: &expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
+            };
+            (
+                item_key(&view, &state.transcript[0]),
+                reply_parts(&super::transcript_rows(
+                    &view,
+                    None,
+                    &mut super::RowCache::default(),
+                )),
+            )
+        };
+        let html = |part: &super::PartHtml| match part {
+            super::PartHtml::Html(html) => html.to_string(),
+            super::PartHtml::Markdown(blocks) => blocks.concat(),
+        };
+        let (key, parts) = draw(&state);
+        // Thinking, the call, the text, then the shelf.
+        assert_eq!(parts.len(), 4);
+        let shelf = html(&parts[3].1);
+        assert!(shelf.contains("data-shelf"), "{shelf}");
+        assert!(shelf.contains("data-asset-view=\"page\""), "{shelf}");
+        let text = html(&parts[2].1);
+        assert!(text.contains("data-action=\"asset-chip\""), "{text}");
+        // The call's own row says what it showed in a line, not the asset.
+        assert!(!html(&parts[1].1).contains("data-asset="));
+        // Renamed, the shelf and the chip draw again.
+        let mut renamed = block;
+        renamed.title = "Explorer".into();
+        let tool = state.tools.get_mut(&call_id).expect("the call");
+        tool.display = vec![cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::DisplayBlock::Asset(renamed),
+        )];
+        tool.revision += 1;
+        let (renamed_key, parts) = draw(&state);
+        assert_ne!(renamed_key, key);
+        assert!(html(&parts[2].1).contains(">Explorer<"));
+        assert!(html(&parts[3].1).contains(">Explorer<"));
     }
 
     #[test]

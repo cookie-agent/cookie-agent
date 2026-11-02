@@ -35,7 +35,10 @@ otherwise the last user text decides.
   "show a report": one of `report.md`, shown; containing "replace the figure"
   and an asset's handle: a `write_asset` of `report.md` over that asset;
   containing "save a project report": a `write_asset` of `report.md` kept
-  for the project, titled "Shared report";
+  for the project, titled "Shared report"; after any of these, the reply
+  names the asset's handle, as the tool descriptions ask;
+- containing "show two images": `write_asset`s of `one.png` and
+  `two.png`, shown, then a reply;
 - containing "remember": a `memory_write` of `user://e2e-build`; containing
   "revise": a `memory_edit` of it; containing "forget": a `memory_delete`
   of it;
@@ -150,6 +153,19 @@ def last_text(messages):
     return ""
 
 
+def two_images_step(messages):
+    """The next step of "show two images": the second image after the
+    first, then a reply, which both show under."""
+    done = 0
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            break
+        done += message.get("role") == "tool"
+    if done == 1:
+        return tool_reply("write_asset", {"path": "two.png", "title": "Second image", "show": True})
+    return text_reply(["Both are above."])
+
+
 def reply(request):
     messages = request.get("messages", [])
     if messages and messages[-1].get("role") == "tool":
@@ -157,6 +173,11 @@ def reply(request):
             return long_session_step(messages, last_text(messages).lower())
         if "stream long" in last_text(messages).lower():
             return long_reply(last_text(messages).lower())
+        if "show two images" in last_text(messages).lower():
+            return two_images_step(messages)
+        handle = re.search(r"asset_[0-9a-f]{8}", str(messages[-1].get("content")))
+        if handle and "write_asset" in json.dumps(messages[-2:]):
+            return text_reply(["Saved it as `%s` for you." % handle.group(0)])
         return text_reply(["The tool ran."])
     if not request.get("tools"):
         # A compaction or other tool-less request: a summary.
@@ -232,6 +253,11 @@ def reply(request):
         return tool_reply("write_asset", {"path": "report.md", "asset": handle.group(0) if handle else ""})
     if "save a project report" in text:
         return tool_reply("write_asset", {"path": "report.md", "scope": "project", "title": "Shared report"})
+    if "show two images" in text:
+        return tool_reply(
+            "write_asset",
+            {"path": "one.png", "title": "First image", "show": True, "caption": "Two plots."},
+        )
     if "show a report" in text:
         return tool_reply("write_asset", {"path": "report.md", "show": True})
     if "remember" in text:

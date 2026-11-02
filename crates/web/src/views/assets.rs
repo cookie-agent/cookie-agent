@@ -14,17 +14,6 @@ use crate::{icons::Glyph, workspace::Workspace};
 const SELECT: &str = "min-h-11 min-w-0 rounded-md border border-crust bg-cream px-2 text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 const ROW_BUTTON: &str = "inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
 
-/// A kind's icon.
-fn kind_icon(kind: AssetKind) -> crate::icons::Icon {
-    match kind {
-        AssetKind::Image => icondata::FaImageSolid,
-        AssetKind::Page => icondata::FaCodeSolid,
-        AssetKind::Document => icondata::FaFileLinesSolid,
-        AssetKind::Media => icondata::FaFilmSolid,
-        AssetKind::Other => icondata::FaFileSolid,
-    }
-}
-
 /// The `<select>` value of a store.
 fn store_value(store: &AssetStore) -> String {
     match store {
@@ -239,7 +228,7 @@ fn asset_row(workspace: Workspace, asset: Asset) -> impl IntoView {
     view! {
         <div class="flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-asset-row=asset.handle.to_string()>
             <div class="flex min-w-0 flex-wrap items-center gap-2">
-                <Glyph icon=kind_icon(kind) class="text-caramel dark:text-maple" />
+                <Glyph icon=crate::icons::asset_icon(kind) class="text-caramel dark:text-maple" />
                 <span class="min-w-0 flex-1 truncate text-sm font-bold" data-asset-row-title>{title.clone()}</span>
                 <span class=NOTE>{format!("{} · {}", asset.media_type, human_bytes(asset.byte_length))}</span>
             </div>
