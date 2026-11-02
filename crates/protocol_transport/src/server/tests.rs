@@ -551,6 +551,20 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::AssetsSearchResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+
+    async fn decide_attachment(
+        &self,
+        _: cookie_agent_protocol::AttachmentDecideParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDecideResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+
+    async fn save_attachment_asset(
+        &self,
+        _: cookie_agent_protocol::AttachmentSaveAssetParams,
+    ) -> Result<cookie_agent_protocol::AttachmentSaveAssetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn get_asset(
         &self,
         _: cookie_agent_protocol::AssetGetParams,

@@ -88,6 +88,9 @@ impl ReadArtifactTool {
     }
 }
 
+/// The prompt section on attaching files to a reply.
+const ATTACHMENTS_SECTION: &str = "To give the user a file in your reply, write a tag where it should show: `<attach src=\"runs/loss.png\"/>` for a file on a machine (add `machine=\"name\"` for another machine than the workspace's), `<attach artifact=\"<sha256>\"/>` for an artifact of this conversation, or `<attach asset=\"asset_3f9a1c2e\"/>` to show an asset. Add `title=\"…\"` to name it. Pictures, video, and audio play, an HTML page runs live, Markdown renders, and anything else downloads. Tags written next to each other show as one row. A file is read once, when your message ends, at most 25 MiB, and at most 12 attachments go in one message. A tag inside code is only text. If an attachment fails, you are told before your next request.";
+
 impl ReadArtifactTool {
     /// The group this provider's tools are announced under when deferred.
     pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
@@ -107,6 +110,19 @@ impl ToolProvider for ReadArtifactTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::spec()])
+    }
+
+    /// How to attach files to a reply
+    /// (`docs/site/specs/message-attachments.md`): with the artifacts, as
+    /// a tag can name one.
+    fn prompt_sections(
+        &self,
+        _: &SessionToolContext,
+    ) -> Result<Vec<cookie_agent_runtime_api::PromptSection>, ToolError> {
+        Ok(vec![cookie_agent_runtime_api::PromptSection {
+            title: "Attachments".to_owned(),
+            body: ATTACHMENTS_SECTION.to_owned(),
+        }])
     }
 
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {

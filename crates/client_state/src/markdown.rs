@@ -375,11 +375,10 @@ fn settled_split(source: &str, blocks: &[ParsedBlock]) -> usize {
     line_start.max(settled_end)
 }
 
+/// The options the engine reads attach tags with too, so both see the
+/// same HTML.
 fn markdown_options() -> Options {
-    Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TABLES
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_GFM
+    cookie_agent_protocol::markdown_options()
 }
 
 struct ParsedBlock {

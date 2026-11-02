@@ -1045,6 +1045,26 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn decide_attachment(
+        &self,
+        params: cookie_agent_protocol::AttachmentDecideParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDecideResult> {
+        self.engine
+            .decide_attachment(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn save_attachment_asset(
+        &self,
+        params: cookie_agent_protocol::AttachmentSaveAssetParams,
+    ) -> Result<cookie_agent_protocol::AttachmentSaveAssetResult> {
+        self.engine
+            .save_attachment_asset(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn get_asset(
         &self,
         params: cookie_agent_protocol::AssetGetParams,

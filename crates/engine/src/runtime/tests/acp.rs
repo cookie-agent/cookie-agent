@@ -2018,8 +2018,18 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     let note = first[1].rsplit("</machines>\n").next().unwrap();
     assert!(note.contains(&format!("`{machine}`")), "{note}");
     assert!(note.contains(&*workspace.to_string_lossy()), "{note}");
+    // How to attach files, then the memory's instructions.
+    assert!(
+        first[2].starts_with("<tool_instructions provider=\"builtin.read_artifact\">\n"),
+        "{}",
+        first[2]
+    );
+    assert!(first[2].contains("<attach src="), "{}", first[2]);
+    let memory = first[2]
+        .split_once("</tool_instructions>\n\n")
+        .map_or("", |(_, memory)| memory);
     assert_eq!(
-        first[2],
+        memory,
         "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
     );
     assert!(
@@ -2090,7 +2100,8 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say one").await;
     let first = &prompts(&acp)[0];
-    assert_eq!(first.len(), 4, "{first:#?}");
+    // Hidden memory tools give no instructions; how to attach files stays.
+    assert_eq!(first.len(), 5, "{first:#?}");
     assert_eq!(first[0], "Body.\n");
     assert!(
         first[1].starts_with("This session is attached to the following machines."),
@@ -2098,11 +2109,16 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
         first[1]
     );
     assert!(
-        first[2].starts_with("<system-reminder>\n# Memory\n"),
+        first[2].starts_with("<tool_instructions provider=\"builtin.read_artifact\">"),
         "{}",
         first[2]
     );
-    assert_eq!(first[3], "say one");
+    assert!(
+        first[3].starts_with("<system-reminder>\n# Memory\n"),
+        "{}",
+        first[3]
+    );
+    assert_eq!(first[4], "say one");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3475,4 +3491,62 @@ async fn an_acp_agents_input_counts_its_cache_and_its_rounds_cost_is_the_session
     let usage = engine.session_usage(priced).expect("usage").usage;
     assert_eq!(usage.request_count, 1, "{usage:?}");
     assert_eq!(usage.estimated_cost_usd, Some(0.5), "{usage:?}");
+}
+
+/// An ACP agent's reply attaches files as a model's does, from the agent's
+/// own machine, and hears of a failed one with its next prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acp_agents_reply_attaches_files_and_hears_of_failures() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    std::fs::write(acp.workspace().join("note.txt"), "a note").unwrap();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(
+        engine,
+        session,
+        "first",
+        "say <attach src=\"note.txt\"/> <attach src=\"gone.txt\"/>",
+    )
+    .await;
+    let mut outcomes = Vec::new();
+    for _ in 0..200 {
+        outcomes = engine
+            .inner
+            .store
+            .log(session)
+            .unwrap()
+            .event_snapshot()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AssistantAttachment {
+                    ordinal, outcome, ..
+                } => Some((*ordinal, outcome.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if outcomes.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert!(
+        matches!(&outcomes[0], (0, cookie_agent_protocol::AttachmentOutcome::Attached { file }) if file.filename.as_deref() == Some("note.txt")),
+        "{outcomes:?}"
+    );
+    assert!(
+        matches!(
+            &outcomes[1],
+            (1, cookie_agent_protocol::AttachmentOutcome::Failed { .. })
+        ),
+        "{outcomes:?}"
+    );
+    turn(engine, session, "second", "say ok").await;
+    let second = &prompts(&acp)[1];
+    assert!(
+        second
+            .iter()
+            .any(|part| part.contains("[attachment not attached] gone.txt")),
+        "{second:#?}"
+    );
 }

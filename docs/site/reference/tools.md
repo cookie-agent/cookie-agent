@@ -60,7 +60,6 @@ block under the system prompt in the TUI transcript.
 | [`cron_delete`](#cron_delete) | `cron` |
 | [`cron_run`](#cron_run) | `cron` |
 | [`write_asset`](#write_asset) | `asset` |
-| [`show_asset`](#show_asset) | `asset` |
 | [`read_asset`](#read_asset) | `asset` |
 | [`list_assets`](#list_assets) | `asset` |
 | [`delete_asset`](#delete_asset) | `asset` |
@@ -1031,7 +1030,7 @@ tools instead of in the system prompt.
 |---|---|---|---|
 | `agents` | [`list_agents`](#list_agents) | yes | The agents this session can delegate to or schedule, and what each is for. |
 | `artifacts` | [`read_artifact`](#read_artifact) | no | Tool output too large for the conversation, kept aside and read back by range. |
-| `assets` | [`write_asset`](#write_asset), [`show_asset`](#show_asset), [`read_asset`](#read_asset), [`list_assets`](#list_assets), [`delete_asset`](#delete_asset) | yes | Assets: files you give the user, such as charts, diagrams, HTML pages, and reports, shown in the conversation and kept for this session or the project. |
+| `assets` | [`write_asset`](#write_asset), [`read_asset`](#read_asset), [`list_assets`](#list_assets), [`delete_asset`](#delete_asset) | yes | Assets: files you give the user, such as charts, diagrams, HTML pages, and reports, shown in the conversation and kept for this session or the project. |
 | `background` | [`stop_background`](#stop_background) | no | Calls running in the background, and stopping them. |
 | `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash), [`webfetch`](#webfetch) | no | The workspace: reading, writing, and editing files, running shell commands, and fetching web pages. |
 | `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | yes | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
@@ -2875,7 +2874,7 @@ names an asset by its handle, such as `asset_3f9a1c2e`. Writing an asset
 again replaces it; there are no versions.
 
 The tools are checked under the `asset` action, whose resource is what a
-call does: `read` (`read_asset`, `show_asset`, `list_assets`), `write`
+call does: `read` (`read_asset`, `list_assets`, and an `<attach asset=…/>` tag), `write`
 (`write_asset`), or `delete` (`delete_asset`). Assets have no owner: a rule
 applies the same to every asset a session can see.
 
@@ -2884,13 +2883,13 @@ applies the same to every asset a session can see.
 <!-- generated: tool write_asset -->
 
 ```text
-write_asset(asset?: string, caption?: string, machine?: string, path: string, scope?: "session" | "project", show?: boolean, title?: string)
+write_asset(asset?: string, machine?: string, path: string, scope?: "session" | "project", title?: string)
 ```
 
 Description sent to the model:
 
 ```text
-Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and list_runtimes do; omitted, it is the machine of this session's workspace. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: pass `show: true`, with an optional `caption`, or call show_asset. A shown asset shows under the next text you write; name it there by its handle to link to it.
+Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and list_runtimes do; omitted, it is the machine of this session's workspace. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset="asset_3f9a1c2e"/>` in your reply where it should show.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
@@ -2898,11 +2897,9 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `asset` | `string` | no | The handle of an asset to replace. Omit it to save a new asset |
-| `caption` | `string` | no | With `show`: one short line on what the asset shows |
 | `machine` | `string` | no | A machine of this session, as the machines block names it. Defaults to the machine of this session's workspace |
 | `path` | `string` | yes | The file to save: relative to the machine's working directory, absolute, or under `~` |
 | `scope` | `"session" \| "project"` | no | `session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset |
-| `show` | `boolean` | no | Also show the asset in the conversation, as show_asset does. Defaults to false |
 | `title` | `string` | no | Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing |
 
 ??? note "Parameters JSON Schema"
@@ -2913,11 +2910,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "properties": {
         "asset": {
           "description": "The handle of an asset to replace. Omit it to save a new asset",
-          "type": "string"
-        },
-        "caption": {
-          "description": "With `show`: one short line on what the asset shows",
-          "maxLength": 300,
           "type": "string"
         },
         "machine": {
@@ -2936,10 +2928,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           ],
           "type": "string"
         },
-        "show": {
-          "description": "Also show the asset in the conversation, as show_asset does. Defaults to false",
-          "type": "boolean"
-        },
         "title": {
           "description": "Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing",
           "maxLength": 200,
@@ -2948,57 +2936,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       },
       "required": [
         "path"
-      ],
-      "type": "object"
-    }
-    ```
-
-<!-- /generated -->
-
-### `show_asset`
-
-<!-- generated: tool show_asset -->
-
-```text
-show_asset(assets: string[], caption?: string)
-```
-
-Description sent to the model:
-
-```text
-Show one or more assets to the user in the conversation, by their handles. They show as cards under the next text you write, as they are now: images, SVG, and video as pictures, an HTML page live, a Markdown document rendered, and any other file as a download. `caption` is one short line on what they show. The user may be on a phone, or in a terminal where an asset is a link, so still say in your reply what they show. Naming an asset by its handle in your reply, such as `asset_3f9a1c2e`, makes it a link the user can open. You get nothing back but a confirmation: use read_asset to look at an asset yourself.
-```
-
-Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `assets` | `string[]` | yes | The handles of the assets to show, 1 to 12, in the order to show them |
-| `caption` | `string` | no | One short line on what they show |
-
-??? note "Parameters JSON Schema"
-
-    ```json
-    {
-      "additionalProperties": false,
-      "properties": {
-        "assets": {
-          "description": "The handles of the assets to show, 1 to 12, in the order to show them",
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 12,
-          "minItems": 1,
-          "type": "array"
-        },
-        "caption": {
-          "description": "One short line on what they show",
-          "maxLength": 300,
-          "type": "string"
-        }
-      },
-      "required": [
-        "assets"
       ],
       "type": "object"
     }
@@ -3141,8 +3078,9 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
 ### Display
 
-A figure (`show_asset`, or `write_asset` with `show: true`) is the caption
-as a `text` block, then one `asset` block per asset, under the presentation
-hint `figure`. Clients keep it outside a folded turn, show each asset as it
-is now, and say when it was replaced or deleted since. `write_asset` without
-`show` is one short row.
+`write_asset` is one short row. An agent shows an asset with
+`<attach asset="asset_3f9a1c2e"/>` in its reply
+([attachments](../specs/message-attachments.md)): the asset shows there,
+as it is now. Calls of older builds that showed assets (`show_asset`, or
+`write_asset` with `show: true`) keep their `asset` blocks under the hint
+`figure`, which clients show as figures in the open row.

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.72.0",
+    "protocol_version": "1.73.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.72.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.73.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -325,6 +325,8 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `artifact.read` | Session ID, `sha256`, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
 | `assets.list` | `store` (since 1.67.0; see [Assets](#assets)) | The store's `assets`, newest first |
 | `assets.search` | `project?`, `scope?` (since 1.71.0; see [Assets](#assets)) | The `assets` of many stores, newest first, and the `sessions` whose own they list |
+| `attachment.decide` | `session_id`, `model_turn_seq`, `content_index`, `ordinal`, `allow` (since 1.73.0; see [Attachments](#attachments)) | `{}`; the tag's next `assistant_attachment` says how it resolved |
+| `attachment.save_asset` | `session_id`, `model_turn_seq`, `content_index`, `ordinal`, `scope?` (since 1.73.0) | The new `asset` |
 | `asset.get` | `store`, `asset` ID | The `asset` as it is now, or `asset_not_found` |
 | `asset.read` | `store`, `asset` ID, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
 | `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
@@ -769,6 +771,24 @@ has is `project_name_taken`; an unknown ID is `project_not_found`.
 
 Each change sends `projects.changed` to every connection. A failure to read
 or write a project is `project_store_failed`.
+
+### Attachments
+
+Since 1.73.0 an agent attaches files in its reply with `<attach …/>` tags
+([spec](../specs/message-attachments.md)): `src` (a path, with `machine`),
+`artifact` (a hex SHA-256 of the session tree's artifacts), or `asset` (a
+handle), and an optional `title`. Only a tag in the reply's Markdown text
+counts, never one in code; `cookie_agent_protocol::attach_tags` is the one
+reading every client shares. The engine resolves each tag once its turn is
+committed and records the event `assistant_attachment { model_turn_seq,
+content_index, ordinal, tag, outcome }`: the `ordinal`th tag of text part
+`content_index`. `outcome` is `pending_approval`, `attached { file }` (a
+`PersistedFilePart` of the tree's artifacts), `shown { asset }` (an
+`AssetBlock`, which clients show as the asset is now), or `failed { reason
+}`. A tag's later event replaces its earlier one. `attachment.decide`
+answers one waiting for the user; `attachment.save_asset` makes an asset
+of an attached file. The event is skippable: a reader that does not know
+it shows the tag as text.
 
 ### Assets
 

@@ -909,6 +909,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::AssetsSearchParams,
     ) -> Result<cookie_agent_protocol::AssetsSearchResult, ServerFault>;
+
+    async fn decide_attachment(
+        &self,
+        params: cookie_agent_protocol::AttachmentDecideParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDecideResult, ServerFault>;
+
+    async fn save_attachment_asset(
+        &self,
+        params: cookie_agent_protocol::AttachmentSaveAssetParams,
+    ) -> Result<cookie_agent_protocol::AttachmentSaveAssetResult, ServerFault>;
     /// One asset as it is now.
     async fn get_asset(
         &self,
@@ -1890,6 +1900,12 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::ASSETS_SEARCH_METHOD => {
             value(server.search_assets(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ATTACHMENT_DECIDE_METHOD => {
+            value(server.decide_attachment(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ATTACHMENT_SAVE_ASSET_METHOD => {
+            value(server.save_attachment_asset(decode(params)?).await?)
         }
         cookie_agent_protocol::ASSET_GET_METHOD => value(server.get_asset(decode(params)?).await?),
         cookie_agent_protocol::ASSET_READ_METHOD => {

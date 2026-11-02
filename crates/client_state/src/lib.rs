@@ -1239,6 +1239,31 @@ impl BusyCounts {
     }
 }
 
+/// One `<attach …/>` tag of a reply and how it resolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MessageAttachment {
+    pub tag: cookie_agent_protocol::AttachTag,
+    pub outcome: cookie_agent_protocol::AttachmentOutcome,
+}
+
+impl SessionState {
+    /// The text child `child_id`'s turn and part, once it is committed.
+    #[must_use]
+    pub fn text_part(&self, child_id: u64) -> Option<(u64, u32)> {
+        self.text_parts.get(&child_id).copied()
+    }
+
+    /// The attachments of the text child `child_id`, by ordinal; `None`
+    /// while it is not committed or none resolved.
+    #[must_use]
+    pub fn attachments_of(
+        &self,
+        child_id: u64,
+    ) -> Option<&std::collections::BTreeMap<u32, MessageAttachment>> {
+        self.attachments.get(&self.text_part(child_id)?)
+    }
+}
+
 /// Per-session projection of persisted events and live output.
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
@@ -1319,6 +1344,14 @@ pub struct SessionState {
     /// The files each submitted user message attached, by the message's
     /// `seq`, for clients that show them.
     pub user_files: HashMap<u64, Vec<cookie_agent_protocol::ArtifactRef>>,
+    /// Where each committed text child stands in its model turn: its
+    /// `model_turn_seq` and `content_index`, by the child's ID, which its
+    /// attachments are keyed by.
+    pub text_parts: HashMap<u64, (u64, u32)>,
+    /// The attachments of each text part (`<attach …/>` tags), by the
+    /// part's `model_turn_seq` and `content_index`, then by the tag's
+    /// ordinal: each as its latest `assistant_attachment` says.
+    pub attachments: HashMap<(u64, u32), std::collections::BTreeMap<u32, MessageAttachment>>,
     /// Pending inputs the engine voided at run end (no per-entry events),
     /// parked here until the UI restores their text into the composer —
     /// user text is never silently lost. Drained by the UI on sight.

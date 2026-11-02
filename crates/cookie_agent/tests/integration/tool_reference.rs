@@ -116,7 +116,7 @@ fn availability(name: &str) -> Option<&'static str> {
             "Only next to the other cron tools. It needs no rule of its own: it lists the jobs \
              whose target kind the `cron` rules allow or ask for."
         }
-        "write_asset" | "show_asset" | "read_asset" | "list_assets" | "delete_asset" => {
+        "write_asset" | "read_asset" | "list_assets" | "delete_asset" => {
             "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
              `asset` hides them. A root run of any agent but an internal one is allowed them by \
              default; a delegated run is denied them. `write_asset` also checks its file as \

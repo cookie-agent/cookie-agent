@@ -910,7 +910,9 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
         | EventPayload::ElicitationRequested { .. }
-        | EventPayload::ElicitationResolved { .. } => true,
+        | EventPayload::ElicitationResolved { .. }
+        // An attachment's outcome, which the user may answer.
+        | EventPayload::AssistantAttachment { .. } => true,
         // Grants and approval decisions.
         EventPayload::ApprovalRequested { .. }
         | EventPayload::ApprovalStep { .. }
@@ -3784,8 +3786,11 @@ fn validate_record_incremental(
             validate_approval_owner(path, approval_owners, grant.approval_id, record.run_id)?;
         }
         // A diagnostic about a run belongs to it; any other is runless. An
-        // omitted record keeps the run of the record it stands for.
-        EventPayload::Diagnostic { .. } | EventPayload::RecordOmitted { .. } => {
+        // omitted record keeps the run of the record it stands for. An
+        // attachment resolves after its run, so it is runless.
+        EventPayload::Diagnostic { .. }
+        | EventPayload::RecordOmitted { .. }
+        | EventPayload::AssistantAttachment { .. } => {
             if record.run_id.is_some() {
                 require_started_run(path, runs, record.run_id)?;
             }

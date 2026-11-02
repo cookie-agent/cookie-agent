@@ -130,7 +130,6 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             "memory_write",
             "read",
             "read_asset",
-            "show_asset",
             "write",
             "write_asset"
         ]
@@ -283,7 +282,6 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "memory_write",
             "read",
             "read_asset",
-            "show_asset",
             "write_asset"
         ]
     );
@@ -353,7 +351,6 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "memory_write",
             "read",
             "read_asset",
-            "show_asset",
             "write",
             "write_asset"
         ]
@@ -475,7 +472,6 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             "memory_write",
             "middle",
             "read_asset",
-            "show_asset",
             "write_asset",
             "zeta"
         ]

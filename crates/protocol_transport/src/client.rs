@@ -977,6 +977,26 @@ impl Client {
             .await
     }
 
+    /// Answers an attachment waiting for the user (`attachment.decide`,
+    /// client protocol 1.73.0).
+    pub async fn decide_attachment(
+        &self,
+        params: cookie_agent_protocol::AttachmentDecideParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDecideResult, ClientError> {
+        self.call(cookie_agent_protocol::ATTACHMENT_DECIDE_METHOD, &params)
+            .await
+    }
+
+    /// Makes an asset of an attachment (`attachment.save_asset`, client
+    /// protocol 1.73.0).
+    pub async fn save_attachment_asset(
+        &self,
+        params: cookie_agent_protocol::AttachmentSaveAssetParams,
+    ) -> Result<cookie_agent_protocol::AttachmentSaveAssetResult, ClientError> {
+        self.call(cookie_agent_protocol::ATTACHMENT_SAVE_ASSET_METHOD, &params)
+            .await
+    }
+
     /// One asset as it is now (`asset.get`).
     pub async fn get_asset(
         &self,

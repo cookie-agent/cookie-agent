@@ -5,6 +5,18 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.73.0
+
+- Attachments in assistant messages
+  ([spec](../specs/message-attachments.md)): the event
+  `assistant_attachment` (`model_turn_seq`, `content_index`, `ordinal`,
+  `tag` an `AttachTag`, `outcome` an `AttachmentOutcome`), and the methods
+  `attachment.decide` and `attachment.save_asset`. Plugin protocol 1.38.0
+  carries the event.
+- The `show_asset` tool and `write_asset`'s `show` and `caption` are gone:
+  agents show assets with `<attach asset="…"/>`. The `asset` display block
+  and the `figure` hint stay, for calls older builds recorded.
+
 ## 1.72.0
 
 - Why agents cannot run

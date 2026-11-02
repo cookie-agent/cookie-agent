@@ -122,6 +122,22 @@
       "result": "AssetsSearchResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "attachment.decide",
+      "params": "AttachmentDecideParams",
+      "params_role": "command",
+      "result": "AttachmentDecideResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "attachment.save_asset",
+      "params": "AttachmentSaveAssetParams",
+      "params_role": "command",
+      "result": "AttachmentSaveAssetResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "background.changed",

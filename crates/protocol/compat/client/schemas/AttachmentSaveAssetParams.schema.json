@@ -1,0 +1,49 @@
+{
+  "$defs": {
+    "AssetScope": {
+      "description": "Who an asset belongs to: the session tree that wrote it, or every\nsession of its project (section 4.1).",
+      "enum": [
+        "session",
+        "project"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Makes an asset of an attached file or artifact.",
+  "properties": {
+    "content_index": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "model_turn_seq": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ordinal": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "scope": {
+      "$ref": "#/$defs/AssetScope",
+      "default": "session",
+      "description": "The session tree's own (the default), or the project's."
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "model_turn_seq",
+    "content_index",
+    "ordinal"
+  ],
+  "title": "AttachmentSaveAssetParams",
+  "type": "object"
+}

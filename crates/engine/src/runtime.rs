@@ -55,6 +55,7 @@ pub mod chatgpt;
 pub(crate) mod cron;
 pub(crate) mod machines;
 pub(crate) mod memory;
+pub(crate) mod message_attachments;
 pub(crate) mod messaging;
 pub(crate) mod official;
 pub(crate) use background_tasks::{BackgroundActor, Stopped};
@@ -1053,6 +1054,8 @@ pub(crate) struct Inner {
     /// The asset stores of session trees, projects, and sessions in no
     /// project.
     pub(crate) assets: Arc<crate::assets::AssetStores>,
+    /// The attachments of assistant messages in flight.
+    pub(crate) message_attachments: message_attachments::MessageAttachments,
     /// The cron jobs.
     pub(crate) crons: Arc<crate::crons::CronStore>,
     pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
@@ -1393,6 +1396,7 @@ impl Engine {
                 machines,
                 projects,
                 assets,
+                message_attachments: Default::default(),
                 crons,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
                 restart: restart::RestartState::default(),

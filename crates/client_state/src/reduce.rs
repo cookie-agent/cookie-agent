@@ -1918,6 +1918,19 @@ pub(super) fn reduce_event_from(
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
+        EventPayload::AssistantAttachment {
+            model_turn_seq,
+            content_index,
+            ordinal,
+            tag,
+            outcome,
+        } => {
+            state
+                .attachments
+                .entry((model_turn_seq, content_index))
+                .or_default()
+                .insert(ordinal, crate::MessageAttachment { tag, outcome });
+        }
         EventPayload::ContextRefreshed { reason, changed } => {
             let (header, text) = crate::model_input::refresh_row(reason, &changed);
             push_model_input(
@@ -2563,12 +2576,15 @@ pub(super) fn rebuild_committed_children(
 ) {
     state.open_assistant = None;
     let mut children = Vec::with_capacity(turn.content.len());
+    // Each text child's place in the turn, by its place among `children`.
+    let mut text_places = Vec::new();
     for (index, part) in turn.content.iter().enumerate() {
         let index = u32::try_from(index).unwrap_or(u32::MAX);
         match part {
             cookie_agent_protocol::PersistedAssistantPart::Text { text, .. }
                 if !text.is_empty() =>
             {
+                text_places.push((children.len(), index));
                 children.push(AssistantChild::Text {
                     id: sequence,
                     version: 0,
@@ -2615,6 +2631,13 @@ pub(super) fn rebuild_committed_children(
             | AssistantChild::MediaFile { .. }
             | AssistantChild::Notice { .. }
             | AssistantChild::Tool { .. } => {}
+        }
+    }
+    for (place, content_index) in text_places {
+        if let Some(AssistantChild::Text { id, .. }) = children.get(place) {
+            state
+                .text_parts
+                .insert(*id, (model_turn_seq, content_index));
         }
     }
     if let Some(TranscriptItem::Assistant {

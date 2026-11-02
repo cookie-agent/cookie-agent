@@ -1401,6 +1401,154 @@
       ],
       "type": "object"
     },
+    "AttachSource": {
+      "description": "What a tag attaches.",
+      "oneOf": [
+        {
+          "description": "A file on a machine: `src`, with the tag's `machine`.",
+          "properties": {
+            "machine": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An artifact of the session tree, by its hex SHA-256.",
+          "properties": {
+            "sha256": {
+              "type": "string"
+            },
+            "type": {
+              "const": "artifact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An asset, by its handle.",
+          "properties": {
+            "handle": {
+              "type": "string"
+            },
+            "type": {
+              "const": "asset",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "handle"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AttachTag": {
+      "description": "One `<attach …/>` tag as written.",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/AttachSource"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
+    "AttachmentOutcome": {
+      "description": "How a tag resolved.",
+      "oneOf": [
+        {
+          "description": "The `read` (or `asset`) rule asks: the user's answer decides, with\n`attachment.decide`.",
+          "properties": {
+            "type": {
+              "const": "pending_approval",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file or an artifact, stored in the session tree's artifacts.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/PersistedFilePart"
+            },
+            "type": {
+              "const": "attached",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An asset, as it was when shown; clients show it as it is now.",
+          "properties": {
+            "asset": {
+              "$ref": "#/$defs/AssetBlock"
+            },
+            "type": {
+              "const": "shown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "type": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "BackgroundActor": {
       "description": "Who moved a call to the background.\n\nA value this build does not know reads as `model`.",
       "enum": [
@@ -5539,6 +5687,45 @@
           "required": [
             "type",
             "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The `ordinal`th `<attach …/>` tag of the text part `content_index`\nof model turn `model_turn_seq` resolved as `outcome` (client\nprotocol 1.73.0). A tag's later event replaces its earlier one.",
+          "properties": {
+            "content_index": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "model_turn_seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ordinal": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "outcome": {
+              "$ref": "#/$defs/AttachmentOutcome"
+            },
+            "tag": {
+              "$ref": "#/$defs/AttachTag"
+            },
+            "type": {
+              "const": "assistant_attachment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "model_turn_seq",
+            "content_index",
+            "ordinal",
+            "tag",
+            "outcome"
           ],
           "type": "object"
         }

@@ -1377,10 +1377,7 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
     // The workspace's machine by default, and the remote one by name.
     fixture.model.enqueue(tool_call(
         "write_asset",
-        &serde_json::json!({
-            "path": "plot.svg", "title": "Loss curves", "show": true,
-            "caption": "Training loss over 40 epochs.",
-        }),
+        &serde_json::json!({"path": "plot.svg", "title": "Loss curves"}),
     ));
     fixture.model.enqueue(tool_call(
         "write_asset",
@@ -1390,11 +1387,11 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
         "write_asset",
         &serde_json::json!({"path": "missing.png"}),
     ));
-    fixture.model.enqueue(tool_call(
-        "show_asset",
-        &serde_json::json!({"assets": ["asset_00000000"]}),
+    // The reply attaches a file, one that is not there, and an asset no
+    // session has.
+    fixture.model.enqueue(final_answer(
+        "Saved.\n\n<attach src=\"plot.svg\" title=\"The plot\"/> <attach src=\"nowhere.png\"/>\n\nAnd `<attach src=\"code.png\"/>` is text. <attach asset=\"asset_00000000\"/>",
     ));
-    fixture.model.enqueue(final_answer("saved"));
     fixture.run(session, "make the figures").await;
     let requests = fixture.model.requests();
     assert!(
@@ -1404,18 +1401,85 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
         "{}",
         requests[0]
     );
-    assert!(
-        requests[1].contains("Saved asset_") && requests[1].contains("Shown to the user"),
-        "{}",
-        requests[1]
-    );
+    assert!(requests[1].contains("Saved asset_"), "{}", requests[1]);
     assert!(requests[2].contains("project scope"), "{}", requests[2]);
     assert!(requests[3].contains("does not exist"), "{}", requests[3]);
+    // Every tag of the reply resolves, in the background, once: the one in
+    // code is text.
+    let attachments = {
+        let mut found = Vec::new();
+        for _ in 0..100 {
+            let (events, _) = fixture.engine.subscribe(session, None).await.unwrap();
+            found = events
+                .events
+                .iter()
+                .filter_map(|event| match &event.payload {
+                    EventPayload::AssistantAttachment {
+                        ordinal, outcome, ..
+                    } => Some((*ordinal, outcome.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if found.len() == 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        found
+    };
+    assert_eq!(attachments.len(), 3, "{attachments:?}");
+    let cookie_agent_protocol::AttachmentOutcome::Attached { file } = &attachments[0].1 else {
+        panic!("the plot is attached: {attachments:?}");
+    };
+    assert_eq!(file.media_type.as_str(), "image/svg+xml");
+    assert_eq!(file.filename.as_deref(), Some("plot.svg"));
     assert!(
-        requests[4].contains("there is no asset") && requests[4].contains("Loss curves"),
-        "an unknown handle lists the assets: {}",
-        requests[4]
+        matches!(&attachments[1].1, cookie_agent_protocol::AttachmentOutcome::Failed { reason } if reason.contains("does not exist")),
+        "{attachments:?}"
     );
+    assert!(
+        matches!(&attachments[2].1, cookie_agent_protocol::AttachmentOutcome::Failed { reason } if reason.contains("there is no asset")),
+        "{attachments:?}"
+    );
+    // The user saves the attached plot as an asset of the project.
+    let EventPayload::ModelTurnCommitted { model_turn_seq, .. } = fixture
+        .engine
+        .subscribe(session, None)
+        .await
+        .unwrap()
+        .0
+        .events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.payload, EventPayload::ModelTurnCommitted { .. }))
+        .unwrap()
+        .payload
+        .clone()
+    else {
+        unreachable!()
+    };
+    let saved = fixture
+        .engine
+        .save_attachment_asset(cookie_agent_protocol::AttachmentSaveAssetParams {
+            session_id: session,
+            model_turn_seq,
+            content_index: 0,
+            ordinal: 0,
+            scope: cookie_agent_protocol::AssetScope::Project,
+        })
+        .await
+        .unwrap()
+        .asset;
+    assert_eq!(saved.title, "The plot");
+    assert_eq!(saved.store, AssetStore::Shared);
+    fixture
+        .engine
+        .delete_asset(cookie_agent_protocol::AssetDeleteParams {
+            store: AssetStore::Shared,
+            asset: saved.id,
+        })
+        .await
+        .unwrap();
 
     let session_store = AssetStore::Session { session };
     let mine = fixture
@@ -1506,13 +1570,6 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
         "a project the daemon does not have"
     );
 
-    // The figure is an `asset` block of a call the clients keep open.
-    let (events, _) = fixture.engine.subscribe(session, None).await.unwrap();
-    let log = serde_json::to_string(&events).unwrap();
-    assert!(log.contains("\"hint\":\"figure\""), "the figure hint");
-    assert!(log.contains("\"type\":\"asset\""), "an asset block");
-    assert!(log.contains("Training loss over 40 epochs."), "the caption");
-
     // A second run reads, lists, replaces, and deletes them by handle.
     fs::write(
         fixture.web.join("plot.svg"),
@@ -1543,6 +1600,13 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
     let before = fixture.model.requests().len();
     fixture.run(session, "update the plot").await;
     let requests = fixture.model.requests()[before..].to_vec();
+    // The failed attachments are told before the next request.
+    assert!(
+        requests[0].contains("[attachment not attached] nowhere.png")
+            && requests[0].contains("[attachment not attached] asset_00000000"),
+        "{}",
+        requests[0]
+    );
     assert!(
         requests[1].contains("<rect/>"),
         "read as text: {}",
@@ -1593,6 +1657,108 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
             .assets
             .is_empty()
     );
+    // A read the rules ask about waits for the user, who allows it: in the
+    // mode that asks, not yolo.
+    fs::write(fixture.web.join("secret.txt"), "only when allowed").unwrap();
+    fixture
+        .engine
+        .set_permission_mode(
+            session,
+            PermissionMode::Ask,
+            EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .engine
+        .set_session_permission(
+            session,
+            &cookie_agent_protocol::PermissionAction::READ,
+            None,
+            cookie_agent_protocol::WildcardPattern::new("secret.txt").unwrap(),
+            cookie_agent_protocol::PermissionEffect::Ask,
+            EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .model
+        .enqueue(final_answer("Here: <attach src=\"secret.txt\"/>"));
+    fixture.run(session, "attach the secret").await;
+    let latest = |want: fn(&cookie_agent_protocol::AttachmentOutcome) -> bool| {
+        let engine = fixture.engine.clone();
+        async move {
+            for _ in 0..100 {
+                let events = engine.subscribe(session, None).await.unwrap().0.events;
+                let found = events.iter().rev().find_map(|event| match &event.payload {
+                    EventPayload::AssistantAttachment {
+                        model_turn_seq,
+                        tag,
+                        outcome,
+                        ..
+                    } if tag.label() == "secret.txt" && want(outcome) => {
+                        Some((*model_turn_seq, outcome.clone()))
+                    }
+                    _ => None,
+                });
+                if let Some(found) = found {
+                    return found;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            let events = engine.subscribe(session, None).await.unwrap().0.events;
+            let seen = events
+                .iter()
+                .filter_map(|event| match &event.payload {
+                    EventPayload::AssistantAttachment { tag, outcome, .. } => {
+                        Some(format!("{}: {outcome:?}", tag.label()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            panic!("the secret's attachment never resolved so: {seen:#?}");
+        }
+    };
+    let (secret_turn, _) = latest(|outcome| {
+        matches!(
+            outcome,
+            cookie_agent_protocol::AttachmentOutcome::PendingApproval
+        )
+    })
+    .await;
+    fixture
+        .engine
+        .decide_attachment(cookie_agent_protocol::AttachmentDecideParams {
+            session_id: session,
+            model_turn_seq: secret_turn,
+            content_index: 0,
+            ordinal: 0,
+            allow: true,
+        })
+        .await
+        .unwrap();
+    latest(|outcome| {
+        matches!(
+            outcome,
+            cookie_agent_protocol::AttachmentOutcome::Attached { .. }
+        )
+    })
+    .await;
+    // Answered, it waits no more.
+    assert!(
+        fixture
+            .engine
+            .decide_attachment(cookie_agent_protocol::AttachmentDecideParams {
+                session_id: session,
+                model_turn_seq: secret_turn,
+                content_index: 0,
+                ordinal: 0,
+                allow: false,
+            })
+            .await
+            .is_err()
+    );
+
     // Deleting the tree deletes its own assets.
     let last = fixture.engine.get_session(session).unwrap().last_event_seq;
     fixture.engine.delete_session(session, last).await.unwrap();

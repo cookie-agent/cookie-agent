@@ -1259,6 +1259,12 @@ impl Engine {
                 )
                 .await?;
             }
+            // Attachments that failed since the last request: told now, after
+            // the round's tool results, as user history.
+            if let Some(note) = self.take_attachment_notes(active.session) {
+                self.record_attachment_notes(active.session, Some(run_id), &note)
+                    .await?;
+            }
             let prompt_events = self.prompt_events(active.session, run_id).await?;
             let attempt = match self
                 .stream_attempt(
@@ -2610,6 +2616,7 @@ impl Engine {
                             },
                         )
                         .await?;
+                        self.attach_turn(session, model_turn_seq, &turn, &policy.agent, None);
                         request_claim.release().await?;
                         self.note_reasoning_transformations(
                             session,
@@ -2798,12 +2805,13 @@ impl Engine {
                                     model_turn_seq,
                                     resolved_model: wire_model(binding),
                                     input_through_seq,
-                                    turn,
+                                    turn: turn.clone(),
                                     warnings,
                                     prefix_fingerprint: prefix_fingerprint.clone(),
                                 },
                             )
                             .await?;
+                            self.attach_turn(session, model_turn_seq, &turn, &policy.agent, None);
                             // No `ModelUsageRecorded`: an interrupted stream has
                             // no trustworthy usage, and the usage fold skips a
                             // commit whose usage carries no observed tokens.

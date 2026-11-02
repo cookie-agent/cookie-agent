@@ -1,6 +1,8 @@
 //! The asset tools of the `global` runtime (`docs/site/specs/assets.md`
-//! section 5): `write_asset`, `show_asset`, `read_asset`, `list_assets`,
-//! and `delete_asset`, provider `builtin.assets`, group `assets`.
+//! section 5): `write_asset`, `read_asset`, `list_assets`, and
+//! `delete_asset`, provider `builtin.assets`, group `assets`. An agent shows
+//! an asset with `<attach asset="…"/>` in its reply
+//! (`docs/site/specs/message-attachments.md`).
 //!
 //! Every tool is checked under the `asset` action with what the call does
 //! as its resource (`read`, `write`, or `delete`); `write_asset` also checks
@@ -20,10 +22,9 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    ASSET_CAPTION_MAX_CHARS, ASSET_MAX_BYTES, ASSET_SHOW_MAX, ASSET_TITLE_MAX_CHARS,
-    ApprovalResourceSource, Asset, AssetHandle, AssetId, AssetScope, AssetStamp, DisplayBlock,
-    Open, PermissionAction, PersistedToolResult as ToolResult, PreparedBindingLifetime, RuntimeId,
-    ToolHint, human_bytes,
+    ASSET_MAX_BYTES, ASSET_TITLE_MAX_CHARS, ApprovalResourceSource, Asset, AssetHandle, AssetId,
+    AssetScope, AssetStamp, DisplayBlock, Open, PermissionAction,
+    PersistedToolResult as ToolResult, PreparedBindingLifetime, RuntimeId, ToolHint, human_bytes,
     runtime_protocol::{FsDirection, FsKind, FsPrepareResult, MAX_FS_CHUNK_BYTES},
 };
 use cookie_agent_runtime_api::{
@@ -44,7 +45,6 @@ use crate::{
 pub(crate) const PROVIDER_ID: &str = "builtin.assets";
 
 pub(crate) const WRITE: &str = "write_asset";
-pub(crate) const SHOW: &str = "show_asset";
 pub(crate) const READ: &str = "read_asset";
 pub(crate) const LIST: &str = "list_assets";
 pub(crate) const DELETE: &str = "delete_asset";
@@ -54,9 +54,7 @@ const LISTED_ON_ERROR: usize = 20;
 /// The most assets `list_assets` lists.
 const LIST_MAX: usize = 100;
 
-const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and list_runtimes do; omitted, it is the machine of this session's workspace. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: pass `show: true`, with an optional `caption`, or call show_asset. A shown asset shows under the next text you write; name it there by its handle to link to it.";
-
-const SHOW_DESCRIPTION: &str = "Show one or more assets to the user in the conversation, by their handles. They show as cards under the next text you write, as they are now: images, SVG, and video as pictures, an HTML page live, a Markdown document rendered, and any other file as a download. `caption` is one short line on what they show. The user may be on a phone, or in a terminal where an asset is a link, so still say in your reply what they show. Naming an asset by its handle in your reply, such as `asset_3f9a1c2e`, makes it a link the user can open. You get nothing back but a confirmation: use read_asset to look at an asset yourself.";
+const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and list_runtimes do; omitted, it is the machine of this session's workspace. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset=\"asset_3f9a1c2e\"/>` in your reply where it should show.";
 
 const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines, an image as an image when you take images, and otherwise only the asset's type and size.";
 
@@ -76,18 +74,6 @@ struct WriteArgs {
     title: Option<String>,
     #[serde(default)]
     scope: Option<AssetScope>,
-    #[serde(default)]
-    show: bool,
-    #[serde(default)]
-    caption: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ShowArgs {
-    assets: Vec<String>,
-    #[serde(default)]
-    caption: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,7 +105,7 @@ fn spec(name: &str, description: &str, parameters: serde_json::Value) -> ToolSpe
         background_default: false,
         collision: Default::default(),
         output: Default::default(),
-        concurrency: if matches!(name, SHOW | READ | LIST) {
+        concurrency: if matches!(name, READ | LIST) {
             ToolConcurrency::Parallel
         } else {
             ToolConcurrency::default()
@@ -165,24 +151,6 @@ fn build_specs() -> Vec<ToolSpec> {
                     "asset": handle("The handle of an asset to replace. Omit it to save a new asset"),
                     "title": {"type": "string", "maxLength": ASSET_TITLE_MAX_CHARS, "description": "Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing"},
                     "scope": scope("`session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset"),
-                    "show": {"type": "boolean", "description": "Also show the asset in the conversation, as show_asset does. Defaults to false"},
-                    "caption": {"type": "string", "maxLength": ASSET_CAPTION_MAX_CHARS, "description": "With `show`: one short line on what the asset shows"},
-                }
-            }),
-        ),
-        spec(
-            SHOW,
-            SHOW_DESCRIPTION,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["assets"],
-                "properties": {
-                    "assets": {
-                        "type": "array", "minItems": 1, "maxItems": ASSET_SHOW_MAX,
-                        "items": {"type": "string"},
-                        "description": "The handles of the assets to show, 1 to 12, in the order to show them",
-                    },
-                    "caption": {"type": "string", "maxLength": ASSET_CAPTION_MAX_CHARS, "description": "One short line on what they show"},
                 }
             }),
         ),
@@ -230,7 +198,7 @@ pub fn asset_tool_specs() -> Vec<ToolSpec> {
 /// The `asset` resource a tool's calls have.
 fn resource(tool: &str) -> Result<&'static str, ToolError> {
     match tool {
-        SHOW | READ | LIST => Ok("read"),
+        READ | LIST => Ok("read"),
         WRITE => Ok("write"),
         DELETE => Ok("delete"),
         other => Err(ToolError::execution(format!(
@@ -314,7 +282,7 @@ fn store_failed(error: crate::assets::AssetError) -> ToolError {
 /// The asset `reference` names among the assets `stores` reach: a handle,
 /// or an asset's full ID, the tree's first. A reference that names none
 /// fails with the assets listed.
-fn resolve(
+pub(crate) fn resolve(
     engine: &Engine,
     stores: &SessionAssetStores,
     reference: &str,
@@ -385,27 +353,9 @@ fn text_result(title: &str, output: String, display: Vec<Open<DisplayBlock>>) ->
     })
 }
 
-/// A figure of `assets`: the caption as a `text` block, then one `asset`
-/// block each.
-fn figure(assets: &[Asset], caption: Option<&str>) -> Vec<Open<DisplayBlock>> {
-    caption
-        .map(|caption| Open::Known(DisplayBlock::text(caption)))
-        .into_iter()
-        .chain(
-            assets
-                .iter()
-                .map(|asset| Open::Known(DisplayBlock::Asset(asset.block()))),
-        )
-        .collect()
-}
-
 /// What a prepared asset call does.
 enum AssetCall {
     Write(Box<WriteCall>),
-    Show {
-        assets: Vec<Asset>,
-        caption: Option<String>,
-    },
     Read {
         asset: Asset,
         offset: Option<usize>,
@@ -427,8 +377,6 @@ struct WriteCall {
     store: cookie_agent_protocol::AssetStore,
     replace: Option<Asset>,
     title: Option<String>,
-    show: bool,
-    caption: Option<String>,
 }
 
 impl Drop for WriteCall {
@@ -449,7 +397,7 @@ impl Engine {
     /// The machine `write_asset` reads from when it names none: the
     /// machine of the session's first attachment whose runtime takes
     /// transfers.
-    fn default_asset_machine(
+    pub(crate) fn default_asset_machine(
         &self,
         session: cookie_agent_protocol::SessionId,
     ) -> Result<String, ToolError> {
@@ -518,17 +466,6 @@ impl ToolProvider for AssetTools {
         let text = |member: &str| arguments.get(member).and_then(serde_json::Value::as_str);
         Ok(match name {
             WRITE => text("path").unwrap_or_default().to_owned(),
-            SHOW => arguments
-                .get("assets")
-                .and_then(serde_json::Value::as_array)
-                .map(|handles| {
-                    handles
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default(),
             LIST => text("scope").unwrap_or_default().to_owned(),
             _ => text("asset").unwrap_or_default().to_owned(),
         })
@@ -544,45 +481,24 @@ impl ToolProvider for AssetTools {
         let primary = self
             .get_display_argument(&call.name, &call.arguments)
             .unwrap_or_default();
-        let shows = call.name == SHOW
-            || (call.name == WRITE
-                && call
-                    .arguments
-                    .get("show")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false));
         let title = match call.name.as_str() {
-            WRITE if shows => match text("title") {
-                Some(title) => format!("Show {title}"),
-                None => "Show an asset".to_owned(),
-            },
             WRITE => match (text("asset"), text("title")) {
                 (Some(asset), _) => format!("Replace asset {asset}"),
                 (None, Some(title)) => format!("Save asset {title}"),
                 (None, None) => "Save an asset".to_owned(),
             },
-            SHOW => "Show assets".to_owned(),
             READ => "Read an asset".to_owned(),
             LIST => "List assets".to_owned(),
             DELETE => "Delete an asset".to_owned(),
             _ => return cookie_agent_runtime_api::tool_title_only(&call.name),
         };
         let mut entries = Vec::new();
-        for member in ["machine", "asset", "title", "scope", "caption"] {
+        for member in ["machine", "asset", "title", "scope"] {
             if let Some(value) = text(member) {
                 entries.push((member, value));
             }
         }
-        crate::base_tools::base_presentation(
-            &title,
-            if shows {
-                ToolHint::FIGURE
-            } else {
-                ToolHint::GENERIC
-            },
-            &primary,
-            entries,
-        )
+        crate::base_tools::base_presentation(&title, ToolHint::GENERIC, &primary, entries)
     }
 
     async fn prepare(
@@ -598,12 +514,6 @@ impl ToolProvider for AssetTools {
                 let args: WriteArgs = parse_args(WRITE, call.arguments.clone())?;
                 if let Some(title) = &args.title {
                     check_line(title, "title", ASSET_TITLE_MAX_CHARS)?;
-                }
-                if let Some(caption) = &args.caption {
-                    if !args.show {
-                        return Err(refused("`caption` goes with `show: true`"));
-                    }
-                    check_line(caption, "caption", ASSET_CAPTION_MAX_CHARS)?;
                 }
                 if args.asset.is_some() && args.scope.is_some() {
                     return Err(refused(
@@ -643,8 +553,6 @@ impl ToolProvider for AssetTools {
                     stores,
                     replace,
                     title: args.title,
-                    show: args.show,
-                    caption: args.caption,
                     prepared,
                 };
                 // Refused before anyone is asked to approve it.
@@ -679,39 +587,6 @@ impl ToolProvider for AssetTools {
                     endpoint.scope,
                 );
                 (AssetCall::Write(Box::new(write)), Some(path))
-            }
-            SHOW => {
-                let args: ShowArgs = parse_args(SHOW, call.arguments.clone())?;
-                if args.assets.is_empty() || args.assets.len() > ASSET_SHOW_MAX {
-                    return Err(refused(format!(
-                        "show 1 to {ASSET_SHOW_MAX} assets at once"
-                    )));
-                }
-                if let Some(caption) = &args.caption {
-                    check_line(caption, "caption", ASSET_CAPTION_MAX_CHARS)?;
-                }
-                let references = args.assets;
-                let assets = blocking(&engine, session, move |engine, stores| {
-                    let mut seen = HashSet::new();
-                    references
-                        .iter()
-                        .map(|reference| {
-                            let asset = resolve(engine, stores, reference)?;
-                            if !seen.insert(asset.id) {
-                                return Err(refused(format!("{} is named twice", asset.handle)));
-                            }
-                            Ok(asset)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .await?;
-                (
-                    AssetCall::Show {
-                        assets,
-                        caption: args.caption,
-                    },
-                    None,
-                )
             }
             READ => {
                 let args: ReadArgs = parse_args(READ, call.arguments.clone())?;
@@ -820,41 +695,6 @@ impl PreparedExecutor for AssetExecutor {
         let session = self.session;
         match self.call {
             AssetCall::Write(write) => execute_write(engine, context, *write).await,
-            AssetCall::Show { assets, caption } => {
-                // Shown as each asset is now, in case it changed since the
-                // call was prepared.
-                let ids = assets.iter().map(|asset| asset.id).collect::<Vec<_>>();
-                let assets = blocking(&engine, session, move |engine, stores| {
-                    let current = engine.session_assets(stores).map_err(store_failed)?;
-                    ids.iter()
-                        .map(|id| {
-                            current
-                                .iter()
-                                .find(|asset| asset.id == *id)
-                                .cloned()
-                                .ok_or_else(|| refused("an asset was deleted before it was shown"))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .await?;
-                let output = format!(
-                    "Shown to the user: {}.",
-                    assets
-                        .iter()
-                        .map(Asset::summary)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                let title = match assets.as_slice() {
-                    [asset] => format!("Showed {}", asset.title),
-                    _ => format!("Showed {} assets", assets.len()),
-                };
-                Ok(text_result(
-                    &title,
-                    output,
-                    figure(&assets, caption.as_deref()),
-                ))
-            }
             AssetCall::Read {
                 asset,
                 offset,
@@ -944,24 +784,29 @@ fn list_line(
 /// Reads the file of `write` from its machine, at most
 /// [`ASSET_MAX_BYTES`].
 async fn read_file(write: &mut WriteCall) -> Result<Vec<u8>, String> {
+    write.armed = false;
+    read_route(&write.client, write.route).await
+}
+
+/// Reads the file `client` prepared as `route`, at most
+/// [`ASSET_MAX_BYTES`]; the route is used up either way.
+pub(crate) async fn read_route(client: &RuntimeClient, route: u64) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
 
-    write.armed = false;
-    let opened = write.client.fs_read_open(write.route).await?;
+    let opened = client.fs_read_open(route).await?;
     if opened.kind != FsKind::File {
-        write.client.fs_close(opened.handle).await;
+        client.fs_close(opened.handle).await;
         return Err("it is not a file".into());
     }
     let mut bytes = Vec::with_capacity(opened.size.unwrap_or(0).min(ASSET_MAX_BYTES) as usize);
     loop {
-        let chunk = match write
-            .client
+        let chunk = match client
             .fs_read_chunk(opened.handle, MAX_FS_CHUNK_BYTES)
             .await
         {
             Ok(chunk) => chunk,
             Err(error) => {
-                write.client.fs_close(opened.handle).await;
+                client.fs_close(opened.handle).await;
                 return Err(error);
             }
         };
@@ -970,9 +815,9 @@ async fn read_file(write: &mut WriteCall) -> Result<Vec<u8>, String> {
             .map_err(|error| format!("the runtime sent data that does not decode: {error}"))?;
         bytes.extend_from_slice(&data);
         if bytes.len() as u64 > ASSET_MAX_BYTES {
-            write.client.fs_close(opened.handle).await;
+            client.fs_close(opened.handle).await;
             return Err(format!(
-                "it holds more than an asset's {}",
+                "it holds more than {}",
                 human_bytes(ASSET_MAX_BYTES)
             ));
         }
@@ -1032,27 +877,13 @@ async fn execute_write(
         })
         .await
         .map_err(|error| refused(error.to_string()))?;
-    let mut output = format!(
+    let output = format!(
         "Saved {}, {}.",
         scoped_summary(&asset),
         if new { "new" } else { "replaced" }
     );
-    let display = if write.show {
-        output.push_str(" Shown to the user.");
-        figure(std::slice::from_ref(&asset), write.caption.as_deref())
-    } else {
-        Vec::new()
-    };
-    let title = if write.show {
-        format!("Showed {}", asset.title)
-    } else {
-        format!("Saved {}", asset.title)
-    };
-    let display = if display.is_empty() {
-        crate::base_tools::markdown_display(&output)
-    } else {
-        display
-    };
+    let title = format!("Saved {}", asset.title);
+    let display = crate::base_tools::markdown_display(&output);
     Ok(text_result(&title, output, display))
 }
 

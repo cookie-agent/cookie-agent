@@ -1308,6 +1308,15 @@ impl Turn<'_> {
                 Value::from(step.message_ids),
             );
         }
+        let turn = PersistedModelTurn {
+            content: step.parts,
+            provider_options: Default::default(),
+            finish_reason: finish,
+            usage: Usage::default(),
+            response_metadata,
+            provider_metadata: Default::default(),
+            native_replay: None,
+        };
         self.engine
             .append(
                 self.session(),
@@ -1318,20 +1327,27 @@ impl Turn<'_> {
                     model_turn_seq,
                     resolved_model: binding.resolved.clone(),
                     input_through_seq: self.input_through_seq,
-                    turn: PersistedModelTurn {
-                        content: step.parts,
-                        provider_options: Default::default(),
-                        finish_reason: finish,
-                        usage: Usage::default(),
-                        response_metadata,
-                        provider_metadata: Default::default(),
-                        native_replay: None,
-                    },
+                    turn: turn.clone(),
                     warnings: Vec::new(),
                     prefix_fingerprint: None,
                 },
             )
             .await?;
+        // A tag without `machine` reads from the agent's own machine.
+        let machine = self
+            .engine
+            .runtime_machine(self.live.agent.runtime.as_str())
+            .map_or_else(
+                || self.live.agent.runtime.to_string(),
+                |name| name.to_string(),
+            );
+        self.engine.attach_turn(
+            self.session(),
+            model_turn_seq,
+            &turn,
+            &self.active.policy.agent,
+            Some(machine),
+        );
         self.last_turn_seq = Some(model_turn_seq);
         self.retries = 0;
         if let Some(mut claim) = self.claim.take() {
@@ -3089,6 +3105,13 @@ impl Engine {
                 )
                 .await;
             }
+            // Attachments that failed since the agent last heard: told with
+            // this prompt, and recorded so the user sees it.
+            let attachments_note = self.take_attachment_notes(active.session);
+            if let Some(note) = &attachments_note {
+                self.record_attachment_notes(active.session, Some(run_id), note)
+                    .await?;
+            }
             let claim = self.prompt_events(active.session, run_id).await?;
             // What the agent reads beyond the conversation is on the record,
             // so the user sees it.
@@ -3107,13 +3130,11 @@ impl Engine {
                 )
                 .await?;
             }
-            let prompt = self.acp_prompt(
-                &claim.events,
-                &mut turn.live,
-                context,
-                machines_note,
-                process,
-            );
+            let notes = match (machines_note, attachments_note) {
+                (Some(machines), Some(attachments)) => Some(format!("{machines}\n\n{attachments}")),
+                (machines, attachments) => machines.or(attachments),
+            };
+            let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, notes, process);
             // The agent's own subagent works only on what its parent gives
             // it: cookie has no prompt to send it.
             if !prompt.is_empty() && super::is_acp_subagent(&claim.events) {

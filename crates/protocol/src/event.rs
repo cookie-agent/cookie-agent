@@ -3417,6 +3417,16 @@ pub enum EventPayload {
     PermissionModeSet {
         mode: crate::PermissionMode,
     },
+    /// The `ordinal`th `<attach …/>` tag of the text part `content_index`
+    /// of model turn `model_turn_seq` resolved as `outcome` (client
+    /// protocol 1.73.0). A tag's later event replaces its earlier one.
+    AssistantAttachment {
+        model_turn_seq: u64,
+        content_index: u32,
+        ordinal: u32,
+        tag: crate::AttachTag,
+        outcome: crate::AttachmentOutcome,
+    },
 }
 
 // Plugins receive events as `Open<EventPayload>`: an event type a plugin
@@ -3429,6 +3439,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "approval_finalized",
     "approval_requested",
     "approval_step",
+    "assistant_attachment",
     "attempt_abandoned",
     "automatic_runs_held",
     "automatic_runs_resumed",
@@ -3632,6 +3643,9 @@ impl EventPayload {
             | Self::ToolCallProgress { .. }
             | Self::AcpLiveUpdate { .. }
             | Self::MemoryChanged { .. }
+            // Only clients show these; the model's history and the
+            // projection never read them.
+            | Self::AssistantAttachment { .. }
             | Self::RecordOmitted { .. } => true,
             // The approval projection ignores the doom-loop step; an unknown
             // step reads as a state step, the safe side for its writer's
@@ -3766,6 +3780,7 @@ impl EventPayload {
                 | Self::AcpSessionUpdated { .. }
                 | Self::AutomaticRunsHeld { .. }
                 | Self::AutomaticRunsResumed {}
+                | Self::AssistantAttachment { .. }
         )
     }
     fn validate(&self) -> Result<(), EventSchemaError> {
