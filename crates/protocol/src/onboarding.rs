@@ -262,3 +262,71 @@ pub struct OnboardingRunResult {
     pub settings: Vec<String>,
     pub status: OnboardingStatus,
 }
+
+/// An ACP agent onboarding can link (`docs/site/specs/acp-onboarding.md`
+/// section 3, client protocol 1.73.0), from the official agents
+/// repository: the declaration it fills in.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpPreset {
+    /// The agent ID it suggests, such as `claude`.
+    pub id: crate::AgentId,
+    /// Its name, such as "Claude Code".
+    #[schemars(length(min = 1, max = 128))]
+    pub name: String,
+    /// The declaration's `description`.
+    #[schemars(length(max = 512))]
+    pub description: String,
+    /// The program and its arguments.
+    #[schemars(length(min = 1, max = 64))]
+    pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// What each machine that runs it needs, as a sentence.
+    #[schemars(length(max = 1024))]
+    pub needs: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 2048))]
+    pub docs_url: Option<String>,
+}
+
+/// Where an MCP preset's server goes. A value this build does not know
+/// reads as `unknown`, which onboarding does not offer.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum McpPresetPlace {
+    /// A hosted server: `[mcp.servers.<name>]`, where the daemon runs.
+    Global,
+    /// A program on a machine the user picks:
+    /// `[runtimes.<runtime>.mcp.servers.<name>]`.
+    Machine,
+    #[serde(other)]
+    Unknown,
+}
+
+/// An MCP server that needs no login, which onboarding's Tools step offers
+/// (`docs/site/specs/acp-onboarding.md` section 9.1, client protocol
+/// 1.73.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct McpPreset {
+    /// The server name it suggests, such as `exa`.
+    #[schemars(length(min = 1, max = 64))]
+    pub id: String,
+    #[schemars(length(min = 1, max = 128))]
+    pub name: String,
+    /// What kind of tool it is, such as "Web search".
+    #[schemars(length(max = 128))]
+    pub category: String,
+    #[schemars(length(max = 512))]
+    pub description: String,
+    /// The server's table as `config.toml` takes it (`url`, or `command`
+    /// and `args`, and the other keys of an MCP server).
+    pub server: serde_json::Map<String, serde_json::Value>,
+    #[serde(rename = "where")]
+    pub place: McpPresetPlace,
+    #[schemars(length(max = 1024))]
+    pub needs: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 2048))]
+    pub docs_url: Option<String>,
+}

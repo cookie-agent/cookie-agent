@@ -8,6 +8,11 @@
 //! and is reported as a configuration diagnostic. A refresh that changes
 //! anything reloads the configuration, so new runs see it at once; a user
 //! document of the same ID in `agents/` replaces the official one.
+//!
+//! The index also lists templates (`templates`, kept as `_<name>.md`) and
+//! the presets onboarding offers (`acp_presets`, `mcp_presets`, kept in
+//! `.presets.json`), in lists of their own that earlier builds ignore
+//! (`docs/site/specs/acp-onboarding.md` sections 3, 6.1, and 9.1).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -38,6 +43,150 @@ const MAX_AGENTS: usize = 256;
 struct SourceIndex {
     version: u32,
     agents: Vec<IndexAgent>,
+    /// Templates by name without the `_`; kept as `_<name>.md`.
+    #[serde(default)]
+    templates: Vec<IndexAgent>,
+    /// Each read on its own, so one this build cannot use leaves out only
+    /// itself.
+    #[serde(default)]
+    acp_presets: Vec<serde_json::Value>,
+    #[serde(default)]
+    mcp_presets: Vec<serde_json::Value>,
+}
+
+/// The presets onboarding offers, from the official source
+/// (`docs/site/specs/acp-onboarding.md` sections 3 and 9.1).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OfficialPresets {
+    #[serde(default)]
+    pub acp: Vec<cookie_agent_protocol::AcpPreset>,
+    #[serde(default)]
+    pub mcp: Vec<cookie_agent_protocol::McpPreset>,
+}
+
+/// Where the presets are kept, beside the official agents.
+const PRESETS_RECORD: &str = ".presets.json";
+
+/// A preset of the index with the cookie versions it needs.
+#[derive(Deserialize)]
+struct Versioned<T> {
+    requires_cookie: String,
+    #[serde(flatten)]
+    preset: T,
+}
+
+/// The presets of `index` this build can use, and why the others were left
+/// out: each must read, need a cookie version this one is, and hold what a
+/// preset must (a command, a server table the configuration takes).
+pub fn usable_presets(
+    acp: &[serde_json::Value],
+    mcp: &[serde_json::Value],
+    version: &str,
+) -> (OfficialPresets, Vec<String>) {
+    let mut presets = OfficialPresets::default();
+    let mut refusals = Vec::new();
+    for value in acp.iter().take(MAX_AGENTS) {
+        let label = preset_label(value);
+        match serde_json::from_value::<Versioned<cookie_agent_protocol::AcpPreset>>(value.clone()) {
+            Err(error) => refusals.push(format!("ACP preset `{label}`: {error}")),
+            Ok(versioned) => match version_satisfies(&versioned.requires_cookie, version) {
+                None => refusals.push(format!(
+                    "ACP preset `{label}`: `{}` is not a version range",
+                    versioned.requires_cookie
+                )),
+                Some(false) => {}
+                Some(true) => match acp_preset_problem(&versioned.preset) {
+                    Some(problem) => refusals.push(format!("ACP preset `{label}`: {problem}")),
+                    None => presets.acp.push(versioned.preset),
+                },
+            },
+        }
+    }
+    for value in mcp.iter().take(MAX_AGENTS) {
+        let label = preset_label(value);
+        match serde_json::from_value::<Versioned<cookie_agent_protocol::McpPreset>>(value.clone()) {
+            Err(error) => refusals.push(format!("MCP preset `{label}`: {error}")),
+            Ok(versioned) => match version_satisfies(&versioned.requires_cookie, version) {
+                None => refusals.push(format!(
+                    "MCP preset `{label}`: `{}` is not a version range",
+                    versioned.requires_cookie
+                )),
+                Some(false) => {}
+                Some(true) => match mcp_preset_problem(&versioned.preset) {
+                    Some(problem) => refusals.push(format!("MCP preset `{label}`: {problem}")),
+                    None => presets.mcp.push(versioned.preset),
+                },
+            },
+        }
+    }
+    (presets, refusals)
+}
+
+fn preset_label(value: &serde_json::Value) -> String {
+    value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?")
+        .to_owned()
+}
+
+fn acp_preset_problem(preset: &cookie_agent_protocol::AcpPreset) -> Option<String> {
+    if preset.name.trim().is_empty() {
+        return Some("has no name".into());
+    }
+    if preset
+        .command
+        .first()
+        .is_none_or(|program| program.trim().is_empty())
+    {
+        return Some("has no command".into());
+    }
+    None
+}
+
+fn mcp_preset_problem(preset: &cookie_agent_protocol::McpPreset) -> Option<String> {
+    if preset.name.trim().is_empty() {
+        return Some("has no name".into());
+    }
+    if preset.place == cookie_agent_protocol::McpPresetPlace::Unknown {
+        return Some("`where` is neither `global` nor `machine`".into());
+    }
+    mcp_server_problem(
+        &preset.id,
+        &preset.server,
+        preset.place == cookie_agent_protocol::McpPresetPlace::Global,
+    )
+}
+
+/// Why `server` is not a table the configuration takes for an MCP server
+/// `name`, at the top level (`global`) or a runtime's.
+pub(crate) fn mcp_server_problem(
+    name: &str,
+    server: &serde_json::Map<String, serde_json::Value>,
+    global: bool,
+) -> Option<String> {
+    let value = match toml::Value::try_from(serde_json::Value::Object(server.clone())) {
+        Ok(value) => value,
+        Err(error) => return Some(format!("its server is not a TOML table: {error}")),
+    };
+    let config = match cookie_agent_config::McpServerConfig::deserialize(value) {
+        Ok(config) => config,
+        Err(error) => return Some(format!("its server does not read: {error}")),
+    };
+    let checked = if global {
+        config.validate_top_level(name)
+    } else {
+        config.validate(name)
+    };
+    checked.err().map(|error| error.to_string())
+}
+
+/// The presets kept in `root`, or none.
+fn read_presets(root: &Path) -> OfficialPresets {
+    std::fs::read(root.join(PRESETS_RECORD))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 /// One agent of the index, and of the daemon's record of what it keeps
@@ -62,6 +211,9 @@ pub struct OfficialAgentsReport {
     pub removed: Vec<String>,
     /// Why the refresh failed, or what it refused, if anything.
     pub error: Option<String>,
+    /// The presets kept afterwards: the index's, or the cached ones when
+    /// it was not read.
+    pub presets: OfficialPresets,
 }
 
 pub(crate) struct OfficialAgentsState {
@@ -69,6 +221,9 @@ pub(crate) struct OfficialAgentsState {
     /// one, they live below it, where the configuration reads them.
     root: PathBuf,
     versions: Mutex<Arc<BTreeMap<String, String>>>,
+    /// The presets as of the last refresh; `None` before one, when they
+    /// are read from where the configuration keeps them.
+    presets: Mutex<Option<Arc<OfficialPresets>>>,
     source_url: Mutex<String>,
     last_error: Mutex<Option<String>>,
     refresh: tokio::sync::Mutex<()>,
@@ -82,6 +237,7 @@ impl OfficialAgentsState {
             // record; this is only the engine's own view until a refresh.
             versions: Mutex::new(Arc::new(versions(read_kept(&root)))),
             root,
+            presets: Mutex::new(None),
             source_url: Mutex::new(OFFICIAL_AGENTS_URL.to_owned()),
             last_error: Mutex::new(None),
             refresh: tokio::sync::Mutex::new(()),
@@ -100,6 +256,23 @@ impl Engine {
     #[must_use]
     pub fn official_agents(&self) -> Arc<BTreeMap<String, String>> {
         Arc::clone(&lock(&self.inner.official_agents.versions))
+    }
+
+    /// The presets onboarding offers: the last refresh's, else the kept
+    /// ones.
+    #[must_use]
+    pub fn official_presets(&self) -> Arc<OfficialPresets> {
+        let state = &self.inner.official_agents;
+        if let Some(presets) = lock(&state.presets).as_ref() {
+            return Arc::clone(presets);
+        }
+        let root = self.configuration_root().ok().map_or_else(
+            || state.root.clone(),
+            |root| cookie_agent_config::official_agents_root(&root),
+        );
+        let presets = Arc::new(read_presets(&root));
+        *lock(&state.presets) = Some(Arc::clone(&presets));
+        presets
     }
 
     /// Why the last refresh failed, and why kept official agents were left
@@ -142,7 +315,11 @@ impl Engine {
         let mut report = refresh(&url, &root, config_root).await;
         report.enabled = true;
         *lock(&state.versions) = Arc::new(report.agents.clone());
-        if (!report.updated.is_empty() || !report.removed.is_empty())
+        let presets_changed = lock(&state.presets)
+            .as_deref()
+            .is_none_or(|presets| *presets != report.presets);
+        *lock(&state.presets) = Some(Arc::new(report.presets.clone()));
+        if (!report.updated.is_empty() || !report.removed.is_empty() || presets_changed)
             && let Err(error) = self.reload_configuration().await
         {
             let reload = format!("the configuration did not reload: {error}");
@@ -178,9 +355,14 @@ async fn refresh(url: &str, root: &Path, config_root: Option<PathBuf>) -> Offici
         let root = root.to_owned();
         local(move || read_kept(&root)).await.unwrap_or_default()
     };
+    let cached_presets = {
+        let root = root.to_owned();
+        local(move || read_presets(&root)).await.unwrap_or_default()
+    };
     let fail = |mut report: OfficialAgentsReport, error: String, kept: Vec<IndexAgent>| {
         report.error = Some(error);
         report.agents = versions(kept);
+        report.presets = cached_presets.clone();
         report
     };
     let client = match source_client() {
@@ -203,8 +385,34 @@ async fn refresh(url: &str, root: &Path, config_root: Option<PathBuf>) -> Offici
         Err(error) => return fail(report, error, kept),
     };
     let mut refusals = Vec::new();
+    let (presets, preset_refusals) = usable_presets(
+        &index.acp_presets,
+        &index.mcp_presets,
+        env!("CARGO_PKG_VERSION"),
+    );
+    refusals.extend(preset_refusals);
+    {
+        let root = root.to_owned();
+        let bytes = serde_json::to_vec_pretty(&presets).unwrap_or_default();
+        if let Ok(Err(error)) =
+            local(move || write_atomically(&root.join(PRESETS_RECORD), &bytes)).await
+        {
+            refusals.push(format!("the presets were not kept: {error}"));
+        }
+    }
+    report.presets = presets;
+    // A template is kept as `_<name>.md`, under the ID `_<name>`.
+    let templates = index.templates.into_iter().map(|template| IndexAgent {
+        id: format!("_{}", template.id),
+        ..template
+    });
     let mut wanted = BTreeMap::new();
-    for agent in index.agents.into_iter().take(MAX_AGENTS) {
+    for agent in index
+        .agents
+        .into_iter()
+        .take(MAX_AGENTS)
+        .chain(templates.take(MAX_AGENTS))
+    {
         if let Err(reason) = valid_entry(&agent) {
             refusals.push(format!("`{}`: {reason}", agent.id));
             continue;
@@ -379,16 +587,29 @@ fn loads(
     id: &str,
     bytes: &[u8],
 ) -> Result<(), String> {
-    let id = cookie_agent_identity::AgentId::new(id).map_err(|error| error.to_string())?;
+    let put = |tree: &mut cookie_agent_config::ConfigTree| -> Result<(), String> {
+        match id.strip_prefix('_') {
+            Some(name) => {
+                cookie_agent_identity::AgentId::new(name).map_err(|error| error.to_string())?;
+                tree.put_official_template(name, bytes.to_vec());
+            }
+            None => {
+                let id =
+                    cookie_agent_identity::AgentId::new(id).map_err(|error| error.to_string())?;
+                tree.put_official_agent(id, bytes.to_vec());
+            }
+        }
+        Ok(())
+    };
     let mut tree = tree.cloned().unwrap_or_default();
     tree.clear_official_agents();
-    tree.put_official_agent(id.clone(), bytes.to_vec());
+    put(&mut tree)?;
     match cookie_agent_config::load_from_tree(&tree) {
         // The user's own configuration may not load; that is not the
         // official document's fault, so check it alone.
         Err(_) => {
             let mut alone = cookie_agent_config::ConfigTree::default();
-            alone.put_official_agent(id, bytes.to_vec());
+            put(&mut alone)?;
             first_diagnostic(cookie_agent_config::load_from_tree(&alone))
         }
         loaded => first_diagnostic(loaded),
@@ -406,7 +627,9 @@ fn first_diagnostic(
 }
 
 fn valid_entry(agent: &IndexAgent) -> Result<(), String> {
-    cookie_agent_identity::AgentId::new(&agent.id).map_err(|_| "not an agent ID".to_owned())?;
+    // A template's entry is `_<name>`, its file `_<name>.md`.
+    cookie_agent_identity::AgentId::new(agent.id.strip_prefix('_').unwrap_or(&agent.id))
+        .map_err(|_| "not an agent ID".to_owned())?;
     if agent.sha256.len() != 64 || !agent.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("has no SHA-256".into());
     }

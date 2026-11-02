@@ -18,9 +18,11 @@ pub(crate) enum AgentsCommand {
     /// Refresh the official agents now.
     Update,
     /// Check the agent documents of a directory: each `<id>.md` loads with
-    /// this build's strict parser, on its own as an official agent; an
-    /// `index.json` beside them must match their files; a `compaction.md`
-    /// keeps the body this build falls back to. Needs no daemon.
+    /// this build's strict parser, on its own as an official agent, and each
+    /// template `_<name>.md` as an official template; an `index.json` beside
+    /// them must match their files, and its presets must be ones this build
+    /// takes; a `compaction.md` keeps the body this build falls back to.
+    /// Needs no daemon.
     Check {
         /// The agents directory.
         dir: PathBuf,
@@ -151,11 +153,39 @@ pub(crate) fn check(dir: &Path) -> anyhow::Result<Vec<String>> {
     }
     let mut problems = Vec::new();
     let mut ids = Vec::new();
+    let mut templates = Vec::new();
     for path in &documents {
         let id = path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
+        if let Some(name) = id.strip_prefix('_') {
+            let name = match cookie_agent_protocol::AgentId::new(name) {
+                Ok(name) => name,
+                Err(error) => {
+                    problems.push(format!("{}: not a template name: {error}", path.display()));
+                    continue;
+                }
+            };
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let mut tree = cookie_agent_config::ConfigTree::default();
+                    tree.put_official_template(name.as_str(), bytes);
+                    match cookie_agent_config::load_from_tree(&tree) {
+                        Err(error) => problems.push(format!("{}: {error}", path.display())),
+                        Ok(loaded) => problems.extend(
+                            loaded
+                                .official_agent_diagnostics
+                                .iter()
+                                .map(|diagnostic| format!("{}: {diagnostic}", path.display())),
+                        ),
+                    }
+                }
+                Err(error) => problems.push(format!("{}: {error}", path.display())),
+            }
+            templates.push(name);
+            continue;
+        }
         let id = match cookie_agent_protocol::AgentId::new(&id) {
             Ok(id) => id,
             Err(error) => {
@@ -187,17 +217,28 @@ pub(crate) fn check(dir: &Path) -> anyhow::Result<Vec<String>> {
     }
     let index = dir.join("index.json");
     if index.exists() {
-        problems.extend(index_problems(dir, &index, &ids));
+        problems.extend(index_problems(dir, &index, &ids, &templates));
     }
     Ok(problems)
 }
 
 /// What is wrong with `index.json` against the documents `ids` of `dir`.
-fn index_problems(dir: &Path, index: &Path, ids: &[cookie_agent_protocol::AgentId]) -> Vec<String> {
+fn index_problems(
+    dir: &Path,
+    index: &Path,
+    ids: &[cookie_agent_protocol::AgentId],
+    templates: &[cookie_agent_protocol::AgentId],
+) -> Vec<String> {
     #[derive(serde::Deserialize)]
     struct Index {
         version: u32,
         agents: Vec<Entry>,
+        #[serde(default)]
+        templates: Vec<Entry>,
+        #[serde(default)]
+        acp_presets: Vec<serde_json::Value>,
+        #[serde(default)]
+        mcp_presets: Vec<serde_json::Value>,
     }
     #[derive(serde::Deserialize)]
     struct Entry {
@@ -220,7 +261,17 @@ fn index_problems(dir: &Path, index: &Path, ids: &[cookie_agent_protocol::AgentI
     if index.version != 1 {
         problems.push(format!("{shown}: version must be 1"));
     }
-    for entry in &index.agents {
+    let entries = index
+        .agents
+        .iter()
+        .map(|entry| (entry, entry.id.clone()))
+        .chain(
+            index
+                .templates
+                .iter()
+                .map(|entry| (entry, format!("_{}", entry.id))),
+        );
+    for (entry, file) in entries {
         if entry.version.is_empty() {
             problems.push(format!("{shown}: `{}` has no version", entry.id));
         }
@@ -230,7 +281,7 @@ fn index_problems(dir: &Path, index: &Path, ids: &[cookie_agent_protocol::AgentI
                 entry.id, entry.requires_cookie
             ));
         }
-        match std::fs::read(dir.join(format!("{}.md", entry.id))) {
+        match std::fs::read(dir.join(format!("{file}.md"))) {
             Ok(bytes) => {
                 let actual = format!("{:x}", Sha256::digest(&bytes));
                 if !actual.eq_ignore_ascii_case(&entry.sha256) {
@@ -240,9 +291,29 @@ fn index_problems(dir: &Path, index: &Path, ids: &[cookie_agent_protocol::AgentI
                     ));
                 }
             }
-            Err(_) => problems.push(format!("{shown}: `{}` has no {}.md", entry.id, entry.id)),
+            Err(_) => problems.push(format!("{shown}: `{}` has no {file}.md", entry.id)),
         }
     }
+    for name in templates {
+        if !index
+            .templates
+            .iter()
+            .any(|entry| entry.id == name.as_str())
+        {
+            problems.push(format!(
+                "{shown}: `_{name}.md` is not listed under `templates`"
+            ));
+        }
+    }
+    // Every preset, whatever cookie version it asks for, must be one this
+    // build takes.
+    let (_, refusals) =
+        cookie_agent_engine::usable_presets(&index.acp_presets, &index.mcp_presets, "999.0.0");
+    problems.extend(
+        refusals
+            .into_iter()
+            .map(|refusal| format!("{shown}: {refusal}")),
+    );
     for id in ids {
         if !index.agents.iter().any(|entry| entry.id == id.as_str()) {
             problems.push(format!("{shown}: `{id}.md` is not listed"));
@@ -279,6 +350,55 @@ mod tests {
         assert_eq!(
             super::check(directory.path()).expect("checked"),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn check_reads_templates_and_presets() {
+        use sha2::{Digest as _, Sha256};
+        let directory = tempfile::tempdir().expect("tempdir");
+        let template =
+            "---\ndescription: An ACP agent\nmode: all\nacp: {}\n---\nYou run inside cookie.\n";
+        std::fs::write(directory.path().join("_acp.md"), template).expect("template");
+        let index = |acp_command: serde_json::Value, listed: bool| {
+            let mut index = serde_json::json!({
+                "version": 1,
+                "agents": [],
+                "acp_presets": [{"id": "claude", "name": "Claude Code", "description": "",
+                    "command": acp_command, "needs": "", "requires_cookie": ">=0.1.0"}],
+                "mcp_presets": [{"id": "exa", "name": "Exa", "category": "Web search",
+                    "description": "", "server": {"url": "https://mcp.exa.ai/mcp"},
+                    "where": "global", "needs": "", "requires_cookie": ">=0.1.0"}]
+            });
+            if listed {
+                index["templates"] = serde_json::json!([{"id": "acp", "version": "1.0.0",
+                    "requires_cookie": ">=0.1.0",
+                    "sha256": format!("{:x}", Sha256::digest(template))}]);
+            }
+            std::fs::write(
+                directory.path().join("index.json"),
+                serde_json::to_vec(&index).unwrap(),
+            )
+            .expect("index");
+        };
+        index(serde_json::json!(["npx", "claude-agent-acp"]), true);
+        assert_eq!(
+            super::check(directory.path()).expect("checked"),
+            Vec::<String>::new()
+        );
+        index(serde_json::json!([]), false);
+        let problems = super::check(directory.path()).expect("checked");
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("`_acp.md` is not listed")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("ACP preset `claude`: has no command")),
+            "{problems:?}"
         );
     }
 }

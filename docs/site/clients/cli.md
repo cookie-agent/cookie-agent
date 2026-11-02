@@ -679,9 +679,13 @@ cookie agents check <DIR>
 Checks agent documents before they are published, with no daemon: each
 `<DIR>/<id>.md` (`README.md` aside) must load with this build's strict
 parser as an official agent, which holds its whole prompt and never uses
-`{{default_prompt}}`. An `index.json`
-in `<DIR>` must list every document there, with a version, a
-`requires_cookie` range, and its SHA-256. Each problem is printed with its
+`{{default_prompt}}`, and each template `<DIR>/_<name>.md` as an official
+template. An `index.json` in `<DIR>` must list every document there (agents
+under `agents`, templates under `templates` by `<name>`), with a version, a
+`requires_cookie` range, and its SHA-256, and every preset it carries
+(`acp_presets`, `mcp_presets`) must be one this build takes: an ACP preset
+with a command, an MCP preset with `where` of `global` or `machine` and a
+server table the configuration reads. Each problem is printed with its
 file, and any problem fails the command. The official agents repository runs
 it on every push.
 

@@ -277,3 +277,93 @@ async fn the_default_agent_names_whom_new_sessions_start_with() {
     );
     fixture.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn templates_and_presets_arrive_with_the_agents() {
+    let fixture = fixture("");
+    let routes = Routes::default();
+    let url = serve(Arc::clone(&routes)).await;
+    fixture.engine.set_official_agents_url(&url);
+    let root = official_root(&fixture);
+    let primary = agent_md("the assistant");
+    let template =
+        b"---\ndescription: An ACP agent\nmode: all\nacp: {}\n---\nYou run inside cookie.\n"
+            .to_vec();
+    {
+        let mut routes = routes.lock().unwrap();
+        routes.insert("/skills/primary.md".into(), primary.clone());
+        routes.insert("/skills/_acp.md".into(), template.clone());
+        let index = serde_json::json!({
+            "version": 1,
+            "agents": [{"id": "primary", "version": "1.0.0", "requires_cookie": ">=0.1.0", "sha256": sha(&primary)}],
+            "templates": [{"id": "acp", "version": "1.0.0", "requires_cookie": ">=0.1.0", "sha256": sha(&template)}],
+            "acp_presets": [
+                {"id": "claude", "name": "Claude Code", "description": "Claude Code",
+                 "command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+                 "needs": "Node.js", "requires_cookie": ">=0.1.0"},
+                {"id": "empty", "name": "Empty", "description": "", "command": [],
+                 "needs": "", "requires_cookie": ">=0.1.0"},
+                {"id": "later", "name": "Later", "description": "", "command": ["later"],
+                 "needs": "", "requires_cookie": ">=99.0.0"}
+            ],
+            "mcp_presets": [
+                {"id": "exa", "name": "Exa", "category": "Web search", "description": "",
+                 "server": {"url": "https://mcp.exa.ai/mcp"}, "where": "global",
+                 "needs": "", "requires_cookie": ">=0.1.0"},
+                {"id": "broken", "name": "Broken", "category": "", "description": "",
+                 "server": {"url": "https://example.com", "unknown": true}, "where": "global",
+                 "needs": "", "requires_cookie": ">=0.1.0"}
+            ]
+        });
+        routes.insert(
+            "/skills/index.json".into(),
+            serde_json::to_vec(&index).unwrap(),
+        );
+    }
+    let report = fixture.engine.refresh_official_agents().await;
+    assert_eq!(ids(&report.updated), ["_acp", "primary"]);
+    assert!(root.join("_acp.md").exists());
+    // The two presets this build cannot use are refused, and named.
+    let error = report.error.expect("refusals");
+    assert!(error.contains("ACP preset `empty`"), "{error}");
+    assert!(error.contains("MCP preset `broken`"), "{error}");
+    assert!(!error.contains("later"), "{error}");
+    let presets = fixture.engine.official_presets();
+    assert_eq!(
+        presets
+            .acp
+            .iter()
+            .map(|preset| preset.id.as_str())
+            .collect::<Vec<_>>(),
+        ["claude"]
+    );
+    assert_eq!(
+        presets
+            .mcp
+            .iter()
+            .map(|preset| preset.id.as_str())
+            .collect::<Vec<_>>(),
+        ["exa"]
+    );
+    assert!(root.join(".presets.json").exists());
+    // The template is one, and no agent.
+    assert!(listed(&fixture, "acp").is_none());
+    assert!(listed(&fixture, "_acp").is_none());
+    assert!(
+        fixture
+            .engine
+            .inner
+            .config
+            .load()
+            .templates
+            .keys()
+            .any(|name| name.as_str() == "acp")
+    );
+
+    // A source that is gone keeps the template and the presets.
+    routes.lock().unwrap().clear();
+    let report = fixture.engine.refresh_official_agents().await;
+    assert!(report.error.is_some());
+    assert_eq!(report.presets.acp.len(), 1);
+    assert!(root.join("_acp.md").exists());
+}

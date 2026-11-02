@@ -105,11 +105,13 @@ path for `utility_model` alone. Readiness does not require it.
 - **Where presets come from:** the official agents repository
   (`cookie-agent/agents`). Its `index.json` gains `acp_presets: [{ id, name,
   command, env, description, needs, docs_url, requires_cookie }]`. The daemon
-  refreshes them with the official agents, so when an adapter package is
+  refreshes them with the official agents and keeps them in
+  `official_agents/.presets.json`, so when an adapter package is
   renamed (it has been once already, from `@zed-industries/...`), daemons
-  learn of it without a release. `cookie agents check` validates the
-  presets. Older daemons ignore the new field: the index is not parsed
-  strictly.
+  learn of it without a release. A preset this build cannot use is left
+  out, with a configuration diagnostic naming it. `cookie agents check`
+  validates the presets. Older daemons ignore the new field: the index is
+  not parsed strictly.
 - **What onboarding writes is the literal command and environment**, which
   stay editable. Later preset changes never rewrite a declaration. Instead,
   the agents panel shows **"The Claude Code preset now launches `<new
@@ -175,9 +177,11 @@ The check is a new RPC, `acp.check { runtime_id, declaration }`.
   preset folders.
 - **Inheriting** is unchanged: `inherit: ../official_agents/_acp.md` or
   `inherit: _acp.md`. A template may inherit another template, or an agent.
-- **The official agents index** lists templates as entries with `kind:
-  "template"`, and `requires_cookie` at the release that knows templates, so
-  older daemons skip them.
+- **The official agents index** lists templates under a list of their own,
+  `templates`, by name without the `_`. Older daemons ignore the list:
+  they check every `agents` entry's ID before its `requires_cookie`, so a
+  `_acp` entry there would be an error on each of them. The daemon keeps a
+  template as `official_agents/_<name>.md` and records it as `_<name>`.
 
 ### 6.2 The official `_acp` template
 
@@ -462,9 +466,10 @@ and use a browser. It is optional, and nothing is selected by default.
   - A `machine` preset asks which machine: the daemon's own (`local`, the
     default) or another runtime the daemon knows. It is written to
     `[runtimes.<runtime>.mcp.servers.<id>]` with `scope = "runtime"`.
-    Playwright also offers **Show the browser window**, which drops
-    `--headless`. Its `needs` names Node.js and a browser Playwright can
-    start, and links [Giving agents a browser](../extend/browser.md).
+    A machine preset's command and arguments are editable in the step, as
+    an ACP agent's are: drop Playwright's `--headless` to see its window.
+    Its `needs` names Node.js and a browser Playwright can start, and links
+    [Giving agents a browser](../extend/browser.md).
 - **Already set up:** a preset whose name already has a server at that
   place shows as configured and cannot be added twice.
 - **Permissions are unchanged:** the official agents' `mcp` rules still

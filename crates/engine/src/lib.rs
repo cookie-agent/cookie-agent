@@ -81,7 +81,8 @@ pub use runtime::messaging::api::{
     MESSAGE_NOT_TREE_PEER, MESSAGE_SELF_SEND, MESSAGE_UNKNOWN_SESSION,
 };
 pub use runtime::official::agents::{
-    OFFICIAL_AGENTS_REFRESH, OFFICIAL_AGENTS_URL, OfficialAgentsReport,
+    OFFICIAL_AGENTS_REFRESH, OFFICIAL_AGENTS_URL, OfficialAgentsReport, OfficialPresets,
+    usable_presets,
 };
 pub use runtime::official::onboarding::{
     OnboardingField, OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,

@@ -467,6 +467,11 @@ if that matters to you.
   diagnostic, and the copy kept before it stays; it never fails the load.
 - **`[agents] official = false`** stops the refreshes and leaves the
   official agents unused.
+- **Presets.** The same source carries the ACP agents and MCP servers
+  [onboarding](../quickstart.md) offers (`acp_presets`, `mcp_presets` in its
+  `index.json`), kept in `official_agents/.presets.json`. Onboarding writes
+  a preset's values into `config.toml`; a later change to the preset does
+  not rewrite them.
 - **`cookie agents list`** shows each agent with where it comes from
   (`user`, `official <version>`), `cookie agents update` refreshes now, and
   `cookie agents check <dir>` checks documents before they are published.
