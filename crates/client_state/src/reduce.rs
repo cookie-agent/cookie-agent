@@ -507,6 +507,7 @@ pub(super) fn reduce_event_from(
             resolved_model,
             ..
         } => {
+            state.request_sent_at = Some(timestamp);
             close_open_assistant(state, timestamp);
             // Attempt attribution is frozen: the producing agent comes from
             // the owning `RunStarted`, the exact resolved model from this
@@ -1383,6 +1384,8 @@ pub(super) fn reduce_event_from(
             );
         }
         EventPayload::ContextCheckpointCommitted { commit } => {
+            // The next request caches the compacted context afresh.
+            state.cache_clock = None;
             // The first request after a checkpoint announces afresh.
             state.deferred_announcements.clear();
             state.deferred_tool_groups.clear();
@@ -1396,7 +1399,7 @@ pub(super) fn reduce_event_from(
                 id,
                 version: 0,
                 seq: sequence,
-                commit,
+                commit: Box::new(commit),
             });
             if let Some(index) = relocate {
                 move_transcript_item_to_end(state, index);
@@ -1695,13 +1698,20 @@ pub(super) fn reduce_event_from(
             state.creation_agent = Some(creation_agent);
             state.created_at = Some(timestamp);
         }
+        EventPayload::ModelRequestPrepared { .. } => {
+            state.request_sent_at = Some(timestamp);
+        }
         EventPayload::ModelUsageRecorded {
             model_turn_seq,
             estimated_cost_pico_usd,
             resolved_model,
             usage,
+            cache_ttl,
             ..
         } => {
+            // The request this usage measured started its cache's clock.
+            let sent_at = state.request_sent_at.take().unwrap_or(timestamp);
+            state.cache_clock = cache_ttl.map(|stamp| crate::cache::CacheClock { sent_at, stamp });
             if let Some(item_id) = state.turn_items.get(&model_turn_seq).copied() {
                 let opened = state.item_times.get(&item_id).copied();
                 let context = state.context_tokens;
@@ -1921,7 +1931,6 @@ pub(super) fn reduce_event_from(
         EventPayload::UserInputTransformed { .. }
         | EventPayload::DelegationReserved { .. }
         | EventPayload::DelegationProgressed { .. }
-        | EventPayload::ModelRequestPrepared { .. }
         | EventPayload::ToolRoundStarted { .. }
         | EventPayload::PromptBlocksRecorded { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }

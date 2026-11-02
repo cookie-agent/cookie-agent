@@ -2790,6 +2790,7 @@ fn unrelated_skipped_event_does_not_permit_forged_usage_or_orphan_tool_terminati
         Some(run),
         next_seq + 1,
         EventPayload::ModelUsageRecorded {
+            cache_ttl: None,
             model_turn_seq: 999,
             agent_id: cookie_agent_protocol::AgentId::new("test").expect("agent id"),
             resolved_model: wire_resolved(&fallback_binding("fallback-zero")),

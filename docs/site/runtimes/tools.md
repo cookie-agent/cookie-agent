@@ -102,6 +102,7 @@ env = { CODEX_HOME = "/home/ada/.codex" }
 | `env` | table of strings | `{}` | Variables merged over the runtime's environment. |
 | `description` | string | `""` | Shown where the agent is listed when its daemon document gives none; at most 512 bytes without control characters. |
 | `enabled` | boolean | `true` | A disabled agent is listed as unavailable. |
+| `cache_ttl` | duration string | none | How long the agent keeps its prompt cache, such as `"1h"` (`"0s"` never expires). Set, an idle session of the agent is compacted with its `/compact` command shortly [before the cache expires](../sessions/compaction.md#before-the-cache-expires), and both clients show the cache's state. The official presets set `"1h"` for Claude Code and `"30m"` for Codex. |
 
 - **IDs.** The table key is an agent ID (lowercase letters, digits, and
   single inner hyphens) and the agent's ID: `[runtimes.local.acp.agents.claude]`

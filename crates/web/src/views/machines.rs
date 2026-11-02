@@ -449,8 +449,10 @@ fn acp_form(workspace: Workspace, manage: Manage, edit: AcpEdit) -> impl IntoVie
         None => format!("New ACP agent on {place}"),
     };
     let renames = editing.is_some();
+    let cache_ttl = fields.cache_ttl.clone();
     let submit = move || {
         let fields = AcpAgentFields {
+            cache_ttl: cache_ttl.clone(),
             agent: field_value("acp-agent"),
             command: field_value("acp-command"),
             environment: field_value("acp-env"),

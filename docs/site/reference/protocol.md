@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.77.0",
+    "protocol_version": "1.78.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.77.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.78.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -1396,6 +1396,19 @@ state lives in `<data_root>/pinned.json` and survives restarts; like
 nor the activity times. Each change sends `sessions.changed` `upserted`;
 deleting a session forgets its pin. A 1.65 daemon sends no `pinned` and
 answers `session.pin.set` with `-32601`.
+
+### Prompt cache compaction
+
+Since 1.78.0 a session's `SessionMeta` carries `cache_compaction` while the
+daemon plans a compaction shortly before the session's prompt cache expires
+([compaction](../sessions/compaction.md#before-the-cache-expires)): `at`, when
+it starts; `expires_at`; `next_fire` and `job_id`, the scheduled job that
+wakes the session after expiry, when one decided it; and `running: true`
+while it runs. It is live state, never stored: each change sends
+`sessions.changed` `upserted`, and a restart drops it until the daemon plans
+again. A client counts the cache down from the latest
+`model_usage_recorded`'s `cache_ttl` and its request time; `cache_compaction`
+only adds the plan. A 1.77 daemon sends neither.
 
 ### Held sessions
 

@@ -321,6 +321,11 @@ pub struct ManagedModelOverride {
     pub reasoning_binding: Option<crate::ReasoningBinding>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
+    /// How long the provider keeps this model's prompt cache, such as
+    /// `"1h"` (`"0s"` never expires), where cookie sets no TTL itself
+    /// (`docs/site/specs/cache-aware-idle.md` section 4.1). The
+    /// configuration loader checks it.
+    pub cache_ttl: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -363,6 +368,8 @@ pub struct CustomModelDefinition {
     pub default_variant: Option<ConfiguredModelDefault>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
+    /// As [`ManagedModelOverride::cache_ttl`].
+    pub cache_ttl: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

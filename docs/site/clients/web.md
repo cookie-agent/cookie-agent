@@ -156,9 +156,15 @@ refreshes no longer change). Reset and Replace ask once more.
   the session's live badges, and the ⋮ menu of the session's commands.
   The badges show what is live in the session, each only while it is: the
   goal with its checklist done (such as `3/5`), the calls running in the
-  background, the approvals waiting, and, once a request has measured it,
-  the context's use as a ring. Click one for its tab in the session panel
-  (below). Click the title to rename the
+  background, the approvals waiting, the prompt cache, and, once a request
+  has measured it, the context's use as a ring. The prompt cache shows as a
+  flame with the minutes the cache stays warm (`41m`; `~` when the TTL is
+  assumed, a dot when a compaction
+  [before it expires](../sessions/compaction.md#before-the-cache-expires)
+  is planned), its colour fading as the time runs out, then a snowflake and
+  "cache expired"; its tooltip says when the last request went out, the
+  TTL, and the plan. Click one for its tab in the session panel (below);
+  the cache badge opens Usage, whose *Prompt cache* card shows the same. Click the title to rename the
   session (see [Renaming](#sessions-and-chat)). Below the transcript are
   the composer and the bottom bar. While a subagent's session is open, the
   title is a path from its root, such as

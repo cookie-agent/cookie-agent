@@ -242,6 +242,11 @@ pub struct OnboardingAcpAgentInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 256))]
     pub effort: Option<String>,
+    /// The declaration's `cache_ttl`, from its preset (client protocol
+    /// 1.78.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 32))]
+    pub cache_ttl: Option<String>,
 }
 
 /// An MCP server `onboarding.run` adds (client protocol 1.74.0).
@@ -487,6 +492,11 @@ pub struct AcpPreset {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 2048))]
     pub docs_url: Option<String>,
+    /// The declaration's `cache_ttl`, such as `"1h"` (client protocol
+    /// 1.78.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 32))]
+    pub cache_ttl: Option<String>,
 }
 
 /// Where an MCP preset's server goes. A value this build does not know

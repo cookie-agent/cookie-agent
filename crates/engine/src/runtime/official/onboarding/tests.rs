@@ -306,6 +306,7 @@ async fn a_run_declares_acp_agents_adds_mcp_servers_and_sets_the_default_agent()
         .engine
         .run_onboarding(OnboardingRequest {
             acp_agents: vec![super::OnboardingAcpRequest {
+                cache_ttl: None,
                 id: "claude".parse().unwrap(),
                 runtime: Some("local".parse().unwrap()),
                 command: vec!["npx".into(), "-y".into(), "claude-agent-acp".into()],

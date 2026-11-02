@@ -2021,6 +2021,7 @@ impl Engine {
                 let uncompacted_events = Arc::clone(&request_events);
                 let compacted = self
                     .maybe_compact_context(CompactionInput {
+                        reason: None,
                         session,
                         run,
                         cancellation,
@@ -2062,6 +2063,7 @@ impl Engine {
                     )) => {
                         let request_events = self
                             .maybe_compact_context(CompactionInput {
+                                reason: None,
                                 session,
                                 run,
                                 cancellation,
@@ -2629,6 +2631,10 @@ impl Engine {
                             Some(run),
                             event_origin("engine:model-loop"),
                             Event::ModelUsageRecorded {
+                                cache_ttl: self.stamp_cache_ttl(
+                                    policy.cache_strategy(binding, session).as_ref(),
+                                    binding,
+                                ),
                                 model_turn_seq,
                                 agent_id: policy.agent.agent.clone(),
                                 resolved_model: wire_model(binding),
@@ -2698,6 +2704,7 @@ impl Engine {
                         )?;
                         match self
                             .maybe_compact_context(CompactionInput {
+                                reason: None,
                                 session,
                                 run,
                                 cancellation,

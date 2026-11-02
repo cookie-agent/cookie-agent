@@ -197,6 +197,8 @@ html.pressing * {
   --qi-bad-soft: rgb(209 52 59 / 0.08);
   --qi-warn: #b26b00;
   --qi-warn-soft: rgb(214 138 0 / 0.12);
+  /* A warm prompt cache (the session header's cache badge). */
+  --qi-hot: #c2410c;
   --qi-scrim: rgb(9 9 11 / 0.25);
   --qi-sheen: rgb(255 255 255 / 0.85);
   --qi-shadow-menu: 0 12px 32px -8px rgb(0 0 0 / 0.18), 0 2px 6px -2px rgb(0 0 0 / 0.08);
@@ -226,6 +228,7 @@ html.pressing * {
   --qi-bad-soft: rgb(242 85 90 / 0.12);
   --qi-warn: #e5a93b;
   --qi-warn-soft: rgb(229 169 59 / 0.13);
+  --qi-hot: #fb923c;
   --qi-scrim: rgb(0 0 0 / 0.5);
   --qi-sheen: rgb(255 255 255 / 0.06);
   --qi-shadow-menu: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
@@ -260,6 +263,7 @@ html.pressing * {
   --color-bad-soft: var(--qi-bad-soft);
   --color-warn: var(--qi-warn);
   --color-warn-soft: var(--qi-warn-soft);
+  --color-hot: var(--qi-hot);
   --color-scrim: var(--qi-scrim);
   --shadow-menu: var(--qi-shadow-menu);
   --shadow-sheet: var(--qi-shadow-sheet);

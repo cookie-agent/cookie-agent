@@ -4741,6 +4741,7 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
                         {format!("Context: {} tokens in the last request", format_count(tokens))}
                     </p>
                 })}
+                {cache_card(workspace)}
                 <h3 class="text-sm font-bold">"This session"</h3>
                 {session}
                 {tree}
@@ -4748,6 +4749,51 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
             .into_any()
         }
     }
+}
+
+/// The usage tab's prompt cache card (`docs/site/specs/cache-aware-idle.md`
+/// section 4.5): how much of the TTL is left, and what the badge's tooltip
+/// says.
+fn cache_card(workspace: Workspace) -> Option<impl IntoView + use<>> {
+    let viewed = workspace.viewed.get_untracked();
+    let clock = viewed.cache_clock?;
+    let session = workspace.selected.get_untracked()?;
+    let plan = workspace.sessions.with_untracked(|sessions| {
+        sessions
+            .iter()
+            .find(|meta| meta.session_id == session)
+            .and_then(|meta| meta.cache_compaction.clone())
+    });
+    let now = jiff::Timestamp::now();
+    let badge = clock.badge(now, viewed.running, plan.as_ref());
+    let lines = cookie_agent_client_state::cache::detail_lines(
+        &clock,
+        &badge,
+        plan.as_ref(),
+        now,
+        &crate::cron::zone_at(now),
+    );
+    let left = match &badge {
+        cookie_agent_client_state::cache::CacheBadge::Counting { left, .. } => {
+            let ttl = clock.stamp.ttl_secs.max(1) as f64;
+            (left.as_secs_f64() / ttl).clamp(0.0, 1.0)
+        }
+        _ => 1.0,
+    };
+    Some(view! {
+        <section class="mb-3 rounded-lg border border-line p-3" id="usage-cache">
+            <h3 class="mb-2 flex items-center gap-2 text-sm font-bold">
+                <Glyph icon=icondata::LuFlame class="text-hot" />
+                "Prompt cache"
+            </h3>
+            <div class="h-1.5 overflow-hidden rounded-full bg-sunken" aria-hidden="true">
+                <div class="h-full rounded-full bg-hot" style=format!("width: {:.1}%", left * 100.0)></div>
+            </div>
+            <ul class="mt-2 flex flex-col gap-0.5 text-sm text-fg-2">
+                {lines.into_iter().map(|line| view! { <li>{line}</li> }).collect_view()}
+            </ul>
+        </section>
+    })
 }
 
 /// A rollup's figures by model, as the TUI's usage panel lists them: each

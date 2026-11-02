@@ -167,6 +167,13 @@ impl Engine {
                 lock(&self.inner.push.armed).remove(&session);
             }
             Event::RunFinished { outcome } => {
+                // An ACP agent's compaction before its prompt cache expires
+                // is a run that is not activity: it settles nothing
+                // (`docs/site/specs/cache-aware-idle.md` section 10).
+                if self.inner.store.is_quiet(session) {
+                    lock(&self.inner.push.armed).remove(&session);
+                    return;
+                }
                 if self.inner.store.parent_of(session).is_some() {
                     // An agent's subagent's run of its work ended.
                     self.set_acp_subagent_working(session, false);

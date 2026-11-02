@@ -362,6 +362,7 @@ impl SessionState {
             cwd_identity: seed.cwd_identity,
             context_tokens: seed.context_tokens,
             context_window: seed.context_window,
+            cache_clock: seed.cache_clock,
             run_agent: seed.run_agent,
             creation_agent: seed.creation_agent,
             run_snapshot: seed.run_snapshot,

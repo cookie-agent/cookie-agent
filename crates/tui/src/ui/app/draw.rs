@@ -3,6 +3,86 @@
 use super::*;
 
 impl App {
+    /// The viewed session's prompt cache badge, when it has a clock.
+    pub(in crate::ui) fn cache_badge(
+        &self,
+    ) -> Option<cookie_agent_client_state::cache::CacheBadge> {
+        let state = self
+            .viewed_session()
+            .and_then(|session_id| self.store.sessions.get(&session_id))?;
+        let clock = state.cache_clock?;
+        let plan = self
+            .selected_session_meta()
+            .and_then(|meta| meta.cache_compaction.clone());
+        Some(clock.badge(
+            jiff::Timestamp::now(),
+            state.active_run.is_some(),
+            plan.as_ref(),
+        ))
+    }
+
+    /// What the usage panel says of the viewed session's prompt cache.
+    pub(in crate::ui) fn cache_detail_lines(&self) -> Vec<String> {
+        let Some(state) = self
+            .viewed_session()
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+        else {
+            return Vec::new();
+        };
+        let (Some(clock), Some(badge)) = (state.cache_clock, self.cache_badge()) else {
+            return Vec::new();
+        };
+        let plan = self
+            .selected_session_meta()
+            .and_then(|meta| meta.cache_compaction.clone());
+        cookie_agent_client_state::cache::detail_lines(
+            &clock,
+            &badge,
+            plan.as_ref(),
+            jiff::Timestamp::now(),
+            &jiff::tz::TimeZone::system(),
+        )
+    }
+
+    /// The text of the status line's cache part, for the idle redraw check.
+    pub(in crate::ui) fn cache_status_text(&self) -> Option<String> {
+        self.cache_badge()
+            .map(|badge| cookie_agent_client_state::cache::badge_text(&badge))
+    }
+
+    /// The status line's cache part for `badge`, and its style.
+    fn cache_part(
+        &self,
+        badge: &cookie_agent_client_state::cache::CacheBadge,
+    ) -> (String, ratatui::style::Style) {
+        use cookie_agent_client_state::cache::{CacheBadge, CacheHeat, badge_text};
+        let mut text = badge_text(badge);
+        // A compaction before expiry is planned.
+        if matches!(badge, CacheBadge::Counting { planned: true, .. }) {
+            text.push('•');
+        }
+        match badge {
+            CacheBadge::Compacting => {
+                let glyph = ['◐', '◓', '◑', '◒'][usize::from(self.clock_bucket())];
+                (format!("{glyph} {text}"), self.theme.accent())
+            }
+            CacheBadge::Counting {
+                heat: CacheHeat::Expired,
+                ..
+            } => (format!("❄ {text}"), self.theme.faint()),
+            CacheBadge::Counting {
+                heat: CacheHeat::Cooling,
+                ..
+            } => (format!("🔥 {text}"), self.theme.warning()),
+            CacheBadge::Counting {
+                heat: CacheHeat::Warm,
+                ..
+            } => (format!("🔥 {text}"), self.theme.muted()),
+            _ if text.is_empty() => ("🔥".to_owned(), self.theme.hot()),
+            _ => (format!("🔥 {text}"), self.theme.hot()),
+        }
+    }
+
     /// The exact Message panel title `Agent • Model[Variant]` with separate
     /// structured agent, model, and bracketed variant hit regions. The model
     /// reads by its display name, falling back to its `provider/model-id`
@@ -237,6 +317,7 @@ impl App {
         };
         self.hit_map.permission_mode = bottom_bar.mode_span.and_then(span_rect);
         self.hit_map.session_cost = bottom_bar.cost_span.and_then(span_rect);
+        self.hit_map.session_cache = bottom_bar.cache_span.and_then(span_rect);
         self.hit_map.project_label = bottom_bar.project_span.and_then(span_rect);
         frame.render_widget(
             Paragraph::new(bottom_bar.line).style(self.theme.panel()),
@@ -560,6 +641,7 @@ impl App {
                 line: Line::default(),
                 mode_span: None,
                 cost_span: None,
+                cache_span: None,
                 project_span: None,
             };
         }
@@ -615,6 +697,10 @@ impl App {
         let cost = state
             .and_then(|state| state.estimated_cost_usd)
             .map(format_cost_usd);
+        // The prompt cache's heat: `🔥 41m`, `❄ cache expired`, or
+        // `◐ compacting`, after the cost and before the context.
+        let cache = self.cache_badge().map(|badge| self.cache_part(&badge));
+        let cache_text = cache.as_ref().map(|(text, _)| text.as_str());
         // An ACP agent's own mode is the session's permission mode.
         let mode_label = self.agent_mode().map_or_else(
             || permission_mode_label(self.displayed_permission_mode()).to_owned(),
@@ -625,6 +711,7 @@ impl App {
         #[derive(Clone, Copy)]
         struct Candidate<'a> {
             cost: Option<&'a str>,
+            cache: Option<&'a str>,
             context: Option<&'a str>,
             hint: bool,
         }
@@ -633,6 +720,10 @@ impl App {
             if let Some(cost) = candidate.cost {
                 rendered.push_str("    ");
                 rendered.push_str(cost);
+            }
+            if let Some(cache) = candidate.cache {
+                rendered.push_str("    ");
+                rendered.push_str(cache);
             }
             if let Some(context) = candidate.context {
                 rendered.push_str("    ");
@@ -644,20 +735,33 @@ impl App {
             }
             rendered
         };
-        let mut candidates = Vec::with_capacity(5);
+        // What gives way first: the hint, the cost, the cache, the
+        // context's percentage, then the context.
+        let mut candidates = Vec::with_capacity(6);
         candidates.push(Candidate {
             cost: cost.as_deref(),
+            cache: cache_text,
             context: context_with_percentage.as_deref(),
             hint: true,
         });
         candidates.push(Candidate {
             cost: cost.as_deref(),
+            cache: cache_text,
             context: context_with_percentage.as_deref(),
             hint: false,
         });
-        if cost.is_some() && context_with_percentage.is_some() {
+        if cost.is_some() {
             candidates.push(Candidate {
                 cost: None,
+                cache: cache_text,
+                context: context_with_percentage.as_deref(),
+                hint: false,
+            });
+        }
+        if cache_text.is_some() && context_with_percentage.is_some() {
+            candidates.push(Candidate {
+                cost: None,
+                cache: None,
                 context: context_with_percentage.as_deref(),
                 hint: false,
             });
@@ -665,12 +769,14 @@ impl App {
         if context_with_percentage != context {
             candidates.push(Candidate {
                 cost: None,
+                cache: None,
                 context: context.as_deref(),
                 hint: false,
             });
         }
         candidates.push(Candidate {
             cost: None,
+            cache: None,
             context: None,
             hint: false,
         });
@@ -714,11 +820,19 @@ impl App {
         let mode_span = (!mode_text.is_empty()).then_some(spans.len());
         spans.push(Span::styled(mode_text.to_owned(), self.theme.accent()));
         let mut cost_span = None;
+        let mut cache_span = None;
         if let Some(candidate) = selected {
             if let Some(cost) = candidate.cost {
                 spans.push(Span::styled("    ", self.theme.muted()));
                 cost_span = Some(spans.len());
                 spans.push(Span::styled(cost.to_owned(), self.theme.muted()));
+            }
+            if let Some(text) = candidate.cache
+                && let Some((_, style)) = &cache
+            {
+                spans.push(Span::styled("    ", self.theme.muted()));
+                cache_span = Some(spans.len());
+                spans.push(Span::styled(text.to_owned(), *style));
             }
             if let Some(context) = candidate.context {
                 spans.push(Span::styled("    ", self.theme.muted()));
@@ -735,6 +849,7 @@ impl App {
             line: Line::from(spans),
             mode_span,
             cost_span,
+            cache_span,
             project_span,
         }
     }

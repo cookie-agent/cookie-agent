@@ -453,6 +453,8 @@ pub(in crate::ui) struct WallClockView {
     queue_age: Option<String>,
     /// How far the status message has faded, so each step draws.
     status_fade: u8,
+    /// The status line's prompt cache part, so its countdown ticks.
+    cache: Option<String>,
 }
 
 /// Only user rows recall the newest user input; producer rows are read-only.
@@ -559,6 +561,8 @@ pub(super) enum PointerTarget {
     BackgroundBar,
     PermissionMode,
     SessionCost,
+    /// The bottom bar's prompt cache part; a click opens the usage panel.
+    SessionCache,
     /// The bottom bar's project; a click opens the project picker.
     ProjectLabel,
     EventLevelFilter,
@@ -647,6 +651,7 @@ pub(super) struct UiHitMap {
     pub(super) user_messages: Vec<UserMessageHit>,
     pub(super) permission_mode: Option<Rect>,
     pub(super) session_cost: Option<Rect>,
+    pub(super) session_cache: Option<Rect>,
     pub(super) project_label: Option<Rect>,
     pub(super) event_level_filter: Option<Rect>,
     pub(super) provider_fields: Vec<ProviderFieldHit>,
@@ -722,6 +727,7 @@ struct BottomBarRender {
     line: Line<'static>,
     mode_span: Option<usize>,
     cost_span: Option<usize>,
+    cache_span: Option<usize>,
     project_span: Option<usize>,
 }
 

@@ -638,6 +638,16 @@ impl CronStore {
             .collect()
     }
 
+    /// The earliest next fire of the enabled jobs that fire into
+    /// `session`, and its job.
+    pub(crate) fn next_fire_into(&self, session: SessionId) -> Option<(Timestamp, CronJobId)> {
+        lock(&self.jobs)
+            .iter()
+            .filter(|job| job.waits_on(session))
+            .filter_map(|job| job.next_fire.map(|fire| (fire, job.id.clone())))
+            .min_by_key(|(fire, _)| *fire)
+    }
+
     /// Whether an enabled one-time job with a next fire targets `session`.
     pub(crate) fn waits_on_once(&self, session: SessionId) -> bool {
         lock(&self.jobs)

@@ -1643,6 +1643,7 @@ impl App {
             approval_seconds_left,
             queue_age,
             status_fade: self.status_fade(),
+            cache: self.cache_status_text(),
         }
     }
 
@@ -1837,6 +1838,7 @@ impl App {
             .expect("usage load generation exhausted");
         let generation = self.usage_load_generation;
         self.usage_panel.begin_load();
+        self.usage_panel.cache = self.cache_detail_lines();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

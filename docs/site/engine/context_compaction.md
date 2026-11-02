@@ -8,6 +8,13 @@ auto = true
 trigger = { percent = 70 }
 max_summary_bytes = 262144
 keep_recent_tokens = 16384
+
+[context_compaction.cache_expiry]
+mode = "off"
+slack = "5m"
+fallback_ttl = "30m"
+min_tokens = 40000
+min_cost_usd = 0.0
 ```
 
 For fixed headroom, replace `trigger` with `{ buffer_tokens = 33000 }`.
@@ -65,3 +72,27 @@ alongside pinned context.
 | `buffer_tokens` | integer | unset | Legacy alias for `trigger = { buffer_tokens = N }`. Must be greater than zero and cannot be set together with `trigger`. |
 | `max_summary_bytes` | integer | `262144` (`256 * 1024`) | Hard byte limit for a compaction summary produced by the internal `compaction` agent. Must be greater than zero and at most `2 * 1024 * 1024` (2 MiB). |
 | `keep_recent_tokens` | integer (`u64`) | `16384` | Nonnegative token budget for recent original messages retained unchanged after an internal summary. The summarizer receives only the messages before them. `0` disables retention, so the summary covers the whole active history. The effective target is at most `min(keep_recent_tokens, input_budget / 4)`, further limited by actual post-checkpoint available space. Complete tool-call/result groups are never split; an oversized newest indivisible group leaves no recent messages retained. Configuration does not clamp the requested value. Native windows receive no independent recent messages. |
+
+## Before the cache expires
+
+`[context_compaction.cache_expiry]` compacts an idle session shortly before
+its prompt cache expires, so the next prompt caches a short context again
+instead of the whole conversation (see
+[Compaction before the cache expires](../sessions/compaction.md#before-the-cache-expires)).
+It belongs to `[context_compaction]`: an authored `[context_compaction]`
+table replaces the lower one with this table's defaults unless it sets
+them too.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `mode` | string | `"off"` | `"off"`; `"scheduled"`, only sessions a [scheduled job](../sessions/scheduling.md) wakes after their cache expires; or `"always"`, every idle session. |
+| `slack` | duration string | `"5m"` | How long before expiry the compaction starts, at most a fifth of the cache's TTL: `min(slack, ttl / 5)`, so a ten-minute cache compacts two minutes before it expires. Must be positive. |
+| `fallback_ttl` | duration string | `"30m"` | The TTL of a model whose TTL cookie neither sets nor is told: a provider's automatic caching, OpenAI-compatible endpoints, Gemini. A model's [`cache_ttl`](../extend/providers.md#managed-model-overrides) replaces it. Must be positive. |
+| `min_tokens` | integer | `40000` | Compacts only a context of at least this many tokens (the latest turn's input plus output). `0` or less turns the floor off. |
+| `min_cost_usd` | number | `0.0` | Compacts only a context whose caching again would cost at least this many dollars, at the model's cache-write rate or else its input rate. Models without prices never reach it. `0` or less turns the floor off. |
+
+With both floors off, every idle session that meets the rest of the rule
+compacts; with both on, reaching either one is enough. Durations take
+`ms`, `s`, `m`, `h`, and `d` suffixes. A change applies at once, from the
+scheduler's next look, within a minute.
+

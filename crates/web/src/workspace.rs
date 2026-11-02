@@ -483,6 +483,8 @@ pub struct Viewed {
     /// The window `context_tokens` fills, when the session says it (an ACP
     /// agent's).
     pub context_window: Option<u64>,
+    /// The latest request's prompt cache, for the cache badge.
+    pub cache_clock: Option<cookie_agent_client_state::cache::CacheClock>,
 }
 
 impl Workspace {
@@ -517,6 +519,7 @@ impl Workspace {
                         stoppable: state.active_run.is_some() || state.is_compacting(),
                         context_tokens: state.context_tokens,
                         context_window: state.context_window,
+                        cache_clock: state.cache_clock,
                     })
                     .unwrap_or_default()
             })

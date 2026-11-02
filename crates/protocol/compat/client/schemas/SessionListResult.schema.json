@@ -48,6 +48,48 @@
       ],
       "x-open": true
     },
+    "PlannedCacheCompaction": {
+      "description": "A compaction the daemon plans before a session's prompt cache expires\n(`docs/site/specs/cache-aware-idle.md` section 4.5), on\n[`SessionMeta::cache_compaction`].",
+      "properties": {
+        "at": {
+          "description": "When it starts.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "When the cache expires.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_fire": {
+          "description": "The scheduled job that wakes the session after expiry, and its\nfire; absent under `mode = \"always\"` with no job.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "running": {
+          "description": "It is running now.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "at",
+        "expires_at"
+      ],
+      "type": "object"
+    },
     "RunSelection": {
       "properties": {
         "acp_runtime": {
@@ -187,6 +229,17 @@
             "$ref": "#/$defs/RuntimeAttachment"
           },
           "type": "array"
+        },
+        "cache_compaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlannedCacheCompaction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The compaction the daemon plans before the session's prompt cache\nexpires, while one is planned or running\n(`docs/site/specs/cache-aware-idle.md` section 4.5, client protocol\n1.78.0). Live state: never stored, absent from an older daemon."
         },
         "catalog_revision": {
           "maxLength": 71,

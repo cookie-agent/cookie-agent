@@ -171,6 +171,7 @@ fn harness_on(
         preset_templates: Default::default(),
         pending_agents: Vec::new(),
         runtime: EngineConfig {
+            model_cache_ttls: std::collections::BTreeMap::new(),
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
             utility_model: None,
@@ -446,6 +447,7 @@ fn harness_with_catalog_and_mcp(
         preset_templates: Default::default(),
         pending_agents: Vec::new(),
         runtime: EngineConfig {
+            model_cache_ttls: std::collections::BTreeMap::new(),
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
             utility_model: None,

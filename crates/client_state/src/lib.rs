@@ -14,6 +14,7 @@ pub mod activity;
 pub mod agent_documents;
 pub mod assets;
 pub mod badges;
+pub mod cache;
 pub mod config;
 pub mod cron;
 pub mod daemon_status;
@@ -621,7 +622,7 @@ pub enum TranscriptItem {
         id: u64,
         version: u64,
         seq: u64,
-        commit: cookie_agent_protocol::ContextCheckpointCommit,
+        commit: Box<cookie_agent_protocol::ContextCheckpointCommit>,
     },
     /// A plugin-injected model message rendered inline at its durable event.
     PluginMessage {
@@ -1288,6 +1289,14 @@ pub struct SessionState {
     /// an ACP agent's, which no model catalog lists. `None` for a model's
     /// turns, whose window the catalog gives.
     pub context_window: Option<u64>,
+    /// The prompt cache of the session's latest request: when it was sent
+    /// and how long it lives (`docs/site/specs/cache-aware-idle.md`
+    /// section 4.5). `None` before a request with a cache TTL, and after a
+    /// checkpoint until the next one.
+    pub cache_clock: Option<cache::CacheClock>,
+    /// When the latest model request went out, for the cache clock its
+    /// usage starts.
+    pub request_sent_at: Option<jiff::Timestamp>,
     /// Latest authoritative session usage cost fetched from the engine.
     /// `None` covers both not-yet-fetched and unpriced usage; both hide the
     /// bottom-bar segment.

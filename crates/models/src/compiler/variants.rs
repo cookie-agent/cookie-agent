@@ -375,6 +375,7 @@ mod tests {
         default_variant: Option<ConfiguredModelDefault>,
     ) -> ManagedModelOverride {
         ManagedModelOverride {
+            cache_ttl: None,
             model_id: None,
             enabled: None,
             display_name: None,

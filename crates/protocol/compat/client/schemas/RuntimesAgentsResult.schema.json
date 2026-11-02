@@ -3,6 +3,13 @@
     "AcpAgentDefinition": {
       "description": "What an ACP agent declaration sets.",
       "properties": {
+        "cache_ttl": {
+          "description": "How long the agent's prompt cache lives, such as `\"1h\"` (`\"0s\"`\nnever expires; client protocol 1.78.0).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "command": {
           "description": "The program and its arguments, run without a shell on the runtime's\nmachine.",
           "items": {

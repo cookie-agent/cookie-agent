@@ -312,6 +312,7 @@ mod tests {
 
     fn meta(id: SessionId, short_id: Option<&str>) -> SessionMeta {
         SessionMeta {
+            cache_compaction: None,
             cron: None,
             project: None,
             session_id: id,

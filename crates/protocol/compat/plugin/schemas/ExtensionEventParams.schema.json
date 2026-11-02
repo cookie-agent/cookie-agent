@@ -1558,6 +1558,46 @@
       "type": "string",
       "x-open": true
     },
+    "CacheTtlSource": {
+      "description": "Where a cache TTL came from. A value this build does not know reads as\n`assumed`.",
+      "oneOf": [
+        {
+          "const": "set",
+          "description": "Cookie set it on the request: an Anthropic or Bedrock marker,\nOpenAI's GPT-5.6 controls, or its 24-hour retention.",
+          "type": "string"
+        },
+        {
+          "const": "declared",
+          "description": "The configuration declares it: a model's or an ACP agent's\n`cache_ttl`.",
+          "type": "string"
+        },
+        {
+          "const": "assumed",
+          "description": "Assumed: `fallback_ttl`, or the `chatgpt` provider's 30 minutes.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "CacheTtlStamp": {
+      "description": "How long a request's prompt cache lives, and where cookie learned it\n(`docs/site/specs/cache-aware-idle.md` section 4.1).",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/CacheTtlSource"
+        },
+        "ttl_secs": {
+          "description": "Seconds from the request; `0` is a cache that never expires.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ttl_secs",
+        "source"
+      ],
+      "type": "object"
+    },
     "CheckpointNativeWindow": {
       "description": "The provider window a summary checkpoint carries beside its summary,\nwhen native compaction succeeded alongside it (client protocol 1.29.0).\nA request on the window's provider and model uses it; every other\nrequest uses the summary.",
       "properties": {
@@ -1576,6 +1616,47 @@
         "source_through_seq"
       ],
       "type": "object"
+    },
+    "CheckpointReason": {
+      "description": "Why a checkpoint was committed, when not for the usual reasons\n(`docs/site/specs/cache-aware-idle.md` section 4.4).",
+      "oneOf": [
+        {
+          "description": "The session was compacted shortly before its prompt cache expired,\nbecause a scheduled job (`job_id`, at `next_fire`) wakes it only\nafter, or because `mode` is `always`.",
+          "properties": {
+            "expires_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "job_id": {
+              "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+              "maxLength": 8,
+              "minLength": 1,
+              "pattern": "^[a-z0-9]{8}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_fire": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "cache_expiry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "expires_at"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
     },
     "ContextCheckpoint": {
       "oneOf": [
@@ -4499,6 +4580,17 @@
               "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
               "type": "string"
             },
+            "cache_ttl": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CacheTtlStamp"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How long the provider keeps this request's prompt cache, stamped\nat write time (`docs/site/specs/cache-aware-idle.md` section 4.1,\nclient protocol 1.78.0). Absent when the request cached nothing\npast its system prompt and tools, and in logs written before."
+            },
             "estimated_cost_pico_usd": {
               "description": "The price stamped at write time; `null` is unpriced.",
               "format": "uint64",
@@ -5164,6 +5256,17 @@
             },
             "checkpoint": {
               "$ref": "#/$defs/ContextCheckpoint"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CheckpointReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why it was committed, when not for the usual reasons (client\nprotocol 1.78.0). Absent for size, overflow, and manual\ncompactions, and in logs written before."
             },
             "type": {
               "const": "context_checkpoint_committed",

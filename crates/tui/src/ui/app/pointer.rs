@@ -64,6 +64,9 @@ impl App {
         if hits.session_cost.is_some_and(over) {
             return Some(PointerTarget::SessionCost);
         }
+        if hits.session_cache.is_some_and(over) {
+            return Some(PointerTarget::SessionCache);
+        }
         if hits.project_label.is_some_and(over) {
             return Some(PointerTarget::ProjectLabel);
         }
@@ -498,7 +501,7 @@ impl App {
             PointerTarget::HeldResume => self.resume_held(),
             PointerTarget::ConfigAction(action) => self.activate_config_action(action),
             PointerTarget::RestartChoice(choice) => self.answer_restart_confirm(choice),
-            PointerTarget::SessionCost => {
+            PointerTarget::SessionCost | PointerTarget::SessionCache => {
                 self.modal = Modal::Usage;
                 self.load_usage();
             }
@@ -890,6 +893,7 @@ impl App {
             ),
             PointerTarget::PermissionMode => (one(hits.permission_mode), text_style),
             PointerTarget::SessionCost => (one(hits.session_cost), text_style),
+            PointerTarget::SessionCache => (one(hits.session_cache), text_style),
             PointerTarget::ProjectLabel => (one(hits.project_label), text_style),
             PointerTarget::EventLevelFilter => (one(hits.event_level_filter), text_style),
             PointerTarget::QueueEntry(index) => (

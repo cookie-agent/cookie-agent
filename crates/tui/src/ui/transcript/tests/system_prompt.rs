@@ -378,7 +378,7 @@ fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
                 id: 1,
                 version: 0,
                 seq: 10,
-                commit: checkpoint_commit(&oversized),
+                commit: Box::new(checkpoint_commit(&oversized)),
             },
             TranscriptItem::PluginMessage {
                 id: 2,
@@ -799,7 +799,8 @@ fn native_compaction_expands_window_reference_details() {
             id: 1,
             version: 0,
             seq: 9,
-            commit: cookie_agent_protocol::ContextCheckpointCommit {
+            commit: Box::new(cookie_agent_protocol::ContextCheckpointCommit {
+                reason: None,
                 checkpoint: cookie_agent_protocol::ContextCheckpoint::NativeWindow { window },
                 boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
                     source_from_seq: 2,
@@ -816,7 +817,7 @@ fn native_compaction_expands_window_reference_details() {
                     keep_recent_tokens: 0,
                     max_summary_bytes: max,
                 },
-            },
+            }),
         }],
         ..SessionState::default()
     };

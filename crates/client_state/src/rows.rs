@@ -98,6 +98,43 @@ pub fn agent_background_ended_details(
     )
 }
 
+/// The header of a compaction checkpoint's row: what it is, how much it
+/// shrank the context, and, for one made before the prompt cache expired,
+/// that, with the scheduled prompt that decided it in `zone`'s time
+/// (`docs/site/specs/cache-aware-idle.md` section 4.4).
+pub fn compaction_header(
+    commit: &cookie_agent_protocol::ContextCheckpointCommit,
+    zone: &jiff::tz::TimeZone,
+) -> String {
+    let kind = match &commit.checkpoint {
+        cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => "internal summary",
+        cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. } => "native window",
+    };
+    let sizes = format!(
+        "{kind}, {}→{} tokens",
+        commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
+    );
+    match commit
+        .reason
+        .as_ref()
+        .and_then(cookie_agent_protocol::Open::known)
+    {
+        Some(cookie_agent_protocol::CheckpointReason::CacheExpiry { next_fire, .. }) => {
+            let mut header = format!("compacted before the cache expired ({sizes})");
+            if let Some(fire) = next_fire {
+                let time = zone.to_datetime(*fire);
+                header.push_str(&format!(
+                    " · next scheduled prompt {:02}:{:02}",
+                    time.hour(),
+                    time.minute()
+                ));
+            }
+            header
+        }
+        None => format!("context compacted ({sizes})"),
+    }
+}
+
 /// The header of a compaction of an ACP agent's own.
 pub const AGENT_COMPACTION_HEADER: &str = "context compacted (by the agent)";
 

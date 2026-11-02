@@ -203,6 +203,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         agents: crate::AgentsConfig::default(),
         transfer: crate::TransferConfig::default(),
         pricing: Default::default(),
+        model_cache_ttls: BTreeMap::new(),
         headers: BTreeMap::new(),
         providers: BTreeMap::new(),
     };
@@ -529,6 +530,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
             })
         })
         .collect();
+    runtime.model_cache_ttls = model_cache_ttls(&runtime.providers)?;
     validate_runtime(&runtime)?;
     for (name, server) in &mcp_servers {
         server.config.validate_top_level(name)?;
@@ -797,4 +799,40 @@ fn resolve_default_prompt(
          its prompt goes without it",
         document.id, document.id
     ))
+}
+
+/// Each model's authored `cache_ttl`, checked.
+fn model_cache_ttls(
+    providers: &BTreeMap<cookie_agent_identity::ProviderId, ProviderDefinition>,
+) -> Result<BTreeMap<cookie_agent_identity::ModelKey, std::time::Duration>, ConfigError> {
+    let mut ttls = BTreeMap::new();
+    for (provider_id, provider) in providers {
+        let authored: Vec<_> = match provider {
+            ProviderDefinition::ModelsDev(provider) | ProviderDefinition::ChatGpt(provider) => {
+                provider
+                    .model_overrides
+                    .iter()
+                    .filter_map(|(id, model)| model.cache_ttl.as_ref().map(|ttl| (id, ttl)))
+                    .collect()
+            }
+            ProviderDefinition::Custom(provider) => provider
+                .models
+                .iter()
+                .filter_map(|(id, model)| model.cache_ttl.as_ref().map(|ttl| (id, ttl)))
+                .collect(),
+        };
+        for (id, ttl) in authored {
+            let duration = crate::runtime::parse_cache_ttl(ttl).ok_or_else(|| {
+                ConfigError::Toml(format!(
+                    "providers.{provider_id}.models.{id}.cache_ttl must be an integer followed by ms, s, m, h, or d"
+                ))
+            })?;
+            ttls.insert(
+                cookie_agent_identity::ModelKey::new(provider_id.clone(), id.clone())
+                    .expect("validated model IDs"),
+                duration,
+            );
+        }
+    }
+    Ok(ttls)
 }

@@ -95,6 +95,7 @@ fn agent_config(definition: AcpAgentDefinition) -> AcpAgentConfig {
         env: definition.env,
         description: definition.description,
         enabled: definition.enabled,
+        cache_ttl: definition.cache_ttl,
     }
 }
 
@@ -311,6 +312,7 @@ impl Engine {
                     documents: documents_running(&config, agent.as_str()),
                     agent: AgentId::new(agent.as_str()).ok()?,
                     definition: AcpAgentDefinition {
+                        cache_ttl: None,
                         command: declared.command,
                         env: declared.env,
                         description: declared.description,

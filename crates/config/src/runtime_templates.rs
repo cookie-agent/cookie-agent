@@ -48,6 +48,7 @@ pub(crate) struct RawAcpAgent {
     env: Option<BTreeMap<String, String>>,
     description: Option<String>,
     enabled: Option<bool>,
+    cache_ttl: Option<String>,
 }
 
 /// One ACP agent a runtime hosts (`docs/site/specs/acp-agents.md`
@@ -62,6 +63,21 @@ pub struct AcpAgentConfig {
     /// Shown where the agent is listed; empty when not authored.
     pub description: String,
     pub enabled: bool,
+    /// How long the agent's prompt cache lives, as authored (`"1h"`;
+    /// `"0s"` never expires): set, cookie compacts its idle sessions before
+    /// expiry (`docs/site/specs/cache-aware-idle.md` section 4.4).
+    pub cache_ttl: Option<String>,
+}
+
+impl AcpAgentConfig {
+    /// [`Self::cache_ttl`] as a duration; zero is a cache that never
+    /// expires.
+    #[must_use]
+    pub fn cache_ttl_duration(&self) -> Option<std::time::Duration> {
+        self.cache_ttl
+            .as_deref()
+            .and_then(crate::runtime::parse_cache_ttl)
+    }
 }
 
 /// A validated runtime template. `[runtimes.local]`, which configures the
@@ -304,6 +320,16 @@ fn validate_acp_agents(
             let what = format!("ACP agent `{key}`: ");
             let command = validate_command(id, &what, agent.command)?;
             let env = validate_env(id, &what, agent.env)?;
+            if let Some(ttl) = &agent.cache_ttl
+                && crate::runtime::parse_cache_ttl(ttl).is_none()
+            {
+                return Err(invalid(
+                    id,
+                    format!(
+                        "{what}`cache_ttl` must be an integer followed by ms, s, m, h, or d"
+                    ),
+                ));
+            }
             let description = agent.description.unwrap_or_default();
             if description.len() > MAX_ACP_DESCRIPTION
                 || description.chars().any(char::is_control)
@@ -322,6 +348,7 @@ fn validate_acp_agents(
                     env,
                     description,
                     enabled: agent.enabled.unwrap_or(true),
+                    cache_ttl: agent.cache_ttl,
                 },
             ))
         })

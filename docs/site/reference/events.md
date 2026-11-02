@@ -552,6 +552,7 @@ belongs to that run; any other is runless. The kinds written today:
 | `plugin:<name>` | `interception_timeout`, `interception_crash` (the plugin was not connected or exited during the hook), `interception_rejected` (it answered with an error or a malformed result), `hook_blocked`, `invalid_modification`, `oversized_event`, `event_drop`, `context_mismatch`, `rate_limited` | A plugin's operational notice, coalesced by `count` |
 | `plugin:<name>`, `runtime:<id>` | `recovery_failed`, `recovery_disabled` | A producer source cannot restore the external work it tracks; goal continuation is held |
 | `engine:auto-compact` | `auto_compaction_disabled` | Automatic context compaction failed three times in a row and stays off for the rest of the run |
+| `engine:cache-expiry` | `cache_expiry_compaction` | A compaction [before the prompt cache expired](../sessions/compaction.md#before-the-cache-expires) failed; it is not tried again until the session runs |
 | `engine:agent-md` | `agent_md_too_large` | An `AGENTS.md` file is over the size limit and contributes no context; run-scoped, with `detail` `{ path, byte_length, attachment }` |
 
 
@@ -757,6 +758,15 @@ reasoning text is recorded as unknown, together with the text output count
 derived from it. The required `estimated_cost_pico_usd` stamps the
 engine-selected price for that request: a number is priced, and `null` is
 unpriced. `internal_agent_usage_recorded` stamps its price the same way.
+Since client protocol 1.78.0 the optional `cache_ttl` records how long the
+provider keeps the request's prompt cache: `ttl_secs` (`0` never expires)
+and `source`, `set` (cookie set it on the request), `declared` (a model's or
+ACP agent's `cache_ttl`), or `assumed` (`fallback_ttl`, or a ChatGPT
+sign-in's 30 minutes). It is absent when the request cached nothing past
+its system prompt and tools, and in logs written before. Events a session
+records while it compacts [before its cache expires](../sessions/compaction.md#before-the-cache-expires)
+carry the origin `engine:cache-expiry` and are not activity: they do not
+move the session's `last_activity`.
 Usage rollups preserve stamped prices exactly and never price a record again.
 Event-log validation requires its run, agent, model, and turn to
 match and rejects duplicate records for one turn. Session, agent, and global
@@ -1018,6 +1028,7 @@ The retention fields:
 | `boundaries.recent_from_seq` | `u64` or `null` | Inclusive starting sequence of the retained original-message suffix. `null` means no retained suffix. |
 | `budgets.keep_recent_tokens` | `u64` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
 | `checkpoint.native` | object, optional | On an `internal_summary` checkpoint, the provider window compacted from the same events (`window`) and the last event it covers (`source_through_seq`). Absent when native compaction was not attempted or failed. |
+| `reason` | object, optional | Why the checkpoint was made, when not for size, overflow, or a manual request (client protocol 1.78.0): `{"type": "cache_expiry", "expires_at", "next_fire"?, "job_id"?}`, a compaction [before the prompt cache expired](../sessions/compaction.md#before-the-cache-expires), for the scheduled job `job_id` firing at `next_fire` when one decided it. A reader treats a type it does not know as no reason. |
 | `checkpoint.folded_tools` | string array, optional | On an `internal_summary` checkpoint, the [deferred tools](#deferred-tools) loaded before it, and the previous checkpoint's: the next tool round declares them up front. Absent when empty; at most 1,024 names. |
 
 The effective budget is at most `min(configured keep_recent_tokens,

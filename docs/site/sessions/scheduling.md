@@ -199,6 +199,15 @@ attachments, in the foreground (waiting for the result) or in the background
 job's agent need not be one the caller may delegate to. An in-session job
 fires into its session as scheduled.
 
+### The prompt cache
+
+A job that fires into an idle session after its prompt cache expired makes
+that session cache its whole context again. With
+`[context_compaction.cache_expiry] mode = "scheduled"`, the daemon compacts
+such a session shortly before its cache expires, so the fire caches a
+shorter context; see
+[Before the cache expires](compaction.md#before-the-cache-expires).
+
 ### Deleting
 
 Deleting a session deletes the jobs that target it or any session in its

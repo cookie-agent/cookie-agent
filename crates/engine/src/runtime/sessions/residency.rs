@@ -494,10 +494,12 @@ impl Engine {
         let root = session.meta.session_id;
         let unused = |member: &crate::session::SessionProjection| {
             // Cheap checks first: the pending-work check scans the log.
-            member.log.last_event().is_some_and(|event| {
-                Duration::try_from(now.duration_since(event.timestamp))
+            // `last_activity` leaves out what counts as no activity, a
+            // compaction before the prompt cache expires among it.
+            member.log.last_event().is_some()
+                && Duration::try_from(now.duration_since(member.meta.last_activity))
                     .is_ok_and(|idle| idle > idle_after)
-            }) && !self.inner.store.has_live_tail(member.meta.session_id)
+                && !self.inner.store.has_live_tail(member.meta.session_id)
                 && !self.session_has_pending_work(member)
         };
         unused(session)

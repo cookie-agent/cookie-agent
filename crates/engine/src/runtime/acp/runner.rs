@@ -3463,6 +3463,8 @@ impl Engine {
             Some(turn.run),
             origin(),
             Event::ModelUsageRecorded {
+                cache_ttl: self
+                    .stamp_acp_cache_ttl(&turn.live.agent.runtime, &turn.live.agent.agent),
                 model_turn_seq,
                 agent_id: turn.live.agent.id.clone(),
                 resolved_model: turn.active.policy.agent.fallback_chain[0].resolved.clone(),

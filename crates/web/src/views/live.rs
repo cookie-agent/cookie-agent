@@ -6,6 +6,7 @@
 //! request has measured it.
 
 use cookie_agent_client_state::{
+    cache::{CacheBadge, CacheHeat, badge_text, detail_lines},
     format::{compact_count, format_count},
     rows::goal_bar_shows,
 };
@@ -65,9 +66,82 @@ fn ring(fraction: f64) -> impl IntoView {
     }
 }
 
+/// The cache badge's icon and its colour (`docs/site/specs/cache-aware-idle.md`
+/// section 4.5): a flame while warm, graded by heat; a snowflake once
+/// expired; a spinner while compacting.
+fn cache_icon(badge: &CacheBadge) -> (icondata::Icon, &'static str, bool) {
+    match badge {
+        CacheBadge::Compacting => (icondata::LuLoaderCircle, "text-sm text-accent", true),
+        CacheBadge::InUse { .. } | CacheBadge::Forever { .. } => {
+            (icondata::LuFlame, "text-sm text-hot", false)
+        }
+        CacheBadge::Counting { heat, .. } => match heat {
+            CacheHeat::Hot => (icondata::LuFlame, "text-sm text-hot", false),
+            CacheHeat::Warm => (icondata::LuFlame, "text-sm text-hot opacity-60", false),
+            CacheHeat::Cooling => (icondata::LuFlame, "text-sm text-muted", false),
+            CacheHeat::Expired => (icondata::LuSnowflake, "text-sm text-faint", false),
+        },
+    }
+}
+
 /// The open session's live badges.
 #[component]
 pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
+    // The cache badge counts down while it shows.
+    let now = RwSignal::new(jiff::Timestamp::now());
+    let ticker = set_interval_with_handle(
+        move || now.set(jiff::Timestamp::now()),
+        std::time::Duration::from_secs(1),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(ticker) = ticker {
+            ticker.clear();
+        }
+    });
+    let cache_badge = move || {
+        let viewed = workspace.viewed.get();
+        let clock = viewed.cache_clock?;
+        let session = workspace.selected.get()?;
+        let plan = workspace.sessions.with(|sessions| {
+            sessions
+                .iter()
+                .find(|meta| meta.session_id == session)
+                .and_then(|meta| meta.cache_compaction.clone())
+        });
+        let now = now.get();
+        let badge = clock.badge(now, viewed.running, plan.as_ref());
+        let zone = crate::cron::zone_at(now);
+        let title = detail_lines(&clock, &badge, plan.as_ref(), now, &zone).join("\n");
+        let (icon, class, spins) = cache_icon(&badge);
+        let text = badge_text(&badge);
+        let planned = matches!(badge, CacheBadge::Counting { planned: true, .. });
+        let cooling = matches!(
+            badge,
+            CacheBadge::Counting {
+                heat: CacheHeat::Cooling,
+                ..
+            }
+        );
+        Some(view! {
+            <button
+                type="button"
+                class=format!("{BADGE} relative")
+                id="cache-badge"
+                aria-label=title.clone()
+                title=title
+                on:click=move |_| workspace.run_command(Command::Usage)
+            >
+                <Glyph icon=icon class=if spins { format!("{class} animate-spin") } else { class.to_owned() } />
+                {(!text.is_empty()).then(|| view! {
+                    <span class=if cooling { "text-warn" } else { "text-muted" }>{text}</span>
+                })}
+                {planned.then(|| view! {
+                    <span class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent" data-cache-planned></span>
+                })}
+            </button>
+        })
+    };
     let goal = Memo::new(move |_| workspace.goal().filter(|goal| goal_bar_shows(goal.status)));
     let background = Memo::new(move |_| workspace.background_calls().len());
     let approvals = Memo::new(move |_| workspace.approvals().len());
@@ -113,6 +187,7 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
     view! {
         <div class="flex shrink-0 items-center gap-0.5" data-live-badges>
             {goal_badge}
+            {cache_badge}
             <Show when=move || { background.get() > 0 }>
                 <button
                     type="button"

@@ -387,6 +387,12 @@ pub struct SessionMeta {
     /// older daemon.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// The compaction the daemon plans before the session's prompt cache
+    /// expires, while one is planned or running
+    /// (`docs/site/specs/cache-aware-idle.md` section 4.5, client protocol
+    /// 1.78.0). Live state: never stored, absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_compaction: Option<PlannedCacheCompaction>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -448,6 +454,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             unread: bool,
             #[serde(default)]
             pinned: bool,
+            #[serde(default)]
+            cache_compaction: Option<PlannedCacheCompaction>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -478,6 +486,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             held: w.held,
             unread: w.unread,
             pinned: w.pinned,
+            cache_compaction: w.cache_compaction,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -2315,6 +2324,11 @@ pub struct ContextCheckpointCommit {
     pub checkpoint: ContextCheckpoint,
     pub boundaries: ContextCheckpointBoundaries,
     pub budgets: ContextCheckpointBudgets,
+    /// Why it was committed, when not for the usual reasons (client
+    /// protocol 1.78.0). Absent for size, overflow, and manual
+    /// compactions, and in logs written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::Open<CheckpointReason>>,
 }
 impl ContextCheckpointCommit {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
@@ -2409,16 +2423,101 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
             checkpoint: ContextCheckpoint,
             boundaries: ContextCheckpointBoundaries,
             budgets: ContextCheckpointBudgets,
+            #[serde(default)]
+            reason: Option<crate::Open<CheckpointReason>>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
             checkpoint: w.checkpoint,
             boundaries: w.boundaries,
             budgets: w.budgets,
+            reason: w.reason,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
     }
+}
+
+/// How long a request's prompt cache lives, and where cookie learned it
+/// (`docs/site/specs/cache-aware-idle.md` section 4.1).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CacheTtlStamp {
+    /// Seconds from the request; `0` is a cache that never expires.
+    pub ttl_secs: u64,
+    pub source: CacheTtlSource,
+}
+
+impl CacheTtlStamp {
+    /// When the cache of a request sent at `sent_at` expires; `None` when
+    /// it never does.
+    #[must_use]
+    pub fn expires_at(&self, sent_at: Timestamp) -> Option<Timestamp> {
+        if self.ttl_secs == 0 {
+            return None;
+        }
+        let secs = i64::try_from(self.ttl_secs).ok()?;
+        sent_at
+            .checked_add(jiff::SignedDuration::from_secs(secs))
+            .ok()
+    }
+}
+
+/// Where a cache TTL came from. A value this build does not know reads as
+/// `assumed`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum CacheTtlSource {
+    /// Cookie set it on the request: an Anthropic or Bedrock marker,
+    /// OpenAI's GPT-5.6 controls, or its 24-hour retention.
+    Set,
+    /// The configuration declares it: a model's or an ACP agent's
+    /// `cache_ttl`.
+    Declared,
+    /// Assumed: `fallback_ttl`, or the `chatgpt` provider's 30 minutes.
+    #[serde(other)]
+    Assumed,
+}
+
+/// Why a checkpoint was committed, when not for the usual reasons
+/// (`docs/site/specs/cache-aware-idle.md` section 4.4).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CheckpointReason {
+    /// The session was compacted shortly before its prompt cache expired,
+    /// because a scheduled job (`job_id`, at `next_fire`) wakes it only
+    /// after, or because `mode` is `always`.
+    CacheExpiry {
+        expires_at: Timestamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_fire: Option<Timestamp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        job_id: Option<crate::CronJobId>,
+    },
+}
+
+crate::open_enum!(tagged CheckpointReason, tag = "type", {
+    CacheExpiry => "cache_expiry",
+});
+
+/// A compaction the daemon plans before a session's prompt cache expires
+/// (`docs/site/specs/cache-aware-idle.md` section 4.5), on
+/// [`SessionMeta::cache_compaction`].
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PlannedCacheCompaction {
+    /// When it starts.
+    pub at: Timestamp,
+    /// When the cache expires.
+    pub expires_at: Timestamp,
+    /// The scheduled job that wakes the session after expiry, and its
+    /// fire; absent under `mode = "always"` with no job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_fire: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<crate::CronJobId>,
+    /// It is running now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
 }
 
 /// Why a `context_refreshed` composed the context again (frozen context
@@ -3218,6 +3317,12 @@ pub enum EventPayload {
         #[serde(deserialize_with = "deserialize_required_option")]
         #[schemars(with = "crate::NullableSchema<u64>", required)]
         estimated_cost_pico_usd: Option<u64>,
+        /// How long the provider keeps this request's prompt cache, stamped
+        /// at write time (`docs/site/specs/cache-aware-idle.md` section 4.1,
+        /// client protocol 1.78.0). Absent when the request cached nothing
+        /// past its system prompt and tools, and in logs written before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_ttl: Option<CacheTtlStamp>,
     },
     ModelFallback {
         from: ResolvedModelRef,
@@ -4306,6 +4411,9 @@ pub enum EngineDiagnosticKind {
     /// context; `detail` carries its `path`, `byte_length`, and
     /// `attachment`.
     AgentMdTooLarge,
+    /// A compaction before the prompt cache expired failed
+    /// (`docs/site/specs/cache-aware-idle.md` section 4.4).
+    CacheExpiryCompaction,
 }
 
 /// The `diagnostic` kinds the daemon records about what a plugin or runtime
@@ -4370,6 +4478,7 @@ diagnostic_kinds! {
     EngineDiagnosticKind {
         AutoCompactionDisabled => "auto_compaction_disabled",
         AgentMdTooLarge => "agent_md_too_large",
+        CacheExpiryCompaction => "cache_expiry_compaction",
     }
     PeerDiagnosticKind {
         UnknownDisplayBlock => "unknown_display_block",

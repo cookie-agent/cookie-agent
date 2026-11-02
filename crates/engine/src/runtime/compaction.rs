@@ -150,6 +150,8 @@ pub(super) struct CompactionInput<'a> {
     pub(super) compacts_in_stream: bool,
     pub(super) focus: Option<&'a str>,
     pub(super) origin: cookie_agent_protocol::EventOrigin,
+    /// Why the checkpoint is made, when not for the usual reasons.
+    pub(super) reason: Option<cookie_agent_protocol::Open<cookie_agent_protocol::CheckpointReason>>,
 }
 
 impl Engine {
@@ -181,7 +183,33 @@ impl Engine {
         let focus = focus.map(str::to_owned);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.on_actor(session, move |engine| {
-            engine.spawn_compaction(session, focus, origin, reply);
+            engine.spawn_compaction(session, focus, origin, None, reply);
+            Ok(())
+        })
+        .await?;
+        receiver.await.map_err(|_| EngineError::ActorStopped)?
+    }
+
+    /// Compacts `session` as `session.compact` does without a focus,
+    /// recording `reason` on the checkpoint
+    /// (`docs/site/specs/cache-aware-idle.md` section 4.4). An ACP agent
+    /// compacts with its own command, which records no checkpoint.
+    pub(crate) async fn compact_session_with_reason(
+        &self,
+        session: SessionId,
+        origin: cookie_agent_protocol::EventOrigin,
+        reason: Option<cookie_agent_protocol::Open<cookie_agent_protocol::CheckpointReason>>,
+    ) -> Result<SessionCompactResult, EngineError> {
+        self.ensure_appendable(session)?;
+        if let Some(result) = self
+            .compact_acp_session(session, None, origin.clone())
+            .await?
+        {
+            return Ok(result);
+        }
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.on_actor(session, move |engine| {
+            engine.spawn_compaction(session, None, origin, reason, reply);
             Ok(())
         })
         .await?;
@@ -196,6 +224,7 @@ impl Engine {
         session: SessionId,
         focus: Option<String>,
         origin: cookie_agent_protocol::EventOrigin,
+        reason: Option<cookie_agent_protocol::Open<cookie_agent_protocol::CheckpointReason>>,
         reply: tokio::sync::oneshot::Sender<Result<SessionCompactResult, EngineError>>,
     ) {
         if !self.reserve_compaction(session) {
@@ -225,7 +254,7 @@ impl Engine {
                 hook.release.notified().await;
             }
             let mut result = engine
-                .compact_session_direct(session, focus.as_deref(), origin)
+                .compact_session_direct(session, focus.as_deref(), origin, reason)
                 .await;
             if let Err(error) = engine.finish_compaction(session).await
                 && result.is_ok()
@@ -241,6 +270,7 @@ impl Engine {
         session: SessionId,
         focus: Option<&str>,
         origin: cookie_agent_protocol::EventOrigin,
+        reason: Option<cookie_agent_protocol::Open<cookie_agent_protocol::CheckpointReason>>,
     ) -> Result<SessionCompactResult, EngineError> {
         let projection = self.inner.store.get(session)?;
         if projection.status == SessionStatus::Running {
@@ -301,6 +331,7 @@ impl Engine {
                 compacts_in_stream: false,
                 focus,
                 origin,
+                reason,
             })
             .await
         {
@@ -876,6 +907,7 @@ impl Engine {
             },
             boundaries,
             budgets,
+            reason: input.reason.clone(),
         };
         if commit.validate().is_err() {
             // A window the boundaries cannot hold leaves the summary alone.
@@ -893,6 +925,9 @@ impl Engine {
             Event::ContextCheckpointCommitted { commit },
         )
         .await?;
+        // A checkpoint ends whatever compaction was planned before the
+        // prompt cache expires.
+        self.cache_expiry_touch(input.session);
         if let Some(run) = active_run {
             run.auto_compaction_failures.store(0, Ordering::Relaxed);
         }

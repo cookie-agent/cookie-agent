@@ -599,6 +599,7 @@ pub(crate) fn empty_configuration() -> LoadedConfiguration {
             producers: cookie_agent_config::ProducersConfig::default(),
             memory: cookie_agent_config::MemoryConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
+            model_cache_ttls: std::collections::BTreeMap::new(),
             headers: BTreeMap::new(),
             providers: BTreeMap::new(),
             subagent_output: Default::default(),

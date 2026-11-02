@@ -293,6 +293,8 @@ pub struct AcpAgentFields {
     pub environment: String,
     pub description: String,
     pub enabled: bool,
+    /// The prompt cache's lifetime, such as `1h`; empty for none.
+    pub cache_ttl: String,
 }
 
 impl AcpAgentFields {
@@ -305,6 +307,7 @@ impl AcpAgentFields {
             environment: "{}".into(),
             description: String::new(),
             enabled: true,
+            cache_ttl: String::new(),
         }
     }
 
@@ -319,6 +322,7 @@ impl AcpAgentFields {
                 .unwrap_or_else(|_| "{}".into()),
             description: declaration.definition.description.clone(),
             enabled: declaration.definition.enabled,
+            cache_ttl: declaration.definition.cache_ttl.clone().unwrap_or_default(),
         }
     }
 
@@ -345,6 +349,7 @@ impl AcpAgentFields {
                 env,
                 description: self.description.trim().to_owned(),
                 enabled: self.enabled,
+                cache_ttl: Some(self.cache_ttl.trim().to_owned()).filter(|ttl| !ttl.is_empty()),
             },
         ))
     }

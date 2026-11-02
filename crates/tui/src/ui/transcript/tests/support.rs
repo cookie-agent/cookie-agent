@@ -115,6 +115,7 @@ pub(crate) fn production_provider_harness(
         preset_templates: Default::default(),
         pending_agents: Vec::new(),
         runtime: EngineConfig {
+            model_cache_ttls: std::collections::BTreeMap::new(),
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
             utility_model: None,
@@ -484,6 +485,7 @@ pub(crate) fn runless_event(session_id: SessionId, seq: u64, payload: EventPaylo
 pub(crate) fn checkpoint_commit(summary: &str) -> cookie_agent_protocol::ContextCheckpointCommit {
     let max = cookie_agent_protocol::SummaryByteLimit::new(1024).expect("summary limit");
     cookie_agent_protocol::ContextCheckpointCommit {
+        reason: None,
         checkpoint: cookie_agent_protocol::ContextCheckpoint::InternalSummary {
             checkpoint: cookie_agent_protocol::InternalSummaryCheckpoint::new(
                 summary.into(),
@@ -759,6 +761,7 @@ pub(crate) fn usage_recorded(
         seq,
         run,
         EventPayload::ModelUsageRecorded {
+            cache_ttl: None,
             model_turn_seq,
             agent_id: agent_id(),
             resolved_model: resolved_model(None),
@@ -966,6 +969,7 @@ pub(crate) fn tool_terminated(
 
 pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
     SessionMeta {
+        cache_compaction: None,
         cron: None,
         held: None,
         unread: false,

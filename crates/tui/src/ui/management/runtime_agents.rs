@@ -98,6 +98,8 @@ pub(in crate::ui) struct AcpAgentForm {
     description: InputState,
     pub(in crate::ui) enabled: bool,
     pub(in crate::ui) focus: AcpFormFocus,
+    /// The declaration's `cache_ttl`, kept as it was.
+    cache_ttl: String,
 }
 
 fn input(value: &str) -> InputState {
@@ -116,11 +118,13 @@ impl AcpAgentForm {
             description: input(&fields.description),
             enabled: fields.enabled,
             focus: AcpFormFocus::Agent,
+            cache_ttl: fields.cache_ttl.clone(),
         }
     }
 
     pub(in crate::ui) fn fields(&self) -> AcpAgentFields {
         AcpAgentFields {
+            cache_ttl: self.cache_ttl.clone(),
             agent: self.agent.as_str().to_owned(),
             command: self.command.as_str().to_owned(),
             environment: self.environment.as_str().to_owned(),

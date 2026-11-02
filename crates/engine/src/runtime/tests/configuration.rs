@@ -580,6 +580,7 @@ async fn a_runtimes_acp_agents_are_set_listed_renamed_and_removed() {
     let labpc = cookie_agent_protocol::RuntimeId::new("labpc").unwrap();
     let claude = cookie_agent_protocol::AgentId::new("claude").unwrap();
     let definition = cookie_agent_protocol::AcpAgentDefinition {
+        cache_ttl: None,
         command: vec!["claude-acp".into()],
         env: std::collections::BTreeMap::new(),
         description: "Claude Code".into(),
@@ -631,6 +632,7 @@ async fn an_acp_agent_for_every_runtime_is_global_and_a_runtimes_own_wins() {
     let labpc = cookie_agent_protocol::RuntimeId::new("labpc").unwrap();
     let claude = cookie_agent_protocol::AgentId::new("claude").unwrap();
     let definition = |command: &str, enabled| cookie_agent_protocol::AcpAgentDefinition {
+        cache_ttl: None,
         command: vec![command.into()],
         env: std::collections::BTreeMap::new(),
         description: String::new(),

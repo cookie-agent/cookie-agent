@@ -589,6 +589,12 @@ impl Theme {
     }
 
     /// Warning style: visually distinct from error styling (never red).
+    /// A warm prompt cache: the status line's cache part
+    /// (`docs/site/specs/cache-aware-idle.md` section 4.5).
+    pub fn hot(&self) -> Style {
+        self.semantic(self.palette().orange, Modifier::empty())
+    }
+
     pub fn warning(&self) -> Style {
         self.semantic(self.palette().warn, Modifier::BOLD)
     }

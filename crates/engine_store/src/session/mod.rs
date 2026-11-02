@@ -84,6 +84,11 @@ use crate::ownership::{
 
 /// The session store under the data root (`~/.cookie-agent/sessions`).
 pub const SESSIONS_ROOT_DIR: &str = "sessions";
+/// The origin of what a session records while it is quiet
+/// ([`SessionStore::set_quiet`]): a compaction before its prompt cache
+/// expires (`docs/site/specs/cache-aware-idle.md` section 10). It is not
+/// activity.
+pub const QUIET_ORIGIN: &str = "engine:cache-expiry";
 /// The store's layout and history format, in [`SESSIONS_ROOT_DIR`].
 pub const LAYOUT_MARKER_FILE: &str = "layout.json";
 /// Session metadata cache file name.
@@ -465,6 +470,13 @@ pub struct SessionStore {
     /// [`Self::record_live_waiting`]. Never persisted: a daemon restart ends
     /// every one of them.
     live_waiting: Mutex<HashMap<SessionId, Vec<WaitingOn>>>,
+    /// The compaction the engine plans before each session's prompt cache
+    /// expires, see [`Self::record_cache_compaction`]. Never persisted.
+    cache_compactions: Mutex<HashMap<SessionId, cookie_agent_protocol::PlannedCacheCompaction>>,
+    /// Sessions whose appends are not activity: a compaction before the
+    /// prompt cache expires (`docs/site/specs/cache-aware-idle.md` section
+    /// 10), see [`Self::set_quiet`].
+    quiet: Mutex<HashSet<SessionId>>,
     /// The unread root sessions (`<data_root>/unread.json`).
     unread: marks::MarkedSessions,
     /// The pinned root sessions (`<data_root>/pinned.json`).
@@ -625,7 +637,56 @@ impl SessionStore {
             meta.waiting_on.sort();
             meta.waiting_on.dedup();
         }
+        meta.cache_compaction = self
+            .cache_compactions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&meta.session_id)
+            .cloned();
         meta
+    }
+
+    /// Records the compaction the engine plans before `id`'s prompt cache
+    /// expires, or that none is planned, and returns whether that changed;
+    /// [`Self::announce_live_waiting`] then tells clients.
+    pub fn record_cache_compaction(
+        &self,
+        id: SessionId,
+        planned: Option<cookie_agent_protocol::PlannedCacheCompaction>,
+    ) -> bool {
+        let mut plans = self
+            .cache_compactions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = match planned.clone() {
+            Some(planned) => plans.insert(id, planned),
+            None => plans.remove(&id),
+        };
+        previous != planned
+    }
+
+    /// Makes `id`'s appends count, or not, as activity: while quiet they
+    /// carry [`QUIET_ORIGIN`] and move neither `last_activity` nor the idle
+    /// clock that pages the session out.
+    pub fn set_quiet(&self, id: SessionId, quiet: bool) {
+        let mut sessions = self
+            .quiet
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if quiet {
+            sessions.insert(id);
+        } else {
+            sessions.remove(&id);
+        }
+    }
+
+    /// Whether `id`'s appends are not activity now ([`Self::set_quiet`]).
+    #[must_use]
+    pub fn is_quiet(&self, id: SessionId) -> bool {
+        self.quiet
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&id)
     }
 
     /// Records `kinds`, what the engine's live producers make `id` wait on,
@@ -697,6 +758,10 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|id, _| !deleted.contains(id));
+        self.cache_compactions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|id, _| !deleted.contains(id));
     }
 
     /// Opens the store under `data_root`, first bringing it to this build's
@@ -744,6 +809,8 @@ impl SessionStore {
             publications: publication::Publications::default(),
             index_changes: tokio::sync::broadcast::channel(INDEX_CHANGE_CAPACITY).0,
             live_waiting: Mutex::default(),
+            cache_compactions: Mutex::default(),
+            quiet: Mutex::default(),
             unread: marks::MarkedSessions::open(data_root, marks::UNREAD_FILE, "unread sessions"),
             pinned: marks::MarkedSessions::open(data_root, marks::PINNED_FILE, "pinned sessions"),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
@@ -2109,6 +2176,15 @@ impl SessionStore {
                     | EventPayload::SkillLoaded { .. }
                     | EventPayload::AgentMdLoaded { .. }
             );
+        // What a quiet session records carries the quiet origin, so a fold
+        // of its log leaves it out of `last_activity` too.
+        let quiet = self.is_quiet(id);
+        let origin = if quiet {
+            cookie_agent_protocol::EventOrigin::new(QUIET_ORIGIN)
+                .expect("static event origin is valid")
+        } else {
+            origin
+        };
         let (envelope, commit) = log.write_owned(&capability, run, origin, event)?;
         // The event is folded into the resident projection in place; only a
         // usage record that cannot be taken back exactly refolds the whole
@@ -2140,7 +2216,9 @@ impl SessionStore {
                     match resident.observe(&envelope, FoldStep::Append) {
                         Observed::Applied { durable_meta } => {
                             resident.meta.last_event_seq = envelope.seq;
-                            resident.meta.last_activity = envelope.timestamp;
+                            if !quiet {
+                                resident.meta.last_activity = envelope.timestamp;
+                            }
                             let root = matches!(resident.meta.origin, SessionOrigin::Root);
                             residency.evicted.remove(&id);
                             index_changed = durable_meta || first_user_message;
@@ -2173,7 +2251,11 @@ impl SessionStore {
             }
         } else {
             let previous = self.get_resident(id);
-            let rebuilt = Arc::new(refold(log.clone(), previous.as_deref())?);
+            let mut rebuilt = refold(log.clone(), previous.as_deref())?;
+            if quiet && let Some(previous) = &previous {
+                rebuilt.meta.last_activity = previous.meta.last_activity;
+            }
+            let rebuilt = Arc::new(rebuilt);
             drop(previous);
             if first_user_message {
                 self.persist_buffered(id, &rebuilt)?;

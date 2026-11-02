@@ -353,6 +353,9 @@ pub(super) struct UsagePanel {
     pub(super) scroll: u16,
     max_scroll: u16,
     page_size: u16,
+    /// The prompt cache's lines, as the status line's tooltip-less part
+    /// would say them; empty without a cache clock.
+    pub(super) cache: Vec<String>,
 }
 
 impl UsagePanel {
@@ -877,7 +880,18 @@ fn usage_panel_lines(panel: &UsagePanel, width: usize, theme: &Theme) -> Vec<Lin
     ];
     let stats = StatsWidths::from_usages(usages);
     let table = TableWidths::from_usages(usages);
-    let mut lines = usage_section_lines(
+    let mut lines = Vec::new();
+    if !panel.cache.is_empty() {
+        lines.push(Line::from(Span::styled("Prompt cache", theme.heading())));
+        lines.extend(
+            panel
+                .cache
+                .iter()
+                .map(|line| Line::from(Span::styled(line.clone(), theme.body()))),
+        );
+        lines.push(Line::default());
+    }
+    lines.extend(usage_section_lines(
         "This session",
         None,
         false,
@@ -887,7 +901,7 @@ fn usage_panel_lines(panel: &UsagePanel, width: usize, theme: &Theme) -> Vec<Lin
         &stats,
         &table,
         theme,
-    );
+    ));
     lines.push(Line::default());
     let tree_session_count = panel.tree.as_ref().map(|result| result.session_count);
     let qualifier = tree_session_count.map(|count| format!("· {} sessions", format_count(count)));

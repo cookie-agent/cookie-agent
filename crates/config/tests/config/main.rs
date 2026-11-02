@@ -6,6 +6,7 @@ mod agent_inherit;
 mod agent_md;
 mod agent_templates;
 mod approval;
+mod cache_expiry;
 mod compaction_recent_tokens;
 mod compaction_trigger;
 mod config_tree;

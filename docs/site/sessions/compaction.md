@@ -260,6 +260,44 @@ longer offers.
 See [Context Compaction](../engine/context_compaction.md) for settings, defaults,
 trigger forms, and inheritance.
 
+## Before the cache expires
+
+A provider keeps a session's prompt cache for a while after each request:
+an hour for Anthropic's markers by default, 30 minutes for OpenAI's GPT-5.6
+and later. A session that sits idle past that and then runs again writes
+its whole context to the cache once more. With
+[`[context_compaction.cache_expiry]`](../engine/context_compaction.md#before-the-cache-expires)
+on, the daemon compacts such a session shortly before its cache expires.
+The summary request reads the still-warm cache, and the next prompt caches
+only the shorter context.
+
+- **Which sessions.** With `mode = "scheduled"`, those a
+  [scheduled job](scheduling.md) fires into after the cache expires; with
+  `mode = "always"`, every idle one. A session that is running, held, too
+  small for the floors, or already compacted since its last turn is left
+  alone, and a job that fires before expiry reads the warm cache anyway.
+- **When.** `min(slack, ttl / 5)` before expiry: five minutes before a
+  one-hour cache, two before a ten-minute one. A timer that wakes after
+  expiry (a suspended machine) compacts nothing.
+- **Which TTL.** The one cookie sent: Anthropic and Bedrock markers,
+  OpenAI's GPT-5.6 controls (`30m` or `12h`), or `24h` retention. A ChatGPT
+  sign-in is assumed to keep 30 minutes. Anything else takes the model's
+  `cache_ttl`, else `fallback_ttl`. Each usage event records the TTL it
+  assumed (`cache_ttl` on `model_usage_recorded`).
+- **ACP agents** compact with their own `/compact` command, and only when
+  their declaration sets a [`cache_ttl`](../runtimes/tools.md#acp-agents).
+- **It is not activity.** The compaction does not move the session up in
+  the session list, does not restart the idle time after which it is paged
+  out of memory, marks nothing unread, and sends no push notification. Its
+  checkpoint says why it was made (`reason`), and both clients show it as
+  "Compacted before the cache expired".
+- **A failure** is recorded as a `cache_expiry_compaction` diagnostic and
+  not retried until the session runs again.
+
+Both clients show the cache's state in the session header as a flame with
+the minutes left, or a snowflake and "cache expired"; see the
+[web client](../clients/web.md) and the [TUI](../clients/tui.md).
+
 ## Manual compaction
 
 Choosing `/compact` in the [command palette](../clients/tui.md#command-palette) forces a

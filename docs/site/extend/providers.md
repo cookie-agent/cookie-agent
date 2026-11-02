@@ -130,7 +130,7 @@ stored); unconfigured providers report counts alone.
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
 | `cache` | table | family default | [Prompt-cache policy](#prompt-caching) matching the resolved adaptor family. |
 | `headers` | map of strings | empty | Provider request-header overrides. |
-| `models` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `model_id`, `generation_options`, `adaptor_options`, `variants`, `default_variant`, `compaction`, `deferred_tools`, `reasoning_binding`, `headers`, `pricing`. Unmentioned catalog models remain available. Cannot invent models or directly change catalog capabilities. |
+| `models` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `model_id`, `generation_options`, `adaptor_options`, `variants`, `default_variant`, `compaction`, `deferred_tools`, `reasoning_binding`, `cache_ttl`, `headers`, `pricing`. Unmentioned catalog models remain available. Cannot invent models or directly change catalog capabilities. |
 
 Every model on a Responses adaptor compacts natively by default (see
 [native compaction](../sessions/compaction.md#native-provider-compaction)):
@@ -229,8 +229,13 @@ generation_options = { max_output_tokens = 4096 }
 ```
 
 Model overrides accept `enabled`, `display_name`, `model_id`, `generation_options`,
-`adaptor_options`, `pricing`, `variants`, `default_variant`, `compaction`, and
-`headers`. Omitted fields retain catalog/base values. Display names and generation settings have
+`adaptor_options`, `pricing`, `variants`, `default_variant`, `compaction`,
+`cache_ttl`, and `headers`. `cache_ttl` is a duration such as `"1h"` saying how
+long the provider keeps the model's prompt cache, for compaction
+[before the cache expires](../sessions/compaction.md#before-the-cache-expires);
+`"0s"` is a cache that never expires. It applies only where cookie sets no
+TTL itself (Anthropic and Bedrock markers, OpenAI's GPT-5.6 controls or
+`24h` retention win). Omitted fields retain catalog/base values. Display names and generation settings have
 the same constraints as custom definitions. Variant and pricing rules are below.
 
 ### Catalog reasoning variants
@@ -463,6 +468,7 @@ Custom model definition under `[providers."custom.x".models."<model-id>"]`:
 | `generation_options` | table | empty | Generation settings (see below). |
 | `adaptor_options` | table | empty | Typed adaptor-specific settings (see below). |
 | `pricing` | table | absent | Whole-model rate override, including an explicitly empty rate set. |
+| `cache_ttl` | duration string | absent | How long the provider keeps the model's prompt cache, such as `"1h"`; `"0s"` never expires. Used for compaction [before the cache expires](../sessions/compaction.md#before-the-cache-expires) where cookie sets no TTL itself; absent, `[context_compaction.cache_expiry] fallback_ttl` applies. |
 | `headers` | map of strings | empty | Model request-header overrides. Variants accept the same header map. |
 | `variants` | map | empty | Implicit variant creation or sparse overrides. |
 | `default_variant` | string | *(none)* | `"base"` or a named variant that must exist in `variants`. |

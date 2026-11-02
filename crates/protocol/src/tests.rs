@@ -26,6 +26,7 @@ fn usage_event_cost_round_trips_and_is_required_but_nullable() {
     }))
     .unwrap();
     let payload = EventPayload::ModelUsageRecorded {
+        cache_ttl: None,
         model_turn_seq: 1,
         agent_id: AgentId::new("primary").unwrap(),
         resolved_model,
@@ -47,6 +48,7 @@ fn usage_event_cost_round_trips_and_is_required_but_nullable() {
     assert!(serde_json::from_value::<EventPayload>(unstamped).is_err());
 
     let unpriced = EventPayload::ModelUsageRecorded {
+        cache_ttl: None,
         model_turn_seq: 1,
         agent_id: AgentId::new("primary").unwrap(),
         resolved_model: serde_json::from_value(json!({
@@ -1798,6 +1800,7 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
     )
     .unwrap();
     let mut commit = ContextCheckpointCommit {
+        reason: None,
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint,
             native: None,
@@ -1838,6 +1841,7 @@ fn checkpoint_recent_tail_is_required_and_stays_within_source() {
     )
     .unwrap();
     let commit = ContextCheckpointCommit {
+        reason: None,
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint,
             native: None,
@@ -1906,6 +1910,7 @@ fn native_checkpoint_rejects_recent_tail_boundary_and_budget() {
     )
     .unwrap();
     let mut commit = ContextCheckpointCommit {
+        reason: None,
         checkpoint: ContextCheckpoint::NativeWindow { window },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 1,
@@ -1953,6 +1958,7 @@ fn test_window(adapter: &str, provider: &str, model: &str) -> NativeContextWindo
 
 fn summary_commit(native: Option<CheckpointNativeWindow>) -> ContextCheckpointCommit {
     ContextCheckpointCommit {
+        reason: None,
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint: InternalSummaryCheckpoint::new(
                 "summary".into(),
@@ -2153,6 +2159,7 @@ fn available_model_descriptor_serde_round_trip_preserves_variant_order() {
 fn session_meta_serde_round_trip_preserves_last_activity() {
     let last_activity = "2026-08-06T12:34:56Z".parse().expect("timestamp");
     let meta = SessionMeta {
+        cache_compaction: None,
         cron: None,
         held: None,
         unread: false,
@@ -3753,6 +3760,7 @@ fn remembered_runtimes_and_forget_runtime_round_trip() {
 
 fn meta_fixture() -> SessionMeta {
     SessionMeta {
+        cache_compaction: None,
         cron: None,
         held: None,
         unread: false,

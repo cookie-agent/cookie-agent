@@ -1,7 +1,9 @@
 # Cache-aware idle sessions: compaction before the cache expires
 
-Status: **approved** (2026-11-02), with the user's decisions in
-[section 2](#2-decisions-2026-11-02); phase 0 (a probe) still to run. Builds on [cron jobs](cron.md) (sections
+Status: **implemented** (2026-11-02; client protocol 1.78.0, plugin
+protocol 1.39.0), with the user's decisions in
+[section 2](#2-decisions-2026-11-02); deviations in
+[section 11.3](#113-implementation-2026-11-02). Builds on [cron jobs](cron.md) (sections
 4 and 5), [native compaction](native-compaction.md), [ACP agents](acp-agents.md)
 (section 7, sessions and processes; section 15, compaction), and the
 residency janitor (`crates/engine/src/runtime/sessions/residency.rs`).
@@ -604,4 +606,60 @@ backend with Codex's sign-in token was not made.
   assumes `30m`, to be safe *(user decision of 2026-11-02)*. The announced
   "forever" is not relied on until it is documented. A model override's
   `cache_ttl` replaces it, `0s` for no expiry.
+
+### 11.3 Implementation (2026-11-02)
+
+Phases 1 and 2 landed together. Where the code differs from the sections
+above:
+
+- **The clock rides on history and metadata (4.5, 7).** There is no
+  `session_cache_clock` event and no `cache_clock` on the session view.
+  Instead:
+  - `model_usage_recorded.cache_ttl` (`CacheTtlStamp`: `ttl_secs` and
+    `source`) stamps every request's TTL. Clients count down from it and
+    from the request's time (its `model_request_prepared`, else its
+    attempt's start). A late subscriber reads it back from history.
+  - The planned compaction rides on `SessionMeta.cache_compaction`
+    (`PlannedCacheCompaction`) as live state, the way `unread` and
+    `pinned` do. Every connection hears of it through `sessions.changed`.
+- **`reason` is internally tagged:** `{"type": "cache_expiry",
+  "expires_at", "next_fire"?, "job_id"?}`, like the other open enums of
+  the history, not `{"cache_expiry": {...}}`.
+- **A log written before has no clock.** A request without a stamp gives no
+  clock until the session's next request; the TTL is not resolved again
+  from the binding.
+- **Not activity, durably.** While a session compacts before expiry, the
+  store marks it quiet:
+  - everything it records carries the origin `engine:cache-expiry`, the
+    compaction agent's own events included (they were
+    `engine:internal-agent`);
+  - a fold leaves those events out of `last_activity`, so the list order
+    and the idle clock that pages a tree out (which now reads
+    `last_activity`) hold across reloads too;
+  - an ACP agent's `/compact` run arms no settle push, so it marks nothing
+    unread.
+- **The scheduler** wakes on:
+  - `sessions.changed` `upserted` (run starts and ends, held changes);
+  - any change to the cron jobs;
+  - a committed checkpoint;
+  - its own due time;
+  - a full look at every candidate once a minute, which also picks up
+    `config.reload`.
+- **A fire before expiry skips under `always` too.** It reads a warm cache,
+  so there is nothing to save.
+- **`cache_expiry` is not per agent (5).** `[context_compaction]` is a
+  configuration table, not part of agent documents, so it applies
+  daemon-wide.
+- **ACP agents' `cache_ttl`** is read from the daemon's configuration (the
+  runtime's `[runtimes.<id>.acp.agents.<agent>]`, else
+  `[acp.agents.<agent>]`), stamped on the agent's usage when it reports
+  some. `AcpAgentDefinition`, `AcpPreset`, and `OnboardingAcpAgentInput`
+  carry it, so onboarding writes the preset's value and the agents panel
+  keeps it on an edit.
+- **The usage card** shows the meter and the tooltip's lines (state; last
+  request, TTL and source, expiry; the plan). It leaves out the cost of
+  caching again and the `mode`, which a client does not have.
+- **The TUI** draws the planned compaction as a `•` after the minutes. The
+  cache part is a click target with its hover (`SessionCache`) that opens
+  the usage panel, whose top lists the same lines.
 

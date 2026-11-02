@@ -14,6 +14,7 @@ mod approvals;
 mod artifacts;
 mod background_tasks;
 mod background_waits;
+mod cache_expiry;
 mod chatgpt;
 mod compaction;
 mod configuration;

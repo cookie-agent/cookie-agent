@@ -4,6 +4,14 @@
       "additionalProperties": false,
       "description": "An ACP agent `onboarding.run` declares (client protocol 1.74.0).",
       "properties": {
+        "cache_ttl": {
+          "description": "The declaration's `cache_ttl`, from its preset (client protocol\n1.78.0).",
+          "maxLength": 32,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "command": {
           "items": {
             "type": "string"

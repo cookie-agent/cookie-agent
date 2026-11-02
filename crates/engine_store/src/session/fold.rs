@@ -95,6 +95,25 @@ impl AutomaticTitleEligibility {
     }
 }
 
+/// When `events` last saw activity: its tip, or, when the tip is quiet
+/// ([`super::QUIET_ORIGIN`]), the latest event before that is not.
+fn last_activity(events: &[Arc<StoredEvent>], tip: &StoredEvent) -> jiff::Timestamp {
+    let quiet = |event: &StoredEvent| {
+        event
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.as_str() == super::QUIET_ORIGIN)
+    };
+    if !quiet(tip) {
+        return tip.timestamp;
+    }
+    events
+        .iter()
+        .rev()
+        .find(|event| !quiet(event))
+        .map_or(tip.timestamp, |event| event.timestamp)
+}
+
 pub fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     refold(log, None)
 }
@@ -153,6 +172,7 @@ fn projection_fold_with(
             _ => unreachable!(),
         };
     let meta = SessionMeta {
+        cache_compaction: None,
         session_id: events[0].session_id,
         origin,
         short_id,
@@ -168,7 +188,7 @@ fn projection_fold_with(
         title: None,
         title_updated_seq: 0,
         last_event_seq: log.physical_tip_seq(),
-        last_activity: physical_tip.timestamp,
+        last_activity: last_activity(&events, &physical_tip),
         last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: log

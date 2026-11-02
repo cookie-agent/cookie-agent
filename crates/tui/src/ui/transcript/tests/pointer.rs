@@ -70,6 +70,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::BackgroundBar => "background bar",
         PointerTarget::PermissionMode => "permission mode",
         PointerTarget::SessionCost => "session cost",
+        PointerTarget::SessionCache => "session cache",
         PointerTarget::ProjectLabel => "project label",
         PointerTarget::EventLevelFilter => "event level filter",
         PointerTarget::TitleSegment(_) => "title segment",
@@ -303,6 +304,13 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
         state.tools.get_mut(&call_id).expect("call").backgroundable = true;
         state.background_calls = vec![background_call("job_1"), background_call("job_2")];
         state.estimated_cost_usd = Some(0.18);
+        state.cache_clock = Some(cookie_agent_client_state::cache::CacheClock {
+            sent_at: jiff::Timestamp::now(),
+            stamp: cookie_agent_protocol::CacheTtlStamp {
+                ttl_secs: 3_600,
+                source: cookie_agent_protocol::CacheTtlSource::Set,
+            },
+        });
         state.goal = Some(test_goal(
             GoalStatus::Active,
             vec![goal_item("Hover everything", false)],
@@ -603,6 +611,7 @@ async fn every_clickable_element_hovers_visibly() {
         "background bar",
         "permission mode",
         "session cost",
+        "session cache",
         "project label",
         "event level filter",
         "title segment",

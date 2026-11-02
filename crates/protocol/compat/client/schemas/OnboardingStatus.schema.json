@@ -3,6 +3,14 @@
     "AcpPreset": {
       "description": "An ACP agent onboarding can link (`docs/site/specs/acp-onboarding.md`\nsection 3, client protocol 1.73.0), from the official agents\nrepository: the declaration it fills in.",
       "properties": {
+        "cache_ttl": {
+          "description": "The declaration's `cache_ttl`, such as `\"1h\"` (client protocol\n1.78.0).",
+          "maxLength": 32,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "command": {
           "description": "The program and its arguments.",
           "items": {

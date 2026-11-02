@@ -637,6 +637,7 @@ pub fn acp_preset_input(preset: &AcpPreset, place: AcpPlace) -> OnboardingAcpAge
         description: Some(preset.description.clone()).filter(|text| !text.is_empty()),
         model: None,
         effort: None,
+        cache_ttl: preset.cache_ttl.clone(),
     }
 }
 
@@ -679,6 +680,7 @@ pub fn other_acp_input(
         description: Some(description.trim().to_owned()).filter(|text| !text.is_empty()),
         model: None,
         effort: None,
+        cache_ttl: None,
     })
 }
 

@@ -3139,6 +3139,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
             Some(run_id),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ModelUsageRecorded {
+                cache_ttl: None,
                 model_turn_seq: 1,
                 agent_id: agent.agent.clone(),
                 resolved_model,
@@ -3734,6 +3735,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     &store,
                     Some(run_id),
                     EventPayload::ModelUsageRecorded {
+                        cache_ttl: None,
                         model_turn_seq: turn_seq,
                         agent_id: agent_id.clone(),
                         resolved_model: resolved_model.clone(),
@@ -4030,6 +4032,7 @@ fn usage_rollup_after_a_usage_less_commit(
         Some(run_id),
         cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
         EventPayload::ModelUsageRecorded {
+            cache_ttl: None,
             model_turn_seq: 1,
             agent_id: agent.agent.clone(),
             resolved_model: resolved_model.clone(),
@@ -4242,6 +4245,7 @@ fn append_realistic_run(
         append(
             Some(run_id),
             EventPayload::ModelUsageRecorded {
+                cache_ttl: None,
                 model_turn_seq: turn_seq,
                 agent_id: agent_id.clone(),
                 resolved_model: resolved_model.clone(),
@@ -4436,6 +4440,7 @@ fn in_place_projection_matches_a_full_fold_through_truncation_and_late_usage() {
                 Some(run_id),
                 fuzz_origin(),
                 EventPayload::ModelUsageRecorded {
+                    cache_ttl: None,
                     model_turn_seq: turn_seq,
                     agent_id: agent_id.clone(),
                     resolved_model: resolved_model.clone(),

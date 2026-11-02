@@ -756,6 +756,10 @@ pub struct AcpAgentDefinition {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
     pub enabled: bool,
+    /// How long the agent's prompt cache lives, such as `"1h"` (`"0s"`
+    /// never expires; client protocol 1.78.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<String>,
 }
 
 /// `runtimes.agents.set` (client protocol 1.37.0): adds the declaration

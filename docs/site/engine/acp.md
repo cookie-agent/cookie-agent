@@ -24,7 +24,7 @@ uses defaults for omitted fields. Unknown fields fail; see
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `idle_shutdown_ms` | integer | `300000` | How long an agent's process stays up with no turn in progress before the daemon stops it. Each agent runs one process per runtime, shared by its sessions; the next turn starts it again and resumes the session's ACP session. Must be at least 1. |
-| `agents.<agent>` | table | none | An ACP agent every runtime offers (all but `global`), run on each runtime's own machine. Its fields are those of a runtime's declaration: `command`, `env`, `description`, `enabled`. A runtime's own `[runtimes.<id>.acp.agents.<agent>]` of the same key replaces it on that runtime, with another command or `enabled = false` to leave it off there. |
+| `agents.<agent>` | table | none | An ACP agent every runtime offers (all but `global`), run on each runtime's own machine. Its fields are those of a runtime's declaration: `command`, `env`, `description`, `enabled`, `cache_ttl`. A runtime's own `[runtimes.<id>.acp.agents.<agent>]` of the same key replaces it on that runtime, with another command or `enabled = false` to leave it off there. |
 
 The table applies at once when the configuration changes: the next idle
 period reads it.

@@ -217,6 +217,7 @@ pub(crate) fn request_from_wire(params: OnboardingRunParams) -> Result<Onboardin
                 description: agent.description,
                 model: agent.model,
                 effort: agent.effort,
+                cache_ttl: agent.cache_ttl,
             })
             .collect(),
         mcp_servers: params

@@ -295,6 +295,33 @@ pub fn estimated_cost_pico_usd(
     u64::try_from(rounded_pico_usd).ok()
 }
 
+/// What writing `tokens` of `model`'s context to the prompt cache again
+/// costs: the tokens at its cache-write rate, else at its input rate
+/// (`docs/site/specs/cache-aware-idle.md` section 4.2). `None` for a model
+/// with neither.
+#[must_use]
+pub fn recache_cost_pico_usd(
+    model: &ResolvedModelRef,
+    tokens: u64,
+    pricing: &PricingConfig,
+    catalog: &impl CatalogCosts,
+) -> Option<u64> {
+    let model_key = ModelKey::new(model.provider_id.clone(), model.model_id.clone()).ok()?;
+    let rates = if let Some(rates) = pricing.models.get(&model_key) {
+        *rates
+    } else {
+        catalog_rates(catalog.catalog_cost(&model_key)?.rates_for_input(tokens))
+    };
+    let rate = rates
+        .cache_write_per_million_usd
+        .or(rates.input_per_million_usd)?;
+    let numerator = category_cost(tokens, Some(rate))?;
+    let rounded_pico_usd = numerator
+        .checked_add(TOKENS_PER_MILLION / 2)?
+        .checked_div(TOKENS_PER_MILLION)?;
+    u64::try_from(rounded_pico_usd).ok()
+}
+
 fn hit_rate<'a>(observations: impl Iterator<Item = &'a Usage>) -> Option<f64> {
     // Only turns whose provider reported cache usage participate: a single
     // cache-unaware (or cache-miss) turn must not poison the whole rollup.

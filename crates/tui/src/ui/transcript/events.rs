@@ -466,15 +466,10 @@ pub(super) fn compaction_layout(
         .expanded
         .is_some_and(|blocks| blocks.contains(&block_id));
     let chevron = if is_expanded { '▾' } else { '▸' };
-    let kind = match &commit.checkpoint {
-        cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => "internal summary",
-        cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. } => "native window",
-    };
+    let header =
+        cookie_agent_client_state::rows::compaction_header(commit, &jiff::tz::TimeZone::system());
     let mut body = vec![Line::styled(
-        format!(
-            "🧹 {chevron} context compacted ({kind}, {}→{} tokens)",
-            commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
-        ),
+        format!("🧹 {chevron} {header}"),
         context.theme.internal(),
     )];
     if is_expanded {

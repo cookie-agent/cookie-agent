@@ -52,6 +52,7 @@ pub(crate) mod artifacts;
 pub(crate) mod assets;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
+pub(crate) mod cache_expiry;
 pub mod chatgpt;
 pub(crate) mod cron;
 pub(crate) mod machines;
@@ -1060,6 +1061,7 @@ pub(crate) struct Inner {
     /// The cron jobs.
     pub(crate) crons: Arc<crate::crons::CronStore>,
     pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
+    pub(crate) cache_expiry: cache_expiry::CacheExpiryState,
     /// A restart a client scheduled, and the hook that does it.
     pub(crate) restart: restart::RestartState,
     /// The daemon's status, which the engine reports its slow work on.
@@ -1404,6 +1406,7 @@ impl Engine {
                 message_attachments: Default::default(),
                 crons,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
+                cache_expiry: cache_expiry::CacheExpiryState::default(),
                 restart: restart::RestartState::default(),
                 status,
                 served_server_token: std::sync::OnceLock::new(),
@@ -1496,6 +1499,7 @@ impl Engine {
         }
         engine.start_subagent_janitor();
         engine.start_cron_scheduler();
+        engine.start_cache_expiry_scheduler();
         engine.install_acp();
         Ok(engine)
     }
@@ -2096,6 +2100,10 @@ impl Engine {
             let _ = task.await;
         }
         if let Some(task) = self.take_cron_scheduler() {
+            task.abort();
+            let _ = task.await;
+        }
+        for task in self.take_cache_expiry_tasks() {
             task.abort();
             let _ = task.await;
         }

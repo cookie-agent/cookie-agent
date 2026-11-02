@@ -139,6 +139,8 @@ pub struct OnboardingAcpRequest {
     /// The agent's model and effort values for `agents/<id>.md`.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The declaration's `cache_ttl`, from its preset.
+    pub cache_ttl: Option<String>,
 }
 
 /// An MCP server `onboarding.run` adds.
@@ -423,6 +425,9 @@ fn apply_agents_and_tools(
         }
         if let Some(description) = agent.description.as_deref().filter(|text| !text.is_empty()) {
             table.insert("description".into(), serde_json::json!(description));
+        }
+        if let Some(cache_ttl) = &agent.cache_ttl {
+            table.insert("cache_ttl".into(), serde_json::json!(cache_ttl));
         }
         candidate
             .set_key_json(&key, &serde_json::Value::Object(table))

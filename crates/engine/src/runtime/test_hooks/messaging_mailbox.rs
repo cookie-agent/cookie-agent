@@ -113,6 +113,7 @@ impl crate::runtime::Engine {
                 session,
                 None,
                 crate::runtime::event_origin("engine:auto-compact"),
+                None,
                 reply,
             );
             Ok(())

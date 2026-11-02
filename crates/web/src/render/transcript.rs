@@ -528,7 +528,8 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         }
         TranscriptItem::Compaction { commit, .. } => {
             let key = block_key(item).unwrap_or_default();
-            let (kind, body) = match &commit.checkpoint {
+            // The header names the kind (`rows::compaction_header`).
+            let (_kind, body) = match &commit.checkpoint {
                 // The summary as the model reads it, in its frame.
                 ContextCheckpoint::InternalSummary { checkpoint, .. } => (
                     "internal summary",
@@ -550,10 +551,8 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                     )
                 }
             };
-            let header = format!(
-                "context compacted ({kind}, {}→{} tokens)",
-                commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
-            );
+            let zone = crate::cron::zone_at(jiff::Timestamp::now());
+            let header = cookie_agent_client_state::rows::compaction_header(commit, &zone);
             collapsible(
                 view.expanded.block(&key),
                 &key,

@@ -21,7 +21,13 @@ client on it (see [A daemon already running](../daemon/persistent.md#a-daemon-al
 otherwise it starts the engine and the terminal client together in one
 process. The bottom bar starts with where the engine runs: the daemon's
 address, or `standalone` (after the session's [project](#projects), while
-no run is active). Configure the
+no run is active). Its right end shows the permission mode, the session's
+cost, its prompt cache (`🔥 41m` while warm, `~` before an assumed TTL and a
+`•` after the minutes when a compaction
+[before it expires](../sessions/compaction.md#before-the-cache-expires) is
+planned, `❄ cache expired` after; click it for the usage panel), and the
+context's size; on a narrow terminal the cost gives way first, then the
+cache. Configure the
 [theme](../tui/theme.md) and [diagnostic filter](../tui/minimum_event_level.md)
 in the independent client configuration.
 When at least one model is available, select an agent and model if needed, type

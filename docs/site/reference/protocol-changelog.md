@@ -5,6 +5,21 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.78.0
+
+- Compaction before the prompt cache expires
+  ([Cache-aware idle sessions](../specs/cache-aware-idle.md) section 4):
+  `model_usage_recorded` gains an optional `cache_ttl` (`CacheTtlStamp`:
+  `ttl_secs`, `0` never expiring, and an open `CacheTtlSource`, `set`,
+  `declared`, or `assumed`); `ContextCheckpointCommit` gains an optional
+  `reason` (an open `CheckpointReason`, `cache_expiry` with `expires_at`,
+  `next_fire`, and `job_id`); `SessionMeta` gains the live
+  `cache_compaction` (`PlannedCacheCompaction`: `at`, `expires_at`,
+  `next_fire`, `job_id`, `running`); and the engine diagnostic kind
+  `cache_expiry_compaction`.
+- `AcpAgentDefinition`, `AcpPreset`, and `OnboardingAcpAgentInput` gain an
+  optional `cache_ttl`, the declaration's prompt cache lifetime.
+
 ## 1.77.0
 
 - `AgentsUpdateResult` gains `templates` (`OfficialTemplate`: `name`,

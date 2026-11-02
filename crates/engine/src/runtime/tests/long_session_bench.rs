@@ -180,6 +180,7 @@ impl Grower<'_> {
         self.append(
             Some(run),
             EventPayload::ModelUsageRecorded {
+                cache_ttl: None,
                 model_turn_seq: turn_seq,
                 agent_id: self.template.agent_id.clone(),
                 resolved_model: self.template.resolved_model.clone(),

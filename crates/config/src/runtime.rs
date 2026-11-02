@@ -735,6 +735,10 @@ pub struct EngineConfig {
     pub transfer: TransferConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
+    /// Each model's authored `cache_ttl`: zero is a cache that never
+    /// expires (`docs/site/specs/cache-aware-idle.md` section 4.1).
+    #[serde(skip)]
+    pub model_cache_ttls: BTreeMap<ModelKey, Duration>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
     #[serde(default)]
@@ -1789,6 +1793,101 @@ pub struct ContextCompactionConfig {
     pub max_summary_bytes: usize,
     /// Recent-history tail token budget; zero disables retention. Runtime caps it to available space.
     pub keep_recent_tokens: u64,
+    /// Compaction shortly before a session's prompt cache expires
+    /// (`docs/site/specs/cache-aware-idle.md` section 5).
+    pub cache_expiry: CacheExpiryConfig,
+}
+
+/// `[context_compaction.cache_expiry]`: when to compact an idle session
+/// shortly before its prompt cache expires.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CacheExpiryConfig {
+    #[serde(default)]
+    pub mode: CacheExpiryMode,
+    /// How long before expiry the compaction starts, at most a fifth of
+    /// the TTL.
+    #[serde(
+        default = "default_cache_slack",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub slack: Duration,
+    /// The TTL of a provider whose TTL cookie neither sets nor reads.
+    #[serde(
+        default = "default_fallback_cache_ttl",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub fallback_ttl: Duration,
+    /// The token floor; `0` or less is off.
+    #[serde(default = "default_cache_min_tokens")]
+    pub min_tokens: i64,
+    /// The cost floor in dollars, for priced models; `0` or less is off.
+    #[serde(default)]
+    pub min_cost_usd: f64,
+}
+
+impl Default for CacheExpiryConfig {
+    fn default() -> Self {
+        Self {
+            mode: CacheExpiryMode::default(),
+            slack: default_cache_slack(),
+            fallback_ttl: default_fallback_cache_ttl(),
+            min_tokens: default_cache_min_tokens(),
+            min_cost_usd: 0.0,
+        }
+    }
+}
+
+impl CacheExpiryConfig {
+    /// How long before expiry a cache of `ttl` compacts:
+    /// `min(slack, ttl / 5)`.
+    #[must_use]
+    pub fn effective_slack(&self, ttl: Duration) -> Duration {
+        self.slack.min(ttl / 5)
+    }
+
+    fn invalid_reason(&self) -> Option<&'static str> {
+        if self.slack.is_zero() {
+            return Some("context_compaction.cache_expiry.slack must be positive");
+        }
+        if self.fallback_ttl.is_zero() {
+            return Some("context_compaction.cache_expiry.fallback_ttl must be positive");
+        }
+        if !self.min_cost_usd.is_finite() {
+            return Some("context_compaction.cache_expiry.min_cost_usd must be a finite number");
+        }
+        None
+    }
+}
+
+/// Which idle sessions compact before their prompt cache expires.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheExpiryMode {
+    /// None.
+    #[default]
+    Off,
+    /// Those a scheduled job wakes only after the cache expires.
+    Scheduled,
+    /// Every idle session.
+    Always,
+}
+
+const fn default_cache_slack() -> Duration {
+    Duration::from_secs(5 * 60)
+}
+const fn default_fallback_cache_ttl() -> Duration {
+    Duration::from_secs(30 * 60)
+}
+const fn default_cache_min_tokens() -> i64 {
+    40_000
+}
+
+/// A `cache_ttl` as authored: a duration such as `"1h"`, where `"0s"` is a
+/// cache that never expires. `None` when it does not parse.
+#[must_use]
+pub fn parse_cache_ttl(value: &str) -> Option<Duration> {
+    parse_duration(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1809,6 +1908,8 @@ struct RawContextCompactionConfig {
     max_summary_bytes: usize,
     #[serde(default = "default_keep_recent_tokens")]
     keep_recent_tokens: u64,
+    #[serde(default)]
+    cache_expiry: CacheExpiryConfig,
 }
 
 impl<'de> Deserialize<'de> for ContextCompactionConfig {
@@ -1832,6 +1933,7 @@ impl<'de> Deserialize<'de> for ContextCompactionConfig {
             trigger,
             max_summary_bytes: raw.max_summary_bytes,
             keep_recent_tokens: raw.keep_recent_tokens,
+            cache_expiry: raw.cache_expiry,
         })
     }
 }
@@ -1843,6 +1945,7 @@ impl Default for ContextCompactionConfig {
             trigger: default_compaction_trigger(),
             max_summary_bytes: default_summary(),
             keep_recent_tokens: default_keep_recent_tokens(),
+            cache_expiry: CacheExpiryConfig::default(),
         }
     }
 }
@@ -2144,6 +2247,9 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         return Err(ConfigError::InvalidRuntime(
             "context_compaction.trigger requires percent 1..99 or positive buffer_tokens; max_summary_bytes must be 1..2097152",
         ));
+    }
+    if let Some(reason) = runtime.context_compaction.cache_expiry.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.memory.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
