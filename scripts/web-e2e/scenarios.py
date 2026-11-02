@@ -4321,12 +4321,26 @@ def phone_audit():
             # from the sessions shown as the page.
             phone.click("main [data-sidebar-toggle]")
             phone.wait("the sessions", lambda: count(phone, "#sidebar nav[aria-label=Sessions] [data-session]") > 0)
-            latest = "#sidebar nav[aria-label=Sessions] [data-session]"
-            if phone.script("return document.querySelector(arguments[0]).getAttribute('aria-current')", latest) == "true":
-                # Already open: a tap would switch its tree.
-                phone.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
-            else:
-                click_row(phone, latest)
+            # The newest session with a conversation: earlier scenarios
+            # leave empty ones too.
+            rows = phone.script(
+                "return [...document.querySelectorAll('#sidebar nav[aria-label=Sessions] [data-session]')]"
+                ".map((r) => r.dataset.session)"
+            )
+            for session in rows[:8]:
+                phone.script(
+                    "const d = document.querySelector('#sidebar [data-sidebar-toggle]');"
+                    "if (!d) document.querySelector('main [data-sidebar-toggle]').click();"
+                )
+                phone.script(
+                    "document.querySelector('#sidebar [data-session=\"' + arguments[0] + '\"]').click()", session
+                )
+                deadline = time.time() + 3
+                while time.time() < deadline and phone.text("#transcript").strip() == "":
+                    time.sleep(0.2)
+                if "\n" in phone.text("#transcript").strip():
+                    break
+            phone.script("const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click()")
             phone.wait("the transcript", lambda: phone.text("#transcript") != "")
             settle(phone)
             views = [("transcript", None)] + SHEETS

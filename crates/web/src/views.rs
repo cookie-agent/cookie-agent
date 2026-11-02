@@ -3858,7 +3858,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     role="tab"
-                    class="relative inline-flex h-9 shrink-0 items-center gap-1.5 px-2 text-[0.8125rem] text-muted transition-colors hover:text-fg aria-selected:font-semibold aria-selected:text-fg"
+                    class="relative inline-flex h-11 shrink-0 items-center gap-1.5 px-2 text-[0.8125rem] text-muted transition-colors hover:text-fg aria-selected:font-semibold aria-selected:text-fg lg:h-9"
                     aria-selected=move || current().to_string()
                     data-session-tab=label.to_lowercase()
                     on:click=move |_| workspace.run_command(command)
@@ -3877,7 +3877,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
         })
         .collect_view();
     view! {
-        <div role="tablist" aria-label="Session" class="flex overflow-x-auto px-2" data-session-tabs>
+        <div role="tablist" aria-label="Session" class="flex flex-wrap px-2" data-session-tabs>
             {tabs}
         </div>
     }
