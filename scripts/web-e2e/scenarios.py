@@ -423,11 +423,26 @@ def ready_lines():
         return sum(1 for line in file if line.startswith("daemon-ready "))
 
 
-def wait_reconnected(browser, ready_before, what="the reconnection"):
-    """Waits for the group's daemon, restarted when it had `ready_before`
-    ready lines, to get ready again, then for the page to reconnect to it:
-    a slow daemon and a page that does not follow it fail apart."""
-    browser.wait("the restarted daemon to get ready", lambda: ready_lines() > ready_before, timeout=DAEMON_RESTART_TIMEOUT)
+def started_lines():
+    """How often the group's daemon finished starting: it takes connections
+    at its `daemon-ready` line, before its slow startup work, and says
+    `cookie daemon ready` once that is done."""
+    with open(os.path.join(HOME, "daemon.out")) as file:
+        return sum(1 for line in file if line.rstrip("\n") == "cookie daemon ready")
+
+
+def restart_marks():
+    """What `wait_reconnected` compares against, taken before a restart."""
+    return (ready_lines(), started_lines())
+
+
+def wait_reconnected(browser, marks, what="the reconnection"):
+    """Waits for the group's daemon, restarted at `marks` (`restart_marks`),
+    to listen and finish starting again, then for the page to reconnect to
+    it: a slow daemon and a page that does not follow it fail apart."""
+    ready_before, started_before = marks
+    browser.wait("the restarted daemon to listen", lambda: ready_lines() > ready_before, timeout=DAEMON_RESTART_TIMEOUT)
+    browser.wait("the restarted daemon to start", lambda: started_lines() > started_before, timeout=DAEMON_RESTART_TIMEOUT)
     browser.wait(
         what,
         lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0,
@@ -4743,7 +4758,7 @@ def restart_daemon(browser):
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
     with open(os.path.join(HOME, "daemon.pid")) as file:
         pid = int(file.read())
-    ready_before = ready_lines()
+    ready_before = restart_marks()
     browser.click("#restart-idle")
     browser.wait(
         "the daemon restarting",
@@ -5862,7 +5877,7 @@ def acp_restart(browser):
     browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
     browser.click("#connection-restart")
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
-    ready_before = ready_lines()
+    ready_before = restart_marks()
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
     wait_reconnected(browser, ready_before)
@@ -5885,7 +5900,7 @@ def session_restart(browser):
     browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
     browser.click("#connection-restart")
     browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
-    ready_before = ready_lines()
+    ready_before = restart_marks()
     browser.click("#restart-idle")
     browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
     browser.script("document.querySelector('#composer').focus()")
