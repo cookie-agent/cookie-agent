@@ -103,6 +103,11 @@ What the implementation does differently from the sections below, or adds:
 - **ACP sessions** keep the earlier runtimes block and are exempt from
   section 4's one-name-per-machine rule: an ACP agent takes no routed
   tools, and its extra directories are attachments of one capability.
+  *(Superseded 2026-11-01 by
+  [ACP agents across several machines](acp-several-runtimes.md): an ACP
+  agent's runtime tools are always routed, it gets the routed machines
+  block with its own machine marked, and the exemption covers only its
+  own machine.)*
 - **`[agents] default`** is diagnosed only when it is set and names no
   runnable agent; without it the first runnable agent is the fallback.
 - **Partial-copy cleanup after a crash** uses a journal: each partial copy

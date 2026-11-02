@@ -1558,3 +1558,14 @@ shown to the user with the agent's own options, a request for one of
 cookie's tools by that call's own rules on its row; the agent's mode is
 the session's permission mode, and cookie's modes and reviewer do not
 apply to ACP sessions (client protocol 1.68.0, plugin protocol 1.36.0).
+
+## Addendum (2026-11-01): several machines
+
+[ACP agents across several machines](acp-several-runtimes.md) replaces the
+rule that a session runs its agent on the one attached runtime that offers
+it, and the 2026-10-25 **Attachments in the first prompt** block: several
+attached runtimes may offer the agent, which runs on the one its ACP
+session started on, else the one the user chose (`RunSelection.acp_runtime`,
+client protocol 1.70.0), else the first attached that can run it, and never
+moves; its runtime tools are always routed by `machine`; and its context
+carries the routed machines block with its own machine marked.

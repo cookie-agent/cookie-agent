@@ -349,17 +349,19 @@ message and in the order a model's system prompt has them, each part left
 out when it is empty:
 
 1. the agent document's body;
-2. where the session's attachments work, as a model's system prompt says
-   it, even for an attachment whose tools `hide_tools` hides: with one
-   attachment, its working directory and machine; with several, a
-   `<machines>` listing of every attachment by machine and runtime, which
-   explains tool names such as `labpc_read`, with the attachment your
-   harness's built-in tools run on marked `builtin_tools="true"` and a
-   sentence naming that attachment, its runtime and machine, and the
-   working directory: the built-in tools act on that machine and workspace
-   only, while cookie's tools act on the attachment their description or
-   `<attachment>_` prefix names. A session in a
-   [project](../concepts/projects.md) also names the project here;
+2. the machines block a model's system prompt has
+   ([machines on demand](../specs/machines-on-demand.md) section 5.4): every
+   machine the session attaches, with its directory and the tools it
+   offers (less those `hide_tools` hides), each tool's default machine
+   marked; the agent's own machine marked `builtin_tools="true"`; and a
+   paragraph saying its harness's own tools reach only that machine and
+   working directory, to prefer them there, and to use the `cookie` MCP
+   server's tools with their `machine` argument for every other machine
+   (with `transfer` for files between machines when it is offered). With
+   only its own machine attached, the paragraph says where its tools run
+   and, when it may attach machines, how it reaches one it attaches. A
+   session in a [project](../concepts/projects.md) also names the project
+   here;
 3. the tool instructions cookie would give a model for the tools the agent
    is offered over the [bridge](#cookies-tools-for-the-agent-the-mcp-bridge),
    after `hide_tools` and the rules (`<tool_instructions provider=...>`
@@ -379,7 +381,13 @@ lost the one it had (or a fork or revert before its first reply starts
 over), and not when it resumes, loads, or forks one, since the agent
 remembers them there. Later prompts carry only the input, so a change to
 the agent's skills, tool instructions, or memory reaches it with its next
-new ACP session (its memory tools read memory as it is now).
+new ACP session (its memory tools read memory as it is now). The one
+exception is the session's machines: when one was attached or detached
+between the agent's turns, outside a run, the next prompt starts with a
+`<machines_changed>` block holding the machines block as it stands now,
+and the session shows what the agent was told. A machine the agent attaches
+itself with `attach_machine` is described in that tool's result, which also
+says that its own tools do not reach it.
 
 An agent that takes a system prompt (`sessionCapabilities.systemPrompt`;
 Claude Code and Codex do) gets these as one instead, appended to its own

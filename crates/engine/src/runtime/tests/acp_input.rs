@@ -414,26 +414,19 @@ async fn several_attachments_say_where_the_agents_builtin_tools_run() {
     let machine = engine
         .runtime_machine("local")
         .expect("the daemon's machine");
-    let os = std::env::consts::OS;
     let received = prompts(&acp);
-    assert_eq!(
-        received[0][0],
-        format!(
-            "{}\n<machines>\n\
-             <machine name=\"{machine}\" platform=\"{os}\">\n\
-             <runtime name=\"local\">\n\
-             <attachment name=\"{first}\" kind=\"coding\" workspace=\"{cwd}\" builtin_tools=\"true\"/>\n\
-             <attachment name=\"{other}\" kind=\"coding\" workspace=\"{second}\"/>\n\
-             </runtime>\n\
-             </machine>\n\
-             </machines>\n\
-             Your harness's built-in tools run on attachment `{first}` (runtime `local` on machine \
-             `{machine}`), marked `builtin_tools` above, in working directory {cwd}, and act on \
-             that machine and workspace only. Cookie's tools from the `cookie` MCP server act on \
-             the attachment their description or `<attachment>_` prefix names.",
-            crate::runtime::runtime_notes::SEVERAL_ATTACHMENTS
-        )
+    // One machine holds both workspaces: it is marked, and the note names
+    // the agent's working directory; nothing names attachments any more.
+    let block = &received[0][0];
+    let _ = (first, other, second);
+    assert!(
+        block.contains(&format!("<machine name=\"{machine}\""))
+            && block.contains("builtin_tools=\"true\""),
+        "{block}"
     );
+    let note = block.rsplit("</machines>\n").next().unwrap();
+    assert!(note.contains(&*cwd), "{note}");
+    assert!(!block.contains("<attachment>_"), "{block}");
     assert!(
         received[0][1].starts_with("<system-reminder>\n# Memory\n"),
         "{received:?}"
@@ -472,12 +465,11 @@ async fn the_first_prompt_names_the_sessions_project() {
         .runtime_machine("local")
         .expect("the daemon's machine");
     let first = &prompts(&acp)[0];
+    let _ = (cwd, machine);
     assert!(
-        first.contains(&format!(
-            "Working directory: {}\nMachine: {machine} ({})\nProject: web",
-            cwd.display(),
-            std::env::consts::OS
-        )),
+        first
+            .iter()
+            .any(|part| part.contains("<machines project=\"web\">")),
         "{first:#?}"
     );
 }
@@ -543,7 +535,7 @@ async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
     // The attachments come before both, the memory after.
     let attachments = prompts[0]
         .iter()
-        .position(|part| part.starts_with("Working directory: "));
+        .position(|part| part.starts_with("This session is attached to the following machines."));
     assert!(
         attachments < tools.or(skills) && attachments.is_some(),
         "{prompts:?}"
@@ -574,4 +566,49 @@ async fn a_hidden_skill_tool_lists_no_skills() {
             .iter()
             .any(|part| part.contains("<available_skills>"))
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_agent_hears_of_machines_that_came_between_its_turns_once() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say hi").await;
+    // Nothing changed: the next prompt is the message alone.
+    turn(engine, session, "second", "say again").await;
+    // A workspace attached between turns is announced ahead of the next
+    // prompt, with the machines as they stand, and shown in the session.
+    let other = acp.workspace().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    engine
+        .attach_runtime(
+            session,
+            "local",
+            Some("coding"),
+            Some(other),
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    turn(engine, session, "third", "say three").await;
+    turn(engine, session, "fourth", "say four").await;
+    let received = prompts(&acp);
+    assert_eq!(received[1], ["say again"]);
+    assert_eq!(received[2].len(), 2, "{:?}", received[2]);
+    assert!(
+        received[2][0].starts_with("<machines_changed>\n"),
+        "{:?}",
+        received[2]
+    );
+    assert!(
+        received[2][0].contains("builtin_tools=\"true\""),
+        "{:?}",
+        received[2]
+    );
+    assert_eq!(received[2][1], "say three");
+    assert_eq!(received[3], ["say four"], "told once");
+    assert!(events(engine, session).iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Diagnostic { message, .. } if message.contains("<machines_changed>")
+    )));
 }

@@ -30,6 +30,10 @@ pub(crate) struct AttachedMachine {
     /// The tools the attachment brings, sorted by name; `None` when the
     /// attaching run is gone or they cannot be listed.
     pub(crate) tools: Option<Vec<AttachedTool>>,
+    /// For an ACP agent, the machine the attachment is on when it is not
+    /// the agent's own: its harness's tools do not reach it
+    /// (`docs/site/specs/acp-several-runtimes.md` section 5).
+    pub(crate) beyond_agent: Option<String>,
 }
 
 /// One tool an attachment brings to a session, as its run publishes it.
@@ -117,8 +121,25 @@ impl Engine {
             .into_iter()
             .find(|template| template.runtime_id == runtime_id)
             .map(|template| template.listing);
+        let machine = self.runtime_machine(runtime_id);
+        let beyond_agent = self
+            .session_acp_offers(session)
+            .ok()
+            .flatten()
+            .and_then(|offers| self.place_acp_agent(session, &offers).ok())
+            .filter(|agent| {
+                agent.runtime.as_str() != runtime_id
+                    && (machine.is_none()
+                        || self.runtime_machine(agent.runtime.as_str()) != machine)
+            })
+            .map(|_| {
+                machine
+                    .as_ref()
+                    .map_or_else(|| runtime_id.to_owned(), ToString::to_string)
+            });
         Ok(AttachedMachine {
-            machine: self.runtime_machine(runtime_id),
+            beyond_agent,
+            machine,
             platform: self
                 .inner
                 .runtimes

@@ -499,6 +499,12 @@ fn attached_text(attached: &crate::runtime::machines::attach::AttachedMachine) -
             }
         }
     }
+    if let Some(machine) = &attached.beyond_agent {
+        text.push_str(&format!(
+            "\nYour harness's built-in tools do not reach `{machine}`: use the `cookie` MCP \
+             server's tools there, with `machine: \"{machine}\"`."
+        ));
+    }
     for entry in &attached.agent_md {
         text.push_str(&format!(
             "\n\n<contents from=\"{}\">\n{}\n</contents>",
@@ -550,7 +556,17 @@ mod tests {
             agent_md: Vec::new(),
             memories: None,
             tools,
+            beyond_agent: None,
         }
+    }
+
+    #[test]
+    fn an_acp_agent_is_told_its_own_tools_do_not_reach_the_machine() {
+        let mut machine = attached(Some(Vec::new()));
+        assert!(!attached_text(&machine).contains("built-in"));
+        machine.beyond_agent = Some("labpc".into());
+        let text = attached_text(&machine);
+        assert!(text.contains("machine: \"labpc\""), "{text}");
     }
 
     fn tool(name: &str, machine: Option<&str>, deferred: Option<&str>) -> AttachedTool {

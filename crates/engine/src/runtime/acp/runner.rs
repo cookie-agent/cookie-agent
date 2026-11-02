@@ -1079,6 +1079,8 @@ struct Turn<'a> {
     /// Rows of cookie's tool calls the agent asked to make, by the agent's
     /// call ID, until the call reaches the bridge.
     prestarted: HashMap<String, PrestartedBridge>,
+    /// Whether the run's first prompt went out, with any machines note.
+    machines_told: bool,
     /// Model call IDs used in the run, which must stay unique.
     used_call_ids: std::collections::HashSet<String>,
     last_turn_seq: Option<u64>,
@@ -2988,6 +2990,7 @@ impl Engine {
             echoes: HashMap::new(),
             unclaimed_bridge_calls: Vec::new(),
             prestarted: HashMap::new(),
+            machines_told: false,
             used_call_ids: Default::default(),
             last_turn_seq: None,
             last_text: String::new(),
@@ -3070,6 +3073,22 @@ impl Engine {
             } else {
                 Vec::new()
             };
+            // A live session hears of machines that came or went between
+            // its runs, once, ahead of the run's first prompt.
+            let first_round = !std::mem::replace(&mut turn.machines_told, true);
+            let machines_note = if first_round && context.is_empty() {
+                self.acp_machines_note(active.session, run_id, &active.policy, document, &turn.live)
+            } else {
+                None
+            };
+            if let Some(note) = &machines_note {
+                self.acp_notice(
+                    active.session,
+                    Some(run_id),
+                    format!("The agent was told the session's machines changed:\n{note}"),
+                )
+                .await;
+            }
             let claim = self.prompt_events(active.session, run_id).await?;
             // What the agent reads beyond the conversation is on the record,
             // so the user sees it.
@@ -3088,7 +3107,13 @@ impl Engine {
                 )
                 .await?;
             }
-            let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, process);
+            let prompt = self.acp_prompt(
+                &claim.events,
+                &mut turn.live,
+                context,
+                machines_note,
+                process,
+            );
             // The agent's own subagent works only on what its parent gives
             // it: cookie has no prompt to send it.
             if !prompt.is_empty() && super::is_acp_subagent(&claim.events) {
@@ -3438,6 +3463,78 @@ impl Engine {
     /// of the skills a model run would see, when the `skill` tool is
     /// offered; and last the session's memory snapshot as a model run sees
     /// it, taken now: the agent reads no later one (2026-10-31).
+    /// The machines block an ACP agent of `policy` reads, its harness's
+    /// tools on `runtime` in `cwd`, `hide` left out
+    /// (`docs/site/specs/acp-several-runtimes.md` section 5).
+    fn acp_runtimes_block(
+        &self,
+        session: SessionId,
+        policy: &crate::policy::FrozenRunPolicy,
+        hide: &[String],
+        runtime: &str,
+        cwd: &str,
+    ) -> Option<String> {
+        let bridged = self
+            .bridged_tool_definitions(session, policy, hide)
+            .map(|tools| tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>())
+            .unwrap_or_default();
+        self.runtimes_block(
+            session,
+            Some(&super::super::runtime_notes::BuiltinTools {
+                runtime,
+                cwd,
+                hide,
+                transfer: bridged.iter().any(|tool| tool == "transfer"),
+                example: bridged.iter().any(|tool| tool == "bash").then_some("bash"),
+            }),
+            Some(policy),
+        )
+    }
+
+    /// What a live ACP session is told ahead of `run`'s prompt when a
+    /// machine was attached or detached since its last run, outside any
+    /// run (by a client, say): the machines block as it stands now
+    /// (`docs/site/specs/acp-several-runtimes.md` section 5, D3).
+    fn acp_machines_note(
+        &self,
+        session: SessionId,
+        run: RunId,
+        policy: &crate::policy::FrozenRunPolicy,
+        document: &cookie_agent_config::AgentDocument,
+        live: &LiveSession,
+    ) -> Option<String> {
+        let events = self.inner.store.log(session).ok()?.event_snapshot();
+        let started = events.iter().rposition(|event| {
+            event.run_id == Some(run) && matches!(event.payload, Event::RunStarted { .. })
+        })?;
+        let previous_end = events[..started]
+            .iter()
+            .rposition(|event| matches!(event.payload, Event::RunFinished { .. }))?;
+        let changed = events[previous_end..started].iter().any(|event| {
+            matches!(
+                event.payload,
+                Event::RuntimeAttached { .. } | Event::RuntimeDetached { .. }
+            )
+        });
+        if !changed {
+            return None;
+        }
+        let hide = document
+            .frontmatter
+            .acp
+            .clone()
+            .unwrap_or_default()
+            .hidden_tools();
+        let block = self.acp_runtimes_block(
+            session,
+            policy,
+            &hide,
+            live.agent.runtime.as_str(),
+            &live.cwd,
+        )?;
+        Some(format!("<machines_changed>\n{block}\n</machines_changed>"))
+    }
+
     async fn acp_prompt_context(
         &self,
         session: SessionId,
@@ -3466,11 +3563,7 @@ impl Engine {
         if !document.body.trim().is_empty() {
             context.push(document.body.clone());
         }
-        context.extend(self.runtimes_block(
-            session,
-            Some(&super::super::runtime_notes::BuiltinTools { runtime, cwd }),
-            None,
-        ));
+        context.extend(self.acp_runtimes_block(session, policy, &hide, runtime, cwd));
         context.extend(self.tool_prompt_block(policy, session, Some(&offered), &|_, _| true)?);
         if offered.skill {
             context.extend(self.skill_listing(
@@ -3504,6 +3597,7 @@ impl Engine {
         events: &crate::events::EventSnapshot,
         live: &mut LiveSession,
         context: Vec<String>,
+        machines_note: Option<String>,
         process: &AgentProcess,
     ) -> Vec<Value> {
         let boundary = events
@@ -3520,6 +3614,7 @@ impl Engine {
         if live.first_prompt {
             prompt.extend(context.iter().map(|part| wire::text_block(part)));
         }
+        prompt.extend(machines_note.as_deref().map(wire::text_block));
         let caps = &process.init().capabilities.prompt();
         prompt.extend(self.input_since(events, boundary, caps).0);
         // Only the agent's own wake: nothing to send, the round listens.

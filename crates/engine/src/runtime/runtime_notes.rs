@@ -30,10 +30,17 @@ pub(super) const SEVERAL_ATTACHMENTS: &str = concat!(
 
 /// Where an ACP agent's harness runs its built-in tools: the runtime that
 /// hosts the agent's process, and the working directory cookie gave the
-/// agent in `session/new`.
+/// agent in `session/new`; with what the bridge offers it
+/// (`docs/site/specs/acp-several-runtimes.md` section 5).
 pub(crate) struct BuiltinTools<'a> {
     pub(crate) runtime: &'a str,
     pub(crate) cwd: &'a str,
+    /// The agent document's `hide_tools`: left out of the listing.
+    pub(crate) hide: &'a [String],
+    /// Whether the bridge offers `transfer`.
+    pub(crate) transfer: bool,
+    /// A routed tool the bridge offers, for the example (`bash`).
+    pub(crate) example: Option<&'a str>,
 }
 
 /// One attachment the model is told about.
@@ -200,10 +207,9 @@ impl Engine {
                 None => reach,
             });
         }
-        // An ACP agent's bridge offers cookie's tools under their
-        // attachments' names, so its prompt keeps naming attachments.
-        if builtin.is_none()
-            && let Ok(Some(machines)) = self.routing_machines(session)
+        // An ACP agent's runtime tools are always routed: its block is the
+        // routed one, with where its harness's own tools run.
+        if let Ok(Some(machines)) = self.routing_machines(session)
             && !facts.is_empty()
         {
             let tools = self.machine_tools(session, policy, &machines, composition);
@@ -225,7 +231,7 @@ impl Engine {
                 &facts, project, builtin, &tools, &reach, &homes,
             ));
         }
-        runtimes_prompt(&facts, project, builtin)
+        runtimes_prompt(&facts, project)
     }
 
     /// The tools each attachment offers, routed by machine, as groups in
@@ -382,7 +388,7 @@ fn routed_runtimes_prompt(
     block.push('\n');
     let host = builtin.and_then(|builtin| builtin_host(facts, builtin));
     // A tool's default machine is the first, in attach order, to offer it.
-    let mut defaulted = std::collections::HashSet::<&str>::new();
+    let mut defaulted = std::collections::HashSet::<String>::new();
     let mut first = true;
     for machine in group_by_machine(facts) {
         let members = machine
@@ -432,9 +438,25 @@ fn routed_runtimes_prompt(
         block.push_str(">\n");
         for member in &members {
             for (group, names) in tools.get(&member.name).into_iter().flatten() {
+                // An ACP agent's hidden tools are not listed.
+                let names = names
+                    .iter()
+                    .filter(|name| {
+                        builtin.is_none_or(|builtin| {
+                            !builtin.hide.iter().any(|pattern| {
+                                cookie_agent_config::simple_wildcard_match(pattern, name)
+                            })
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if names.is_empty() {
+                    continue;
+                }
+                let names = &names;
                 let new_defaults = names
                     .iter()
-                    .filter(|name| defaulted.insert(name.as_str()))
+                    .filter(|name| defaulted.insert((*name).clone()))
                     .count();
                 let marker = if !first && new_defaults == names.len() {
                     " (default)"
@@ -450,9 +472,93 @@ fn routed_runtimes_prompt(
     block.push_str("</machines>");
     if let Some(builtin) = builtin {
         block.push('\n');
-        block.push_str(&builtin_note(host, builtin));
+        block.push_str(&routed_builtin_note(facts, host, builtin, reach));
     }
     block
+}
+
+/// The name a machine of `facts` goes by in the machines block.
+fn machine_label(group: &MachineGroup<'_>) -> String {
+    group.name.map_or_else(
+        || {
+            group
+                .runtimes
+                .first()
+                .map_or_else(String::new, |(runtime, _)| (*runtime).to_owned())
+        },
+        ToString::to_string,
+    )
+}
+
+/// What an ACP agent is told after the machines block: its harness's own
+/// tools reach only its machine, which `host` serves, and cookie's tools,
+/// naming the machine, reach the others
+/// (`docs/site/specs/acp-several-runtimes.md` section 5).
+fn routed_builtin_note(
+    facts: &[AttachmentFacts],
+    host: Option<&AttachmentFacts>,
+    builtin: &BuiltinTools<'_>,
+    reach: &Reach,
+) -> String {
+    let machines = group_by_machine(facts);
+    let own = host.and_then(|host| {
+        machines
+            .iter()
+            .find(|group| {
+                group
+                    .runtimes
+                    .iter()
+                    .any(|(_, members)| members.iter().any(|member| std::ptr::eq(*member, host)))
+            })
+            .map(machine_label)
+    });
+    let place = own.as_ref().map_or_else(
+        || format!("runtime `{}`", builtin.runtime),
+        |machine| format!("machine `{machine}`, marked `builtin_tools` above,"),
+    );
+    let mut note = format!(
+        "Your harness's built-in tools (its file, edit, and shell tools) run on {place} in \
+         working directory {}",
+        builtin.cwd
+    );
+    let other = machines
+        .iter()
+        .map(machine_label)
+        .find(|machine| Some(machine) != own.as_ref());
+    match other {
+        Some(other) => {
+            note.push_str(", and reach no other machine.");
+            if let Some(own) = &own {
+                note.push_str(&format!(" Prefer them for work on `{own}`."));
+            }
+            note.push_str(
+                " To work on another machine, use the tools of the `cookie` MCP server and name \
+                 the machine in their `machine` argument",
+            );
+            if let Some(example) = builtin.example {
+                note.push_str(&format!(
+                    ", for example `{example}` with `machine: \"{other}\"`"
+                ));
+            }
+            note.push_str("; without `machine` they run on their default machine.");
+            if builtin.transfer {
+                note.push_str(
+                    " A path on one machine means nothing on another: copy files between \
+                     machines with `transfer`.",
+                );
+            }
+        }
+        None => {
+            note.push('.');
+            if reach.attaches {
+                note.push_str(
+                    " A machine you attach is reached through the `cookie` MCP server's tools, \
+                     with its `machine` argument.",
+                );
+            }
+        }
+    }
+    note
 }
 
 /// A group's tools: listed by name up to [`LISTED_GROUP`], else as the
@@ -533,30 +639,9 @@ fn builtin_host<'a>(
         .or_else(|| on_runtime.next())
 }
 
-/// What an ACP agent with several attachments is told about its harness's
-/// built-in tools, which `host` serves (`None` when no listed attachment
-/// does).
-fn builtin_note(host: Option<&AttachmentFacts>, builtin: &BuiltinTools<'_>) -> String {
-    let place = host.map_or_else(
-        || format!("runtime `{}`", builtin.runtime),
-        |host| format!("{}, marked `builtin_tools` above,", placement(host)),
-    );
-    format!(
-        "Your harness's built-in tools run on {place} in working directory {}, and act on that \
-         machine and workspace only. Cookie's tools from the `cookie` MCP server act on the \
-         attachment their description or `<attachment>_` prefix names.",
-        builtin.cwd
-    )
-}
-
 /// The system prompt's block for `attachments` (those besides `global`) of
-/// a session in `project`, if any. With several, an ACP agent's (`builtin`)
-/// also says where its harness's built-in tools run.
-fn runtimes_prompt(
-    attachments: &[AttachmentFacts],
-    project: Option<&str>,
-    builtin: Option<&BuiltinTools<'_>>,
-) -> Option<String> {
+/// a session in `project` whose tools are not routed, if any.
+fn runtimes_prompt(attachments: &[AttachmentFacts], project: Option<&str>) -> Option<String> {
     let project_line = project.map(|project| format!("Project: {project}"));
     match attachments {
         [] => project_line,
@@ -580,16 +665,11 @@ fn runtimes_prompt(
                 || "<machines>".to_owned(),
                 |project| format!("<machines project=\"{}\">", escape_xml_attribute(project)),
             );
-            let host = builtin.and_then(|builtin| builtin_host(several, builtin));
             let mut block = format!("{SEVERAL_ATTACHMENTS}\n{open}\n");
             for machine in group_by_machine(several) {
-                push_machine(&mut block, &machine, host);
+                push_machine(&mut block, &machine);
             }
             block.push_str("</machines>");
-            if let Some(builtin) = builtin {
-                block.push('\n');
-                block.push_str(&builtin_note(host, builtin));
-            }
             Some(block)
         }
     }
@@ -639,9 +719,8 @@ fn group_by_machine(attachments: &[AttachmentFacts]) -> Vec<MachineGroup<'_>> {
 
 /// One `<machine>` element. The platform is the machine's when every
 /// attachment on it reports the same one; otherwise each runtime carries
-/// the platform it reports. `host`, the attachment an ACP agent's built-in
-/// tools run on, is marked `builtin_tools="true"`.
-fn push_machine(block: &mut String, machine: &MachineGroup<'_>, host: Option<&AttachmentFacts>) {
+/// the platform it reports.
+fn push_machine(block: &mut String, machine: &MachineGroup<'_>) {
     let platforms = machine
         .runtimes
         .iter()
@@ -686,9 +765,6 @@ fn push_machine(block: &mut String, machine: &MachineGroup<'_>, host: Option<&At
                     escape_xml_attribute(workspace)
                 ));
             }
-            if host.is_some_and(|host| std::ptr::eq(host, *attachment)) {
-                block.push_str(" builtin_tools=\"true\"");
-            }
             block.push_str("/>\n");
         }
         block.push_str("</runtime>\n");
@@ -706,9 +782,13 @@ fn escape_xml_attribute(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use cookie_agent_protocol::AttachmentName;
+
     use super::{
-        AttachmentFacts, BuiltinTools, SEVERAL_ATTACHMENTS, escape_xml_attribute, runtimes_prompt,
-        tool_note,
+        AttachmentFacts, BuiltinTools, Reach, SEVERAL_ATTACHMENTS, escape_xml_attribute,
+        routed_runtimes_prompt, runtimes_prompt, tool_note,
     };
 
     fn attachment(
@@ -731,7 +811,7 @@ mod tests {
 
     #[test]
     fn one_attachment_gives_its_working_directory_and_machine() {
-        assert_eq!(runtimes_prompt(&[], None, None), None);
+        assert_eq!(runtimes_prompt(&[], None), None);
         assert_eq!(
             runtimes_prompt(
                 &[attachment(
@@ -741,7 +821,6 @@ mod tests {
                     Some("linux"),
                     Some("laptop")
                 )],
-                None,
                 None
             ),
             Some("Working directory: /home/me/web\nMachine: laptop (linux)".into())
@@ -750,7 +829,6 @@ mod tests {
         assert_eq!(
             runtimes_prompt(
                 &[attachment("w", "local", Some("/w"), None, Some("laptop"))],
-                None,
                 None
             ),
             Some("Working directory: /w\nMachine: laptop".into())
@@ -758,7 +836,6 @@ mod tests {
         assert_eq!(
             runtimes_prompt(
                 &[attachment("w", "local", Some("/w"), Some("linux"), None)],
-                None,
                 None
             ),
             Some("Working directory: /w".into())
@@ -773,7 +850,6 @@ mod tests {
                     Some("linux"),
                     Some("m")
                 )],
-                None,
                 None
             ),
             None
@@ -784,11 +860,11 @@ mod tests {
     fn a_project_adds_a_line_or_an_attribute() {
         let one = attachment("w", "local", Some("/w"), None, Some("laptop"));
         assert_eq!(
-            runtimes_prompt(std::slice::from_ref(&one), Some("web"), None),
+            runtimes_prompt(std::slice::from_ref(&one), Some("web")),
             Some("Working directory: /w\nMachine: laptop\nProject: web".into())
         );
         assert_eq!(
-            runtimes_prompt(&[], Some("web"), None),
+            runtimes_prompt(&[], Some("web")),
             Some("Project: web".into())
         );
         let several = runtimes_prompt(
@@ -797,7 +873,6 @@ mod tests {
                 attachment("v", "labpc", Some("/v"), None, Some("labpc")),
             ],
             Some("web"),
-            None,
         )
         .unwrap();
         assert!(
@@ -833,7 +908,6 @@ mod tests {
                     Some("laptop"),
                 ),
             ],
-            None,
             None,
         )
         .unwrap();
@@ -872,7 +946,6 @@ mod tests {
                 attachment("lost", "lost", None, None, None),
             ],
             None,
-            None,
         )
         .unwrap();
         assert!(
@@ -898,55 +971,12 @@ mod tests {
     }
 
     #[test]
-    fn an_acp_agent_with_one_attachment_is_told_what_a_model_run_is() {
-        let builtin = BuiltinTools {
-            runtime: "local",
-            cwd: "/home/me/web",
-        };
-        let one = [attachment(
-            "local_web",
-            "local",
-            Some("/home/me/web"),
-            Some("linux"),
-            Some("laptop"),
-        )];
-        assert_eq!(
-            runtimes_prompt(&one, Some("web"), Some(&builtin)),
-            Some("Working directory: /home/me/web\nMachine: laptop (linux)\nProject: web".into())
-        );
-        assert_eq!(
-            runtimes_prompt(&one, None, Some(&builtin)),
-            runtimes_prompt(&one, None, None)
-        );
-        // The runtime's home as the working directory: still nothing to say.
-        let home = BuiltinTools {
-            runtime: "desk",
-            cwd: "/home/me",
-        };
-        assert_eq!(
-            runtimes_prompt(
-                &[attachment("desktop", "desk", None, None, Some("m"))],
-                None,
-                Some(&home)
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn several_attachments_mark_where_an_acp_agents_builtin_tools_run() {
-        let attachments = [
+    fn an_acp_agent_is_told_its_own_machine_and_how_to_reach_the_others() {
+        let facts = [
             attachment(
                 "local_web",
                 "local",
                 Some("/home/me/web"),
-                Some("linux"),
-                Some("laptop"),
-            ),
-            attachment(
-                "local_api",
-                "local",
-                Some("/home/me/api"),
                 Some("linux"),
                 Some("laptop"),
             ),
@@ -958,90 +988,78 @@ mod tests {
                 Some("labpc"),
             ),
         ];
-        // The agent's working directory is the second workspace on its
-        // runtime: that attachment is marked, not the runtime's first.
-        let block = runtimes_prompt(
-            &attachments,
-            Some("web"),
-            Some(&BuiltinTools {
-                runtime: "local",
-                cwd: "/home/me/api",
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            block,
-            format!(
-                "{SEVERAL_ATTACHMENTS}\n<machines project=\"web\">\n\
-                 <machine name=\"laptop\" platform=\"linux\">\n\
-                 <runtime name=\"local\">\n\
-                 <attachment name=\"local_web\" kind=\"coding\" workspace=\"/home/me/web\"/>\n\
-                 <attachment name=\"local_api\" kind=\"coding\" workspace=\"/home/me/api\" builtin_tools=\"true\"/>\n\
-                 </runtime>\n\
-                 </machine>\n\
-                 <machine name=\"labpc\" platform=\"linux\">\n\
-                 <runtime name=\"labpc\">\n\
-                 <attachment name=\"labpc_api\" kind=\"coding\" workspace=\"/srv/api\"/>\n\
-                 </runtime>\n\
-                 </machine>\n\
-                 </machines>\n\
-                 Your harness's built-in tools run on attachment `local_api` (runtime `local` on \
-                 machine `laptop`), marked `builtin_tools` above, in working directory \
-                 /home/me/api, and act on that machine and workspace only. Cookie's tools from \
-                 the `cookie` MCP server act on the attachment their description or \
-                 `<attachment>_` prefix names."
-            )
+        let coding = || {
+            vec![(
+                "coding".to_owned(),
+                ["read", "write", "edit", "bash", "webfetch"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            )]
+        };
+        let tools = HashMap::from([
+            (AttachmentName::new("local_web").unwrap(), coding()),
+            (AttachmentName::new("labpc_api").unwrap(), coding()),
+        ]);
+        let hide = vec!["webfetch".to_owned()];
+        let builtin = BuiltinTools {
+            runtime: "local",
+            cwd: "/home/me/web",
+            hide: &hide,
+            transfer: true,
+            example: Some("bash"),
+        };
+        let reach = Reach {
+            lists: true,
+            attaches: true,
+            delegates: false,
+        };
+        let block = routed_runtimes_prompt(
+            &facts,
+            None,
+            Some(&builtin),
+            &tools,
+            &reach,
+            &HashMap::new(),
         );
-        // A model run's block has neither.
-        let model = runtimes_prompt(&attachments, Some("web"), None).unwrap();
+        // The agent's own machine is marked, the hidden tool is listed on no
+        // machine, and the note names both machines and `transfer`.
+        let laptop = block
+            .lines()
+            .find(|line| line.starts_with("<machine name=\"laptop\""))
+            .unwrap();
+        assert!(laptop.contains("builtin_tools=\"true\""), "{block}");
+        assert!(!block.contains("webfetch"), "{block}");
+        let note = block.rsplit("</machines>\n").next().unwrap();
+        for part in [
+            "`laptop`",
+            "/home/me/web",
+            "machine: \"labpc\"",
+            "`transfer`",
+        ] {
+            assert!(note.contains(part), "{part}: {note}");
+        }
+        assert!(!note.contains("<attachment>_"), "{note}");
+
+        // With only its own machine, no other is named, and attaching one is
+        // explained only when it may attach.
+        let alone = &facts[..1];
+        let block =
+            routed_runtimes_prompt(alone, None, Some(&builtin), &tools, &reach, &HashMap::new());
+        let note = block.rsplit("</machines>\n").next().unwrap();
+        assert!(note.contains("`laptop`"), "{note}");
+        assert!(!note.contains("labpc"), "{note}");
+        assert!(note.contains("A machine you attach"), "{note}");
+        let shut = Reach {
+            attaches: false,
+            ..reach
+        };
+        let block =
+            routed_runtimes_prompt(alone, None, Some(&builtin), &tools, &shut, &HashMap::new());
+        assert!(!block.contains("A machine you attach"), "{block}");
+        // A model run's block has neither the mark nor the note.
+        let model = routed_runtimes_prompt(&facts, None, None, &tools, &reach, &HashMap::new());
         assert!(!model.contains("builtin_tools"), "{model}");
         assert!(!model.contains("built-in"), "{model}");
-    }
-
-    #[test]
-    fn an_acp_agent_in_its_runtimes_home_marks_that_runtimes_attachment() {
-        let attachments = [
-            attachment("labpc_api", "labpc", Some("/srv/api"), None, Some("labpc")),
-            attachment("desktop", "desk", None, None, None),
-        ];
-        let block = runtimes_prompt(
-            &attachments,
-            None,
-            Some(&BuiltinTools {
-                runtime: "desk",
-                cwd: "/home/me",
-            }),
-        )
-        .unwrap();
-        assert!(
-            block.contains("<attachment name=\"desktop\" kind=\"coding\" builtin_tools=\"true\"/>"),
-            "{block}"
-        );
-        assert!(
-            block.contains(
-                "</machines>\nYour harness's built-in tools run on attachment `desktop` (runtime \
-                 `desk`), marked `builtin_tools` above, in working directory /home/me, and act"
-            ),
-            "{block}"
-        );
-        // A runtime no listed attachment belongs to is named alone.
-        let block = runtimes_prompt(
-            &attachments,
-            None,
-            Some(&BuiltinTools {
-                runtime: "other",
-                cwd: "/x",
-            }),
-        )
-        .unwrap();
-        assert!(!block.contains("builtin_tools=\"true\""), "{block}");
-        assert!(
-            block.contains(
-                "</machines>\nYour harness's built-in tools run on runtime `other` in working \
-                 directory /x, and act"
-            ),
-            "{block}"
-        );
     }
 
     #[test]

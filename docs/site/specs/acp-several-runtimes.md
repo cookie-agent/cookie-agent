@@ -1,8 +1,10 @@
 # ACP agents across several machines
 
-Status: **approved** (2026-11-01), being implemented. The user made decisions
-D1 to D6 on 2026-11-01 (section 8). It builds on
-[ACP agent permissions](acp-permissions.md), which ships first.
+Status: **implemented** (2026-11-01; client protocol 1.70.0, plugin
+protocol 1.37.0). The user made decisions D1 to D6 on 2026-11-01
+(section 8). It builds on [ACP agent permissions](acp-permissions.md).
+Where the code departs from the text is in the
+[implementation notes](#implementation-notes).
 
 ## 1. Problem
 
@@ -450,3 +452,34 @@ files between machines with `transfer`.
 - **Prefix the remote tools' names** (`labpc_bash`): machines on demand
   removed prefixes for every model (section 5.2). One routed tool and one
   explanation keeps the ACP agent's tools the same as a model's.
+
+## Implementation notes
+
+What the implementation does differently from the sections above, or adds:
+
+- **Routing on the agent's machine** (section 3.5): the first attachment,
+  in attach order, on the agent's machine routes a tool there. That is the
+  attachment of the agent's working directory unless another runtime on
+  the same machine was attached first; both reach the same files.
+- **The default runtime** (section 3.7): the clients preselect the first
+  attached runtime that offers the agent and can run it, else the first
+  runtime that offers it and can run it at all. They do not prefer the
+  client's own machine, which they cannot tell reliably.
+- **A run that names no runtime** keeps the session's choice for the same
+  agent, so a client older than client protocol 1.70.0 does not reset it.
+- **Cron templates** gain `acp_runtime` too, for a job's runs.
+- **A chosen runtime not attached** is attached at its home, both when a
+  session is created and on `session.select_model`; a project's default
+  workspace for it is already attached by the project's defaults.
+- **After the agent starts**, the web's Runs on chip is disabled with the
+  reason as its tooltip, and the TUI's `@runtime` title segment answers a
+  click with the reason in the status line.
+- **`<machines_changed>`** (D3) carries the whole machines block as it
+  stands, with the paragraph, rather than only the new machine's element or
+  the name that left. It is recorded as one of the agent's session notices
+  (a diagnostic the transcript shows), so it needs no protocol field.
+- **`attach_machine`'s result** for a machine other than the agent's adds
+  a line saying the agent's own tools do not reach it.
+- **The pre-routing runtimes block** no longer reaches ACP agents; its
+  `builtin_tools` marker and sentence for attachments are gone, and the
+  routed block's `<machine>` carries the marker instead.

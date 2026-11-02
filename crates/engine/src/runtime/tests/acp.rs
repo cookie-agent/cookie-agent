@@ -836,7 +836,7 @@ async fn an_agent_that_takes_a_system_prompt_gets_the_context_there_and_again_on
         part["text"]
             .as_str()
             .unwrap()
-            .contains("Working directory: ")
+            .contains("builtin_tools=\"true\"")
     }));
     // On the record, so the user sees it.
     assert!(events(engine, session).iter().any(|event| matches!(
@@ -914,8 +914,8 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
         "a new ACP session gets the body again"
     );
     assert!(
-        final_text(&third).contains("Working directory: "),
-        "and the attachments, though every tool is hidden"
+        final_text(&third).contains("builtin_tools=\"true\""),
+        "and the machines, though every tool is hidden"
     );
     let starts = session_starts(engine, session);
     assert_eq!(starts.len(), 2);
@@ -2003,20 +2003,21 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     // A model run's order: the body, the attachments, the tool
     // instructions, then the memory.
     assert_eq!(first[0], "You review changes.\n");
-    // One attachment: where it works, as a model run's system prompt says,
-    // with nothing on the harness's built-in tools.
+    // One machine: the routed machines block, its own machine marked, and
+    // where the harness's tools run.
     let workspace = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
     let machine = engine
         .runtime_machine("local")
         .expect("the daemon's machine");
-    assert_eq!(
-        first[1],
-        format!(
-            "Working directory: {}\nMachine: {machine} ({})",
-            workspace.display(),
-            std::env::consts::OS
-        )
+    assert!(
+        first[1].contains(&format!("<machine name=\"{machine}\"")),
+        "{}",
+        first[1]
     );
+    assert!(first[1].contains("builtin_tools=\"true\""), "{}", first[1]);
+    let note = first[1].rsplit("</machines>\n").next().unwrap();
+    assert!(note.contains(&format!("`{machine}`")), "{note}");
+    assert!(note.contains(&*workspace.to_string_lossy()), "{note}");
     assert_eq!(
         first[2],
         "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
@@ -2068,7 +2069,11 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     turn(engine, session, "first", "say one").await;
     let first = &prompts(&acp)[0];
     assert_eq!(first.len(), 4, "no body: {first:#?}");
-    assert!(first[0].starts_with("Working directory: "), "{}", first[0]);
+    assert!(
+        first[0].starts_with("This session is attached to the following machines."),
+        "{}",
+        first[0]
+    );
     assert!(
         first[1].contains("You manage your own memory."),
         "{}",
@@ -2087,7 +2092,11 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     let first = &prompts(&acp)[0];
     assert_eq!(first.len(), 4, "{first:#?}");
     assert_eq!(first[0], "Body.\n");
-    assert!(first[1].starts_with("Working directory: "), "{}", first[1]);
+    assert!(
+        first[1].starts_with("This session is attached to the following machines."),
+        "{}",
+        first[1]
+    );
     assert!(
         first[2].starts_with("<system-reminder>\n# Memory\n"),
         "{}",
