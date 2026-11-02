@@ -18,7 +18,9 @@ where the picture belongs, rather than in a tool call before it.
 **Goals:**
 
 - An agent attaches a file from one of the session's machines by writing
-  a tag in its reply, `<attach src="…"/>`, where the file should show.
+  a tag in its reply, `<attach src="…"/>`, where the file should show. The
+  same tag attaches an artifact of the session (`artifact="…"`) or shows
+  an asset (`asset="…"`), which replaces `show_asset` (section 11).
 - The file is read once and kept with the session; nothing watches it.
 - Every media type works, as for assets: pictures, video, and audio play,
   HTML pages run in the same sandbox, Markdown renders, and anything else
@@ -28,8 +30,9 @@ where the picture belongs, rather than in a tool call before it.
 
 **Non-goals:**
 
-- Attachments are not assets: no handle, no replacing, no listing, and no
-  Assets tab. "Save as asset" makes an asset of one.
+- Attachments of files and artifacts are not assets: no handle, no
+  replacing, no listing, and no Assets tab. "Save as asset" makes an asset
+  of one.
 - Attachments from URLs. `src` is a path on a machine.
 - Attachments in user messages, which have their own upload.
 
@@ -41,13 +44,20 @@ The loss falls fastest in run 14:
 <attach src="runs/loss.png" machine="labpc" title="Loss curves"/>
 
 The full table: <attach src="runs/summary.csv"/>
+
+The explorer, live: <attach asset="asset_3f9a1c2e"/>
+The output it cut: <attach artifact="9f2c…e1" title="build.log"/>
 ```
 
 | Attribute | Meaning |
 |---|---|
-| `src` | Required. A path on the machine, resolved as `read` resolves one: against the machine's working directory, or under `~`. |
-| `machine` | Optional. The machine, named as the machines block and `list_runtimes` name it. Omitted: the machine of the session's workspace; for an ACP agent, the machine it runs on. |
-| `title` | Optional, at most 200 characters. Omitted: the file's name. |
+| `src` | A path on the machine, resolved as `read` resolves one: against the machine's working directory, or under `~`. |
+| `artifact` | An artifact of the session tree, by the 64-character hex SHA-256 the model sees it by (a `read_artifact` hint names it). |
+| `asset` | An asset the session can use, by its handle: shown live, as `show_asset` showed one. |
+| `machine` | Optional, with `src` only. The machine, named as the machines block and `list_runtimes` name it. Omitted: the machine of the session's workspace; for an ACP agent, the machine it runs on. |
+| `title` | Optional, at most 200 characters. Omitted: the file's name, the asset's title, or the artifact's digest's start. |
+
+A tag names exactly one of `src`, `artifact`, and `asset`.
 
 - **Only a tag in the reply's text is an attachment.** One in inline code
   or a code block is text, so an agent can write about the tag. The
@@ -62,9 +72,11 @@ The full table: <attach src="runs/summary.csv"/>
 
 ## 4. Resolving an attachment
 
-- **When:** text only grows while it streams, so a tag is final once its
-  `/>` arrives. The engine starts reading the file then, while the reply
-  goes on, and records the outcome as soon as it has it.
+- **When:** once the message that holds the tag is committed, when the
+  model's response ends (an ACP agent's step, the same): only then is the
+  tag's place, its text part and order, fixed. The run goes on meanwhile;
+  the outcome is recorded as soon as the engine has it. While the message
+  streams, clients show a complete tag as attaching.
 - **Once:** the file is read through the machine's file transfer, as
   `write_asset` reads one, and its bytes go into the session tree's
   artifact store by their SHA-256, where a model's own images go. Nothing
@@ -84,6 +96,14 @@ The full table: <attach src="runs/summary.csv"/>
   attachments.
 - **Ending the run** does not cancel a read in progress, nor an attachment
   waiting for the user.
+- **An artifact** is attached without a read of any machine and without a
+  permission check: it is the session's own. It must be in the session
+  tree's artifact store. Its media type comes from its first bytes, then
+  from the title's extension, as an asset's does.
+- **An asset** is checked as `asset` with the resource `read`, as
+  `show_asset` was: allowed, it is shown; denied, it fails; a rule that
+  asks waits for the user, as for a file. It is shown as it is now, so a
+  replaced asset shows its new content and a deleted one says so.
 
 ## 5. What is recorded
 
@@ -97,6 +117,7 @@ The full table: <attach src="runs/summary.csv"/>
     outcome:
       pending_approval
       | attached { file: PersistedFilePart }   the artifact, its type and size
+      | shown { asset: AssetBlock }            an asset, as it was when shown
       | failed { reason }
   }
   ```
@@ -105,9 +126,11 @@ The full table: <attach src="runs/summary.csv"/>
   `attached` or `failed`.
 - **The model's history keeps the text as written.** The model never gets
   the file back: it wrote the reference.
-- **Failures reach the model** at the start of its next request, as one
-  line each, materialized as user history (as tool-emitted system messages
-  are, so the cached prefix stays the same):
+- **Failures reach the model** before its next request, as one line each,
+  materialized as user history (as tool-emitted system messages are, so
+  the cached prefix stays the same). The engine holds them until its next
+  request, after the round's tool results, so a line never splits a call
+  from its result; a daemon restart in between drops them:
 
   ```text
   [attachment not attached] runs/loss.png on labpc: no such file
@@ -119,7 +142,10 @@ The full table: <attach src="runs/summary.csv"/>
 ## 6. In the clients
 
 **Web:** the tag's place in the text shows the attachment, in the shelf's
-card styles ([assets](assets.md) section 8.1):
+card styles ([assets](assets.md) section 8.1). Tags written next to each
+other, with only white space between them, are one row of cards whose
+widths let them share rows, pictures and video gathered in one deck, as
+the shelf was:
 
 - an image or SVG as a picture, which opens the media viewer;
 - video and audio with a player;
@@ -128,9 +154,11 @@ card styles ([assets](assets.md) section 8.1):
   the same sandbox as an asset's (section 7);
 - anything else as a file chip with a download button.
 
-Every card has *Save as asset* (section 8). While the file is read, the
-card says it is attaching; a failed one names the file and why; one
-waiting for the user asks, with *Allow* and *Deny*.
+Every card of a file or an artifact has *Save as asset* (section 8); an
+asset's card has *Copy handle* instead, and follows the asset live. While
+the file is read, the card says it is attaching; a failed one names the
+file and why; one waiting for the user asks, with *Allow* and *Deny*.
+Handles of shown assets named in the text are chips, as before.
 
 **TUI:** the tag's place shows one line, such as
 `📎 Loss curves — loss.png (image/png, 48 KB)`, with a link into the web
@@ -223,6 +251,15 @@ the context cookie sends with their first prompt.
 - **ACP agents attach files too,** from the start.
 - **HTML attachments run live** in the same sandbox as assets.
 - **Cards have *Save as asset*** from the start.
+- **The tag also takes `artifact`,** an artifact of the session by its
+  digest, and **`asset`,** an asset by its handle.
+- **`show_asset` is removed,** and so are `write_asset`'s `show` and
+  `caption`: an agent shows assets and files with the tag, and its own
+  text is the caption (section 11).
+- **No shelf:** cards show where their tags are, tags next to each other
+  in one row.
+- **Old figure calls** (`show_asset`, `write_asset` with `show`) render as
+  plain tool rows, their assets as figures in the open row.
 - **One read, when the tag closes,** and never again.
 - **Attachments live in the session tree's artifact store,** and go with
   it; they are not listed anywhere but their message.
@@ -231,7 +268,20 @@ the context cookie sends with their first prompt.
 
 No questions are open.
 
-## 11. Phases
+## 11. Assets without show_asset
+
+- **`show_asset` is gone** from the `assets` group, and `write_asset` loses
+  `show` and `caption`; its description, and the group's summary, say to
+  show an asset with `<attach asset="…"/>`.
+- **The shelf is gone:** the engine no longer gives calls the `figure`
+  hint, and clients no longer gather figure calls' assets under the text
+  after them. A call of an older build that showed assets is a plain tool
+  row; open, it shows its `asset` blocks as figures. The `asset` display
+  block and the `figure` hint stay in the protocol for those logs.
+- **The tag's cards** take the shelf's place: the same cards, where the
+  agent writes them.
+
+## 12. Phases
 
 1. Engine and protocol: parsing tags in text parts (native and ACP), the
    read, the permission, `assistant_attachment`, `attachment.decide`,

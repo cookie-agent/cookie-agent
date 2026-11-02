@@ -304,6 +304,10 @@ write_asset(
 
 ### 5.3 `show_asset`
 
+> **Removed** (2026-11-01, [attachments](message-attachments.md) section
+> 11): an agent shows an asset with `<attach asset="…"/>` in its reply,
+> and `write_asset` has no `show` or `caption`.
+
 ```text
 show_asset(
   assets: [string],                    1 to 12 handles, shown in this order
@@ -461,6 +465,10 @@ the run is delegated, as `cron`'s and memory's do:
 ## 8. The web client
 
 ### 8.1 The shelf
+
+> **Replaced** (2026-11-01, [attachments](message-attachments.md) sections
+> 6 and 11): cards show where an `<attach …/>` tag is, tags next to each
+> other in one row. What follows describes the shelf as it was.
 
 Revised 2026-11-01 after the first version shipped: a figure showed as a
 tool row that looked the same folded or open. The user chose the shelf
