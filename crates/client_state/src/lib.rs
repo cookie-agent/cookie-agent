@@ -1726,6 +1726,8 @@ pub struct StateStore {
     /// are left to that replay, which the client runs next.
     awaiting_rebuild: HashSet<SessionId>,
     replays: HashMap<SessionId, ReplayProgress>,
+    /// How far each replay read a page at a time has got, until it ends.
+    pub replay_counts: HashMap<SessionId, ReplayCount>,
     /// The display view's held history of each session opened in it.
     histories: HashMap<SessionId, history::HeldHistory>,
     /// How many `background.changed` notifications each session had, which
@@ -1737,6 +1739,14 @@ pub struct StateStore {
 /// background calls were asked for: see [`StateStore::background_mark`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BackgroundMark(u64);
+
+/// How far a replay read a page at a time has got
+/// ([`ClientDelivery::ReplayProgress`]): the events read, of how many.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplayCount {
+    pub events: u64,
+    pub total: Option<u64>,
+}
 
 #[derive(Clone, Debug)]
 struct ReplayProgress {
@@ -1878,6 +1888,16 @@ impl StateStore {
                     DeliveryOutcome::Applied
                 }
             },
+            ClientDelivery::ReplayProgress {
+                session_id,
+                events,
+                total,
+                ..
+            } => {
+                self.replay_counts
+                    .insert(session_id, ReplayCount { events, total });
+                DeliveryOutcome::Applied
+            }
             ClientDelivery::ReplayStart {
                 session_id,
                 generation,
@@ -1885,10 +1905,9 @@ impl StateStore {
                 rebuild,
                 history,
             } => {
-                let windowed = history
-                    .as_ref()
-                    .is_some_and(|history| history.window.is_some());
-                let (staged, last_seq) = if rebuild && windowed {
+                // A rebuild in the display view, newest first or whole,
+                // holds its events and folds them with its cut results.
+                let (staged, last_seq) = if rebuild && history.is_some() {
                     self.awaiting_rebuild.remove(&session_id);
                     (Staged::Held(Vec::new()), 0)
                 } else if rebuild {
@@ -1969,6 +1988,7 @@ impl StateStore {
                 generation,
                 final_seq,
             } => {
+                self.replay_counts.remove(&session_id);
                 let replay = self.replays.remove(&session_id);
                 let valid = replay.as_ref().is_some_and(|replay| {
                     replay.generation == generation
@@ -2240,6 +2260,7 @@ impl StateStore {
     fn abandon_replay(&mut self, session_id: SessionId) {
         self.quarantined_sessions.insert(session_id);
         self.replays.remove(&session_id);
+        self.replay_counts.remove(&session_id);
     }
 
     /// Drain a session's voided inputs for restoration into the composer of

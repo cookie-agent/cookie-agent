@@ -2224,6 +2224,13 @@ pub struct EventsSubscribeResult {
     /// does not own, and from a daemon before 1.64.0.
     #[serde(default, skip_serializing_if = "is_false")]
     pub live: bool,
+    /// How many events the asked `view` holds in all, on the first page
+    /// (no `cursor`) of a `limit`ed request that has more (client protocol
+    /// 1.76.0): a client reading the whole history counts its pages
+    /// against it. Events that arrive while the pages are read add to the
+    /// history but not to this count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_events: Option<u64>,
 }
 
 impl EventsSubscribeResult {
@@ -2238,6 +2245,7 @@ impl EventsSubscribeResult {
             cut: Vec::new(),
             spans: Vec::new(),
             live: false,
+            view_events: None,
         }
     }
 
@@ -2252,6 +2260,7 @@ impl EventsSubscribeResult {
             cut: Vec::new(),
             spans: Vec::new(),
             live: false,
+            view_events: None,
         }
     }
 }

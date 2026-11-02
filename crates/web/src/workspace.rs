@@ -190,6 +190,9 @@ pub struct Workspace {
     ownership_classifications: StoredValue<HashMap<SessionId, u64>>,
     next_ownership_classification: StoredValue<u64>,
     subscriptions: StoredValue<Subscriptions>,
+    /// The sessions loading with nothing of them shown yet: the transcript
+    /// shows a skeleton and how much has loaded until their replay ends.
+    pub opening: RwSignal<HashSet<SessionId>>,
     pub draft: RwSignal<Option<RunSelection>>,
     pub preset: RwSignal<Option<String>>,
     draft_publish: StoredValue<DraftPublish>,
@@ -531,6 +534,7 @@ impl Workspace {
             ownership_classifications: StoredValue::new(HashMap::new()),
             next_ownership_classification: StoredValue::new(0),
             subscriptions: StoredValue::new(Subscriptions::default()),
+            opening: RwSignal::new(HashSet::new()),
             draft: RwSignal::new(None),
             preset: RwSignal::new(None),
             draft_publish: StoredValue::new(DraftPublish::default()),
@@ -833,6 +837,7 @@ impl Workspace {
         self.client.set_value(None);
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
+        self.opening.update(HashSet::clear);
     }
 
     /// Reads the session list, as far back as its window reaches, and the
@@ -1059,6 +1064,11 @@ impl Workspace {
                 ) && self.in_viewed_tree(event.session_id)
             });
         let outcome = self.update_store(|store| store.apply_delivery(delivery));
+        if let Some(session_id) = replay_ended {
+            self.opening.update(|opening| {
+                opening.remove(&session_id);
+            });
+        }
         if foreign_pick {
             self.draft_publish
                 .update_value(DraftPublish::yield_to_foreign_pick);
@@ -1776,10 +1786,18 @@ impl Workspace {
             self.store
                 .with_value(|store| store.sessions.get(&session_id).map(|state| state.last_seq))
         };
+        if self
+            .store
+            .with_value(|store| !store.sessions.contains_key(&session_id))
+        {
+            self.opening.update(|opening| {
+                opening.insert(session_id);
+            });
+        }
         let connection = self.connection.get_value();
-        // A session opens at its newest messages when the daemon can send
-        // them first; older history loads as the user scrolls up.
-        client.use_display_view(true);
+        // A session loads whole, in the display view, its progress counted
+        // page by page while the transcript shows a skeleton.
+        client.use_history(cookie_agent_protocol_transport::HistoryReading::Whole);
         spawn_local(async move {
             let outcome = match client.subscribe_events(session_id, cursor).await {
                 Ok(()) => {
@@ -1806,10 +1824,13 @@ impl Workspace {
             if !self.is_current(connection) {
                 return;
             }
-            if let SubscriptionOutcome::Failed(error) = &outcome
-                && self.selected.get_untracked() == Some(session_id)
-            {
-                self.status.set(error.clone());
+            if let SubscriptionOutcome::Failed(error) = &outcome {
+                self.opening.update(|opening| {
+                    opening.remove(&session_id);
+                });
+                if self.selected.get_untracked() == Some(session_id) {
+                    self.status.set(error.clone());
+                }
             }
             let owned = self.owned(session_id);
             if let Some(next) = self
@@ -2771,25 +2792,6 @@ impl Workspace {
             if self.read_is_current(|reads| &mut reads.usage, read) {
                 self.usage.set(Some(UsageView { session, tree }));
             }
-        });
-    }
-
-    /// Reads the history the viewed session's row of history not loaded
-    /// stands for (`events.page`), unless it is being read.
-    pub fn load_history(self, before: u64) {
-        let Some(session_id) = self.selected.get_untracked() else {
-            return;
-        };
-        let params = self.update_store(|store| store.request_history(session_id, before));
-        let (Some(params), Some(client)) = (params, self.client()) else {
-            return;
-        };
-        spawn_local(async move {
-            let page = client
-                .events_page(params)
-                .await
-                .map_err(|error| crate::errors::describe_full(&error));
-            self.update_store(|store| store.apply_history_page(session_id, before, page));
         });
     }
 

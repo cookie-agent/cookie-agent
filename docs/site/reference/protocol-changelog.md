@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.76.0
+
+- `EventsSubscribeResult` gains `view_events` on the first page (no
+  `cursor`) of a `limit`ed request that has more: how many events the asked
+  `view` holds in all, for a client that reads a session's whole history
+  page by page to count its progress against. The web client now opens a
+  session whole, in the display view, and shows how many of its events
+  have loaded.
+
 ## 1.75.0
 
 - The agents panel

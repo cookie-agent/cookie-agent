@@ -649,7 +649,8 @@ impl ServerProtocol for Server {
                             params.cursor_timestamp,
                             params.limit,
                         )
-                        .map(|page| forward_view(page, params.view)),
+                        .map(|page| forward_view(page, params.view))
+                        .and_then(|page| count_view_events(&self.engine, page, &params)),
                 }
                 .map_err(protocol_fault);
             }
@@ -657,7 +658,8 @@ impl ServerProtocol for Server {
         };
         let result = match params.from {
             Some(_) => result,
-            None => forward_view(result, params.view),
+            None => count_view_events(&self.engine, forward_view(result, params.view), &params)
+                .map_err(protocol_fault)?,
         };
         // A non-final page is only history; the final page goes live.
         let Some(receiver) = receiver else {
@@ -1813,6 +1815,23 @@ fn forward_view(
         cut,
         ..page
     }
+}
+
+/// `page`, the first of a forward history that has more pages, with how
+/// many events its view holds in all (`view_events`).
+fn count_view_events(
+    engine: &cookie_agent_engine::Engine,
+    page: EventsSubscribeResult,
+    params: &EventsSubscribeParams,
+) -> std::result::Result<EventsSubscribeResult, EngineError> {
+    if !page.has_more || params.cursor.unwrap_or(0) != 0 {
+        return Ok(page);
+    }
+    let view_events = engine.view_event_count(params.session_id, params.view)?;
+    Ok(EventsSubscribeResult {
+        view_events: Some(view_events),
+        ..page
+    })
 }
 
 fn protocol_fault(error: EngineError) -> ServerFault {

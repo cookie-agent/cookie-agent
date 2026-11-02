@@ -154,13 +154,6 @@ html.dark {
   overflow-clip-margin: 0.5rem;
 }
 
-/* Older history arrives below the pinned rows and a row of history not
-   loaded, which stay where they are: the row the browser keeps in place
-   as it arrives (scroll anchoring) is the first row under them. */
-#transcript .transcript-item:has([data-pinned-rows], [data-history]) {
-  overflow-anchor: none;
-}
-
 /* A session row's long press offers to delete it, not the browser's
    callout. */
 .no-callout {
@@ -205,6 +198,7 @@ html.pressing * {
   --qi-warn: #b26b00;
   --qi-warn-soft: rgb(214 138 0 / 0.12);
   --qi-scrim: rgb(9 9 11 / 0.25);
+  --qi-sheen: rgb(255 255 255 / 0.85);
   --qi-shadow-menu: 0 12px 32px -8px rgb(0 0 0 / 0.18), 0 2px 6px -2px rgb(0 0 0 / 0.08);
   --qi-shadow-sheet: 0 24px 60px -12px rgb(0 0 0 / 0.22), 0 8px 20px -8px rgb(0 0 0 / 0.1);
 }
@@ -233,6 +227,7 @@ html.pressing * {
   --qi-warn: #e5a93b;
   --qi-warn-soft: rgb(229 169 59 / 0.13);
   --qi-scrim: rgb(0 0 0 / 0.5);
+  --qi-sheen: rgb(255 255 255 / 0.06);
   --qi-shadow-menu: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
   --qi-shadow-sheet: 0 30px 70px -10px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(255 255 255 / 0.06);
 }
@@ -880,5 +875,60 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .rise-in {
     animation: none;
+  }
+}
+
+/* While a session loads whole, its transcript is a skeleton of rows a
+   light passes over, under a line of how much has loaded; it fades as the
+   transcript takes its place (views/loader.rs). */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  background: var(--color-sunken);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  translate: -100% 0;
+  background: linear-gradient(90deg, transparent, var(--qi-sheen), transparent);
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-sweep {
+  to {
+    translate: 100% 0;
+  }
+}
+.loader-line {
+  box-shadow: 0 0 10px var(--color-accent);
+  transition: width 180ms ease-out;
+}
+.loader-line-unknown {
+  width: 30%;
+  animation: loader-line-slide 1.2s ease-in-out infinite;
+}
+@keyframes loader-line-slide {
+  from {
+    translate: -100% 0;
+  }
+  to {
+    translate: 340% 0;
+  }
+}
+.loader-out {
+  opacity: 0;
+  filter: blur(2px);
+  transition:
+    opacity 320ms ease,
+    filter 320ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after,
+  .loader-line-unknown {
+    animation: none;
+  }
+  .loader-out {
+    filter: none;
   }
 }

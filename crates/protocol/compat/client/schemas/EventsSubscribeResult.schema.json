@@ -10143,6 +10143,15 @@
       "description": "`cursor_timestamp` no longer matches the event at `cursor`: nothing is\nreturned and no tail is registered. The caller replays from the start.",
       "type": "boolean"
     },
+    "view_events": {
+      "description": "How many events the asked `view` holds in all, on the first page\n(no `cursor`) of a `limit`ed request that has more (client protocol\n1.76.0): a client reading the whole history counts its pages\nagainst it. Events that arrive while the pages are read add to the\nhistory but not to this count.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "window": {
       "anyOf": [
         {

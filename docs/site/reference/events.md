@@ -1062,8 +1062,11 @@ metadata take more than 4 KiB is cut: its `output` keeps its first 2 KiB
 and its `display` fits 2 KiB with the usual `omitted_*` counts. The result's `cut` lists each cut result's `seq` and
 the whole result's `bytes`; `event.read` returns the stored event. A
 forward page in the display view always ends with the last event it covers,
-so the next page and the live tail follow on from it. Live notifications
-are sent whole in either view.
+so the next page and the live tail follow on from it. Since 1.76.0 the
+first page (no `cursor`) of a `limit`ed request that has more holds
+`view_events`, how many events its view holds in all: the web client reads
+a session's whole display view page by page and counts its progress
+against it. Live notifications are sent whole in either view.
 
 `from: "tail"` takes no cursor or limit. The answer holds the newest
 events within `max_bytes` (256 KiB unless given, at most 1 MiB, measured

@@ -431,16 +431,12 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     hasher.finish()
 }
 
-/// The item as HTML; `None` for a diagnostic row the level filter hides.
+/// The item as HTML; `None` for a diagnostic row the level filter hides,
+/// and for a row of history not loaded, which the page, loading sessions
+/// whole, never holds.
 pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<String> {
     Some(match item {
-        TranscriptItem::History {
-            before,
-            skipped,
-            loading,
-            failed,
-            ..
-        } => history_html(*before, *skipped, *loading, failed.as_deref()),
+        TranscriptItem::History { .. } => return None,
         TranscriptItem::User { markdown, seq, .. } => {
             let files = view
                 .state
@@ -1860,33 +1856,6 @@ fn cut_result_html(
     }
 }
 
-/// A row of history the display view has not loaded: a button that reads
-/// it, which also reads it when it scrolls into view.
-fn history_html(before: u64, skipped: Option<u64>, loading: bool, failed: Option<&str>) -> String {
-    let what = match skipped {
-        Some(1) => "1 earlier event of this run".to_owned(),
-        Some(count) => format!("{count} earlier events of this run"),
-        None => "Earlier messages".to_owned(),
-    };
-    let label = match (loading, failed) {
-        (true, _) => format!("Loading {}…", what.to_lowercase()),
-        (false, Some(error)) => format!(
-            "Could not load {} ({error}) · try again",
-            what.to_lowercase()
-        ),
-        (false, None) => format!("{what} not loaded · load"),
-    };
-    format!(
-        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{} class=\"min-h-11 rounded-md px-2 text-left text-xs text-muted hover:bg-hover active:bg-press w-full text-center\">{}</button>",
-        if failed.is_some() {
-            " data-history-failed"
-        } else {
-            ""
-        },
-        escape(&label)
-    )
-}
-
 /// A delegate call's subagent: its agent and handle, what it does while it
 /// runs, and the way to open it.
 fn delegate_html(delegate: &Delegate, running: bool) -> String {
@@ -3289,18 +3258,6 @@ mod tests {
         }
         let per_delta = started.elapsed() / rounds;
         println!("one delta in a 4000-part reply: {per_delta:?}");
-    }
-
-    #[test]
-    fn history_not_loaded_is_a_button_that_reads_it() {
-        let row = super::history_html(40, Some(12), false, None);
-        assert!(row.contains("data-action=\"history\""), "{row}");
-        assert!(row.contains("data-history=\"40\""), "{row}");
-        assert!(row.contains("12"), "{row}");
-        assert!(!row.contains("data-history-failed"), "{row}");
-        // A failed read waits for a click: scrolling to it reads nothing.
-        let failed = super::history_html(40, None, false, Some("timed out"));
-        assert!(failed.contains("data-history-failed"), "{failed}");
     }
 
     #[test]

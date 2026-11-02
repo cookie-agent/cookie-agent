@@ -2032,6 +2032,74 @@ async fn memory_is_listed_read_written_and_deleted_through_rpc() {
 }
 
 #[tokio::test]
+async fn the_first_page_of_a_paged_history_counts_its_view() {
+    let mut catalog = (*openai_catalog()).clone();
+    Arc::make_mut(&mut catalog.providers)
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let harness = harness_with_catalog(Arc::new(catalog), |_| {});
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let (connected, _) = request(
+        &mut client,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"view-count-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+    let (created, _) = request(
+        &mut client,
+        3,
+        "session.create",
+        json!({
+            "selection": {
+                "agent": "default",
+                "model": { "model": "openai/gpt-5-mini", "variant": null }
+            },
+            "runtimes": [],
+            "global": false
+        }),
+    )
+    .await;
+    let session = created["result"]["session"].clone();
+    for (id, title) in [(10, "one"), (11, "two")] {
+        let (renamed, _) = request(
+            &mut client,
+            id,
+            "session.rename",
+            json!({
+                "session_id": session["session_id"],
+                "client_rename_id": format!("rename-{id}"),
+                "change": { "type": "set", "title": title }
+            }),
+        )
+        .await;
+        assert!(renamed.get("result").is_some(), "{renamed}");
+    }
+    let last = session["last_event_seq"].as_u64().expect("last event seq") + 2;
+    let page = |cursor: u64| json!({ "session_id": session["session_id"], "cursor": cursor, "limit": 1, "view": "full" });
+    let (first, _) = request(&mut client, 4, "events.subscribe", page(0)).await;
+    assert_eq!(first["result"]["has_more"], json!(true), "{first}");
+    assert_eq!(first["result"]["view_events"], json!(last), "{first}");
+    // Later pages leave it out: the client counts against the first.
+    let (second, _) = request(&mut client, 5, "events.subscribe", page(1)).await;
+    assert!(second["result"].get("view_events").is_none(), "{second}");
+    harness.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_deleted_session_is_removed_for_every_connection() {
     let mut catalog = (*openai_catalog()).clone();
     Arc::make_mut(&mut catalog.providers)

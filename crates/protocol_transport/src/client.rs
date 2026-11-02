@@ -62,11 +62,55 @@ const REPLAY_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Events per replay page. Pages keep each response small enough to answer
 /// well inside [`REPLAY_RESPONSE_TIMEOUT`] however long the session is.
 const REPLAY_PAGE_EVENTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(2_000).unwrap();
+/// Events per page of a [`HistoryReading::Whole`] rebuild: small enough
+/// that its progress moves while a long session loads.
+const WHOLE_PAGE_EVENTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(500).unwrap();
 
 /// The first client protocol whose daemons answer the display view, a
 /// newest-first `events.subscribe`, `events.page`, and `event.read`.
 pub const DISPLAY_VIEW_SINCE: cookie_agent_protocol::SemVer =
     cookie_agent_protocol::SemVer::new(1, 59, 0);
+
+/// How a client's replays read a session's history.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HistoryReading {
+    /// Every stored event, from the start.
+    #[default]
+    Full,
+    /// The display view, newest first: a window of the newest events, with
+    /// `events.page` for what it leaves out ([`ReplayHistory`]).
+    Newest,
+    /// The whole display view, read forward a page at a time, with a
+    /// [`ClientDelivery::ReplayProgress`] after each page but the last.
+    Whole,
+}
+
+impl HistoryReading {
+    /// The view its replays ask for.
+    #[must_use]
+    pub const fn view(self) -> cookie_agent_protocol::EventsView {
+        match self {
+            Self::Full => cookie_agent_protocol::EventsView::Full,
+            Self::Newest | Self::Whole => cookie_agent_protocol::EventsView::Display,
+        }
+    }
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::Full => 0,
+            Self::Newest => 1,
+            Self::Whole => 2,
+        }
+    }
+
+    const fn of_code(code: u8) -> Self {
+        match code {
+            1 => Self::Newest,
+            2 => Self::Whole,
+            _ => Self::Full,
+        }
+    }
+}
 
 /// What a replay in the display view adds to its events (client protocol
 /// 1.59.0): a replay without it holds every stored event, whole.
@@ -132,6 +176,16 @@ pub enum ClientDelivery {
         generation: u64,
         final_seq: u64,
         event: Box<cookie_agent_protocol::StoredEvent>,
+    },
+    /// A page of a replay read a page at a time arrived
+    /// ([`HistoryReading::Whole`]): `events` read so far, of `total` when
+    /// the daemon said (client protocol 1.76.0). The replay itself is
+    /// delivered once its last page arrives.
+    ReplayProgress {
+        session_id: SessionId,
+        generation: u64,
+        events: u64,
+        total: Option<u64>,
     },
     /// A durable event this build could not read, live or in a replay (with
     /// the replay's `final_seq`). It advances the session's sequence and
@@ -286,7 +340,7 @@ struct ReplayRequest {
     rebuild: bool,
     attempt: u64,
     /// The display view asks a rebuild for the newest events first.
-    view: cookie_agent_protocol::EventsView,
+    reading: HistoryReading,
 }
 
 struct Command {
@@ -422,9 +476,12 @@ struct Subscription {
     /// The results those pages cut.
     replay_cut: Vec<cookie_agent_protocol::CutOutput>,
     replay_pages_attempt: u64,
-    /// The view this session's replays ask for, chosen when it was last
-    /// subscribed.
-    view: cookie_agent_protocol::EventsView,
+    /// How many events the view holds in all, from the first page of the
+    /// replay attempt `replay_pages_attempt` (`view_events`).
+    replay_total: Option<u64>,
+    /// How this session's replays read its history, chosen when it was
+    /// last subscribed.
+    reading: HistoryReading,
     /// The view unsubscribed: live messages still in flight for the session
     /// are dropped and recovery leaves it alone until it subscribes again.
     closed: bool,
@@ -437,6 +494,7 @@ impl Subscription {
         self.fetching = false;
         self.replay_pages = Vec::new();
         self.replay_cut = Vec::new();
+        self.replay_total = None;
     }
 }
 
@@ -474,8 +532,8 @@ pub struct Client {
     origin: Arc<StdMutex<Option<EventOrigin>>>,
     /// The daemon's client protocol version, from the handshake response.
     daemon_version: Arc<StdMutex<Option<cookie_agent_protocol::SemVer>>>,
-    /// Replays ask for the display view when the daemon has it.
-    display_view: Arc<std::sync::atomic::AtomicBool>,
+    /// How replays read history ([`HistoryReading`]'s code).
+    history: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pending_command_count: Arc<AtomicUsize>,
 }
@@ -529,7 +587,7 @@ impl Client {
             shutdown,
             origin: Arc::new(StdMutex::new(None)),
             daemon_version: Arc::new(StdMutex::new(None)),
-            display_view: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            history: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             #[cfg(all(test, not(target_arch = "wasm32")))]
             pending_command_count,
         };
@@ -603,26 +661,25 @@ impl Client {
         *self.daemon_version.lock().expect("daemon version lock")
     }
 
-    /// Whether sessions subscribed from now on replay in the display view:
-    /// a transcript's events, newest first, with long tool results cut
-    /// ([`ReplayHistory`]). Only a daemon of [`DISPLAY_VIEW_SINCE`] or later
-    /// has it; with an older one, replays stay whole.
-    pub fn use_display_view(&self, display: bool) {
-        self.display_view.store(display, Ordering::Relaxed);
+    /// How sessions subscribed from now on read their history. The display
+    /// view, newest first or whole, needs a daemon of [`DISPLAY_VIEW_SINCE`]
+    /// or later; with an older one, replays read every event.
+    pub fn use_history(&self, reading: HistoryReading) {
+        self.history.store(reading.code(), Ordering::Relaxed);
     }
 
-    /// The view replays ask for now: the display view when it was asked for
-    /// and the daemon has it.
+    /// How replays read history now: as asked, when the daemon can.
     #[must_use]
-    pub fn history_view(&self) -> cookie_agent_protocol::EventsView {
-        if self.display_view.load(Ordering::Relaxed)
-            && self
+    pub fn history_reading(&self) -> HistoryReading {
+        let reading = HistoryReading::of_code(self.history.load(Ordering::Relaxed));
+        if reading == HistoryReading::Full
+            || self
                 .daemon_version()
                 .is_some_and(|version| version >= DISPLAY_VIEW_SINCE)
         {
-            cookie_agent_protocol::EventsView::Display
+            reading
         } else {
-            cookie_agent_protocol::EventsView::Full
+            HistoryReading::Full
         }
     }
 
@@ -1977,14 +2034,14 @@ impl Client {
         cursor: Option<u64>,
     ) -> Result<(), ClientError> {
         let cursor = cursor.unwrap_or(0);
-        let view = self.history_view();
+        let reading = self.history_reading();
         let request = prepare_subscription(
             &self.subscriptions,
             session_id,
             cursor,
             false,
             cursor == 0,
-            view,
+            reading,
         )
         .await?;
         // The replay runs to completion in its own task. A caller that stops
@@ -2134,12 +2191,12 @@ async fn prepare_subscription(
     cursor: u64,
     recovering: bool,
     rebuild: bool,
-    view: cookie_agent_protocol::EventsView,
+    reading: HistoryReading,
 ) -> Result<ReplayRequest, ClientError> {
     let mut subscriptions = subscriptions.lock().await;
     let subscription = subscriptions.entry(session_id).or_default();
     subscription.closed = false;
-    subscription.view = view;
+    subscription.reading = reading;
     if subscription.fetching {
         if recovering {
             subscription.recovery_requested =
@@ -2165,7 +2222,7 @@ async fn prepare_subscription(
         generation: subscription.generation,
         rebuild,
         attempt: subscription.active_attempt,
-        view,
+        reading,
     })
 }
 
@@ -2207,15 +2264,20 @@ async fn request_replay_with_timeout(
     timeout: Duration,
 ) -> Result<(), ClientError> {
     loop {
-        // A rebuild in the display view asks for the newest events first,
-        // in one answer that also registers the tail.
-        let tail = cursor == 0 && !replay.view.is_full();
+        // A rebuild newest first asks for the newest events, in one answer
+        // that also registers the tail.
+        let tail = cursor == 0 && replay.reading == HistoryReading::Newest;
+        let limit = if replay.reading == HistoryReading::Whole {
+            WHOLE_PAGE_EVENTS
+        } else {
+            REPLAY_PAGE_EVENTS
+        };
         let params = EventsSubscribeParams {
             session_id: replay.session_id,
             cursor: (!tail).then_some(cursor),
             cursor_timestamp: if tail { None } else { cursor_timestamp.take() },
-            limit: (!tail).then_some(REPLAY_PAGE_EVENTS),
-            view: replay.view,
+            limit: (!tail).then_some(limit),
+            view: replay.reading.view(),
             from: tail.then_some(cookie_agent_protocol::EventsFrom::Tail),
             max_bytes: None,
         };
@@ -2418,7 +2480,7 @@ async fn recover_all(
                         generation: subscription.generation,
                         rebuild,
                         attempt: subscription.active_attempt,
-                        view: subscription.view,
+                        reading: subscription.reading,
                     },
                     cursor,
                     subscription.cursor_timestamp,
@@ -2714,7 +2776,16 @@ async fn handle_frame(
                             let page = result.read(replay.session_id, deliveries);
                             let (page, cut, window) = if has_more {
                                 match hold_replay_page(replay, page, subscriptions).await {
-                                    Ok(next) => {
+                                    Ok((next, events, total)) => {
+                                        if replay.reading == HistoryReading::Whole {
+                                            let _ =
+                                                deliveries.send(ClientDelivery::ReplayProgress {
+                                                    session_id: replay.session_id,
+                                                    generation: replay.generation,
+                                                    events,
+                                                    total,
+                                                });
+                                        }
                                         let _ = command.response.send(Ok(replay_next(Some(next))));
                                         return Ok(());
                                     }
@@ -2727,7 +2798,7 @@ async fn handle_frame(
                                 take_replay_pages(replay, subscriptions).await;
                             events.extend(page);
                             held_cut.extend(cut);
-                            let history = (!replay.view.is_full()).then(|| {
+                            let history = (!replay.reading.view().is_full()).then(|| {
                                 Box::new(ReplayHistory {
                                     window,
                                     cut: held_cut,
@@ -2896,6 +2967,8 @@ struct ReplayPageWire {
     spans: Vec<cookie_agent_protocol::OutputSpan>,
     #[serde(default)]
     live: bool,
+    #[serde(default)]
+    view_events: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -2914,6 +2987,7 @@ struct ReplayPage {
     last_seq: Option<u64>,
     cut: Vec<cookie_agent_protocol::CutOutput>,
     window: Option<ReplayWindow>,
+    view_events: Option<u64>,
 }
 
 /// The events of `events` this build can read, as known events.
@@ -2970,6 +3044,7 @@ impl ReplayPageWire {
                 older_cursor: window.older_cursor,
                 gap: window.gap,
             }),
+            view_events: self.view_events,
         }
     }
 }
@@ -3063,18 +3138,20 @@ fn replay_is_current(subscription: &Subscription, replay: &ReplayRequest) -> boo
 }
 
 /// Hold one non-final page of the current attempt and return the cursor the
-/// next page starts from. A superseded attempt (or an empty page) gets its
-/// events back, and the caller ends it as if this were the final page.
+/// next page starts from, with the events held so far and how many the
+/// view holds. A superseded attempt (or an empty page) gets its events
+/// back, and the caller ends it as if this were the final page.
 async fn hold_replay_page(
     replay: ReplayRequest,
     page: ReplayPage,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-) -> Result<u64, Vec<ClientEvent>> {
+) -> Result<(u64, u64, Option<u64>), Vec<ClientEvent>> {
     let ReplayPage {
         events,
         last_seq,
         cut,
         window: _,
+        view_events,
     } = page;
     let Some(next) = last_seq else {
         return Err(events);
@@ -3090,10 +3167,15 @@ async fn hold_replay_page(
         subscription.replay_pages = Vec::new();
         subscription.replay_cut = Vec::new();
         subscription.replay_pages_attempt = replay.attempt;
+        subscription.replay_total = view_events;
     }
     subscription.replay_pages.extend(events);
     subscription.replay_cut.extend(cut);
-    Ok(next)
+    Ok((
+        next,
+        subscription.replay_pages.len() as u64,
+        subscription.replay_total,
+    ))
 }
 
 async fn take_replay_pages(

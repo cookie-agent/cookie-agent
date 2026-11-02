@@ -44,6 +44,7 @@ mod cron;
 mod depth;
 mod install;
 mod live;
+mod loader;
 mod machines;
 mod manage;
 mod media_viewer;
@@ -227,8 +228,12 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
             >
                 <TitleBar workspace=workspace />
                 // A new session shows its runtime cards where the
-                // transcript will be, above the composer.
-                <Transcript workspace=workspace />
+                // transcript will be, above the composer; a session that
+                // loads shows a skeleton there until it has.
+                <div class="relative flex min-h-0 flex-1 flex-col">
+                    <Transcript workspace=workspace />
+                    <loader::TranscriptLoader workspace=workspace />
+                </div>
                 <QueueStrip workspace=workspace />
                 <DraftFiles workspace=workspace />
                 // An agent's question waits above the composer, scrolling
@@ -2219,7 +2224,6 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     let container = NodeRef::<html::Div>::new();
     let content = NodeRef::<html::Div>::new();
     let follow = StoredValue::new(Follow::default());
-    let history = StoredValue::new(HistoryScroll::default());
     // Whether the view follows the end, for the jump-to-latest button.
     let following = RwSignal::new(true);
     let metrics = move || {
@@ -2404,14 +2408,6 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 return;
             }
             pin();
-            if let Some((element, at)) = metrics() {
-                restore_after_history(&element, at, workspace, history);
-                // Rows that do not fill the box leave no scroll to ask for
-                // more.
-                if !at.overflows() {
-                    load_history_in_view(&element, workspace, history);
-                }
-            }
             if let Some(key) = reveal.try_update_value(Option::take).flatten() {
                 reveal_work_row(container, content, pinned_work, &key);
                 shown();
@@ -2447,19 +2443,6 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             "approvals" => workspace.panel.set(Some(Panel::Approvals)),
-            "history" => {
-                if let Some(before) = target
-                    .get_attribute("data-history")
-                    .and_then(|before| before.parse().ok())
-                {
-                    match metrics() {
-                        Some((scroller, _)) => {
-                            load_history(&scroller, before, workspace, history);
-                        }
-                        None => workspace.load_history(before),
-                    }
-                }
-            }
             "cut-result" => {
                 if let Some(call) = call
                     && let Ok(call) = call.parse::<cookie_agent_protocol::ToolCallId>()
@@ -2590,13 +2573,9 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             class="min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-6"
             on:click=on_click
             on:scroll=move |_| {
-                if let Some((element, at)) = metrics() {
+                if let Some((_, at)) = metrics() {
                     follow.update_value(|follow| follow.scrolled(at));
                     shown();
-                    keep_off_top(&element, workspace);
-                    if history.try_update_value(|history| history.scrolled(at)) == Some(true) {
-                        load_history_in_view(&element, workspace, history);
-                    }
                 }
             }
             on:wheel=move |event: ev::WheelEvent| {
@@ -2837,137 +2816,6 @@ fn reveal_work_row(
     let above = row.get_bounding_client_rect().top() - top;
     if above < 0.0 {
         scroller.set_scroll_top(scroller.scroll_top() + above.floor() as i32);
-    }
-}
-
-/// Where the transcript's view stands while a page of older history is
-/// read, and which way the user last moved it.
-#[derive(Clone, Copy, Debug, Default)]
-struct HistoryScroll {
-    /// The scroll position the last scroll reported.
-    last_top: i32,
-    /// While a page is read: the content height and scroll position the
-    /// last scroll before it arrived reported.
-    reading: Option<(i32, i32)>,
-}
-
-impl HistoryScroll {
-    /// Notes a scroll to `at`, telling whether it moved toward older rows:
-    /// only then may more history load. A page arriving, and the browser
-    /// keeping the rows in view in place, move the view the other way, so
-    /// pages never call for more on their own.
-    fn scrolled(&mut self, at: Metrics) -> bool {
-        let older = at.top < self.last_top;
-        self.last_top = at.top;
-        if let Some(reading) = &mut self.reading
-            && reading.0 == at.height
-        {
-            *reading = (at.height, at.top);
-        }
-        older
-    }
-}
-
-/// Reads the history a row of history not loaded stands for once the row
-/// comes within a screen above `scroller`'s view, the transcript, so it
-/// mostly arrives before the user scrolls up to it. A row whose read
-/// failed waits for a click.
-fn load_history_in_view(
-    scroller: &web_sys::Element,
-    workspace: Workspace,
-    history: StoredValue<HistoryScroll>,
-) {
-    let Ok(rows) = scroller.query_selector_all("[data-history]:not([data-history-failed])") else {
-        return;
-    };
-    let view = scroller.get_bounding_client_rect();
-    for index in 0..rows.length() {
-        let Some(row) = rows
-            .item(index)
-            .and_then(|row| row.dyn_into::<web_sys::Element>().ok())
-        else {
-            continue;
-        };
-        let at = row.get_bounding_client_rect();
-        if at.bottom() > view.top() - view.height()
-            && at.top() < view.bottom()
-            && let Some(before) = row
-                .get_attribute("data-history")
-                .and_then(|before| before.parse().ok())
-        {
-            load_history(scroller, before, workspace, history);
-            return;
-        }
-    }
-}
-
-/// Reads the history before `before`. The browser keeps the rows in view
-/// where they are as it arrives above them (`overflow-anchor`), which also
-/// keeps a fling going; see `keep_off_top` and `restore_after_history`.
-fn load_history(
-    scroller: &web_sys::Element,
-    before: u64,
-    workspace: Workspace,
-    history: StoredValue<HistoryScroll>,
-) {
-    workspace.load_history(before);
-    keep_off_top(scroller, workspace);
-    if reading_history(workspace) {
-        history.update_value(|history| {
-            history.reading = Some((scroller.scroll_height(), scroller.scroll_top()));
-        });
-    }
-}
-
-/// Whether the open session's transcript is reading a page of history.
-fn reading_history(workspace: Workspace) -> bool {
-    workspace
-        .selected
-        .get_untracked()
-        .is_some_and(|session_id| {
-            untrack(|| {
-                workspace.with_store(|store| {
-                    store
-                        .sessions
-                        .get(&session_id)
-                        .is_some_and(|state| state.history.loading.is_some())
-                })
-            })
-        })
-}
-
-/// Moves the view a pixel off its top while history is read: the browser
-/// anchors no row while the view rests at its top, and the history would
-/// push the rows in view down.
-fn keep_off_top(scroller: &web_sys::Element, workspace: Workspace) {
-    if scroller.scroll_top() == 0 && reading_history(workspace) {
-        scroller.set_scroll_top(1);
-    }
-}
-
-/// Once a page of older history drew: when the browser kept no row in
-/// view in place, puts the view back as far from the end as it stood,
-/// which history arriving above does not move. The row at the top is often
-/// a reply the page split, which starts in the page and is a new row.
-/// A page that drew nothing (a run's end, a setting) reads the next one,
-/// as the user asked for history to show.
-fn restore_after_history(
-    scroller: &web_sys::Element,
-    at: Metrics,
-    workspace: Workspace,
-    history: StoredValue<HistoryScroll>,
-) {
-    let Some(Some((height, top))) = history.try_with_value(|history| history.reading) else {
-        return;
-    };
-    if reading_history(workspace) {
-        return;
-    }
-    history.update_value(|history| history.reading = None);
-    if at.height <= height {
-        load_history_in_view(scroller, workspace, history);
-    } else if (at.top - top).abs() <= 1 {
-        scroller.set_scroll_top(at.height - (height - top));
     }
 }
 

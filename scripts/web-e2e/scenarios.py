@@ -1075,59 +1075,50 @@ def long_session(browser):
     print("find in page finds and shows a row far above the end")
 
 
-# Scrolls the transcript to its top once and watches it for two seconds:
-# how many times its content grew, its row of history not loaded at the
-# end, and where the first row under that row, in view at the top, moved.
-ONE_SCROLL_UP = """
-const done = arguments[arguments.length - 1];
-const t = document.querySelector('#transcript');
-let height = t.scrollHeight;
-let grew = 0;
-t.scrollTop = 0;
-requestAnimationFrame(() => {
-    const box = t.getBoundingClientRect();
-    const first = [...t.querySelectorAll('.transcript-item')].find((row) =>
-        !row.querySelector('[data-history], [data-pinned-rows]')
-        && row.getBoundingClientRect().bottom > box.top);
-    const id = first.id;
-    const offset = () => document.getElementById(id).getBoundingClientRect().top - t.getBoundingClientRect().top;
-    const start = offset();
-    const end = performance.now() + 2000;
-    const tick = () => {
-        if (t.scrollHeight > height) grew += 1;
-        height = t.scrollHeight;
-        if (performance.now() < end) return requestAnimationFrame(tick);
-        const row = t.querySelector('[data-history]');
-        done({grew: grew, history: row && row.dataset.history, moved: offset() - start, top: t.scrollTop});
-    };
-    tick();
-});
+# Records what the transcript's loader shows from now on: whether it came,
+# and each count its pill read.
+WATCH_LOADER = """
+window.loaderSeen = {came: false, counts: []};
+new MutationObserver(() => {
+    const loader = document.querySelector('[data-transcript-loader]');
+    if (!loader) return;
+    window.loaderSeen.came = true;
+    const count = loader.querySelector('[data-loader-count]').textContent;
+    const counts = window.loaderSeen.counts;
+    if (count && counts[counts.length - 1] !== count) counts.push(count);
+}).observe(document.body, {childList: true, subtree: true, characterData: true});
 """
 
 
-def older_history(browser):
-    """A session of eight long answers, opened afresh, shows its newest
-    runs under a row of those not loaded. One scroll to its top reads
-    history until a page shows (a page can hold only a run's end), not
-    every page, and the rows in view stay where they were as it arrives
-    above them."""
-    new_session(browser)
-    for run in range(8):
-        label = "w" * 150 + str(run)
-        send(browser, "stream only lines 300 label " + label)
-        idle(browser, "long answer %d" % run, text="%s 299 " % label, timeout=120)
+def whole_session(browser):
+    """The long session, opened afresh on a slow CPU, loads whole: a
+    skeleton shows until it has, counting its events against the total the
+    daemon gave, and then the transcript holds every row from the first to
+    the last answer, with no row of history left to load."""
+    # Rows far off screen are not drawn, so their text is read whole.
+    holds = lambda text: browser.script(
+        "return document.querySelector('#transcript').textContent.includes(arguments[0])", text
+    )
     session = open_session_id(browser)
     browser.script("location.reload()")
     time.sleep(0.5)
     browser.wait("the connection", lambda: browser.text("#connected") != "")
     browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % session) == 1)
-    click_row(browser, 'aside [data-session="%s"]' % session)
-    browser.wait("the row of history not loaded", lambda: count(browser, "#transcript [data-history]") == 1, timeout=30)
-    watched = browser.script_async(ONE_SCROLL_UP)
-    assert watched["grew"] == 1, "one scroll up drew %d pages: %s" % (watched["grew"], watched)
-    assert watched["history"], "the session's history fits in one more page: %s" % watched
-    assert abs(watched["moved"]) <= 2, "the rows in view moved as history arrived: %s" % watched
-    print("one scroll to the top drew one page of history, the rows in view held still: %s" % watched)
+    browser.script(WATCH_LOADER)
+    browser.cdp("Emulation.setCPUThrottlingRate", {"rate": 4})
+    try:
+        click_row(browser, 'aside [data-session="%s"]' % session)
+        browser.wait("the loaded session", lambda: holds("omega 1499 "), timeout=120)
+    finally:
+        browser.cdp("Emulation.setCPUThrottlingRate", {"rate": 1})
+    browser.wait("the loader's fade", lambda: count(browser, "[data-transcript-loader]") == 0)
+    seen = browser.script("return window.loaderSeen")
+    assert seen["came"], "the session loaded with no skeleton: %s" % seen
+    counted = [count for count in seen["counts"] if " / " in count]
+    assert counted, "the loader never counted against a total: %s" % seen
+    assert holds("Step 7 looks at"), "an early row did not load"
+    assert count(browser, "#transcript [data-history]") == 0, "a row of history is left to load"
+    print("the long session loaded whole behind its skeleton, counting %s" % ", ".join(counted))
 
 
 def session_list_older(browser):
@@ -6690,7 +6681,7 @@ SCENARIOS = [
     ("streaming_scroll", streaming_scroll, "chat", []),
     ("open_row_streams", open_row_streams, "chat", []),
     ("long_session", long_session, "long", []),
-    ("older_history", older_history, "long", []),
+    ("whole_session", whole_session, "long", ["long_session"]),
     # Its daemon has sessions last active months ago (test-web-page.sh).
     ("session_list_older", session_list_older, "long", []),
     # Its daemon has only sessions last active weeks ago (test-web-page.sh).

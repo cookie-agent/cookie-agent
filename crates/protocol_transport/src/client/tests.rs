@@ -332,7 +332,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         0,
         false,
         true,
-        cookie_agent_protocol::EventsView::Full,
+        HistoryReading::Full,
     )
     .await
     .expect("prepare replay");
@@ -441,7 +441,7 @@ async fn transient_output_follows_its_durable_event_or_is_dropped() {
         0,
         false,
         true,
-        cookie_agent_protocol::EventsView::Full,
+        HistoryReading::Full,
     )
     .await
     .expect("prepare replay");
@@ -527,7 +527,7 @@ async fn replay_larger_than_delivery_capacity_reduces_completely() {
         0,
         false,
         true,
-        cookie_agent_protocol::EventsView::Full,
+        HistoryReading::Full,
     )
     .await
     .expect("prepare replay");
@@ -884,7 +884,7 @@ async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
         0,
         false,
         true,
-        cookie_agent_protocol::EventsView::Full,
+        HistoryReading::Full,
     )
     .await
     .expect("prepare replay");
@@ -931,7 +931,7 @@ async fn buffered_gap_schedules_one_recovery() {
         0,
         false,
         true,
-        cookie_agent_protocol::EventsView::Full,
+        HistoryReading::Full,
     )
     .await
     .expect("prepare replay");
@@ -1035,7 +1035,7 @@ async fn stale_replay_attempt_response_is_discarded() {
         0,
         false,
         true,
-        cookie_agent_protocol::EventsView::Full,
+        HistoryReading::Full,
     )
     .await
     .expect("first request");
@@ -1051,7 +1051,7 @@ async fn stale_replay_attempt_response_is_discarded() {
         0,
         false,
         true,
-        cookie_agent_protocol::EventsView::Full,
+        HistoryReading::Full,
     )
     .await
     .expect("second request");
@@ -1778,7 +1778,7 @@ async fn a_display_view_replay_asks_for_the_newest_events_and_delivers_its_windo
         sent,
     });
     *client.daemon_version.lock().unwrap() = Some(DISPLAY_VIEW_SINCE);
-    client.use_display_view(true);
+    client.use_history(HistoryReading::Newest);
     let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
     let subscribe = tokio::spawn({
         let client = client.clone();
@@ -1852,6 +1852,88 @@ async fn a_display_view_replay_asks_for_the_newest_events_and_delivers_its_windo
 }
 
 #[tokio::test]
+async fn a_whole_replay_reads_the_display_view_forward_and_counts_its_pages() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    *client.daemon_version.lock().unwrap() = Some(DISPLAY_VIEW_SINCE);
+    client.use_history(HistoryReading::Whole);
+    let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
+    let subscribe = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, None).await }
+    });
+
+    let first = next_request(&mut sent_rx).await;
+    assert_eq!(first["params"]["view"], "display");
+    assert_eq!(first["params"]["cursor"], 0);
+    assert_eq!(first["params"]["limit"], WHOLE_PAGE_EVENTS.get());
+    assert!(first["params"].get("from").is_none());
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": {
+                "events": [event(session_id, 1), event(session_id, 4)],
+                "has_more": true,
+                "view_events": 3,
+            },
+        })))
+        .expect("first page");
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayProgress {
+            events: 2,
+            total: Some(3),
+            ..
+        })
+    ));
+
+    let second = next_request(&mut sent_rx).await;
+    assert_eq!(second["params"]["cursor"], 4);
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": second["id"],
+            "result": {
+                "events": [event(session_id, 6)],
+                "cut": [{"seq": 6, "bytes": 5000}],
+            },
+        })))
+        .expect("last page");
+    subscribe
+        .await
+        .expect("subscribe task")
+        .expect("subscribe result");
+
+    let Some(ClientDelivery::ReplayStart {
+        final_seq: 6,
+        rebuild: true,
+        history: Some(history),
+        ..
+    }) = deliveries.recv().await
+    else {
+        panic!("a rebuild in the display view");
+    };
+    assert!(history.window.is_none(), "a whole replay has no window");
+    assert_eq!(history.cut.len(), 1);
+    for seq in [1, 4, 6] {
+        assert!(matches!(
+            deliveries.recv().await,
+            Some(ClientDelivery::ReplayEvent { event, .. }) if event.seq == seq
+        ));
+    }
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayEnd { final_seq: 6, .. })
+    ));
+}
+
+#[tokio::test]
 async fn an_older_daemon_replays_the_whole_history_from_the_start() {
     let session_id = SessionId::new_v7();
     let (incoming, incoming_rx) = mpsc::unbounded_channel();
@@ -1861,11 +1943,8 @@ async fn an_older_daemon_replays_the_whole_history_from_the_start() {
         sent,
     });
     *client.daemon_version.lock().unwrap() = Some(cookie_agent_protocol::SemVer::new(1, 56, 0));
-    client.use_display_view(true);
-    assert_eq!(
-        client.history_view(),
-        cookie_agent_protocol::EventsView::Full
-    );
+    client.use_history(HistoryReading::Newest);
+    assert_eq!(client.history_reading(), HistoryReading::Full);
     let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
     let subscribe = tokio::spawn({
         let client = client.clone();

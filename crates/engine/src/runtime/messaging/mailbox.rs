@@ -343,6 +343,22 @@ impl Engine {
         })
     }
 
+    /// How many events `view` holds of `session`'s own log: what a client
+    /// reading its whole history counts against (`view_events`).
+    pub fn view_event_count(
+        &self,
+        session: SessionId,
+        view: cookie_agent_protocol::EventsView,
+    ) -> Result<u64, EngineError> {
+        let store = Arc::clone(&self.inner.store);
+        off_worker(|| {
+            let events = store.recovery_event_snapshot(session)?;
+            let (events, _) =
+                cookie_agent_protocol::display_view::view_events(&events, view, false);
+            Ok(events.len() as u64)
+        })
+    }
+
     /// The stored event at `seq` of `session`'s own log, whole
     /// (`event.read`).
     pub fn read_event(
