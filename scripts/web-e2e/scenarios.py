@@ -5915,6 +5915,14 @@ def onboarding(browser):
     browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
     print("the ACP path links an agent and keeps the sheet open")
 
+    # The Agents view lists the linked agent with where its document comes
+    # from: none yet, and no template on a daemon without official agents.
+    view(browser, "agents")
+    browser.wait("the agents panel", lambda: count(browser, "#agent-panel [data-agent-document=gemini]") == 1)
+    assert "no document" in browser.text("#agent-panel [data-agent-document=gemini]")
+    browser.shot("agents-panel-desktop")
+    print("the agents panel lists the linked ACP agent")
+
 
 def panic_hook():
     """A panic reaches the console with its message and where it happened,

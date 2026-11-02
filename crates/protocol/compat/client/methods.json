@@ -12,6 +12,46 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "agents.customize",
+      "params": "AgentDocumentParams",
+      "params_role": "command",
+      "result": "AgentDocumentResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "agents.documents",
+      "params": "AgentsDocumentsParams",
+      "params_role": "command",
+      "result": "AgentsDocumentsResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "agents.replace",
+      "params": "AgentDocumentParams",
+      "params_role": "command",
+      "result": "AgentDocumentResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "agents.reset",
+      "params": "AgentDocumentParams",
+      "params_role": "command",
+      "result": "AgentDocumentResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "agents.set_enabled",
+      "params": "AgentsSetEnabledParams",
+      "params_role": "command",
+      "result": "AgentDocumentResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "agents.update",
       "params": "AgentsUpdateParams",
       "params_role": "command",

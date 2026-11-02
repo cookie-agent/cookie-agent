@@ -420,7 +420,7 @@ impl App {
 
     /// Reads the configuration to open agent document `path` in the
     /// editor, as `template` when it does not exist.
-    fn fetch_agent_document(&mut self, path: String, template: String) {
+    pub(super) fn fetch_agent_document(&mut self, path: String, template: String) {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

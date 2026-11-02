@@ -814,6 +814,51 @@ impl Client {
         .await
     }
 
+    /// Every agent document with where it comes from.
+    pub async fn agent_documents(
+        &self,
+        params: cookie_agent_protocol::AgentsDocumentsParams,
+    ) -> Result<cookie_agent_protocol::AgentsDocumentsResult, ClientError> {
+        self.call(cookie_agent_protocol::AGENTS_DOCUMENTS_METHOD, &params)
+            .await
+    }
+
+    /// Starts the user's document of an agent, inheriting the official one.
+    pub async fn customize_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ClientError> {
+        self.call(cookie_agent_protocol::AGENTS_CUSTOMIZE_METHOD, &params)
+            .await
+    }
+
+    /// Turns an agent on or off in the user's document.
+    pub async fn set_agent_enabled(
+        &self,
+        params: cookie_agent_protocol::AgentsSetEnabledParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ClientError> {
+        self.call(cookie_agent_protocol::AGENTS_SET_ENABLED_METHOD, &params)
+            .await
+    }
+
+    /// Deletes the user's document of an agent.
+    pub async fn reset_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ClientError> {
+        self.call(cookie_agent_protocol::AGENTS_RESET_METHOD, &params)
+            .await
+    }
+
+    /// Copies an official agent whole into the user's documents.
+    pub async fn replace_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ClientError> {
+        self.call(cookie_agent_protocol::AGENTS_REPLACE_METHOD, &params)
+            .await
+    }
+
     pub async fn compact_session(
         &self,
         params: SessionCompactParams,

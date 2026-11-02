@@ -9,6 +9,7 @@ pub(in crate::ui) use approvals::{
     approval_hotkey_choice as approval_hotkey_choice_for_tests,
     note_choice as note_choice_for_tests,
 };
+mod agent_documents;
 mod attachments;
 mod background;
 mod composer;
@@ -183,6 +184,8 @@ pub(super) enum Modal {
     /// The selected session's background calls.
     Background,
     Plugins,
+    /// `/agents`: the agent documents and what the panel does to them.
+    AgentDocuments,
     /// `/config`: the daemon's configuration documents.
     Config,
     /// `/memory`: the daemon's memories.
@@ -937,6 +940,7 @@ pub struct App {
     connect_details_scroll: providers::DetailsScroll,
     background_panel: background::BackgroundPanelState,
     plugin_panel: plugins::PluginPanelState,
+    pub(in crate::ui) agent_documents_panel: agent_documents::AgentDocumentsPanelState,
     pub(super) config_panel: config_panel::ConfigPanelState,
     /// The restart banner's status and a restart under way.
     pub(super) restart: restart::RestartState,
@@ -1375,6 +1379,16 @@ pub(in crate::ui) enum RpcUpdate {
     PluginsRefreshed {
         result: Result<Vec<cookie_agent_protocol::PluginInfo>, String>,
     },
+    /// `agents.documents` answered.
+    AgentDocumentsListed {
+        result: Result<Vec<cookie_agent_protocol::AgentDocumentInfo>, String>,
+    },
+    /// An agents panel call finished: the document's path, or why not.
+    AgentDocumentChanged {
+        action: cookie_agent_client_state::agent_documents::AgentDocumentAction,
+        id: String,
+        result: Result<String, String>,
+    },
     /// An attach or detach finished; `Ok` carries the status line.
     RuntimeAttachmentChanged {
         result: Result<String, String>,
@@ -1760,6 +1774,7 @@ impl App {
             connect_details_scroll: providers::DetailsScroll::default(),
             background_panel: background::BackgroundPanelState::default(),
             plugin_panel: plugins::PluginPanelState::default(),
+            agent_documents_panel: agent_documents::AgentDocumentsPanelState::default(),
             config_panel: config_panel::ConfigPanelState::default(),
             restart: restart::RestartState::default(),
             pending_editor: None,

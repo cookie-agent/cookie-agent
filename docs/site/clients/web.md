@@ -119,6 +119,16 @@ provider that is missing; no connected machine offering an ACP agent; a
 document whose inherited one is not there yet); they cannot be picked. An
 agent you turned off is not listed.
 
+The Agents view lists, above your agent documents, the **official
+agents**, the **ACP agents**, and the **templates**, each with where its
+document comes from (`official 1.2.0`, `customized`, `replaced`, `follows
+_acp`), why it cannot run when the daemon says so, and its actions:
+**Customize** (a document of yours that inherits the official one, or the
+`_acp` template, with the inherited keys as comments, opened in the
+editor), **Open** (yours), **Turn off** and **Turn on**, **Reset** (deletes
+your document), and **Replace** (copies the official document whole, which
+refreshes no longer change). Reset and Replace ask once more.
+
 ## Layout
 
 - **The rail.** An icon strip on the far left switches between nine

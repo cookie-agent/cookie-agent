@@ -34,6 +34,7 @@ use leptos::{prelude::*, task::spawn_local};
 use crate::{browser, connect::EVENT_LEVEL_KEY};
 
 mod acp;
+mod agent_documents;
 mod assets;
 pub use assets::ASSET_ROWS;
 mod attachments;
@@ -308,6 +309,10 @@ pub struct Workspace {
     /// The daemon declares ACP agents for every runtime (client protocol
     /// 1.43.0).
     pub shares_acp_agents: RwSignal<bool>,
+    /// `agents.documents`, for the Agents view's panel
+    /// (`docs/site/specs/acp-onboarding.md` section 7); `None` before it.
+    pub agent_documents:
+        RwSignal<Option<Result<Vec<cookie_agent_protocol::AgentDocumentInfo>, String>>>,
     /// The sign-ins this browser started that still wait, as
     /// `(state, server)`.
     pub sign_ins: RwSignal<Vec<(String, String)>>,
@@ -594,6 +599,7 @@ impl Workspace {
             mcp_servers: RwSignal::new(None),
             can_sign_in: RwSignal::new(false),
             shares_acp_agents: RwSignal::new(false),
+            agent_documents: RwSignal::new(None),
             sign_ins: RwSignal::new(crate::oauth::waiting()),
             sign_in_outcome: RwSignal::new(None),
             sign_in_waiting: StoredValue::new(None),

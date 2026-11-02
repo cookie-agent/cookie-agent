@@ -1556,6 +1556,124 @@ pub struct AgentsUpdateResult {
     pub error: Option<String>,
 }
 
+pub const AGENTS_DOCUMENTS_METHOD: &str = "agents.documents";
+pub const AGENTS_CUSTOMIZE_METHOD: &str = "agents.customize";
+pub const AGENTS_SET_ENABLED_METHOD: &str = "agents.set_enabled";
+pub const AGENTS_RESET_METHOD: &str = "agents.reset";
+pub const AGENTS_REPLACE_METHOD: &str = "agents.replace";
+
+/// `agents.documents` (client protocol 1.75.0): every agent document with
+/// where it comes from, for the agents panel
+/// (`docs/site/specs/acp-onboarding.md` section 7).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsDocumentsParams {}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentsDocumentsResult {
+    #[schemars(length(max = 4096))]
+    pub documents: Vec<AgentDocumentInfo>,
+}
+
+/// What kind of document an agents panel row is. A value this build does
+/// not know reads as `unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum AgentDocumentKind {
+    /// One of the daemon's own agents.
+    Agent,
+    /// An ACP agent a runtime declares.
+    Acp,
+    /// A template, `_<name>.md`: inherited, never an agent.
+    Template,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where an agent's document comes from. A value this build does not know
+/// reads as `unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum AgentDocumentOrigin {
+    /// The official document; the user has none.
+    Official,
+    /// The user's document inherits the official one, or for an ACP agent
+    /// the `_acp` template.
+    Customized,
+    /// The user's document replaces the official one whole.
+    Replaced,
+    /// The user's document, with no official counterpart.
+    Own,
+    /// An ACP agent with no document: it follows the `_acp` template.
+    FollowsTemplate,
+    /// An ACP agent with no document and no template.
+    Bare,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One row of the agents panel.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentDocumentInfo {
+    /// The agent's ID, or a template's `_<name>`.
+    #[schemars(length(min = 1, max = 64))]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<crate::agent::AgentPresetNameSchema>")]
+    pub preset: Option<String>,
+    pub kind: AgentDocumentKind,
+    pub origin: AgentDocumentOrigin,
+    /// The tree path the user's document inherits, such as
+    /// `official_agents/primary.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 512))]
+    pub inherits: Option<String>,
+    /// The tree path of the user's document, when there is one, as
+    /// `config.get` names documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 512))]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 64))]
+    pub official_version: Option<String>,
+    /// The user's document says `enabled: false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
+/// An agent (or a template's `_<name>`) in a preset, or the shared ones.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentDocumentParams {
+    #[schemars(length(min = 1, max = 64))]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<crate::agent::AgentPresetNameSchema>")]
+    pub preset: Option<String>,
+}
+
+/// `agents.set_enabled`: turns an agent on or off in its document of the
+/// user's.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsSetEnabledParams {
+    #[schemars(length(min = 1, max = 64))]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<crate::agent::AgentPresetNameSchema>")]
+    pub preset: Option<String>,
+    pub enabled: bool,
+}
+
+/// The user's document a panel call wrote or removed, as a tree path.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentDocumentResult {
+    #[schemars(length(min = 1, max = 512))]
+    pub path: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SkillsListResult {
     pub skills: Vec<SkillDescriptor>,

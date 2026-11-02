@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`agents.set_enabled`: turns an agent on or off in its document of the\nuser's.",
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    },
+    "preset": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "enabled"
+  ],
+  "title": "AgentsSetEnabledParams",
+  "type": "object"
+}

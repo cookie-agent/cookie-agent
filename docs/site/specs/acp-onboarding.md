@@ -1,8 +1,7 @@
 # Onboarding with ACP agents, the agents panel, and unavailable agents
 
-Status: **approved** (2026-11-01), in progress: phases 1 to 4 implemented
-(client protocol 1.72.0 and 1.74.0); see the
-[implementation notes](#implementation-notes). The user took every
+Status: **implemented** (2026-11-02; client protocol 1.72.0, 1.74.0, and
+1.75.0); see the [implementation notes](#implementation-notes). The user took every
 recommendation of [section 11](#11-decisions) on 2026-11-01.
 
 ## Implementation notes
@@ -32,6 +31,26 @@ Where the code departs from the sections below:
 - **The TUI's ACP step edits another agent inline** (ID, command, and
   environment as `KEY=VALUE` words); its description stays empty. The web
   step has every field.
+- **Customize opens the document, not a form** (section 7.2): the daemon
+  writes the user's document with `inherit:` and the inherited frontmatter
+  as comments, and the client opens it in its editor (the web's document
+  editor, the TUI's `$EDITOR`), where the user uncomments and changes what
+  they want. So the panel's calls are `agents.documents`,
+  `agents.customize`, `agents.set_enabled`, `agents.reset`, and
+  `agents.replace` rather than `agents.override` and `agents.document`, and
+  the CLI has `cookie agents customize|disable|enable|reset|replace` rather
+  than `set` and `show` (`cookie config edit` edits the document).
+- **Turning an ACP agent off writes its document's `enabled: false`**, not
+  its declaration's `enabled = false`: the agent is then `disabled`, which
+  agent selection leaves out (D6), on every runtime at once.
+- **The web panel shows the official agents, the ACP agents, and the
+  templates** above the Agents view's documents, which already list the
+  user's own agents; the TUI's `/agents` lists all four groups.
+- **Not done:** the panel's **Use it** for a declaration whose preset
+  changed (section 3), since a declaration does not record the preset it
+  came from; **Check** in the agents panel (the onboarding ACP step and
+  `cookie onboard --acp-check` check an agent); and `cookie agents
+  check-acp`.
 - **Templates and presets are lists of their own** in the official index
   (`templates`, `acp_presets`, `mcp_presets`), which older daemons ignore.
 

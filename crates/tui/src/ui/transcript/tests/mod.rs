@@ -2,6 +2,7 @@
 
 mod acp;
 mod acp_input;
+mod agents_panel;
 mod approvals;
 mod assistant;
 mod attachments;

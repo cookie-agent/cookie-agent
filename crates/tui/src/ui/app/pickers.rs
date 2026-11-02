@@ -1157,6 +1157,7 @@ impl App {
             | Modal::GoalDetail
             | Modal::Background
             | Modal::Plugins
+            | Modal::AgentDocuments
             | Modal::Config
             | Modal::Onboarding
             | Modal::Memory

@@ -1,0 +1,147 @@
+{
+  "$defs": {
+    "AgentDocumentInfo": {
+      "description": "One row of the agents panel.",
+      "properties": {
+        "disabled": {
+          "description": "The user's document says `enabled: false`.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The agent's ID, or a template's `_<name>`.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "inherits": {
+          "description": "The tree path the user's document inherits, such as\n`official_agents/primary.md`.",
+          "maxLength": 512,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/AgentDocumentKind"
+        },
+        "official_version": {
+          "maxLength": 64,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/AgentDocumentOrigin"
+        },
+        "path": {
+          "description": "The tree path of the user's document, when there is one, as\n`config.get` names documents.",
+          "maxLength": 512,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "AgentDocumentKind": {
+      "description": "What kind of document an agents panel row is. A value this build does\nnot know reads as `unknown`.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "One of the daemon's own agents.",
+          "type": "string"
+        },
+        {
+          "const": "acp",
+          "description": "An ACP agent a runtime declares.",
+          "type": "string"
+        },
+        {
+          "const": "template",
+          "description": "A template, `_<name>.md`: inherited, never an agent.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "AgentDocumentOrigin": {
+      "description": "Where an agent's document comes from. A value this build does not know\nreads as `unknown`.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "official",
+          "description": "The official document; the user has none.",
+          "type": "string"
+        },
+        {
+          "const": "customized",
+          "description": "The user's document inherits the official one, or for an ACP agent\nthe `_acp` template.",
+          "type": "string"
+        },
+        {
+          "const": "replaced",
+          "description": "The user's document replaces the official one whole.",
+          "type": "string"
+        },
+        {
+          "const": "own",
+          "description": "The user's document, with no official counterpart.",
+          "type": "string"
+        },
+        {
+          "const": "follows_template",
+          "description": "An ACP agent with no document: it follows the `_acp` template.",
+          "type": "string"
+        },
+        {
+          "const": "bare",
+          "description": "An ACP agent with no document and no template.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "documents": {
+      "items": {
+        "$ref": "#/$defs/AgentDocumentInfo"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    }
+  },
+  "required": [
+    "documents"
+  ],
+  "title": "AgentsDocumentsResult",
+  "type": "object"
+}

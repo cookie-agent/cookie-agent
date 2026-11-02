@@ -129,6 +129,7 @@ Esc in a step returns to the command list with the search intact.
 | `/new` | Choose the next root-run agent |
 | `/preset` | Select the preset for the next root run and future new sessions; see [Agent presets](../extend/agents.md#agent-presets) |
 | `/agent` | Choose the agent for the next run |
+| `/agents` | The [agents panel](#the-agents-panel): official, ACP, and your agents with where each document comes from and why one cannot run; Enter customizes (a document of yours that inherits the official one, opened in your editor) or opens yours, `d` turns an agent off or on, `x` resets (deletes your document), `R` replaces (copies the official one whole); `x` and `R` ask once more |
 | `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models; each row shows, dimmed after its name, the ID an agent document's `models` writes for it (the model's `provider/model` key, the variant's ID, an ACP agent's option value), once when the name is the ID; for an [ACP agent](../extend/acp-agents.md), which chooses its own model, it lists the values of the agent's model option, and the title's bracketed variant (or ctrl+t) cycles its effort option; a new session's draft offers what the agent last started a session with |
 | `/options` | Change the options of the session's ACP agent, such as its model, mode, and effort: pick an option, then a value; listed while the agent offers options |
 | `/connect` | Connect or update a managed provider; Enter on a connected one opens its details, titled by its name with its ID dimmed and listing its available models (each name with its model ID dimmed beside it; ↑↓, PgUp/PgDn, Home/End, and the wheel scroll), where R reconnects (signs in again) and D disconnects |
@@ -207,6 +208,23 @@ the TUI reconnects as after any dropped connection. A daemon not started by
 `cookie daemon`, including the engine of `cookie --standalone`, cannot
 restart itself and says so. See
 [Restarting the daemon](../daemon/persistent.md#restarting-the-daemon).
+
+## The agents panel
+
+`/agents` lists the official agents, the ACP agents, the templates, and your
+own agents, each with where its document comes from (`official 1.2.0`,
+`customized` when your document inherits the official one, `replaced` when
+yours replaces it whole, `follows _acp` for an ACP agent without a document)
+and `cannot run` when the daemon says so; the lower pane says why, and
+which actions the selected agent offers. Enter **customizes** an official
+or ACP agent: the daemon writes `agents/<id>.md` with
+`inherit: ../official_agents/<id>.md` (or the `_acp` template) and the
+inherited keys as comments, and the TUI opens it in your editor; on an
+agent you have a document of, Enter opens it. `d` turns the agent off or on
+(`enabled: false` in your document); `x` **resets** it, deleting your
+document; `R` **replaces** it with a copy of the official document, which
+refreshes no longer change. `x` and `R` ask once more. See
+[Inheriting an agent](../extend/agents.md#inheriting-an-agent).
 
 ## Setting up
 

@@ -19,13 +19,16 @@ No configuration file is needed. With no daemon running on this machine,
 `standalone`, and the runtime and directory the session will work in follow
 it. Sessions you create here work in this directory.
 
-## Set up: a provider and a default model
+## Set up: model providers, an ACP agent, or both
 
-Cookie is set up once it has a connected model provider, a `default_model`
-for its agents to run on, and its default agent. Until then the TUI shows a
-notice offering **Set up** (or **Not now**, which it remembers for this
-machine), and `/onboard` opens the same panel at any time. It walks four
-steps:
+Cookie is set up once an agent can run: either a connected model provider
+and a `default_model` for its own agents, or an
+[ACP agent](extend/acp-agents.md) such as Claude Code or Codex, which runs
+with its own login and models. Until then the TUI shows a notice offering
+**Set up** (or **Not now**, which it remembers for this machine), and
+`/onboard` opens the same panel at any time. Its first step asks how agents
+run, **model providers**, **an ACP agent**, or both, and shows only the
+steps of what you chose:
 
 1. **Provider.** Pick a [managed provider](extend/providers.md#managed-providers)
    and its sign-in: an API key, typed hidden, or a browser login. The
@@ -40,6 +43,20 @@ steps:
 4. **Utility model** (optional). A fast, cheap model for approval reviews
    and session titles; its variant picker preselects the model's first
    listed variant, the cheapest. Without it they use the session's model.
+5. **ACP agent.** Claude Code or Codex fills in the command that launches
+   it, with what each machine needs (Node.js and the harness logged in
+   there); another ACP agent takes its own command. It runs **on every
+   machine** or **on this daemon's machine only**. Adding it declares it at
+   once, and **Check** starts it to see that it works. It follows the
+   official `_acp` [template](extend/agents.md#templates), which tells it
+   how to work inside cookie; you need no document for it.
+6. **Tools** (optional). MCP servers that need no login: web search,
+   library and repository documentation, and a browser (Playwright, on a
+   machine you pick). Here you also choose the agent new sessions start
+   with.
+
+With only an ACP agent, sessions are not titled automatically and approval
+reviews pass to you: those internal agents need a model provider.
 
 There is no starter kit to install. The daemon keeps cookie's
 [official agents](extend/agents.md#official-agents) (`primary`, the assistant
@@ -49,7 +66,7 @@ and **Finish** fetches the agents first when it has none yet. A document of
 your own in `~/.cookie-agent/agents/` replaces the official one of its name.
 
 **Finish** writes the settings, and stays disabled, with the reason, until a
-provider and a default model are chosen.
+provider and a default model are chosen, or an ACP agent is added.
 
 The same steps run from a terminal against a running daemon, here or on
 another machine (`--url` and `--token`, as for `cookie config`):
@@ -59,6 +76,8 @@ cookie daemon &                 # once; or the persistent daemon service
 cookie onboard                  # numbered questions; `/` searches the lists
 cookie onboard --yes --default-model anthropic/claude-opus-4-1:high \
                --utility-model deepseek/deepseek-chat
+cookie onboard --yes --acp claude --acp-where every --acp-check \
+               --mcp exa,context7 --default-agent claude
 ```
 
 The web page offers the same as a first-run sheet, and Settings → **Set up

@@ -749,6 +749,10 @@ impl App {
                 }
             }
             RpcUpdate::PluginsRefreshed { result } => self.install_plugins(result),
+            RpcUpdate::AgentDocumentsListed { result } => self.install_agent_documents(result),
+            RpcUpdate::AgentDocumentChanged { action, id, result } => {
+                self.install_agent_document_change(action, id, result);
+            }
             RpcUpdate::ConfigLoaded { result } => self.install_config(result),
             RpcUpdate::OnboardingStatus { read, status } => {
                 self.install_onboarding_read(read, status)

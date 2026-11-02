@@ -7,6 +7,7 @@ mod acp_document_models;
 mod acp_input;
 mod acp_onboarding;
 mod acp_templates;
+mod agent_documents;
 mod agent_memory;
 mod agents;
 mod approvals;

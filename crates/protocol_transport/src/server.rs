@@ -429,6 +429,31 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::AgentsUpdateParams,
     ) -> Result<cookie_agent_protocol::AgentsUpdateResult, ServerFault>;
+    /// Every agent document with where it comes from.
+    async fn agent_documents(
+        &self,
+        params: cookie_agent_protocol::AgentsDocumentsParams,
+    ) -> Result<cookie_agent_protocol::AgentsDocumentsResult, ServerFault>;
+    /// Starts the user's document of an agent, inheriting the official one.
+    async fn customize_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ServerFault>;
+    /// Turns an agent on or off in the user's document.
+    async fn set_agent_enabled(
+        &self,
+        params: cookie_agent_protocol::AgentsSetEnabledParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ServerFault>;
+    /// Deletes the user's document of an agent.
+    async fn reset_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ServerFault>;
+    /// Copies an official agent whole into the user's documents.
+    async fn replace_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult, ServerFault>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -1616,6 +1641,21 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::AGENTS_UPDATE_METHOD => {
             value(server.update_agents(decode_default(params)?).await?)
+        }
+        cookie_agent_protocol::AGENTS_DOCUMENTS_METHOD => {
+            value(server.agent_documents(decode_default(params)?).await?)
+        }
+        cookie_agent_protocol::AGENTS_CUSTOMIZE_METHOD => {
+            value(server.customize_agent(decode(params)?).await?)
+        }
+        cookie_agent_protocol::AGENTS_SET_ENABLED_METHOD => {
+            value(server.set_agent_enabled(decode(params)?).await?)
+        }
+        cookie_agent_protocol::AGENTS_RESET_METHOD => {
+            value(server.reset_agent(decode(params)?).await?)
+        }
+        cookie_agent_protocol::AGENTS_REPLACE_METHOD => {
+            value(server.replace_agent(decode(params)?).await?)
         }
         "session.compact" => value(server.compact_session(decode(params)?, context).await?),
         "session.revert" => value(server.revert_session(decode(params)?, context).await?),

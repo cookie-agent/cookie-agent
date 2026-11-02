@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`agents.documents` (client protocol 1.75.0): every agent document with\nwhere it comes from, for the agents panel\n(`docs/site/specs/acp-onboarding.md` section 7).",
+  "title": "AgentsDocumentsParams",
+  "type": "object"
+}

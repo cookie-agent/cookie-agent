@@ -17,6 +17,44 @@ pub(crate) enum AgentsCommand {
     List,
     /// Refresh the official agents now.
     Update,
+    /// Start your own document of an agent that inherits the official one
+    /// (or, for an ACP agent, the `_acp` template), its inherited keys as
+    /// comments, and print its path; an existing one is left as it is.
+    Customize {
+        /// The agent, or a template's `_<name>`.
+        id: String,
+        /// The preset whose document it is; the shared agents by default.
+        #[arg(long)]
+        preset: Option<String>,
+    },
+    /// Turn an agent off: `enabled: false` in your document of it, which
+    /// inherits the official one when you have none.
+    Disable {
+        id: String,
+        #[arg(long)]
+        preset: Option<String>,
+    },
+    /// Turn an agent back on; a document left with nothing but `inherit` is
+    /// removed.
+    Enable {
+        id: String,
+        #[arg(long)]
+        preset: Option<String>,
+    },
+    /// Delete your document of an agent, so the official one (or the
+    /// template) applies again.
+    Reset {
+        id: String,
+        #[arg(long)]
+        preset: Option<String>,
+    },
+    /// Copy an official agent whole into your documents, where refreshes
+    /// no longer change it.
+    Replace {
+        id: String,
+        #[arg(long)]
+        preset: Option<String>,
+    },
     /// Check the agent documents of a directory: each `<id>.md` loads with
     /// this build's strict parser, on its own as an official agent, and each
     /// template `_<name>.md` as an official template; an `index.json` beside
@@ -50,6 +88,7 @@ pub(crate) async fn agents_with(
     command: AgentsCommand,
 ) -> anyhow::Result<Vec<String>> {
     let mut lines = Vec::new();
+    let enabling = matches!(command, AgentsCommand::Enable { .. });
     match command {
         AgentsCommand::List => {
             let snapshot = client
@@ -62,7 +101,15 @@ pub(crate) async fn agents_with(
             if snapshot.agents.is_empty() {
                 lines.push("No agents.".into());
             }
+            let mut unavailable_lines = Vec::new();
             for agent in &snapshot.agents {
+                if let Some(unavailable) = &agent.unavailable {
+                    unavailable_lines.push(format!(
+                        "{}\tunavailable: {}",
+                        agent.id,
+                        unavailable.summary()
+                    ));
+                }
                 let origin = match (agent.official, &agent.official_version) {
                     (true, Some(version)) => format!("official {version}"),
                     (true, None) => "official".to_owned(),
@@ -93,6 +140,59 @@ pub(crate) async fn agents_with(
                 };
                 lines.push(format!("{name}\t{mode}\t{origin}{marks}"));
             }
+            lines.extend(unavailable_lines);
+        }
+        AgentsCommand::Customize { id, preset } => {
+            let result = client
+                .customize_agent(cookie_agent_protocol::AgentDocumentParams { id, preset })
+                .await
+                .context("agents.customize failed")?;
+            lines.push(format!(
+                "Your document: {} (edit it with `cookie config edit {}`)",
+                result.path, result.path
+            ));
+        }
+        AgentsCommand::Disable { id, preset } | AgentsCommand::Enable { id, preset } => {
+            let enabled = enabling;
+            let result = client
+                .set_agent_enabled(cookie_agent_protocol::AgentsSetEnabledParams {
+                    id: id.clone(),
+                    preset,
+                    enabled,
+                })
+                .await
+                .context("agents.set_enabled failed")?;
+            lines.push(format!(
+                "`{id}` is {} ({})",
+                if enabled { "on" } else { "off" },
+                result.path
+            ));
+        }
+        AgentsCommand::Reset { id, preset } => {
+            let result = client
+                .reset_agent(cookie_agent_protocol::AgentDocumentParams {
+                    id: id.clone(),
+                    preset,
+                })
+                .await
+                .context("agents.reset failed")?;
+            lines.push(format!(
+                "Removed {}; `{id}` is the official one again.",
+                result.path
+            ));
+        }
+        AgentsCommand::Replace { id, preset } => {
+            let result = client
+                .replace_agent(cookie_agent_protocol::AgentDocumentParams {
+                    id: id.clone(),
+                    preset,
+                })
+                .await
+                .context("agents.replace failed")?;
+            lines.push(format!(
+                "Copied the official `{id}` to {}; refreshes no longer change it.",
+                result.path
+            ));
         }
         AgentsCommand::Update => {
             let result = client

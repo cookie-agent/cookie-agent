@@ -11,6 +11,7 @@
 
 pub mod acp;
 pub mod activity;
+pub mod agent_documents;
 pub mod assets;
 pub mod badges;
 pub mod config;

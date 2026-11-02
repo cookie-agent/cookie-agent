@@ -4,7 +4,10 @@
 //! hides and shows; a narrower window shows it as the page in place of the
 //! editor. A phone shows the agents as the page until one opens. Under the
 //! documents, the ACP agents every runtime offers (`[acp.agents]`), whose
-//! form opens over the page.
+//! form opens over the page. Above the documents, the official agents, the
+//! ACP agents, and the templates, each with where its document comes from,
+//! why it cannot run, and Customize, Turn off, Reset, and Replace
+//! (`docs/site/specs/acp-onboarding.md` section 7).
 
 use leptos::prelude::*;
 
@@ -12,6 +15,8 @@ use super::{
     BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading,
     manage::{CONFIRM, EDITOR, EDITOR_ACTIONS, EDITOR_PAGE, FIELD, STATE, area_value, field_value},
 };
+use cookie_agent_client_state::agent_documents::AgentDocumentAction;
+
 use crate::{
     agents::{AgentEntry, agent_groups, agent_id, agent_summary},
     icons::Glyph,
@@ -93,6 +98,11 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
         }
     });
     let create = move || workspace.new_agent(&field_value("config-new-path"));
+    // The panel's rows follow the configuration.
+    Effect::new(move |_| {
+        workspace.config.track();
+        workspace.poll_agent_documents();
+    });
     view! {
         <div class="flex flex-col gap-2 p-3">
             <div class="flex gap-2">
@@ -145,6 +155,7 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
             </Show>
         </div>
         <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-3" aria-label="Agents">
+            {agent_panel(workspace)}
             {move || {
                 let config = match workspace.config.get() {
                     None => return loading("Reading the agents…").into_any(),
@@ -191,6 +202,117 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
         {super::machines::acp_dialog(workspace, acp, "agents-acp-form")}
     }
 }
+
+/// The official agents, the ACP agents, and the templates, by group, each
+/// with its actions.
+fn agent_panel(workspace: Workspace) -> impl IntoView {
+    use cookie_agent_client_state::agent_documents::{
+        AgentDocumentGroup, actions, group, origin_label, unavailable_line,
+    };
+    // An action that asks first, waiting for its second click.
+    let pending = RwSignal::new(None::<(String, AgentDocumentAction)>);
+    move || {
+        let documents = match workspace.agent_documents.get() {
+            None => return None,
+            Some(Err(error)) => return Some(view! { <p class=ERROR>{error}</p> }.into_any()),
+            Some(Ok(documents)) => documents,
+        };
+        let agents = workspace.with_runtime(|runtime| {
+            runtime
+                .snapshot()
+                .map(|snapshot| snapshot.agents.clone())
+                .unwrap_or_default()
+        });
+        let sections = [
+            AgentDocumentGroup::Official,
+            AgentDocumentGroup::Acp,
+            AgentDocumentGroup::Templates,
+        ]
+        .into_iter()
+        .filter_map(|each| {
+            let rows = documents
+                .iter()
+                .filter(|info| info.preset.is_none() && group(info) == each)
+                .cloned()
+                .collect::<Vec<_>>();
+            (!rows.is_empty()).then(|| {
+                let rows = rows
+                    .into_iter()
+                    .map(|info| {
+                        let reason = unavailable_line(&info, &agents);
+                        let buttons = actions(&info)
+                            .into_iter()
+                            .map(|action| {
+                                let key = (info.id.clone(), action);
+                                let asking = {
+                                    let key = key.clone();
+                                    move || pending.get().as_ref() == Some(&key)
+                                };
+                                let (id, preset, path) =
+                                    (info.id.clone(), info.preset.clone(), info.path.clone());
+                                let click = {
+                                    let key = key.clone();
+                                    let asking = asking.clone();
+                                    move |_| {
+                                        if action.confirms() && !asking() {
+                                            pending.set(Some(key.clone()));
+                                            return;
+                                        }
+                                        pending.set(None);
+                                        workspace.agent_document_action(
+                                            action,
+                                            id.clone(),
+                                            preset.clone(),
+                                            path.clone(),
+                                        );
+                                    }
+                                };
+                                view! {
+                                    <button
+                                        type="button"
+                                        class=PANEL_BUTTON
+                                        data-agent-action=format!("{:?}", action).to_lowercase()
+                                        on:click=click
+                                    >
+                                        {move || if asking() {
+                                            format!("Sure? {}", action.label())
+                                        } else {
+                                            action.label().to_owned()
+                                        }}
+                                    </button>
+                                }
+                            })
+                            .collect_view();
+                        view! {
+                            <div class="flex flex-col gap-1 rounded-md px-3 py-1" data-agent-document=info.id.clone()>
+                                <span class="flex w-full items-center gap-2">
+                                    <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{info.id.clone()}</span>
+                                    <span class=STATE>{origin_label(&info)}</span>
+                                </span>
+                                {reason.map(|reason| view! { <span class=NOTE data-agent-unavailable>{reason}</span> })}
+                                <span class="flex flex-wrap gap-1">{buttons}</span>
+                            </div>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <h3 class="mt-2 flex items-center gap-2 px-3 text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">
+                        {each.label()}
+                    </h3>
+                    {rows}
+                }
+            })
+        })
+        .collect_view();
+        Some(
+            view! { <section id="agent-panel" class="flex flex-col gap-1">{sections}</section> }
+                .into_any(),
+        )
+    }
+}
+
+/// A panel row's action: small, beside the others.
+const PANEL_BUTTON: &str = "inline-flex min-h-11 items-center rounded-md border border-crust px-2 text-xs hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
 
 /// An agent's row: its mode's icon, its ID, whether it is off or has an
 /// edit the daemon refused, and its description; a click opens it.

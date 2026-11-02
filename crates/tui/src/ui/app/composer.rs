@@ -1130,6 +1130,7 @@ impl App {
             SlashCommand::Mcp => self.open_mcp_panel(None),
             SlashCommand::Background => self.open_background_panel(),
             SlashCommand::Plugins => self.open_plugin_panel(),
+            SlashCommand::Agents => self.open_agent_documents_panel(),
             SlashCommand::Config => self.open_config_panel(),
             SlashCommand::Restart => self.open_restart_confirm(),
             SlashCommand::Onboard => self.open_onboarding_panel(),

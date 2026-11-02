@@ -699,6 +699,55 @@ at start and daily, and prints what changed and the agents it keeps. A
 refresh that fails keeps the agents it had and fails with the reason; with
 `[agents] official = false` it does nothing.
 
+#### `cookie agents customize`
+
+```text
+cookie agents customize <ID> [--preset <PRESET>]
+```
+
+Writes `agents/<ID>.md` (or the preset's) inheriting the official agent, or
+the `_acp` template for an ACP agent, with the inherited keys as comments,
+and prints its path for [`cookie config edit`](#cookie-config); an existing
+document is left as it is. `<ID>` may name a template as `_<name>`. This
+and the commands below do what the clients' agents panel does, through the
+daemon.
+
+#### `cookie agents disable`
+
+```text
+cookie agents disable <ID> [--preset <PRESET>]
+```
+
+Writes `enabled: false` into your document of the agent, starting one that
+inherits the official agent when you have none.
+
+#### `cookie agents enable`
+
+```text
+cookie agents enable <ID> [--preset <PRESET>]
+```
+
+Removes `enabled: false` from your document, and the document with it when
+nothing but `inherit` is left.
+
+#### `cookie agents reset`
+
+```text
+cookie agents reset <ID> [--preset <PRESET>]
+```
+
+Deletes your document of the agent, so the official one (or the template)
+applies again.
+
+#### `cookie agents replace`
+
+```text
+cookie agents replace <ID> [--preset <PRESET>]
+```
+
+Copies the official document whole into yours, where refreshes no longer
+change it.
+
 #### `cookie agents check`
 
 ```text

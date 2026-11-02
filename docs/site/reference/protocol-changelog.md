@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.75.0
+
+- The agents panel
+  ([Onboarding with ACP agents](../specs/acp-onboarding.md) section 7):
+  `agents.documents` lists every agent document as an
+  `AgentDocumentInfo` (open `AgentDocumentKind` and
+  `AgentDocumentOrigin`); `agents.customize`, `agents.set_enabled`,
+  `agents.reset`, and `agents.replace` change the user's document of an
+  agent (`AgentDocumentParams`, `AgentsSetEnabledParams`), each answering
+  its `path` (`AgentDocumentResult`).
+
 ## 1.74.0
 
 - Onboarding with ACP agents

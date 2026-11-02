@@ -45,6 +45,7 @@ use crate::{
 
 pub(crate) mod acp;
 mod admission;
+pub(crate) mod agent_documents;
 mod agent_md;
 mod approval;
 pub(crate) mod artifacts;

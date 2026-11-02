@@ -512,7 +512,8 @@ impl App {
             | Modal::About
             | Modal::GoalDetail
             | Modal::Background
-            | Modal::Plugins => 0,
+            | Modal::Plugins
+            | Modal::AgentDocuments => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError

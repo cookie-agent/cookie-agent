@@ -308,6 +308,92 @@ impl ServerProtocol for Server {
         }
     }
 
+    async fn agent_documents(
+        &self,
+        _params: cookie_agent_protocol::AgentsDocumentsParams,
+    ) -> Result<cookie_agent_protocol::AgentsDocumentsResult> {
+        use cookie_agent_engine::{AgentDocumentKind as Kind, AgentDocumentOrigin as Origin};
+        let documents = self
+            .engine
+            .agent_documents()
+            .await
+            .map_err(protocol_fault)?
+            .into_iter()
+            .map(|entry| cookie_agent_protocol::AgentDocumentInfo {
+                id: entry.id,
+                preset: entry.preset,
+                kind: match entry.kind {
+                    Kind::Agent => cookie_agent_protocol::AgentDocumentKind::Agent,
+                    Kind::Acp => cookie_agent_protocol::AgentDocumentKind::Acp,
+                    Kind::Template => cookie_agent_protocol::AgentDocumentKind::Template,
+                },
+                origin: match entry.origin {
+                    Origin::Official => cookie_agent_protocol::AgentDocumentOrigin::Official,
+                    Origin::Customized => cookie_agent_protocol::AgentDocumentOrigin::Customized,
+                    Origin::Replaced => cookie_agent_protocol::AgentDocumentOrigin::Replaced,
+                    Origin::Own => cookie_agent_protocol::AgentDocumentOrigin::Own,
+                    Origin::FollowsTemplate => {
+                        cookie_agent_protocol::AgentDocumentOrigin::FollowsTemplate
+                    }
+                    Origin::Bare => cookie_agent_protocol::AgentDocumentOrigin::Bare,
+                },
+                inherits: entry.inherits,
+                path: entry.path,
+                official_version: entry.official_version,
+                disabled: entry.disabled,
+            })
+            .collect();
+        Ok(cookie_agent_protocol::AgentsDocumentsResult { documents })
+    }
+
+    async fn customize_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult> {
+        let path = self
+            .engine
+            .customize_agent(&params.id, params.preset.as_deref())
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::AgentDocumentResult { path })
+    }
+
+    async fn set_agent_enabled(
+        &self,
+        params: cookie_agent_protocol::AgentsSetEnabledParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult> {
+        let path = self
+            .engine
+            .set_agent_enabled(&params.id, params.preset.as_deref(), params.enabled)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::AgentDocumentResult { path })
+    }
+
+    async fn reset_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult> {
+        let path = self
+            .engine
+            .reset_agent(&params.id, params.preset.as_deref())
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::AgentDocumentResult { path })
+    }
+
+    async fn replace_agent(
+        &self,
+        params: cookie_agent_protocol::AgentDocumentParams,
+    ) -> Result<cookie_agent_protocol::AgentDocumentResult> {
+        let path = self
+            .engine
+            .replace_agent(&params.id, params.preset.as_deref())
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::AgentDocumentResult { path })
+    }
+
     async fn update_agents(
         &self,
         _params: cookie_agent_protocol::AgentsUpdateParams,

@@ -43,6 +43,7 @@ pub(crate) enum SlashCommand {
     Runtime,
     Background,
     Plugins,
+    Agents,
     Config,
     /// Restart the daemon, when idle or now.
     Restart,
@@ -201,6 +202,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "attach and detach the session's runtimes",
         action: PaletteAction::Run(SlashCommand::Runtime),
         writes_session: true,
+    },
+    CommandSpec {
+        name: "agents",
+        aliases: &[],
+        description: "official, ACP, and your agents: customize, turn off, reset, replace",
+        action: PaletteAction::Run(SlashCommand::Agents),
+        writes_session: false,
     },
     CommandSpec {
         name: "plugins",
@@ -700,7 +708,8 @@ mod tests {
                 "agent",
                 "agent-panel show",
                 "agent-panel hide",
-                "agent-panel auto"
+                "agent-panel auto",
+                "agents"
             ]
         );
         assert_eq!(names("agent-panel h"), ["agent-panel hide"]);

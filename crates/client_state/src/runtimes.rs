@@ -356,8 +356,9 @@ pub fn agent_document_path(agent: &str) -> String {
     format!("agents/{agent}.md")
 }
 
-/// A new document for the ACP agent of declaration `agent`: what the agent
-/// is called, and the agent's own rules until the user adds cookie's.
+/// A new document for the ACP agent of declaration `agent`: it inherits the
+/// official `_acp` template, so it keeps its rules and prompt and changes
+/// only what it writes (`docs/site/specs/acp-onboarding.md` section 6.3).
 #[must_use]
 pub fn acp_agent_document(agent: &str, description: &str) -> String {
     let description = if description.is_empty() {
@@ -366,7 +367,7 @@ pub fn acp_agent_document(agent: &str, description: &str) -> String {
         description.to_owned()
     };
     format!(
-        "---\ndescription: {}\nmode: all\nacp: {{}}\n---\n",
+        "---\ninherit: ../official_agents/_acp.md\ndescription: {}\n---\n",
         serde_json::to_string(&description).unwrap_or_default()
     )
 }
@@ -376,7 +377,7 @@ pub fn acp_agent_document(agent: &str, description: &str) -> String {
 #[must_use]
 pub fn acp_template_document(agent: &str) -> String {
     format!(
-        "---\ndescription: {}\nmode: subagent\nacp:\n  agent: {agent}\n---\n",
+        "---\ninherit: ../official_agents/_acp.md\ndescription: {}\nmode: subagent\nacp:\n  agent: {agent}\n---\n",
         serde_json::to_string(&format!("{agent}, with its own settings")).unwrap_or_default()
     )
 }
@@ -1075,7 +1076,7 @@ mod tests {
         let own = super::acp_agent_document("claude", "");
         assert_eq!(
             own,
-            "---\ndescription: \"ACP agent claude\"\nmode: all\nacp: {}\n---\n"
+            "---\ninherit: ../official_agents/_acp.md\ndescription: \"ACP agent claude\"\n---\n"
         );
         let template = super::acp_template_document("claude");
         assert!(template.contains("acp:\n  agent: claude\n"), "{template}");

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The user's document a panel call wrote or removed, as a tree path.",
+  "properties": {
+    "path": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "title": "AgentDocumentResult",
+  "type": "object"
+}

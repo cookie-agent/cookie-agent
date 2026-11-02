@@ -1177,6 +1177,7 @@ impl App {
             Modal::GoalDetail => self.handle_goal_detail_key(key),
             Modal::Background => self.handle_background_key(key),
             Modal::Plugins => self.handle_plugin_key(key),
+            Modal::AgentDocuments => self.handle_agent_documents_key(key),
             Modal::Config => self.handle_config_key(key),
             Modal::Onboarding => self.handle_onboarding_key(key),
             Modal::Memory => self.handle_memory_key(key),
@@ -1704,6 +1705,7 @@ impl App {
                     | Modal::Background
                     | Modal::Onboarding
                     | Modal::Plugins
+                    | Modal::AgentDocuments
                     | Modal::Config
                     | Modal::Memory
                     | Modal::Cron

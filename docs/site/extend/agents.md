@@ -472,6 +472,12 @@ if that matters to you.
   `index.json`), kept in `official_agents/.presets.json`. Onboarding writes
   a preset's values into `config.toml`; a later change to the preset does
   not rewrite them.
+- **The agents panel** (`/agents` in the TUI, the Agents view on the web,
+  `cookie agents customize|disable|enable|reset|replace`) does this for
+  you: Customize writes a document that inherits the official one, with
+  the inherited keys as comments, and opens it; Turn off writes `enabled:
+  false`; Reset deletes your document; Replace copies the official one
+  whole. See [the agents panel](../clients/tui.md#the-agents-panel).
 - **`cookie agents list`** shows each agent with where it comes from
   (`user`, `official <version>`), `cookie agents update` refreshes now, and
   `cookie agents check <dir>` checks documents before they are published.

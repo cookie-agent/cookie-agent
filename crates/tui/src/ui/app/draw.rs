@@ -252,6 +252,7 @@ impl App {
             Modal::GoalDetail => self.render_goal_detail(frame),
             Modal::Background => self.render_background_panel(frame),
             Modal::Plugins => self.render_plugin_panel(frame),
+            Modal::AgentDocuments => self.render_agent_documents_panel(frame),
             Modal::Config => self.render_config_panel(frame),
             Modal::Onboarding => self.render_onboarding_panel(frame),
             Modal::Memory => self.render_memory_panel(frame),

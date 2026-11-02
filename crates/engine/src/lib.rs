@@ -63,6 +63,7 @@ pub use machines_tool::machines_tool_specs;
 pub use memory_tools::memory_tool_specs;
 pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
 pub use projects::ProjectError;
+pub use runtime::agent_documents::{AgentDocumentEntry, AgentDocumentKind, AgentDocumentOrigin};
 pub use runtime::artifacts::uploads::{MAX_UPLOADS_PER_CONNECTION, MediaError};
 pub use runtime::attachments::{DialInClaim, SessionRuntimeRequest, SessionRuntimes};
 pub use runtime::chatgpt::CHATGPT_MAINTENANCE_INTERVAL;
