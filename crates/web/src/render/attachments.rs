@@ -1,10 +1,12 @@
 //! A reply's attachments as HTML (`docs/site/specs/message-attachments.md`
 //! section 6): each `<attach …/>` tag of its text, which the Markdown
 //! renderer left as a [`super::markdown::ATTACH_MARKER`], becomes a card
-//! where it is, and tags next to each other one row of cards whose widths
-//! let them share rows. Pictures and video of a row are one deck, a page
-//! and a document cards that open in the side panel, audio a player, any
-//! other file a chip with a download. Each card is a placeholder
+//! where it is, and tags next to each other one row. A row's pictures,
+//! videos, pages, and documents are a gallery of cards, laid out by how
+//! many there are; a picture or video opens in the media viewer, which
+//! steps through the gallery's others, and a page or document beside the
+//! chat. Audio is a player and any other file a chip with a download,
+//! after the gallery. Each card is a placeholder
 //! (`data-asset`) the page fills in after drawing it (`crate::assets`), in
 //! the way its `data-asset-view` names: an asset's live, an attached file's
 //! from the session's artifacts. Handles of shown assets the text names
@@ -35,8 +37,8 @@ const BUTTON: &str = "inline-flex min-h-9 items-center gap-1 rounded-lg px-2.5 t
 /// How a card shows its file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Card {
-    /// In the deck: an image, an SVG, or a video.
-    Deck,
+    /// An image, an SVG, or a video: the media viewer shows it.
+    Media,
     Page,
     Document,
     Audio,
@@ -47,7 +49,7 @@ impl Card {
     #[must_use]
     pub fn of(media_type: &str) -> Self {
         if media_type.starts_with("image/") || media_type.starts_with("video/") {
-            Self::Deck
+            Self::Media
         } else if media_type.starts_with("audio/") {
             Self::Audio
         } else {
@@ -302,59 +304,155 @@ fn state(part: &PartAttachments<'_>, next: &mut u32) -> CardState {
     )
 }
 
-/// A row of cards: one deck where its first picture is, holding every
-/// picture, then each other card where it is.
+/// A row of cards: the gallery of its pictures, videos, pages, and
+/// documents, then each other card in a row of its own.
 fn row_html(states: &[CardState]) -> String {
-    let mut groups: Vec<(Card, Vec<&CardState>)> = Vec::new();
-    let mut deck: Option<usize> = None;
+    let mut gallery = Vec::new();
+    let mut others = Vec::new();
     for state in states {
-        let card = match state {
-            CardState::Ready(file) => Card::of(&file.media_type),
-            _ => Card::File,
-        };
-        match (card, deck) {
-            (Card::Deck, Some(at)) => groups[at].1.push(state),
-            (Card::Deck, None) => {
-                deck = Some(groups.len());
-                groups.push((card, vec![state]));
-            }
-            _ => groups.push((card, vec![state])),
+        match state {
+            CardState::Ready(file) => match Card::of(&file.media_type) {
+                card @ (Card::Media | Card::Page | Card::Document) => gallery.push((card, file)),
+                card => others.push((card, state)),
+            },
+            _ => others.push((Card::File, state)),
         }
     }
-    let mut html = String::from(
-        "<span class=\"attach-row my-1 flex flex-wrap items-start gap-3.5\" data-attach-row>",
-    );
-    for (card, states) in groups {
-        let files = states
-            .iter()
-            .filter_map(|state| match state {
-                CardState::Ready(file) => Some(file),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let (width, body, kind) = match (card, states.first()) {
-            (Card::Deck, _) => (
-                if files.len() == 1 {
-                    "w-[300px]"
-                } else {
-                    "w-[220px]"
-                },
-                deck_html(&files),
-                "deck",
-            ),
-            (Card::Page, _) => ("w-[240px]", page_html(files[0]), "page"),
-            (Card::Document, _) => ("w-[240px]", document_html(files[0]), "document"),
-            (Card::Audio, _) => ("w-[240px]", audio_html(files[0]), "audio"),
-            (Card::File, Some(CardState::Ready(file))) => ("w-[240px]", file_html(file), "file"),
-            (Card::File, Some(state)) => ("w-[240px]", waiting_html(state), "waiting"),
-            (Card::File, None) => continue,
-        };
-        html.push_str(&format!(
-            "<span class=\"flex max-w-full {width} flex-col gap-1.5\" data-attach-item=\"{kind}\">{body}</span>"
-        ));
+    let mut html =
+        String::from("<span class=\"attach-row my-1 flex flex-col gap-3\" data-attach-row>");
+    if !gallery.is_empty() {
+        html.push_str(&gallery_html(&gallery));
+    }
+    if !others.is_empty() {
+        html.push_str("<span class=\"flex flex-wrap items-start gap-3.5\">");
+        for (card, state) in others {
+            let (body, kind) = match (card, state) {
+                (Card::Audio, CardState::Ready(file)) => (audio_html(file), "audio"),
+                (_, CardState::Ready(file)) => (file_html(file), "file"),
+                (_, state) => (waiting_html(state), "waiting"),
+            };
+            html.push_str(&format!(
+                "<span class=\"flex w-[240px] max-w-full flex-col gap-1.5\" data-attach-item=\"{kind}\">{body}</span>"
+            ));
+        }
+        html.push_str("</span>");
     }
     html.push_str("</span>");
     html
+}
+
+/// The gallery: each card its own, laid out by how many there are
+/// (`data-gallery`, style/main.css): a picture or video alone shows large
+/// and whole, a page or document alone as a card of its own size, two
+/// share a row,
+/// three or more make a grid with the first of four across it. Its
+/// pictures and videos are numbered (`data-index`) for the media viewer to
+/// step through from the one clicked.
+fn gallery_html(cards: &[(Card, &CardFile)]) -> String {
+    let layout = match cards {
+        [(Card::Media, _)] => "1".to_owned(),
+        [_] => "single".to_owned(),
+        _ => cards.len().min(5).to_string(),
+    };
+    let mut html = format!(
+        "<span class=\"attach-gallery\" data-gallery=\"{layout}\" data-deck=\"{}\">",
+        cards
+            .iter()
+            .filter(|(card, _)| matches!(card, Card::Media))
+            .count()
+    );
+    let mut index = 0;
+    for (card, file) in cards {
+        html.push_str(&match card {
+            Card::Media => {
+                index += 1;
+                media_html(file, index - 1)
+            }
+            Card::Page => page_html(file),
+            _ => document_html(file),
+        });
+    }
+    html.push_str("</span>");
+    html
+}
+
+/// A gallery card: a frame for what it shows, its footer, a button over
+/// the whole card that opens it, and the corner's.
+fn tile_html(
+    file: &CardFile,
+    view: &str,
+    frame: &str,
+    end: &str,
+    open: &str,
+    extra: &str,
+) -> String {
+    format!(
+        "<span class=\"{SURFACE} asset-tile flex-col transition-[translate,box-shadow] hover:-translate-y-0.5 hover:shadow-md\" data-attach-item=\"{view}\" {}{extra}><span class=\"relative block overflow-hidden bg-sunken\" data-tile-frame>{frame}</span><span class=\"flex h-9 min-w-0 shrink-0 items-center gap-2 border-t border-line px-2.5\">{}<span class=\"min-w-0 flex-1 truncate text-sm font-medium\" data-asset-title>{}</span>{end}</span>{open}{}</span>",
+        file.placeholder(view),
+        svg(
+            crate::icons::asset_icon(AssetKind::of(&file.media_type)),
+            "shrink-0 text-accent"
+        ),
+        escape(&file.title),
+        file.corner(),
+    )
+}
+
+/// A picture's or video's card: its picture, or the video's first frame,
+/// which opens the media viewer at it.
+fn media_html(file: &CardFile, index: usize) -> String {
+    tile_html(
+        file,
+        "thumb",
+        &format!(
+            "<span class=\"absolute inset-0 flex items-center justify-center\" data-asset-body><span class=\"px-3 text-center {NOTE}\">{}</span></span>",
+            escape(&file.title)
+        ),
+        &format!(
+            "<span class=\"{PILL}\">{}</span>",
+            escape(&file.type_label())
+        ),
+        &format!(
+            "<button type=\"button\" data-action=\"asset-deck\" class=\"absolute inset-0 z-10 cursor-zoom-in rounded-xl\" aria-label=\"Open {}\" title=\"{}\"></button>",
+            escape(&file.title),
+            escape(&file.title)
+        ),
+        &format!(" data-index=\"{index}\""),
+    )
+}
+
+/// What a page's or document's card says it does.
+const OPEN_NOTE: &str =
+    "<span class=\"shrink-0 text-xs text-accent\" data-asset-note>Open →</span>";
+
+/// A page's card: a live thumbnail, which opens it beside the chat.
+fn page_html(file: &CardFile) -> String {
+    tile_html(
+        file,
+        "page",
+        "<span class=\"absolute inset-0 overflow-hidden bg-white\" data-asset-body></span>",
+        OPEN_NOTE,
+        &format!(
+            "<button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Open {} beside the chat\"></button>",
+            escape(&file.title)
+        ),
+        "",
+    )
+}
+
+/// A document's card: its first lines, which open it beside the chat.
+fn document_html(file: &CardFile) -> String {
+    tile_html(
+        file,
+        "doc",
+        "<span class=\"asset-excerpt absolute inset-0 block overflow-hidden bg-surface px-3 pt-2.5 text-xs text-muted\" data-asset-body></span>",
+        OPEN_NOTE,
+        &format!(
+            "<button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Read {} beside the chat\"></button>",
+            escape(&file.title)
+        ),
+        "",
+    )
 }
 
 /// A card not ready: attaching, asking the user, or failed.
@@ -391,74 +489,6 @@ fn waiting_html(state: &CardState) -> String {
         svg(icon, "shrink-0 text-accent"),
         escape(label),
         escape(&line),
-    )
-}
-
-/// The deck: its first three as stacked cards, the first on top, and every
-/// one of them filled in, for the media viewer to step through.
-fn deck_html(files: &[&CardFile]) -> String {
-    let count = files.len();
-    let mut cards = String::new();
-    // Drawn back to front: the first shown is the last drawn, on top.
-    for (index, file) in files.iter().enumerate().rev() {
-        let layer = if index < 3 {
-            format!(" data-layer=\"{index}\"")
-        } else {
-            " hidden".to_owned()
-        };
-        cards.push_str(&format!(
-            "<span class=\"asset-deck-card absolute inset-0 flex items-center justify-center overflow-hidden rounded-xl border border-line bg-surface shadow-md\" {} data-index=\"{index}\"{layer}><span class=\"px-3 text-center {NOTE}\" data-asset-body>{}</span></span>",
-            file.placeholder("thumb"),
-            escape(&file.title),
-        ));
-    }
-    let what = if files
-        .iter()
-        .all(|file| file.media_type.starts_with("video/"))
-    {
-        "videos"
-    } else {
-        "images"
-    };
-    let count_badge = if count > 1 {
-        format!(
-            "<span class=\"pointer-events-none absolute right-2 bottom-2 z-10 rounded-full bg-black/60 px-2 text-[0.6875rem] text-white\" data-deck-count>{count} {what}</span>"
-        )
-    } else {
-        String::new()
-    };
-    let label = match files {
-        [file] => format!("Open {}", file.title),
-        _ => format!("Open the {count} {what}"),
-    };
-    let height = if count == 1 { "h-[200px]" } else { "h-[162px]" };
-    format!(
-        "<span role=\"button\" tabindex=\"0\" data-action=\"asset-deck\" aria-label=\"{}\" title=\"{}\" class=\"asset-deck relative block {height} w-full cursor-zoom-in rounded-xl\" data-deck=\"{count}\">{cards}{count_badge}</span>",
-        escape(&label),
-        escape(&label),
-    )
-}
-
-/// A page's card: a live thumbnail over its title, the whole card a button
-/// that opens it beside the chat.
-fn page_html(file: &CardFile) -> String {
-    format!(
-        "<span class=\"{SURFACE} flex-col transition-[translate,box-shadow] hover:-translate-y-0.5 hover:shadow-md\" {}><span class=\"relative block h-[132px] overflow-hidden border-b border-line bg-white\" data-asset-body></span>{}<span class=\"px-2.5 pb-2 text-xs text-accent\" data-asset-note>Open beside the chat →</span><button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Open {} beside the chat\"></button>{}</span>",
-        file.placeholder("page"),
-        title_row(file),
-        escape(&file.title),
-        file.corner(),
-    )
-}
-
-/// A document's card: its title and first lines.
-fn document_html(file: &CardFile) -> String {
-    format!(
-        "<span class=\"{SURFACE} flex-col transition-[translate,box-shadow] hover:-translate-y-0.5 hover:shadow-md\" {}>{}<span class=\"asset-excerpt relative mx-2.5 mb-2 block h-[84px] overflow-hidden text-xs text-muted\" data-asset-body></span><span class=\"px-2.5 pb-2 text-xs text-accent\" data-asset-note>Read beside the chat →</span><button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Read {} beside the chat\"></button>{}</span>",
-        file.placeholder("doc"),
-        title_row(file),
-        escape(&file.title),
-        file.corner(),
     )
 }
 
@@ -677,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn markers_next_to_each_other_are_one_row_and_pictures_one_deck() {
+    fn markers_next_to_each_other_are_one_row_and_pictures_one_gallery() {
         let mut attachments = BTreeMap::new();
         attachments.insert(0, attached("a.png", "image/png"));
         attachments.insert(
@@ -701,12 +731,18 @@ mod tests {
         let (out, next) = cards(&html, &attachments);
         assert_eq!(next, 4);
         assert_eq!(out.matches("data-attach-row").count(), 2, "{out}");
-        assert_eq!(out.matches("data-deck=\"2\"").count(), 1, "{out}");
+        // Both pictures are cards of one gallery, numbered for the viewer.
+        assert_eq!(
+            out.matches("data-gallery=\"2\" data-deck=\"2\"").count(),
+            1,
+            "{out}"
+        );
+        assert_eq!(out.matches("data-index=").count(), 2, "{out}");
         assert_eq!(out.matches("data-asset-view=\"file\"").count(), 1, "{out}");
         // The fourth tag resolved to nothing yet: it attaches.
         assert!(out.contains("data-attach-state=\"attaching\""), "{out}");
-        // A stored file offers saving; the deck's asset keeps its handle,
-        // which the viewer copies.
+        // A stored file offers saving; the gallery's asset keeps its
+        // handle, which the viewer copies.
         assert!(
             out.contains("data-action=\"attachment-save\" data-attach-key=\"7:1:2\""),
             "{out}"

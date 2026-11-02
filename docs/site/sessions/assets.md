@@ -11,9 +11,9 @@ report, or anything else.
   can find in the Assets view; it shows one with
   `<attach asset="asset_3f9a1c2e"/>`, always as the asset is now.
 
-The web client shows images and video as a deck, HTML pages and Markdown
-documents as cards that open beside the chat, and other files as
-downloads; the TUI lists them with links that open them in the web
+The web client shows images, video, HTML pages, and Markdown documents
+as a gallery of cards (pages and documents open beside the chat), and
+other files as downloads; the TUI lists them with links that open them in the web
 client. The specs have the details: [assets](../specs/assets.md) and
 [attachments](../specs/message-attachments.md).
 
@@ -101,10 +101,11 @@ from, so your `read` rules decide which files can become assets. See
 ## In the web client
 
 - **Cards.** Each tag of a reply is a card where it is, tags next to each
-  other one row whose cards share lines: images and video as a deck the
-  media viewer steps through, an HTML page as a live thumbnail, a Markdown
-  document as its first lines, audio as a player, any other file as a
-  download chip.
+  other one row: its images, video, pages, and documents a gallery of
+  cards laid out by how many there are (an image alone large and whole),
+  the media viewer stepping through its images and video; an HTML page as
+  a live thumbnail, a Markdown document as its first lines; then audio as
+  a player and any other file as a download chip.
 - **The side panel.** A page or document card opens beside the chat, with
   *Preview* and *Source*, *Full screen*, and *Download*. An HTML page runs
   there in a sandboxed frame with its scripts and network access, with no

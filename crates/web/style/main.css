@@ -422,32 +422,54 @@ body {
 
 /* Terminal output: stderr, and the 16 standard SGR colours, readable on
    both palettes. Other colours arrive inline. */
-/* A shelf's deck (render/shelf.rs): its first three cards stacked, the
-   first on top, fanned out while the pointer is over it or it has the
-   focus. */
-.asset-deck-card {
-  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+/* A reply's gallery (render/attachments.rs): its pictures, videos, pages,
+   and documents, each a card of its own, laid out by how many there are.
+   A picture or video alone shows whole at its own shape, a page or a
+   document alone as a card of its own size; two share a row; three or
+   more are a grid, three across from a tablet's width with the first of
+   four across the row, two across on a phone with the first of an odd
+   number across it. */
+.attach-gallery {
+  display: grid;
+  gap: 0.625rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.asset-deck[data-deck="2"] .asset-deck-card[data-layer="1"],
-.asset-deck .asset-deck-card[data-layer="2"] {
-  transform: rotate(-6deg) translate(-6px, 4px);
+.attach-gallery[data-gallery="1"] {
+  grid-template-columns: minmax(0, 1fr);
 }
-.asset-deck .asset-deck-card[data-layer="1"] {
-  transform: rotate(4deg) translate(6px, 2px);
+.attach-gallery [data-tile-frame] {
+  aspect-ratio: 4 / 3;
 }
-.asset-deck:is(:hover, :focus-visible) .asset-deck-card[data-layer="0"] {
-  transform: translateY(-8px);
+.attach-gallery[data-gallery="1"] [data-tile-frame] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: auto;
+  min-height: 12rem;
 }
-.asset-deck:is(:hover, :focus-visible) .asset-deck-card[data-layer="1"] {
-  transform: rotate(10deg) translate(48px, 6px);
+.attach-gallery[data-gallery="single"] {
+  grid-template-columns: minmax(0, 20rem);
 }
-.asset-deck:is(:hover, :focus-visible) .asset-deck-card[data-layer="2"],
-.asset-deck[data-deck="2"]:is(:hover, :focus-visible) .asset-deck-card[data-layer="1"] {
-  transform: rotate(-10deg) translate(-48px, 8px);
+.attach-gallery[data-gallery="single"] [data-tile-frame] {
+  aspect-ratio: 16 / 10;
 }
-@media (prefers-reduced-motion: reduce) {
-  .asset-deck-card {
-    transition: none;
+@media (min-width: 40rem) {
+  .attach-gallery:is([data-gallery="3"], [data-gallery="4"], [data-gallery="5"]) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .attach-gallery[data-gallery="4"] > :first-child {
+    grid-column: 1 / -1;
+  }
+  .attach-gallery[data-gallery="4"] > :first-child [data-tile-frame] {
+    aspect-ratio: 16 / 7;
+  }
+}
+@media (max-width: 39.99rem) {
+  .attach-gallery:is([data-gallery="3"], [data-gallery="5"]) > :first-child {
+    grid-column: 1 / -1;
+  }
+  .attach-gallery:is([data-gallery="3"], [data-gallery="5"]) > :first-child [data-tile-frame] {
+    aspect-ratio: 16 / 9;
   }
 }
 /* A card whose asset was deleted. */

@@ -743,12 +743,16 @@ refreshes no longer change). Reset and Replace ask once more.
 
 When an agent shows you files with `<attach …/>` tags
 ([Assets and attachments](../sessions/assets.md)), each tag is a card
-where it is in the reply, and tags next to each other one row whose cards
-share lines:
+where it is in the reply, and tags next to each other one row. Its images,
+video, pages, and documents are a gallery: each its own card, with a
+footer of its title and type, laid out by how many there are. An image or
+video alone shows large at its own shape and a page or document alone at
+a card's size; two share a line; three or more make a grid, three across
+(two on a phone).
 
-- **Images, SVG, and video** are a deck: stacked cards that fan out under
-  the pointer. A click opens the media viewer at the card clicked; its
-  arrows, ← and → on an image, and its filmstrip step through the deck.
+- **Images, SVG, and video** open the media viewer at the card clicked;
+  its arrows, ← and → on an image, and its filmstrip step through the
+  gallery's images and video.
 - **An HTML page** is a card with a live thumbnail of the page. A click
   opens it in the side panel.
 - **A Markdown document** is a card with its first lines. A click opens it

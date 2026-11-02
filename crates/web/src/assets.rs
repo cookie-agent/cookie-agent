@@ -9,9 +9,10 @@
 //!   page in a sandboxed frame of `viewer.html` (section 8.2), which gets
 //!   the page by `postMessage` with a token and reports its height back
 //!   with it, anything else as a download card;
-//! - the shelf's cards (`crate::render::shelf`): `thumb` in a deck, `page`
-//!   a live thumbnail, `doc` the first lines, `audio` a player, and `file`
-//!   only the asset's state;
+//! - a reply's cards (`crate::render::attachments`): `thumb` a picture or
+//!   a video's first frame, whole when it is alone, `page` a live
+//!   thumbnail, `doc` the first lines, `audio` a player, and `file` only
+//!   the asset's state;
 //! - the side panel's `panel` (the asset whole, the page filling it) and
 //!   `source` (its text).
 //!
@@ -277,7 +278,8 @@ fn card_of(handle: &str) -> Option<web_sys::Element> {
 ///   `asset-reload` runs its page again, `asset-show-all` uncuts its
 ///   document;
 /// - a card's: `asset-panel` opens it in the side panel, `asset-deck` opens
-///   the deck in the media viewer at the card clicked, `asset-download`
+///   the media viewer at the card, to step through its gallery's pictures
+///   and videos, `asset-download`
 ///   saves it, `asset-copy` copies its handle;
 /// - `asset-chip`, a handle in a reply, opens the newest card of its asset.
 pub fn act(
@@ -316,11 +318,16 @@ pub fn act(
         }
         "asset-deck" => {
             let index = clicked
-                .and_then(|clicked| clicked.closest("[data-index]").ok().flatten())
+                .unwrap_or(target)
+                .closest("[data-index]")
+                .ok()
+                .flatten()
                 .and_then(|card| card.get_attribute("data-index"))
                 .and_then(|index| index.parse().ok())
                 .unwrap_or(0);
-            open_deck(target, index, workspace);
+            if let Ok(Some(gallery)) = target.closest("[data-deck]") {
+                open_deck(&gallery, index, workspace);
+            }
         }
         "asset-download" => {
             if let Some(card) = card()
@@ -679,29 +686,49 @@ fn panel(target: &web_sys::Element, content: &Content, asset: &Asset) {
     }
 }
 
-/// A deck card's picture: the image, or a video's first frame.
+/// A gallery card's picture: the image, or a video's first frame, filling
+/// its frame; alone in its gallery, whole at its own shape.
 fn thumb(target: &web_sys::Element, content: &Content, asset: &Asset) {
     let video = content.media_type.starts_with("video/");
-    let fit = if content.media_type == "image/svg+xml" {
-        "object-contain bg-white"
+    let alone = target
+        .closest("[data-gallery='1']")
+        .ok()
+        .flatten()
+        .is_some();
+    let size = if alone {
+        "block max-h-96 w-auto max-w-full object-contain"
+    } else if content.media_type == "image/svg+xml" {
+        "h-full w-full object-contain"
     } else {
-        "object-cover"
+        "h-full w-full object-cover"
+    };
+    let svg_ground = if content.media_type == "image/svg+xml" {
+        " bg-white"
+    } else {
+        ""
     };
     let picture = if video {
         format!(
-            "<video preload=\"metadata\" muted playsinline src=\"{}\" class=\"pointer-events-none h-full w-full object-cover\"></video><span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\">{}</span>",
+            "<video preload=\"metadata\" muted playsinline src=\"{}\" class=\"pointer-events-none {size}\"></video><span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\">{}</span>",
             escape(&content.url),
             crate::icons::svg(icondata::LuCirclePlay, "text-4xl text-white/90 drop-shadow")
         )
     } else {
         format!(
-            "<img src=\"{}\" alt=\"{}\" draggable=\"false\" class=\"pointer-events-none h-full w-full {fit}\">",
+            "<img src=\"{}\" alt=\"{}\" draggable=\"false\" class=\"pointer-events-none {size}{svg_ground}\">",
             escape(&content.url),
             escape(&asset.title)
         )
     };
     target.set_inner_html(&picture);
-    let _ = target.set_attribute("class", "absolute inset-0");
+    let _ = target.set_attribute(
+        "class",
+        if alone {
+            "relative flex justify-center"
+        } else {
+            "absolute inset-0"
+        },
+    );
 }
 
 /// A document card's first lines.
@@ -888,8 +915,8 @@ fn uncut(document: &web_sys::Element) {
 /// A frame whose size its page does not set.
 #[derive(Clone, Copy)]
 enum Fixed {
-    /// A card's thumbnail: the page laid out at 960 px wide, shown at a
-    /// quarter of its size, taking no input.
+    /// A card's thumbnail: the page laid out at 960 px wide, scaled to
+    /// the card's width, taking no input.
     Thumbnail,
     /// Filling the side panel.
     Filling,
@@ -906,6 +933,7 @@ fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>, fixed: Option<Fixed
     };
     let token = uuid::Uuid::now_v7().simple().to_string();
     let start = format!("height: {FRAME_START}px");
+    let thumbnail = thumbnail_style(target);
     let (class, style) = match fixed {
         None => (
             "block w-full rounded border border-line bg-white",
@@ -913,7 +941,7 @@ fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>, fixed: Option<Fixed
         ),
         Some(Fixed::Thumbnail) => (
             "pointer-events-none block border-0 bg-white",
-            "width: 960px; height: 528px; transform: scale(0.25); transform-origin: 0 0",
+            thumbnail.as_str(),
         ),
         Some(Fixed::Filling) => (
             "block min-h-0 w-full flex-1 border-0 bg-white",
@@ -949,6 +977,25 @@ fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>, fixed: Option<Fixed
     on_load.forget();
     FRAMES.with(|frames| frames.borrow_mut().insert(token, iframe.clone()));
     let _ = target.append_child(&iframe);
+}
+
+/// A thumbnail frame's size: the page laid out 960 px wide, scaled to fill
+/// `target`, its card's frame (a quarter before the card is laid out).
+fn thumbnail_style(target: &web_sys::Element) -> String {
+    const LAYOUT_WIDTH: f64 = 960.0;
+    let (width, height) = (
+        f64::from(target.client_width()),
+        f64::from(target.client_height()),
+    );
+    let scale = if width > 0.0 {
+        width / LAYOUT_WIDTH
+    } else {
+        0.25
+    };
+    let height = if height > 0.0 { height / scale } else { 528.0 };
+    format!(
+        "width: {LAYOUT_WIDTH}px; height: {height:.0}px; transform: scale({scale:.4}); transform-origin: 0 0"
+    )
 }
 
 fn send_page(frame: &web_sys::Element, html: &str, token: &str) {

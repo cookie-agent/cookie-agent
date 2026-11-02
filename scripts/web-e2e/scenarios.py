@@ -71,6 +71,7 @@ MADE = {}
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 ENTER, ALT, ESCAPE, NULL = "", "", "", ""
 ARROW_RIGHT = ""
+ARROW_LEFT = "\ue012"
 
 
 def call(method, path, body=None):
@@ -1308,8 +1309,8 @@ def asset_figures(browser):
     other one row. An HTML page's card is a live thumbnail that opens in the
     side panel, where the page runs sandboxed, its scripts running but
     reaching neither the page's storage nor the page itself; a Markdown
-    document's card shows its first lines; images are a deck the media
-    viewer steps through. The reply's handles are chips that open their
+    document's card shows its first lines; images are cards of one gallery
+    the media viewer steps through from the one clicked. The reply's handles are chips that open their
     asset; a replaced asset's card says so, and a link opens the asset. A
     file attached from a machine shows the same, saves as an asset, and one
     that fails says why and is told to the model."""
@@ -1392,30 +1393,32 @@ def asset_figures(browser):
     browser.click("#asset-panel-close")
     print("a Markdown asset's card shows its first lines and opens as a document")
 
-    # Two images are one deck, which the viewer steps through.
+    # Two images are two cards of one gallery: the viewer opens at the one
+    # clicked and steps to the other.
     send(browser, "show two images")
     idle(browser, "the images' calls")
-    deck = "#transcript [data-attach-row] [data-deck='2']"
+    deck = "#transcript [data-attach-row] [data-gallery='2']"
     browser.wait(
-        "the deck",
+        "the gallery",
         lambda: count(browser, deck + " [data-asset][data-shown='yes']") == 2,
         timeout=60,
     )
+    browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", deck)
     browser.shot("asset-deck")
     if SCREENSHOTS:
         browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "dark"}]})
         browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", deck)
         browser.shot("asset-shelf-dark")
         browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "light"}]})
-    browser.click(deck)
-    browser.wait("the viewer at the first", lambda: browser.text("#media-viewer-position") == "1 / 2")
-    assert browser.text("#media-viewer-title") == "First image"
-    browser.type("#media-viewer", ARROW_RIGHT)
-    browser.wait("the second image", lambda: browser.text("#media-viewer-position") == "2 / 2")
+    browser.click(deck + " [data-index='1'] [data-action='asset-deck']")
+    browser.wait("the viewer at the second", lambda: browser.text("#media-viewer-position") == "2 / 2")
     assert browser.text("#media-viewer-title") == "Second image"
+    browser.type("#media-viewer", ARROW_LEFT)
+    browser.wait("the first image", lambda: browser.text("#media-viewer-position") == "1 / 2")
+    assert browser.text("#media-viewer-title") == "First image"
     browser.click("#media-viewer-close")
     browser.wait("the closed viewer", lambda: count(browser, "#media-viewer") == 0)
-    print("images are a deck the viewer steps through")
+    print("images are cards of one gallery the viewer steps through from the one clicked")
 
     # Written over, the page's card shows the new content and says it was
     # updated.
