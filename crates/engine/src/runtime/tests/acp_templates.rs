@@ -182,7 +182,13 @@ async fn a_document_over_another_or_no_declaration_is_a_diagnostic() {
     let elsewhere = "---\ndescription: Elsewhere\nmode: all\nacp:\n  agent: ghost\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", elsewhere)]).await;
     let engine = acp.engine();
-    assert!(descriptor(engine, "fixture").is_none());
+    // Listed, so clients can say why, but no agent.
+    assert_eq!(
+        descriptor(engine, "fixture")
+            .and_then(|descriptor| descriptor.unavailable)
+            .map(|unavailable| unavailable.reason),
+        Some(cookie_agent_protocol::AgentUnavailableReason::AcpNotOffered)
+    );
     assert_eq!(
         engine.configuration_status().diagnostics,
         [

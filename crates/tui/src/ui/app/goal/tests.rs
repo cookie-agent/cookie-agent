@@ -104,6 +104,7 @@ fn install_draft_catalog(app: &mut App) {
         .map(|preset| AgentDescriptor {
             official: false,
             official_version: None,
+            unavailable: None,
             id: selection.agent.clone(),
             preset,
             description: "Primary test agent".into(),

@@ -167,6 +167,9 @@ fn harness_on(
         .collect();
     let config = LoadedConfiguration {
         official_agent_diagnostics: Vec::new(),
+        templates: Default::default(),
+        preset_templates: Default::default(),
+        pending_agents: Vec::new(),
         runtime: EngineConfig {
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
@@ -439,6 +442,9 @@ fn harness_with_catalog_and_mcp(
         Arc::new(ModelManager::new(BTreeMap::new(), catalog, store).expect("model manager"));
     let config = LoadedConfiguration {
         official_agent_diagnostics: Vec::new(),
+        templates: Default::default(),
+        preset_templates: Default::default(),
+        pending_agents: Vec::new(),
         runtime: EngineConfig {
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),

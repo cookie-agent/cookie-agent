@@ -216,9 +216,19 @@ permissions:
 You review changes for this project before they are committed.
 ```
 
-- **Optional.** Without it, the agent has mode `all`, the first offering
-  runtime's description, the rules every agent gets for actions it names no
-  key for, and the default `hide_tools`.
+- **Optional.** Without it, the agent follows the `_acp`
+  [template](agents.md#templates): yours in `agents/_acp.md` when you wrote
+  one, else the official one. It gets the template's mode, rules, and
+  prompt, and the first offering runtime's description. The official
+  template allows reads, edits inside the session's workspace, and
+  read-only commands such as `git status`, and asks for everything else;
+  its prompt is the reference document below, without the harness's name.
+  With official agents off (`[agents] official = false`) and no
+  `agents/_acp.md`, the agent has mode `all`, the rules every agent gets
+  for actions it names no key for, the default `hide_tools`, and no prompt.
+- **Change only some keys** with `inherit: ../official_agents/_acp.md`
+  (or `inherit: _acp.md` for your own template): the rest follows the
+  template as it is refreshed.
 - **`acp`** marks the document as the agent's; `acp: {}` is enough. `mode`
   picks the mode its sessions start in (else the agent's `auto` mode, else
   its default), and `config` sets its other config options by ID, such as
@@ -296,9 +306,10 @@ You review the change you are given and report findings; you do not edit.
 ### A reference document for Claude Code
 
 The agent learns from the document's body that it runs inside cookie and
-which of cookie's tools to prefer over its harness's own. Adapt this one to
-your setup; it names Claude Code as the harness, so change that line for
-another agent:
+which of cookie's tools to prefer over its harness's own. The official
+`_acp` template carries this body already, so most setups need no document
+at all; write your own only to replace it. This one names Claude Code as the
+harness:
 
 ```markdown
 ---

@@ -580,6 +580,176 @@ pub struct AgentDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 64))]
     pub official_version: Option<String>,
+    /// Why the agent cannot run now, absent when it can (client protocol
+    /// 1.72.0, `docs/site/specs/acp-onboarding.md` section 8). Clients list
+    /// an unavailable root agent with the reason, and never select it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<AgentUnavailable>,
+}
+
+/// Why an agent cannot run (client protocol 1.72.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentUnavailable {
+    pub reason: AgentUnavailableReason,
+    /// For `inherit_missing`: the tree path the document inherits, such as
+    /// `official_agents/primary.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 512))]
+    pub target: Option<String>,
+    /// For `no_model`: each entry of the agent's `models`, a field's
+    /// expanded models included, and why it gave no model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 32))]
+    pub entries: Vec<AgentModelEntryStatus>,
+}
+
+impl AgentUnavailable {
+    /// One line saying why, such as "no model: `default_model` is not set",
+    /// the same in every client, the CLI, and what the agents see.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self.reason {
+            AgentUnavailableReason::Disabled => "it is turned off".to_owned(),
+            AgentUnavailableReason::NoModel => {
+                let mut parts = Vec::new();
+                for entry in &self.entries {
+                    let part = entry.summary();
+                    if !parts.contains(&part) {
+                        parts.push(part);
+                    }
+                }
+                match parts.len() {
+                    0 => "no model: its `models` name none".to_owned(),
+                    1..=3 => format!("no model: {}", parts.join("; ")),
+                    count => format!(
+                        "no model: {}; and {} more",
+                        parts[..3].join("; "),
+                        count - 3
+                    ),
+                }
+            }
+            AgentUnavailableReason::InheritMissing => format!(
+                "it inherits `{}`, which does not exist yet",
+                self.target.as_deref().unwrap_or("another document")
+            ),
+            AgentUnavailableReason::AcpNotOffered => {
+                "no runtime declares the ACP agent it runs".to_owned()
+            }
+            AgentUnavailableReason::AcpDeclarationDisabled => {
+                "its ACP agent is turned off on every runtime".to_owned()
+            }
+            AgentUnavailableReason::AcpRuntimesUnavailable => {
+                "no connected machine offers it".to_owned()
+            }
+            AgentUnavailableReason::Unknown => "it cannot run now".to_owned(),
+        }
+    }
+}
+
+impl AgentModelEntryStatus {
+    /// Why this entry gave no model, as a phrase.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let model = self
+            .model
+            .as_ref()
+            .map_or_else(|| self.entry.clone(), ToString::to_string);
+        match self.problem {
+            AgentModelProblem::FieldUnset => {
+                // `${small_model} → ${default_model}`: the field at the end.
+                let field = self
+                    .entry
+                    .rsplit("${")
+                    .next()
+                    .and_then(|rest| rest.split('}').next())
+                    .unwrap_or(&self.entry);
+                format!("`{field}` is not set")
+            }
+            AgentModelProblem::ProviderNotConnected => format!(
+                "provider `{}` is not connected ({model})",
+                self.model
+                    .as_ref()
+                    .map_or_else(String::new, |key| key.provider_id().to_string())
+            ),
+            AgentModelProblem::ProviderNeedsSetup => format!(
+                "provider `{}` needs setup ({model})",
+                self.model
+                    .as_ref()
+                    .map_or_else(String::new, |key| key.provider_id().to_string())
+            ),
+            AgentModelProblem::ModelNotOffered => {
+                format!("no connected provider offers `{model}`")
+            }
+            AgentModelProblem::VariantNotOffered => format!(
+                "`{model}` has no variant `{}`",
+                self.variant.as_deref().unwrap_or("?")
+            ),
+            AgentModelProblem::Unknown => format!("`{model}` cannot run"),
+        }
+    }
+}
+
+/// Why an agent cannot run. A value this build does not know reads as
+/// `unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum AgentUnavailableReason {
+    /// Its document says `enabled: false`.
+    Disabled,
+    /// Its `models` resolve to no available model.
+    NoModel,
+    /// Its document inherits one that does not exist (yet), such as an
+    /// official agent before the first refresh.
+    InheritMissing,
+    /// An ACP agent's document names a declaration no runtime has.
+    AcpNotOffered,
+    /// Every runtime that declares the ACP agent has it turned off.
+    AcpDeclarationDisabled,
+    /// The ACP agent is declared and on, but every runtime that offers it
+    /// is away.
+    AcpRuntimesUnavailable,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One `models` entry of an agent that has no model, and why it gave none.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentModelEntryStatus {
+    /// The entry as written: a model key, or `${default_model}`-style
+    /// variable.
+    #[schemars(length(max = 300))]
+    pub entry: String,
+    /// The model it names, or for a field the expanded model this row is
+    /// about; absent for an unset field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelKey>,
+    pub problem: AgentModelProblem,
+    /// For `variant_not_offered`: the variant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 128))]
+    pub variant: Option<String>,
+}
+
+/// Why a `models` entry gave no model. A value this build does not know
+/// reads as `unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum AgentModelProblem {
+    /// The entry names `default_model`, `small_model`, or `utility_model`,
+    /// which is not set; `entry` names the variable.
+    FieldUnset,
+    /// The model's provider has no usable credentials: it is not connected.
+    ProviderNotConnected,
+    /// The model's provider needs setup values (region, deployment).
+    ProviderNeedsSetup,
+    /// No connected provider offers the model.
+    ModelNotOffered,
+    /// The model is available, but not in that variant.
+    VariantNotOffered,
+    #[serde(other)]
+    Unknown,
 }
 
 /// A runtime that offers an ACP agent (`docs/site/specs/acp-agents.md`
@@ -668,6 +838,10 @@ impl AgentDescriptor {
             || self.delegation_targets.len() > 256
             || self.runtimes.len() > 256
             || self.unset_models.len() > 8
+            || self
+                .unavailable
+                .as_ref()
+                .is_some_and(|unavailable| unavailable.entries.len() > 32)
         {
             return Err(AgentSchemaError::InvalidListBounds);
         }
@@ -750,6 +924,8 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             official: bool,
             #[serde(default)]
             official_version: Option<String>,
+            #[serde(default)]
+            unavailable: Option<AgentUnavailable>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -766,6 +942,7 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             unset_models: w.unset_models,
             official: w.official,
             official_version: w.official_version,
+            unavailable: w.unavailable,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

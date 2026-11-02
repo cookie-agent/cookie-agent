@@ -423,7 +423,7 @@ error_codes! {
     AGENT_UNAVAILABLE {
         code: "agent_unavailable",
         rpc: APPLICATION_ERROR,
-        fields: [optional("agent", "The agent.")],
+        fields: [optional("agent", "The agent."), optional("reason", "Why it cannot run, when the daemon knows.")],
         message: "The selected agent cannot run here.",
         hint: Some("Choose another agent or model; the details say why."),
         description: "An agent that is disabled, not eligible in this session, unknown, or whose model is unavailable.",

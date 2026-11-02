@@ -1095,6 +1095,7 @@ mod tests {
         let agent = |id: &str, description: &str, runtimes: Vec<AgentRuntime>| AgentDescriptor {
             official: false,
             official_version: None,
+            unavailable: None,
             id: AgentId::new(id).unwrap(),
             preset: None,
             description: description.into(),

@@ -203,6 +203,10 @@ pub enum EngineError {
     UnavailableAgentModel { agent: AgentId, model: ModelKey },
     #[error("agent `{0}` is disabled")]
     DisabledAgent(AgentId),
+    /// An agent that cannot run now, with why
+    /// (`docs/site/specs/acp-onboarding.md` section 8).
+    #[error("agent `{agent}` cannot run: {reason}")]
+    AgentUnavailable { agent: AgentId, reason: String },
     #[error("run {0} not found")]
     MissingRun(RunId),
     #[error("session {0} is already running")]

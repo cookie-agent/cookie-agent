@@ -1285,6 +1285,7 @@ mod tests {
         cookie_agent_protocol::AgentDescriptor {
             official: false,
             official_version: None,
+            unavailable: None,
             id: AgentId::new("codex").expect("agent ID"),
             preset: None,
             description: "Codex".to_owned(),

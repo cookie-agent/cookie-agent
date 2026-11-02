@@ -421,6 +421,10 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::IneligibleAgent(agent) | EngineError::DisabledAgent(agent) => {
             errors::AGENT_UNAVAILABLE.error().field("agent", agent)
         }
+        EngineError::AgentUnavailable { agent, reason } => errors::AGENT_UNAVAILABLE
+            .error()
+            .field("agent", agent)
+            .field("reason", reason),
         EngineError::UnknownAgentModel { agent, .. }
         | EngineError::UnavailableAgentModel { agent, .. } => {
             errors::AGENT_UNAVAILABLE.error().field("agent", agent)

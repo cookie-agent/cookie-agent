@@ -5,6 +5,18 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.72.0
+
+- Why agents cannot run
+  ([Onboarding with ACP agents](../specs/acp-onboarding.md) section 8):
+  `AgentDescriptor` gains `unavailable`, an `AgentUnavailable` (`reason`, an
+  open `AgentUnavailableReason`; `target`; `entries`, each an
+  `AgentModelEntryStatus` with an open `AgentModelProblem`). The agent
+  listing also holds documents that are no agent now: an ACP document whose
+  declaration no runtime has, and one whose `inherit` target does not exist
+  yet, never runnable.
+- `agent_unavailable` gains the optional field `reason`.
+
 ## 1.71.0
 
 - Assets across stores ([Assets](../specs/assets.md) section 8.3):

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.71.0",
+    "protocol_version": "1.72.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.71.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.72.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -1195,7 +1195,24 @@ revokes the sign-in. Every failure is `provider_sign_in_rejected`, whose
   `models` entries name that are not set, omitted when empty; those entries
   are skipped. Since 1.56.0 an agent has `official`, `true` for an
   [official agent](../extend/agents.md#official-agents) (omitted when
-  `false`), and its `official_version`.
+  `false`), and its `official_version`. Since 1.72.0 an agent that cannot
+  run has `unavailable` (see below), and the list also holds documents that
+  are no agent now, with `runnable_as_root` false: an ACP document whose
+  declaration no runtime has, and a document whose `inherit` target does not
+  exist yet.
+- **`unavailable`** (since 1.72.0, optional) is an `AgentUnavailable`:
+  `reason`, an open label (`disabled`, `no_model`, `inherit_missing`,
+  `acp_not_offered`, `acp_declaration_disabled`,
+  `acp_runtimes_unavailable`); `target`, the tree path an
+  `inherit_missing` document inherits; and for `no_model` the `entries`
+  (at most 32) that gave no model, each `{ entry, model?, problem,
+  variant? }`, `problem` an open label (`field_unset`,
+  `provider_not_connected`, `provider_needs_setup`, `model_not_offered`,
+  `variant_not_offered`). Clients list an unavailable root agent with the
+  reason and never select it; an agent the user turned off (`disabled`,
+  `acp_declaration_disabled`) only in the agents panel. Starting a run of
+  one, or delegating to one, fails with `agent_unavailable` and its
+  `reason`.
 - **`default_agent`** (since 1.56.0, optional) is `[agents] default`: the
   agent a client preselects for a new session when nothing else chooses
   one. Without it the default is `primary`.

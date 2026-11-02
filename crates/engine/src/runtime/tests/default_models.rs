@@ -493,3 +493,64 @@ async fn without_a_parent_model_the_reviewer_runs_on_the_utility_model_alone() {
     assert_eq!(policy_models(&reviewer), ["custom.test/z-model:None"]);
     fixture.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn an_agent_without_a_model_says_which_entry_gave_none() {
+    let fixture = fixture_with(Some(PRIMARY));
+    write_agent(
+        &fixture,
+        "helper.md",
+        "---\ndescription: Helper\nmode: all\nmodels:\n  - ${small_model}\n  - custom.gone/model\npermissions: {}\n---\nHelp.\n",
+    )
+    .await;
+    let helper = descriptor(&fixture, "helper");
+    assert!(!helper.runnable_as_root);
+    let unavailable = helper.unavailable.expect("no model");
+    assert_eq!(
+        unavailable.reason,
+        cookie_agent_protocol::AgentUnavailableReason::NoModel
+    );
+    let problems = unavailable
+        .entries
+        .iter()
+        .map(|entry| (entry.entry.as_str(), entry.problem))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        problems,
+        [
+            (
+                "${small_model}",
+                cookie_agent_protocol::AgentModelProblem::FieldUnset
+            ),
+            (
+                "custom.gone/model",
+                cookie_agent_protocol::AgentModelProblem::ModelNotOffered
+            ),
+        ]
+    );
+
+    // Once the field names an available model, it runs.
+    set(
+        &fixture,
+        "small_model",
+        serde_json::json!("custom.test/z-model"),
+    )
+    .await;
+    let helper = descriptor(&fixture, "helper");
+    assert!(helper.unavailable.is_none());
+    assert!(helper.runnable_as_root);
+
+    // A disabled agent says so, whatever its models.
+    write_agent(
+        &fixture,
+        "helper.md",
+        "---\ndescription: Helper\nmode: all\nenabled: false\nmodels: [custom.test/z-model]\npermissions: {}\n---\nHelp.\n",
+    )
+    .await;
+    assert_eq!(
+        descriptor(&fixture, "helper")
+            .unavailable
+            .map(|unavailable| unavailable.reason),
+        Some(cookie_agent_protocol::AgentUnavailableReason::Disabled)
+    );
+}

@@ -27,7 +27,9 @@ pub(crate) const MAX_AGENT_BYTES: u64 = 256 * 1024;
 
 /// A document of the configuration tree: `config.toml`, `agents/<id>.md`
 /// (a shared agent), or `agents/<preset>/<id>.md` (a preset's agent). IDs and
-/// preset names follow the agent ID grammar.
+/// preset names follow the agent ID grammar. An agent file named `_<name>.md`
+/// is a template (`docs/site/specs/acp-onboarding.md` section 6.1): a
+/// document other documents inherit, never an agent itself.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ConfigPath(String);
 
@@ -39,6 +41,32 @@ pub enum ConfigDocument<'a> {
         preset: Option<&'a str>,
         id: &'a str,
     },
+    /// `agents/_<name>.md` or `agents/<preset>/_<name>.md`; `name` is
+    /// without the `_`.
+    Template {
+        preset: Option<&'a str>,
+        name: &'a str,
+    },
+}
+
+impl ConfigDocument<'_> {
+    /// The preset folder an agent or template document is in.
+    #[must_use]
+    pub fn preset(&self) -> Option<&str> {
+        match self {
+            Self::Config => None,
+            Self::Agent { preset, .. } | Self::Template { preset, .. } => *preset,
+        }
+    }
+}
+
+/// The name of the template `_<name>.md`, when `file` is one: a name that
+/// follows the agent ID grammar after its `_`.
+#[must_use]
+pub fn template_name(file: &str) -> Option<&str> {
+    file.strip_suffix(".md")?
+        .strip_prefix('_')
+        .filter(|name| AgentId::new(*name).is_ok())
 }
 
 impl ConfigPath {
@@ -78,7 +106,9 @@ impl ConfigPath {
             })?;
         }
         let id = file.strip_suffix(".md").ok_or(ConfigError::UnsafePath)?;
-        AgentId::new(id).map_err(|_| ConfigError::AgentFilename(file.to_owned()))?;
+        if template_name(file).is_none() {
+            AgentId::new(id).map_err(|_| ConfigError::AgentFilename(file.to_owned()))?;
+        }
         Ok(Self(path.to_owned()))
     }
 
@@ -107,6 +137,9 @@ impl ConfigPath {
             Some((preset, file)) => (Some(preset), file),
             None => (None, rest),
         };
+        if let Some(name) = template_name(file) {
+            return ConfigDocument::Template { preset, name };
+        }
         ConfigDocument::Agent {
             preset,
             id: file.strip_suffix(".md").expect("validated agent path"),
@@ -143,9 +176,13 @@ pub struct ConfigTree {
     /// by ID. Not documents of the tree: never written through it and not
     /// part of its revision.
     official_agents: BTreeMap<AgentId, Zeroizing<Vec<u8>>>,
-    /// The official agents' versions, from the daemon's record
-    /// (`official_agents/.index.json`).
-    official_versions: BTreeMap<AgentId, String>,
+    /// The official templates the daemon keeps in `<root>/official_agents/`
+    /// as `_<name>.md`, by name without the `_`.
+    official_templates: BTreeMap<String, Zeroizing<Vec<u8>>>,
+    /// The official agents' and templates' versions, from the daemon's
+    /// record (`official_agents/.index.json`), by the entry's ID (`_acp`
+    /// for a template).
+    official_versions: BTreeMap<String, String>,
     /// Why entries of `official_agents/` could not be read; a configuration
     /// load reports them and goes on without those agents.
     official_agent_errors: Vec<String>,
@@ -258,7 +295,7 @@ impl ConfigTree {
             if let Ok(kept) = serde_json::from_slice::<Vec<Kept>>(&bytes) {
                 self.official_versions = kept
                     .into_iter()
-                    .filter_map(|kept| Some((AgentId::new(kept.id).ok()?, kept.version)))
+                    .map(|kept| (kept.id, kept.version))
                     .collect();
             }
         }
@@ -267,6 +304,27 @@ impl ConfigTree {
             let Some(id) = name.strip_suffix(".md").filter(|_| !name.starts_with('.')) else {
                 continue;
             };
+            if let Some(template) = template_name(&name) {
+                let read = regular_file_at(&directory, &name)
+                    .map_err(|error| error.to_string())
+                    .and_then(|regular| {
+                        if !regular {
+                            return Err("not a regular file".to_owned());
+                        }
+                        read_required_file(&directory, &name, MAX_AGENT_BYTES)
+                            .map_err(|error| error.to_string())
+                    });
+                match read {
+                    Ok(bytes) => {
+                        self.official_templates.insert(template.to_owned(), bytes);
+                    }
+                    Err(error) => self.official_agent_errors.push(format!(
+                        "{}/{name}: {error}",
+                        crate::OFFICIAL_AGENTS_DIRECTORY
+                    )),
+                }
+                continue;
+            }
             let read = AgentId::new(id)
                 .map_err(|error| error.to_string())
                 .and_then(|id| {
@@ -299,7 +357,30 @@ impl ConfigTree {
     /// An official agent's version, from the daemon's record.
     #[must_use]
     pub fn official_version(&self, id: &AgentId) -> Option<&str> {
-        self.official_versions.get(id).map(String::as_str)
+        self.official_versions.get(id.as_str()).map(String::as_str)
+    }
+
+    /// The official templates read with the tree, by name without the `_`.
+    pub fn official_templates(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.official_templates
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+    }
+
+    /// An official template's version, from the daemon's record.
+    #[must_use]
+    pub fn official_template_version(&self, name: &str) -> Option<&str> {
+        self.official_versions
+            .get(&format!("_{name}"))
+            .map(String::as_str)
+    }
+
+    /// Sets the official template `name` (without the `_`) as if read from
+    /// `official_agents/_<name>.md`, for tests and for validating a refresh
+    /// before it is written.
+    pub fn put_official_template(&mut self, name: &str, bytes: Vec<u8>) {
+        self.official_templates
+            .insert(name.to_owned(), Zeroizing::new(bytes));
     }
 
     /// Why entries of `official_agents/` could not be read.
@@ -318,6 +399,7 @@ impl ConfigTree {
     /// them unused.
     pub fn clear_official_agents(&mut self) {
         self.official_agents.clear();
+        self.official_templates.clear();
         self.official_versions.clear();
         self.official_agent_errors.clear();
     }
@@ -363,11 +445,7 @@ impl ConfigTree {
         if bytes.len() as u64 > path.limit() {
             return Err(ConfigError::TooLarge(path.0));
         }
-        if let ConfigDocument::Agent {
-            preset: Some(preset),
-            ..
-        } = path.document()
-        {
+        if let Some(preset) = path.document().preset() {
             self.empty_presets.remove(preset);
         }
         self.documents.insert(path, Zeroizing::new(bytes));
@@ -384,9 +462,10 @@ impl ConfigTree {
     #[must_use]
     pub fn has_preset(&self, preset: &str) -> bool {
         self.empty_presets.contains(preset)
-            || self.documents.keys().any(|path| {
-                matches!(path.document(), ConfigDocument::Agent { preset: Some(name), .. } if name == preset)
-            })
+            || self
+                .documents
+                .keys()
+                .any(|path| path.document().preset() == Some(preset))
     }
 
     /// Sets the key `key` of `config.toml` (a path of table and key names)

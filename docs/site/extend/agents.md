@@ -449,6 +449,9 @@ once; a run in progress keeps the agent it started with.
 | `title` | `internal` | `${utility_model}`, then `${parent_model}` | Session titles |
 | `compaction` | `internal` | `${parent_model}` | Checkpoint summaries |
 
+They come with one [template](#templates), `_acp`, which ACP agents without
+a document of their own follow.
+
 Their `permissions` name every action explicitly, defaults included, each
 line with a comment saying whether it is a default and what it does, so a
 document shows its whole policy. `bash` asks, except a list of read-only
@@ -739,6 +742,38 @@ models:
 
 Without `inherit`, a document of an official agent's ID replaces the official
 agent whole.
+
+### Templates
+
+A document whose file name starts with `_`, such as `_acp.md`, is a
+template: other documents inherit it, and it is never an agent itself. It is
+not listed, cannot be selected, delegated to, or named as `[agents]
+default`, and its name is no agent ID. It parses and validates like any
+agent document, and may itself inherit (`inherit:`) another template or
+agent. Templates may live in `agents/`, in a preset folder, and in
+`official_agents/`.
+
+The official agents include one template, `_acp`: the document every
+[ACP agent](acp-agents.md#cookie-settings-the-daemon-side-document) without
+a document of its own follows. To change every ACP agent at once, write
+`agents/_acp.md`:
+
+```markdown
+---
+inherit: ../official_agents/_acp.md
+permissions:
+  bash: { "git *": allow, "*": ask }
+---
+{{default_prompt}}
+
+Prefer small, reviewable commits.
+```
+
+To change one, write `agents/<id>.md` with `inherit: _acp.md` (or
+`inherit: ../official_agents/_acp.md` when you have no `agents/_acp.md`)
+and the keys you change. Without `inherit`, a template of yours named like
+an official one replaces it whole, and `{{default_prompt}}` in it stands for
+the official template's prompt, as for agents.
 
 ### Extending an official agent's prompt
 

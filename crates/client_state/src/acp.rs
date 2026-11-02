@@ -552,6 +552,7 @@ mod tests {
         AgentDescriptor {
             official: false,
             official_version: None,
+            unavailable: None,
             resolved_fallback: if offers.is_empty() {
                 Vec::new()
             } else {

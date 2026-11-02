@@ -568,6 +568,9 @@ pub(crate) fn empty_catalog() -> Arc<CatalogSnapshot> {
 pub(crate) fn empty_configuration() -> LoadedConfiguration {
     LoadedConfiguration {
         official_agent_diagnostics: Vec::new(),
+        templates: Default::default(),
+        preset_templates: Default::default(),
+        pending_agents: Vec::new(),
         runtime: EngineConfig {
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),

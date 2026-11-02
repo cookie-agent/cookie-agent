@@ -392,7 +392,9 @@ rules in `client_state::onboarding`.
    - **Check**, per runtime (section 5);
    - after a successful check, an optional **Model** among the values the
      agent offered. This writes an inheriting `agents/<id>.md` with `models`.
-4. **Finish:**
+4. **Tools** (optional, added 2026-11-01, section 9.1): MCP servers that
+   need no login, such as web search and a browser.
+5. **Finish:**
    - **New sessions start with:** the root agents runnable after applying,
      preselecting what resolves now, and written to `[agents] default` only
      when it differs from that;
@@ -403,6 +405,7 @@ rules in `client_state::onboarding`.
 
 - `acp_agents: [{ id, where, command, env, description?, preset?, models?
   }]`;
+- `mcp_servers` (section 9.1);
 - `default_agent?`.
 
 It applies everything in one candidate configuration, as today, and refuses
@@ -429,6 +432,57 @@ with `onboarding_incomplete` when no path would be complete afterwards.
   choice. The ACP step uses the Machines view's ACP agent form. Full screen
   on a phone, as today.
 
+### 9.1 The Tools step: MCP servers without a login
+
+Added at the user's request on 2026-11-01 (D9). The last step before
+Finish offers a few MCP servers that work without signing in to anything,
+so a fresh daemon's agents can search the web, read library documentation,
+and use a browser. It is optional, and nothing is selected by default.
+
+- **Presets** come from the official agents repository with the ACP
+  presets: `index.json` gains `mcp_presets: [{ id, name, category,
+  description, server, where, needs, docs_url, requires_cookie }]`. `server`
+  is the `[mcp.servers.<name>]` table as `config.toml` takes it (`url`, or
+  `command` and `args`). `where` is `global` for a hosted server, or
+  `machine` for one that runs a program on a machine. The first presets:
+
+  | Preset | Category | Server | Where |
+  |---|---|---|---|
+  | Exa | Web search | `url = "https://mcp.exa.ai/mcp"` | `global` |
+  | Context7 | Library documentation | `url = "https://mcp.context7.com/mcp"` | `global` |
+  | DeepWiki | Documentation of public GitHub repositories | `url = "https://mcp.deepwiki.com/mcp"` | `global` |
+  | Playwright | Browser | `command = "npx"`, `args = ["-y", "@playwright/mcp@latest", "--headless"]` | `machine` |
+
+  The repository's CI checks that each hosted preset answers MCP
+  `initialize` without credentials. A preset that stops working is fixed
+  or removed there, with no release.
+- **Where a server goes:**
+  - A `global` preset is written to `[mcp.servers.<id>]`. It runs where the
+    daemon runs, and every session that attaches `global` gets it.
+  - A `machine` preset asks which machine: the daemon's own (`local`, the
+    default) or another runtime the daemon knows. It is written to
+    `[runtimes.<runtime>.mcp.servers.<id>]` with `scope = "runtime"`.
+    Playwright also offers **Show the browser window**, which drops
+    `--headless`. Its `needs` names Node.js and a browser Playwright can
+    start, and links [Giving agents a browser](../extend/browser.md).
+- **Already set up:** a preset whose name already has a server at that
+  place shows as configured and cannot be added twice.
+- **Permissions are unchanged:** the official agents' `mcp` rules still
+  decide each tool call. The step says that calls ask until allowed, and the
+  summary links to the agents panel.
+- **Protocol:**
+  - `OnboardingStatus` gains `mcp_presets`, and `mcp_servers`: the
+    configured servers' names and places.
+  - `onboarding.run` gains `mcp_servers: [{ name, preset?, where: global |
+    runtime(<id>), server }]`, applied in the same candidate configuration
+    and checked like `config.apply`. A name already taken at that place is
+    refused.
+  - The Tools step is not part of readiness.
+- **After Finish,** the summary shows each new server's connection state as
+  `mcp.changed` reports it.
+- **`cookie onboard`:** `--mcp exa,context7,deepwiki,playwright`, and
+  `--mcp-runtime <id>` for the machine presets (default `local`).
+
 ## 10. Protocol, configuration, and phases
 
 - **Client protocol minor:**
@@ -454,11 +508,12 @@ with `onboarding_incomplete` when no path would be complete afterwards.
 
 1. Engine: templates, the effective `_acp` rule, `AgentDescriptor.unavailable`
    with its reasons, and `list_agents`/`delegate_subagent` reasons.
-2. The official repository: `_acp.md`, presets, and the checks.
-3. Onboarding: readiness paths, `acp.check`, `onboarding.run`'s ACP fields,
-   and `cookie onboard`.
-4. Clients: the onboarding paths in the TUI and web, and unavailable agents in
-   the pickers.
+2. The official repository: `_acp.md`, the ACP and MCP presets, and the
+   checks.
+3. Onboarding: readiness paths, `acp.check`, `onboarding.run`'s ACP and MCP
+   fields, and `cookie onboard`.
+4. Clients: the onboarding paths and the Tools step in the TUI and web, and
+   unavailable agents in the pickers.
 5. The agents panel: the `agents.*` RPCs, the web view, TUI `/agents`, and
    the `cookie agents` commands.
 6. Docs: the ACP guide (onboarding first, the reference document replaced by
@@ -492,3 +547,7 @@ made.
 - **D8. The ACP path is complete from the configuration** (section 2): a
   declared, enabled agent that a reachable runtime offers. No successful
   check is required.
+- **D9. Onboarding ends with an optional Tools step** (section 9.1), which
+  offers MCP servers that need no login, from presets kept in the official
+  agents repository. The user asked for it on 2026-11-01; the preset list
+  is mine.

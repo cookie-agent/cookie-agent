@@ -348,6 +348,9 @@ fn build_in_process_server(
     }
     let config = LoadedConfiguration {
         official_agent_diagnostics: Vec::new(),
+        templates: Default::default(),
+        preset_templates: Default::default(),
+        pending_agents: Vec::new(),
         runtime: EngineConfig {
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),

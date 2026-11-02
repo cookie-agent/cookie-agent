@@ -407,6 +407,9 @@ pub(crate) fn render_agent_list(
         let mode = mode_name(frontmatter.mode);
         let tag = if agent.acp.is_some() { ", acp" } else { "" };
         let _ = writeln!(output, "{id} ({mode}{tag}) — {}", frontmatter.description);
+        if let Some(unavailable) = &agent.unavailable {
+            let _ = writeln!(output, "  unavailable: {}", unavailable.summary());
+        }
         if let Some(offers) = &agent.acp {
             let runtimes = crate::runtime_snapshot::join_runtimes(&offers.runtimes());
             if offers.declaration() != id {

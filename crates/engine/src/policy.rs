@@ -195,6 +195,17 @@ impl FrozenRunPolicy {
     }
 }
 
+/// The error naming why `agent` cannot run, when the registry knows.
+pub(crate) fn unavailable_error(agent: &ResolvedAgent) -> Option<EngineError> {
+    agent
+        .unavailable
+        .as_ref()
+        .map(|unavailable| EngineError::AgentUnavailable {
+            agent: agent.document.id.clone(),
+            reason: unavailable.summary(),
+        })
+}
+
 fn missing_model_error(
     agent: &ResolvedAgent,
     runtime: &crate::runtime_snapshot::PublishedRuntime,
@@ -348,7 +359,7 @@ pub(crate) fn freeze_root_agent_policy(
         return Err(error);
     }
     if !agent.runnable_as_root {
-        return Err(EngineError::NoRunnableModel);
+        return Err(unavailable_error(agent).unwrap_or(EngineError::NoRunnableModel));
     }
     let start = agent
         .resolved_fallback

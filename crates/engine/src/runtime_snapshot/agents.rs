@@ -8,7 +8,10 @@ use cookie_agent_config::{
 use cookie_agent_config::{ConfiguredModelRef, ConfiguredModels, ModelField};
 use cookie_agent_identity::{AgentId as IdentityAgentId, ConfiguredVariantRef, ModelKey};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
-use cookie_agent_protocol::{AgentDescriptor, AgentId, ModelSelection};
+use cookie_agent_protocol::{
+    AgentDescriptor, AgentId, AgentModelEntryStatus, AgentModelProblem, AgentUnavailable,
+    AgentUnavailableReason, ModelSelection,
+};
 use indexmap::IndexMap;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -31,7 +34,17 @@ pub(crate) struct ResolvedAgent {
     /// The runtimes that offer an ACP agent; `None` for the daemon's own
     /// agents.
     pub acp: Option<AcpOffers>,
+    /// Why it cannot run now (`docs/site/specs/acp-onboarding.md` section
+    /// 8.1); `None` when it can.
+    pub unavailable: Option<AgentUnavailable>,
 }
+
+/// The template an ACP agent with no document of its own runs
+/// (`docs/site/specs/acp-onboarding.md` section 6.3): `_acp.md`.
+pub(crate) const ACP_TEMPLATE: &str = "acp";
+
+/// The most `entries` an unavailable agent reports.
+const MAX_UNAVAILABLE_ENTRIES: usize = 32;
 
 /// An ACP agent on one runtime that declares it
 /// (`docs/site/specs/acp-agents.md` section 3): what a session that
@@ -377,11 +390,14 @@ impl AgentRegistry {
         // agent with the default document. A daemon agent of the same ID
         // wins; the configuration status names the ignored declarations.
         let mut acp_agents = Vec::new();
+        // ACP documents whose declaration no runtime has: listed, not agents.
+        let mut not_offered = Vec::new();
         for document in authored.documents().values() {
             let Some(settings) = &document.frontmatter.acp else {
                 continue;
             };
             let Some(offers) = offered.get(settings.declaration(&document.id)) else {
+                not_offered.push(document.clone());
                 continue;
             };
             let offers = AcpOffers {
@@ -401,7 +417,11 @@ impl AgentRegistry {
                 continue;
             }
             let offers = AcpOffers { id, offers };
-            acp_agents.push((runtime_agent_default_document(&offers)?, offers));
+            let document = match authored.template(ACP_TEMPLATE) {
+                Some(template) => templated_acp_document(template, &offers)?,
+                None => runtime_agent_default_document(&offers)?,
+            };
+            acp_agents.push((document, offers));
         }
         for (document, offers) in acp_agents {
             // Whether it can run depends on the session's runtimes: it is
@@ -412,6 +432,15 @@ impl AgentRegistry {
                     document.frontmatter.mode,
                     AgentMode::Primary | AgentMode::All
                 );
+            let unavailable = if !document.frontmatter.enabled {
+                Some(unavailable(AgentUnavailableReason::Disabled))
+            } else if !offers.offers.iter().any(|offer| offer.enabled) {
+                Some(unavailable(AgentUnavailableReason::AcpDeclarationDisabled))
+            } else if !offers.any_available() {
+                Some(unavailable(AgentUnavailableReason::AcpRuntimesUnavailable))
+            } else {
+                None
+            };
             agents.insert(
                 offers.id.clone(),
                 ResolvedAgent {
@@ -423,6 +452,7 @@ impl AgentRegistry {
                     unset_models: Vec::new(),
                     runnable_as_root,
                     acp: Some(offers),
+                    unavailable,
                 },
             );
         }
@@ -499,6 +529,21 @@ impl AgentRegistry {
                     AgentMode::Primary | AgentMode::All
                 )
                 && available;
+            let parent_model = resolved_fallback
+                .iter()
+                .any(|fallback| matches!(fallback, ResolvedAgentFallback::ParentModel { .. }));
+            let unavailable = if !document.frontmatter.enabled {
+                Some(unavailable(AgentUnavailableReason::Disabled))
+            } else if !available && !parent_model && !document.frontmatter.models.is_empty() {
+                // An agent with no `models` runs on its parent's model.
+                Some(AgentUnavailable {
+                    reason: AgentUnavailableReason::NoModel,
+                    target: None,
+                    entries: model_entry_statuses(&document, models, variables),
+                })
+            } else {
+                None
+            };
             agents.insert(
                 id,
                 ResolvedAgent {
@@ -507,6 +552,7 @@ impl AgentRegistry {
                     unset_models,
                     runnable_as_root,
                     acp: None,
+                    unavailable,
                 },
             );
         }
@@ -542,11 +588,12 @@ impl AgentRegistry {
                         unset_models,
                         runnable_as_root: true,
                         acp: None,
+                        unavailable: None,
                     },
                 );
             }
         }
-        let descriptors = agents
+        let mut descriptors = agents
             .iter()
             .map(|(id, agent)| AgentDescriptor {
                 id: id.clone(),
@@ -589,8 +636,59 @@ impl AgentRegistry {
                             .map(|offer| agent_runtime(offer, &agent.document))
                     })
                     .collect(),
+                unavailable: agent.unavailable.clone(),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // Documents that are no agent now, listed so clients can say why
+        // (`docs/site/specs/acp-onboarding.md` section 8.1).
+        for document in not_offered {
+            if agents.contains_key(&document.id) {
+                continue;
+            }
+            descriptors.push(listed_only_descriptor(
+                &document.id,
+                preset.as_ref(),
+                &document.frontmatter.description,
+                document.frontmatter.mode,
+                document.frontmatter.enabled,
+                document.official,
+                AgentUnavailable {
+                    reason: if document.frontmatter.enabled {
+                        AgentUnavailableReason::AcpNotOffered
+                    } else {
+                        AgentUnavailableReason::Disabled
+                    },
+                    target: None,
+                    entries: Vec::new(),
+                },
+            ));
+        }
+        for pending in authored.pending() {
+            if agents.contains_key(&pending.id)
+                || descriptors
+                    .iter()
+                    .any(|descriptor| descriptor.id == pending.id)
+            {
+                continue;
+            }
+            descriptors.push(listed_only_descriptor(
+                &pending.id,
+                preset.as_ref(),
+                pending
+                    .description
+                    .as_deref()
+                    .unwrap_or("An agent whose inherited document is not there yet"),
+                pending.mode.unwrap_or(AgentMode::All),
+                true,
+                false,
+                AgentUnavailable {
+                    reason: AgentUnavailableReason::InheritMissing,
+                    target: Some(pending.target.clone()),
+                    entries: Vec::new(),
+                },
+            ));
+        }
+        descriptors.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(Self {
             preset,
             default_agent,
@@ -837,6 +935,179 @@ fn built_in_internal_document(
         official_version: None,
         document_fingerprint,
         prompt_fingerprint,
+    })
+}
+
+fn unavailable(reason: AgentUnavailableReason) -> AgentUnavailable {
+    AgentUnavailable {
+        reason,
+        target: None,
+        entries: Vec::new(),
+    }
+}
+
+/// The descriptor of a document that is no agent now: never runnable.
+#[allow(clippy::too_many_arguments)]
+fn listed_only_descriptor(
+    id: &AgentId,
+    preset: Option<&String>,
+    description: &str,
+    mode: AgentMode,
+    enabled: bool,
+    official: bool,
+    unavailable: AgentUnavailable,
+) -> AgentDescriptor {
+    AgentDescriptor {
+        id: id.clone(),
+        preset: preset.cloned(),
+        description: description.to_owned(),
+        mode,
+        enabled,
+        runnable_as_root: false,
+        resolved_fallback: Vec::new(),
+        delegation_targets: Vec::new(),
+        runtime: None,
+        runtimes: Vec::new(),
+        unset_models: Vec::new(),
+        official,
+        official_version: None,
+        unavailable: Some(unavailable),
+    }
+}
+
+/// Why each `models` entry of `document` gives no available model, for an
+/// agent that has none (`docs/site/specs/acp-onboarding.md` section 8.1).
+fn model_entry_statuses(
+    document: &AgentDocument,
+    models: &CompiledModelRuntime,
+    variables: ModelVariables<'_>,
+) -> Vec<AgentModelEntryStatus> {
+    let mut entries = Vec::new();
+    for fallback in &document.frontmatter.models {
+        match &fallback.model {
+            AgentModelRef::ParentModel => {}
+            AgentModelRef::Model(model) => {
+                let selection = ModelSelection {
+                    model: model.clone(),
+                    variant: resolve_variant(models, model, fallback.variant.as_ref()),
+                };
+                entries.extend(
+                    selection_problem(models, &selection).map(|(problem, variant)| {
+                        AgentModelEntryStatus {
+                            entry: model.to_string(),
+                            model: Some(model.clone()),
+                            problem,
+                            variant,
+                        }
+                    }),
+                );
+            }
+            variable @ (AgentModelRef::DefaultModel
+            | AgentModelRef::SmallModel
+            | AgentModelRef::UtilityModel) => {
+                let field = variable.field().expect("a model field's variable");
+                let written = format!("${{{}}}", field.name());
+                let mut unset = Vec::new();
+                let selections =
+                    variables.selections(models, field, fallback.variant.as_ref(), &mut unset);
+                unset.sort_unstable();
+                unset.dedup();
+                for name in unset {
+                    entries.push(AgentModelEntryStatus {
+                        entry: if name == field.name() {
+                            written.clone()
+                        } else {
+                            format!("{written} → ${{{name}}}")
+                        },
+                        model: None,
+                        problem: AgentModelProblem::FieldUnset,
+                        variant: None,
+                    });
+                }
+                for selection in selections {
+                    entries.extend(selection_problem(models, &selection).map(
+                        |(problem, variant)| AgentModelEntryStatus {
+                            entry: written.clone(),
+                            model: Some(selection.model.clone()),
+                            problem,
+                            variant,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    entries.truncate(MAX_UNAVAILABLE_ENTRIES);
+    entries
+}
+
+/// Why `selection` is not available, with the variant when that is why.
+fn selection_problem(
+    models: &CompiledModelRuntime,
+    selection: &ModelSelection,
+) -> Option<(AgentModelProblem, Option<String>)> {
+    let Some(model) = models.model(&selection.model) else {
+        return Some((AgentModelProblem::ModelNotOffered, None));
+    };
+    match model.model.status {
+        CompiledModelStatus::CredentialsUnavailable => {
+            return Some((AgentModelProblem::ProviderNotConnected, None));
+        }
+        CompiledModelStatus::SetupUnavailable => {
+            return Some((AgentModelProblem::ProviderNeedsSetup, None));
+        }
+        CompiledModelStatus::Available => {}
+    }
+    selection
+        .variant
+        .as_ref()
+        .filter(|variant| !model.model.variants.contains_key(*variant))
+        .map(|variant| {
+            (
+                AgentModelProblem::VariantNotOffered,
+                Some(variant.to_string()),
+            )
+        })
+}
+
+/// The document of an ACP agent with none of its own, from the `_acp`
+/// template (`docs/site/specs/acp-onboarding.md` section 6.3): the
+/// template's frontmatter and prompt, the agent's ID, and the first
+/// offering runtime's description when it has one.
+fn templated_acp_document(
+    template: &AgentDocument,
+    agent: &AcpOffers,
+) -> Result<AgentDocument, EngineError> {
+    let mut frontmatter = template.frontmatter.clone();
+    if let Some(description) = agent
+        .offers
+        .iter()
+        .map(|offer| offer.description.trim())
+        .find(|description| !description.is_empty())
+    {
+        description.clone_into(&mut frontmatter.description);
+    }
+    // It runs its own declaration, whatever the template names.
+    let mut acp = frontmatter.acp.take().unwrap_or_default();
+    acp.agent = None;
+    frontmatter.acp = Some(acp);
+    let document_fingerprint = fingerprint(
+        "cookie-agent/templated-acp-document/v1",
+        &(
+            agent.id.as_str(),
+            &frontmatter,
+            template.document_fingerprint.as_str(),
+        ),
+    )?;
+    Ok(AgentDocument {
+        id: agent.id.clone(),
+        frontmatter,
+        body: template.body.clone(),
+        source: template.source,
+        official: false,
+        official_version: None,
+        document_fingerprint,
+        prompt_fingerprint: template.prompt_fingerprint.clone(),
     })
 }
 
@@ -1158,6 +1429,7 @@ mod tests {
                 unset_models: Vec::new(),
                 runnable_as_root: false,
                 acp: None,
+                unavailable: None,
             },
         )]);
         assert_eq!(delegation_targets(&permissions, &known), [reviewer]);
@@ -1267,6 +1539,7 @@ mod tests {
             unset_models: Vec::new(),
             runnable_as_root: false,
             acp: None,
+            unavailable: None,
         }
     }
 

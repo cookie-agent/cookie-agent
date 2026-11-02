@@ -92,10 +92,7 @@ pub fn write_tree(original: &ConfigTree, candidate: &ConfigTree) -> Result<(), C
         written.push(path.clone());
     }
     for path in &paths {
-        if let crate::ConfigDocument::Agent {
-            preset: Some(preset),
-            ..
-        } = path.document()
+        if let Some(preset) = path.document().preset()
             && candidate.get(path).is_none()
             && !candidate.has_preset(preset)
         {

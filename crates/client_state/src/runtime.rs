@@ -259,6 +259,7 @@ mod tests {
                 vec![cookie_agent_protocol::AgentDescriptor {
                     official: false,
                     official_version: None,
+                    unavailable: None,
                     id: cookie_agent_protocol::AgentId::new("default").expect("agent ID"),
                     preset: None,
                     description: "Built-in default coding agent".to_owned(),
@@ -306,6 +307,7 @@ mod tests {
         only_acp.agents = vec![cookie_agent_protocol::AgentDescriptor {
             official: false,
             official_version: None,
+            unavailable: None,
             id: cookie_agent_protocol::AgentId::new("codex").expect("agent ID"),
             preset: None,
             description: "Codex".to_owned(),

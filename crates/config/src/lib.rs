@@ -32,7 +32,7 @@ pub use cache::{
 };
 pub use error::ConfigError;
 pub use loader::{
-    ConfigLayerPaths, LoadedConfiguration, load, load_from_tree, load_from_user_root,
+    ConfigLayerPaths, LoadedConfiguration, PendingAgent, load, load_from_tree, load_from_user_root,
 };
 pub use loader::{LoadedMcpServer, McpServerSource};
 pub use prompt_template::{
@@ -57,6 +57,8 @@ pub use skills::{
     load_skill_roots_with_official, load_user_skills, load_user_skills_with_official,
     official_skills_root, parse_skill_document, render_available_skills,
 };
-pub use tree::{CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree, OFFICIAL_AGENTS_RECORD};
+pub use tree::{
+    CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree, OFFICIAL_AGENTS_RECORD, template_name,
+};
 pub use wildcard::simple_wildcard_match;
 pub use writer::{write_beside, write_server_token, write_tree};

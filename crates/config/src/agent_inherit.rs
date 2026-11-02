@@ -8,7 +8,9 @@
 //!
 //! The path is relative to the document's own file and must name an agent
 //! document of the configuration tree: `official_agents/<id>.md`,
-//! `agents/<id>.md`, or `agents/<preset>/<id>.md`. Inheritance may chain; a
+//! `agents/<id>.md`, or `agents/<preset>/<id>.md`, or a template of one of
+//! those folders, `_<name>.md` (`docs/site/specs/acp-onboarding.md` section
+//! 6.1). Inheritance may chain; a
 //! cycle is an error. The merge happens before the strict parser reads the
 //! document, so the merged document is validated as one written whole would
 //! be, and its fingerprints change when what it inherits does.
@@ -114,8 +116,8 @@ fn parts_of(
             &shown,
             format!(
                 "`inherit: {inherit}` must name an agent document of the configuration: \
-                     official_agents/<id>.md, agents/<id>.md, or agents/<preset>/<id>.md, \
-                     relative to this file"
+                     official_agents/<id>.md, agents/<id>.md, or agents/<preset>/<id>.md \
+                     (or a template `_<name>.md` of those folders), relative to this file"
             ),
         )
     })?;
@@ -238,8 +240,10 @@ fn target_path(path: &str, inherit: &str) -> Option<String> {
     }
     let joined = parts.join("/");
     let valid_id = |file: &str| {
-        file.strip_suffix(".md")
-            .is_some_and(|id| cookie_agent_identity::AgentId::new(id).is_ok())
+        crate::template_name(file).is_some()
+            || file
+                .strip_suffix(".md")
+                .is_some_and(|id| cookie_agent_identity::AgentId::new(id).is_ok())
     };
     let agent_document = match parts.as_slice() {
         [directory, file] => {
@@ -259,6 +263,12 @@ fn lookup(tree: &ConfigTree, path: &str, officials: bool) -> Option<Vec<u8>> {
     if let Some(file) = path.strip_prefix(&format!("{}/", crate::OFFICIAL_AGENTS_DIRECTORY)) {
         if !officials {
             return None;
+        }
+        if let Some(name) = crate::template_name(file) {
+            return tree
+                .official_templates()
+                .find(|(official, _)| *official == name)
+                .map(|(_, bytes)| bytes.to_vec());
         }
         let id = file.strip_suffix(".md")?;
         return tree
@@ -307,12 +317,22 @@ mod tests {
             target_path("agents/x.md", "./other/y.md").as_deref(),
             Some("agents/other/y.md")
         );
+        assert_eq!(
+            target_path("agents/claude.md", "_acp.md").as_deref(),
+            Some("agents/_acp.md")
+        );
+        assert_eq!(
+            target_path("agents/_acp.md", "../official_agents/_acp.md").as_deref(),
+            Some("official_agents/_acp.md")
+        );
         for refused in [
             "/etc/passwd",
             "../../secret.md",
             "../config.toml",
             "../official_agents/Not An ID.md",
             "../official_agents/x/y.md",
+            "../official_agents/_.md",
+            "../official_agents/__acp.md",
             "..\\official_agents\\x.md",
         ] {
             assert_eq!(target_path("agents/x.md", refused), None, "{refused}");

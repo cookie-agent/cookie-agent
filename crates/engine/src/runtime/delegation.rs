@@ -615,6 +615,11 @@ impl Engine {
         if !child_agent.document.frontmatter.enabled || !delegable_mode {
             return Err(EngineError::DisabledAgent(invocation.agent_type));
         }
+        if child_agent.acp.is_none()
+            && let Some(error) = crate::policy::unavailable_error(child_agent)
+        {
+            return Err(error);
+        }
         let fallback_index = active_parent.fallback_index.load(Ordering::Acquire) as usize;
         let inherited = parent_policy.active_suffix(fallback_index);
         let acp_child = child_agent.acp.is_some();

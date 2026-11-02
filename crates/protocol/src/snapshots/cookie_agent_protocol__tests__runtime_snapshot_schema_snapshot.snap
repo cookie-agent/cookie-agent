@@ -201,6 +201,17 @@ expression: schema_for!(RuntimeSnapshotResult)
           },
           "maxItems": 256
         },
+        "unavailable": {
+          "description": "Why the agent cannot run now, absent when it can (client protocol\n1.72.0, `docs/site/specs/acp-onboarding.md` section 8). Clients list\nan unavailable root agent with the reason, and never select it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentUnavailable"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "unset_models": {
           "description": "The configuration fields (`default_model`, `small_model`,\n`utility_model`) the agent's `models` entries name but that are not\nset, sorted (client protocol 1.22.0). Those entries are skipped; an\nagent with no other entry is unavailable until a field is set.",
           "type": "array",
@@ -228,6 +239,79 @@ expression: schema_for!(RuntimeSnapshotResult)
         "subagent",
         "all",
         "internal"
+      ],
+      "x-open": true
+    },
+    "AgentModelEntryStatus": {
+      "description": "One `models` entry of an agent that has no model, and why it gave none.",
+      "type": "object",
+      "properties": {
+        "entry": {
+          "description": "The entry as written: a model key, or `${default_model}`-style\nvariable.",
+          "type": "string",
+          "maxLength": 300
+        },
+        "model": {
+          "description": "The model it names, or for a field the expanded model this row is\nabout; absent for an unset field.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+        },
+        "problem": {
+          "$ref": "#/$defs/AgentModelProblem"
+        },
+        "variant": {
+          "description": "For `variant_not_offered`: the variant.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "entry",
+        "problem"
+      ]
+    },
+    "AgentModelProblem": {
+      "description": "Why a `models` entry gave no model. A value this build does not know\nreads as `unknown`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "unknown"
+          ]
+        },
+        {
+          "description": "The entry names `default_model`, `small_model`, or `utility_model`,\nwhich is not set; `entry` names the variable.",
+          "type": "string",
+          "const": "field_unset"
+        },
+        {
+          "description": "The model's provider has no usable credentials: it is not connected.",
+          "type": "string",
+          "const": "provider_not_connected"
+        },
+        {
+          "description": "The model's provider needs setup values (region, deployment).",
+          "type": "string",
+          "const": "provider_needs_setup"
+        },
+        {
+          "description": "No connected provider offers the model.",
+          "type": "string",
+          "const": "model_not_offered"
+        },
+        {
+          "description": "The model is available, but not in that variant.",
+          "type": "string",
+          "const": "variant_not_offered"
+        }
       ],
       "x-open": true
     },
@@ -275,6 +359,76 @@ expression: schema_for!(RuntimeSnapshotResult)
         "agent",
         "available"
       ]
+    },
+    "AgentUnavailable": {
+      "description": "Why an agent cannot run (client protocol 1.72.0).",
+      "type": "object",
+      "properties": {
+        "entries": {
+          "description": "For `no_model`: each entry of the agent's `models`, a field's\nexpanded models included, and why it gave no model.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentModelEntryStatus"
+          },
+          "maxItems": 32
+        },
+        "reason": {
+          "$ref": "#/$defs/AgentUnavailableReason"
+        },
+        "target": {
+          "description": "For `inherit_missing`: the tree path the document inherits, such as\n`official_agents/primary.md`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "reason"
+      ]
+    },
+    "AgentUnavailableReason": {
+      "description": "Why an agent cannot run. A value this build does not know reads as\n`unknown`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "unknown"
+          ]
+        },
+        {
+          "description": "Its document says `enabled: false`.",
+          "type": "string",
+          "const": "disabled"
+        },
+        {
+          "description": "Its `models` resolve to no available model.",
+          "type": "string",
+          "const": "no_model"
+        },
+        {
+          "description": "Its document inherits one that does not exist (yet), such as an\nofficial agent before the first refresh.",
+          "type": "string",
+          "const": "inherit_missing"
+        },
+        {
+          "description": "An ACP agent's document names a declaration no runtime has.",
+          "type": "string",
+          "const": "acp_not_offered"
+        },
+        {
+          "description": "Every runtime that declares the ACP agent has it turned off.",
+          "type": "string",
+          "const": "acp_declaration_disabled"
+        },
+        {
+          "description": "The ACP agent is declared and on, but every runtime that offers it\nis away.",
+          "type": "string",
+          "const": "acp_runtimes_unavailable"
+        }
+      ],
+      "x-open": true
     },
     "AuthCredentialDescriptor": {
       "type": "object",

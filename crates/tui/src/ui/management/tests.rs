@@ -1322,6 +1322,7 @@ fn the_machines_view_lists_a_runtimes_tools_and_acp_agents() {
     let agent = |id: &str, declaration: &str| AgentDescriptor {
         official: false,
         official_version: None,
+        unavailable: None,
         id: AgentId::new(id).unwrap(),
         preset: None,
         description: String::new(),

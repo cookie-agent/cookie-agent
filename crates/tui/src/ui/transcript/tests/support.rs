@@ -111,6 +111,9 @@ pub(crate) fn production_provider_harness(
     );
     let config = LoadedConfiguration {
         official_agent_diagnostics: Vec::new(),
+        templates: Default::default(),
+        preset_templates: Default::default(),
+        pending_agents: Vec::new(),
         runtime: EngineConfig {
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
@@ -1079,6 +1082,7 @@ pub(crate) fn descriptor(agent: &str, runnable: bool) -> cookie_agent_protocol::
     cookie_agent_protocol::AgentDescriptor {
         official: false,
         official_version: None,
+        unavailable: None,
         id: AgentId::new(agent).expect("agent id"),
         preset: None,
         description: format!("Test {agent} agent"),

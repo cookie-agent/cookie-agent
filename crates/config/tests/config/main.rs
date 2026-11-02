@@ -4,6 +4,7 @@
 mod acp_agents;
 mod agent_inherit;
 mod agent_md;
+mod agent_templates;
 mod approval;
 mod compaction_recent_tokens;
 mod compaction_trigger;

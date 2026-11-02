@@ -50,6 +50,31 @@ pub struct LoadedConfiguration {
     /// `official_agents/` that does not read, parse, or validate. Reported
     /// as configuration diagnostics; never a load error.
     pub official_agent_diagnostics: Vec<String>,
+    /// The templates of the top level (`agents/_<name>.md` over
+    /// `official_agents/_<name>.md`), by name without the `_`, which is
+    /// also each document's `id` (`docs/site/specs/acp-onboarding.md`
+    /// section 6.1). Never agents.
+    pub templates: BTreeMap<AgentId, AgentDocument>,
+    /// Each preset's templates: the top level's with the preset's own over
+    /// them.
+    pub preset_templates: BTreeMap<String, BTreeMap<AgentId, AgentDocument>>,
+    /// Documents of the user's left out because what they inherit does not
+    /// exist (yet), so clients can list them as unavailable.
+    pub pending_agents: Vec<PendingAgent>,
+}
+
+/// An agent document of the user's left out because its `inherit` names a
+/// document the tree does not hold (yet), such as an official agent before
+/// the first refresh.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAgent {
+    pub id: AgentId,
+    pub preset: Option<String>,
+    /// The tree path it inherits.
+    pub target: String,
+    /// What the document itself writes, when it does.
+    pub description: Option<String>,
+    pub mode: Option<crate::AgentMode>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -74,13 +99,44 @@ impl LoadedConfiguration {
     #[must_use]
     pub fn agent_registry(&self) -> AgentRegistry {
         AgentRegistry::from_validated(self.agents.clone())
+            .with_templates(self.templates.clone())
+            .with_pending(
+                self.pending_agents
+                    .iter()
+                    .filter(|pending| pending.preset.is_none())
+                    .cloned()
+                    .collect(),
+            )
     }
 
     #[must_use]
     pub fn agent_preset_registries(&self) -> BTreeMap<String, AgentRegistry> {
         self.agent_presets
             .iter()
-            .map(|(name, agents)| (name.clone(), AgentRegistry::from_validated(agents.clone())))
+            .map(|(name, agents)| {
+                let templates = self
+                    .preset_templates
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| self.templates.clone());
+                // A preset's agents are the shared ones with its own over
+                // them; so are the pending ones, minus those it replaces.
+                let pending = self
+                    .pending_agents
+                    .iter()
+                    .filter(|pending| match &pending.preset {
+                        Some(preset) => preset == name,
+                        None => !agents.contains_key(&pending.id),
+                    })
+                    .cloned()
+                    .collect();
+                (
+                    name.clone(),
+                    AgentRegistry::from_validated(agents.clone())
+                        .with_templates(templates)
+                        .with_pending(pending),
+                )
+            })
             .collect()
     }
 
@@ -151,6 +207,9 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
+    let mut templates = BTreeMap::<AgentId, AgentDocument>::new();
+    let mut preset_template_documents = BTreeMap::<String, BTreeMap<AgentId, AgentDocument>>::new();
+    let mut pending_agents = Vec::new();
     let mut official_agent_diagnostics = Vec::new();
     let mut preset_agents = BTreeMap::<String, BTreeMap<AgentId, AgentDocument>>::new();
     let mut mcp_servers = BTreeMap::new();
@@ -236,25 +295,96 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
                         .push(format!("official agent `{id}` was left out: {error}")),
                 }
             }
+            for (name, bytes) in tree.official_templates() {
+                let id = AgentId::new(name).expect("a template's name is an agent ID");
+                let path = tree.root().map_or_else(
+                    || PathBuf::from(crate::OFFICIAL_AGENTS_DIRECTORY).join(format!("_{name}.md")),
+                    |root| crate::official_agents_root(root).join(format!("_{name}.md")),
+                );
+                match parse_agent(id.clone(), bytes, AgentDocumentSource::BuiltIn, &path) {
+                    Ok(document) if crate::prompt_template::uses_default_prompt(&document.body) => {
+                        official_agent_diagnostics.push(format!(
+                            "official template `_{name}` was left out: an official template's \
+                             prompt never uses `{{{{default_prompt}}}}`"
+                        ));
+                    }
+                    Ok(mut document) => {
+                        document.official = true;
+                        document.official_version =
+                            tree.official_template_version(name).map(str::to_owned);
+                        templates.insert(id, document);
+                    }
+                    Err(error) => official_agent_diagnostics
+                        .push(format!("official template `_{name}` was left out: {error}")),
+                }
+            }
         }
         // A document's `{{default_prompt}}` is the prompt of the agent it
         // replaces: for one in `agents/`, the official agent's; for one in a
         // preset, the agent `agents/` ends up with, the user's own (already
         // expanded) over the official one. So the top level loads first.
         let officials = agents.clone();
+        let official_templates = templates.clone();
         let documents = tree
             .documents()
             .filter_map(|(path, bytes)| match path.document() {
-                ConfigDocument::Agent { preset, id } => Some((path, bytes, preset, id)),
-                _ => None,
+                ConfigDocument::Agent { preset, id } => Some((path, bytes, preset, id, false)),
+                ConfigDocument::Template { preset, name } => {
+                    Some((path, bytes, preset, name, true))
+                }
+                ConfigDocument::Config => None,
             })
             .collect::<Vec<_>>();
         for top_level in [true, false] {
-            for (path, bytes, preset, id) in &documents {
+            for (path, bytes, preset, id, template) in &documents {
                 if preset.is_none() != top_level {
                     continue;
                 }
                 let id = AgentId::new(*id).expect("validated agent path");
+                if *template {
+                    let merged = match crate::agent_inherit::resolve(
+                        tree,
+                        path.as_str(),
+                        bytes,
+                        runtime.agents.official,
+                    )? {
+                        crate::agent_inherit::Resolved::AsWritten => None,
+                        crate::agent_inherit::Resolved::Merged(merged) => Some(merged),
+                        crate::agent_inherit::Resolved::Missing(target) => {
+                            official_agent_diagnostics.push(format!(
+                                "template `_{id}` was left out: it inherits `{target}`, which \
+                                 there is no document for (yet)"
+                            ));
+                            continue;
+                        }
+                    };
+                    let mut document = parse_agent(
+                        id.clone(),
+                        merged.as_deref().unwrap_or(bytes),
+                        AgentDocumentSource::User,
+                        &tree.display_path(path),
+                    )?;
+                    let replaced = if top_level {
+                        &official_templates
+                    } else {
+                        &templates
+                    };
+                    if let Some(diagnostic) = resolve_default_prompt(&mut document, replaced) {
+                        official_agent_diagnostics.push(diagnostic);
+                    }
+                    match preset {
+                        None => templates.insert(id, document),
+                        Some(preset) => {
+                            // A preset exists while it has any document.
+                            preset_agents.entry((*preset).to_owned()).or_default();
+                            preset_template_documents
+                                .entry((*preset).to_owned())
+                                .or_default()
+                                .insert(id, document)
+                        }
+                    };
+                    continue;
+                }
                 let merged = match crate::agent_inherit::resolve(
                     tree,
                     path.as_str(),
@@ -268,6 +398,17 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
                             "agent `{id}` was left out: it inherits `{target}`, which there is \
                              no document for (yet)"
                         ));
+                        if let Some(preset) = preset {
+                            preset_agents.entry((*preset).to_owned()).or_default();
+                        }
+                        let (description, mode) = written_description_and_mode(bytes);
+                        pending_agents.push(PendingAgent {
+                            id,
+                            preset: preset.map(str::to_owned),
+                            target,
+                            description,
+                            mode,
+                        });
                         continue;
                     }
                 };
@@ -314,6 +455,44 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         official_agent_diagnostics.push(format!("official agent `{id}` was left out: {error}"));
     }
     AgentRegistry::validate_ref(&agents)?;
+    // A template validates as an agent of the registry it serves would: an
+    // official one that does not is left out, one of the user's fails the
+    // load as any document of theirs.
+    templates.retain(
+        |name, document| match AgentRegistry::validate_one(document, &agents) {
+            Ok(()) => true,
+            Err(error) if document.official => {
+                official_agent_diagnostics
+                    .push(format!("official template `_{name}` was left out: {error}"));
+                false
+            }
+            Err(_) => true,
+        },
+    );
+    for document in templates.values() {
+        if !document.official {
+            AgentRegistry::validate_one(document, &agents)?;
+        }
+    }
+    let preset_templates = preset_template_documents
+        .into_iter()
+        .map(|(preset, documents)| {
+            let mut effective = templates.clone();
+            effective.extend(documents);
+            let agents = preset_agents.get(&preset).map_or_else(
+                || agents.clone(),
+                |own| {
+                    let mut all = agents.clone();
+                    all.extend(own.clone());
+                    all
+                },
+            );
+            for document in effective.values() {
+                AgentRegistry::validate_one(document, &agents)?;
+            }
+            Ok((preset, effective))
+        })
+        .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
     let agent_presets = preset_agents
         .into_iter()
         .map(|(preset, documents)| {
@@ -381,7 +560,32 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         revision: tree.revision(),
         skills: crate::SkillRegistry::default(),
         official_agent_diagnostics,
+        templates,
+        preset_templates,
+        pending_agents,
     })
+}
+
+/// The `description` and `mode` a document writes itself, read leniently:
+/// it was left out before the strict parser saw it.
+fn written_description_and_mode(bytes: &[u8]) -> (Option<String>, Option<crate::AgentMode>) {
+    let Ok((yaml, _)) = crate::agent_document::split_document(bytes, Path::new("")) else {
+        return (None, None);
+    };
+    let Ok(serde_yaml::Value::Mapping(mapping)) = serde_yaml::from_str::<serde_yaml::Value>(&yaml)
+    else {
+        return (None, None);
+    };
+    let description = mapping
+        .get("description")
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(str::to_owned);
+    let mode = mapping
+        .get("mode")
+        .and_then(|mode| serde_yaml::from_value::<crate::AgentMode>(mode.clone()).ok());
+    (description, mode)
 }
 
 fn plugins_in_authored_order(

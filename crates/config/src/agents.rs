@@ -571,12 +571,17 @@ pub struct AgentMaterializationInput<'a> {
 #[derive(Clone, Debug)]
 pub struct AgentRegistry {
     agents: BTreeMap<AgentId, AgentDocument>,
+    /// Templates, by name without the `_` (`docs/site/specs/acp-onboarding.md`
+    /// section 6.1).
+    templates: BTreeMap<AgentId, AgentDocument>,
+    /// Documents left out because what they inherit does not exist yet.
+    pending: Vec<crate::PendingAgent>,
 }
 
 impl AgentRegistry {
     pub fn validate(agents: BTreeMap<AgentId, AgentDocument>) -> Result<Self, ConfigError> {
         Self::validate_ref(&agents)?;
-        Ok(Self { agents })
+        Ok(Self::from_validated(agents))
     }
 
     pub(crate) fn validate_ref(
@@ -597,7 +602,46 @@ impl AgentRegistry {
     }
 
     pub(crate) fn from_validated(agents: BTreeMap<AgentId, AgentDocument>) -> Self {
-        Self { agents }
+        Self {
+            agents,
+            templates: BTreeMap::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    /// The registry with `templates`, by name without the `_`.
+    #[must_use]
+    pub fn with_templates(mut self, templates: BTreeMap<AgentId, AgentDocument>) -> Self {
+        self.templates = templates;
+        self
+    }
+
+    /// The registry with the documents left out for a missing `inherit`.
+    #[must_use]
+    pub fn with_pending(mut self, pending: Vec<crate::PendingAgent>) -> Self {
+        self.pending = pending;
+        self
+    }
+
+    /// The template `_<name>.md`: the user's over the official one.
+    #[must_use]
+    pub fn template(&self, name: &str) -> Option<&AgentDocument> {
+        self.templates
+            .iter()
+            .find(|(id, _)| id.as_str() == name)
+            .map(|(_, document)| document)
+    }
+
+    /// Every template, by name without the `_`.
+    #[must_use]
+    pub fn templates(&self) -> &BTreeMap<AgentId, AgentDocument> {
+        &self.templates
+    }
+
+    /// The documents left out because what they inherit does not exist yet.
+    #[must_use]
+    pub fn pending(&self) -> &[crate::PendingAgent] {
+        &self.pending
     }
 
     #[must_use]
