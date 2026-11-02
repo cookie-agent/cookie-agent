@@ -2549,13 +2549,6 @@ def drag(browser, source, target, touch=False, dx=0):
     perform(browser, [{"type": "pointer", "id": pointer, "parameters": {"pointerType": pointer}, "actions": steps}])
 
 
-def drag_row(browser, source, target, touch=False):
-    """Drags a session row by its title: over a hovered row, its buttons
-    cover the middle."""
-    width = browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().width", source)
-    drag(browser, source, target, touch=touch, dx=int(-width / 2 + 40))
-
-
 def under(browser, machine, runtime):
     return count(browser, '#page [data-machine-drop="%s"] [data-runtime="%s"]' % (machine, runtime)) == 1
 
@@ -5077,6 +5070,21 @@ def header(project):
     return 'aside [data-project-header="%s"]' % project
 
 
+def move_by_menu(browser, session, project):
+    """Moves `session` into `project` (`none` for No project) with its
+    row's ⋮ menu."""
+    row = 'aside [data-session-row="%s"]' % session
+    hover(browser, row)
+    browser.wait("the ⋮", lambda: shown(browser, row + " [data-row-menu]"))
+    browser.click(row + " [data-row-menu]")
+    browser.wait("the row's menu", lambda: count(browser, "aside [data-row-menu-list]") == 1)
+    browser.click("aside [data-row-menu-list] [data-menu-item=move]")
+    browser.wait("the picker", lambda: count(browser, "#sheet [data-move-to]") >= 2)
+    browser.click('#sheet [data-move-to="%s"]' % project)
+    section = "none" if project == "none" else "project:" + project
+    browser.wait("the moved session", lambda: section_of(browser, session) == section)
+
+
 def section_of(browser, session):
     """The section key a session's row is listed under."""
     return browser.script(
@@ -5122,9 +5130,8 @@ def projects(browser):
     """Projects in the sidebar: sections instead of the workspace filter,
     a project made in the editor with an emoji, default attachments, a
     default agent, and an AGENTS.md; a new session in it from its header's
-    +, prefilled; sessions moved by mouse and by finger onto a header and
-    with the row's ⋮ menu's Move to project…, which Escape and a click
-    outside close; folding remembered; the editor's unsaved-edit
+    +, prefilled; sessions moved with the row's ⋮ menu's Move to project…,
+    which Escape and a click outside close; folding remembered; the editor's unsaved-edit
     guard, its rename, and its conflict; and the delete, refused while a
     session runs, then confirmed with what goes."""
     close_sheet(browser)
@@ -5215,20 +5222,16 @@ def projects(browser):
     browser.wait("its row in the section", lambda: section_of(browser, made) == "project:" + project)
     print("a new session from the header's + starts in the project with its runtimes and agent")
 
-    # Moving: a mouse drags a row from No project onto the header.
+    # Moving: the row's ⋮ menu moves two rows from No project into it.
     loose = browser.script(
         "return [...document.querySelectorAll(arguments[0] + ' [data-session-row]')].map((r) => r.dataset.sessionRow)",
         section("none"),
     )
     assert len(loose) >= 2, loose
     first, second = loose[0], loose[1]
-    drag_row(browser, 'aside [data-session-row="%s"] [data-session]' % first, header(project) + " [data-section-toggle]")
-    browser.wait("the dragged session", lambda: section_of(browser, first) == "project:" + project)
-    print("a mouse drag moved a session into the project")
-    # A finger lifts the row after a long press, then drags it.
-    drag_row(browser, 'aside [data-session-row="%s"] [data-session]' % second, header(project) + " [data-section-toggle]", touch=True)
-    browser.wait("the finger-dragged session", lambda: section_of(browser, second) == "project:" + project)
-    print("a finger drag moved a session into the project")
+    for moved in (first, second):
+        move_by_menu(browser, moved, project)
+    print("the ⋮ menu's Move to project… moved two sessions into the project")
     # The row's ⋮ menu's Move to project… sends one back out.
     row = 'aside [data-session-row="%s"]' % second
     hover(browser, "#transcript")
@@ -5397,8 +5400,9 @@ def phone_section_of(phone, session):
 
 def projects_phone():
     """Projects on a phone: a long press on a header shows its buttons, a
-    long press on a row offers its ⋮, Rename, and Delete, a finger drags a
-    row onto a header, and the ⋮'s sheet moves it back out."""
+    long press on a row offers its ⋮, Rename, and Delete while the finger
+    still holds it, and the ⋮'s sheet moves the row into a project and back
+    out."""
     phone = Browser()
     try:
         phone.phone(375, 800)
@@ -5419,7 +5423,17 @@ def projects_phone():
             "const r = document.querySelector('#sidebar [data-project-section=none] [data-session-row]');"
             "return r ? r.dataset.sessionRow : null"
         )
-        long_press(phone, '#sidebar [data-session-row="%s"] [data-session]' % row)
+        # The row's actions show while the finger still holds it: a press
+        # the page gets, not yet let go.
+        held = '#sidebar [data-session-row="%s"] [data-session]' % row
+        finger = (
+            "const b = document.querySelector(arguments[0]), r = b.getBoundingClientRect();"
+            "b.dispatchEvent(new PointerEvent(arguments[1], {pointerType: 'touch', pointerId: 9, isPrimary: true,"
+            " clientX: r.left + 30, clientY: r.top + r.height / 2, bubbles: true}))"
+        )
+        phone.script(finger, held, "pointerdown")
+        phone.wait("the row's actions while held", lambda: count(phone, "#sidebar [data-delete-actions] [data-row-menu]") == 1, timeout=5)
+        phone.script(finger, held, "pointerup")
         phone.wait("the row's actions", lambda: count(phone, "#sidebar [data-delete-actions] [data-row-menu]") == 1)
         labels = phone.script(
             "return [...document.querySelectorAll('#sidebar [data-delete-actions] button')].map((b) => b.getAttribute('aria-label'))"
@@ -5432,10 +5446,16 @@ def projects_phone():
         assert len(tops) == 1, "the row's actions wrap: %s" % tops
         fits(phone, "the row's actions")
         phone.shot("phone-row-actions")
-        phone.click("#sidebar [data-actions-cancel]")
-        drag_row(phone, '#sidebar [data-session-row="%s"] [data-session]' % row, target + " [data-section-toggle]", touch=True)
+        # The ⋮'s sheet moves it into the project.
+        phone.click("#sidebar [data-delete-actions] [data-row-menu]")
+        phone.wait("the row's sheet", lambda: count(phone, "#sidebar [data-row-menu-list]") == 1)
+        phone.click("#sidebar [data-row-menu-list] [data-menu-item=move]")
+        phone.wait("the picker", lambda: count(phone, "#sheet [data-move-to]") >= 2)
+        phone.click('#sheet [data-move-to="%s"]' % project)
+        phone.wait("the closed picker", lambda: count(phone, "#sheet") == 0)
+        phone.click("main [data-sidebar-toggle]")
         phone.wait("the moved row", lambda: phone_section_of(phone, row) == "project:" + project)
-        print("phone: long presses show the header's and the row's buttons; a finger drags a row onto a header")
+        print("phone: long presses show the header's and the row's buttons, the row's while held; its sheet moved it into the project")
         # The ⋮ a long press reveals opens a sheet from the bottom, the
         # screen's width, with rows a finger can hit; a tap outside closes
         # it, and its Move to project… moves the row back out.

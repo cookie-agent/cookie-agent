@@ -1,8 +1,7 @@
 //! Projects in the chat view (`docs/site/specs/projects.md` section 10.1):
-//! the sessions sidebar's project sections and their headers, dragging a
-//! session onto a header (a mouse drags at once, a finger after a long
-//! press), "Move to project…", the project editor with its emoji picker,
-//! and the new session's project picker.
+//! the sessions sidebar's project sections and their headers, "Move to
+//! project…", the project editor with its emoji picker, and the new
+//! session's project picker.
 
 use std::collections::HashMap;
 
@@ -14,25 +13,18 @@ use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId, SessionMeta};
 use leptos::{ev, html, prelude::*};
 
 use super::{
-    BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, RowActions, choice_line, empty_state,
-    search_query,
+    BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, choice_line, empty_state, search_query,
     session_rows::{SessionRows, keyed_rows, search_matches},
 };
 use crate::{
     browser,
     icons::Glyph,
     layout::{Press, View},
-    machines::{Drag, DragEnd, DragStep},
     workspace::{CardSet, PickState, Workspace},
 };
 
-/// How long a finger holds a session row before it lifts to be dragged,
-/// or a header before it shows its buttons.
+/// How long a finger holds a header before it shows its buttons.
 const LONG_PRESS: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// A drop target: a project section's header, named by its
-/// `data-project-drop` (the section's key).
-const DROP: &str = "[data-project-drop]";
 
 /// A header's button (pencil, trash, `+`): clear at rest, so it shows the
 /// header's own colour (hovered or pressed with it), one step darker under
@@ -46,210 +38,6 @@ const HEADER_COVER: &str = "pl-6 bg-[linear-gradient(to_right,transparent,var(--
 
 /// A text field of the editor.
 const FIELD: &str = "min-h-11 w-full min-w-0 rounded-lg bg-surface px-3 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
-
-/// The project a section key names: `None` for "No project".
-fn project_of_key(key: &str) -> Option<Option<ProjectId>> {
-    if key == "none" {
-        return Some(None);
-    }
-    key.strip_prefix("project:")
-        .and_then(|id| ProjectId::new(id).ok())
-        .map(Some)
-}
-
-/// A session row's drag, shared by the rows, the headers, and the window's
-/// listeners.
-#[derive(Clone, Copy)]
-pub(super) struct SessionDrag {
-    gesture: StoredValue<Drag>,
-    /// The row pressed, until the press ends.
-    pressed: StoredValue<Option<SessionId>>,
-    /// The row lifted or dragged, which follows the pointer.
-    pub(super) dragged: RwSignal<Option<SessionId>>,
-    pub(super) offset: RwSignal<(f64, f64)>,
-    /// The section whose header is under the pointer.
-    over: RwSignal<Option<String>>,
-    timer: StoredValue<Option<TimeoutHandle>>,
-    /// A drag or a long press just ended: the click that follows does not
-    /// open the row.
-    swallow_click: StoredValue<bool>,
-    /// The list, which scrolls when a drag nears its edge.
-    pub(super) list: NodeRef<html::Nav>,
-}
-
-impl SessionDrag {
-    pub(super) fn new() -> Self {
-        Self {
-            gesture: StoredValue::new(Drag::default()),
-            pressed: StoredValue::new(None),
-            dragged: RwSignal::new(None),
-            offset: RwSignal::new((0.0, 0.0)),
-            over: RwSignal::new(None),
-            timer: StoredValue::new(None),
-            swallow_click: StoredValue::new(false),
-            list: NodeRef::new(),
-        }
-    }
-
-    fn stop_timer(self) {
-        if let Some(timer) = self.timer.get_value() {
-            timer.clear();
-        }
-        self.timer.set_value(None);
-    }
-
-    fn reset(self) {
-        browser::set_pressing(false);
-        self.stop_timer();
-        self.gesture.update_value(Drag::cancel);
-        self.pressed.set_value(None);
-        self.dragged.set(None);
-        self.offset.set((0.0, 0.0));
-        self.over.set(None);
-    }
-
-    /// Whether the click that just came must be ignored; it is ignored
-    /// once.
-    pub(super) fn take_click(self) -> bool {
-        let swallow = self.swallow_click.get_value();
-        self.swallow_click.set_value(false);
-        swallow
-    }
-
-    /// A press on `session_id`'s row: a mouse drags once it moves (only
-    /// where there are headers to drop on), a finger after a long press,
-    /// which let go in place reveals the row's buttons.
-    pub(super) fn press(
-        self,
-        workspace: Workspace,
-        session_id: SessionId,
-        event: &ev::PointerEvent,
-    ) {
-        let touch = event.pointer_type() == "touch";
-        if !touch && (event.button() != 0 || !workspace.has_projects.get_untracked()) {
-            return;
-        }
-        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
-        self.stop_timer();
-        self.swallow_click.set_value(false);
-        self.gesture
-            .update_value(|gesture| gesture.press(x, y, touch));
-        self.pressed.set_value(Some(session_id));
-        if touch {
-            browser::set_pressing(true);
-            let timer = set_timeout_with_handle(
-                move || {
-                    if self.gesture.try_update_value(Drag::elapse).unwrap_or(false) {
-                        self.dragged.set(Some(session_id));
-                    }
-                },
-                LONG_PRESS,
-            )
-            .ok();
-            self.timer.set_value(timer);
-        }
-    }
-
-    /// Follows the pointer and lets go of it, on the window, for as long
-    /// as the list shows. A long press let go in place reveals the row's
-    /// buttons in `actions`; a drop on a header moves the session.
-    pub(super) fn follow(self, workspace: Workspace, actions: RowActions) {
-        let moved = window_event_listener(ev::pointermove, move |event| {
-            let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
-            match self
-                .gesture
-                .try_update_value(|gesture| gesture.moved(x, y))
-                .unwrap_or(DragStep::Nothing)
-            {
-                DragStep::Nothing => {}
-                DragStep::Cancelled => {
-                    browser::set_pressing(false);
-                    self.stop_timer();
-                    self.pressed.set_value(None);
-                }
-                DragStep::Started => {
-                    self.stop_timer();
-                    browser::set_pressing(true);
-                    actions.revealed.set(None);
-                    self.dragged.set(self.pressed.get_value());
-                    self.over
-                        .set(browser::attribute_at(x, y, DROP, "data-project-drop"));
-                }
-                DragStep::Moved { dx, dy } => {
-                    self.offset.set((dx, dy));
-                    self.over
-                        .set(browser::attribute_at(x, y, DROP, "data-project-drop"));
-                    if let Some(list) = self.list.get_untracked() {
-                        browser::scroll_element_near_edge(&list, y);
-                    }
-                }
-            }
-        });
-        let released = window_event_listener(ev::pointerup, move |_| {
-            let end = self
-                .gesture
-                .try_update_value(Drag::release)
-                .unwrap_or(DragEnd::Nothing);
-            let pressed = self.pressed.get_value();
-            let over = self.over.get_untracked();
-            self.reset();
-            let Some(session_id) = pressed else {
-                return;
-            };
-            // The click a release may bring comes before any timer: past it,
-            // a click (the keyboard's, say) opens the row again.
-            if end != DragEnd::Nothing {
-                self.swallow_click.set_value(true);
-                set_timeout(
-                    move || {
-                        let _ = self.swallow_click.try_set_value(false);
-                    },
-                    std::time::Duration::ZERO,
-                );
-            }
-            match end {
-                DragEnd::Nothing => {}
-                DragEnd::Held => {
-                    actions.confirming.set(None);
-                    actions.revealed.set(Some(session_id));
-                }
-                DragEnd::Dropped => {
-                    if let Some(project) = over.as_deref().and_then(project_of_key) {
-                        workspace.move_session(session_id, project);
-                    }
-                }
-            }
-        });
-        let cancelled = window_event_listener(ev::pointercancel, move |_| self.reset());
-        let unselectable = StoredValue::new_local(browser::hold_selection(move || {
-            self.pressed
-                .try_with_value(Option::is_some)
-                .unwrap_or(false)
-        }));
-        let hold = StoredValue::new_local(browser::hold_touch_scroll(move || {
-            self.gesture
-                .try_with_value(Drag::holds_scroll)
-                .unwrap_or(false)
-        }));
-        on_cleanup(move || {
-            moved.remove();
-            released.remove();
-            cancelled.remove();
-            if let Some(hold) = hold.try_update_value(Option::take).flatten() {
-                hold.remove();
-            }
-            if let Some(hold) = unselectable.try_update_value(Option::take).flatten() {
-                hold.remove();
-            }
-            browser::set_pressing(false);
-        });
-    }
-
-    /// Whether `session_id`'s row is lifted or dragged.
-    pub(super) fn lifts(self, session_id: SessionId) -> bool {
-        self.dragged.get() == Some(session_id)
-    }
-}
 
 /// A header's state shared by every header of the list: which one a
 /// mouse is over, which a long press revealed, and which delete waits for
@@ -507,7 +295,7 @@ fn section_view(
         <section class="flex flex-col gap-1 pb-2" data-project-section=key.clone() data-open=move || open.get().to_string()>
             {move || {
                 header.get().map(|(project, members)| {
-                    project_header(workspace, project, header_key.clone(), open, rows.drag, headers, members)
+                    project_header(workspace, project, header_key.clone(), open, headers, members)
                 })
             }}
             {move || {
@@ -538,13 +326,11 @@ fn section_view(
 /// emoji (a folder without one) and its name; its tooltip names its
 /// default attachments. `+` starts a session in it; a project's pencil
 /// and delete show on hover, or after a long press on a touch screen.
-/// Sessions dropped on it move into it.
 fn project_header(
     workspace: Workspace,
     project: Option<ProjectInfo>,
     key: String,
     open: Memo<bool>,
-    drag: SessionDrag,
     headers: HeaderActions,
     members: Vec<SessionId>,
 ) -> impl IntoView {
@@ -607,16 +393,6 @@ fn project_header(
         let empty = members.is_empty();
         move || workspace.picking.active.get() && !empty
     };
-    // A dragged session from another section can land here.
-    let target = {
-        let key = key.clone();
-        move || {
-            drag.dragged
-                .get()
-                .is_some_and(|dragged| !members.contains(&dragged))
-                && drag.over.get().as_deref() == Some(key.as_str())
-        }
-    };
     let on_pointerdown = {
         let key = key.clone();
         move |event: ev::PointerEvent| {
@@ -663,16 +439,10 @@ fn project_header(
     let confirm_id = project_id.clone();
     let confirm_project = project.clone();
     let shown_buttons = shown.clone();
-    let ring = target.clone();
     view! {
         <div
-            class=move || format!(
-                "project-header group relative flex rounded-md {}",
-                if ring() { "bg-sunken ring-2 ring-accent" } else { "" },
-            )
-            data-project-drop=key.clone()
+            class="project-header group relative flex rounded-md"
             data-project-header=project_id.as_ref().map_or_else(|| "none".to_owned(), ToString::to_string)
-            data-drop-target=move || target().then_some("true")
             on:pointerenter=move |event: ev::PointerEvent| {
                 if event.pointer_type() != "touch" {
                     hovered.set(Some(enter_key.clone()));

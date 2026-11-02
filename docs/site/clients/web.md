@@ -354,10 +354,8 @@ refreshes no longer change). Reset and Replace ask once more.
     touch screen, press it for about half a second) for its pencil, which
     opens the project editor, and its trash. **No project** has only its
     **+**. The folder button beside **New session** makes a new project.
-  - **Moving a session.** Drag its row onto a project's header, or onto
-    **No project**: a mouse drags at once, a finger after pressing the row
-    for half a second (the list scrolls when the row nears its edge). Or
-    hover over the row for its **⋮**, left of its pencil, and choose
+  - **Moving a session.** Hover over its row for its **⋮**, left of its
+    pencil (on a touch screen, press the row for half a second), and choose
     **Move to project…**, which lists the projects and **No project**.
     The ⋮ menu holds a row's less frequent actions: it opens under the
     button (a sheet from the bottom on a phone), the arrow keys move
@@ -1074,11 +1072,11 @@ changes (`crons.changed`), from any client or agent.
   Back (Android's Back gesture and button too), the sidebar button in its
   title bar, or choosing a session or a view hides it, and a tap on the
   open session's row switches its tree and leaves it shown. A long press
-  on a session's row, let go in place, reveals its **⋮**, a sheet with
-  **Move to project…**, which lists the projects, its **Rename**, which
-  makes its title a field, and its **Delete**, then the confirmation; held
-  and moved, it drags the row onto a project's header. A long press on a
-  project's header shows its pencil and trash.
+  on a session's row reveals, as soon as it is held, its **⋮**, a sheet
+  with **Move to project…**, which lists the projects, its **Rename**,
+  which makes its title a field, and its **Delete**, then the
+  confirmation. A long press on a project's header shows its pencil and
+  trash.
 - **Back.** Back steps out of the innermost thing open: a sheet, then an
   item open in a view, then the sidebar shown as the page, then a view
   other than Chat, back to the conversation. Only Back from the

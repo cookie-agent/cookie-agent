@@ -9,8 +9,97 @@ use std::collections::{HashMap, HashSet};
 use cookie_agent_protocol::{SessionId, SessionMeta, SessionOrigin};
 use leptos::prelude::*;
 
-use super::{RowActions, projects::SessionDrag, session_label, session_row};
-use crate::workspace::Workspace;
+use leptos::ev;
+
+use super::{LONG_PRESS, RowActions, session_label, session_row};
+use crate::{browser, layout::Press, workspace::Workspace};
+
+/// A finger's long press on a session row, shared by the rows (one finger
+/// presses at a time): held still for [`LONG_PRESS`], it shows the row's
+/// buttons at once, with a short buzz where the phone has one, and the
+/// click its release brings opens nothing. A move, as a scroll makes,
+/// cancels it. A mouse has hover and its right-click instead.
+#[derive(Clone, Copy)]
+pub(super) struct RowPress {
+    press: StoredValue<Press>,
+    timer: StoredValue<Option<TimeoutHandle>>,
+}
+
+impl RowPress {
+    pub(super) fn new() -> Self {
+        Self {
+            press: StoredValue::new(Press::default()),
+            timer: StoredValue::new(None),
+        }
+    }
+
+    fn stop_timer(self) {
+        if let Some(timer) = self.timer.try_update_value(Option::take).flatten() {
+            timer.clear();
+        }
+    }
+
+    /// A press on `session_id`'s row.
+    pub(super) fn down(self, session_id: SessionId, event: &ev::PointerEvent, actions: RowActions) {
+        if event.pointer_type() != "touch" {
+            return;
+        }
+        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+        self.press.update_value(|press| press.start(x, y));
+        self.stop_timer();
+        browser::set_pressing(true);
+        let timer = set_timeout_with_handle(
+            move || {
+                if self.press.try_update_value(Press::elapse).unwrap_or(false) {
+                    Self::held(session_id, actions);
+                }
+            },
+            LONG_PRESS,
+        )
+        .ok();
+        self.timer.set_value(timer);
+    }
+
+    /// The press on `session_id`'s row was a long one: its buttons show.
+    /// The browser's own long press, its `contextmenu`, says so too, and
+    /// may come first, taking the gesture over.
+    pub(super) fn held(session_id: SessionId, actions: RowActions) {
+        if actions.revealed.get_untracked() == Some(session_id) {
+            return;
+        }
+        actions.confirming.set(None);
+        actions.revealed.set(Some(session_id));
+        if let Some(window) = web_sys::window() {
+            let _ = window.navigator().vibrate_with_duration(12);
+        }
+    }
+
+    /// The finger moved: far enough, it is no long press.
+    pub(super) fn moved(self, event: &ev::PointerEvent) {
+        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+        if self
+            .press
+            .try_update_value(|press| press.moved(x, y))
+            .unwrap_or(false)
+        {
+            self.stop_timer();
+            browser::set_pressing(false);
+        }
+    }
+
+    /// The finger lifted, or the browser took the gesture over.
+    pub(super) fn up(self) {
+        self.press.update_value(Press::cancel);
+        self.stop_timer();
+        browser::set_pressing(false);
+    }
+
+    /// Whether the click that came opens the row: not the one a long
+    /// press's release brings.
+    pub(super) fn click(self) -> bool {
+        self.press.try_update_value(Press::click).unwrap_or(true)
+    }
+}
 
 /// Each listed session's meta, by ID.
 #[derive(Clone, Copy)]
@@ -103,7 +192,7 @@ pub(super) struct SessionRows {
     pub slots: SessionSlots,
     pub now: RwSignal<jiff::Timestamp>,
     pub actions: RowActions,
-    pub drag: SessionDrag,
+    pub press: RowPress,
 }
 
 impl SessionRows {
@@ -114,12 +203,12 @@ impl SessionRows {
             slots,
             now,
             actions,
-            drag,
+            press,
         } = self;
         let slot = slots.slot(session_id);
         move || {
             slot.as_ref()
-                .map(|slot| session_row(workspace, slot.get(), now, actions, drag))
+                .map(|slot| session_row(workspace, slot.get(), now, actions, press))
         }
     }
 }

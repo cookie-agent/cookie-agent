@@ -81,7 +81,7 @@ use crate::{
     tree::{Activity, delegates_of, path, subagent_label},
 };
 
-/// How long a touch must hold a session row to offer its delete.
+/// How long a finger holds a session row, or a message, for its actions.
 const LONG_PRESS: Duration = Duration::from_millis(500);
 
 /// How long after the composer loses focus a phone's bottom bar returns.
@@ -341,16 +341,15 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     };
     // Dragging a session onto a project's header, and the headers' own
     // buttons.
-    let drag = projects::SessionDrag::new();
-    drag.follow(workspace, actions);
+    let press = session_rows::RowPress::new();
     let headers = projects::HeaderActions::new();
-    let list = drag.list;
+    let list = NodeRef::<html::Nav>::new();
     let rows = session_rows::SessionRows {
         workspace,
         slots: session_rows::SessionSlots::new(workspace),
         now,
         actions,
-        drag,
+        press,
     };
     // The project sections, worked out once for the list and Select all.
     let sections = projects::listed_sections(workspace, searching, labels);
@@ -1112,7 +1111,7 @@ fn session_row(
     session: SessionMeta,
     now: RwSignal<jiff::Timestamp>,
     actions: RowActions,
-    drag: projects::SessionDrag,
+    press: session_rows::RowPress,
 ) -> impl IntoView {
     let session_id = session.session_id;
     let current = move || workspace.selected.get() == Some(session_id);
@@ -1282,29 +1281,15 @@ fn session_row(
         }
         items
     };
-    // A mouse drags the row onto a project's header at once; a finger
-    // after a long press, which let go in place reveals the buttons.
+    // A finger's long press shows the row's buttons.
     let on_pointerdown = move |event: ev::PointerEvent| {
         if !is_renaming() && !picking() {
-            drag.press(workspace, session_id, &event);
+            press.down(session_id, &event, actions);
         }
     };
-    let lifted = move || drag.lifts(session_id);
     view! {
         <div
-            class=move || format!(
-                "session-row group relative {}",
-                if lifted() {
-                    "pointer-events-none z-30 rounded-md bg-surface shadow-xl ring-2 ring-accent"
-                } else {
-                    ""
-                },
-            )
-            style:transform=move || {
-                let (dx, dy) = drag.offset.get();
-                if lifted() { format!("translate({dx}px, {dy}px) scale(1.02)") } else { String::new() }
-            }
-            data-dragging=move || lifted().then_some("true")
+            class="session-row group relative"
             data-session-row=session_id.to_string()
             on:pointerenter=move |event: ev::PointerEvent| {
                 if event.pointer_type() != "touch" {
@@ -1336,10 +1321,27 @@ fn session_row(
                 data-session=session_id.to_string()
                 title=title
                 on:pointerdown=on_pointerdown
+                on:pointermove=move |event: ev::PointerEvent| press.moved(&event)
+                on:pointerup=move |_| press.up()
+                on:pointercancel=move |_| press.up()
+                on:touchend=move |event: ev::TouchEvent| {
+                    // Chrome ends a long press with a click, which would
+                    // land on the buttons it just showed under the finger.
+                    if !press.click() {
+                        event.prevent_default();
+                    }
+                }
                 on:contextmenu=move |event: ev::MouseEvent| {
-                    // A touch screen's long press lifts the row and offers
-                    // its actions, not the browser's menu.
-                    if lifted() || revealed.get_untracked() == Some(session_id) {
+                    // A touch screen's long press offers the row's actions,
+                    // not the browser's menu.
+                    if crate::browser::from_touch(&event) {
+                        event.prevent_default();
+                        if !is_renaming() && !picking() {
+                            session_rows::RowPress::held(session_id, actions);
+                        }
+                        return;
+                    }
+                    if revealed.get_untracked() == Some(session_id) {
                         event.prevent_default();
                         return;
                     }
@@ -1362,7 +1364,7 @@ fn session_row(
                         workspace.toggle_pick(session_id, event.shift_key());
                         return;
                     }
-                    if !drag.take_click() {
+                    if press.click() {
                         // From another view, the open session's row goes
                         // back to its conversation.
                         if current() && workspace.view.get_untracked() != View::Chat {
