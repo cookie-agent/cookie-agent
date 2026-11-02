@@ -1,6 +1,6 @@
 # Onboarding with ACP agents, the agents panel, and unavailable agents
 
-Status: **approved** (2026-11-01), in progress: phases 1 to 3 implemented
+Status: **approved** (2026-11-01), in progress: phases 1 to 4 implemented
 (client protocol 1.72.0 and 1.74.0); see the
 [implementation notes](#implementation-notes). The user took every
 recommendation of [section 11](#11-decisions) on 2026-11-01.
@@ -25,6 +25,13 @@ Where the code departs from the sections below:
 - **No `official_pending` reason** (section 8.1): before the first refresh
   the daemon does not know which official agents there will be. A document
   of the user's that inherits one is `inherit_missing`.
+- **The TUI's agent picker marks** each agent that cannot run with `✗`
+  after the others instead of drawing a divider line (section 8.2): its
+  rows are one line each, and a line that is no row would break its
+  pointer targets. The web's agent sheet has the divider.
+- **The TUI's ACP step edits another agent inline** (ID, command, and
+  environment as `KEY=VALUE` words); its description stays empty. The web
+  step has every field.
 - **Templates and presets are lists of their own** in the official index
   (`templates`, `acp_presets`, `mcp_presets`), which older daemons ignore.
 

@@ -70,24 +70,38 @@ address bar.
 
 ## Setting up a daemon
 
-A daemon that is not set up yet, with no provider connected, without a
-`default_model` its providers offer, or without its default agent (see
+A daemon that is not set up yet, with neither a provider connected and a
+`default_model` its providers offer nor an [ACP agent](../extend/acp-agents.md)
+that can run, or without its default agent (see
 [onboarding](../quickstart.md)), offers a first-run sheet when the page
-connects. It walks four steps, each starting from what is already
-configured, with **Back** and **Next** and a check on each step done:
+connects. Its steps start from what is already configured, with **Back** and
+**Next** and a check on each step done:
 
-1. **Provider**: the connected providers with their count of available
+1. **How agents run**: **Model providers**, **An ACP agent**, or both. The
+   steps below follow the choice.
+2. **Provider**: the connected providers with their count of available
    models, then the same provider list and connect forms as Settings ›
    Providers; errors show in the form, which can be sent again. Several may
    be connected.
-2. **Default model**: a searchable list of the connected providers' models,
+3. **Default model**: a searchable list of the connected providers' models,
    grouped by provider, with their context size. Choosing one shows its
    variants as chips, the model's own default variant chosen.
-3. **Small model** (optional): the same list, for the subagents that carry
+4. **Small model** (optional): the same list, for the subagents that carry
    out work; its chips start on the model's default variant.
-4. **Utility model** (optional): the same list, for approvals and session
+5. **Utility model** (optional): the same list, for approvals and session
    titles; its chips start on the model's first listed variant, the
    cheapest.
+6. **ACP agent** (the ACP path): the daemon's presets (Claude Code, Codex)
+   with what each machine needs, or **Another ACP agent**; where it runs,
+   **on every machine** or **on this daemon's machine only**; and its ID,
+   command, environment, and description, filled in from the preset.
+   **Add ACP agent** declares it at once, and each runtime that offers it
+   has a **Check**, which starts the agent there and says whether it works
+   (`acp.check`). With an ACP agent, the model steps are optional.
+7. **Tools** (optional): MCP servers that need no login, such as web
+   search, documentation, and a browser, from the daemon's presets; one
+   that runs a program runs on the runtime chosen there. **New sessions
+   start with** sets `[agents] default`.
 
 **Finish** (`onboarding.run`) is disabled, with what is still needed beside
 it, until the daemon would be set up; it fetches the
@@ -98,6 +112,12 @@ remembers it for this daemon, and Settings › **Set up Cookie** opens the
 sheet again at any time, also on a daemon that is set up. Every page
 connected to the daemon follows `onboarding.changed`: finishing in one tab
 closes the sheet in the others. On a phone the sheet fills the screen.
+
+The agent sheet lists the agents that cannot run now below a **Cannot
+run now** divider, dimmed and with why (no model, with the model field or
+provider that is missing; no connected machine offering an ACP agent; a
+document whose inherited one is not there yet); they cannot be picked. An
+agent you turned off is not listed.
 
 ## Layout
 

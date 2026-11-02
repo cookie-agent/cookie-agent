@@ -4,7 +4,12 @@
 //! is this browser's choice; the daemon's answer stays what its
 //! configuration says.
 
-use cookie_agent_protocol::{OnboardingRunParams, OnboardingRunResult, OnboardingStatus};
+use std::collections::BTreeMap;
+
+use cookie_agent_protocol::{
+    AcpCheckParams, AcpCheckResult, AgentId, OnboardingAcpAgentInput, OnboardingRunParams,
+    OnboardingRunResult, OnboardingStatus, RuntimeId,
+};
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
@@ -13,6 +18,9 @@ use crate::browser;
 /// Where this browser remembers "Not now": the page's origin is the
 /// daemon's, so it is one choice per daemon.
 pub const NOT_NOW_KEY: &str = "cookie.onboarding_not_now";
+
+/// What an `acp.check` found, or why it could not run.
+pub type CheckOutcome = Result<AcpCheckResult, String>;
 
 /// The first-run sheet's state that outlives a render.
 #[derive(Clone, Copy)]
@@ -27,6 +35,13 @@ pub struct Onboarding {
     pub result: RwSignal<Option<OnboardingRunResult>>,
     /// Why the last run was refused.
     pub error: RwSignal<Option<String>>,
+    /// The user changed the daemon from the sheet (an ACP agent added or
+    /// checked): a daemon set up by that does not close it.
+    pub touched: RwSignal<bool>,
+    /// What the ACP step said last: the agent added, or why not.
+    pub acp_note: RwSignal<Option<String>>,
+    /// Each check's outcome by runtime and agent; `None` while it runs.
+    pub checks: RwSignal<BTreeMap<(RuntimeId, AgentId), Option<CheckOutcome>>>,
 }
 
 impl Default for Onboarding {
@@ -37,6 +52,9 @@ impl Default for Onboarding {
             running: RwSignal::new(false),
             result: RwSignal::new(None),
             error: RwSignal::new(None),
+            touched: RwSignal::new(false),
+            acp_note: RwSignal::new(None),
+            checks: RwSignal::new(BTreeMap::new()),
         }
     }
 }
@@ -97,7 +115,8 @@ impl Workspace {
         let closes = closes_on_change(
             &status,
             self.onboarding.running.get_untracked(),
-            self.onboarding.result.with_untracked(Option::is_some),
+            self.onboarding.result.with_untracked(Option::is_some)
+                || self.onboarding.touched.get_untracked(),
         );
         self.onboarding.status.set(Some(status));
         if closes {
@@ -109,6 +128,8 @@ impl Workspace {
     pub fn open_onboarding(self) {
         self.onboarding.result.set(None);
         self.onboarding.error.set(None);
+        self.onboarding.touched.set(false);
+        self.onboarding.acp_note.set(None);
         self.onboarding.open.set(true);
         self.refresh_onboarding(false);
     }
@@ -146,6 +167,61 @@ impl Workspace {
                     .set(Some(crate::errors::describe(&error))),
             }
             self.onboarding.running.set(false);
+        });
+    }
+
+    /// The ACP step's Add: declares `agent` now (`onboarding.run` with it
+    /// alone), so it can be checked before Finish.
+    pub fn add_onboarding_acp(self, agent: OnboardingAcpAgentInput) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        self.onboarding.touched.set(true);
+        self.onboarding.running.set(true);
+        self.onboarding.error.set(None);
+        let id = agent.id.clone();
+        spawn_local(async move {
+            let params = OnboardingRunParams {
+                acp_agents: Some(vec![agent]),
+                ..OnboardingRunParams::default()
+            };
+            match client.run_onboarding(params).await {
+                Ok(result) => {
+                    self.onboarding.status.set(Some(result.status));
+                    self.onboarding
+                        .acp_note
+                        .set(Some(format!("Added `{id}`. Check it below, or go on.")));
+                }
+                Err(error) => self
+                    .onboarding
+                    .acp_note
+                    .set(Some(crate::errors::describe(&error))),
+            }
+            self.onboarding.running.set(false);
+        });
+    }
+
+    /// The ACP step's Check: `acp.check` for `agent` on `runtime`.
+    pub fn check_onboarding_acp(self, runtime: RuntimeId, agent: AgentId) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        self.onboarding.touched.set(true);
+        let key = (runtime.clone(), agent.clone());
+        self.onboarding
+            .checks
+            .update(|checks| drop(checks.insert(key.clone(), None)));
+        spawn_local(async move {
+            let result = client
+                .check_acp_agent(AcpCheckParams {
+                    runtime_id: runtime,
+                    agent,
+                })
+                .await
+                .map_err(|error| crate::errors::describe(&error));
+            self.onboarding
+                .checks
+                .update(|checks| drop(checks.insert(key, Some(result))));
         });
     }
 

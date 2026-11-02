@@ -13,32 +13,101 @@ use cookie_agent_protocol::{
     OnboardingRunResult, OnboardingStatus, ProviderId, RuntimeId, VariantId,
 };
 
-/// The steps of onboarding, in order. The small and utility models are
-/// optional: agents that name them fall back to the next model of their
-/// list.
+/// The steps of onboarding, in order: how agents run, then the models
+/// path's steps, the ACP path's, and the optional Tools
+/// (`docs/site/specs/acp-onboarding.md` section 9). The small and utility
+/// models are optional: agents that name them fall back to the next model
+/// of their list.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum OnboardingStep {
+    Start,
     Provider,
     DefaultModel,
     SmallModel,
     UtilityModel,
+    AcpAgent,
+    Tools,
+}
+
+/// The ways of running agents the user chose in the first step.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PathChoice {
+    /// Cookie's own agents on connected model providers.
+    pub models: bool,
+    /// An ACP agent with its own login.
+    pub acp: bool,
+}
+
+impl PathChoice {
+    /// What `status` has done: the ACP path when it is complete, the models
+    /// path when it is complete or nothing is.
+    #[must_use]
+    pub fn of(status: &OnboardingStatus) -> Self {
+        let (models, acp) = status.paths.as_ref().map_or((true, false), |paths| {
+            (paths.models.complete, paths.acp.complete)
+        });
+        Self {
+            models: models || !acp,
+            acp,
+        }
+    }
+
+    /// The choice with `models` (or else `acp`) turned the other way; one
+    /// of them stays chosen.
+    #[must_use]
+    pub const fn toggled(self, models: bool) -> Self {
+        let next = if models {
+            Self {
+                models: !self.models,
+                acp: self.acp,
+            }
+        } else {
+            Self {
+                models: self.models,
+                acp: !self.acp,
+            }
+        };
+        if next.models || next.acp { next } else { self }
+    }
+
+    /// The steps it shows, in order.
+    #[must_use]
+    pub fn steps(self) -> Vec<OnboardingStep> {
+        OnboardingStep::ALL
+            .into_iter()
+            .filter(|step| match step {
+                OnboardingStep::Provider
+                | OnboardingStep::DefaultModel
+                | OnboardingStep::SmallModel
+                | OnboardingStep::UtilityModel => self.models,
+                OnboardingStep::AcpAgent => self.acp,
+                OnboardingStep::Start | OnboardingStep::Tools => true,
+            })
+            .collect()
+    }
 }
 
 impl OnboardingStep {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 7] = [
+        Self::Start,
         Self::Provider,
         Self::DefaultModel,
         Self::SmallModel,
         Self::UtilityModel,
+        Self::AcpAgent,
+        Self::Tools,
     ];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Start => "How agents run",
             Self::Provider => "Provider",
             Self::DefaultModel => "Default model",
             Self::SmallModel => "Small model",
             Self::UtilityModel => "Utility model",
+            Self::AcpAgent => "ACP agent",
+            Self::Tools => "Tools",
         }
     }
 
@@ -47,9 +116,24 @@ impl OnboardingStep {
     #[must_use]
     pub fn done(self, status: &OnboardingStatus) -> bool {
         let missing = |requirement| status.missing.contains(&requirement);
+        let models_missing = |requirement| {
+            status.paths.as_ref().map_or_else(
+                || missing(requirement),
+                |paths| paths.models.missing.contains(&requirement),
+            )
+        };
         match self {
-            Self::Provider => !missing(OnboardingRequirement::Provider),
-            Self::DefaultModel => !missing(OnboardingRequirement::DefaultModel),
+            Self::Start => status
+                .paths
+                .as_ref()
+                .is_some_and(|paths| paths.models.complete || paths.acp.complete),
+            Self::Provider => !models_missing(OnboardingRequirement::Provider),
+            Self::DefaultModel => !models_missing(OnboardingRequirement::DefaultModel),
+            Self::AcpAgent => status
+                .paths
+                .as_ref()
+                .is_some_and(|paths| paths.acp.complete),
+            Self::Tools => !status.mcp_servers.is_empty(),
             Self::SmallModel => status.small_model_list.is_some() || status.small_model.is_some(),
             Self::UtilityModel => {
                 status.utility_model_list.is_some() || status.utility_model.is_some()
@@ -63,31 +147,37 @@ impl OnboardingStep {
         matches!(self, Self::Provider | Self::DefaultModel)
     }
 
+    /// The step after this one among `choice`'s.
     #[must_use]
-    pub fn next(self) -> Option<Self> {
-        Self::ALL
+    pub fn next(self, choice: PathChoice) -> Option<Self> {
+        let steps = choice.steps();
+        steps
             .iter()
             .position(|step| *step == self)
-            .and_then(|index| Self::ALL.get(index + 1).copied())
+            .and_then(|index| steps.get(index + 1).copied())
     }
 
+    /// The step before this one among `choice`'s.
     #[must_use]
-    pub fn previous(self) -> Option<Self> {
-        Self::ALL
+    pub fn previous(self, choice: PathChoice) -> Option<Self> {
+        let steps = choice.steps();
+        steps
             .iter()
             .position(|step| *step == self)
             .and_then(|index| index.checked_sub(1))
-            .map(|index| Self::ALL[index])
+            .map(|index| steps[index])
     }
 }
 
-/// The step to open on: the first step not done, else the last.
+/// The step to open on: the first step of `status`'s choice not done, else
+/// the first.
 #[must_use]
 pub fn first_step(status: &OnboardingStatus) -> OnboardingStep {
-    OnboardingStep::ALL
+    PathChoice::of(status)
+        .steps()
         .into_iter()
         .find(|step| !step.done(status))
-        .unwrap_or(OnboardingStep::UtilityModel)
+        .unwrap_or(OnboardingStep::Start)
 }
 
 /// What a requirement asks for, as a phrase.
@@ -139,6 +229,25 @@ pub fn finish_refusal(
         first.make_ascii_uppercase();
     }
     Some(format!("{text} first."))
+}
+
+/// Why Finish is disabled for `choice`, the ways the user chose: with the
+/// ACP path alone, until an ACP agent is linked (the ACP step declares it
+/// at once); otherwise as [`finish_refusal`] says.
+#[must_use]
+pub fn finish_refusal_for(
+    status: &OnboardingStatus,
+    choice: PathChoice,
+    chosen_default: bool,
+) -> Option<String> {
+    let acp_complete = status
+        .paths
+        .as_ref()
+        .is_some_and(|paths| paths.acp.complete);
+    if !choice.models && !acp_complete {
+        return Some("Add an ACP agent first.".into());
+    }
+    finish_refusal(status, chosen_default, false)
 }
 
 /// One group of the model pickers: a connected provider and its available
@@ -744,13 +853,32 @@ mod tests {
 
     #[test]
     fn the_panel_opens_on_the_first_step_left() {
+        use super::PathChoice;
         use OnboardingRequirement::*;
+        use cookie_agent_protocol::{OnboardingAcpPath, OnboardingModelsPath, OnboardingPaths};
+        let paths = |models: bool, acp: bool| {
+            Some(OnboardingPaths {
+                models: OnboardingModelsPath {
+                    complete: models,
+                    missing: Vec::new(),
+                },
+                acp: OnboardingAcpPath {
+                    complete: acp,
+                    agents: Vec::new(),
+                },
+            })
+        };
+        // Nothing done: how agents run.
         assert_eq!(
             first_step(&status(&[Provider, DefaultModel])),
-            OnboardingStep::Provider
+            OnboardingStep::Start
         );
-        // The optional models are left while unset.
-        assert_eq!(first_step(&status(&[])), OnboardingStep::SmallModel);
+        // The models path done: the optional models are left while unset.
+        let models_done = OnboardingStatus {
+            paths: paths(true, false),
+            ..status(&[])
+        };
+        assert_eq!(first_step(&models_done), OnboardingStep::SmallModel);
         let chosen = |model: &str| {
             Some(cookie_agent_protocol::OnboardingModel {
                 model: model.parse().unwrap(),
@@ -760,15 +888,51 @@ mod tests {
         let all_set = OnboardingStatus {
             small_model: chosen("a/small"),
             utility_model: chosen("a/utility"),
+            ..models_done.clone()
+        };
+        assert_eq!(first_step(&all_set), OnboardingStep::Tools);
+        // The ACP path alone shows its own steps.
+        let acp_done = OnboardingStatus {
+            paths: paths(false, true),
             ..status(&[])
         };
-        assert_eq!(first_step(&all_set), OnboardingStep::UtilityModel);
+        let acp = PathChoice::of(&acp_done);
         assert_eq!(
-            OnboardingStep::Provider.next(),
+            acp,
+            PathChoice {
+                models: false,
+                acp: true
+            }
+        );
+        assert_eq!(
+            acp.steps(),
+            [
+                OnboardingStep::Start,
+                OnboardingStep::AcpAgent,
+                OnboardingStep::Tools
+            ]
+        );
+        assert_eq!(first_step(&acp_done), OnboardingStep::Tools);
+        let models = PathChoice::of(&models_done);
+        assert_eq!(
+            OnboardingStep::Provider.next(models),
             Some(OnboardingStep::DefaultModel)
         );
-        assert_eq!(OnboardingStep::UtilityModel.next(), None);
-        assert_eq!(OnboardingStep::Provider.previous(), None);
+        assert_eq!(
+            OnboardingStep::UtilityModel.next(models),
+            Some(OnboardingStep::Tools)
+        );
+        assert_eq!(OnboardingStep::Tools.next(models), None);
+        assert_eq!(OnboardingStep::Start.previous(models), None);
+        // One way stays chosen.
+        assert_eq!(models.toggled(true), models);
+        assert_eq!(
+            models.toggled(false),
+            PathChoice {
+                models: true,
+                acp: true
+            }
+        );
         assert!(OnboardingStep::DefaultModel.required());
         assert!(!OnboardingStep::SmallModel.required());
         assert!(!OnboardingStep::UtilityModel.required());

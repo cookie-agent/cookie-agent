@@ -71,10 +71,14 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     assert!(app.onboarding_notice_visible());
     assert!(rendered_frame(&mut app, 120, 40).contains("Cookie is not set up"));
 
-    // The panel opens on the first step not done, and Finish says why it
-    // is disabled.
+    // The panel opens on how agents run, neither way being done; the
+    // models path is the one chosen. Finish says why it is disabled.
     app.run_command(SlashCommand::Onboard).await;
     assert_eq!(app.modal, Modal::Onboarding);
+    assert_eq!(app.onboarding.step, Some(OnboardingStep::Start));
+    assert!(rendered_frame(&mut app, 120, 40).contains("[x] 1 Model providers"));
+    app.handle_key(key(KeyCode::Right)).await;
+    app.handle_key(key(KeyCode::Right)).await;
     assert_eq!(app.onboarding.step, Some(OnboardingStep::DefaultModel));
     assert_eq!(
         app.onboarding_finish_refusal().as_deref(),
@@ -102,8 +106,11 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     app.choose_picker_entry(0).await;
     assert_eq!(app.modal, Modal::Onboarding);
     assert_eq!(app.onboarding.utility_choice.len(), 1);
-    // A fallback after it: the same models as the default model, stays on
-    // the step; removing it leaves the first model.
+    // Choosing it moved on to the Tools; back on the step, a fallback after
+    // it: the same models as the default model, which stays on the step;
+    // removing it leaves the first model.
+    assert_eq!(app.onboarding.step, Some(OnboardingStep::Tools));
+    app.handle_key(key(KeyCode::Left)).await;
     assert_eq!(app.onboarding.step, Some(OnboardingStep::UtilityModel));
     app.handle_key(key(KeyCode::Char('d'))).await;
     assert_eq!(
@@ -233,4 +240,57 @@ async fn the_model_steps_preselect_the_default_and_the_first_listed_variant() {
     assert_eq!(variant(ModelSlot::Default).as_deref(), Some("medium"));
     assert_eq!(variant(ModelSlot::Small).as_deref(), Some("medium"));
     assert_eq!(variant(ModelSlot::Utility).as_deref(), Some("fast"));
+}
+
+#[tokio::test]
+async fn an_acp_agent_alone_sets_the_daemon_up_from_the_panel() {
+    let (directory, server) = crate::tests::in_process_server_with_configuration();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    let mut app = App::new(client).await.expect("app");
+    let _deliveries = app.take_deliveries();
+    app.poll_onboarding();
+    pump_until(&mut app, |app| app.onboarding.status.is_some()).await;
+    app.run_command(SlashCommand::Onboard).await;
+    assert_eq!(app.onboarding.step, Some(OnboardingStep::Start));
+
+    // An ACP agent instead of model providers: its steps replace theirs.
+    app.handle_key(key(KeyCode::Char('2'))).await;
+    app.handle_key(key(KeyCode::Char('1'))).await;
+    let paths = app.onboarding.paths();
+    assert!(paths.acp && !paths.models);
+    assert_eq!(
+        app.onboarding_finish_refusal().as_deref(),
+        Some("Add an ACP agent first.")
+    );
+    app.handle_key(key(KeyCode::Right)).await;
+    assert_eq!(app.onboarding.step, Some(OnboardingStep::AcpAgent));
+    let frame = rendered_frame(&mut app, 120, 40);
+    assert!(frame.contains("Another ACP agent"), "{frame}");
+
+    // The daemon has no presets here: another agent's fields, typed in.
+    assert!(app.onboarding.other_chosen());
+    app.handle_key(key(KeyCode::Char('e'))).await;
+    for character in "gemini".chars() {
+        app.handle_key(key(KeyCode::Char(character))).await;
+    }
+    app.handle_key(key(KeyCode::Tab)).await;
+    for character in "gemini --acp".chars() {
+        app.handle_key(key(KeyCode::Char(character))).await;
+    }
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert_eq!(app.modal, Modal::Onboarding, "Esc leaves the field only");
+    app.handle_key(key(KeyCode::Enter)).await;
+    pump_until(&mut app, |app| !app.onboarding.running).await;
+    let status = app.onboarding.status.clone().expect("status");
+    assert!(status.ready, "{status:?}");
+    let config =
+        std::fs::read_to_string(directory.path().join(".cookie-agent/config.toml")).unwrap();
+    assert!(
+        config.contains("[runtimes.local.acp.agents.gemini]"),
+        "{config}"
+    );
+    assert_eq!(app.onboarding_finish_refusal(), None);
+    app.handle_key(key(KeyCode::Right)).await;
+    assert_eq!(app.onboarding.step, Some(OnboardingStep::Tools));
 }

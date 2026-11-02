@@ -89,17 +89,24 @@ impl Workspace {
             runtime
                 .snapshot()
                 .map(|snapshot| {
-                    snapshot
-                        .agents
-                        .iter()
-                        .filter(|agent| {
-                            cookie_agent_client_state::acp::listed_in_root_picker(
-                                agent,
-                                preset.as_deref(),
-                            )
-                        })
-                        .cloned()
-                        .collect()
+                    // The agents that cannot run come last
+                    // (`docs/site/specs/acp-onboarding.md` section 8.2).
+                    cookie_agent_client_state::acp::picker_order(
+                        snapshot
+                            .agents
+                            .iter()
+                            .filter(|agent| {
+                                cookie_agent_client_state::acp::listed_in_root_picker(
+                                    agent,
+                                    preset.as_deref(),
+                                )
+                            })
+                            .collect(),
+                    )
+                    .0
+                    .into_iter()
+                    .cloned()
+                    .collect()
                 })
                 .unwrap_or_default()
         })

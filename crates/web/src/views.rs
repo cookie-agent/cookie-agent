@@ -4082,9 +4082,21 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
     if agents.is_empty() {
         return empty_state(icondata::FaRobotSolid, "No agent can start a session.").into_any();
     }
+    // The agents that cannot run come last, below a divider.
+    let divider = agents
+        .iter()
+        .position(|agent| !agent.runnable_as_root && agent.unavailable.is_some());
     agents
         .into_iter()
-        .map(|agent| {
+        .enumerate()
+        .map(|(index, agent)| {
+            let divider = (divider == Some(index)).then(|| {
+                view! {
+                    <p class=format!("border-t border-toasted pt-2 dark:border-ember {NOTE}") data-agents-divider>
+                        "Cannot run now"
+                    </p>
+                }
+            });
             let picked = agent.clone();
             let chosen = current.as_ref() == Some(&agent.id);
             // An ACP agent shows its runtime; one that is unavailable now is
@@ -4095,8 +4107,11 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
             let choices = cookie_agent_client_state::acp::runs_on_choices(&agent);
             // Several runtimes offer it: one option under it for each.
             if choices.len() > 1 {
-                return agent_runtime_options(workspace, &agent, chosen, host, &attached, choices)
-                    .into_any();
+                return view! {
+                    {divider}
+                    {agent_runtime_options(workspace, &agent, chosen, host, &attached, choices)}
+                }
+                .into_any();
             }
             let pickable = cookie_agent_client_state::acp::pickable(&agent, &attached, host.as_ref());
             let note = cookie_agent_client_state::acp::runtime_note(&agent, &attached, host.as_ref());
@@ -4104,6 +4119,7 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
                 cookie_agent_client_state::acp::unpickable_reason(&agent, &attached, host.as_ref())
             });
             view! {
+                {divider}
                 <button
                     type="button"
                     class=ROW

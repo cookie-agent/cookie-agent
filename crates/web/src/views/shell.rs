@@ -274,7 +274,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                             <Glyph icon=icondata::FaWandMagicSparklesSolid />
                             <span class="min-w-0 flex-1 text-sm font-bold">"Set up Cookie"</span>
                         </span>
-                        <span class=NOTE>"a provider and the default, small, and utility models"</span>
+                        <span class=NOTE>"model providers or an ACP agent, and tools"</span>
                     </button>
                 </Show>
                 {entries}

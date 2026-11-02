@@ -754,6 +754,8 @@ impl App {
                 self.install_onboarding_read(read, status)
             }
             RpcUpdate::OnboardingRun { result } => self.install_onboarding_run(result),
+            RpcUpdate::OnboardingAcpAdded { result } => self.install_onboarding_acp_added(result),
+            RpcUpdate::OnboardingAcpChecked { line } => self.install_onboarding_acp_check(line),
             RpcUpdate::ConfigApplied {
                 path,
                 edit,

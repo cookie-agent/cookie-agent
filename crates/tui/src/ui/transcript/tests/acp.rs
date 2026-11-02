@@ -20,6 +20,8 @@ pub(super) fn acp_descriptor(
     available: bool,
 ) -> cookie_agent_protocol::AgentDescriptor {
     let mut agent = descriptor(id, available);
+    // Its document is on; whether it can run is its runtime's.
+    agent.enabled = true;
     agent.mode = cookie_agent_protocol::AgentMode::All;
     agent.resolved_fallback = vec![cookie_agent_protocol::acp_model_selection(&agent.id)];
     agent.runtime = Some(AgentRuntime {

@@ -22,8 +22,8 @@ impl App {
         self.root_agents_for_preset(preset)
     }
 
-    /// The agent picker's rows: the root-runnable agents, and ACP agents
-    /// that are unavailable now, shown dimmed and not pickable.
+    /// The agent picker's rows: the root-runnable agents, then the root
+    /// agents that cannot run now, shown dimmed with why and not pickable.
     pub(super) fn agent_picker_candidates(&self) -> Vec<&AgentDescriptor> {
         let preset = if self.new_session_draft.is_some() {
             self.selected_preset.as_deref()
@@ -36,10 +36,17 @@ impl App {
                         .and_then(|session| session.creation_selection.preset.as_deref())
                 })
         };
-        self.agents
-            .iter()
-            .filter(|agent| cookie_agent_client_state::acp::listed_in_root_picker(agent, preset))
-            .collect()
+        // The agents that cannot run come last
+        // (`docs/site/specs/acp-onboarding.md` section 8.2).
+        cookie_agent_client_state::acp::picker_order(
+            self.agents
+                .iter()
+                .filter(|agent| {
+                    cookie_agent_client_state::acp::listed_in_root_picker(agent, preset)
+                })
+                .collect(),
+        )
+        .0
     }
 
     /// The agent picker's rows: each agent, and an ACP agent several

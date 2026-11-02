@@ -26,7 +26,13 @@ pub(super) fn agent_picker_row(
     selected: bool,
     theme: &Theme,
 ) -> Line<'static> {
-    let id = truncate_with_ellipsis(agent.id.as_str(), width);
+    // An agent the daemon says cannot run is marked, below the others.
+    let cannot_run = !agent.runnable_as_root && agent.unavailable.is_some();
+    let id = if cannot_run {
+        truncate_with_ellipsis(&format!("✗ {}", agent.id), width)
+    } else {
+        truncate_with_ellipsis(agent.id.as_str(), width)
+    };
     let id_width = UnicodeWidthStr::width(id.as_str());
     let id_style = theme.body().add_modifier(Modifier::BOLD);
     let id_style = if selected {

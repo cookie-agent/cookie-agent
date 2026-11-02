@@ -1318,6 +1318,20 @@ pub(in crate::ui) enum RpcUpdate {
     OnboardingRun {
         result: Result<cookie_agent_protocol::OnboardingRunResult, String>,
     },
+    /// The onboarding ACP step declared an agent (its ID), or why not.
+    OnboardingAcpAdded {
+        result: Result<
+            (
+                cookie_agent_protocol::AgentId,
+                cookie_agent_protocol::OnboardingStatus,
+            ),
+            String,
+        >,
+    },
+    /// One `acp.check` of the onboarding ACP step, as a line.
+    OnboardingAcpChecked {
+        line: String,
+    },
     MemoryListed {
         result: Result<cookie_agent_protocol::MemoryListResult, String>,
     },

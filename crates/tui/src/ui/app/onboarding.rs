@@ -7,18 +7,25 @@
 //! panel does is a daemon call: `onboarding.get`, `onboarding.run`, and
 //! `provider.connect`. There is no starter kit: the daemon keeps the
 //! official agents itself.
+//!
+//! The first step chooses how agents run (model providers, an ACP agent, or
+//! both); the ACP agent step declares a preset or another agent at once, so
+//! it can be checked; the last, optional step adds MCP servers that need no
+//! login and chooses the agent new sessions start with
+//! (`docs/site/specs/acp-onboarding.md` section 9).
 
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 use cookie_agent_client_state::onboarding::{
-    self as rules, ModelChoice, OnboardingStep, choice_entries, choice_label, configured_label,
-    default_model_variant, finish_refusal, first_step, run_summary, small_model_variant,
-    utility_model_variant,
+    self as rules, AcpPlace, ModelChoice, OnboardingStep, PathChoice, choice_entries, choice_label,
+    configured_label, default_model_variant, finish_refusal_for, first_step, run_summary,
+    small_model_variant, utility_model_variant,
 };
 use cookie_agent_client_state::refresh::{Latest, Ticket};
 use cookie_agent_protocol::{
-    AgentId, ModelKey, OnboardingModelField, OnboardingRequirement, OnboardingRunParams,
-    OnboardingRunResult, OnboardingStatus, VariantId,
+    AcpCheckParams, AgentId, McpPresetPlace, ModelKey, OnboardingAcpAgentInput,
+    OnboardingModelField, OnboardingRequirement, OnboardingRunParams, OnboardingRunResult,
+    OnboardingStatus, RuntimeId, VariantId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -57,7 +64,10 @@ impl ModelSlot {
             OnboardingStep::DefaultModel => Some(Self::Default),
             OnboardingStep::SmallModel => Some(Self::Small),
             OnboardingStep::UtilityModel => Some(Self::Utility),
-            OnboardingStep::Provider => None,
+            OnboardingStep::Start
+            | OnboardingStep::Provider
+            | OnboardingStep::AcpAgent
+            | OnboardingStep::Tools => None,
         }
     }
 }
@@ -88,11 +98,42 @@ pub(in crate::ui) enum OnboardingAction {
     /// After a run: a new-session draft on the default agent.
     StartSession,
     Close,
+    /// The first step: cookie's own agents on model providers, on or off.
+    UseModels,
+    /// The first step: an ACP agent, on or off.
+    UseAcp,
+    /// The ACP step: the next preset, or another ACP agent after the last.
+    NextPreset,
+    /// The ACP step: every machine or the daemon's only.
+    TogglePlace,
+    /// The ACP step: edits another ACP agent's ID, command, and
+    /// environment.
+    EditOther,
+    /// The ACP step: declares the chosen agent now.
+    AddAcp,
+    /// The ACP step: starts each linked agent on each runtime that offers it.
+    CheckAcp,
+    /// The Tools step: adds or drops the preset of that index.
+    ToggleTool(u8),
+    /// The Tools step: the next runtime for tools that run a program.
+    NextToolRuntime,
+    /// The Tools step: the next agent new sessions start with.
+    NextDefaultAgent,
 }
 
 impl OnboardingAction {
     const fn label(self) -> &'static str {
         match self {
+            Self::UseModels => "model providers",
+            Self::UseAcp => "an ACP agent",
+            Self::NextPreset => "next agent",
+            Self::TogglePlace => "where",
+            Self::EditOther => "edit",
+            Self::AddAcp => "add",
+            Self::CheckAcp => "check",
+            Self::ToggleTool(_) => "tool",
+            Self::NextToolRuntime => "runs on",
+            Self::NextDefaultAgent => "new sessions",
             Self::SetUp => "Set up",
             Self::NotNow => "Not now",
             Self::Connect => "connect a provider",
@@ -109,9 +150,25 @@ impl OnboardingAction {
         }
     }
 
-    const fn key_label(self) -> &'static str {
+    fn key_label(self) -> String {
+        if let Self::ToggleTool(index) = self {
+            return (index + 1).to_string();
+        }
         match self {
-            Self::SetUp | Self::Connect | Self::ChooseModel | Self::StartSession => "enter",
+            Self::UseModels => "1",
+            Self::UseAcp => "2",
+            Self::NextPreset => "p",
+            Self::TogglePlace => "w",
+            Self::EditOther => "e",
+            Self::CheckAcp => "c",
+            Self::NextToolRuntime => "r",
+            Self::NextDefaultAgent => "g",
+            Self::SetUp
+            | Self::Connect
+            | Self::ChooseModel
+            | Self::StartSession
+            | Self::AddAcp
+            | Self::ToggleTool(_) => "enter",
             Self::NotNow => "n",
             Self::AddFallback => "a",
             Self::RemoveLast => "x",
@@ -121,6 +178,28 @@ impl OnboardingAction {
             Self::Next => "→",
             Self::Finish => "f",
             Self::Close => "esc",
+        }
+        .to_owned()
+    }
+}
+
+/// Another ACP agent's fields, edited in the ACP step.
+#[derive(Default)]
+pub(in crate::ui) struct OtherAcpForm {
+    pub(in crate::ui) id: crate::ui::input::InputState,
+    pub(in crate::ui) command: crate::ui::input::InputState,
+    /// `KEY=VALUE` pairs separated by spaces.
+    pub(in crate::ui) env: crate::ui::input::InputState,
+    /// The field being edited: 0 the ID, 1 the command, 2 the environment.
+    pub(in crate::ui) focus: Option<usize>,
+}
+
+impl OtherAcpForm {
+    fn field_mut(&mut self, index: usize) -> &mut crate::ui::input::InputState {
+        match index {
+            0 => &mut self.id,
+            1 => &mut self.command,
+            _ => &mut self.env,
         }
     }
 }
@@ -168,6 +247,24 @@ pub(in crate::ui) struct OnboardingState {
     pub(in crate::ui) picking: Option<ModelSlot>,
     /// The picker's model is the next fallback rather than the first model.
     pub(in crate::ui) appending: bool,
+    /// The ways of running agents chosen in the first step; `None` follows
+    /// the daemon.
+    pub(in crate::ui) paths: Option<PathChoice>,
+    /// The ACP step's preset by index; one past the last is another agent.
+    pub(in crate::ui) acp_preset: usize,
+    /// Where the ACP agent runs; the daemon's machine when `None`.
+    pub(in crate::ui) acp_place: Option<AcpPlace>,
+    pub(in crate::ui) other: OtherAcpForm,
+    /// What the ACP step said last.
+    pub(in crate::ui) acp_note: Option<String>,
+    /// What the last checks found, one line per runtime.
+    pub(in crate::ui) checks: Vec<String>,
+    /// The MCP presets chosen, by ID.
+    pub(in crate::ui) tools: BTreeSet<String>,
+    /// Where tools that run a program run; `local` when `None`.
+    pub(in crate::ui) tools_runtime: Option<RuntimeId>,
+    /// The agent new sessions start with; `None` keeps it.
+    pub(in crate::ui) default_agent: Option<AgentId>,
 }
 
 impl OnboardingState {
@@ -208,7 +305,33 @@ impl OnboardingState {
     }
 
     fn step(&self) -> OnboardingStep {
-        self.step.unwrap_or(OnboardingStep::Provider)
+        self.step.unwrap_or(OnboardingStep::Start)
+    }
+
+    /// The ways of running agents: the user's choice, else the daemon's.
+    pub(in crate::ui) fn paths(&self) -> PathChoice {
+        self.paths.unwrap_or_else(|| {
+            self.status.as_ref().map_or(
+                PathChoice {
+                    models: true,
+                    acp: false,
+                },
+                PathChoice::of,
+            )
+        })
+    }
+
+    fn place(&self) -> AcpPlace {
+        self.acp_place.unwrap_or(AcpPlace::DaemonMachine)
+    }
+
+    /// Whether the ACP step's choice is another agent, not a preset.
+    pub(in crate::ui) fn other_chosen(&self) -> bool {
+        self.acp_preset
+            >= self
+                .status
+                .as_ref()
+                .map_or(0, |status| status.acp_presets.len())
     }
 
     pub(in crate::ui) fn choice(&self, slot: ModelSlot) -> &[ModelChoice] {
@@ -291,7 +414,7 @@ impl App {
             self.onboarding
                 .status
                 .as_ref()
-                .map_or(OnboardingStep::Provider, first_step),
+                .map_or(OnboardingStep::Start, first_step),
         );
         self.modal = Modal::Onboarding;
         self.poll_onboarding();
@@ -327,7 +450,11 @@ impl App {
         if self.onboarding.running {
             return Some("Setting up…".into());
         }
-        finish_refusal(status, !self.onboarding.default_choice.is_empty(), false)
+        finish_refusal_for(
+            status,
+            self.onboarding.paths(),
+            !self.onboarding.default_choice.is_empty(),
+        )
     }
 
     fn finish_onboarding(&mut self) {
@@ -340,15 +467,29 @@ impl App {
                 self.model_descriptor(model)
             })
         };
+        let models = self.onboarding.paths().models;
+        let runtime = self.onboarding.tools_runtime.clone();
+        let mcp_servers = self
+            .onboarding
+            .status
+            .as_ref()
+            .map(|status| {
+                rules::offered_mcp_presets(status)
+                    .into_iter()
+                    .filter(|preset| self.onboarding.tools.contains(&preset.id))
+                    .filter(|preset| {
+                        !rules::mcp_preset_configured(status, preset, runtime.as_ref())
+                    })
+                    .map(|preset| rules::mcp_preset_input(preset, runtime.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let params = OnboardingRunParams {
-            install_kit: false,
-            source: None,
-            default_model: None,
-            small_model: None,
-            utility_model: None,
-            default_model_list: list(ModelSlot::Default),
-            small_model_list: list(ModelSlot::Small),
-            utility_model_list: list(ModelSlot::Utility),
+            default_model_list: models.then(|| list(ModelSlot::Default)).flatten(),
+            small_model_list: models.then(|| list(ModelSlot::Small)).flatten(),
+            utility_model_list: models.then(|| list(ModelSlot::Utility)).flatten(),
+            mcp_servers: (!mcp_servers.is_empty()).then_some(mcp_servers),
+            default_agent: self.onboarding.default_agent.clone(),
             ..Default::default()
         };
         self.onboarding.running = true;
@@ -385,6 +526,179 @@ impl App {
                 self.status = "Not set up.".into();
                 self.onboarding.error = Some(error);
             }
+        }
+    }
+
+    /// The ACP step's Add: declares the chosen agent now.
+    fn add_acp_from_onboarding(&mut self) {
+        let Some(status) = &self.onboarding.status else {
+            return;
+        };
+        let place = self.onboarding.place();
+        let input: Result<OnboardingAcpAgentInput, String> = match status
+            .acp_presets
+            .get(self.onboarding.acp_preset)
+        {
+            Some(preset) => Ok(rules::acp_preset_input(preset, place)),
+            None => {
+                let other = &self.onboarding.other;
+                let env = other
+                    .env
+                    .as_str()
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                rules::other_acp_input(other.id.as_str(), other.command.as_str(), &env, "", place)
+            }
+        };
+        let input = match input {
+            Ok(input) => input,
+            Err(reason) => {
+                self.onboarding.acp_note = Some(reason);
+                return;
+            }
+        };
+        self.onboarding.running = true;
+        self.onboarding.acp_note = Some(format!("Adding `{}`…", input.id));
+        let id = input.id.clone();
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .run_onboarding(OnboardingRunParams {
+                    acp_agents: Some(vec![input]),
+                    ..OnboardingRunParams::default()
+                })
+                .await
+                .map(|result| (id, result.status))
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::OnboardingAcpAdded { result });
+        });
+    }
+
+    /// `onboarding.run` declared the ACP agent, or why not.
+    pub(in crate::ui) fn install_onboarding_acp_added(
+        &mut self,
+        result: Result<(AgentId, OnboardingStatus), String>,
+    ) {
+        self.onboarding.running = false;
+        match result {
+            Ok((id, status)) => {
+                self.onboarding.acp_note = Some(format!("Added `{id}`; c checks it, → goes on."));
+                self.onboarding.status = Some(status);
+            }
+            Err(error) => self.onboarding.acp_note = Some(error),
+        }
+    }
+
+    /// The ACP step's Check: every linked agent on each runtime that
+    /// offers it now.
+    fn check_acp_from_onboarding(&mut self) {
+        let checks = self
+            .onboarding
+            .status
+            .iter()
+            .flat_map(|status| &status.paths)
+            .flat_map(|paths| &paths.acp.agents)
+            .flat_map(|agent| {
+                agent
+                    .runtimes
+                    .iter()
+                    .filter(|runtime| runtime.available)
+                    .map(|runtime| (runtime.runtime_id.clone(), agent.id.clone()))
+            })
+            .collect::<Vec<_>>();
+        if checks.is_empty() {
+            self.onboarding.acp_note = Some("No linked agent to check yet.".into());
+            return;
+        }
+        self.onboarding.checks.clear();
+        self.onboarding.acp_note = Some("Checking…".into());
+        for (runtime_id, agent) in checks {
+            let client = self.client.clone();
+            let updates = self.rpc_updates_tx.clone();
+            self.spawn_rpc(async move {
+                let line = match client
+                    .check_acp_agent(AcpCheckParams {
+                        runtime_id: runtime_id.clone(),
+                        agent: agent.clone(),
+                    })
+                    .await
+                {
+                    Ok(result) => rules::acp_check_line(&result),
+                    Err(error) => error.to_string(),
+                };
+                let _ = updates.send(RpcUpdate::OnboardingAcpChecked {
+                    line: format!("{agent} on {runtime_id}: {line}"),
+                });
+            });
+        }
+    }
+
+    /// One check's line.
+    pub(in crate::ui) fn install_onboarding_acp_check(&mut self, line: String) {
+        self.onboarding.acp_note = None;
+        self.onboarding.checks.push(line);
+    }
+
+    /// The runtimes tools that run a program may run on: `local`, then the
+    /// others the daemon knows.
+    fn tool_runtimes(&self) -> Vec<RuntimeId> {
+        let mut runtimes = vec![RuntimeId::new("local").expect("a runtime ID")];
+        for listing in self.runtime_panel.runtimes() {
+            if listing.runtime_id.as_str() != RuntimeId::GLOBAL
+                && !runtimes.contains(&listing.runtime_id)
+            {
+                runtimes.push(listing.runtime_id.clone());
+            }
+        }
+        runtimes
+    }
+
+    /// The agents new sessions may start with: the root agents, then the
+    /// linked ACP agents.
+    fn default_agent_choices(&self) -> Vec<AgentId> {
+        let mut choices = self
+            .agents
+            .iter()
+            .filter(|agent| agent.preset.is_none() && agent.runnable_as_root)
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>();
+        for agent in self
+            .onboarding
+            .status
+            .iter()
+            .flat_map(|status| &status.paths)
+            .flat_map(|paths| &paths.acp.agents)
+        {
+            if !choices.contains(&agent.id) {
+                choices.push(agent.id.clone());
+            }
+        }
+        choices
+    }
+
+    /// The action bar's label for `action`.
+    fn onboarding_action_label(&self, action: OnboardingAction) -> String {
+        match action {
+            OnboardingAction::ToggleTool(index) => self
+                .onboarding
+                .status
+                .as_ref()
+                .and_then(|status| {
+                    rules::offered_mcp_presets(status)
+                        .get(usize::from(index))
+                        .map(|preset| {
+                            let mark = if self.onboarding.tools.contains(&preset.id) {
+                                "[x]"
+                            } else {
+                                "[ ]"
+                            };
+                            format!("{mark} {}", preset.name)
+                        })
+                })
+                .unwrap_or_default(),
+            other => other.label().to_owned(),
         }
     }
 
@@ -509,7 +823,7 @@ impl App {
         self.variant_step_model = None;
         self.modal = Modal::None;
         self.resume_onboarding();
-        if !appending && let Some(next) = self.onboarding.step().next() {
+        if !appending && let Some(next) = self.onboarding.step().next(self.onboarding.paths()) {
             self.go_to_step(next);
         }
     }
@@ -545,14 +859,70 @@ impl App {
                 }
             }
             OnboardingAction::Back => {
-                if let Some(step) = self.onboarding.step().previous() {
+                if let Some(step) = self.onboarding.step().previous(self.onboarding.paths()) {
                     self.go_to_step(step);
                 }
             }
             OnboardingAction::Next => {
-                if let Some(step) = self.onboarding.step().next() {
+                if let Some(step) = self.onboarding.step().next(self.onboarding.paths()) {
                     self.go_to_step(step);
                 }
+            }
+            OnboardingAction::UseModels | OnboardingAction::UseAcp => {
+                let paths = self.onboarding.paths();
+                self.onboarding.paths = Some(paths.toggled(action == OnboardingAction::UseModels));
+            }
+            OnboardingAction::NextPreset => {
+                let count = self
+                    .onboarding
+                    .status
+                    .as_ref()
+                    .map_or(0, |status| status.acp_presets.len());
+                self.onboarding.acp_preset = (self.onboarding.acp_preset + 1) % (count + 1);
+                self.onboarding.other.focus = None;
+            }
+            OnboardingAction::TogglePlace => {
+                self.onboarding.acp_place = Some(match self.onboarding.place() {
+                    AcpPlace::EveryMachine => AcpPlace::DaemonMachine,
+                    AcpPlace::DaemonMachine => AcpPlace::EveryMachine,
+                });
+            }
+            OnboardingAction::EditOther => self.onboarding.other.focus = Some(0),
+            OnboardingAction::AddAcp => self.add_acp_from_onboarding(),
+            OnboardingAction::CheckAcp => self.check_acp_from_onboarding(),
+            OnboardingAction::ToggleTool(index) => {
+                let id = self.onboarding.status.as_ref().and_then(|status| {
+                    rules::offered_mcp_presets(status)
+                        .get(usize::from(index))
+                        .map(|preset| preset.id.clone())
+                });
+                if let Some(id) = id
+                    && !self.onboarding.tools.remove(&id)
+                {
+                    self.onboarding.tools.insert(id);
+                }
+            }
+            OnboardingAction::NextToolRuntime => {
+                let runtimes = self.tool_runtimes();
+                let current = self
+                    .onboarding
+                    .tools_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtimes.iter().position(|each| each == runtime))
+                    .unwrap_or(0);
+                self.onboarding.tools_runtime =
+                    runtimes.get((current + 1) % runtimes.len()).cloned();
+            }
+            OnboardingAction::NextDefaultAgent => {
+                let choices = self.default_agent_choices();
+                self.onboarding.default_agent = match &self.onboarding.default_agent {
+                    None => choices.first().cloned(),
+                    Some(current) => choices
+                        .iter()
+                        .position(|each| each == current)
+                        .and_then(|index| choices.get(index + 1))
+                        .cloned(),
+                };
             }
             OnboardingAction::Finish => self.finish_onboarding(),
             OnboardingAction::StartSession => self.start_primary_session(),
@@ -571,9 +941,44 @@ impl App {
             return actions;
         }
         let step = self.onboarding.step();
-        let mut actions = match ModelSlot::of(step) {
-            None => vec![OnboardingAction::Connect],
-            Some(slot) => {
+        let status = self.onboarding.status.as_ref();
+        let mut actions = match (step, ModelSlot::of(step)) {
+            (OnboardingStep::Start, _) => {
+                vec![OnboardingAction::UseModels, OnboardingAction::UseAcp]
+            }
+            (OnboardingStep::AcpAgent, _) => {
+                let mut actions = vec![
+                    OnboardingAction::AddAcp,
+                    OnboardingAction::NextPreset,
+                    OnboardingAction::TogglePlace,
+                ];
+                if self.onboarding.other_chosen() {
+                    actions.push(OnboardingAction::EditOther);
+                }
+                if status
+                    .and_then(|status| status.paths.as_ref())
+                    .is_some_and(|paths| !paths.acp.agents.is_empty())
+                {
+                    actions.push(OnboardingAction::CheckAcp);
+                }
+                actions
+            }
+            (OnboardingStep::Tools, _) => {
+                let presets = status.map(rules::offered_mcp_presets).unwrap_or_default();
+                let mut actions = (0..presets.len().min(9))
+                    .map(|index| OnboardingAction::ToggleTool(index as u8))
+                    .collect::<Vec<_>>();
+                if presets
+                    .iter()
+                    .any(|preset| preset.place == McpPresetPlace::Machine)
+                {
+                    actions.push(OnboardingAction::NextToolRuntime);
+                }
+                actions.push(OnboardingAction::NextDefaultAgent);
+                actions
+            }
+            (_, None) => vec![OnboardingAction::Connect],
+            (_, Some(slot)) => {
                 let chosen = self.onboarding.choice(slot);
                 let mut actions = vec![OnboardingAction::ChooseModel];
                 let same_as = |field| chosen.contains(&ModelChoice::Field(field));
@@ -596,10 +1001,11 @@ impl App {
                 actions
             }
         };
-        if step.previous().is_some() {
+        let paths = self.onboarding.paths();
+        if step.previous(paths).is_some() {
             actions.push(OnboardingAction::Back);
         }
-        if step.next().is_some() {
+        if step.next(paths).is_some() {
             actions.push(OnboardingAction::Next);
         }
         if self.onboarding_finish_refusal().is_none() {
@@ -618,6 +1024,16 @@ impl App {
     }
 
     pub(super) fn handle_onboarding_key(&mut self, key: KeyEvent) {
+        // Another ACP agent's fields take the keys while one is edited.
+        if let Some(focus) = self.onboarding.other.focus {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.onboarding.other.focus = None,
+                KeyCode::Tab => self.onboarding.other.focus = Some((focus + 1) % 3),
+                KeyCode::BackTab => self.onboarding.other.focus = Some((focus + 2) % 3),
+                _ => super::keys::edit_plain_input(self.onboarding.other.field_mut(focus), key),
+            }
+            return;
+        }
         let offered = self.onboarding_actions();
         let offers = |action| offered.contains(&action);
         let action = match key.code {
@@ -630,8 +1046,28 @@ impl App {
                     OnboardingAction::Connect
                         | OnboardingAction::ChooseModel
                         | OnboardingAction::StartSession
+                        | OnboardingAction::AddAcp
                 )
             }),
+            KeyCode::Char(digit @ '1'..='9') if key.modifiers.is_empty() => {
+                let index = digit as u8 - b'1';
+                match self.onboarding.step() {
+                    OnboardingStep::Start if index == 0 => Some(OnboardingAction::UseModels),
+                    OnboardingStep::Start if index == 1 => Some(OnboardingAction::UseAcp),
+                    OnboardingStep::Tools => Some(OnboardingAction::ToggleTool(index)),
+                    _ => None,
+                }
+            }
+            KeyCode::Char('p') if key.modifiers.is_empty() => Some(OnboardingAction::NextPreset),
+            KeyCode::Char('w') if key.modifiers.is_empty() => Some(OnboardingAction::TogglePlace),
+            KeyCode::Char('e') if key.modifiers.is_empty() => Some(OnboardingAction::EditOther),
+            KeyCode::Char('c') if key.modifiers.is_empty() => Some(OnboardingAction::CheckAcp),
+            KeyCode::Char('r') if key.modifiers.is_empty() => {
+                Some(OnboardingAction::NextToolRuntime)
+            }
+            KeyCode::Char('g') if key.modifiers.is_empty() => {
+                Some(OnboardingAction::NextDefaultAgent)
+            }
             KeyCode::Char('n') if key.modifiers.is_empty() => Some(OnboardingAction::NotNow),
             KeyCode::Char('a') if key.modifiers.is_empty() => Some(OnboardingAction::AddFallback),
             KeyCode::Char('x') if key.modifiers.is_empty() => Some(OnboardingAction::RemoveLast),
@@ -717,7 +1153,7 @@ impl App {
         let current = self.onboarding.step();
         let mut spans = Vec::new();
         let mut x = tabs_area.x;
-        for step in OnboardingStep::ALL {
+        for step in self.onboarding.paths().steps() {
             let done = self
                 .onboarding
                 .status
@@ -758,7 +1194,11 @@ impl App {
         let mut lines = vec![Vec::new()];
         let (mut x, mut y) = (actions_area.x, actions_area.y);
         for action in self.onboarding_actions() {
-            let label = format!(" {} ({}) ", action.label(), action.key_label());
+            let label = format!(
+                " {} ({}) ",
+                self.onboarding_action_label(action),
+                action.key_label()
+            );
             let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
             if x > actions_area.x && x.saturating_add(width) > actions_area.right() {
                 lines.push(Vec::new());
@@ -802,6 +1242,167 @@ impl App {
             return lines;
         };
         match step {
+            OnboardingStep::Start => {
+                let paths = self.onboarding.paths();
+                lines.push(Line::styled(
+                    "How should agents run? Choose either, or both.",
+                    body,
+                ));
+                lines.push(Line::raw(""));
+                for (on, title, text) in [
+                    (
+                        paths.models,
+                        "1 Model providers",
+                        "Cookie's own agents run on models you connect: an API key or a sign-in.",
+                    ),
+                    (
+                        paths.acp,
+                        "2 An ACP agent",
+                        "Claude Code, Codex, or another ACP agent runs with its own login and models.",
+                    ),
+                ] {
+                    let mark = if on { "[x]" } else { "[ ]" };
+                    lines.push(Line::styled(format!("{mark} {title}"), body));
+                    lines.push(Line::styled(format!("    {text}"), muted));
+                }
+            }
+            OnboardingStep::AcpAgent => {
+                lines.push(Line::styled(
+                    "Cookie launches the agent on a machine, with that machine's login: install it and log in there first.",
+                    body,
+                ));
+                lines.push(Line::raw(""));
+                for (index, preset) in status.acp_presets.iter().enumerate() {
+                    let mark = if index == self.onboarding.acp_preset {
+                        "▸"
+                    } else {
+                        " "
+                    };
+                    lines.push(Line::styled(format!("{mark} {}", preset.name), body));
+                    if index == self.onboarding.acp_preset {
+                        lines.push(Line::styled(format!("    needs: {}", preset.needs), muted));
+                        lines.push(Line::styled(
+                            format!("    runs: {}", rules::join_command_line(&preset.command)),
+                            muted,
+                        ));
+                    }
+                }
+                let other = self.onboarding.other_chosen();
+                lines.push(Line::styled(
+                    format!("{} Another ACP agent", if other { "▸" } else { " " }),
+                    body,
+                ));
+                if other {
+                    let form = &self.onboarding.other;
+                    for (index, (label, input)) in [
+                        ("ID", &form.id),
+                        ("command", &form.command),
+                        ("environment (KEY=VALUE …)", &form.env),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let editing = form.focus == Some(index);
+                        let caret = if editing { "▏" } else { "" };
+                        lines.push(Line::styled(
+                            format!("    {label}: {}{caret}", input.as_str()),
+                            if editing {
+                                self.theme.selected()
+                            } else {
+                                muted
+                            },
+                        ));
+                    }
+                }
+                lines.push(Line::raw(""));
+                lines.push(Line::styled(
+                    format!("Runs {}.", self.onboarding.place().label()),
+                    body,
+                ));
+                if let Some(note) = &self.onboarding.acp_note {
+                    lines.push(Line::styled(note.clone(), muted));
+                }
+                if let Some(paths) = &status.paths
+                    && !paths.acp.agents.is_empty()
+                {
+                    lines.push(Line::raw(""));
+                    lines.push(Line::styled("Linked:", body));
+                    for agent in &paths.acp.agents {
+                        let runtimes = agent
+                            .runtimes
+                            .iter()
+                            .map(|runtime| {
+                                if runtime.available {
+                                    runtime.runtime_id.to_string()
+                                } else {
+                                    format!("{} (away)", runtime.runtime_id)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        lines.push(Line::styled(
+                            format!("  {} · on {runtimes}", agent.id),
+                            self.theme.tool_success(),
+                        ));
+                    }
+                }
+                for line in &self.onboarding.checks {
+                    lines.push(Line::styled(format!("  {line}"), muted));
+                }
+            }
+            OnboardingStep::Tools => {
+                lines.push(Line::styled(
+                    "Optional: tools that need no login. Agents ask you before each call until you allow it.",
+                    body,
+                ));
+                lines.push(Line::raw(""));
+                let runtime = self.onboarding.tools_runtime.clone();
+                let presets = rules::offered_mcp_presets(status);
+                if presets.is_empty() {
+                    lines.push(Line::styled(
+                        "No tool presets yet: they arrive with the official agents.",
+                        muted,
+                    ));
+                }
+                for (index, preset) in presets.iter().enumerate() {
+                    let configured = rules::mcp_preset_configured(status, preset, runtime.as_ref());
+                    let mark = if configured {
+                        "set up"
+                    } else if self.onboarding.tools.contains(&preset.id) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    };
+                    lines.push(Line::styled(
+                        format!("{} {mark} {} · {}", index + 1, preset.name, preset.category),
+                        body,
+                    ));
+                    lines.push(Line::styled(format!("    {}", preset.description), muted));
+                }
+                if presets
+                    .iter()
+                    .any(|preset| preset.place == McpPresetPlace::Machine)
+                {
+                    lines.push(Line::styled(
+                        format!(
+                            "Tools that run a program run on {}.",
+                            runtime.as_ref().map_or("local", RuntimeId::as_str)
+                        ),
+                        body,
+                    ));
+                }
+                lines.push(Line::raw(""));
+                lines.push(Line::styled(
+                    format!(
+                        "New sessions start with: {}",
+                        self.onboarding.default_agent.as_ref().map_or_else(
+                            || format!("{} (kept)", self.default_agent),
+                            ToString::to_string
+                        )
+                    ),
+                    body,
+                ));
+            }
             OnboardingStep::Provider => {
                 if status.providers_connected.is_empty() {
                     lines.push(Line::styled("No provider is connected yet.", body));

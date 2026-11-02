@@ -139,14 +139,53 @@ fn joined(runtimes: &[RuntimeId]) -> String {
 }
 
 /// Whether an agent picker for root sessions of `preset` lists `agent`:
-/// every agent that can run as a root, and an ACP agent that could but no
-/// runtime can run now, which the picker shows dimmed and does not let the
-/// user pick.
+/// every agent that can run as a root, and a root agent that cannot run
+/// now (no model, an ACP agent no runtime can run), which the picker shows
+/// dimmed, below the others, with the reason, and does not let the user
+/// pick. An agent the user turned off is not listed
+/// (`docs/site/specs/acp-onboarding.md` section 8.2, D6).
 pub fn listed_in_root_picker(agent: &AgentDescriptor, preset: Option<&str>) -> bool {
     agent.mode != AgentMode::Internal
         && agent.preset.as_deref() == preset
+        && !turned_off(agent)
         && (agent.runnable_as_root
-            || (is_acp(agent) && matches!(agent.mode, AgentMode::Primary | AgentMode::All)))
+            || (matches!(agent.mode, AgentMode::Primary | AgentMode::All)
+                && (is_acp(agent) || agent.unavailable.is_some())))
+}
+
+/// Whether the user turned `agent` off: its document is disabled, or its
+/// ACP agent is turned off on every runtime.
+#[must_use]
+pub fn turned_off(agent: &AgentDescriptor) -> bool {
+    !agent.enabled
+        || agent.unavailable.as_ref().is_some_and(|unavailable| {
+            matches!(
+                unavailable.reason,
+                cookie_agent_protocol::AgentUnavailableReason::Disabled
+                    | cookie_agent_protocol::AgentUnavailableReason::AcpDeclarationDisabled
+            )
+        })
+}
+
+/// `agents` in picker order: the ones that can run as a root, then the
+/// others, each part in the order given; and where the second part starts,
+/// where pickers draw their divider.
+#[must_use]
+pub fn picker_order(agents: Vec<&AgentDescriptor>) -> (Vec<&AgentDescriptor>, usize) {
+    let (mut runnable, unavailable): (Vec<_>, Vec<_>) =
+        agents.into_iter().partition(|agent| agent.runnable_as_root);
+    let divider = runnable.len();
+    runnable.extend(unavailable);
+    (runnable, divider)
+}
+
+/// Why `agent` cannot run, as one line, when the daemon says.
+#[must_use]
+pub fn unavailable_note(agent: &AgentDescriptor) -> Option<String> {
+    agent
+        .unavailable
+        .as_ref()
+        .map(cookie_agent_protocol::AgentUnavailable::summary)
 }
 
 /// Whether the user can pick `agent` for a session or draft that attaches
@@ -171,6 +210,12 @@ pub fn runtime_note(
     attached: &[RuntimeId],
     host: Option<&RuntimeId>,
 ) -> Option<String> {
+    // An agent the daemon says cannot run shows why, ACP or not.
+    if !agent.runnable_as_root
+        && let Some(note) = unavailable_note(agent)
+    {
+        return Some(note);
+    }
     let note = placement_note(agent, attached, host)?;
     Some(match declaration(agent) {
         Some(declaration) if note.starts_with("on ") => format!("{declaration} {note}"),
@@ -211,6 +256,11 @@ pub fn unpickable_reason(
     attached: &[RuntimeId],
     host: Option<&RuntimeId>,
 ) -> String {
+    if !agent.runnable_as_root
+        && let Some(note) = unavailable_note(agent)
+    {
+        return format!("`{}` cannot run: {note}", agent.id);
+    }
     match placement(agent, attached, host) {
         Some(AcpPlacement::NeedsOneOf(runtimes)) => format!(
             "`{}` needs one of these runtimes connected: {}",
@@ -704,6 +754,43 @@ mod tests {
         assert!(!listed_in_root_picker(&daemon, None));
         assert_eq!(runtime_note(&daemon, &lab, None), None);
         assert!(!listed_in_root_picker(&away, Some("python")));
+    }
+
+    #[test]
+    fn an_agent_the_daemon_says_cannot_run_is_listed_last_with_why_unless_turned_off() {
+        use cookie_agent_protocol::{
+            AgentModelEntryStatus, AgentModelProblem, AgentUnavailable, AgentUnavailableReason,
+        };
+        let lab = [runtime("lab")];
+        let mut no_model = agent("coder", &[], false, AgentMode::All);
+        no_model.unavailable = Some(AgentUnavailable {
+            reason: AgentUnavailableReason::NoModel,
+            target: None,
+            entries: vec![AgentModelEntryStatus {
+                entry: "${default_model}".into(),
+                model: None,
+                problem: AgentModelProblem::FieldUnset,
+                variant: None,
+            }],
+        });
+        assert!(listed_in_root_picker(&no_model, None));
+        assert!(!pickable(&no_model, &lab, None));
+        let note = runtime_note(&no_model, &lab, None).unwrap();
+        assert!(note.contains("default_model"), "{note}");
+        assert!(unpickable_reason(&no_model, &lab, None).contains("cannot run"));
+
+        let mut off = agent("primary", &[], false, AgentMode::Primary);
+        off.unavailable = Some(AgentUnavailable {
+            reason: AgentUnavailableReason::Disabled,
+            target: None,
+            entries: Vec::new(),
+        });
+        assert!(!listed_in_root_picker(&off, None), "turned off: panel only");
+
+        let runs = agent("claude", &[("lab", true)], true, AgentMode::All);
+        let (ordered, divider) = picker_order(vec![&no_model, &runs]);
+        assert_eq!(ordered[0].id.as_str(), "claude");
+        assert_eq!(divider, 1);
     }
 
     #[test]

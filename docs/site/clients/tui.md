@@ -72,6 +72,13 @@ and descriptions; model search matches display names and `provider/model_id`.
 Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
 into the matching rows.
 
+The agent panel lists the agents that cannot run now after the others,
+dimmed, marked `✗`, and with why (no model, with the model field or provider
+that is missing; no connected machine offering an ACP agent; a document
+whose inherited one is not there yet); they cannot be picked. An agent you
+turned off is not listed; the [agents' documents](../extend/agents.md) show
+it.
+
 On Unix, Ctrl+Z suspends the TUI to the shell as it would any terminal
 program, and `fg` brings it back with its screen redrawn. A TUI stopped some
 other way, such as `kill -STOP` or an editor opened from `/config` or `/memory` being
@@ -203,8 +210,9 @@ restart itself and says so. See
 
 ## Setting up
 
-When the TUI connects to a daemon that is not set up (no provider connected,
-`default_model` not naming an available model, or its default agent
+When the TUI connects to a daemon that is not set up (neither a provider
+connected and `default_model` naming an available model, nor an
+[ACP agent](../extend/acp-agents.md) that can run; or its default agent
 missing), a notice
 takes the bar above the composer: what is left, then **Set up** and **Not
 now**. Set up opens the onboarding panel; Not now hides the notice on this
@@ -213,20 +221,31 @@ changes. `/onboard` opens the panel any time, also on a daemon that is set
 up. Every client sees the same state: finishing in the web client or with
 [`cookie onboard`](cli.md#cookie-onboard) hides the notice here too.
 
-The panel shows the four steps as tabs, each done one with a check; ← and →
+The panel shows its steps as tabs, each done one with a check; ← and →
 (or Tab) move between them, and a tab can be clicked:
 
-1. **Provider**: the connected providers with their count of available
+1. **How agents run**: `1` toggles **model providers**, `2` **an ACP
+   agent**; one stays chosen. The steps below follow the choice.
+2. **Provider**: the connected providers with their count of available
    models. Enter opens the [connect panel](#command-palette) (`/connect`);
    it returns to the panel when it closes.
-2. **Default model**: Enter opens the model list, searchable and grouped by
+3. **Default model**: Enter opens the model list, searchable and grouped by
    provider; choosing a model with variants opens its variants, the model's
    default variant highlighted.
-3. **Small model** (optional): the same list, for the subagents that carry
+4. **Small model** (optional): the same list, for the subagents that carry
    out work; the variant list highlights the model's default variant.
-4. **Utility model** (optional): the same list, for approvals and session
+5. **Utility model** (optional): the same list, for approvals and session
    titles; the variant list highlights the model's first listed variant,
    its cheapest.
+6. **ACP agent** (the ACP path): `p` moves through the daemon's presets
+   (Claude Code, Codex) and **Another ACP agent**, whose ID, command, and
+   environment `e` edits (Tab moves between them, Esc or Enter stops); `w`
+   switches between every machine and this daemon's machine only. Enter
+   declares the agent at once, and `c` checks each linked agent on each
+   runtime that offers it (`acp.check`).
+7. **Tools** (optional): a number adds or drops an MCP preset that needs no
+   login; `r` picks the runtime tools that run a program run on, and `g`
+   the agent new sessions start with.
 
 `f` (or the **finish** button) sets everything up with `onboarding.run`,
 which fetches the [official agents](../extend/agents.md#official-agents)

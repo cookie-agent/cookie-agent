@@ -4,14 +4,22 @@
 //! searchable lists with variant chips that build each field's fallback list
 //! (`docs/site/specs/model-fallback-lists.md` section 6), the small and
 //! utility models optional. There is no starter kit: the daemon keeps the official agents
-//! itself. Full screen on a phone.
+//! itself. Full screen on a phone. Its first step chooses how agents run, on
+//! model providers, an ACP agent, or both, and its last optional one adds
+//! MCP servers (`docs/site/specs/acp-onboarding.md` section 9).
+
+use std::collections::BTreeSet;
 
 use cookie_agent_client_state::onboarding::{
-    ModelChoice, OnboardingStep, choice_entries, choice_label, configured_label,
-    default_model_variant, field_name, finish_refusal, first_step, model_groups, run_summary,
-    small_model_variant, utility_model_variant, variants,
+    AcpPlace, ModelChoice, OnboardingStep, PathChoice, acp_check_line, choice_entries,
+    choice_label, configured_label, default_model_variant, field_name, finish_refusal_for,
+    first_step, join_command_line, mcp_preset_configured, mcp_preset_input, model_groups,
+    offered_mcp_presets, other_acp_input, run_summary, small_model_variant, utility_model_variant,
+    variants,
 };
-use cookie_agent_protocol::{AvailableModelDescriptor, OnboardingModelField, OnboardingRunParams};
+use cookie_agent_protocol::{
+    AvailableModelDescriptor, McpPresetPlace, OnboardingModelField, OnboardingRunParams, RuntimeId,
+};
 use leptos::prelude::*;
 
 use super::{BUTTON, ERROR, NOTE, PRIMARY, ROW, manage::FIELD};
@@ -74,13 +82,25 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
     let default_choice = RwSignal::new(Choice::new());
     let small_choice = RwSignal::new(Choice::new());
     let utility_choice = RwSignal::new(Choice::new());
+    let paths = RwSignal::new(
+        onboarding
+            .status
+            .with_untracked(|status| status.as_ref().map(PathChoice::of))
+            .unwrap_or(PathChoice {
+                models: true,
+                acp: false,
+            }),
+    );
+    let tools = RwSignal::new(BTreeSet::<String>::new());
+    let tools_runtime = RwSignal::new("local".to_owned());
+    let default_agent = RwSignal::new(String::new());
     let status = move || onboarding.status.get();
     let refusal = move || {
         status().and_then(|status| {
-            finish_refusal(
+            finish_refusal_for(
                 &status,
+                paths.get(),
                 default_choice.with(|choice| !choice.is_empty()),
-                false,
             )
         })
     };
@@ -89,16 +109,34 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
         let list = |choice: Choice| {
             choice_entries(&choice, |key| models.iter().find(|model| model.key == *key))
         };
+        let with_models = paths.get_untracked().models;
+        let runtime = RuntimeId::new(tools_runtime.get_untracked()).ok();
+        let mcp_servers = onboarding
+            .status
+            .get_untracked()
+            .map(|status| {
+                let chosen = tools.get_untracked();
+                offered_mcp_presets(&status)
+                    .into_iter()
+                    .filter(|preset| chosen.contains(&preset.id))
+                    .filter(|preset| !mcp_preset_configured(&status, preset, runtime.as_ref()))
+                    .map(|preset| mcp_preset_input(preset, runtime.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         // The daemon fetches the official agents first when it has none.
         workspace.run_onboarding(OnboardingRunParams {
-            install_kit: false,
-            source: None,
-            default_model: None,
-            small_model: None,
-            utility_model: None,
-            default_model_list: list(default_choice.get_untracked()),
-            small_model_list: list(small_choice.get_untracked()),
-            utility_model_list: list(utility_choice.get_untracked()),
+            default_model_list: with_models
+                .then(|| list(default_choice.get_untracked()))
+                .flatten(),
+            small_model_list: with_models
+                .then(|| list(small_choice.get_untracked()))
+                .flatten(),
+            utility_model_list: with_models
+                .then(|| list(utility_choice.get_untracked()))
+                .flatten(),
+            mcp_servers: (!mcp_servers.is_empty()).then_some(mcp_servers),
+            default_agent: default_agent.get_untracked().parse().ok(),
             ..Default::default()
         });
     };
@@ -123,7 +161,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                     Some(result) => summary(workspace, &result).into_any(),
                     None => view! {
                         <nav aria-label="Onboarding steps" class="grid grid-cols-2 gap-1 border-b border-toasted px-4 py-2 sm:flex sm:flex-wrap dark:border-ember">
-                            {OnboardingStep::ALL
+                            {move || paths.get().steps()
                                 .into_iter()
                                 .enumerate()
                                 .map(|(index, each)| {
@@ -159,6 +197,9 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                         </nav>
                         <div class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-3" data-onboarding-body>
                             {move || match step.get() {
+                                OnboardingStep::Start => start_step(paths).into_any(),
+                                OnboardingStep::AcpAgent => acp_step(workspace).into_any(),
+                                OnboardingStep::Tools => tools_step(workspace, tools, tools_runtime, default_agent).into_any(),
                                 OnboardingStep::Provider => provider_step(workspace).into_any(),
                                 OnboardingStep::DefaultModel => model_step(workspace, Slot::Default, default_choice).into_any(),
                                 OnboardingStep::SmallModel => model_step(workspace, Slot::Small, small_choice).into_any(),
@@ -172,9 +213,9 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                     type="button"
                                     id="onboarding-back"
                                     class=BUTTON
-                                    disabled=move || step.get().previous().is_none()
+                                    disabled=move || step.get().previous(paths.get()).is_none()
                                     on:click=move |_| {
-                                        if let Some(previous) = step.get_untracked().previous() {
+                                        if let Some(previous) = step.get_untracked().previous(paths.get_untracked()) {
                                             step.set(previous);
                                         }
                                     }
@@ -183,9 +224,9 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                     "Back"
                                 </button>
                                 <span class=format!("min-w-0 flex-1 {NOTE}") id="onboarding-refusal">
-                                    {move || step.get().next().is_none().then(refusal).flatten()}
+                                    {move || step.get().next(paths.get()).is_none().then(refusal).flatten()}
                                 </span>
-                                {move || match step.get().next() {
+                                {move || match step.get().next(paths.get()) {
                                     Some(next) => view! {
                                         <button type="button" id="onboarding-next" class=PRIMARY on:click=move |_| step.set(next)>
                                             "Next"
@@ -219,10 +260,458 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
 
 const fn step_id(step: OnboardingStep) -> &'static str {
     match step {
+        OnboardingStep::Start => "start",
+        OnboardingStep::AcpAgent => "acp-agent",
+        OnboardingStep::Tools => "tools",
         OnboardingStep::Provider => "provider",
         OnboardingStep::DefaultModel => "default-model",
         OnboardingStep::SmallModel => "small-model",
         OnboardingStep::UtilityModel => "utility-model",
+    }
+}
+
+/// How agents run: on model providers, an ACP agent, or both.
+fn start_step(paths: RwSignal<PathChoice>) -> impl IntoView {
+    let card = move |models: bool| {
+        let on = move || {
+            let chosen = paths.get();
+            if models { chosen.models } else { chosen.acp }
+        };
+        let (title, text, id) = if models {
+            (
+                "Model providers",
+                "Cookie's own agents run on models you connect: an API key or a sign-in with a provider.",
+                "models",
+            )
+        } else {
+            (
+                "An ACP agent",
+                "Claude Code, Codex, or another ACP agent runs with its own login and models; cookie drives it.",
+                "acp",
+            )
+        };
+        view! {
+            <button
+                type="button"
+                class=ROW
+                class:bg-toasted=on
+                class:dark:bg-ember=on
+                aria-pressed=move || on().to_string()
+                data-path=id
+                on:click=move |_| paths.update(|chosen| *chosen = chosen.toggled(models))
+            >
+                <span class="flex w-full items-center gap-2">
+                    {move || if on() {
+                        view! { <Glyph icon=icondata::FaSquareCheckRegular /> }.into_any()
+                    } else {
+                        view! { <Glyph icon=icondata::FaSquareRegular /> }.into_any()
+                    }}
+                    <span class="text-sm font-bold">{title}</span>
+                </span>
+                <span class=NOTE>{text}</span>
+            </button>
+        }
+    };
+    view! {
+        <p class="text-sm">"How should agents run? Choose either, or both."</p>
+        {card(true)}
+        {card(false)}
+    }
+}
+
+/// The ACP agent step: a preset or another agent, where it runs, its
+/// command; Add declares it at once, so each runtime that offers it can be
+/// checked.
+fn acp_step(workspace: Workspace) -> impl IntoView {
+    let onboarding = workspace.onboarding;
+    let presets = move || {
+        onboarding
+            .status
+            .get()
+            .map(|status| status.acp_presets)
+            .unwrap_or_default()
+    };
+    // `None`: another ACP agent.
+    let picked = RwSignal::new(None::<usize>);
+    let place = RwSignal::new(AcpPlace::DaemonMachine);
+    let id = RwSignal::new(String::new());
+    let command = RwSignal::new(String::new());
+    let env = RwSignal::new(String::new());
+    let description = RwSignal::new(String::new());
+    let pick = move |index: Option<usize>| {
+        picked.set(index);
+        let preset = index.and_then(|index| presets().get(index).cloned());
+        id.set(
+            preset
+                .as_ref()
+                .map(|preset| preset.id.to_string())
+                .unwrap_or_default(),
+        );
+        command.set(
+            preset
+                .as_ref()
+                .map(|preset| join_command_line(&preset.command))
+                .unwrap_or_default(),
+        );
+        env.set(
+            preset
+                .as_ref()
+                .map(|preset| {
+                    preset
+                        .env
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default(),
+        );
+        description.set(preset.map(|preset| preset.description).unwrap_or_default());
+    };
+    // Read once: the step's view must not follow the status, or each
+    // change would rebuild it and lose what was typed.
+    untrack(|| {
+        if !presets().is_empty() {
+            pick(Some(0));
+        }
+    });
+    let add = move |_| {
+        let lines = env
+            .get_untracked()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        match other_acp_input(
+            &id.get_untracked(),
+            &command.get_untracked(),
+            &lines,
+            &description.get_untracked(),
+            place.get_untracked(),
+        ) {
+            Ok(agent) => workspace.add_onboarding_acp(agent),
+            Err(reason) => onboarding.acp_note.set(Some(reason)),
+        }
+    };
+    let field = |label: &'static str, value: RwSignal<String>, name: &'static str| {
+        view! {
+            <label class="flex flex-col gap-1 text-sm">
+                <span>{label}</span>
+                <input
+                    type="text"
+                    class=FIELD
+                    data-acp-field=name
+                    prop:value=move || value.get()
+                    on:input=move |event| value.set(event_target_value(&event))
+                />
+            </label>
+        }
+    };
+    view! {
+        <p class="text-sm">"Cookie launches the agent on a machine, where it uses that machine's login. Install it and log in there first."</p>
+        <div class="flex flex-wrap gap-2" data-acp-presets>
+            {move || presets()
+                .into_iter()
+                .enumerate()
+                .map(|(index, preset)| {
+                    let on = move || picked.get() == Some(index);
+                    view! {
+                        <button
+                            type="button"
+                            class=BUTTON
+                            class:bg-toasted=on
+                            class:dark:bg-ember=on
+                            aria-pressed=move || on().to_string()
+                            data-acp-preset=preset.id.to_string()
+                            on:click=move |_| pick(Some(index))
+                        >
+                            {preset.name.clone()}
+                        </button>
+                    }
+                })
+                .collect_view()}
+            <button
+                type="button"
+                class=BUTTON
+                class:bg-toasted=move || picked.get().is_none()
+                class:dark:bg-ember=move || picked.get().is_none()
+                aria-pressed=move || picked.get().is_none().to_string()
+                data-acp-preset="other"
+                on:click=move |_| pick(None)
+            >
+                "Another ACP agent"
+            </button>
+        </div>
+        {move || picked
+            .get()
+            .and_then(|index| presets().get(index).cloned())
+            .map(|preset| view! { <p class=NOTE data-acp-needs>{format!("Needs: {}", preset.needs)}</p> })}
+        <div class="flex flex-wrap gap-2" data-acp-place>
+            {AcpPlace::ALL
+                .into_iter()
+                .map(|each| {
+                    let on = move || place.get() == each;
+                    view! {
+                        <button
+                            type="button"
+                            class=BUTTON
+                            class:bg-toasted=on
+                            class:dark:bg-ember=on
+                            aria-pressed=move || on().to_string()
+                            data-acp-where=match each {
+                                AcpPlace::EveryMachine => "every",
+                                AcpPlace::DaemonMachine => "local",
+                            }
+                            on:click=move |_| place.set(each)
+                        >
+                            {each.label()}
+                        </button>
+                    }
+                })
+                .collect_view()}
+        </div>
+        {field("ID", id, "id")}
+        {field("Command", command, "command")}
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Environment (KEY=VALUE, one per line)"</span>
+            <textarea
+                class=FIELD
+                rows="2"
+                data-acp-field="env"
+                prop:value=move || env.get()
+                on:input=move |event| env.set(event_target_value(&event))
+            ></textarea>
+        </label>
+        {field("Description", description, "description")}
+        <div class="flex flex-wrap items-center gap-2">
+            <button type="button" id="onboarding-acp-add" class=PRIMARY disabled=move || onboarding.running.get() on:click=add>
+                "Add ACP agent"
+            </button>
+            {move || onboarding.acp_note.get().map(|note| view! { <span class=NOTE id="onboarding-acp-note">{note}</span> })}
+        </div>
+        {move || acp_declarations(workspace)}
+    }
+}
+
+/// The declared ACP agents, each runtime that offers it with a Check.
+fn acp_declarations(workspace: Workspace) -> impl IntoView {
+    let onboarding = workspace.onboarding;
+    let agents = onboarding
+        .status
+        .get()
+        .and_then(|status| status.paths)
+        .map(|paths| paths.acp.agents)
+        .unwrap_or_default();
+    (!agents.is_empty()).then(|| {
+        let rows = agents
+            .into_iter()
+            .map(|agent| {
+                let place = agent
+                    .runtime
+                    .as_ref()
+                    .map_or_else(|| "every machine".to_owned(), ToString::to_string);
+                let runtimes = agent
+                    .runtimes
+                    .into_iter()
+                    .map(|runtime| {
+                        let key = (runtime.runtime_id.clone(), agent.id.clone());
+                        let check = {
+                            let key = key.clone();
+                            move |_| workspace.check_onboarding_acp(key.0.clone(), key.1.clone())
+                        };
+                        let outcome = {
+                            let key = key.clone();
+                            move || onboarding.checks.with(|checks| checks.get(&key).cloned())
+                        };
+                        let name = runtime.runtime_id.to_string();
+                        view! {
+                            <li class="flex flex-wrap items-center gap-2 text-sm" data-acp-check=format!("{}@{name}", key.1)>
+                                <span class="font-mono">{format!("on {name}")}</span>
+                                {(!runtime.available).then(|| view! { <span class=NOTE>"away"</span> })}
+                                <button type="button" class=BUTTON disabled=!runtime.available on:click=check>
+                                    "Check"
+                                </button>
+                                {move || match outcome() {
+                                    None => None,
+                                    Some(None) => Some(view! { <span class=NOTE>"Checking…"</span> }.into_any()),
+                                    Some(Some(Ok(result))) => Some(view! {
+                                        <span class=if result.ok { NOTE } else { ERROR } data-check-ok=result.ok.to_string()>{acp_check_line(&result)}</span>
+                                    }.into_any()),
+                                    Some(Some(Err(error))) => Some(view! { <span class=ERROR>{error}</span> }.into_any()),
+                                }}
+                            </li>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <li class="flex flex-col gap-1" data-acp-agent=agent.id.to_string()>
+                        <span class="text-sm">
+                            <span class="font-mono font-bold">{agent.id.to_string()}</span>
+                            {format!(" · {place}{}", if agent.enabled { "" } else { " · turned off" })}
+                        </span>
+                        <ul class="flex flex-col gap-1 pl-3">{runtimes}</ul>
+                    </li>
+                }
+            })
+            .collect_view();
+        view! {
+            <h3 class="pt-2 text-xs font-bold uppercase tracking-wide text-ink dark:text-sand">"Linked ACP agents"</h3>
+            <ul class="flex flex-col gap-2" id="onboarding-acp-agents">{rows}</ul>
+        }
+    })
+}
+
+/// The optional Tools: MCP servers that need no login, and the agent new
+/// sessions start with.
+fn tools_step(
+    workspace: Workspace,
+    tools: RwSignal<BTreeSet<String>>,
+    runtime: RwSignal<String>,
+    default_agent: RwSignal<String>,
+) -> impl IntoView {
+    let onboarding = workspace.onboarding;
+    let runtimes = move || {
+        let mut ids = workspace
+            .runtimes
+            .get()
+            .map(|list| {
+                list.runtimes
+                    .into_iter()
+                    .map(|listing| listing.runtime_id.to_string())
+                    .filter(|id| id != RuntimeId::GLOBAL)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !ids.iter().any(|id| id == "local") {
+            ids.insert(0, "local".to_owned());
+        }
+        ids
+    };
+    let agents = move || {
+        let mut ids = workspace
+            .selectable_agents()
+            .into_iter()
+            .filter(|agent| agent.preset.is_none())
+            .map(|agent| agent.id.to_string())
+            .collect::<Vec<_>>();
+        if let Some(status) = onboarding.status.get() {
+            for agent in status
+                .paths
+                .map(|paths| paths.acp.agents)
+                .unwrap_or_default()
+            {
+                if !ids.contains(&agent.id.to_string()) {
+                    ids.push(agent.id.to_string());
+                }
+            }
+        }
+        ids
+    };
+    view! {
+        <p class="text-sm">"Optional: tools that need no login. Agents ask you before each call until you allow it."</p>
+        {move || {
+            let Some(status) = onboarding.status.get() else {
+                return view! { <p class=NOTE>"Asking the daemon…"</p> }.into_any();
+            };
+            let place = RuntimeId::new(runtime.get()).ok();
+            let presets = offered_mcp_presets(&status)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            if presets.is_empty() {
+                return view! { <p class=NOTE>"The daemon has no tool presets yet: they arrive with its official agents."</p> }.into_any();
+            }
+            let machine = presets.iter().any(|preset| preset.place == McpPresetPlace::Machine);
+            let rows = presets
+                .into_iter()
+                .map(|preset| {
+                    let configured = mcp_preset_configured(&status, &preset, place.as_ref());
+                    let name = preset.id.clone();
+                    let on = {
+                        let name = name.clone();
+                        Signal::derive(move || {
+                            configured || tools.with(|chosen| chosen.contains(&name))
+                        })
+                    };
+                    let toggle = move |_| {
+                        if !configured {
+                            tools.update(|chosen| {
+                                if !chosen.remove(&name) {
+                                    chosen.insert(name.clone());
+                                }
+                            });
+                        }
+                    };
+                    view! {
+                        <button
+                            type="button"
+                            class=ROW
+                            class:opacity-50=configured
+                            aria-pressed=move || on.get().to_string()
+                            data-mcp-preset=preset.id.clone()
+                            on:click=toggle
+                        >
+                            <span class="flex w-full items-center gap-2">
+                                {move || if on.get() {
+                                    view! { <Glyph icon=icondata::FaSquareCheckRegular /> }.into_any()
+                                } else {
+                                    view! { <Glyph icon=icondata::FaSquareRegular /> }.into_any()
+                                }}
+                                <span class="text-sm font-bold">{preset.name.clone()}</span>
+                                <span class=NOTE>{preset.category.clone()}</span>
+                                {configured.then(|| view! { <span class=NOTE>"· set up"</span> })}
+                            </span>
+                            <span class=NOTE>{preset.description.clone()}</span>
+                            <span class=NOTE>{format!("Needs: {}", preset.needs)}</span>
+                        </button>
+                    }
+                })
+                .collect_view();
+            view! {
+                <div class="flex flex-col gap-1" id="onboarding-tools">{rows}</div>
+                {machine.then(|| view! {
+                    <label class="flex flex-col gap-1 text-sm">
+                        <span>"Tools that run a program run on"</span>
+                        <select
+                            class=FIELD
+                            data-mcp-runtime
+                            on:change=move |event| runtime.set(event_target_value(&event))
+                        >
+                            {runtimes()
+                                .into_iter()
+                                .map(|id| {
+                                    let selected = id == runtime.get_untracked();
+                                    view! { <option value=id.clone() selected=selected>{id.clone()}</option> }
+                                })
+                                .collect_view()}
+                        </select>
+                    </label>
+                })}
+            }
+            .into_any()
+        }}
+        <label class="flex flex-col gap-1 pt-2 text-sm">
+            <span>"New sessions start with"</span>
+            <select
+                class=FIELD
+                id="onboarding-default-agent"
+                on:change=move |event| default_agent.set(event_target_value(&event))
+            >
+                <option value="" selected=true>
+                    {move || {
+                        let current = onboarding
+                            .status
+                            .get()
+                            .and_then(|status| status.default_agent)
+                            .map_or_else(|| workspace.default_agent().to_string(), |agent| agent.to_string());
+                        format!("Keep: {current}")
+                    }}
+                </option>
+                {move || agents()
+                    .into_iter()
+                    .map(|id| view! { <option value=id.clone()>{id.clone()}</option> })
+                    .collect_view()}
+            </select>
+        </label>
     }
 }
 

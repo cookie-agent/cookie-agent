@@ -5793,11 +5793,13 @@ def foreign_origin(browser):
 
 def onboarding(browser):
     """A daemon that is not set up offers the first-run sheet on connecting:
-    four steps (a provider and the default, small, and utility models; there
-    is no starter kit), the connected providers, and the model lists; "Not
-    now" closes it for good in this browser, and Settings reopens it. A
-    daemon that is set up offers nothing; its sheet's model steps build
-    fallback lists."""
+    how agents run, then the models path's steps (a provider and the
+    default, small, and utility models; there is no starter kit) and the
+    optional Tools, the connected providers, and the model lists; "Not now"
+    closes it for good in this browser, and Settings reopens it. A daemon
+    that is set up offers nothing; its sheet's model steps build fallback
+    lists. The ACP path links an agent instead of the models, and checks it
+    (docs/site/specs/acp-onboarding.md section 9)."""
     browser.resize(1280, 900)
     view(browser, "settings")
     browser.wait("the set-up daemon's onboarding answer", lambda: count(browser, "#settings-onboard") == 1)
@@ -5808,10 +5810,16 @@ def onboarding(browser):
     steps = browser.script(
         "return [...document.querySelectorAll('#onboarding [data-step]')].map(s => s.dataset.step)"
     )
-    assert steps == ["provider", "default-model", "small-model", "utility-model"], steps
+    assert steps == ["start", "provider", "default-model", "small-model", "utility-model", "tools"], steps
     assert browser.script(
-        "return document.querySelector('#onboarding [data-step=provider]').getAttribute('aria-current')"
-    ) == "step", "the sheet opens on the provider step"
+        "return document.querySelector('#onboarding [data-step=start]').getAttribute('aria-current')"
+    ) == "step", "the sheet opens on how agents run"
+    assert browser.script(
+        "return document.querySelector('#onboarding [data-path=models]').getAttribute('aria-pressed')"
+    ) == "true", "the models path is the one chosen"
+    browser.shot("onboarding-start-desktop")
+    browser.click("#onboarding-next")
+    browser.wait("the provider step", lambda: count(browser, "#onboarding-connected") == 1)
     assert "No provider is connected yet" in browser.text("#onboarding-connected")
     assert count(browser, "#onboarding [data-provider]") > 0, "the provider step lists the connect forms"
     browser.shot("onboarding-provider-desktop")
@@ -5825,7 +5833,7 @@ def onboarding(browser):
     fits(browser, "the first-run sheet")
     browser.shot("onboarding-provider-phone")
     browser.resize(1280, 900)
-    print("a daemon without a provider offers the first-run sheet's four steps")
+    print("a daemon without a provider offers the first-run sheet's steps")
 
     # Not now: closed, and closed again after a reload.
     browser.click("#onboarding-not-now")
@@ -5869,6 +5877,43 @@ def onboarding(browser):
     browser.click("#onboarding-not-now")
     browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
     print("a model step builds a fallback list")
+
+    # The ACP path: an agent instead of the models, declared at once, so it
+    # can be checked; the models' steps make way for its own.
+    view(browser, "settings")
+    browser.wait("Settings' Set up Cookie", lambda: count(browser, "#settings-onboard") == 1)
+    browser.click("#settings-onboard")
+    browser.wait("the sheet again", lambda: count(browser, "#onboarding") == 1)
+    browser.click("#onboarding [data-step=start]")
+    browser.wait("how agents run", lambda: count(browser, "#onboarding [data-path=acp]") == 1)
+    browser.click("#onboarding [data-path=acp]")
+    browser.click("#onboarding [data-path=models]")
+    steps = browser.script(
+        "return [...document.querySelectorAll('#onboarding [data-step]')].map(s => s.dataset.step)"
+    )
+    assert steps == ["start", "acp-agent", "tools"], steps
+    browser.click("#onboarding-next")
+    browser.wait("the ACP agent step", lambda: count(browser, "#onboarding-acp-add") == 1)
+    # This daemon has no presets: another agent's fields.
+    assert browser.script(
+        "return document.querySelector('#onboarding [data-acp-preset=other]').getAttribute('aria-pressed')"
+    ) == "true"
+    browser.type("#onboarding [data-acp-field=id]", "gemini")
+    browser.type("#onboarding [data-acp-field=command]", "gemini --experimental-acp")
+    browser.click("#onboarding-acp-add")
+    browser.wait("the linked agent", lambda: count(browser, "#onboarding [data-acp-agent=gemini]") == 1)
+    assert "Added `gemini`" in browser.text("#onboarding-acp-note")
+    assert browser.script(
+        "return document.querySelector('#onboarding [data-acp-field=id]').value"
+    ) == "gemini", "the fields keep what was typed as the status changes"
+    assert count(browser, "#onboarding") == 1, "linking an agent kept the sheet open"
+    browser.shot("onboarding-acp-agent-desktop")
+    browser.click("#onboarding-next")
+    browser.wait("the Tools step", lambda: count(browser, "#onboarding-default-agent") == 1)
+    browser.shot("onboarding-tools-desktop")
+    browser.click("#onboarding-not-now")
+    browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
+    print("the ACP path links an agent and keeps the sheet open")
 
 
 def panic_hook():
@@ -6023,8 +6068,8 @@ def session_restart(browser):
 def acp_agents(browser):
     """An ACP agent the daemon's `local` runtime hosts (test-web-page.sh
     declares the scripted fixture, and a disabled one, for this group):
-    the agent picker lists both with their runtime, the disabled one dimmed
-    and not pickable; the agent's turn shows its plan as a checklist and its
+    the agent picker lists the fixture with its runtime and leaves the
+    disabled one out; the agent's turn shows its plan as a checklist and its
     tool call with the agent as its source, and the status bar its context;
     the commands it runs show their output, and an image in its reply shows
     as media; its commands are offered in the composer; the model chip
@@ -6037,12 +6082,11 @@ def acp_agents(browser):
     browser.click("#agent-chip")
     fixture = '#sheet [data-agent="fixture"]'
     off = '#sheet [data-agent="off"]'
-    browser.wait("the runtime agents", lambda: count(browser, fixture) == 1 and count(browser, off) == 1, timeout=40)
+    browser.wait("the runtime agents", lambda: count(browser, fixture) == 1, timeout=40)
     assert "on local" in browser.text(fixture + " [data-agent-runtime]"), browser.text(fixture)
-    assert "unavailable" in browser.text(off), browser.text(off)
-    assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-disabled')", off) == "true"
-    browser.click(off)
-    assert count(browser, "#sheet") == 1, "a dimmed agent was picked"
+    # An agent the user turned off is not offered at all
+    # (docs/site/specs/acp-onboarding.md, D6).
+    assert count(browser, off) == 0, "a turned-off agent was offered"
     settle(browser)
     browser.shot("acp-agent-picker")
     browser.click(fixture)
