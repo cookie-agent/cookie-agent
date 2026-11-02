@@ -342,6 +342,7 @@ async fn root_sessions_may_switch_draft_agents_between_runs() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
     assert!(app.watching_root_session());
     assert!(app.agent_switching_allowed());
@@ -595,6 +596,7 @@ async fn a_refresh_revalidates_root_drafts_only() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
     app.revalidate_draft();
     assert_eq!(
@@ -609,6 +611,7 @@ async fn a_refresh_revalidates_root_drafts_only() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
     app.revalidate_draft();
     assert_eq!(
@@ -908,6 +911,7 @@ async fn model_command_continues_to_a_variant_step_that_applies_both_together() 
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     app.draft = Some(original.clone());
 
@@ -1007,6 +1011,7 @@ async fn ctrl_t_cycles_the_draft_variant_and_explains_a_variantless_model() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     app.draft = Some(draft(&with_variants.key));
     let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
@@ -1061,6 +1066,7 @@ async fn another_clients_model_pick_moves_this_draft_and_rapid_picks_publish_onc
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     app.draft = Some(primary.clone());
 

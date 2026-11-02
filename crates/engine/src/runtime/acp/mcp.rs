@@ -480,6 +480,7 @@ impl Engine {
                     agent: binding.agent.id.clone(),
                     model: cookie_agent_protocol::acp_model_selection(&binding.agent.id),
                     preset: projection.meta.creation_selection.preset.clone(),
+                    acp_runtime: None,
                 };
                 let memory = self.memory_variables(binding.session);
                 Arc::new(self.freeze_root_selection(&selection, true, &memory)?.0)

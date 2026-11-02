@@ -3,6 +3,8 @@
 mod acp;
 mod agents;
 mod approvals;
+#[cfg(test)]
+pub(in crate::ui) use self::TitleSegment as TitleSegmentForTests;
 pub(in crate::ui) use approvals::ApprovalChoice;
 #[cfg(test)]
 pub(in crate::ui) use approvals::{
@@ -156,6 +158,8 @@ pub(super) enum Modal {
     None,
     Sessions,
     Presets,
+    /// Where the draft's ACP agent runs, when several runtimes offer it.
+    RunsOn,
     Agents,
     Models,
     /// The variant step of `/model`, for the model in
@@ -477,6 +481,8 @@ pub(super) struct UserMessageHit {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TitleSegment {
     Agent,
+    /// The runtime an ACP agent runs on (`@labpc`).
+    RunsOn,
     Model,
     Variant,
 }

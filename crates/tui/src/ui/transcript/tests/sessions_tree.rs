@@ -696,6 +696,7 @@ async fn hidden_current_session_stays_fully_usable() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
 
     let rendered = frame_rows(&mut app, 100, 30).join("\n");

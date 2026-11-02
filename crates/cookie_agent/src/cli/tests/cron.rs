@@ -211,6 +211,7 @@ async fn cookie_cron_manages_the_daemon_jobs() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     let session = client
         .create_session(cookie_agent_protocol::SessionCreateParams {

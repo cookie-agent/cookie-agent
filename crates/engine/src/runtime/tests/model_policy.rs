@@ -27,6 +27,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let owner = frozen_root_policy(&fixture, &selection);
     let parent = owner.selected_suffix[0].clone();
@@ -636,6 +637,7 @@ fn model_capabilities_follow_the_exact_fallback_binding() {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let mut owner = frozen_root_policy(&fixture, &selection);
     let fallback = crate::test_support::model_binding_named("fallback-one");
@@ -670,6 +672,7 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let mut owner = frozen_root_policy(&fixture, &selection);
     let fallback = crate::test_support::model_binding_named("fallback-one");

@@ -179,6 +179,7 @@ pub(super) fn selection() -> RunSelection {
         agent: agent_id(),
         model: cookie_agent_protocol::acp_model_selection(&agent_id()),
         preset: None,
+        acp_runtime: None,
     }
 }
 
@@ -1142,8 +1143,11 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     let listed = final_text(&outcome);
     assert!(listed.starts_with("tools: "), "{listed}");
     let tools = listed["tools: ".len()..].split(',').collect::<Vec<_>>();
-    for hidden in ["read", "write", "edit", "bash", "webfetch"] {
-        assert!(!tools.contains(&hidden), "{hidden} in {tools:?}");
+    // By default only `webfetch` is hidden: cookie's coding tools reach
+    // every machine, the agent's own included.
+    assert!(!tools.contains(&"webfetch"), "{tools:?}");
+    for offered in ["read", "write", "edit", "bash"] {
+        assert!(tools.contains(&offered), "{offered} missing from {tools:?}");
     }
     // Nothing is deferred: the deferrable built-in groups come in full, and
     // there is no loader tool (deferred tools in cookie, section 9).
@@ -1219,6 +1223,40 @@ fn started_calls(
             _ => None,
         })
         .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acp_agents_runtime_tools_take_machine_from_the_first_machine() {
+    // No `global` and one machine: a model's tools would not be routed, an
+    // ACP agent's are, so a list fetched now stays true as machines come.
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine
+        .create_session_with_permissions(
+            selection(),
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                runtimes: Some(vec![crate::SessionRuntimeRequest {
+                    runtime_id: "local".to_owned(),
+                    capability: Some("coding".to_owned()),
+                    workspace: Some(acp.workspace()),
+                }]),
+                global: false,
+                cwd: None,
+            },
+        )
+        .await
+        .unwrap()
+        .session_id;
+    assert!(engine.routing_machines(session).unwrap().is_some());
+    // A call on the agent's own machine runs: nothing refuses it.
+    let call = format!(
+        "mcp call bash {}",
+        serde_json::json!({"command": "echo on-the-host", "description": "echo"})
+    );
+    let answer = final_text(&turn(engine, session, "host", &call).await);
+    assert!(answer.contains("on-the-host"), "{answer}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1627,14 +1665,14 @@ async fn a_turn_records_the_tools_the_bridge_offers_for_the_clients() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    // Once, as the bridge lists them: the hidden coding tools left out.
+    // Once, as the bridge lists them: the hidden `webfetch` left out.
     assert_eq!(published.len(), 1, "{published:?}");
     assert_eq!(
         published[0].join(","),
         listed["tools: ".len()..],
         "{listed}"
     );
-    assert!(!published[0].iter().any(|tool| tool == "read"));
+    assert!(!published[0].iter().any(|tool| tool == "webfetch"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1737,6 +1775,7 @@ async fn a_session_with_an_acp_agent_is_refused_while_its_runtime_is_away() {
             agent: id.clone(),
             model: cookie_agent_protocol::acp_model_selection(&id),
             preset: None,
+            acp_runtime: None,
         })
         .expect_err("refused while the runtime is away");
     assert!(refused.to_string().contains("is unavailable"), "{refused}");
@@ -2492,7 +2531,7 @@ async fn dial_in(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_two_runtimes_offer_runs_on_the_one_the_session_attaches() {
+async fn an_agent_two_runtimes_offer_runs_on_its_host_its_choice_or_the_first_attached() {
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
     let (stop, served) = dial_in(&acp, "labpc", "fixture").await;
@@ -2553,9 +2592,10 @@ async fn an_agent_two_runtimes_offer_runs_on_the_one_the_session_attaches() {
         assert!(line.ends_with(" acp_agents=\"fixture\">"), "{line}");
     }
 
-    // A second runtime that offers it cannot be attached.
+    // A second runtime that offers it can be attached; the agent stays on
+    // `local`, where it started.
     let elsewhere = private_tempdir();
-    let refused = engine
+    engine
         .attach_runtime(
             session,
             "labpc",
@@ -2564,49 +2604,56 @@ async fn an_agent_two_runtimes_offer_runs_on_the_one_the_session_attaches() {
             origin(),
         )
         .await
-        .expect_err("a second offering runtime is refused");
-    assert!(
-        refused.to_string().contains(
-            "runtime `labpc` offers ACP agent `fixture`, which this session runs on runtime `local`"
-        ),
-        "{refused}"
+        .expect("a second offering runtime attaches");
+    assert_eq!(
+        final_text(&turn(engine, session, "stays", "say two").await),
+        "two"
     );
-
-    // Moved to `labpc`, the next turn starts a new ACP session there.
+    assert_eq!(
+        session_starts(engine, session)
+            .pop()
+            .unwrap()
+            .runtime_id
+            .as_str(),
+        "local"
+    );
+    // The runtime it started on cannot be detached, and the session cannot
+    // choose another for it.
     let local = engine
         .session_runtimes(session)
         .unwrap()
         .into_iter()
         .find(|attachment| attachment.runtime_id.as_str() == "local")
         .unwrap();
-    engine
+    let refused = engine
         .detach_runtime(session, local.name, origin())
         .await
+        .expect_err("the host stays");
+    assert!(
+        refused.to_string().contains("cannot be detached"),
+        "{refused}"
+    );
+    let mut moved = selection();
+    moved.acp_runtime = Some(cookie_agent_protocol::RuntimeId::new("labpc").unwrap());
+    assert!(
+        engine
+            .select_model(session, moved.clone(), origin())
+            .await
+            .is_err()
+    );
+    // Another runtime that offers it detaches freely.
+    let labpc = engine
+        .session_runtimes(session)
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.runtime_id.as_str() == "labpc")
         .unwrap();
     engine
-        .attach_runtime(
-            session,
-            "labpc",
-            None,
-            Some(elsewhere.path().to_owned()),
-            origin(),
-        )
+        .detach_runtime(session, labpc.name, origin())
         .await
-        .unwrap();
-    assert_eq!(
-        final_text(&turn(engine, session, "moved", "say two").await),
-        "two"
-    );
-    let record = session_starts(engine, session).pop().unwrap();
-    assert_eq!(record.runtime_id.as_str(), "labpc");
-    assert_eq!(record.how, AcpSessionStart::New);
-    assert!(events(engine, session).iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::Diagnostic { message, .. }
-            if message.contains("earlier session is on runtime `local`")
-    )));
+        .expect("a runtime that does not run it detaches");
 
-    // With none of them attached, or with both, it cannot run.
+    // With none of them attached and none chosen, it cannot run.
     let none = engine
         .create_session_with_permissions(
             selection(),
@@ -2625,35 +2672,73 @@ async fn an_agent_two_runtimes_offer_runs_on_the_one_the_session_attaches() {
             .contains("`fixture` needs a runtime that offers it attached: labpc, local"),
         "{none}"
     );
-    let both = engine
+    // Chosen, the runtime is attached for it, and it runs there.
+    let chosen = engine
         .create_session_with_permissions(
-            selection(),
+            moved.clone(),
             None,
             Vec::new(),
             crate::SessionRuntimes {
-                runtimes: Some(vec![
-                    crate::SessionRuntimeRequest {
-                        runtime_id: "local".to_owned(),
-                        capability: Some("coding".to_owned()),
-                        workspace: Some(acp.workspace()),
-                    },
-                    crate::SessionRuntimeRequest {
-                        runtime_id: "labpc".to_owned(),
-                        capability: None,
-                        workspace: Some(elsewhere.path().to_owned()),
-                    },
-                ]),
+                runtimes: Some(Vec::new()),
                 global: true,
                 cwd: None,
             },
         )
         .await
-        .expect_err("two offering runtimes attached");
+        .expect("the chosen runtime is attached")
+        .session_id;
     assert!(
-        both.to_string()
-            .contains("`fixture` is offered by more than one attached runtime (labpc, local)"),
-        "{both}"
+        engine
+            .session_runtimes(chosen)
+            .unwrap()
+            .iter()
+            .any(|attachment| attachment.runtime_id.as_str() == "labpc")
     );
+    final_text(&turn(engine, chosen, "chosen", "say three").await);
+    assert_eq!(
+        session_starts(engine, chosen)
+            .pop()
+            .unwrap()
+            .runtime_id
+            .as_str(),
+        "labpc"
+    );
+    // With both attached, the first runs it, unless one is chosen.
+    let both = |selection: RunSelection| crate::SessionRuntimes {
+        runtimes: Some(vec![
+            crate::SessionRuntimeRequest {
+                runtime_id: "local".to_owned(),
+                capability: Some("coding".to_owned()),
+                workspace: Some(acp.workspace()),
+            },
+            crate::SessionRuntimeRequest {
+                runtime_id: "labpc".to_owned(),
+                capability: None,
+                workspace: Some(elsewhere.path().to_owned()),
+            },
+        ]),
+        global: true,
+        cwd: {
+            let _ = selection;
+            None
+        },
+    };
+    for (pick, expected) in [(selection(), "local"), (moved, "labpc")] {
+        let session = engine
+            .create_session_with_permissions(pick.clone(), None, Vec::new(), both(pick))
+            .await
+            .expect("two offering runtimes attach")
+            .session_id;
+        final_text(&turn(engine, session, "both", "say four").await);
+        assert_eq!(
+            session_starts(engine, session)
+                .pop()
+                .unwrap()
+                .runtime_id
+                .as_str(),
+            expected
+        );
+    }
     stop.cancel();
     let _ = served.await;
 }

@@ -62,7 +62,6 @@ impl Engine {
     ) -> Result<AttachedMachine, EngineError> {
         let preset = policy.and_then(|policy| policy.preset.as_deref());
         self.ensure_session_owned(session)?;
-        self.refuse_second_acp_runtime(session, runtime_id)?;
         let instance = self
             .ensure_runtime(runtime_id, Some(capability), workspace.as_deref())
             .await?;
@@ -70,19 +69,17 @@ impl Engine {
             connection.retry_failed_mcp();
         }
         let machines_before = self.machine_names(session);
-        let runtime_id_owned = runtime_id.to_owned();
         let attachment = self
             .on_actor(session, move |engine| {
-                // Checked on the actor, so of two attaches under way only
-                // the first can pass.
-                engine.refuse_second_acp_runtime(session, runtime_id_owned.as_str())?;
                 let projection = engine.inner.store.get(session)?;
                 let mut attachments = engine.attachments_of(&projection);
-                engine.refuse_overlap_with(
-                    &attachments,
-                    &instance,
-                    &SessionToolContext::new(session),
-                )?;
+                if !engine.attaches_on_acp_host_machine(session, &attachments, &instance)? {
+                    engine.refuse_overlap_with(
+                        &attachments,
+                        &instance,
+                        &SessionToolContext::new(session),
+                    )?;
+                }
                 let attachment =
                     crate::runtime::attachments::push_instance(&mut attachments, &instance)?;
                 engine.append_direct(
@@ -265,30 +262,38 @@ impl Engine {
                 running.join(", ")
             )));
         }
-        let name = attachment.name.clone();
+        let detached = attachment.clone();
         self.on_actor(session, move |engine| {
+            engine.refuse_detaching_acp_host(session, &detached)?;
             engine.append_direct(
                 session,
                 None,
                 crate::runtime::event_origin("engine:machines"),
-                crate::runtime::Event::RuntimeDetached { name },
+                crate::runtime::Event::RuntimeDetached {
+                    name: detached.name.clone(),
+                },
+            )?;
+            engine.forget_detached_acp_choice(
+                session,
+                &detached,
+                crate::runtime::event_origin("engine:machines"),
             )
         })
         .await?;
         Ok(attachment)
     }
 
-    /// Whether `agent` of `preset` is an ACP agent.
-    pub(crate) fn selects_acp_agent(
+    /// The runtimes that offer `agent` of `preset`, when it is an ACP
+    /// agent.
+    pub(crate) fn selected_acp_offers(
         &self,
         agent: &cookie_agent_protocol::AgentId,
         preset: Option<&str>,
-    ) -> bool {
+    ) -> Option<crate::runtime_snapshot::AcpOffers> {
         self.current_runtime()
             .agents_for_preset(preset)
             .ok()
-            .and_then(|agents| agents.get(agent).map(|agent| agent.acp.is_some()))
-            .unwrap_or(false)
+            .and_then(|agents| agents.get(agent).and_then(|agent| agent.acp.clone()))
     }
 
     /// The policy of run `run`, while it runs.
@@ -337,38 +342,6 @@ impl Engine {
             .chain(bare.iter().cloned())
             .collect();
         self.inner.background.running_calls_of(session, &tools)
-    }
-
-    /// A session runs its ACP agent on the one attached runtime that offers
-    /// it, so a second such runtime is refused.
-    pub(crate) fn refuse_second_acp_runtime(
-        &self,
-        session: SessionId,
-        runtime_id: &str,
-    ) -> Result<(), EngineError> {
-        let Some(offers) = self.session_acp_offers(session)? else {
-            return Ok(());
-        };
-        let attached = self.session_runtime_ids(session)?;
-        let offering = offers
-            .runtimes()
-            .into_iter()
-            .filter(|offering| attached.contains(offering))
-            .collect::<Vec<_>>();
-        if offers
-            .runtimes()
-            .iter()
-            .any(|offering| offering.as_str() == runtime_id)
-            && let Some(other) = offering.iter().find(|other| other.as_str() != runtime_id)
-        {
-            return Err(EngineError::Runtime(format!(
-                "runtime `{runtime_id}` offers ACP agent `{}`, which this session runs on \
-                 runtime `{other}`; a session runs it on one runtime, so detach `{other}` \
-                 first",
-                offers.id
-            )));
-        }
-        Ok(())
     }
 
     /// Refuses `instance` when one of its tools has the name of a tool that

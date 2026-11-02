@@ -202,6 +202,9 @@ impl JsonSchema for CronMaxRunsInput {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(transform = crate::event::open_object_schema)]
+// A target is built once per job and per fire; boxing the template would
+// only move it.
+#[allow(clippy::large_enum_variant)]
 pub enum CronTarget {
     /// A root session.
     Session(SessionId),
@@ -296,6 +299,11 @@ pub struct CronTemplate {
     /// The project the run sessions belong to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectId>,
+    /// For an ACP agent, the runtime its runs run it on, attached when
+    /// `runtimes` does not name it (client protocol 1.70.0); the first
+    /// attached runtime that offers it when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_runtime: Option<crate::RuntimeId>,
 }
 
 /// Who created or changed a job: you, through a client, or an agent from a

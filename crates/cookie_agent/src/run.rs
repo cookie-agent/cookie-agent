@@ -649,6 +649,7 @@ fn resolve_selection(
             agent: agent.id.clone(),
             model: acp_model.clone(),
             preset,
+            acp_runtime: None,
         });
     }
 
@@ -699,6 +700,7 @@ fn resolve_selection(
         agent: agent.id.clone(),
         model,
         preset,
+        acp_runtime: None,
     })
 }
 

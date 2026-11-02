@@ -379,6 +379,7 @@ fn root_selection(fixture: &Fixture, agent: &str) -> RunSelection {
         agent: descriptor.id.clone(),
         model: descriptor.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     }
 }
 

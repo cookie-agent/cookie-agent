@@ -129,9 +129,33 @@ impl Engine {
                 }
             }
         }
+        // A runtime chosen to run an ACP agent that the session does not
+        // attach yet is attached, at its home, before its agent starts.
+        if let Some(chosen) = &selection.acp_runtime
+            && !self.session_runtime_ids(session)?.contains(chosen)
+            && self.acp_host_hints(session, &selection.agent)?.0.is_none()
+        {
+            let home = self
+                .runtime_home(chosen.as_str())
+                .map(std::path::PathBuf::from);
+            self.attach_runtime(session, chosen.as_str(), None, home, origin.clone())
+                .await?;
+        }
         self.on_actor(session, move |engine| {
             if engine.session_model_selection(session)? == selection {
                 return Ok(false);
+            }
+            // An ACP agent stays on the runtime it started on
+            // (`docs/site/specs/acp-several-runtimes.md` section 3.3).
+            if let Some(chosen) = &selection.acp_runtime
+                && let (Some(host), _) = engine.acp_host_hints(session, &selection.agent)?
+                && &host != chosen
+            {
+                return Err(EngineError::Acp(format!(
+                    "`{}` runs on runtime `{host}` for this session; start a new session to run \
+                     it on `{chosen}`",
+                    selection.agent
+                )));
             }
             engine.append_direct(
                 session,

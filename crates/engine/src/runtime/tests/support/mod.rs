@@ -902,6 +902,7 @@ adaptor_options = {{ request_endpoint = "responses" }}
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         },
     )
 }
@@ -1365,6 +1366,7 @@ __MODEL_CAPABILITIES__
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     (
         Fixture {

@@ -19,14 +19,16 @@ impl App {
                 let (model, effort) = self
                     .acp_model_and_effort()
                     .unwrap_or_else(|| ("agent's model".to_owned(), None));
-                let mut spans = vec![
-                    Span::styled(
-                        draft.agent.to_string(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" • ", regular),
-                    Span::styled(model, regular),
-                ];
+                let mut spans = vec![Span::styled(
+                    draft.agent.to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )];
+                // Where it runs, when several runtimes offer it.
+                if let Some(runtime) = self.runs_on_label() {
+                    spans.push(Span::styled(format!("@{runtime}"), regular));
+                }
+                spans.push(Span::styled(" • ", regular));
+                spans.push(Span::styled(model, regular));
                 if let Some(effort) = effort {
                     spans.push(Span::styled(format!("[{effort}]"), regular));
                 }
@@ -176,12 +178,22 @@ impl App {
         self.hit_map.title_segments = if self.new_session_draft.is_none() && self.draft.is_none() {
             Vec::new()
         } else {
-            let segments = [
-                Some(TitleSegment::Agent),
-                None,
-                Some(TitleSegment::Model),
-                Some(TitleSegment::Variant),
-            ];
+            let segments = if self.draft_is_acp() && self.runs_on_label().is_some() {
+                vec![
+                    Some(TitleSegment::Agent),
+                    Some(TitleSegment::RunsOn),
+                    None,
+                    Some(TitleSegment::Model),
+                    Some(TitleSegment::Variant),
+                ]
+            } else {
+                vec![
+                    Some(TitleSegment::Agent),
+                    None,
+                    Some(TitleSegment::Model),
+                    Some(TitleSegment::Variant),
+                ]
+            };
             rendered_input
                 .title_rect
                 .map_or_else(Vec::new, |title_rect| {
@@ -303,6 +315,31 @@ impl App {
                     entries,
                     Some("The agent offers no options."),
                     area,
+                    Some("↑↓ move · enter: select · esc: close"),
+                );
+            }
+            Modal::RunsOn => {
+                let current = self.runs_on_label();
+                let entries = self
+                    .runs_on_rows()
+                    .into_iter()
+                    .map(|(runtime, available)| {
+                        let mut entry = runtime.to_string();
+                        if Some(&runtime) == current.as_ref() {
+                            entry.push_str(" (current)");
+                        }
+                        if !available {
+                            entry.push_str(" · away or disabled");
+                        }
+                        entry
+                    })
+                    .collect();
+                self.render_picker(
+                    frame,
+                    "Runs on — where the agent runs for this session",
+                    entries,
+                    None,
+                    centered(frame.area(), 48, 40),
                     Some("↑↓ move · enter: select · esc: close"),
                 );
             }

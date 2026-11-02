@@ -211,7 +211,7 @@ mode: all
 models: [{ model: "gpt-5", variant: "high" }, "gpt-5-mini"]
 acp:
   mode: auto
-  hide_tools: [read, write, edit, bash, webfetch]
+  hide_tools: [webfetch]
 permissions:
   read: allow
   bash: { "git *": allow, "*": ask }
@@ -225,7 +225,7 @@ You review changes for this project before they are committed.
 | `acp.agent` | agent ID | the document's ID | The declaration the document runs, the key of a `[runtimes.<id>.acp.agents.<agent>]` table; several documents may run one. See [Several documents over one agent](acp-agents.md#several-documents-over-one-agent). |
 | `acp.mode` | string | the agent's `auto`, else its default | The mode the agent starts its sessions in, by mode ID. |
 | `acp.config` | table of strings | `{}` | Initial values of the agent's config options, by option ID (`"true"` or `"false"`, quoted, for an on/off option such as Claude Code's `fast`); an unknown option or value is reported in the session and skipped. |
-| `acp.hide_tools` | array of patterns | `[read, write, edit, bash, webfetch]` | Cookie's tools the agent does not get through the MCP bridge, with `*` and `?`; `[]` offers every tool the rules offer. |
+| `acp.hide_tools` | array of patterns | `[webfetch]` | Cookie's tools the agent does not get through the MCP bridge on any machine, with `*` and `?`; `[]` offers every tool the rules offer. Cookie's `read`, `write`, `edit`, and `bash` are offered by default, for every attached machine, the agent's own included (see [Several machines](acp-agents.md#several-machines)). |
 
 - `models` names values of the agent's own options, not cookie's model
   keys. Each entry's `model` is a value of the agent's model option (the

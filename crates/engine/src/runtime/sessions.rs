@@ -182,7 +182,9 @@ impl Engine {
                 );
             }
         }
-        let acp = self.selects_acp_agent(&selection.agent, selection.preset.as_deref());
+        let acp = self
+            .selected_acp_offers(&selection.agent, selection.preset.as_deref())
+            .map(|offers| (offers, selection.acp_runtime.clone()));
         let attachments = self.resolve_session_runtimes(&runtimes, acp).await?;
         let cwd = runtimes
             .cwd
@@ -245,7 +247,8 @@ impl Engine {
         )>,
     ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
-        // An ACP agent runs on the one attached runtime that offers it.
+        // An ACP agent runs on the runtime chosen for it, else the first
+        // attached that offers it.
         if let Some(offers) = policy.acp_agent() {
             let mut attached = Vec::new();
             for attachment in attachments {
@@ -253,7 +256,9 @@ impl Engine {
                     attached.push(attachment.runtime_id.clone());
                 }
             }
-            offers.place(&attached).map_err(EngineError::Acp)?;
+            offers
+                .place(&attached, None, selection.acp_runtime.as_ref())
+                .map_err(EngineError::Acp)?;
         }
         let (cron, title) = cron.unzip();
         let id = SessionId::new_v7();

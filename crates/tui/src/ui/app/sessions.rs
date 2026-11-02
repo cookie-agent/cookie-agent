@@ -312,6 +312,7 @@ impl App {
                         agent: creation.agent,
                         model,
                         preset: creation.preset,
+                        acp_runtime: None,
                     });
                 } else {
                     self.draft = Some(creation);
@@ -497,6 +498,7 @@ impl App {
         match self.modal {
             Modal::Sessions => self.session_search_ids().len(),
             Modal::Presets => self.preset_names().len() + 1,
+            Modal::RunsOn => self.runs_on_rows().len(),
             Modal::AgentOptions => self.agent_option_row_count(),
             Modal::Projects => self.project_picker_choices().len(),
             Modal::Agents => self.filtered_agent_picker_candidates().len(),

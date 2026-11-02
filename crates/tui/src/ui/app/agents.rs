@@ -109,6 +109,7 @@ impl App {
             agent: agent.id.clone(),
             model,
             preset: preset.map(str::to_owned),
+            acp_runtime: None,
         })
     }
 
@@ -156,6 +157,7 @@ impl App {
             agent: agent.id.clone(),
             model,
             preset: agent.preset.clone(),
+            acp_runtime: None,
         })
     }
 
@@ -665,10 +667,20 @@ impl App {
         let Some(model) = model else {
             return;
         };
+        // With no attached runtime offering it, an ACP agent runs where it
+        // can, which the daemon attaches.
+        let attached = self.agent_runtimes();
+        let acp_runtime = matches!(
+            cookie_agent_client_state::acp::placement(descriptor, &attached, None),
+            Some(cookie_agent_client_state::acp::AcpPlacement::NeedsOneOf(_))
+        )
+        .then(|| cookie_agent_client_state::acp::default_runtime(descriptor, &attached))
+        .flatten();
         let selection = RunSelection {
             agent,
             model,
             preset: descriptor.preset.clone(),
+            acp_runtime,
         };
         if targets_new_session {
             self.status = format!("New session agent: {}", draft_title(&selection));
@@ -747,6 +759,7 @@ impl App {
                     agent: draft.agent,
                     model: selection,
                     preset: draft.preset,
+                    acp_runtime: None,
                 };
                 if targets_new_session {
                     self.new_session_draft = Some(updated);
@@ -791,6 +804,7 @@ impl App {
             agent: draft.agent,
             model: selection,
             preset: draft.preset,
+            acp_runtime: None,
         };
         if targets_new_session {
             self.new_session_draft = Some(updated);
@@ -829,6 +843,7 @@ impl App {
                 variant,
             },
             preset: draft.preset,
+            acp_runtime: None,
         };
         if targets_new_session {
             self.new_session_draft = Some(updated);

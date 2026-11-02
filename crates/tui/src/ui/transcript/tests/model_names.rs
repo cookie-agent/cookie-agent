@@ -309,6 +309,7 @@ async fn composer_title_shows_display_name_with_intact_hit_regions() {
             variant: Some(VariantId::new("high").expect("variant")),
         },
         preset: None,
+        acp_runtime: None,
     });
     let rows = frame_rows(&mut app, 100, 30);
     let rendered = rows.join("\n");

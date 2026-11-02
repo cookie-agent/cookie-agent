@@ -547,6 +547,7 @@ pub(crate) fn session_created_with(
         agent: AgentId::new(agent).expect("agent id"),
         model: chain[suffix_start as usize].selection.clone(),
         preset: None,
+        acp_runtime: None,
     };
     let chain = chain.into_iter().map(frozen_binding).collect::<Vec<_>>();
     session_created_from_bindings(session_id, seq, selection, chain, suffix_start)
@@ -978,6 +979,7 @@ pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         },
         runtime_revision: protocol_revision("1"),
         catalog_revision: protocol_revision("2"),
@@ -2059,6 +2061,7 @@ pub(crate) fn delegated_meta(session_id: SessionId, root: SessionId, agent: &str
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         },
         ..session_meta(session_id)
     }
@@ -2080,6 +2083,7 @@ pub(crate) fn run_started_with_suffix(
         agent: agent_id(),
         model: suffix[0].selection.clone(),
         preset: None,
+        acp_runtime: None,
     };
     event(
         session_id,

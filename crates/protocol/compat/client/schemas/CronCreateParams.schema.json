@@ -88,6 +88,16 @@
     "CronTemplate": {
       "description": "What a new-session job's sessions start with. `runtimes`, `global`, and\n`cwd` have the shape of `session.create`'s members of the same names.",
       "properties": {
+        "acp_runtime": {
+          "description": "For an ACP agent, the runtime its runs run it on, attached when\n`runtimes` does not name it (client protocol 1.70.0); the first\nattached runtime that offers it when omitted.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "agent": {
           "description": "The agent each run session starts with; it must be able to run as a\nroot (`primary` or `all`).",
           "maxLength": 64,

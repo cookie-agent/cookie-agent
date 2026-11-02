@@ -1085,6 +1085,7 @@ async fn model_disabled_skill_lookup_rejects_without_leaking_hidden_hints() {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         })
         .expect("session");
     assert!(
@@ -1421,6 +1422,7 @@ async fn skill_grant_allows_explicit_ask_bash_for_one_turn_only() {
                         variant: None,
                     },
                     preset: None,
+                    acp_runtime: None,
                 },
                 content: cookie_agent_protocol::encode_skill_submission_with_prompt(
                     "release-check",
@@ -2018,6 +2020,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         })
         .unwrap();
     let (_, mut events) = fixture
@@ -2083,6 +2086,7 @@ async fn successful_internal_fallback_still_explains_rejected_backend() {
                     variant: None,
                 },
                 preset: None,
+                acp_runtime: None,
             })
             .unwrap();
         fixture.server.enqueue(MockResponse::Sse(tool_response(
@@ -2358,6 +2362,7 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         })
         .expect("race session");
     let race_deadline = Instant::now() + HANG_WATCHDOG;
@@ -2502,6 +2507,7 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         })
         .expect("gap session");
     let coordination_deadline = Instant::now() + HANG_WATCHDOG;
@@ -2657,6 +2663,7 @@ async fn start_run_admission_failures_map_to_one() {
             agent: agent.id.clone(),
             model,
             preset: None,
+            acp_runtime: None,
         })
         .expect("running session");
     // The first run waits on its model until the conflict is checked.

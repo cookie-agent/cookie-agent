@@ -397,6 +397,7 @@ fn session_selection() -> cookie_agent_protocol::RunSelection {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     }
 }
 

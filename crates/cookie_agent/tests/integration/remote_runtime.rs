@@ -327,6 +327,7 @@ shutdown_grace_ms = 2000
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         }
     }
 

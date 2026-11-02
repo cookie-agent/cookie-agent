@@ -75,6 +75,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let policy = frozen_root_policy(&fixture, &selection);
     let session = fixture
@@ -243,6 +244,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let mut policy = frozen_root_policy(&fixture, &selection);
     let session = fixture
@@ -307,6 +309,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
         agent: default.id.clone(),
         model: default.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     policy = frozen_root_policy(&fixture, &selection);
     // The default document has delegate permission but no named target; supply
@@ -400,6 +403,7 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             agent: selected.id.clone(),
             model: selected.resolved_fallback[0].clone(),
             preset: None,
+            acp_runtime: None,
         };
         let policy = frozen_root_policy(&fixture, &selection);
         let session = fixture.engine.create_session(selection).unwrap();
@@ -514,6 +518,7 @@ fn synthetic_default_replaces_no_authored_agent_and_unknown_models_are_diagnosti
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         })
         .expect_err("unknown model should reject explicit session selection");
     assert!(matches!(error, EngineError::UnknownAgentModel { .. }));
@@ -603,6 +608,7 @@ async fn agent_presets_materialize_effective_registries_and_persist_selection() 
         agent: reviewer_id,
         model: shared_selection.model.clone(),
         preset: Some("python".into()),
+        acp_runtime: None,
     };
     let created = fixture
         .engine
@@ -919,6 +925,7 @@ async fn history_selections_fall_back_best_effort_and_explicit_ones_stay_strict(
         agent: AgentId::new("retired").expect("agent"),
         model: missing_model,
         preset: None,
+        acp_runtime: None,
     };
     let repaired = repair(&gone_agent);
     assert_eq!(repaired.agent.as_str(), "primary");

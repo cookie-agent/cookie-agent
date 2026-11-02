@@ -114,6 +114,7 @@ async fn bottom_bar_renders_cwd_context_and_narrow_degradation_order() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
 
     let wide = rendered_row(&mut app, 100, 24, 23);

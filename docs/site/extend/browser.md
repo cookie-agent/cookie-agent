@@ -357,9 +357,8 @@ tools of every attached runtime included. Claude Code lists them as
 `mcp__cookie__my_chrome_browser_navigate` and so on.
 
 - **`acp.hide_tools`** in the agent's [document](agents.md#acp-agent-documents)
-  removes tools from the bridge. Its default hides only cookie's coding tools
-  (`read`, `write`, `edit`, `bash`, `webfetch`), so the browser tools pass
-  through; add `"my_chrome_*"` to keep them from an agent that has a browser of
+  removes tools from the bridge. Its default hides only `webfetch`, so the
+  browser tools pass through; add `"my_chrome_*"` to keep them from an agent that has a browser of
   its own.
 - **Permissions** work as for a model: a tool the merged rules hide is not
   listed, and each call is decided by the agent document's `mcp` rules.

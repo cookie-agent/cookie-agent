@@ -325,6 +325,7 @@ mod tests {
                     variant: None,
                 },
                 preset: None,
+                acp_runtime: None,
             },
             runtime_revision: RuntimeRevision::new(revision('1')).expect("runtime"),
             catalog_revision: CatalogRevision::new(revision('2')).expect("catalog"),

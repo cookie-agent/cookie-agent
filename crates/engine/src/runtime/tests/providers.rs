@@ -284,6 +284,7 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     manager_two
         .current()

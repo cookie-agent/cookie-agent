@@ -5,6 +5,22 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.70.0
+
+- Where an ACP agent runs
+  ([ACP agents across several machines](../specs/acp-several-runtimes.md)
+  section 3): `RunSelection` gains `acp_runtime`, the runtime the user
+  chose to run the selected ACP agent on, and `CronTemplate` the same for a
+  job's runs. A session or a selection naming one that it does not attach
+  attaches it at the runtime's home before the agent starts.
+- Several attached runtimes may offer one ACP agent: it runs on the runtime
+  its ACP session started on, else the chosen one, else the first attached
+  that offers it and can run it. A session no longer refuses a second
+  runtime that offers it; detaching the runtime the agent started on is
+  refused, and so is a `session.select_model` naming another runtime for
+  it.
+- Plugin protocol 1.37.0 carries `acp_runtime` the same way.
+
 ## 1.69.0
 
 - Fallback lists for the model fields

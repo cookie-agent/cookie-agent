@@ -270,6 +270,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
         agent: agent_id(),
         model: resolved.selection.clone(),
         preset: None,
+        acp_runtime: None,
     };
     let created =
         session_created_from_bindings(session, 1, selection.clone(), vec![binding.clone()], 0);

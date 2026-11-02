@@ -123,6 +123,108 @@ impl App {
             .find(|agent| agent.id == draft.agent && agent.preset == draft.preset)
     }
 
+    /// The runtime the draft's ACP agent must run on
+    /// (`docs/site/specs/acp-several-runtimes.md` section 3.1): a new
+    /// session's choice, else the viewed session's host or choice.
+    pub(in crate::ui) fn agent_host(&self) -> Option<cookie_agent_protocol::RuntimeId> {
+        if let Some(draft) = &self.new_session_draft {
+            return draft.acp_runtime.clone();
+        }
+        let draft = self.draft.as_ref()?;
+        let state = self
+            .viewed_session()
+            .and_then(|session_id| self.store.sessions.get(&session_id))?;
+        cookie_agent_client_state::acp::session_host(&state.acp, Some(draft)).cloned()
+    }
+
+    /// Whether the viewed session's ACP agent has started, so where it runs
+    /// is settled.
+    pub(in crate::ui) fn agent_host_settled(&self) -> bool {
+        if self.new_session_draft.is_some() {
+            return false;
+        }
+        let (Some(draft), Some(state)) = (
+            self.draft.as_ref(),
+            self.viewed_session()
+                .and_then(|session_id| self.store.sessions.get(&session_id)),
+        ) else {
+            return false;
+        };
+        state.acp.agent.as_ref() == Some(&draft.agent) && state.acp.runtime_id.is_some()
+    }
+
+    /// The runtimes the Runs on step offers for the draft's ACP agent, each
+    /// with whether it can run it now.
+    pub(in crate::ui) fn runs_on_rows(&self) -> Vec<(cookie_agent_protocol::RuntimeId, bool)> {
+        self.draft_acp_agent()
+            .map(cookie_agent_client_state::acp::runs_on_choices)
+            .unwrap_or_default()
+    }
+
+    /// The runtime the draft's ACP agent runs on, as the composer title
+    /// names it, when more than one runtime offers it.
+    pub(in crate::ui) fn runs_on_label(&self) -> Option<cookie_agent_protocol::RuntimeId> {
+        let agent = self.draft_acp_agent()?;
+        if cookie_agent_client_state::acp::runs_on_choices(agent).len() < 2 {
+            return None;
+        }
+        cookie_agent_client_state::acp::placed_runtime(
+            agent,
+            &self.agent_runtimes(),
+            self.agent_host().as_ref(),
+        )
+        .map(|runtime| runtime.runtime_id.clone())
+    }
+
+    /// Opens the Runs on step for the draft's ACP agent, unless where it
+    /// runs is settled.
+    pub(in crate::ui) fn open_runs_on(&mut self) {
+        if self.agent_host_settled() {
+            if let Some(runtime) = self.runs_on_label() {
+                self.status = format!(
+                    "the agent runs on {runtime} for this session; start a new session to run it \
+                     elsewhere"
+                );
+            }
+            return;
+        }
+        let rows = self.runs_on_rows();
+        if rows.len() < 2 {
+            return;
+        }
+        let current = self.runs_on_label();
+        let index = rows
+            .iter()
+            .position(|(runtime, _)| Some(runtime) == current.as_ref())
+            .unwrap_or(0);
+        self.modal = Modal::RunsOn;
+        self.picker_state.select(Some(index));
+    }
+
+    /// Row `index` of the Runs on step: the draft's agent runs there, which
+    /// the daemon attaches when the session does not.
+    pub(in crate::ui) fn choose_runs_on(&mut self, index: usize) {
+        let Some((runtime, available)) = self.runs_on_rows().get(index).cloned() else {
+            return;
+        };
+        if !available {
+            self.status =
+                format!("the agent cannot run on {runtime} now: it is away or disabled there");
+            return;
+        }
+        self.modal = Modal::None;
+        if let Some(draft) = &mut self.new_session_draft {
+            draft.acp_runtime = Some(runtime.clone());
+            self.status = format!("The new session's agent runs on {runtime}");
+            return;
+        }
+        if let Some(draft) = &mut self.draft {
+            draft.acp_runtime = Some(runtime.clone());
+            self.status = format!("The agent runs on {runtime}");
+            self.publish_draft_selection();
+        }
+    }
+
     /// The options of the draft's ACP agent (`docs/site/specs/acp-agents.md`
     /// section 15, input and pickers): a new session's draft offers what the
     /// agent last started a session with on the runtime it would run on,
@@ -131,11 +233,13 @@ impl App {
     pub(in crate::ui) fn agent_options(&self) -> Vec<AcpConfigOption> {
         let attached = self.agent_runtimes();
         let agent = self.draft_acp_agent();
+        let host = self.agent_host();
         if self.new_session_draft.is_some() {
             return agent.map_or_else(Vec::new, |agent| {
                 cookie_agent_client_state::acp::draft_options(
                     agent,
                     &attached,
+                    host.as_ref(),
                     self.draft_agent_options.for_agent(&agent.id),
                 )
             });
@@ -146,7 +250,7 @@ impl App {
         else {
             return Vec::new();
         };
-        cookie_agent_client_state::acp::session_options(&state.acp, agent, &attached)
+        cookie_agent_client_state::acp::session_options(&state.acp, agent, &attached, host.as_ref())
     }
 
     /// The draft's ACP model and effort for the title, when the agent

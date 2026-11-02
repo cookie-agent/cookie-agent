@@ -11,7 +11,7 @@ use super::acp::*;
 use super::support::*;
 use crate::Engine;
 
-const REVIEW: &str = "---\ndescription: Fixture, read-only\nmode: all\nacp:\n  agent: fixture\npermissions:\n  bash: deny\n---\n";
+const REVIEW: &str = "---\ndescription: Fixture, read-only\nmode: all\nacp:\n  agent: fixture\n  hide_tools: [read, webfetch]\npermissions:\n  bash: deny\n---\n";
 const OPEN: &str = "---\ndescription: Fixture, trusted\nmode: all\nacp:\n  agent: fixture\n  hide_tools: [\"web*\"]\npermissions:\n  bash: allow\n  read: { \"${workspace_dir}/*\": allow }\n---\n";
 
 fn id(id: &str) -> AgentId {
@@ -23,6 +23,7 @@ fn selection_of(agent: &str) -> RunSelection {
         agent: id(agent),
         model: cookie_agent_protocol::acp_model_selection(&id(agent)),
         preset: None,
+        acp_runtime: None,
     }
 }
 

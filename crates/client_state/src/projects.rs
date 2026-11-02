@@ -359,6 +359,7 @@ pub fn project_agent(
         agent: agent.id.clone(),
         model,
         preset: defaults.preset.clone(),
+        acp_runtime: None,
     })
 }
 

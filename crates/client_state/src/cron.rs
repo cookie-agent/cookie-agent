@@ -618,6 +618,8 @@ pub fn parse_model_pin(text: &str) -> Result<Option<ModelSelection>, String> {
 
 /// Where a form's job fires.
 #[derive(Clone, Debug, Eq, PartialEq)]
+// One per form; boxing the template would only move it.
+#[allow(clippy::large_enum_variant)]
 pub enum CronDraftTarget {
     /// An existing session: a root one, or a delegated one when
     /// `subagent`.
@@ -659,6 +661,7 @@ pub fn bare_template(agent: AgentId) -> CronTemplate {
         global: true,
         cwd: None,
         project: None,
+        acp_runtime: None,
     }
 }
 

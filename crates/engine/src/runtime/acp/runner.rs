@@ -4301,9 +4301,8 @@ impl Engine {
     }
 
     /// The workspace roots besides `cwd` that `session` attaches on
-    /// `agent`'s runtime, each once, in attachment order: the agent's
-    /// `additionalDirectories`. Workspaces on other runtimes are on other
-    /// machines, and are left out.
+    /// `agent`'s machine, each once, in attachment order: the agent's
+    /// `additionalDirectories`. Workspaces on other machines are left out.
     fn acp_additional_directories(
         &self,
         session: SessionId,
@@ -4312,11 +4311,20 @@ impl Engine {
     ) -> Result<Vec<String>, EngineError> {
         let projection = self.inner.store.get(session)?;
         let mut directories = Vec::<String>::new();
+        // Other runtimes on the agent's machine share its files
+        // (`docs/site/specs/acp-several-runtimes.md` section 3.4).
+        let machine = self.runtime_machine(agent.runtime.as_str());
+        let on_machine = |runtime: &cookie_agent_protocol::RuntimeId| {
+            *runtime == agent.runtime
+                || (runtime.as_str() != cookie_agent_protocol::RuntimeId::GLOBAL
+                    && machine.is_some()
+                    && self.runtime_machine(runtime.as_str()) == machine)
+        };
         for workspace in projection
             .meta
             .attachments
             .iter()
-            .filter(|attachment| attachment.runtime_id == agent.runtime)
+            .filter(|attachment| on_machine(&attachment.runtime_id))
             .filter_map(|attachment| attachment.workspace.as_ref())
         {
             if workspace != cwd && !directories.contains(workspace) {
@@ -4379,17 +4387,53 @@ impl Engine {
             .and_then(|agent| agent.acp.clone()))
     }
 
-    /// The ACP agent of `offers` on the one runtime `session` attaches
-    /// that offers it; refused, saying why, when there is none or more
-    /// than one, or it is away or disabled there.
+    /// The ACP agent of `offers` on the runtime that runs it for
+    /// `session` (`docs/site/specs/acp-several-runtimes.md` section 3.1):
+    /// the one its latest ACP session started on, else the one the user
+    /// chose, else the first attached that offers it; refused, saying why,
+    /// when it cannot run there.
     pub(crate) fn place_acp_agent(
         &self,
         session: SessionId,
         offers: &crate::runtime_snapshot::AcpOffers,
     ) -> Result<RuntimeAgent, EngineError> {
+        let (recorded, chosen) = self.acp_host_hints(session, &offers.id)?;
         offers
-            .place(&self.session_runtime_ids(session)?)
+            .place(
+                &self.session_runtime_ids(session)?,
+                recorded.as_ref(),
+                chosen.as_ref(),
+            )
             .map_err(EngineError::Acp)
+    }
+
+    /// What says where ACP agent `agent` runs for `session`: the runtime its
+    /// latest ACP session there started on, and the runtime the session's
+    /// selection chose for it.
+    pub(crate) fn acp_host_hints(
+        &self,
+        session: SessionId,
+        agent: &cookie_agent_protocol::AgentId,
+    ) -> Result<
+        (
+            Option<cookie_agent_protocol::RuntimeId>,
+            Option<cookie_agent_protocol::RuntimeId>,
+        ),
+        EngineError,
+    > {
+        let projection = self.inner.store.get(session)?;
+        let events = projection.log.event_snapshot();
+        let recorded = events.iter().rev().find_map(|event| match &event.payload {
+            Event::AcpSessionStarted { record } if &record.agent == agent => {
+                Some(record.runtime_id.clone())
+            }
+            _ => None,
+        });
+        let selection = cookie_agent_protocol::SessionModelState::from_events(&events)
+            .selection
+            .unwrap_or_else(|| projection.meta.creation_selection.clone());
+        let chosen = selection.acp_runtime.filter(|_| &selection.agent == agent);
+        Ok((recorded, chosen))
     }
 
     /// The live ACP session of `session`, if any.

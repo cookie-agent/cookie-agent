@@ -110,6 +110,16 @@ impl Engine {
     ) -> Result<RunStartResult, EngineError> {
         let session = params.session_id;
         self.ensure_appendable(session)?;
+        // A run that names no runtime for the session's ACP agent keeps the
+        // one the session chose (a client older than client protocol
+        // 1.70.0 names none).
+        let mut params = params;
+        if params.selection.acp_runtime.is_none()
+            && let Ok(current) = self.session_model_selection(session)
+            && current.agent == params.selection.agent
+        {
+            params.selection.acp_runtime = current.acp_runtime;
+        }
         self.request(session, |reply| SessionCommand::Start {
             params,
             origin,

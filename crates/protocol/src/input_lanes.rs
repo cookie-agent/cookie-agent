@@ -131,6 +131,7 @@ mod tests {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         }
     }
 

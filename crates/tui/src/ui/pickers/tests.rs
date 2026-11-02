@@ -78,6 +78,7 @@ fn session_meta(session_id: SessionId) -> SessionMeta {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         },
         runtime_revision: revision("1"),
         catalog_revision: revision("2"),

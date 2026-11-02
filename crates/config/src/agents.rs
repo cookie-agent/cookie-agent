@@ -394,8 +394,9 @@ pub struct AcpDocumentSettings {
     /// Initial values of the agent's config options, by option ID.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, String>,
-    /// Patterns (`*`, `?`) over cookie's tool names the agent does not get;
-    /// cookie's coding runtime tools when absent.
+    /// Patterns (`*`, `?`) over cookie's tool names the agent does not get
+    /// on any machine; `webfetch` when absent, since a fetch reads the same
+    /// page from nearly any machine and the harness has its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_tools: Option<Vec<String>>,
     /// The document's top-level `models`, a fallback chain over the values
@@ -477,7 +478,7 @@ impl<'de> Deserialize<'de> for AcpModelChoice {
 impl AcpDocumentSettings {
     /// The tools an ACP agent does not get when its document names none:
     /// the coding runtime's, which the agent has its own of.
-    pub const DEFAULT_HIDE_TOOLS: [&'static str; 5] = ["read", "write", "edit", "bash", "webfetch"];
+    pub const DEFAULT_HIDE_TOOLS: [&'static str; 1] = ["webfetch"];
 
     /// The declaration the document `id` runs: `agent`, else `id`.
     #[must_use]

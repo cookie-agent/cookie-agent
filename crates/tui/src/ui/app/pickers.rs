@@ -34,11 +34,11 @@ pub(super) fn agent_picker_row(
         id_style
     };
     // An ACP agent that cannot be picked now is dimmed.
-    let pickable = cookie_agent_client_state::acp::pickable(agent, attached);
+    let pickable = cookie_agent_client_state::acp::pickable(agent, attached, None);
     let id_style = if pickable { id_style } else { theme.muted() };
     let mut spans = vec![Span::styled(id, id_style)];
     let mut used = id_width;
-    if let Some(note) = cookie_agent_client_state::acp::runtime_note(agent, attached)
+    if let Some(note) = cookie_agent_client_state::acp::runtime_note(agent, attached, None)
         && used < width
     {
         let note = truncate_with_ellipsis(&format!(" [{note}]"), width - used);
@@ -987,10 +987,12 @@ impl App {
                     .filtered_agent_picker_candidates()
                     .get(index)
                     .map(|agent| {
-                        (cookie_agent_client_state::acp::pickable(agent, &attached))
+                        (cookie_agent_client_state::acp::pickable(agent, &attached, None))
                             .then(|| agent.id.clone())
                             .ok_or_else(|| {
-                                cookie_agent_client_state::acp::unpickable_reason(agent, &attached)
+                                cookie_agent_client_state::acp::unpickable_reason(
+                                    agent, &attached, None,
+                                )
                             })
                     });
                 if let Some(Err(reason)) = agent {
@@ -1001,11 +1003,14 @@ impl App {
                     self.set_draft_agent(agent);
                     self.agent_search.reset();
                     self.modal = Modal::None;
+                    // An ACP agent several runtimes offer asks where it runs.
+                    self.open_runs_on();
                     // Agent selection only updates the client-side draft.
                     // Creation is deferred until the first prompt so the
                     // session and its first run follow one admission flow.
                 }
             }
+            Modal::RunsOn => self.choose_runs_on(index),
             Modal::Presets => {
                 let preset = if index == 0 {
                     Some(None)

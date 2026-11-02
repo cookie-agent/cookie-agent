@@ -145,6 +145,7 @@ pub(crate) fn run_selection(agent: &str) -> RunSelection {
         agent: AgentId::new(agent).expect("agent ID"),
         model: model_binding().selection,
         preset: None,
+        acp_runtime: None,
     }
 }
 

@@ -153,30 +153,37 @@ declaration with `enabled = false`.
 
 An agent's ID is the key of its declaration, whichever runtime declares it:
 `[runtimes.local.acp.agents.claude]` and `[runtimes.lab.acp.agents.claude]`
-both offer the one agent `claude`. A
-session runs it on the runtime it attaches that offers it:
+both offer the one agent `claude`. A session runs it on one runtime, its
+**host**
+([ACP agents across several machines](../specs/acp-several-runtimes.md)):
 
-- A session that attaches `local` (the default for a new session) runs
-  `claude` on the daemon's machine; one that attaches only the lab
-  machine's runtime runs it there.
-- A session with no attached runtime that offers it cannot run it: creating
-  the session, starting a run, or delegating to it is refused with, for
-  example, ``\`claude\` needs a runtime that offers it attached: lab, local``,
-  and the agent pickers show it dimmed with what it needs.
-- A session that runs it may not attach two runtimes that offer it:
-  attaching the second is refused, naming both. Sessions of other agents
-  attach any runtimes.
-- Moved to another runtime (detach one, attach the other), the agent starts
-  a new ACP session there, and the transcript says so: the old one stays on
-  the machine that ran it.
-- A subagent runs it on the runtimes it has: its parent's, or the
-  capabilities its delegation names, by the same rule.
+- **Where you choose.** When more than one runtime offers the agent, the
+  web's **Runs on** chip beside the agent chip, and the TUI's **Runs on**
+  step after the agent picker (and the `@lab` segment of the composer's
+  title), choose the runtime. A runtime the session does not attach yet is
+  attached at its home when the session starts or the choice is made.
+- **Without a choice,** the first attached runtime, in attach order, that
+  offers the agent and can run it. A session that attaches `local` (the
+  default for a new session) runs `claude` on the daemon's machine. With no
+  attached runtime offering it, the clients pick the first that can run it,
+  and the daemon attaches it.
+- **It never moves.** Once the agent has started, its runtime cannot be
+  detached and no other can be chosen for it: ``runtime `local` runs
+  `claude` for this session, so it cannot be detached``. To run it elsewhere,
+  start a new session. A runtime that is away refuses the turn rather than
+  sending the agent to another. Before the agent starts, the choice is
+  free, and detaching the chosen runtime goes back to the default.
+- **Other runtimes that offer it** attach and detach like any: a session can
+  attach `lab` while `claude` runs on `local`, and reach `lab` through
+  cookie's tools (see [Several machines](#several-machines)).
+- A subagent runs it on the first of its runtimes that offers it: its
+  parent's, or the capabilities its delegation names, in order.
 - The agent works in the session's first workspace on that runtime (the
   runtime's home without one). The session's other workspaces on the same
-  runtime reach an agent that supports it (`additionalDirectories`) as
+  machine reach an agent that supports it (`additionalDirectories`) as
   extra workspace roots, when its session starts or resumes: attach
   `local` at two folders and the agent may work in both. Workspaces on
-  other runtimes are on other machines, and the agent does not get them.
+  other machines are reached through cookie's tools.
 
 `list_agents` shows an agent's runtimes and whether it runs in the calling
 session, and `list_runtimes` names the ACP agents each runtime offers.
@@ -195,7 +202,7 @@ mode: all
 models: [{ model: "gpt-5", variant: "high" }]
 acp:
   mode: auto
-  hide_tools: [read, write, edit, bash, webfetch]
+  hide_tools: [webfetch]
 permissions:
   read: allow
   write: { "${workspace_dir}/*": allow, "*": ask }
@@ -537,10 +544,30 @@ the start of a turn. Claude Code fetches the new list and can call the new
 tools in the same turn. Codex ignores the notification and sees a change
 only in a new session.
 
-`acp.hide_tools` lists cookie's tools the agent does not get, with `*` and
-`?`. By default it hides the coding runtime's `read`, `write`, `edit`,
-`bash`, and `webfetch`, since the agent has its own; `[]` offers them too.
-`hide_tools` only hides: the rules still decide every call.
+`acp.hide_tools` lists cookie's tools the agent does not get on any
+machine, with `*` and `?`. By default it hides only `webfetch`, since a
+fetch reads the same page from nearly any machine and the agent has its
+own; `[]` offers it too. Cookie's `read`, `write`, `edit`, and `bash` are
+offered for every attached machine, the agent's own included, so that the
+agent can work on the machines its own tools cannot reach (see
+[Several machines](#several-machines)). `hide_tools` only hides: your
+`deny` rules still refuse calls.
+
+## Several machines
+
+The agent's own file and shell tools act on its host machine only.
+Cookie's runtime tools reach every machine the session attaches, through
+the bridge, as one tool each with a `machine` argument:
+`bash` with `machine: "lab"` runs on the lab machine. The argument is
+there from the first machine on, so a tool list the agent fetched once
+stays true as machines are attached (Codex never fetches it again). Left
+out, `machine` is the tool's default, the first machine attached that
+offers it, usually the agent's own.
+
+The agent is told this in its first prompt: the session's machines, its
+own marked, and that it should prefer its own tools there and use cookie's,
+naming the machine, everywhere else. A machine attached or detached
+between turns is announced ahead of its next prompt.
 
 The transcript's tools row, pinned under the system prompt in the TUI and
 the web client, lists the tools the bridge offers the agent in its latest

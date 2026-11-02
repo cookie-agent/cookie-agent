@@ -185,6 +185,8 @@ pub(crate) struct StoredTemplate {
     pub(crate) cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) project: Option<ProjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) acp_runtime: Option<cookie_agent_protocol::RuntimeId>,
 }
 
 impl From<CronTemplate> for StoredTemplate {
@@ -198,6 +200,7 @@ impl From<CronTemplate> for StoredTemplate {
             global: template.global,
             cwd: template.cwd,
             project: template.project,
+            acp_runtime: template.acp_runtime,
         }
     }
 }
@@ -213,6 +216,7 @@ impl StoredTemplate {
             global: self.global,
             cwd: self.cwd.clone(),
             project: self.project.clone(),
+            acp_runtime: self.acp_runtime.clone(),
         }
     }
 }
@@ -220,6 +224,8 @@ impl StoredTemplate {
 /// A stored target.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+// One per job; boxing the template would only move it.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum StoredTarget {
     Session(SessionId),
     Subagent(SessionId),

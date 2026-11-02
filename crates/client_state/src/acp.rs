@@ -27,18 +27,15 @@ pub fn offering_runtimes(agent: &AgentDescriptor) -> Vec<&AgentRuntime> {
 }
 
 /// Where a session that attaches `attached` would run an ACP agent
-/// (`docs/site/specs/acp-agents.md` section 15, naming of 2026-10-23).
+/// (`docs/site/specs/acp-several-runtimes.md` section 3.1).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AcpPlacement {
-    /// On this runtime, the one attached that offers it.
+    /// On this runtime.
     Runs(RuntimeId),
-    /// The one attached runtime that offers it is away, or has it
-    /// disabled.
+    /// The runtime it must run on is away, or has it disabled.
     Unavailable(RuntimeId),
-    /// No attached runtime offers it; these do.
+    /// No attached runtime offers it, and none was chosen; these do.
     NeedsOneOf(Vec<RuntimeId>),
-    /// Several attached runtimes offer it, and a session runs it on one.
-    Ambiguous(Vec<RuntimeId>),
 }
 
 /// The declaration ACP agent `agent` runs, when its document names
@@ -50,28 +47,87 @@ pub fn declaration(agent: &AgentDescriptor) -> Option<&AgentId> {
         .filter(|declaration| **declaration != agent.id)
 }
 
-/// Where a session or draft that attaches `attached` would run `agent`;
-/// `None` for the daemon's own agents.
-pub fn placement(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<AcpPlacement> {
+/// Where a session or draft that attaches `attached` (in attach order)
+/// would run `agent`; `None` for the daemon's own agents. `host` is the
+/// runtime it must run on: the one its session started it on, else the one
+/// the user chose, attached or not (the daemon attaches a chosen one).
+/// Without one, the first attached runtime that offers it and can run it.
+pub fn placement(
+    agent: &AgentDescriptor,
+    attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
+) -> Option<AcpPlacement> {
     let offering = offering_runtimes(agent);
     if offering.is_empty() {
         return None;
     }
-    let here = offering
-        .iter()
-        .filter(|offer| attached.contains(&offer.runtime_id))
-        .collect::<Vec<_>>();
-    Some(match here[..] {
-        [] => AcpPlacement::NeedsOneOf(
+    let on = |offer: &AgentRuntime| {
+        if offer.available {
+            AcpPlacement::Runs(offer.runtime_id.clone())
+        } else {
+            AcpPlacement::Unavailable(offer.runtime_id.clone())
+        }
+    };
+    if let Some(host) = host {
+        return Some(
             offering
                 .iter()
+                .find(|offer| &offer.runtime_id == host)
+                .map_or_else(
+                    || AcpPlacement::Unavailable(host.clone()),
+                    |offer| on(offer),
+                ),
+        );
+    }
+    let here = attached
+        .iter()
+        .filter_map(|runtime| offering.iter().find(|offer| &offer.runtime_id == runtime))
+        .collect::<Vec<_>>();
+    Some(
+        match here
+            .iter()
+            .find(|offer| offer.available)
+            .or_else(|| here.first())
+        {
+            Some(offer) => on(offer),
+            None => AcpPlacement::NeedsOneOf(
+                offering
+                    .iter()
+                    .map(|offer| offer.runtime_id.clone())
+                    .collect(),
+            ),
+        },
+    )
+}
+
+/// The runtime a draft that attaches `attached` runs `agent` on when the
+/// user chooses none: the first attached runtime that offers it and can
+/// run it, else the first that offers it and can run it at all.
+pub fn default_runtime(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<RuntimeId> {
+    let offering = offering_runtimes(agent);
+    attached
+        .iter()
+        .find(|runtime| {
+            offering
+                .iter()
+                .any(|offer| &offer.runtime_id == *runtime && offer.available)
+        })
+        .cloned()
+        .or_else(|| {
+            offering
+                .iter()
+                .find(|offer| offer.available)
                 .map(|offer| offer.runtime_id.clone())
-                .collect(),
-        ),
-        [offer] if offer.available => AcpPlacement::Runs(offer.runtime_id.clone()),
-        [offer] => AcpPlacement::Unavailable(offer.runtime_id.clone()),
-        _ => AcpPlacement::Ambiguous(here.iter().map(|offer| offer.runtime_id.clone()).collect()),
-    })
+        })
+}
+
+/// The runtimes that offer `agent`, for the Runs on choice: each with
+/// whether it can run the agent now. Empty for the daemon's own agents.
+pub fn runs_on_choices(agent: &AgentDescriptor) -> Vec<(RuntimeId, bool)> {
+    offering_runtimes(agent)
+        .into_iter()
+        .map(|offer| (offer.runtime_id.clone(), offer.available))
+        .collect()
 }
 
 fn joined(runtimes: &[RuntimeId]) -> String {
@@ -94,20 +150,28 @@ pub fn listed_in_root_picker(agent: &AgentDescriptor, preset: Option<&str>) -> b
 }
 
 /// Whether the user can pick `agent` for a session or draft that attaches
-/// `attached`: it runs as a root, and an ACP agent has exactly one of
-/// those runtimes offering it, available.
-pub fn pickable(agent: &AgentDescriptor, attached: &[RuntimeId]) -> bool {
+/// `attached`, with `host` as [`placement`] takes it: it runs as a root,
+/// and an ACP agent can run where it would, or, with no runtime chosen and
+/// none attached offering it, on [`default_runtime`].
+pub fn pickable(agent: &AgentDescriptor, attached: &[RuntimeId], host: Option<&RuntimeId>) -> bool {
     agent.runnable_as_root
-        && placement(agent, attached)
-            .is_none_or(|placement| matches!(placement, AcpPlacement::Runs(_)))
+        && match placement(agent, attached, host) {
+            None | Some(AcpPlacement::Runs(_)) => true,
+            Some(AcpPlacement::NeedsOneOf(_)) => default_runtime(agent, attached).is_some(),
+            Some(AcpPlacement::Unavailable(_)) => false,
+        }
 }
 
 /// What a picker shows after an ACP agent's description, for a session or
 /// draft that attaches `attached`: where it runs, or why it cannot, after
 /// the declaration it runs when that is not its own ID. `None` for the
 /// daemon's own agents.
-pub fn runtime_note(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<String> {
-    let note = placement_note(agent, attached)?;
+pub fn runtime_note(
+    agent: &AgentDescriptor,
+    attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
+) -> Option<String> {
+    let note = placement_note(agent, attached, host)?;
     Some(match declaration(agent) {
         Some(declaration) if note.starts_with("on ") => format!("{declaration} {note}"),
         Some(declaration) => format!("{declaration} · {note}"),
@@ -115,8 +179,12 @@ pub fn runtime_note(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<S
     })
 }
 
-fn placement_note(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<String> {
-    Some(match placement(agent, attached)? {
+fn placement_note(
+    agent: &AgentDescriptor,
+    attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
+) -> Option<String> {
+    Some(match placement(agent, attached, host)? {
         AcpPlacement::Runs(runtime) if agent.runnable_as_root => format!("on {runtime}"),
         AcpPlacement::Runs(runtime) => format!("on {runtime} · disabled"),
         AcpPlacement::Unavailable(runtime) => {
@@ -129,24 +197,23 @@ fn placement_note(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Option<Str
                 format!("on {runtime} · disabled")
             }
         }
-        AcpPlacement::NeedsOneOf(runtimes) => format!("needs {} attached", joined(&runtimes)),
-        AcpPlacement::Ambiguous(runtimes) => {
-            format!("offered by {}: attach one", joined(&runtimes))
-        }
+        AcpPlacement::NeedsOneOf(runtimes) => match default_runtime(agent, attached) {
+            Some(runtime) => format!("on {runtime}"),
+            None => format!("needs one of {} connected", joined(&runtimes)),
+        },
     })
 }
 
 /// Why picking `agent` for a session or draft that attaches `attached` is
 /// refused, for a status line.
-pub fn unpickable_reason(agent: &AgentDescriptor, attached: &[RuntimeId]) -> String {
-    match placement(agent, attached) {
+pub fn unpickable_reason(
+    agent: &AgentDescriptor,
+    attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
+) -> String {
+    match placement(agent, attached, host) {
         Some(AcpPlacement::NeedsOneOf(runtimes)) => format!(
-            "`{}` needs a runtime that offers it attached: {}",
-            agent.id,
-            joined(&runtimes)
-        ),
-        Some(AcpPlacement::Ambiguous(runtimes)) => format!(
-            "`{}` is offered by more than one attached runtime ({}); attach only one of them",
+            "`{}` needs one of these runtimes connected: {}",
             agent.id,
             joined(&runtimes)
         ),
@@ -291,28 +358,32 @@ pub fn model_label(options: &[AcpConfigOption]) -> Option<String> {
 }
 
 /// The runtime a draft or session that attaches `attached` runs ACP agent
-/// `agent` on, whatever its availability: the one attached runtime that
-/// offers it.
+/// `agent` on, whatever its availability ([`placement`], else
+/// [`default_runtime`]).
 pub fn placed_runtime<'a>(
     agent: &'a AgentDescriptor,
     attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
 ) -> Option<&'a AgentRuntime> {
-    match placement(agent, attached)? {
-        AcpPlacement::Runs(runtime) | AcpPlacement::Unavailable(runtime) => {
-            offering_runtimes(agent)
-                .into_iter()
-                .find(|offer| offer.runtime_id == runtime)
-        }
-        AcpPlacement::NeedsOneOf(_) | AcpPlacement::Ambiguous(_) => None,
-    }
+    let runtime = match placement(agent, attached, host)? {
+        AcpPlacement::Runs(runtime) | AcpPlacement::Unavailable(runtime) => runtime,
+        AcpPlacement::NeedsOneOf(_) => default_runtime(agent, attached)?,
+    };
+    offering_runtimes(agent)
+        .into_iter()
+        .find(|offer| offer.runtime_id == runtime)
 }
 
 /// The files ACP agent `agent` takes in a prompt on the runtime a draft or
 /// session that attaches `attached` runs it on, as the daemon last saw it
 /// start there: what the clients check attachments against, its synthetic
 /// model being in no catalog.
-pub fn input_media(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Vec<InputMedia> {
-    placed_runtime(agent, attached)
+pub fn input_media(
+    agent: &AgentDescriptor,
+    attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
+) -> Vec<InputMedia> {
+    placed_runtime(agent, attached, host)
         .map(|runtime| runtime.input_media.clone())
         .unwrap_or_default()
 }
@@ -345,9 +416,10 @@ pub fn with_choices(
 pub fn draft_options(
     agent: &AgentDescriptor,
     attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
     choices: &[AcpOptionChoice],
 ) -> Vec<AcpConfigOption> {
-    placed_runtime(agent, attached)
+    placed_runtime(agent, attached, host)
         .map(|runtime| with_choices(&runtime.options, choices))
         .unwrap_or_default()
 }
@@ -359,13 +431,30 @@ pub fn session_options(
     view: &AcpSessionView,
     agent: Option<&AgentDescriptor>,
     attached: &[RuntimeId],
+    host: Option<&RuntimeId>,
 ) -> Vec<AcpConfigOption> {
     if !view.options.is_empty() {
         return view.options.clone();
     }
     agent
-        .map(|agent| draft_options(agent, attached, &view.starting_options))
+        .map(|agent| draft_options(agent, attached, host, &view.starting_options))
         .unwrap_or_default()
+}
+
+/// The runtime a session's ACP agent must run on, as [`placement`] takes
+/// `host`: the one its ACP session started on (`view`), while it runs the
+/// same agent, else the one its `selection` chose.
+pub fn session_host<'a>(
+    view: &'a AcpSessionView,
+    selection: Option<&'a cookie_agent_protocol::RunSelection>,
+) -> Option<&'a RuntimeId> {
+    let selection = selection?;
+    if view.agent.as_ref() == Some(&selection.agent)
+        && let Some(runtime) = &view.runtime_id
+    {
+        return Some(runtime);
+    }
+    selection.acp_runtime.as_ref()
 }
 
 /// The choices a draft makes for its agent's options, which it sends as
@@ -485,39 +574,88 @@ mod tests {
     }
 
     #[test]
-    fn an_acp_agent_runs_on_the_one_attached_runtime_that_offers_it() {
+    fn an_acp_agent_runs_on_its_host_else_the_first_attached_runtime_that_offers_it() {
         let claude = agent(
             "claude",
-            &[("labpc", true), ("local", true)],
+            &[("labpc", true), ("local", true), ("gpu", false)],
             true,
             AgentMode::All,
         );
         let local = [runtime("global"), runtime("local")];
         assert_eq!(
-            placement(&claude, &local),
+            placement(&claude, &local, None),
             Some(AcpPlacement::Runs(runtime("local")))
         );
-        assert!(pickable(&claude, &local));
-        assert_eq!(runtime_note(&claude, &local).as_deref(), Some("on local"));
-        // No attached runtime offers it.
-        let elsewhere = [runtime("global"), runtime("gpu")];
-        assert!(!pickable(&claude, &elsewhere));
-        assert_eq!(
-            runtime_note(&claude, &elsewhere).as_deref(),
-            Some("needs labpc, local attached")
-        );
-        assert_eq!(
-            unpickable_reason(&claude, &elsewhere),
-            "`claude` needs a runtime that offers it attached: labpc, local"
-        );
-        // Two attached runtimes offer it.
+        assert!(pickable(&claude, &local, None));
+        // Two attached runtimes offer it: the first in attach order runs it,
+        // unless a host says otherwise.
         let both = [runtime("labpc"), runtime("local")];
-        assert!(!pickable(&claude, &both));
         assert_eq!(
-            runtime_note(&claude, &both).as_deref(),
-            Some("offered by labpc, local: attach one")
+            placement(&claude, &both, None),
+            Some(AcpPlacement::Runs(runtime("labpc")))
         );
-        assert!(unpickable_reason(&claude, &both).contains("(labpc, local)"));
+        assert_eq!(
+            placement(&claude, &both, Some(&runtime("local"))),
+            Some(AcpPlacement::Runs(runtime("local")))
+        );
+        // A chosen runtime runs it even before it is attached.
+        assert_eq!(
+            placement(&claude, &local, Some(&runtime("labpc"))),
+            Some(AcpPlacement::Runs(runtime("labpc")))
+        );
+        // A host that cannot run it does not fall back to another.
+        assert_eq!(
+            placement(&claude, &both, Some(&runtime("gpu"))),
+            Some(AcpPlacement::Unavailable(runtime("gpu")))
+        );
+        assert!(!pickable(&claude, &both, Some(&runtime("gpu"))));
+        // Without a host, an attached runtime that cannot run it is passed
+        // over for one that can.
+        let gpu_first = [runtime("gpu"), runtime("local")];
+        assert_eq!(
+            placement(&claude, &gpu_first, None),
+            Some(AcpPlacement::Runs(runtime("local")))
+        );
+        // No attached runtime offers it: it can still be picked, and runs on
+        // the first that can run it, which the daemon attaches.
+        let elsewhere = [runtime("global")];
+        assert!(matches!(
+            placement(&claude, &elsewhere, None),
+            Some(AcpPlacement::NeedsOneOf(_))
+        ));
+        assert!(pickable(&claude, &elsewhere, None));
+        assert_eq!(default_runtime(&claude, &elsewhere), Some(runtime("labpc")));
+        assert_eq!(default_runtime(&claude, &local), Some(runtime("local")));
+        assert_eq!(
+            placed_runtime(&claude, &elsewhere, None).map(|offer| offer.runtime_id.clone()),
+            Some(runtime("labpc"))
+        );
+        assert_eq!(runs_on_choices(&claude).len(), 3);
+    }
+
+    #[test]
+    fn a_session_host_is_where_its_agent_started_else_its_choice() {
+        let mut selection = cookie_agent_protocol::RunSelection {
+            agent: AgentId::new("claude").unwrap(),
+            model: cookie_agent_protocol::acp_model_selection(&AgentId::new("claude").unwrap()),
+            preset: None,
+            acp_runtime: Some(runtime("labpc")),
+        };
+        let mut view = AcpSessionView::default();
+        assert_eq!(
+            session_host(&view, Some(&selection)),
+            Some(&runtime("labpc"))
+        );
+        view.agent = Some(AgentId::new("claude").unwrap());
+        view.runtime_id = Some(runtime("local"));
+        assert_eq!(
+            session_host(&view, Some(&selection)),
+            Some(&runtime("local"))
+        );
+        // Another agent's session says nothing of this one's.
+        selection.agent = AgentId::new("codex").unwrap();
+        selection.acp_runtime = None;
+        assert_eq!(session_host(&view, Some(&selection)), None);
     }
 
     #[test]
@@ -528,12 +666,8 @@ mod tests {
         }
         assert_eq!(declaration(&review).map(AgentId::as_str), Some("claude"));
         assert_eq!(
-            runtime_note(&review, &[runtime("local")]).as_deref(),
+            runtime_note(&review, &[runtime("local")], None).as_deref(),
             Some("claude on local")
-        );
-        assert_eq!(
-            runtime_note(&review, &[runtime("lab")]).as_deref(),
-            Some("claude · needs local attached")
         );
         // An agent of the declaration's own ID names none.
         let claude = agent("claude", &[("local", true)], true, AgentMode::All);
@@ -545,9 +679,9 @@ mod tests {
         let away = agent("codex", &[("lab", false)], false, AgentMode::All);
         let lab = [runtime("lab")];
         assert!(listed_in_root_picker(&away, None));
-        assert!(!pickable(&away, &lab));
+        assert!(!pickable(&away, &lab, None));
         assert_eq!(
-            runtime_note(&away, &lab).as_deref(),
+            runtime_note(&away, &lab, None).as_deref(),
             Some("on lab · unavailable")
         );
         // A subagent-only ACP agent is never a root choice.
@@ -556,7 +690,7 @@ mod tests {
         // A daemon agent that cannot run as a root is not listed.
         let daemon = agent("helper", &[], false, AgentMode::All);
         assert!(!listed_in_root_picker(&daemon, None));
-        assert_eq!(runtime_note(&daemon, &lab), None);
+        assert_eq!(runtime_note(&daemon, &lab, None), None);
         assert!(!listed_in_root_picker(&away, Some("python")));
     }
 
@@ -664,10 +798,12 @@ mod tests {
                 },
             ]
         );
-        let options = draft_options(&claude, &local, draft.for_agent(&claude.id));
+        let options = draft_options(&claude, &local, None, draft.for_agent(&claude.id));
         assert_eq!(model_label(&options).as_deref(), Some("Opus • Low"));
         // labpc has never started the agent: nothing to offer there.
-        assert!(draft_options(&claude, &[runtime("labpc")], &[]).is_empty());
+        assert!(
+            draft_options(&claude, &[runtime("labpc")], Some(&runtime("labpc")), &[]).is_empty()
+        );
         // Choosing for another agent drops the first agent's choices.
         let codex = AgentId::new("codex").unwrap();
         draft.choose(&codex, "model", "gpt");
@@ -687,7 +823,7 @@ mod tests {
             }],
             ..AcpSessionView::default()
         };
-        let options = session_options(&view, Some(&claude), &local);
+        let options = session_options(&view, Some(&claude), &local, None);
         assert_eq!(model_label(&options).as_deref(), Some("Opus • Low"));
         view.options = vec![select(
             "model",
@@ -695,7 +831,7 @@ mod tests {
             "haiku",
             &[("haiku", "Haiku")],
         )];
-        let options = session_options(&view, Some(&claude), &local);
+        let options = session_options(&view, Some(&claude), &local, None);
         assert_eq!(model_label(&options).as_deref(), Some("Haiku"));
     }
 }

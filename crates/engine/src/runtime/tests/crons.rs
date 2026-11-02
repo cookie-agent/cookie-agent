@@ -778,6 +778,7 @@ async fn a_new_session_fire_creates_a_run_session_that_records_its_job() {
         global: true,
         cwd: None,
         project: None,
+        acp_runtime: None,
     };
     let mut create = params(
         "Write the daily summary.",
@@ -879,6 +880,7 @@ async fn agents_cannot_set_a_mode_or_a_model_and_new_sessions_need_a_root_agent(
         global: true,
         cwd: None,
         project: None,
+        acp_runtime: None,
     };
     let mut moded = params("Run.", daily(), CronTarget::New(template.clone()));
     moded.permission_mode = Some(PermissionMode::Yolo);
@@ -1056,6 +1058,7 @@ async fn deleting_a_session_or_a_project_deletes_its_jobs() {
                 global: true,
                 cwd: None,
                 project: Some(project.id.clone()),
+                acp_runtime: None,
             }),
         ))
         .await
@@ -1449,6 +1452,7 @@ async fn cron_run_runs_a_new_session_job_as_a_subagent_of_the_caller() {
                 global: true,
                 cwd: None,
                 project: None,
+                acp_runtime: None,
             }),
         ))
         .await

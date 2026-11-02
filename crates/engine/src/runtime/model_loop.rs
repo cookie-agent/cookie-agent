@@ -120,7 +120,12 @@ impl Engine {
                 policy::ResultLimits::from_config(&self.inner.config.load().runtime),
                 self.inner.config.load().runtime.model_retry,
                 memory,
-            );
+            )
+            // The runtime chosen for it stays chosen.
+            .map(|(policy, mut frozen)| {
+                frozen.acp_runtime = selection.acp_runtime.clone();
+                (policy, frozen)
+            });
         }
         let policy = freeze_root_agent_policy(
             agent,
@@ -231,6 +236,7 @@ impl Engine {
             agent: agent.document.id.clone(),
             model,
             preset: agents.preset().map(str::to_owned),
+            acp_runtime: None,
         };
         Ok((policy, selection))
     }

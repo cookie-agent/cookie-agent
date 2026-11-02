@@ -273,6 +273,7 @@ async fn one_runtime_gives_the_prompt_its_working_directory() {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture

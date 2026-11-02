@@ -90,45 +90,75 @@ impl AcpOffers {
         self.offers.iter().any(RuntimeAgent::available)
     }
 
-    /// The agent on the one runtime of `attached` that offers it. Refused,
-    /// saying why: no attached runtime offers it, two or more do, or the
-    /// one that does is away or has it disabled.
+    /// The agent on the runtime that runs it for a session that attaches
+    /// `attached`, in attach order
+    /// (`docs/site/specs/acp-several-runtimes.md` section 3.1):
+    /// `recorded`, the runtime its ACP session started on, while attached;
+    /// else `chosen`, the runtime the user chose; else the first attached
+    /// runtime that offers it and can run it. Refused, saying why, when the
+    /// runtime it must run on does not offer it, is away, or has it
+    /// disabled: it never moves to another.
     pub(crate) fn place(
         &self,
         attached: &[cookie_agent_protocol::RuntimeId],
+        recorded: Option<&cookie_agent_protocol::RuntimeId>,
+        chosen: Option<&cookie_agent_protocol::RuntimeId>,
     ) -> Result<RuntimeAgent, String> {
-        let offering = self
-            .offers
+        let on = |runtime: &cookie_agent_protocol::RuntimeId, why: &str| {
+            let Some(offer) = self.offers.iter().find(|offer| &offer.runtime == runtime) else {
+                return Err(format!(
+                    "`{}` runs on runtime `{runtime}` {why}, which no longer offers it; start a \
+                     new session to run it on another: {}",
+                    self.id,
+                    join_runtimes(&self.runtimes())
+                ));
+            };
+            self.usable(offer)
+        };
+        if let Some(recorded) = recorded.filter(|recorded| attached.contains(recorded)) {
+            return on(recorded, "for this session");
+        }
+        if let Some(chosen) = chosen {
+            if !attached.contains(chosen) {
+                return Err(format!(
+                    "`{}` is to run on runtime `{chosen}`, which this session does not attach",
+                    self.id
+                ));
+            }
+            return on(chosen, "as chosen");
+        }
+        let offering = attached
             .iter()
-            .filter(|offer| attached.contains(&offer.runtime))
+            .filter_map(|runtime| self.offers.iter().find(|offer| &offer.runtime == runtime))
             .collect::<Vec<_>>();
-        match offering[..] {
-            [] => Err(format!(
+        if let Some(offer) = offering.iter().find(|offer| offer.available()) {
+            return Ok((*offer).clone());
+        }
+        match offering.first() {
+            Some(offer) => self.usable(offer),
+            None => Err(format!(
                 "`{}` needs a runtime that offers it attached: {}",
                 self.id,
                 join_runtimes(&self.runtimes())
             )),
-            [offer] if !offer.enabled => Err(format!(
+        }
+    }
+
+    /// `offer`, when its runtime can run the agent now.
+    fn usable(&self, offer: &RuntimeAgent) -> Result<RuntimeAgent, String> {
+        if !offer.enabled {
+            return Err(format!(
                 "ACP agent `{}` is disabled on runtime `{}`",
                 self.id, offer.runtime
-            )),
-            [offer] if !offer.connected => Err(format!(
+            ));
+        }
+        if !offer.connected {
+            return Err(format!(
                 "ACP agent `{}` is unavailable: runtime `{}` is not connected",
                 self.id, offer.runtime
-            )),
-            [offer] => Ok(offer.clone()),
-            _ => Err(format!(
-                "`{}` is offered by more than one attached runtime ({}); a session runs it on \
-                 one, so detach the others",
-                self.id,
-                join_runtimes(
-                    &offering
-                        .iter()
-                        .map(|offer| offer.runtime.clone())
-                        .collect::<Vec<_>>()
-                )
-            )),
+            ));
         }
+        Ok(offer.clone())
     }
 }
 

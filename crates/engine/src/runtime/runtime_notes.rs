@@ -312,7 +312,11 @@ impl Engine {
             .values()
             .collect::<std::collections::HashSet<_>>()
             .len();
-        Ok((has_global || distinct > 1).then_some(machines))
+        // An ACP agent's tools take `machine` from its first machine on, so
+        // a list an agent fetched once stays true as machines come
+        // (`docs/site/specs/acp-several-runtimes.md` section 4.2).
+        let acp = distinct > 0 && self.session_acp_offers(session)?.is_some();
+        Ok((has_global || distinct > 1 || acp).then_some(machines))
     }
 
     /// The note each attachment's tools carry in their descriptions; empty

@@ -657,6 +657,7 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     assert!(matches!(
         fixture.engine.create_session(selection),

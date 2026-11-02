@@ -37,6 +37,7 @@ async fn connect_submission_renders_the_provider_panel_with_an_empty_catalog() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
 
     type_input(&mut app, "/connect").await;

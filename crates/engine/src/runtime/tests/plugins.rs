@@ -632,6 +632,7 @@ env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let session = fixture
         .engine
@@ -996,6 +997,7 @@ producer_messaging = true
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
         preset: None,
+        acp_runtime: None,
     };
     let session = fixture
         .engine

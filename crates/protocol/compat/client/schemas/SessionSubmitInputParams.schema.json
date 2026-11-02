@@ -55,6 +55,16 @@
     },
     "RunSelection": {
       "properties": {
+        "acp_runtime": {
+          "description": "For an ACP agent, the runtime the user chose to run it on (client\nprotocol 1.70.0; `docs/site/specs/acp-several-runtimes.md` section\n3.7). Absent for a native model, and when the first attached runtime\nthat offers the agent is to run it.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "agent": {
           "maxLength": 64,
           "minLength": 1,

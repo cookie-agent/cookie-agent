@@ -37,6 +37,7 @@ async fn message_title_is_exact_agent_model_variant_with_hit_regions() {
             variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
         },
         preset: None,
+        acp_runtime: None,
     });
     let rendered = rendered_frame(&mut app, 100, 30);
     assert!(rendered.contains("primary • Arbitrary Model[high]"));
@@ -104,6 +105,7 @@ async fn scrolled_message_title_hits_follow_visible_cells_or_disappear() {
                 variant: None,
             },
             preset: None,
+            acp_runtime: None,
         });
         app.input
             .set_buffer("zero\none\ntwo\nthree\nfour\nfive\nsix".into());
@@ -277,6 +279,7 @@ async fn title_segments_open_pickers_and_cycle_variant_by_mouse() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
     rendered_frame(&mut app, 100, 30);
     let agent = app
@@ -320,6 +323,7 @@ async fn draft_model_picker_uses_global_catalog_and_variant_cycle_is_inline() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
     assert_eq!(app.draft_models().len(), app.models.len());
     let variants = app.draft_variants();
@@ -794,6 +798,7 @@ async fn model_agent_and_refresh_normalization_preserve_only_valid_draft_parts()
             variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
         },
         preset: None,
+        acp_runtime: None,
     });
 
     app.set_draft_model(first.key.clone());

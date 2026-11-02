@@ -774,6 +774,7 @@ impl Engine {
                 agent: template.agent.clone(),
                 model: cookie_agent_protocol::acp_model_selection(&template.agent),
                 preset: template.preset.clone(),
+                acp_runtime: template.acp_runtime.clone(),
             });
         }
         let model = match &template.model {
@@ -802,6 +803,7 @@ impl Engine {
                 variant: model.variant,
             },
             preset: template.preset.clone(),
+            acp_runtime: None,
         })
     }
 

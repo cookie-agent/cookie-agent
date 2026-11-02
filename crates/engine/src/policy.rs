@@ -301,6 +301,7 @@ pub(crate) fn best_effort_root_selection(
             agent: selection.agent.clone(),
             model: protocol::acp_model_selection(&selection.agent),
             preset,
+            acp_runtime: selection.acp_runtime.clone(),
         });
     }
     let requested = agents
@@ -328,6 +329,7 @@ pub(crate) fn best_effort_root_selection(
         agent: agent.document.id.clone(),
         model,
         preset,
+        acp_runtime: None,
     })
 }
 
@@ -545,6 +547,7 @@ fn freeze_with_bindings(
         agent: document.id.clone(),
         model: selection.clone(),
         preset: registry.preset().map(str::to_owned),
+        acp_runtime: None,
     };
     snapshot
         .validate_selection(&run_selection)
@@ -1542,6 +1545,7 @@ pub(crate) fn freeze_acp_agent_policy(
         agent: document.id.clone(),
         model: binding.selection,
         preset: registry.preset().map(str::to_owned),
+        acp_runtime: None,
     };
     snapshot
         .validate_selection(&selection)

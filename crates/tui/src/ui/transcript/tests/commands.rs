@@ -467,6 +467,7 @@ async fn empty_agent_and_model_selectors_are_truthful_and_safe() {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     });
     rendered_frame(&mut models, 100, 30);
     let model_hit = models

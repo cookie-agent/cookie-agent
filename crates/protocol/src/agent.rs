@@ -529,6 +529,12 @@ pub struct RunSelection {
     )]
     #[schemars(with = "Option<AgentPresetNameSchema>")]
     pub preset: Option<String>,
+    /// For an ACP agent, the runtime the user chose to run it on (client
+    /// protocol 1.70.0; `docs/site/specs/acp-several-runtimes.md` section
+    /// 3.7). Absent for a native model, and when the first attached runtime
+    /// that offers the agent is to run it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_runtime: Option<crate::RuntimeId>,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]

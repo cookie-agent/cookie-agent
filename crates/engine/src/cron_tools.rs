@@ -490,6 +490,7 @@ impl Engine {
                     global,
                     cwd: None,
                     project,
+                    acp_runtime: None,
                 }))
             }
         }

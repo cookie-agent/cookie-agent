@@ -508,6 +508,7 @@ impl App {
             // variant suffix cycles in place and never opens a separate panel.
             PointerTarget::TitleSegment(segment) => match segment {
                 TitleSegment::Agent => self.open_selection_modal(Modal::Agents),
+                TitleSegment::RunsOn => self.open_runs_on(),
                 TitleSegment::Model => self.open_selection_modal(Modal::Models),
                 TitleSegment::Variant => self.cycle_draft_variant(),
             },

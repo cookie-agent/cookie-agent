@@ -98,6 +98,7 @@ async fn selection_fixture(endpoint: &str) -> (Fixture, RunSelection, RunSelecti
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     };
     let selection_b = RunSelection {
         agent: primary,
@@ -106,6 +107,7 @@ async fn selection_fixture(endpoint: &str) -> (Fixture, RunSelection, RunSelecti
             variant: Some(VariantId::new("precise").expect("selection B variant")),
         },
         preset: Some(PRESET.into()),
+        acp_runtime: None,
     };
     (fixture, selection_a, selection_b)
 }

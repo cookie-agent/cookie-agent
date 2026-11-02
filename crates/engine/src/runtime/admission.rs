@@ -279,6 +279,7 @@ impl Engine {
             agent: agent.clone(),
             model: child_policy.run_model_selection(),
             preset: child_policy.preset.clone(),
+            acp_runtime: None,
         };
         let child_session_id = entry.reservation.child_session_id;
         let short_id = {

@@ -41,6 +41,7 @@ pub(crate) fn test_run_selection() -> RunSelection {
             variant: None,
         },
         preset: None,
+        acp_runtime: None,
     }
 }
 

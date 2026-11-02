@@ -50,7 +50,11 @@ impl Workspace {
         if let Some(agent) = self.draft_acp_agent() {
             return Some(AcceptedMedia {
                 model: agent.id.to_string(),
-                media: cookie_agent_client_state::acp::input_media(&agent, &self.agent_runtimes()),
+                media: cookie_agent_client_state::acp::input_media(
+                    &agent,
+                    &self.agent_runtimes(),
+                    self.agent_host().as_ref(),
+                ),
             });
         }
         self.with_runtime(|runtime| {

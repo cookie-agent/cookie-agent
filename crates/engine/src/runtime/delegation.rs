@@ -673,7 +673,10 @@ impl Engine {
                         attached.push(attachment.runtime_id.clone());
                     }
                 }
-                offers.place(&attached).map_err(EngineError::Acp)?;
+                // The first of its capabilities that offers it runs it.
+                offers
+                    .place(&attached, None, None)
+                    .map_err(EngineError::Acp)?;
             }
             policy::freeze_acp_agent_policy(
                 child_agent,

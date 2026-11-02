@@ -4,7 +4,7 @@
 //! and sheet, and its other options in the agent options sheet.
 
 use cookie_agent_client_state::AcpSessionView;
-use cookie_agent_protocol::{AcpCommand, AcpConfigOption, AgentDescriptor};
+use cookie_agent_protocol::{AcpCommand, AcpConfigOption, AgentDescriptor, RuntimeId};
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
@@ -106,6 +106,49 @@ impl Workspace {
     }
 
     /// The ACP agent the draft runs, when it runs one.
+    /// The runtime the draft's ACP agent must run on
+    /// (`docs/site/specs/acp-several-runtimes.md` section 3.1): a new
+    /// session's choice, else the viewed session's host or choice.
+    pub fn agent_host(self) -> Option<RuntimeId> {
+        let draft = self.draft.get()?;
+        if self.new_session.get() {
+            return draft.acp_runtime;
+        }
+        let session_id = self.selected.get()?;
+        self.with_store(|store| {
+            let state = store.sessions.get(&session_id)?;
+            cookie_agent_client_state::acp::session_host(&state.acp, Some(&draft)).cloned()
+        })
+    }
+
+    /// Where the draft's ACP agent runs, for the Runs on chip: its
+    /// runtime, and whether that is settled (its session started it there).
+    /// `None` unless several runtimes offer it.
+    pub fn runs_on(self) -> Option<(RuntimeId, bool)> {
+        let agent = self.draft_acp_agent()?;
+        if cookie_agent_client_state::acp::runs_on_choices(&agent).len() < 2 {
+            return None;
+        }
+        let host = self.agent_host();
+        let runtime = cookie_agent_client_state::acp::placed_runtime(
+            &agent,
+            &self.agent_runtimes(),
+            host.as_ref(),
+        )?
+        .runtime_id
+        .clone();
+        let settled = !self.new_session.get()
+            && self.selected.get().is_some_and(|session_id| {
+                self.with_store(|store| {
+                    store.sessions.get(&session_id).is_some_and(|state| {
+                        state.acp.agent.as_ref() == Some(&agent.id)
+                            && state.acp.runtime_id.is_some()
+                    })
+                })
+            });
+        Some((runtime, settled))
+    }
+
     pub(crate) fn draft_acp_agent(self) -> Option<AgentDescriptor> {
         let draft = self.draft.get()?;
         if !cookie_agent_client_state::acp::is_acp_model(&draft.model) {
@@ -131,12 +174,14 @@ impl Workspace {
     pub fn acp_options(self) -> Vec<AcpConfigOption> {
         let attached = self.agent_runtimes();
         let agent = self.draft_acp_agent();
+        let host = self.agent_host();
         if self.new_session.get() {
             return agent.map_or_else(Vec::new, |agent| {
                 self.draft_agent_options.with(|draft| {
                     cookie_agent_client_state::acp::draft_options(
                         &agent,
                         &attached,
+                        host.as_ref(),
                         draft.for_agent(&agent.id),
                     )
                 })
@@ -154,6 +199,7 @@ impl Workspace {
                         &state.acp,
                         agent.as_ref(),
                         &attached,
+                        host.as_ref(),
                     )
                 })
                 .unwrap_or_default()

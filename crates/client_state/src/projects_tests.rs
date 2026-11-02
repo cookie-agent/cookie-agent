@@ -323,6 +323,7 @@ fn the_default_agent_brings_its_preset_and_its_own_model() {
             agent: AgentId::new("builder").unwrap(),
             model: model("custom.local/b"),
             preset: Some("rust".into()),
+            acp_runtime: None,
         })
     );
     // An agent that cannot run as root keeps the usual selection.
@@ -384,6 +385,7 @@ fn an_acp_default_agent_runs_its_synthetic_model() {
             agent: AgentId::new("claude").unwrap(),
             model: model("acp/claude"),
             preset: None,
+            acp_runtime: None,
         })
     );
 }

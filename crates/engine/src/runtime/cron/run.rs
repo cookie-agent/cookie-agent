@@ -125,7 +125,8 @@ impl Engine {
         let attachments = self
             .resolve_session_runtimes(
                 &runtimes,
-                self.selects_acp_agent(&template.agent, template.preset.as_deref()),
+                self.selected_acp_offers(&template.agent, template.preset.as_deref())
+                    .map(|offers| (offers, template.acp_runtime.clone())),
             )
             .await
             .map_err(refused)?;

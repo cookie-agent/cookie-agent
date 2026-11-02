@@ -211,6 +211,7 @@ fn attribution_records() -> Vec<StoredEvent> {
         agent: agent.agent.clone(),
         model: suffix[0].selection.clone(),
         preset: None,
+        acp_runtime: None,
     };
     let prompt_fingerprint = agent.prompt_fingerprint.clone();
     let mut records = vec![

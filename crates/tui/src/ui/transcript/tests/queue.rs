@@ -1272,6 +1272,7 @@ fn queued(session: SessionId, seq: u64, input: &str) -> cookie_agent_protocol::S
                         variant: None,
                     },
                     preset: None,
+                    acp_runtime: None,
                 },
                 client_run_id: cookie_agent_protocol::ClientRunId::new(format!("queued-{seq}"))
                     .unwrap(),

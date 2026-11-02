@@ -93,11 +93,9 @@ async fn acp_agents_show_where_they_run_and_ones_that_cannot_run_cannot_be_picke
     assert_eq!(app.modal, Modal::Agents);
     let rendered = rendered_frame(&mut app, 100, 30);
     assert!(rendered.contains("claude [on local]"), "{rendered}");
-    // No runtime this session attaches offers it.
-    assert!(
-        rendered.contains("codex [needs lab attached]"),
-        "{rendered}"
-    );
+    // No runtime this session attaches offers it, and the one that does
+    // cannot run it now.
+    assert!(rendered.contains("codex [needs one of lab"), "{rendered}");
     let ids = app
         .filtered_agent_picker_candidates()
         .iter()
@@ -105,10 +103,7 @@ async fn acp_agents_show_where_they_run_and_ones_that_cannot_run_cannot_be_picke
         .collect::<Vec<_>>();
     let away = ids.iter().position(|id| id == "codex").unwrap();
     app.choose_picker_entry(away).await;
-    assert_eq!(
-        app.status,
-        "`codex` needs a runtime that offers it attached: lab"
-    );
+    assert!(app.status.starts_with("`codex` needs"), "{}", app.status);
     assert_eq!(app.modal, Modal::Agents);
     assert_eq!(app.draft.as_ref().unwrap().agent.as_str(), "primary");
 
@@ -412,6 +407,7 @@ async fn the_status_line_shows_the_agents_context_of_its_own_window() {
         agent: AgentId::new("claude").unwrap(),
         model: cookie_agent_protocol::acp_model_selection(&AgentId::new("claude").unwrap()),
         preset: None,
+        acp_runtime: None,
     });
     let state = app.store.sessions.get_mut(&session).unwrap();
     state.context_tokens = Some(30_000);
@@ -463,4 +459,55 @@ async fn options_toggles_a_boolean_option_in_place() {
     assert_eq!(params["option_id"], "fast");
     assert_eq!(params["value"], "true");
     drop(incoming_guard);
+}
+
+#[tokio::test]
+async fn an_agent_several_runtimes_offer_asks_where_it_runs_until_it_starts() {
+    let (mut app, session) = acp_session_app().await;
+    // `claude` is offered by `local` and `lab` too.
+    let lab = RuntimeId::new("lab").unwrap();
+    for agent in &mut app.agents {
+        if agent.id.as_str() == "claude" {
+            let mut offer = agent.runtimes[0].clone();
+            offer.runtime_id = lab.clone();
+            agent.runtimes.push(offer);
+            agent.runtime = None;
+        }
+    }
+    // The viewed session started it on `local`: that is settled.
+    app.draft = app.default_draft_selection();
+    app.set_draft_agent(AgentId::new("claude").unwrap());
+    assert!(app.agent_host_settled());
+    assert_eq!(app.runs_on_label(), Some(RuntimeId::new("local").unwrap()));
+    app.open_runs_on();
+    assert_ne!(
+        app.modal,
+        Modal::RunsOn,
+        "a started agent stays where it runs"
+    );
+    // A session that has not started it asks where it runs, and the choice
+    // goes with the selection.
+    let state = app.store.sessions.get_mut(&session).unwrap();
+    state.acp.agent = None;
+    state.acp.runtime_id = None;
+    assert!(!app.agent_host_settled());
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(
+        app.hit_map
+            .title_segments
+            .iter()
+            .any(|hit| hit.segment == crate::ui::app::TitleSegmentForTests::RunsOn),
+        "{rendered}"
+    );
+    app.open_runs_on();
+    assert_eq!(app.modal, Modal::RunsOn);
+    let index = app
+        .runs_on_rows()
+        .iter()
+        .position(|(runtime, _)| *runtime == lab)
+        .unwrap();
+    app.choose_picker_entry(index).await;
+    assert_eq!(app.modal, Modal::None);
+    assert_eq!(app.draft.as_ref().unwrap().acp_runtime, Some(lab.clone()));
+    assert_eq!(app.runs_on_label(), Some(lab));
 }

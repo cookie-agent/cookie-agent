@@ -116,6 +116,7 @@ mod tests {
                 model: format!("test/{model}").parse().unwrap(),
                 variant: None,
             },
+            acp_runtime: None,
         }
     }
 

@@ -97,6 +97,8 @@ pub enum Panel {
     Permissions,
     /// The permission mode picker.
     Modes,
+    /// Where the draft's ACP agent runs, when several runtimes offer it.
+    RunsOn,
     /// A user message's actions: copy, revert, fork.
     Message,
     /// The session's attached runtimes.
@@ -1382,6 +1384,7 @@ impl Workspace {
             agent: agent.id.clone(),
             model,
             preset: agent.preset.clone(),
+            acp_runtime: None,
         })
     }
 
@@ -1411,13 +1414,22 @@ impl Workspace {
     /// runs its synthetic model; one that is unavailable is refused.
     pub fn pick_agent(self, agent: &AgentDescriptor) {
         let attached = untrack(|| self.agent_runtimes());
-        if !cookie_agent_client_state::acp::pickable(agent, &attached) {
+        if !cookie_agent_client_state::acp::pickable(agent, &attached, None) {
             self.status
                 .set(cookie_agent_client_state::acp::unpickable_reason(
-                    agent, &attached,
+                    agent, &attached, None,
                 ));
             return;
         }
+        // With no attached runtime offering it, it runs where it can, which
+        // the daemon attaches (`docs/site/specs/acp-several-runtimes.md`
+        // section 3.7).
+        let acp_runtime = matches!(
+            cookie_agent_client_state::acp::placement(agent, &attached, None),
+            Some(cookie_agent_client_state::acp::AcpPlacement::NeedsOneOf(_))
+        )
+        .then(|| cookie_agent_client_state::acp::default_runtime(agent, &attached))
+        .flatten();
         let model = self
             .draft
             .get_untracked()
@@ -1435,6 +1447,7 @@ impl Workspace {
             agent: agent.id.clone(),
             model,
             preset: agent.preset.clone(),
+            acp_runtime,
         });
     }
 
@@ -1451,6 +1464,17 @@ impl Workspace {
     pub fn pick_preset(self, preset: Option<String>) {
         self.preset.set(preset);
         self.draft.set(self.default_draft());
+    }
+
+    /// Runs the draft's ACP agent on `runtime`, which the daemon attaches
+    /// when the session does not (`docs/site/specs/acp-several-runtimes.md`
+    /// section 3.7).
+    pub fn pick_runs_on(self, runtime: cookie_agent_protocol::RuntimeId) {
+        let Some(mut draft) = self.draft.get_untracked() else {
+            return;
+        };
+        draft.acp_runtime = Some(runtime);
+        self.set_draft(draft);
     }
 
     fn set_draft(self, selection: RunSelection) {
