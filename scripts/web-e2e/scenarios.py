@@ -1075,6 +1075,61 @@ def long_session(browser):
     print("find in page finds and shows a row far above the end")
 
 
+# Scrolls the transcript to its top once and watches it for two seconds:
+# how many times its content grew, its row of history not loaded at the
+# end, and where the first row under that row, in view at the top, moved.
+ONE_SCROLL_UP = """
+const done = arguments[arguments.length - 1];
+const t = document.querySelector('#transcript');
+let height = t.scrollHeight;
+let grew = 0;
+t.scrollTop = 0;
+requestAnimationFrame(() => {
+    const box = t.getBoundingClientRect();
+    const first = [...t.querySelectorAll('.transcript-item')].find((row) =>
+        !row.querySelector('[data-history], [data-pinned-rows]')
+        && row.getBoundingClientRect().bottom > box.top);
+    const id = first.id;
+    const offset = () => document.getElementById(id).getBoundingClientRect().top - t.getBoundingClientRect().top;
+    const start = offset();
+    const end = performance.now() + 2000;
+    const tick = () => {
+        if (t.scrollHeight > height) grew += 1;
+        height = t.scrollHeight;
+        if (performance.now() < end) return requestAnimationFrame(tick);
+        const row = t.querySelector('[data-history]');
+        done({grew: grew, history: row && row.dataset.history, moved: offset() - start, top: t.scrollTop});
+    };
+    tick();
+});
+"""
+
+
+def older_history(browser):
+    """A session of eight long answers, opened afresh, shows its newest
+    runs under a row of those not loaded. One scroll to its top reads
+    history until a page shows (a page can hold only a run's end), not
+    every page, and the rows in view stay where they were as it arrives
+    above them."""
+    new_session(browser)
+    for run in range(8):
+        label = "w" * 150 + str(run)
+        send(browser, "stream only lines 300 label " + label)
+        idle(browser, "long answer %d" % run, text="%s 299 " % label, timeout=120)
+    session = open_session_id(browser)
+    browser.script("location.reload()")
+    time.sleep(0.5)
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % session) == 1)
+    click_row(browser, 'aside [data-session="%s"]' % session)
+    browser.wait("the row of history not loaded", lambda: count(browser, "#transcript [data-history]") == 1, timeout=30)
+    watched = browser.script_async(ONE_SCROLL_UP)
+    assert watched["grew"] == 1, "one scroll up drew %d pages: %s" % (watched["grew"], watched)
+    assert watched["history"], "the session's history fits in one more page: %s" % watched
+    assert abs(watched["moved"]) <= 2, "the rows in view moved as history arrived: %s" % watched
+    print("one scroll to the top drew one page of history, the rows in view held still: %s" % watched)
+
+
 def session_list_older(browser):
     """The session list shows the last 7 days (the filter's default), and
     an unread session whatever its age, with no Show older: a longer date
@@ -1832,6 +1887,13 @@ def session_depth(browser):
     browser.shot("background-sheet")
     browser.click("#sheet [data-stop]")
     browser.wait("the stopped call", lambda: count(browser, "#background-badge") == 0, timeout=40)
+    # The tab stays open on its empty state as the session moves on.
+    browser.wait(
+        "the empty background tab",
+        lambda: "No calls are running in the background." in browser.text("#sheet"),
+    )
+    browser.click("#sheet h2 ~ button")
+    browser.wait("the closed sheet", lambda: count(browser, "#sheet") == 0)
     print("moved a call to the background, listed it, and stopped it")
     browser.wait(
         "the background report row",
@@ -6628,6 +6690,7 @@ SCENARIOS = [
     ("streaming_scroll", streaming_scroll, "chat", []),
     ("open_row_streams", open_row_streams, "chat", []),
     ("long_session", long_session, "long", []),
+    ("older_history", older_history, "long", []),
     # Its daemon has sessions last active months ago (test-web-page.sh).
     ("session_list_older", session_list_older, "long", []),
     # Its daemon has only sessions last active weeks ago (test-web-page.sh).

@@ -31,7 +31,7 @@ impl Metrics {
         self.gap() <= END_SLACK
     }
 
-    const fn overflows(self) -> bool {
+    pub const fn overflows(self) -> bool {
         self.height > self.view + END_SLACK
     }
 }

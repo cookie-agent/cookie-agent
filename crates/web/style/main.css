@@ -154,6 +154,13 @@ html.dark {
   overflow-clip-margin: 0.5rem;
 }
 
+/* Older history arrives below the pinned rows and a row of history not
+   loaded, which stay where they are: the row the browser keeps in place
+   as it arrives (scroll anchoring) is the first row under them. */
+#transcript .transcript-item:has([data-pinned-rows], [data-history]) {
+  overflow-anchor: none;
+}
+
 /* A session row's long press offers to delete it, not the browser's
    callout. */
 .no-callout {

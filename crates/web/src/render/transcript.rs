@@ -1876,10 +1876,8 @@ fn history_html(before: u64, skipped: Option<u64>, loading: bool, failed: Option
         ),
         (false, None) => format!("{what} not loaded · load"),
     };
-    // Never the row the browser keeps in place as rows arrive above it:
-    // the history it loads takes its place.
     format!(
-        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{} style=\"overflow-anchor: none\" class=\"min-h-11 rounded-md px-2 text-left text-xs text-muted hover:bg-hover active:bg-press w-full text-center\">{}</button>",
+        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{} class=\"min-h-11 rounded-md px-2 text-left text-xs text-muted hover:bg-hover active:bg-press w-full text-center\">{}</button>",
         if failed.is_some() {
             " data-history-failed"
         } else {

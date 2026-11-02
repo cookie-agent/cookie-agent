@@ -1086,12 +1086,6 @@ impl Workspace {
         if tree_changed {
             self.refresh_tree();
         }
-        // The background sheet closes with its last call, as in the TUI.
-        if self.panel.get_untracked() == Some(Panel::Background)
-            && untrack(|| self.background_calls()).is_empty()
-        {
-            self.panel.set(None);
-        }
         match outcome {
             DeliveryOutcome::Applied => {
                 self.sync_draft();
