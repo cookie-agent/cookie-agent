@@ -621,8 +621,8 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
 
 /// The session list's filter: how far back the list reaches, and which
 /// agents, machines, and (without projects) workspace its sessions run on.
-/// A desktop opens it in place, over the list under its button, and a
-/// click outside or Escape closes it; a narrower window drops it down
+/// A desktop opens it beside the sidebar, near the top of the window and
+/// never past its foot, and a click outside or Escape closes it; a narrower window drops it down
 /// above the list, which it pushes down. The date always lists the pinned,
 /// unread, and busy sessions too, whatever their age.
 #[component]
@@ -777,7 +777,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
             <div class="fixed inset-0 z-30 hidden lg:block" data-filter-backdrop on:click=move |_| close()></div>
         </Show>
         <div
-            class="session-filter grid lg:absolute lg:top-[7rem] lg:left-3 lg:z-40 lg:w-80"
+            class="session-filter grid lg:fixed lg:top-24 lg:left-[16.5rem] lg:z-40 lg:w-80"
             data-open=move || open().to_string()
             inert=move || (!open()).then_some("")
         >
@@ -786,7 +786,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                     id="session-filter"
                     role="dialog"
                     aria-label="Filter sessions"
-                    class="flex flex-col gap-3 rounded-xl p-3 text-fg bg-raised ring-1 ring-line lg:shadow-menu"
+                    class="flex flex-col gap-3 rounded-xl p-3 text-fg bg-raised ring-1 ring-line lg:max-h-[calc(100dvh-7rem)] lg:overflow-y-auto lg:shadow-menu"
                 >
                     <div class="flex flex-col gap-1.5">
                         <span class=heading id="filter-within">"Last active"</span>
@@ -3364,9 +3364,10 @@ const COMPOSER_PRIMARY: &str =
 /// Its second action: Queue.
 const COMPOSER_SECONDARY: &str = "bg-surface-2 text-fg hover:border-accent hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]";
 
-/// The composer's text sizes: a line, and the padding above and below.
+/// The composer's text sizes: a line, and the padding above and below,
+/// which keep one line a finger's 44 px tall.
 const COMPOSER_LINE: f64 = 24.0;
-const COMPOSER_PADDING: f64 = 16.0;
+const COMPOSER_PADDING: f64 = 20.0;
 
 /// Sizes the composer to its text, from one line to five, scrolling past
 /// that.
@@ -3482,7 +3483,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     // Its sides keep clear of the buttons in the box's corners,
                     // from the first render: padding by which buttons show,
                     // not by measuring them once they have.
-                    class="block w-full resize-none appearance-none border-0 bg-transparent px-4 pt-3 pb-1 text-[0.9375rem] leading-6 text-fg shadow-none outline-none placeholder:text-faint focus:outline-none"
+                    class="block w-full resize-none appearance-none border-0 bg-transparent px-4 pt-3 pb-2 text-[0.9375rem] leading-6 text-fg shadow-none outline-none placeholder:text-faint focus:outline-none"
                     placeholder="Ask cookie to…"
                     disabled=disabled
                     prop:value=move || workspace.composer.get()
@@ -3655,7 +3656,7 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
         <div
             id="status-bar"
             class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
-            class:compact:invisible=move || composing.get()
+            class:compact:hidden=move || composing.get()
         >
             <span class="mx-1 h-4 w-px shrink-0 bg-line-2" aria-hidden="true"></span>
             <button

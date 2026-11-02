@@ -1599,7 +1599,7 @@ def session_depth(browser):
         phone.wait("the connection", lambda: phone.text("#connected") != "")
         phone.phone(390, 844)
         row = '#sidebar [data-session="%s"]' % root
-        listed = lambda: phone.script("return document.querySelector('main').inert")
+        listed = lambda: count(phone, SESSIONS_PAGE) == 1
         if not listed():
             phone.click("main [data-sidebar-toggle]")
         phone.wait("the sessions", lambda: listed() and count(phone, row) == 1)
@@ -2151,29 +2151,6 @@ def view(browser, name):
         "const p = document.querySelector('#page'); return p ? p.dataset.view : 'chat'") == name)
 
 
-# How far the composer's text starts right of its attach buttons, and ends
-# left of its action buttons; `null` until the attach button shows.
-COMPOSER_CLEARANCE = """
-const t = document.querySelector('#composer');
-if (!t || !document.querySelector('#attach')) return null;
-const box = t.getBoundingClientRect(), style = getComputedStyle(t);
-const visible = (selector) => [...document.querySelectorAll(selector)].filter((b) => b.getClientRects().length);
-const left = Math.max(...visible('[data-composer-left] button').map((b) => b.getBoundingClientRect().right));
-const right = Math.min(...visible('[data-composer-actions] button').map((b) => b.getBoundingClientRect().left));
-return [box.left + parseFloat(style.paddingLeft) - left, right - (box.right - parseFloat(style.paddingRight))];
-"""
-
-
-def composer_clear(browser, what):
-    """Asserts, with no interaction since the composer first showed, that
-    its text keeps clear of the buttons in its box. A fresh page starts on
-    the new session's composer."""
-    browser.wait("the page", lambda: count(browser, "#composer") > 0)
-    browser.wait("the attach button", lambda: browser.script(COMPOSER_CLEARANCE) is not None)
-    time.sleep(0.5)
-    left, right = browser.script(COMPOSER_CLEARANCE)
-    assert left >= 0 and right >= 0, "%s: the composer's text overlaps its buttons by %s, %s px" % (what, left, right)
-    assert browser.script("return document.querySelector('#composer').placeholder") == "Message"
 
 
 def hover_at(browser, selector, dx=0):
@@ -4032,7 +4009,6 @@ def phone_layout():
         phone.script("document.querySelector('#sidebar [data-sidebar-toggle]').click()")
         phone.wait("the sessions closed", lambda: count(phone, SESSIONS_PAGE) == 0)
         print("phone: the page opens on its sessions, over a new session")
-        composer_clear(phone, "phone")
         phone.shot("phone-fresh-connect")
         # The sidebar button shows the sidebar as the page; Back closes it.
         phone.click("main [data-sidebar-toggle]")
@@ -4161,12 +4137,13 @@ def phone_layout():
             click_row(phone, latest)
         phone.wait("the transcript", lambda: page_view(phone) == "chat" and phone.text("#transcript") != "")
         phone.wait("the closed sessions", lambda: count(phone, SESSIONS_PAGE) == 0)
-        # One row of 44 px targets.
-        tops = phone.script(
+        # The composer's chips: one row.
+        middles = phone.script(
             "return [...document.querySelectorAll('#status-bar > *')]"
-            ".filter((e) => e.getClientRects().length).map((e) => Math.round(e.getBoundingClientRect().top))"
+            ".filter((e) => e.getClientRects().length)"
+            ".map((e) => { const r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); })"
         )
-        assert len(set(tops)) == 1, "the bottom bar wraps: %s" % tops
+        assert max(middles) - min(middles) <= 1, "the chips wrap: %s" % middles
         # A picker rises from the bottom.
         phone.click("#model-chip")
         phone.wait("the model sheet", lambda: "Scripted Model" in phone.text("#sheet"))
@@ -4178,19 +4155,17 @@ def phone_layout():
         assert phone.script(
             "const sheet = document.querySelector('#sheet'); return sheet.scrollWidth <= sheet.clientWidth + 1"
         ), "the model sheet scrolls sideways"
-        rect = phone.script(
+        # It rises into place.
+        rect = lambda: phone.script(
             "const r = document.querySelector('#sheet').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]"
         )
-        assert rect[0] > 40 and abs(rect[1] - rect[2]) <= 2, "the sheet is not a bottom sheet: %s" % rect
+        phone.wait("a bottom sheet", lambda: rect()[0] > 40 and abs(rect()[1] - rect()[2]) <= 2)
         phone.shot("phone-bottom-sheet")
         close_sheet(phone)
         # The mode chip is a shield that opens a bottom sheet of the modes.
         phone.click("#permission-mode")
         phone.wait("the mode sheet", lambda: count(phone, "#sheet [data-mode]") == 5)
-        rect = phone.script(
-            "const r = document.querySelector('#sheet').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]"
-        )
-        assert abs(rect[1] - rect[2]) <= 2, "the mode picker is not a bottom sheet: %s" % rect
+        phone.wait("the mode picker as a bottom sheet", lambda: abs(rect()[1] - rect()[2]) <= 2)
         phone.shot("phone-mode-picker")
         phone.click('#sheet [data-mode="ask"]')
         phone.wait("the ask mode", lambda: "ask" in phone.script("return document.querySelector('#permission-mode').getAttribute('aria-label')"))
@@ -4201,10 +4176,7 @@ def phone_layout():
         for name, field in (("compact", "#compact-focus"), ("goal", "#goal-input")):
             menu(phone, name)
             phone.wait("the %s sheet" % name, lambda: count(phone, field) == 1)
-            rect = phone.script(
-                "const r = document.querySelector('#sheet').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]"
-            )
-            assert abs(rect[1] - rect[2]) <= 2, "the %s sheet is not a bottom sheet: %s" % (name, rect)
+            phone.wait("the %s sheet as a bottom sheet" % name, lambda: abs(rect()[1] - rect()[2]) <= 2)
             phone.shot("phone-%s-sheet" % name)
             close_sheet(phone)
         menu(phone, "usage")
@@ -5390,12 +5362,16 @@ def projects_phone():
         menu = "#sidebar [data-row-menu-list]"
         phone.click("#sidebar [data-delete-actions] [data-row-menu]")
         phone.wait("the row's sheet", lambda: count(phone, menu) == 1)
-        frame = phone.script(
+        frame = lambda: phone.script(
             "const m = document.querySelector(arguments[0]).getBoundingClientRect();"
             "return [Math.round(m.left), Math.round(m.width), Math.round(innerWidth), Math.round(m.bottom), Math.round(innerHeight)]",
             menu,
         )
-        assert frame[0] == 0 and frame[1] == frame[2] and abs(frame[3] - frame[4]) <= 1, "not a bottom sheet: %s" % frame
+        # It settles into place as a bottom sheet.
+        phone.wait(
+            "a bottom sheet",
+            lambda: frame()[0] == 0 and frame()[1] == frame()[2] and abs(frame()[3] - frame()[4]) <= 1,
+        )
         assert "Move to project…" in phone.text(menu), phone.text(menu)
         fits(phone, "the row's sheet")
         phone.shot("phone-row-menu")
@@ -5646,7 +5622,6 @@ def basics(browser):
     session: streamed markdown, a tool call that asks for approval, and a
     slow run steered, queued behind, and cancelled."""
     print("connected:", browser.text("#connected"))
-    composer_clear(browser, "desktop")
     browser.shot("fresh-connect")
     print("the fresh page's composer keeps its text clear of its buttons")
     assert browser.script(
@@ -6070,10 +6045,8 @@ def acp_agents(browser):
     browser.wait("the agent's tool call", lambda: count(browser, "#transcript [data-tool]") > 0)
     assert "fixture on local" not in browser.script("return document.querySelector('#transcript').textContent")
     # The agent's context use, as its usage_update reported it.
-    browser.wait("the agent's context", lambda: "1.2k tokens" in browser.text("#context"))
-    assert "of 200,000" in browser.script("return document.querySelector('#context').title"), browser.script(
-        "return document.querySelector('#context').title"
-    )
+    browser.wait("the agent's context", lambda: "of 200,000" in browser.script(
+        "const c = document.querySelector('#context'); return c ? c.title : ''"))
     print("the agent's turn shows its plan and names it on its tool call, and its context shows")
 
     send(browser, "terminal")

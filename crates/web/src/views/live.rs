@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// One badge: a quiet pill that tints on hover and settles in as it comes.
-const BADGE: &str = "badge-in inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium tabular-nums text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press";
+const BADGE: &str = "badge-in inline-flex h-7 compact:h-11 items-center gap-1.5 rounded-md px-2 text-xs font-medium tabular-nums text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press";
 
 /// How much of `window` `tokens` fill, from 0 to 1.
 fn filled(tokens: u64, window: Option<u64>) -> Option<f64> {
