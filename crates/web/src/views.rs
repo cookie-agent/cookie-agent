@@ -2175,8 +2175,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     let container = NodeRef::<html::Div>::new();
     let content = NodeRef::<html::Div>::new();
     let follow = StoredValue::new(Follow::default());
-    // The row loaded history arrives above, and where it was.
-    let history_anchor = StoredValue::new(None::<(String, f64)>);
+    // Where the rows in view were when history was asked for.
+    let history_anchor = StoredValue::new(None::<HistoryAnchor>);
     // Whether the view follows the end, for the jump-to-latest button.
     let following = RwSignal::new(true);
     let metrics = move || {
@@ -2770,7 +2770,7 @@ fn reveal_work_row(
 fn load_history_in_view(
     scroller: &web_sys::Element,
     workspace: Workspace,
-    anchor: StoredValue<Option<(String, f64)>>,
+    anchor: StoredValue<Option<HistoryAnchor>>,
 ) {
     let Ok(rows) = scroller.query_selector_all("[data-history]:not([data-history-failed])") else {
         return;
@@ -2796,47 +2796,87 @@ fn load_history_in_view(
     }
 }
 
+/// Where the transcript's rows were when history was asked for: each row
+/// then in view with its offset from the view's top, and the scroll height
+/// and position. The history arrives above them.
+#[derive(Clone, Debug)]
+struct HistoryAnchor {
+    rows: Vec<(String, f64)>,
+    height: i32,
+    top: i32,
+}
+
 /// Reads the history `row`, a row of history not loaded, stands for, and
-/// notes where the row after it is: the history arrives above it, and
-/// `keep_history_anchor` keeps it there. The browser's own anchoring does
+/// notes where the rows in view are: the history arrives above them, and
+/// `keep_history_anchor` keeps them there. The browser's own anchoring does
 /// not act while the view rests at its top.
 fn load_history(
     scroller: &web_sys::Element,
     row: &web_sys::Element,
     before: u64,
     workspace: Workspace,
-    anchor: StoredValue<Option<(String, f64)>>,
+    anchor: StoredValue<Option<HistoryAnchor>>,
 ) {
-    let next = row
-        .closest("[id^=row-]")
-        .ok()
-        .flatten()
-        .and_then(|row| row.next_element_sibling());
-    if let Some(next) = next {
-        let offset =
-            next.get_bounding_client_rect().top() - scroller.get_bounding_client_rect().top();
-        anchor.set_value(Some((next.id(), offset)));
+    let placeholder = row.closest("[id^=row-]").ok().flatten().map(|row| row.id());
+    let view = scroller.get_bounding_client_rect();
+    let mut rows = Vec::new();
+    if let Ok(found) = scroller.query_selector_all("[id^=row-]") {
+        for index in 0..found.length() {
+            let Some(found) = found
+                .item(index)
+                .and_then(|found| found.dyn_into::<web_sys::Element>().ok())
+            else {
+                continue;
+            };
+            let at = found.get_bounding_client_rect();
+            // The rows in view, the placeholder aside: a row's ID can change
+            // as older items join it (a reply cut by a page, a fold), so
+            // every one of them is a candidate.
+            if at.bottom() > view.top()
+                && at.top() < view.bottom()
+                && Some(found.id()) != placeholder
+            {
+                rows.push((found.id(), at.top() - view.top()));
+            }
+        }
     }
+    anchor.set_value(Some(HistoryAnchor {
+        rows,
+        height: scroller.scroll_height(),
+        top: scroller.scroll_top(),
+    }));
     workspace.load_history(before);
 }
 
-/// Puts the row noted by `load_history` back where it was, once rows
-/// arrived above it; the note goes once the history is read.
+/// Puts the rows noted by `load_history` back where they were, once rows
+/// arrived above them: the first of them still on the page, else by how
+/// much the transcript grew. The note goes once the history is read and
+/// drawn.
 fn keep_history_anchor(
     scroller: &web_sys::Element,
     workspace: Workspace,
-    anchor: StoredValue<Option<(String, f64)>>,
+    anchor: StoredValue<Option<HistoryAnchor>>,
 ) {
-    let Some((id, offset)) = anchor.get_value() else {
+    let Some(noted) = anchor.get_value() else {
         return;
     };
     let document = web_sys::window().and_then(|window| window.document());
-    if let Some(row) = document.and_then(|document| document.get_element_by_id(&id)) {
-        let now = row.get_bounding_client_rect().top() - scroller.get_bounding_client_rect().top();
-        let moved = now - offset;
-        if moved.abs() >= 1.0 {
+    let view_top = scroller.get_bounding_client_rect().top();
+    let kept = noted.rows.iter().find_map(|(id, offset)| {
+        let row = document.as_ref()?.get_element_by_id(id)?;
+        Some(row.get_bounding_client_rect().top() - view_top - offset)
+    });
+    let height = scroller.scroll_height();
+    match kept {
+        Some(moved) if moved.abs() >= 1.0 => {
             scroller.set_scroll_top(scroller.scroll_top() + moved.round() as i32);
         }
+        Some(_) => {}
+        // None of the rows is left: the history arrived above them all.
+        None if height > noted.height => {
+            scroller.set_scroll_top(noted.top + (height - noted.height));
+        }
+        None => {}
     }
     let loading = workspace
         .selected
@@ -2851,7 +2891,9 @@ fn keep_history_anchor(
                 })
             })
         });
-    if !loading {
+    // Kept until the history is drawn: a drawing before it arrives must not
+    // drop the note.
+    if !loading && height != noted.height {
         anchor.set_value(None);
     }
 }
