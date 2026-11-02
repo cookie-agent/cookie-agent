@@ -192,7 +192,7 @@ pub enum ClientDelivery {
     DaemonStatus(cookie_agent_protocol::DaemonStatus),
     /// Whether the daemon is set up changed: the new `onboarding.get`
     /// answer.
-    OnboardingChanged(cookie_agent_protocol::OnboardingStatus),
+    OnboardingChanged(Box<cookie_agent_protocol::OnboardingStatus>),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -1859,6 +1859,16 @@ impl Client {
             .await
     }
 
+    /// Starts a declared ACP agent on a runtime and opens a session to see
+    /// that it works; see [`cookie_agent_protocol::AcpCheckParams`].
+    pub async fn check_acp_agent(
+        &self,
+        params: cookie_agent_protocol::AcpCheckParams,
+    ) -> Result<cookie_agent_protocol::AcpCheckResult, ClientError> {
+        self.call(cookie_agent_protocol::ACP_CHECK_METHOD, &params)
+            .await
+    }
+
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
         self.call("mcp.server.list", &McpServerListParams {}).await
     }
@@ -2817,7 +2827,7 @@ async fn route_notification(
         }
         cookie_agent_protocol::ONBOARDING_CHANGED_METHOD => {
             let changed: cookie_agent_protocol::OnboardingStatus = serde_json::from_str(params)?;
-            let _ = deliveries.send(ClientDelivery::OnboardingChanged(changed));
+            let _ = deliveries.send(ClientDelivery::OnboardingChanged(Box::new(changed)));
         }
         _ => {}
     }

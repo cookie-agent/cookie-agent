@@ -137,6 +137,7 @@ async fn a_plain_client_onboards_through_the_daemon() {
         default_model_list: None,
         small_model_list: None,
         utility_model_list: None,
+        ..OnboardingRunParams::default()
     };
     let refused = client
         .run_onboarding(models.clone())
@@ -214,6 +215,7 @@ async fn onboarding_sets_and_reports_fallback_lists() {
         ]),
         small_model_list: Some(vec![default_field.clone()]),
         utility_model_list: None,
+        ..OnboardingRunParams::default()
     };
 
     for refused in [

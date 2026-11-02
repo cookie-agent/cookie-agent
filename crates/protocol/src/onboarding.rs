@@ -91,7 +91,7 @@ pub struct OnboardingModel {
 /// Whether the daemon is set up: the result of `onboarding.get` and the
 /// payload of `onboarding.changed`. Computed from the live configuration and
 /// runtime; nothing is stored for it.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct OnboardingStatus {
     /// `missing` is empty.
     pub ready: bool,
@@ -121,7 +121,194 @@ pub struct OnboardingStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 32))]
     pub utility_model_list: Option<Vec<OnboardingModelEntry>>,
+    /// The two ways to set the daemon up, each with whether it is done
+    /// (client protocol 1.74.0, `docs/site/specs/acp-onboarding.md`
+    /// section 2). While the ACP path is complete, `missing` no longer lists
+    /// what only the models path needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<OnboardingPaths>,
+    /// The ACP agents onboarding can link (client protocol 1.74.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub acp_presets: Vec<AcpPreset>,
+    /// The MCP servers the Tools step offers (client protocol 1.74.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub mcp_presets: Vec<McpPreset>,
+    /// The MCP servers configured now, by name and place (client protocol
+    /// 1.74.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 4096))]
+    pub mcp_servers: Vec<OnboardingMcpServer>,
+    /// `[agents] default` as configured; absent when unset, and new
+    /// sessions then start on `primary`, else the first agent that can run
+    /// as a root (client protocol 1.74.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<crate::AgentId>,
 }
+
+/// The two ways to set a daemon up (client protocol 1.74.0).
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OnboardingPaths {
+    pub models: OnboardingModelsPath,
+    pub acp: OnboardingAcpPath,
+}
+
+/// The models path: a connected provider and `default_model`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OnboardingModelsPath {
+    pub complete: bool,
+    /// What it still needs: `provider`, `default_model`.
+    #[schemars(length(max = 16))]
+    pub missing: Vec<OnboardingRequirement>,
+}
+
+/// The ACP path: an enabled ACP agent a runtime that can run it offers.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OnboardingAcpPath {
+    pub complete: bool,
+    /// Every ACP agent declaration, in ID order.
+    #[schemars(length(max = 4096))]
+    pub agents: Vec<OnboardingAcpAgent>,
+}
+
+/// An ACP agent declaration as onboarding shows it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OnboardingAcpAgent {
+    pub id: crate::AgentId,
+    /// The runtime whose table declares it; absent for `[acp.agents]`,
+    /// which every runtime but `global` offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::RuntimeId>,
+    #[schemars(length(max = 64))]
+    pub command: Vec<String>,
+    /// The names of its environment variables; their values are not sent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub env_keys: Vec<String>,
+    #[schemars(length(max = 512))]
+    pub description: String,
+    pub enabled: bool,
+    /// The ACP preset whose command and environment it has, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<crate::AgentId>,
+    /// The runtimes that offer it, and whether each can run it now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub runtimes: Vec<OnboardingAcpRuntime>,
+}
+
+/// A runtime that offers an ACP agent onboarding shows.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OnboardingAcpRuntime {
+    pub runtime_id: crate::RuntimeId,
+    /// Connected, or started on demand.
+    pub available: bool,
+}
+
+/// A configured MCP server, by name and place.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OnboardingMcpServer {
+    #[schemars(length(min = 1, max = 128))]
+    pub name: String,
+    /// The runtime whose table holds it; absent for `[mcp.servers]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::RuntimeId>,
+}
+
+/// An ACP agent `onboarding.run` declares (client protocol 1.74.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnboardingAcpAgentInput {
+    pub id: crate::AgentId,
+    /// The runtime whose table declares it; `[acp.agents]`, every runtime,
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::RuntimeId>,
+    #[schemars(length(min = 1, max = 64))]
+    pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 512))]
+    pub description: Option<String>,
+    /// A value of the agent's model option the agent starts its sessions
+    /// with, written as the `models` of an `agents/<id>.md` that inherits
+    /// the `_acp` template; skipped when that document exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 256))]
+    pub model: Option<String>,
+    /// A value of the agent's effort option, beside `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 256))]
+    pub effort: Option<String>,
+}
+
+/// An MCP server `onboarding.run` adds (client protocol 1.74.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnboardingMcpServerInput {
+    #[schemars(length(min = 1, max = 128))]
+    pub name: String,
+    /// The runtime whose table holds it; `[mcp.servers]` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::RuntimeId>,
+    /// The server's table, as `config.toml` takes it.
+    pub server: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `acp.check` (client protocol 1.74.0): starts a declared ACP agent on a
+/// runtime, opens a session in the runtime's home, records what it offers,
+/// and closes it (`docs/site/specs/acp-onboarding.md` section 5).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcpCheckParams {
+    pub runtime_id: crate::RuntimeId,
+    /// The declaration's key on the runtime.
+    pub agent: crate::AgentId,
+}
+
+/// How far an `acp.check` got. A value this build does not know reads as
+/// `unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum AcpCheckStage {
+    /// The runtime does not declare the agent, or is away.
+    Declared,
+    /// Starting the agent and its `initialize`.
+    Start,
+    /// `session/new`, where an agent that is not logged in fails.
+    Session,
+    /// Everything worked.
+    Ready,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What an `acp.check` found.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpCheckResult {
+    pub ok: bool,
+    /// The stage it reached: `ready` when `ok`, else the one that failed.
+    pub stage: AcpCheckStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 4096))]
+    pub error: Option<String>,
+    /// The agent's name and version, as its `initialize` gave them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 256))]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 128))]
+    pub agent_version: Option<String>,
+    /// The options a new session of it starts with, such as its models.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub options: Vec<crate::AcpConfigOption>,
+}
+
+pub const ACP_CHECK_METHOD: &str = "acp.check";
 
 /// `onboarding.get`.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -215,7 +402,7 @@ pub struct OnboardingModelTable {
 /// `onboarding.run`: sets the model fields given and installs the kit when
 /// asked, as one change. Refused with `onboarding_incomplete`, writing
 /// nothing, when the daemon would not be set up afterwards.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OnboardingRunParams {
     pub install_kit: bool,
@@ -243,6 +430,19 @@ pub struct OnboardingRunParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 32))]
     pub utility_model_list: Option<Vec<OnboardingModelEntry>>,
+    /// ACP agents to declare (client protocol 1.74.0); a declaration of the
+    /// same ID at the same place is replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 64))]
+    pub acp_agents: Option<Vec<OnboardingAcpAgentInput>>,
+    /// MCP servers to add (client protocol 1.74.0); a name already taken
+    /// at that place is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 64))]
+    pub mcp_servers: Option<Vec<OnboardingMcpServerInput>>,
+    /// `[agents] default` to set (client protocol 1.74.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<crate::AgentId>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

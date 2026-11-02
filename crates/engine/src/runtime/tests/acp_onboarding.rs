@@ -132,3 +132,38 @@ async fn a_declaration_turned_off_everywhere_says_so() {
         Some(AgentUnavailableReason::AcpDeclarationDisabled)
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_starts_the_agent_and_opens_a_session() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let local = cookie_agent_protocol::RuntimeId::new("local").unwrap();
+    let checked = engine.check_acp_agent(&local, &agent_id()).await;
+    assert!(checked.ok, "{checked:?}");
+    assert_eq!(checked.stage, cookie_agent_protocol::AcpCheckStage::Ready);
+    assert!(checked.error.is_none());
+
+    // An agent the runtime does not declare fails before anything starts.
+    let missing = engine.check_acp_agent(&local, &id("ghost")).await;
+    assert!(!missing.ok);
+    assert_eq!(
+        missing.stage,
+        cookie_agent_protocol::AcpCheckStage::Declared
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_names_an_agent_that_does_not_start() {
+    let acp = acp_fixture_with(
+        &[],
+        &[],
+        "[runtimes.local.acp.agents.broken]\ncommand = [\"/nonexistent/cookie-acp-agent\"]\n",
+    )
+    .await;
+    let engine = acp.engine();
+    let local = cookie_agent_protocol::RuntimeId::new("local").unwrap();
+    let checked = engine.check_acp_agent(&local, &id("broken")).await;
+    assert!(!checked.ok);
+    assert_eq!(checked.stage, cookie_agent_protocol::AcpCheckStage::Start);
+    assert!(checked.error.is_some());
+}

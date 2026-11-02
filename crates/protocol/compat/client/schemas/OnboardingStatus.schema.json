@@ -1,5 +1,272 @@
 {
   "$defs": {
+    "AcpPreset": {
+      "description": "An ACP agent onboarding can link (`docs/site/specs/acp-onboarding.md`\nsection 3, client protocol 1.73.0), from the official agents\nrepository: the declaration it fills in.",
+      "properties": {
+        "command": {
+          "description": "The program and its arguments.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        },
+        "description": {
+          "description": "The declaration's `description`.",
+          "maxLength": 512,
+          "type": "string"
+        },
+        "docs_url": {
+          "maxLength": 2048,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "id": {
+          "description": "The agent ID it suggests, such as `claude`.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "name": {
+          "description": "Its name, such as \"Claude Code\".",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "needs": {
+          "description": "What each machine that runs it needs, as a sentence.",
+          "maxLength": 1024,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "command",
+        "needs"
+      ],
+      "type": "object"
+    },
+    "McpPreset": {
+      "description": "An MCP server that needs no login, which onboarding's Tools step offers\n(`docs/site/specs/acp-onboarding.md` section 9.1, client protocol\n1.73.0).",
+      "properties": {
+        "category": {
+          "description": "What kind of tool it is, such as \"Web search\".",
+          "maxLength": 128,
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "docs_url": {
+          "maxLength": 2048,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The server name it suggests, such as `exa`.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "needs": {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        "server": {
+          "additionalProperties": true,
+          "description": "The server's table as `config.toml` takes it (`url`, or `command`\nand `args`, and the other keys of an MCP server).",
+          "type": "object"
+        },
+        "where": {
+          "$ref": "#/$defs/McpPresetPlace"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "category",
+        "description",
+        "server",
+        "where",
+        "needs"
+      ],
+      "type": "object"
+    },
+    "McpPresetPlace": {
+      "description": "Where an MCP preset's server goes. A value this build does not know\nreads as `unknown`, which onboarding does not offer.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "global",
+          "description": "A hosted server: `[mcp.servers.<name>]`, where the daemon runs.",
+          "type": "string"
+        },
+        {
+          "const": "machine",
+          "description": "A program on a machine the user picks:\n`[runtimes.<runtime>.mcp.servers.<name>]`.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "OnboardingAcpAgent": {
+      "description": "An ACP agent declaration as onboarding shows it.",
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "description": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env_keys": {
+          "description": "The names of its environment variables; their values are not sent.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "preset": {
+          "description": "The ACP preset whose command and environment it has, when one does.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime": {
+          "description": "The runtime whose table declares it; absent for `[acp.agents]`,\nwhich every runtime but `global` offers.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimes": {
+          "description": "The runtimes that offer it, and whether each can run it now.",
+          "items": {
+            "$ref": "#/$defs/OnboardingAcpRuntime"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "command",
+        "description",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "OnboardingAcpPath": {
+      "description": "The ACP path: an enabled ACP agent a runtime that can run it offers.",
+      "properties": {
+        "agents": {
+          "description": "Every ACP agent declaration, in ID order.",
+          "items": {
+            "$ref": "#/$defs/OnboardingAcpAgent"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "complete",
+        "agents"
+      ],
+      "type": "object"
+    },
+    "OnboardingAcpRuntime": {
+      "description": "A runtime that offers an ACP agent onboarding shows.",
+      "properties": {
+        "available": {
+          "description": "Connected, or started on demand.",
+          "type": "boolean"
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_id",
+        "available"
+      ],
+      "type": "object"
+    },
+    "OnboardingMcpServer": {
+      "description": "A configured MCP server, by name and place.",
+      "properties": {
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "runtime": {
+          "description": "The runtime whose table holds it; absent for `[mcp.servers]`.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "OnboardingModel": {
       "description": "A model and its variant as the configuration holds them: `variant`\nabsent means the model's default variant, `base` its base variant.",
       "properties": {
@@ -69,6 +336,43 @@
       "type": "string",
       "x-open": true
     },
+    "OnboardingModelsPath": {
+      "description": "The models path: a connected provider and `default_model`.",
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "missing": {
+          "description": "What it still needs: `provider`, `default_model`.",
+          "items": {
+            "$ref": "#/$defs/OnboardingRequirement"
+          },
+          "maxItems": 16,
+          "type": "array"
+        }
+      },
+      "required": [
+        "complete",
+        "missing"
+      ],
+      "type": "object"
+    },
+    "OnboardingPaths": {
+      "description": "The two ways to set a daemon up (client protocol 1.74.0).",
+      "properties": {
+        "acp": {
+          "$ref": "#/$defs/OnboardingAcpPath"
+        },
+        "models": {
+          "$ref": "#/$defs/OnboardingModelsPath"
+        }
+      },
+      "required": [
+        "models",
+        "acp"
+      ],
+      "type": "object"
+    },
     "OnboardingRequirement": {
       "description": "What onboarding still needs. A value this build does not know reads as\n`unknown`: something the daemon needs that a client cannot name, which\nkeeps Finish disabled.",
       "oneOf": [
@@ -105,6 +409,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Whether the daemon is set up: the result of `onboarding.get` and the\npayload of `onboarding.changed`. Computed from the live configuration and\nruntime; nothing is stored for it.",
   "properties": {
+    "acp_presets": {
+      "description": "The ACP agents onboarding can link (client protocol 1.74.0).",
+      "items": {
+        "$ref": "#/$defs/AcpPreset"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "default_agent": {
+      "description": "`[agents] default` as configured; absent when unset, and new\nsessions then start on `primary`, else the first agent that can run\nas a root (client protocol 1.74.0).",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "default_model": {
       "anyOf": [
         {
@@ -127,12 +449,39 @@
         "null"
       ]
     },
+    "mcp_presets": {
+      "description": "The MCP servers the Tools step offers (client protocol 1.74.0).",
+      "items": {
+        "$ref": "#/$defs/McpPreset"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "mcp_servers": {
+      "description": "The MCP servers configured now, by name and place (client protocol\n1.74.0).",
+      "items": {
+        "$ref": "#/$defs/OnboardingMcpServer"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
     "missing": {
       "items": {
         "$ref": "#/$defs/OnboardingRequirement"
       },
       "maxItems": 16,
       "type": "array"
+    },
+    "paths": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OnboardingPaths"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The two ways to set the daemon up, each with whether it is done\n(client protocol 1.74.0, `docs/site/specs/acp-onboarding.md`\nsection 2). While the ACP path is complete, `missing` no longer lists\nwhat only the models path needs."
     },
     "providers_connected": {
       "description": "The providers that offer at least one available model, sorted.",

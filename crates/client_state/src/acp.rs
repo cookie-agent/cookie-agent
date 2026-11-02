@@ -328,6 +328,17 @@ pub fn next_value(option: &AcpConfigOption) -> Option<&cookie_agent_protocol::Ac
 }
 
 /// The name of `option`'s current value, else the value itself.
+/// The names of `option`'s values, joined: "Opus, Sonnet, Haiku".
+#[must_use]
+pub fn option_values_label(option: &AcpConfigOption) -> String {
+    option
+        .values
+        .iter()
+        .map(|value| value.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn current_name(option: &AcpConfigOption) -> String {
     option
         .values

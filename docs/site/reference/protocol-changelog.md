@@ -5,6 +5,23 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.74.0
+
+- Onboarding with ACP agents
+  ([Onboarding with ACP agents](../specs/acp-onboarding.md) sections 2, 5,
+  and 9): `OnboardingStatus` gains `paths` (`OnboardingPaths`: the models
+  path's `complete` and `missing`, the ACP path's `complete` and every
+  declaration as an `OnboardingAcpAgent`), `acp_presets` (`AcpPreset`),
+  `mcp_presets` (`McpPreset`, its place an open `McpPresetPlace`),
+  `mcp_servers` (`OnboardingMcpServer`), and `default_agent`. While the ACP
+  path is complete, `missing` no longer names `provider` or
+  `default_model`.
+- `OnboardingRunParams` gains `acp_agents` (`OnboardingAcpAgentInput`),
+  `mcp_servers` (`OnboardingMcpServerInput`), and `default_agent`.
+- `acp.check { runtime_id, agent }` starts a declared ACP agent and opens a
+  session to see it works: an `AcpCheckResult` with an open
+  `AcpCheckStage`.
+
 ## 1.73.0
 
 - Attachments in assistant messages

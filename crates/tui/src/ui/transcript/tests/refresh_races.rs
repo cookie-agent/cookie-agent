@@ -304,8 +304,10 @@ async fn an_onboarding_answer_older_than_its_change_is_dropped() {
     app.poll_onboarding();
     let asked = wait_for_recorded_request(&recorded, "onboarding.get", 1).await;
     // Another client finishes setting up the daemon.
-    app.handle_delivery(ClientDelivery::OnboardingChanged(sample_status(&[])))
-        .await;
+    app.handle_delivery(ClientDelivery::OnboardingChanged(Box::new(sample_status(
+        &[],
+    ))))
+    .await;
     // The answer, read before that, says a model is missing.
     answer(
         &incoming,

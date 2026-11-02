@@ -5,7 +5,8 @@
 
 use cookie_agent_config::{ConfiguredModel, ConfiguredModelRef, ModelField};
 use cookie_agent_engine::{
-    OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
+    OnboardingAcpRequest, OnboardingMcpRequest, OnboardingOutcome, OnboardingRequest,
+    OnboardingRequirement, OnboardingState,
 };
 use cookie_agent_protocol::{
     OnboardingModel, OnboardingModelEntry, OnboardingModelField, OnboardingModelInput,
@@ -41,8 +42,59 @@ pub(crate) fn status_to_wire(state: OnboardingState) -> OnboardingStatus {
             .map(entry_to_wire)
             .collect::<Vec<_>>()
     };
+    let paths = cookie_agent_protocol::OnboardingPaths {
+        models: cookie_agent_protocol::OnboardingModelsPath {
+            complete: state.models_complete(),
+            missing: state
+                .models_missing
+                .iter()
+                .copied()
+                .map(requirement_to_wire)
+                .collect(),
+        },
+        acp: cookie_agent_protocol::OnboardingAcpPath {
+            complete: state.acp_complete(),
+            agents: state
+                .acp_agents
+                .iter()
+                .map(|agent| cookie_agent_protocol::OnboardingAcpAgent {
+                    id: agent.id.clone(),
+                    runtime: agent.runtime.clone(),
+                    command: agent.command.clone(),
+                    env_keys: agent.env_keys.clone(),
+                    description: agent.description.clone(),
+                    enabled: agent.enabled,
+                    preset: agent.preset.clone(),
+                    runtimes: agent
+                        .runtimes
+                        .iter()
+                        .map(|(runtime_id, available)| {
+                            cookie_agent_protocol::OnboardingAcpRuntime {
+                                runtime_id: runtime_id.clone(),
+                                available: *available,
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
+        },
+    };
     OnboardingStatus {
         ready: state.ready(),
+        paths: Some(paths),
+        acp_presets: state.presets.acp.clone(),
+        mcp_presets: state.presets.mcp.clone(),
+        mcp_servers: state
+            .mcp_servers
+            .iter()
+            .map(
+                |(name, runtime)| cookie_agent_protocol::OnboardingMcpServer {
+                    name: name.clone(),
+                    runtime: runtime.clone(),
+                },
+            )
+            .collect(),
+        default_agent: state.default_agent.clone(),
         missing: state.missing.into_iter().map(requirement_to_wire).collect(),
         providers_connected: state.providers_connected,
         default_model: state.default_model.as_ref().and_then(model),
@@ -153,6 +205,31 @@ pub(crate) fn request_from_wire(params: OnboardingRunParams) -> Result<Onboardin
             params.utility_model,
             params.utility_model_list,
         )?,
+        acp_agents: params
+            .acp_agents
+            .unwrap_or_default()
+            .into_iter()
+            .map(|agent| OnboardingAcpRequest {
+                id: agent.id,
+                runtime: agent.runtime,
+                command: agent.command,
+                env: agent.env,
+                description: agent.description,
+                model: agent.model,
+                effort: agent.effort,
+            })
+            .collect(),
+        mcp_servers: params
+            .mcp_servers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|server| OnboardingMcpRequest {
+                name: server.name,
+                runtime: server.runtime,
+                server: server.server,
+            })
+            .collect(),
+        default_agent: params.default_agent,
     })
 }
 

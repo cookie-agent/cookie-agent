@@ -141,7 +141,7 @@ fn stopped(reason: &str) -> RoundEnd {
 }
 
 /// The agent's config options in the session's terms.
-fn options_of(config_options: Option<&Vec<Value>>) -> Vec<AcpConfigOption> {
+pub(super) fn options_of(config_options: Option<&Vec<Value>>) -> Vec<AcpConfigOption> {
     config_options
         .map(|options| options.iter().filter_map(config_option).collect())
         .unwrap_or_default()

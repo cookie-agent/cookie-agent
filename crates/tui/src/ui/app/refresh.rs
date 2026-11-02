@@ -1276,7 +1276,7 @@ impl App {
             self.poll_crons();
         }
         if let ClientDelivery::OnboardingChanged(status) = &delivery {
-            self.note_onboarding_changed(status.clone());
+            self.note_onboarding_changed((**status).clone());
         }
         if matches!(delivery, ClientDelivery::PluginsChanged(_)) {
             self.poll_plugins();

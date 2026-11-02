@@ -85,7 +85,8 @@ pub use runtime::official::agents::{
     usable_presets,
 };
 pub use runtime::official::onboarding::{
-    OnboardingField, OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
+    OnboardingAcpAgent, OnboardingAcpRequest, OnboardingField, OnboardingMcpRequest,
+    OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState,
 };
 pub use runtime::official::skills::{
     OFFICIAL_SKILLS_REFRESH, OFFICIAL_SKILLS_URL, OfficialSkillsReport, UserSkillRoots,

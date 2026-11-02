@@ -4,6 +4,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "acp.check",
+      "params": "AcpCheckParams",
+      "params_role": "command",
+      "result": "AcpCheckResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "agents.update",
       "params": "AgentsUpdateParams",
       "params_role": "command",

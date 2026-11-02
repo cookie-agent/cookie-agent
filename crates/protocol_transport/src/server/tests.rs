@@ -637,6 +637,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::OnboardingRunResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn check_acp_agent(
+        &self,
+        _: cookie_agent_protocol::AcpCheckParams,
+    ) -> Result<cookie_agent_protocol::AcpCheckResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn background_tool(
         &self,
         _: cookie_agent_protocol::RunToolBackgroundParams,

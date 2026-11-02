@@ -4,17 +4,21 @@
 //! connect a provider when none is, choose `default_model`, and optionally
 //! `small_model` and `utility_model`. The daemon fetches its official agents
 //! as it finishes; there is no starter kit. It writes nothing itself; the
-//! daemon does.
+//! daemon does. Instead of the models, or beside them, it links an ACP agent
+//! (Claude Code, Codex, or another), adds MCP servers that need no login, and
+//! sets the default agent (`docs/site/specs/acp-onboarding.md` section 9).
 
 use anyhow::Context as _;
 use clap::Args;
 use cookie_agent_client_state::onboarding::{
-    self as rules, ModelGroup, configured_label, default_model_variant, entry_label, field_entry,
-    model_entry, model_groups, parse_model_flag, small_model_variant, utility_model_variant,
+    self as rules, AcpPlace, ModelGroup, configured_label, default_model_variant, entry_label,
+    field_entry, model_entry, model_groups, parse_model_flag, small_model_variant,
+    utility_model_variant,
 };
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, OnboardingModelEntry, OnboardingModelField, OnboardingRequirement,
-    OnboardingRunParams, OnboardingStatus, VariantId,
+    AcpCheckParams, AgentId, AvailableModelDescriptor, OnboardingAcpAgentInput,
+    OnboardingMcpServerInput, OnboardingModelEntry, OnboardingModelField, OnboardingRequirement,
+    OnboardingRunParams, OnboardingStatus, RuntimeId, VariantId,
 };
 use cookie_agent_protocol_transport::Client;
 
@@ -42,6 +46,44 @@ pub(crate) struct OnboardArgs {
     /// `small_model`; repeat it for a fallback list, in order.
     #[arg(long, value_name = "KEY[:VARIANT]|FIELD")]
     pub(crate) utility_model: Vec<String>,
+    /// Link an ACP agent: a preset's ID (`claude`, `codex`) or `other`
+    /// with `--acp-id` and `--acp-command`.
+    #[arg(long, value_name = "PRESET|other")]
+    pub(crate) acp: Option<String>,
+    /// Where the ACP agent runs: `every` machine, or `local`, this daemon's
+    /// machine only (the default).
+    #[arg(long, value_name = "every|local")]
+    pub(crate) acp_where: Option<String>,
+    /// The ACP agent's ID; a preset's own by default.
+    #[arg(long, value_name = "ID")]
+    pub(crate) acp_id: Option<String>,
+    /// The command line that starts the ACP agent, in place of a preset's.
+    #[arg(long, value_name = "COMMAND")]
+    pub(crate) acp_command: Option<String>,
+    /// An environment variable of the ACP agent; repeat it.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub(crate) acp_env: Vec<String>,
+    /// Start the ACP agent once set up, to see that it works.
+    #[arg(long)]
+    pub(crate) acp_check: bool,
+    /// Add MCP servers from the presets that need no login, by ID
+    /// (`exa,context7,deepwiki,playwright`).
+    #[arg(long, value_name = "ID,...", value_delimiter = ',')]
+    pub(crate) mcp: Vec<String>,
+    /// The runtime that runs the MCP presets that run a program, such as
+    /// Playwright; `local` by default.
+    #[arg(long, value_name = "RUNTIME")]
+    pub(crate) mcp_runtime: Option<String>,
+    /// The agent new sessions start with (`[agents] default`).
+    #[arg(long, value_name = "AGENT")]
+    pub(crate) default_agent: Option<String>,
+}
+
+/// Which ways of running agents the user chose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Paths {
+    models: bool,
+    acp: bool,
 }
 
 /// Which model field a question is for.
@@ -144,13 +186,88 @@ pub(crate) async fn run_onboard_with(
     let utility_flag = flags(&args.utility_model, "--utility-model")?;
     let mut status = client.get_onboarding().await.context("onboarding.get")?;
     describe_status(&status, io)?;
+    let paths = choose_paths(&args, &status, io)?;
 
+    // The ACP agent first: with one, the models are optional.
+    let acp_agent = if paths.acp {
+        Some(choose_acp_agent(&args, &status, io)?)
+    } else {
+        None
+    };
+    let adding_acp = acp_agent.is_some();
+    let (default_model, small_model, utility_model) = if paths.models {
+        choose_models(
+            client,
+            &args,
+            [default_flag, small_flag, utility_flag],
+            adding_acp,
+            &mut status,
+            io,
+        )
+        .await?
+    } else {
+        (None, None, None)
+    };
+    let mcp_servers = choose_mcp_servers(&args, &status, io)?;
+    let default_agent = choose_default_agent(&args, &status, acp_agent.as_ref(), io)?;
+
+    // The daemon fetches its official agents first when it has none.
+    let result = client
+        .run_onboarding(OnboardingRunParams {
+            default_model_list: default_model,
+            small_model_list: small_model,
+            utility_model_list: utility_model,
+            acp_agents: acp_agent.clone().map(|agent| vec![agent]),
+            mcp_servers: (!mcp_servers.is_empty()).then_some(mcp_servers),
+            default_agent,
+            ..OnboardingRunParams::default()
+        })
+        .await
+        .context("onboarding.run")?;
+    for line in rules::run_summary(&result) {
+        io.write_line(&line)?;
+    }
+    if let Some(agent) = &acp_agent
+        && (args.acp_check
+            || (!args.yes
+                && confirm(
+                    io,
+                    "Start the ACP agent now to check it works? [Y/n] ",
+                    true,
+                )?))
+    {
+        check_acp_agent(client, &result.status, agent, io).await?;
+    }
+    if result.status.ready {
+        io.write_line(
+            "Cookie is set up. Run `cookie` to start a session on the default agent; `cookie agents list` shows the others.",
+        )?;
+    }
+    Ok(())
+}
+
+/// Sets up the models path: a provider, then the three model fields.
+async fn choose_models(
+    client: &Client,
+    args: &OnboardArgs,
+    [default_flag, small_flag, utility_flag]: [Option<Vec<OnboardingModelEntry>>; 3],
+    adding_acp: bool,
+    status: &mut OnboardingStatus,
+    io: &mut impl ConnectIo,
+) -> anyhow::Result<ModelLists> {
     // 1. Provider.
-    if status.missing.contains(&OnboardingRequirement::Provider) {
+    if status.missing.contains(&OnboardingRequirement::Provider) && !adding_acp {
         if args.yes {
             anyhow::bail!(
                 "no model provider is connected: run `cookie onboard` without --yes to connect one"
             );
+        }
+        io.write_line("1. Provider: none is connected yet.")?;
+        super::connect::connect_provider_flow(client, None, io).await?;
+    } else if status.missing.contains(&OnboardingRequirement::Provider) {
+        // With an ACP agent, the models are optional.
+        if args.yes {
+            return Ok((None, None, None));
         }
         io.write_line("1. Provider: none is connected yet.")?;
         super::connect::connect_provider_flow(client, None, io).await?;
@@ -163,34 +280,361 @@ pub(crate) async fn run_onboard_with(
         .context("runtime.snapshot.get")?
         .snapshot
         .models;
-    status = client.get_onboarding().await.context("onboarding.get")?;
+    *status = client.get_onboarding().await.context("onboarding.get")?;
+    if models.is_empty() && adding_acp {
+        return Ok((None, None, None));
+    }
 
     // 2. to 4. The models.
-    let default_model = choose_model(Slot::Default, default_flag, &status, &models, &args, io)?;
-    let small_model = choose_model(Slot::Small, small_flag, &status, &models, &args, io)?;
-    let utility_model = choose_model(Slot::Utility, utility_flag, &status, &models, &args, io)?;
+    let required = !adding_acp;
+    let default_model = choose_model(
+        Slot::Default,
+        default_flag,
+        status,
+        &models,
+        args,
+        required,
+        io,
+    )?;
+    let small_model = choose_model(Slot::Small, small_flag, status, &models, args, required, io)?;
+    let utility_model = choose_model(
+        Slot::Utility,
+        utility_flag,
+        status,
+        &models,
+        args,
+        required,
+        io,
+    )?;
+    Ok((default_model, small_model, utility_model))
+}
 
-    // The daemon fetches its official agents first when it has none.
-    let result = client
-        .run_onboarding(OnboardingRunParams {
-            install_kit: false,
-            source: None,
-            default_model: None,
-            small_model: None,
-            utility_model: None,
-            default_model_list: default_model,
-            small_model_list: small_model,
-            utility_model_list: utility_model,
-        })
-        .await
-        .context("onboarding.run")?;
-    for line in rules::run_summary(&result) {
-        io.write_line(&line)?;
+/// The three model fields' lists, each `None` to keep what is set.
+type ModelLists = (
+    Option<Vec<OnboardingModelEntry>>,
+    Option<Vec<OnboardingModelEntry>>,
+    Option<Vec<OnboardingModelEntry>>,
+);
+
+/// The ways to run agents: the flags decide when they name any; else the
+/// user, asked unless `--yes` (then the models path).
+fn choose_paths(
+    args: &OnboardArgs,
+    status: &OnboardingStatus,
+    io: &mut impl ConnectIo,
+) -> anyhow::Result<Paths> {
+    let model_flags = !args.default_model.is_empty()
+        || !args.small_model.is_empty()
+        || !args.utility_model.is_empty();
+    if args.acp.is_some() || model_flags {
+        return Ok(Paths {
+            models: model_flags || args.acp.is_none(),
+            acp: args.acp.is_some(),
+        });
     }
-    if result.status.ready {
+    if args.yes {
+        return Ok(Paths {
+            models: true,
+            acp: false,
+        });
+    }
+    let acp_done = status
+        .paths
+        .as_ref()
+        .is_some_and(|paths| paths.acp.complete);
+    let default = if acp_done { 2 } else { 1 };
+    loop {
+        let answer = io.read_public(&format!(
+            "Run agents on: 1. model providers you connect, 2. an ACP agent (Claude Code, Codex, \
+             ...) with its own login, 3. both [{default}]: "
+        ))?;
+        let choice = match answer.trim() {
+            "" => default,
+            text => text.parse::<u8>().unwrap_or(0),
+        };
+        match choice {
+            1 => {
+                return Ok(Paths {
+                    models: true,
+                    acp: false,
+                });
+            }
+            2 => {
+                return Ok(Paths {
+                    models: false,
+                    acp: true,
+                });
+            }
+            3 => {
+                return Ok(Paths {
+                    models: true,
+                    acp: true,
+                });
+            }
+            _ => io.write_line("Answer 1, 2, or 3.")?,
+        }
+    }
+}
+
+/// The ACP agent to link, from the flags or the user.
+fn choose_acp_agent(
+    args: &OnboardArgs,
+    status: &OnboardingStatus,
+    io: &mut impl ConnectIo,
+) -> anyhow::Result<OnboardingAcpAgentInput> {
+    let place = match args.acp_where.as_deref() {
+        Some("every") => Some(AcpPlace::EveryMachine),
+        Some("local") => Some(AcpPlace::DaemonMachine),
+        Some(other) => anyhow::bail!("--acp-where takes `every` or `local`, not `{other}`"),
+        None => None,
+    };
+    let preset = match args.acp.as_deref() {
+        Some("other") => None,
+        Some(id) => Some(
+            status
+                .acp_presets
+                .iter()
+                .find(|preset| preset.id.as_str() == id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--acp `{id}` is no preset the daemon has ({}), nor `other`",
+                        presets_label(status)
+                    )
+                })?,
+        ),
+        None => {
+            io.write_line(
+                "ACP agent: the program cookie launches, with its own login and models.",
+            )?;
+            for (index, preset) in status.acp_presets.iter().enumerate() {
+                io.write_line(&format!("  {}. {}", index + 1, preset.name))?;
+                io.write_line(&format!("     needs: {}", preset.needs))?;
+            }
+            let other = status.acp_presets.len() + 1;
+            io.write_line(&format!("  {other}. Another ACP agent"))?;
+            loop {
+                let answer = io.read_public("ACP agent number [1]: ")?;
+                let index = match answer.trim() {
+                    "" => 1,
+                    text => text.parse::<usize>().unwrap_or(0),
+                };
+                if index == other {
+                    break None;
+                }
+                if let Some(preset) = index
+                    .checked_sub(1)
+                    .and_then(|index| status.acp_presets.get(index))
+                {
+                    break Some(preset);
+                }
+                io.write_line("Not a listed number.")?;
+            }
+        }
+    };
+    let place = match place {
+        Some(place) => place,
+        None if args.yes || args.acp.is_some() => AcpPlace::DaemonMachine,
+        None => {
+            io.write_line(&format!(
+                "Where it runs: 1. {} (each needs it installed and logged in), 2. {}",
+                AcpPlace::EveryMachine.label(),
+                AcpPlace::DaemonMachine.label()
+            ))?;
+            let answer = io.read_public("Where [2]: ")?;
+            if answer.trim() == "1" {
+                AcpPlace::EveryMachine
+            } else {
+                AcpPlace::DaemonMachine
+            }
+        }
+    };
+    let mut agent = match preset {
+        Some(preset) => {
+            let mut agent = rules::acp_preset_input(preset, place);
+            if let Some(command) = &args.acp_command {
+                agent.command = rules::split_command_line(command).map_err(anyhow::Error::msg)?;
+            }
+            agent
+        }
+        None => {
+            let id = match &args.acp_id {
+                Some(id) => id.clone(),
+                None if args.yes => anyhow::bail!("--acp other needs --acp-id"),
+                None => io.read_public("Its ID (lowercase, such as `gemini`): ")?,
+            };
+            let command = match &args.acp_command {
+                Some(command) => command.clone(),
+                None if args.yes => anyhow::bail!("--acp other needs --acp-command"),
+                None => io.read_public("The command line that starts it in ACP mode: ")?,
+            };
+            rules::other_acp_input(&id, &command, &args.acp_env, "", place)
+                .map_err(anyhow::Error::msg)?
+        }
+    };
+    if let Some(id) = &args.acp_id {
+        agent.id = id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("--acp-id `{id}` is not an agent ID"))?;
+    }
+    for line in &args.acp_env {
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--acp-env `{line}` is not KEY=VALUE"))?;
+        agent.env.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(agent)
+}
+
+fn presets_label(status: &OnboardingStatus) -> String {
+    if status.acp_presets.is_empty() {
+        return "none yet: the official agents were not fetched".to_owned();
+    }
+    status
+        .acp_presets
+        .iter()
+        .map(|preset| format!("`{}`", preset.id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The MCP servers to add, from `--mcp` or the user.
+fn choose_mcp_servers(
+    args: &OnboardArgs,
+    status: &OnboardingStatus,
+    io: &mut impl ConnectIo,
+) -> anyhow::Result<Vec<OnboardingMcpServerInput>> {
+    let runtime = args
+        .mcp_runtime
+        .as_deref()
+        .map(|runtime| {
+            runtime
+                .parse::<RuntimeId>()
+                .map_err(|_| anyhow::anyhow!("--mcp-runtime `{runtime}` is not a runtime ID"))
+        })
+        .transpose()?;
+    let offered = rules::offered_mcp_presets(status);
+    let chosen = if !args.mcp.is_empty() {
+        args.mcp
+            .iter()
+            .map(|id| {
+                offered
+                    .iter()
+                    .find(|preset| preset.id == *id)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("--mcp `{id}` is no MCP preset the daemon has"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+    } else if args.yes || offered.is_empty() {
+        return Ok(Vec::new());
+    } else {
         io.write_line(
-            "Cookie is set up. Run `cookie` to start a session on the default agent; `cookie agents list` shows the others.",
+            "Tools (optional): MCP servers that need no login. Their calls ask you until allowed.",
         )?;
+        for (index, preset) in offered.iter().enumerate() {
+            let configured = if rules::mcp_preset_configured(status, preset, runtime.as_ref()) {
+                " (set up)"
+            } else {
+                ""
+            };
+            io.write_line(&format!(
+                "  {}. {} · {}{configured}: {}",
+                index + 1,
+                preset.name,
+                preset.category,
+                preset.description
+            ))?;
+        }
+        let answer = io.read_public("Numbers to add, separated by commas (Enter skips): ")?;
+        let mut chosen = Vec::new();
+        for part in answer
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            match part
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| offered.get(index))
+            {
+                Some(preset) => chosen.push(*preset),
+                None => io.write_line(&format!("`{part}` is not a listed number; skipped."))?,
+            }
+        }
+        chosen
+    };
+    Ok(chosen
+        .into_iter()
+        .filter(|preset| !rules::mcp_preset_configured(status, preset, runtime.as_ref()))
+        .map(|preset| rules::mcp_preset_input(preset, runtime.clone()))
+        .collect())
+}
+
+/// `[agents] default` to set: the flag, else the ACP agent being linked
+/// when the user says so; `None` keeps what is set.
+fn choose_default_agent(
+    args: &OnboardArgs,
+    status: &OnboardingStatus,
+    acp_agent: Option<&OnboardingAcpAgentInput>,
+    io: &mut impl ConnectIo,
+) -> anyhow::Result<Option<AgentId>> {
+    if let Some(agent) = &args.default_agent {
+        return agent
+            .parse()
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("--default-agent `{agent}` is not an agent ID"));
+    }
+    let Some(acp_agent) = acp_agent else {
+        return Ok(None);
+    };
+    if args.yes {
+        return Ok(None);
+    }
+    let current = status.default_agent.as_ref().map_or(
+        "`primary`, else the first agent that can run",
+        AgentId::as_str,
+    );
+    Ok(confirm(
+        io,
+        &format!(
+            "Start new sessions with `{}`? Now: {current} [y/N] ",
+            acp_agent.id
+        ),
+        false,
+    )?
+    .then(|| acp_agent.id.clone()))
+}
+
+/// Checks `agent` on each runtime that offers it now and prints what each
+/// found.
+async fn check_acp_agent(
+    client: &Client,
+    status: &OnboardingStatus,
+    agent: &OnboardingAcpAgentInput,
+    io: &mut impl ConnectIo,
+) -> anyhow::Result<()> {
+    let runtimes = status
+        .paths
+        .iter()
+        .flat_map(|paths| &paths.acp.agents)
+        .filter(|declared| declared.id == agent.id && declared.runtime == agent.runtime)
+        .flat_map(|declared| &declared.runtimes)
+        .filter(|runtime| runtime.available)
+        .map(|runtime| runtime.runtime_id.clone())
+        .collect::<Vec<_>>();
+    if runtimes.is_empty() {
+        io.write_line("No connected machine offers it yet; check it later with a session.")?;
+    }
+    for runtime_id in runtimes {
+        io.write_line(&format!("Checking `{}` on `{runtime_id}`…", agent.id))?;
+        let result = client
+            .check_acp_agent(AcpCheckParams {
+                runtime_id: runtime_id.clone(),
+                agent: agent.id.clone(),
+            })
+            .await
+            .context("acp.check")?;
+        io.write_line(&format!("  {}", rules::acp_check_line(&result)))?;
     }
     Ok(())
 }
@@ -245,12 +689,14 @@ fn choose_model(
     status: &OnboardingStatus,
     models: &[AvailableModelDescriptor],
     args: &OnboardArgs,
+    required: bool,
     io: &mut impl ConnectIo,
 ) -> anyhow::Result<Option<Vec<OnboardingModelEntry>>> {
     if flag.is_some() {
         return Ok(flag);
     }
-    let missing = slot.required()
+    let missing = required
+        && slot.required()
         && status
             .missing
             .contains(&OnboardingRequirement::DefaultModel);

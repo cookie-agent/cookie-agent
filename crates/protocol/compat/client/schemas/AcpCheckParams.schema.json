@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`acp.check` (client protocol 1.74.0): starts a declared ACP agent on a\nruntime, opens a session in the runtime's home, records what it offers,\nand closes it (`docs/site/specs/acp-onboarding.md` section 5).",
+  "properties": {
+    "agent": {
+      "description": "The declaration's key on the runtime.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": "string"
+    },
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime_id",
+    "agent"
+  ],
+  "title": "AcpCheckParams",
+  "type": "object"
+}

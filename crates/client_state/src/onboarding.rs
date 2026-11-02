@@ -7,9 +7,10 @@
 //! disabled, and the summary of a run.
 
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, ConfiguredVariantRef, ModelKey, OnboardingModelEntry,
-    OnboardingModelField, OnboardingRequirement, OnboardingRunResult, OnboardingStatus, ProviderId,
-    VariantId,
+    AcpCheckResult, AcpCheckStage, AcpPreset, AgentId, AvailableModelDescriptor,
+    ConfiguredVariantRef, McpPreset, McpPresetPlace, ModelKey, OnboardingAcpAgentInput,
+    OnboardingMcpServerInput, OnboardingModelEntry, OnboardingModelField, OnboardingRequirement,
+    OnboardingRunResult, OnboardingStatus, ProviderId, RuntimeId, VariantId,
 };
 
 /// The steps of onboarding, in order. The small and utility models are
@@ -107,14 +108,22 @@ pub fn requirement_label(requirement: OnboardingRequirement) -> &'static str {
 /// `chosen_default` says whether the client has chosen a default model the
 /// run will set. The run fetches the official agents itself, so a missing
 /// default agent never holds Finish back.
+/// `adding_acp` says whether the client adds an ACP agent the run declares:
+/// that completes the ACP path, so what only the models path needs does not
+/// hold Finish back (`docs/site/specs/acp-onboarding.md` section 2).
 #[must_use]
-pub fn finish_refusal(status: &OnboardingStatus, chosen_default: bool) -> Option<String> {
+pub fn finish_refusal(
+    status: &OnboardingStatus,
+    chosen_default: bool,
+    adding_acp: bool,
+) -> Option<String> {
     let remaining = status
         .missing
         .iter()
         .copied()
         .filter(|requirement| match requirement {
-            OnboardingRequirement::DefaultModel => !chosen_default,
+            OnboardingRequirement::Provider => !adding_acp,
+            OnboardingRequirement::DefaultModel => !chosen_default && !adding_acp,
             // Not required since client protocol 1.56.0; an older daemon
             // that misses it is told by the run.
             OnboardingRequirement::SmallModel | OnboardingRequirement::DefaultAgent => false,
@@ -410,6 +419,10 @@ pub fn model_label(model: &cookie_agent_protocol::OnboardingModel) -> String {
 pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
     let mut lines = Vec::new();
     for setting in &result.settings {
+        if let Some(line) = agents_and_tools_line(setting, &result.status) {
+            lines.push(line);
+            continue;
+        }
         let field = match setting.as_str() {
             "default_model" => Some(OnboardingModelField::DefaultModel),
             "small_model" => Some(OnboardingModelField::SmallModel),
@@ -426,7 +439,259 @@ pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
     if lines.is_empty() {
         lines.push("Nothing to change.".into());
     }
+    let paths = result.status.paths.as_ref();
+    if paths.is_some_and(|paths| paths.acp.complete && !paths.models.complete)
+        && result.status.utility_model.is_none()
+    {
+        lines.push(
+            "No model provider is connected: sessions are not titled automatically, and the \
+             approval reviewer passes every question to you. Connect a provider for a utility \
+             model any time."
+                .into(),
+        );
+    }
     lines
+}
+
+/// A summary line for a setting of the ACP agents, MCP servers, or default
+/// agent, as `onboarding.run` names them; `None` for the model fields.
+fn agents_and_tools_line(setting: &str, status: &OnboardingStatus) -> Option<String> {
+    let parts = setting.split('.').collect::<Vec<_>>();
+    Some(match parts.as_slice() {
+        ["acp", "agents", id] => format!("Added ACP agent `{id}` on every machine"),
+        ["runtimes", runtime, "acp", "agents", id] => {
+            format!("Added ACP agent `{id}` on {}", machine_label(runtime))
+        }
+        ["mcp", "servers", name] => format!("Added MCP server `{name}`"),
+        ["runtimes", runtime, "mcp", "servers", name] => {
+            format!("Added MCP server `{name}` on {}", machine_label(runtime))
+        }
+        ["agents", "default"] => format!(
+            "New sessions start with `{}`",
+            status
+                .default_agent
+                .as_ref()
+                .map_or("the default agent", AgentId::as_str)
+        ),
+        _ if setting.starts_with("agents/") => format!("Wrote {setting}"),
+        _ => return None,
+    })
+}
+
+fn machine_label(runtime: &str) -> String {
+    if runtime == "local" {
+        "this daemon's machine".to_owned()
+    } else {
+        format!("`{runtime}`")
+    }
+}
+
+/// Where an ACP agent onboarding links runs
+/// (`docs/site/specs/acp-onboarding.md` section 4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AcpPlace {
+    /// `[acp.agents.<id>]`: every runtime but `global`.
+    EveryMachine,
+    /// `[runtimes.local.acp.agents.<id>]`.
+    DaemonMachine,
+}
+
+impl AcpPlace {
+    pub const ALL: [Self; 2] = [Self::EveryMachine, Self::DaemonMachine];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::EveryMachine => "on every machine",
+            Self::DaemonMachine => "on this daemon's machine only",
+        }
+    }
+
+    /// The runtime whose table it goes in; `None` for every machine.
+    #[must_use]
+    pub fn runtime(self) -> Option<RuntimeId> {
+        match self {
+            Self::EveryMachine => None,
+            Self::DaemonMachine => RuntimeId::new("local").ok(),
+        }
+    }
+}
+
+/// The declaration `preset` fills in, `place` deciding where it goes.
+#[must_use]
+pub fn acp_preset_input(preset: &AcpPreset, place: AcpPlace) -> OnboardingAcpAgentInput {
+    OnboardingAcpAgentInput {
+        id: preset.id.clone(),
+        runtime: place.runtime(),
+        command: preset.command.clone(),
+        env: preset.env.clone(),
+        description: Some(preset.description.clone()).filter(|text| !text.is_empty()),
+        model: None,
+        effort: None,
+    }
+}
+
+/// An ACP agent the user describes: its ID, its command line (words
+/// separated by spaces, a word with spaces in double quotes), and its
+/// environment as `KEY=VALUE` lines.
+pub fn other_acp_input(
+    id: &str,
+    command_line: &str,
+    env: &[String],
+    description: &str,
+    place: AcpPlace,
+) -> Result<OnboardingAcpAgentInput, String> {
+    let id = AgentId::new(id.trim()).map_err(|_| {
+        format!(
+            "`{}` is not an agent ID: lowercase letters, digits, and hyphens",
+            id.trim()
+        )
+    })?;
+    let command = split_command_line(command_line)?;
+    if command.is_empty() {
+        return Err("give the command that starts the agent".into());
+    }
+    let mut variables = std::collections::BTreeMap::new();
+    for line in env
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+    {
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("`{line}` is not KEY=VALUE"))?;
+        variables.insert(key.trim().to_owned(), value.to_owned());
+    }
+    Ok(OnboardingAcpAgentInput {
+        id,
+        runtime: place.runtime(),
+        command,
+        env: variables,
+        description: Some(description.trim().to_owned()).filter(|text| !text.is_empty()),
+        model: None,
+        effort: None,
+    })
+}
+
+/// `text` split into words at spaces, a word in double quotes kept whole.
+pub fn split_command_line(text: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    for character in text.chars() {
+        match character {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            ' ' | '\t' if !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            other => {
+                word.push(other);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return Err("a double quote is not closed".into());
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
+}
+
+/// The command line `command` is, as [`split_command_line`] reads it back.
+#[must_use]
+pub fn join_command_line(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|word| {
+            if word.is_empty() || word.contains(' ') {
+                format!("\"{word}\"")
+            } else {
+                word.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The server `preset` adds, on `runtime` for a machine preset (the
+/// daemon's own machine when `None`).
+#[must_use]
+pub fn mcp_preset_input(
+    preset: &McpPreset,
+    runtime: Option<RuntimeId>,
+) -> OnboardingMcpServerInput {
+    OnboardingMcpServerInput {
+        name: preset.id.clone(),
+        runtime: match preset.place {
+            McpPresetPlace::Global => None,
+            _ => runtime.or_else(|| RuntimeId::new("local").ok()),
+        },
+        server: preset.server.clone(),
+    }
+}
+
+/// Whether `status` already has a server named like `preset` where it
+/// would go.
+#[must_use]
+pub fn mcp_preset_configured(
+    status: &OnboardingStatus,
+    preset: &McpPreset,
+    runtime: Option<&RuntimeId>,
+) -> bool {
+    let place = match preset.place {
+        McpPresetPlace::Global => None,
+        _ => runtime.cloned().or_else(|| RuntimeId::new("local").ok()),
+    };
+    status
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == preset.id && server.runtime == place)
+}
+
+/// The MCP presets the Tools step offers: those this build knows a place
+/// for.
+#[must_use]
+pub fn offered_mcp_presets(status: &OnboardingStatus) -> Vec<&McpPreset> {
+    status
+        .mcp_presets
+        .iter()
+        .filter(|preset| preset.place != McpPresetPlace::Unknown)
+        .collect()
+}
+
+/// One line saying what an `acp.check` found.
+#[must_use]
+pub fn acp_check_line(result: &AcpCheckResult) -> String {
+    let agent = match (&result.agent_name, &result.agent_version) {
+        (Some(name), Some(version)) => format!("{name} {version}"),
+        (Some(name), None) => name.clone(),
+        _ => "The agent".to_owned(),
+    };
+    if result.ok {
+        let models = crate::acp::model_option(&result.options)
+            .map(|option| format!("; models: {}", crate::acp::option_values_label(option)))
+            .unwrap_or_default();
+        return format!("{agent} works{models}");
+    }
+    let stage = match result.stage {
+        AcpCheckStage::Declared => "is not available",
+        AcpCheckStage::Start => "did not start",
+        AcpCheckStage::Session => "started but did not open a session",
+        AcpCheckStage::Ready | AcpCheckStage::Unknown => "failed",
+    };
+    match &result.error {
+        Some(error) => format!("{agent} {stage}: {error}"),
+        None => format!("{agent} {stage}"),
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +716,7 @@ mod tests {
             default_model_list: None,
             small_model_list: None,
             utility_model_list: None,
+            ..Default::default()
         }
     }
 
@@ -512,19 +778,89 @@ mod tests {
     fn finish_says_what_is_left_after_the_client_s_choices() {
         use OnboardingRequirement::*;
         assert_eq!(
-            finish_refusal(&status(&[Provider, DefaultModel]), true).as_deref(),
+            finish_refusal(&status(&[Provider, DefaultModel]), true, false).as_deref(),
             Some("Connect a provider first.")
         );
         assert_eq!(
-            finish_refusal(&status(&[DefaultModel]), false).as_deref(),
+            finish_refusal(&status(&[DefaultModel]), false, false).as_deref(),
             Some("Choose a default model first.")
         );
         // The run fetches the official agents; an older daemon's small
         // model is never required here.
         assert_eq!(
-            finish_refusal(&status(&[DefaultModel, DefaultAgent, SmallModel]), true),
+            finish_refusal(
+                &status(&[DefaultModel, DefaultAgent, SmallModel]),
+                true,
+                false
+            ),
             None
         );
+        // An ACP agent the run adds completes the other path.
+        assert_eq!(
+            finish_refusal(&status(&[Provider, DefaultModel]), false, true),
+            None
+        );
+    }
+
+    #[test]
+    fn command_lines_split_at_spaces_and_keep_quoted_words() {
+        use super::{join_command_line, split_command_line};
+        assert_eq!(
+            split_command_line("npx -y  \"my agent\" --flag").unwrap(),
+            ["npx", "-y", "my agent", "--flag"]
+        );
+        assert_eq!(split_command_line("  ").unwrap(), Vec::<String>::new());
+        assert!(split_command_line("npx \"open").is_err());
+        let words = vec!["npx".to_owned(), "my agent".to_owned(), String::new()];
+        assert_eq!(
+            split_command_line(&join_command_line(&words)).unwrap(),
+            words
+        );
+    }
+
+    #[test]
+    fn another_acp_agent_needs_an_id_a_command_and_key_value_variables() {
+        use super::{AcpPlace, other_acp_input};
+        let input = other_acp_input(
+            "gemini",
+            "gemini --acp",
+            &["MODE=v2".to_owned(), String::new()],
+            "",
+            AcpPlace::DaemonMachine,
+        )
+        .unwrap();
+        assert_eq!(input.command, ["gemini", "--acp"]);
+        assert_eq!(input.env.get("MODE").map(String::as_str), Some("v2"));
+        assert_eq!(input.runtime.as_ref().map(|id| id.as_str()), Some("local"));
+        assert_eq!(input.description, None);
+        assert!(other_acp_input("Not An ID", "x", &[], "", AcpPlace::EveryMachine).is_err());
+        assert!(other_acp_input("x", "", &[], "", AcpPlace::EveryMachine).is_err());
+        assert!(
+            other_acp_input("x", "x", &["NOEQUALS".into()], "", AcpPlace::EveryMachine).is_err()
+        );
+    }
+
+    #[test]
+    fn a_run_summary_names_agents_servers_and_the_default_agent() {
+        let result = cookie_agent_protocol::OnboardingRunResult {
+            written: Vec::new(),
+            skipped: Vec::new(),
+            written_new: Vec::new(),
+            settings: vec![
+                "acp.agents.claude".into(),
+                "runtimes.lab.mcp.servers.playwright".into(),
+                "agents.default".into(),
+            ],
+            status: OnboardingStatus {
+                default_agent: Some("claude".parse().unwrap()),
+                ..status(&[])
+            },
+        };
+        let lines = super::run_summary(&result);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].contains("`claude`"));
+        assert!(lines[1].contains("`playwright`") && lines[1].contains("`lab`"));
+        assert!(lines[2].contains("`claude`"));
     }
 
     #[test]

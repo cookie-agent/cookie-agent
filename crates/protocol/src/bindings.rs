@@ -385,6 +385,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(ONBOARDING_GET_METHOD, ToDaemon, OnboardingGetParams => OnboardingStatus),
         request!(ONBOARDING_PREVIEW_METHOD, ToDaemon, OnboardingPreviewParams => OnboardingPreviewResult),
         request!(ONBOARDING_RUN_METHOD, ToDaemon, OnboardingRunParams => OnboardingRunResult),
+        request!(ACP_CHECK_METHOD, ToDaemon, AcpCheckParams => AcpCheckResult),
         request!(RUN_TOOL_BACKGROUND_METHOD, ToDaemon, RunToolBackgroundParams => RunToolBackgroundResult),
         request!(SESSION_BACKGROUND_LIST_METHOD, ToDaemon, SessionBackgroundListParams => SessionBackgroundListResult),
         request!(SESSION_BACKGROUND_STOP_METHOD, ToDaemon, SessionBackgroundStopParams => SessionBackgroundStopResult),

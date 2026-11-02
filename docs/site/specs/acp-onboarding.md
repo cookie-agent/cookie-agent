@@ -1,7 +1,32 @@
 # Onboarding with ACP agents, the agents panel, and unavailable agents
 
-Status: **approved** (2026-11-01), not implemented yet. The user took
-every recommendation of [section 11](#11-decisions) on 2026-11-01.
+Status: **approved** (2026-11-01), in progress: phases 1 to 3 implemented
+(client protocol 1.72.0 and 1.74.0); see the
+[implementation notes](#implementation-notes). The user took every
+recommendation of [section 11](#11-decisions) on 2026-11-01.
+
+## Implementation notes
+
+Where the code departs from the sections below:
+
+- **`missing` keeps its meaning** (section 2): no `agent` requirement was
+  added. An older client treats a requirement it does not know as blocking,
+  so it could never finish a models-only setup. While no path is complete,
+  `missing` lists what the models path needs, as before; while the ACP path
+  is complete, it no longer names `provider` or `default_model`. New
+  clients read `paths`.
+- **The daemon's own machine always counts as available** for the ACP path,
+  whether or not its `local` runtime has reported yet.
+- **`acp.check` takes a declared agent only** (section 5), `{ runtime_id,
+  agent }`: runtimes start only the agents their tables declare, so an
+  inline command would need a runtime protocol change. Clients declare the
+  agent first (`onboarding.run` with `acp_agents`, which completes the ACP
+  path at once) and check it afterwards.
+- **No `official_pending` reason** (section 8.1): before the first refresh
+  the daemon does not know which official agents there will be. A document
+  of the user's that inherits one is `inherit_missing`.
+- **Templates and presets are lists of their own** in the official index
+  (`templates`, `acp_presets`, `mcp_presets`), which older daemons ignore.
 
 ## 1. Goal and scope
 

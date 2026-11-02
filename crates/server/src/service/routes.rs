@@ -1257,6 +1257,16 @@ impl ServerProtocol for Server {
         ))
     }
 
+    async fn check_acp_agent(
+        &self,
+        params: cookie_agent_protocol::AcpCheckParams,
+    ) -> Result<cookie_agent_protocol::AcpCheckResult> {
+        Ok(self
+            .engine
+            .check_acp_agent(&params.runtime_id, &params.agent)
+            .await)
+    }
+
     async fn run_onboarding(
         &self,
         params: cookie_agent_protocol::OnboardingRunParams,

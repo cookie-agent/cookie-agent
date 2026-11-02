@@ -77,7 +77,11 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
     let status = move || onboarding.status.get();
     let refusal = move || {
         status().and_then(|status| {
-            finish_refusal(&status, default_choice.with(|choice| !choice.is_empty()))
+            finish_refusal(
+                &status,
+                default_choice.with(|choice| !choice.is_empty()),
+                false,
+            )
         })
     };
     let finish = move || {
@@ -95,6 +99,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
             default_model_list: list(default_choice.get_untracked()),
             small_model_list: list(small_choice.get_untracked()),
             utility_model_list: list(utility_choice.get_untracked()),
+            ..Default::default()
         });
     };
     view! {

@@ -1,0 +1,165 @@
+{
+  "$defs": {
+    "AcpCheckStage": {
+      "description": "How far an `acp.check` got. A value this build does not know reads as\n`unknown`.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "declared",
+          "description": "The runtime does not declare the agent, or is away.",
+          "type": "string"
+        },
+        {
+          "const": "start",
+          "description": "Starting the agent and its `initialize`.",
+          "type": "string"
+        },
+        {
+          "const": "session",
+          "description": "`session/new`, where an agent that is not logged in fails.",
+          "type": "string"
+        },
+        {
+          "const": "ready",
+          "description": "Everything worked.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "AcpConfigOption": {
+      "description": "One config option an ACP agent offers in a session, such as its model,\nmode, or reasoning effort. An agent that offers modes but no mode option\nis shown as an option `mode` of category `mode`.",
+      "properties": {
+        "category": {
+          "description": "The agent's label for what the option is, such as `model`, `mode`,\nor `thought_level`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_value": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AcpConfigOptionKind",
+          "description": "The option's control: a select (the default, left out) or a boolean\n(client protocol 1.23.0)."
+        },
+        "name": {
+          "type": "string"
+        },
+        "values": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AcpConfigValue"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "current_value"
+      ],
+      "type": "object"
+    },
+    "AcpConfigOptionKind": {
+      "description": "The control an [`AcpConfigOption`] is (client protocol 1.23.0). An\nunknown kind reads as a select, whose `values` a client lists.",
+      "oneOf": [
+        {
+          "const": "select",
+          "description": "One of `values`.",
+          "type": "string"
+        },
+        {
+          "const": "boolean",
+          "description": "On or off: `current_value` is `true` or `false`, and `values`\nlists both (`true`, named On, and `false`, named Off), so a\nclient that reads every option as a select can still set it.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "AcpConfigValue": {
+      "description": "One value an [`AcpConfigOption`] can take.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What an `acp.check` found.",
+  "properties": {
+    "agent_name": {
+      "description": "The agent's name and version, as its `initialize` gave them.",
+      "maxLength": 256,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "agent_version": {
+      "maxLength": 128,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error": {
+      "maxLength": 4096,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "options": {
+      "description": "The options a new session of it starts with, such as its models.",
+      "items": {
+        "$ref": "#/$defs/AcpConfigOption"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "stage": {
+      "$ref": "#/$defs/AcpCheckStage",
+      "description": "The stage it reached: `ready` when `ok`, else the one that failed."
+    }
+  },
+  "required": [
+    "ok",
+    "stage"
+  ],
+  "title": "AcpCheckResult",
+  "type": "object"
+}

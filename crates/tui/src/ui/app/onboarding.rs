@@ -327,7 +327,7 @@ impl App {
         if self.onboarding.running {
             return Some("Setting up…".into());
         }
-        finish_refusal(status, !self.onboarding.default_choice.is_empty())
+        finish_refusal(status, !self.onboarding.default_choice.is_empty(), false)
     }
 
     fn finish_onboarding(&mut self) {
@@ -349,6 +349,7 @@ impl App {
             default_model_list: list(ModelSlot::Default),
             small_model_list: list(ModelSlot::Small),
             utility_model_list: list(ModelSlot::Utility),
+            ..Default::default()
         };
         self.onboarding.running = true;
         self.onboarding.error = None;
@@ -883,5 +884,6 @@ pub(in crate::ui) fn sample_status(missing: &[OnboardingRequirement]) -> Onboard
         default_model_list: None,
         small_model_list: None,
         utility_model_list: None,
+        ..Default::default()
     }
 }

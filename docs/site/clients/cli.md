@@ -238,12 +238,21 @@ macOS, `start` on Windows, `xdg-open` elsewhere). See [Web](web.md).
 cookie onboard [--yes] [--default-model <KEY[:VARIANT]>]...
                [--small-model <KEY[:VARIANT]|FIELD>]...
                [--utility-model <KEY[:VARIANT]|FIELD>]...
+               [--acp <PRESET|other>] [--acp-where <every|local>]
+               [--acp-id <ID>] [--acp-command <COMMAND>]
+               [--acp-env <KEY=VALUE>]... [--acp-check]
+               [--mcp <ID,...>] [--mcp-runtime <RUNTIME>]
+               [--default-agent <AGENT>]
                [--url <URL>] [--token <TOKEN>]
 ```
 
 Sets up the daemon that `--url` and `--token` name, here or on another
 machine, through its onboarding API; `cookie onboard` writes nothing itself.
-The steps, as numbered questions:
+It first asks how agents run: on **model providers** you connect (the
+steps below), on an **ACP agent** with its own login (Claude Code, Codex,
+or another), or both. The daemon is set up by either.
+
+The models path's steps, as numbered questions:
 
 1. **Provider**: connects one, as [`cookie connect`](#cookie-connect) does,
    when none is connected; otherwise offers to connect another.
@@ -272,6 +281,26 @@ repeated for a fallback list in order; `--yes` answers the rest with their defau
 default model or connect a provider. Without `--yes` it needs an
 interactive terminal. Running it again on a set-up daemon shows the current
 provider and models. See [Getting started](../quickstart.md).
+
+The ACP path links an [ACP agent](../extend/acp-agents.md): a preset (the
+daemon lists the ones its official agents carry, such as Claude Code and
+Codex, with what each machine needs) or another agent's ID and command line,
+and where it runs, on every machine or on the daemon's machine only. It is
+declared in `config.toml` and follows the official `_acp`
+[template](../extend/agents.md#templates). The agent's harness must be
+installed and logged in on each machine that runs it; cookie runs no login.
+Then it offers to start the agent once, to check it works (`--acp-check`
+without asking). With an ACP agent, the models are optional.
+
+Last, an optional **Tools** step adds MCP servers that need no login, such
+as web search, documentation, and a browser, from the daemon's presets; one
+that runs a program, such as Playwright, runs on `--mcp-runtime` (the
+daemon's machine by default). It also offers to start new sessions with the
+linked ACP agent (`[agents] default`).
+
+`--acp`, `--acp-where`, `--acp-id`, `--acp-command`, `--acp-env`, `--mcp`,
+`--mcp-runtime`, and `--default-agent` answer those questions; `--acp-where`
+defaults to `local`.
 
 ### `cookie connect`
 

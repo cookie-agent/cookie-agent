@@ -1366,8 +1366,12 @@ impl Engine {
             current_models.runtime_revision().clone(),
             &published_runtime.revisions,
         )?;
-        let initial_onboarding =
-            official::onboarding::onboarding_state(&options.config, &published_runtime.models);
+        let initial_onboarding = official::onboarding::onboarding_state(
+            &options.config,
+            &published_runtime.models,
+            &BTreeMap::new(),
+            Arc::default(),
+        );
         let engine = Self {
             inner: Arc::new(Inner {
                 started_config: Arc::new(options.config.clone()),

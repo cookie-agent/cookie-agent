@@ -1792,6 +1792,27 @@ impl RuntimeRegistry {
             .collect()
     }
 
+    /// Every registered runtime, and whether a session can use its ACP
+    /// agents now: it is connected, or the daemon starts it on demand.
+    pub(crate) fn acp_availability(&self) -> BTreeMap<String, bool> {
+        let templates = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        templates
+            .into_iter()
+            .map(|template| {
+                (
+                    template.runtime_id().to_owned(),
+                    template.acp_agents().available,
+                )
+            })
+            .collect()
+    }
+
     /// Runtime `runtime_id`'s connection, for its ACP agents.
     pub(crate) async fn agent_connection(&self, runtime_id: &str) -> Result<RuntimeLink, String> {
         let template = self

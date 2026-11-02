@@ -185,6 +185,7 @@ mod tests {
             default_model_list: None,
             small_model_list: None,
             utility_model_list: None,
+            ..Default::default()
         }
     }
 

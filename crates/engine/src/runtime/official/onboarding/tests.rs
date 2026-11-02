@@ -34,6 +34,7 @@ fn ready_request() -> OnboardingRequest {
         ),
         small_model: None,
         utility_model: Some(serde_json::json!("custom.test/z-model")),
+        ..OnboardingRequest::default()
     }
 }
 
@@ -156,6 +157,7 @@ async fn a_default_model_list_is_ready_when_any_of_its_models_is_available() {
             ])),
             small_model: Some(serde_json::json!("${default_model}")),
             utility_model: None,
+            ..OnboardingRequest::default()
         })
         .await
         .expect("a later model is available");
@@ -240,6 +242,134 @@ async fn a_run_fetches_the_official_agents_and_sets_the_models() {
             .and_then(|field| field.first.as_ref())
             .map(|(model, _)| model.to_string()),
         Some("custom.test/z-model".into())
+    );
+    fixture.engine.shutdown().await;
+}
+
+/// The `config.toml` of a fixture without providers: only what `extra`
+/// says.
+fn no_provider_fixture(extra: &str) -> Fixture {
+    let fixture = fixture();
+    let config = root(&fixture).join("config.toml");
+    write_private_test_file(&config, extra);
+    fixture
+}
+
+#[tokio::test]
+async fn an_acp_agent_alone_sets_the_daemon_up() {
+    let fixture = no_provider_fixture("");
+    fixture.engine.reload_configuration().await.expect("reload");
+    let state = fixture.engine.onboarding_state();
+    assert!(!state.ready());
+    assert!(!state.models_complete());
+    assert!(!state.acp_complete());
+    assert_eq!(
+        state.models_missing,
+        [
+            OnboardingRequirement::Provider,
+            OnboardingRequirement::DefaultModel
+        ]
+    );
+
+    // An ACP agent on the daemon's own machine completes the ACP path, and
+    // what only the models path needs is no longer missing.
+    write_private_test_file(
+        &root(&fixture).join("config.toml"),
+        "[runtimes.local.acp.agents.claude]\ncommand = [\"npx\", \"-y\", \"claude-agent-acp\"]\nenv = { TOKEN = \"secret\" }\n",
+    );
+    fixture.engine.reload_configuration().await.expect("reload");
+    let state = fixture.engine.onboarding_state();
+    assert!(state.acp_complete(), "{state:?}");
+    assert!(state.ready(), "{state:?}");
+    assert_eq!(state.acp_agents.len(), 1);
+    let claude = &state.acp_agents[0];
+    assert_eq!(claude.id.as_str(), "claude");
+    assert_eq!(claude.runtime.as_ref().map(|id| id.as_str()), Some("local"));
+    assert_eq!(claude.env_keys, ["TOKEN"], "names, never values");
+
+    // Turned off, it no longer counts.
+    write_private_test_file(
+        &root(&fixture).join("config.toml"),
+        "[runtimes.local.acp.agents.claude]\ncommand = [\"npx\"]\nenabled = false\n",
+    );
+    fixture.engine.reload_configuration().await.expect("reload");
+    assert!(!fixture.engine.onboarding_state().ready());
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_run_declares_acp_agents_adds_mcp_servers_and_sets_the_default_agent() {
+    let fixture = no_provider_fixture("");
+    official_agents(&fixture).await;
+    fixture.engine.reload_configuration().await.expect("reload");
+    let outcome = fixture
+        .engine
+        .run_onboarding(OnboardingRequest {
+            acp_agents: vec![super::OnboardingAcpRequest {
+                id: "claude".parse().unwrap(),
+                runtime: Some("local".parse().unwrap()),
+                command: vec!["npx".into(), "-y".into(), "claude-agent-acp".into()],
+                env: Default::default(),
+                description: Some("Claude Code".into()),
+                model: Some("opus".into()),
+                effort: Some("high".into()),
+            }],
+            mcp_servers: vec![super::OnboardingMcpRequest {
+                name: "exa".into(),
+                runtime: None,
+                server: serde_json::json!({"url": "https://mcp.exa.ai/mcp"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            }],
+            default_agent: Some("claude".parse().unwrap()),
+            ..OnboardingRequest::default()
+        })
+        .await
+        .expect("set up");
+    assert!(outcome.state.ready(), "{:?}", outcome.state);
+    assert_eq!(
+        outcome.settings,
+        [
+            "runtimes.local.acp.agents.claude",
+            "agents/claude.md",
+            "mcp.servers.exa",
+            "agents.default"
+        ]
+    );
+    let text = std::fs::read_to_string(root(&fixture).join("config.toml")).unwrap();
+    assert!(
+        text.contains("[runtimes.local.acp.agents.claude]"),
+        "{text}"
+    );
+    assert!(text.contains("[mcp.servers.exa]"), "{text}");
+    assert!(text.contains("default = \"claude\""), "{text}");
+    let document = std::fs::read_to_string(root(&fixture).join("agents/claude.md")).unwrap();
+    assert!(
+        document.contains("inherit: ../official_agents/_acp.md"),
+        "{document}"
+    );
+    assert!(document.contains("\"opus\""), "{document}");
+    assert_eq!(outcome.state.mcp_servers, [("exa".to_owned(), None)]);
+
+    // A server name already taken there is refused, and nothing written.
+    let refused = fixture
+        .engine
+        .run_onboarding(OnboardingRequest {
+            mcp_servers: vec![super::OnboardingMcpRequest {
+                name: "exa".into(),
+                runtime: None,
+                server: serde_json::json!({"url": "https://mcp.exa.ai/mcp"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            }],
+            ..OnboardingRequest::default()
+        })
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::ConfigChangeRefused(ref reason)) if reason.contains("already configured")),
+        "{refused:?}"
     );
     fixture.engine.shutdown().await;
 }

@@ -1,5 +1,71 @@
 {
   "$defs": {
+    "OnboardingAcpAgentInput": {
+      "additionalProperties": false,
+      "description": "An ACP agent `onboarding.run` declares (client protocol 1.74.0).",
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        },
+        "description": {
+          "maxLength": 512,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effort": {
+          "description": "A value of the agent's effort option, beside `model`.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "model": {
+          "description": "A value of the agent's model option the agent starts its sessions\nwith, written as the `models` of an `agents/<id>.md` that inherits\nthe `_acp` template; skipped when that document exists.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime": {
+          "description": "The runtime whose table declares it; `[acp.agents]`, every runtime,\nwhen absent.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "command"
+      ],
+      "type": "object"
+    },
     "OnboardingKitSource": {
       "description": "Where the starter kit comes from.",
       "oneOf": [
@@ -39,6 +105,37 @@
           "type": "object"
         }
       ]
+    },
+    "OnboardingMcpServerInput": {
+      "additionalProperties": false,
+      "description": "An MCP server `onboarding.run` adds (client protocol 1.74.0).",
+      "properties": {
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "runtime": {
+          "description": "The runtime whose table holds it; `[mcp.servers]` when absent.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server": {
+          "additionalProperties": true,
+          "description": "The server's table, as `config.toml` takes it.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "server"
+      ],
+      "type": "object"
     },
     "OnboardingModelEntry": {
       "description": "One entry of a model field's fallback list (client protocol 1.69.0):\nexactly one of `model`, a model key, and `field`, another model field\nwhose models the entry stands for. `variant` absent means the model's\ndefault variant; beside `field`, it applies to each of that field's\nmodels that has no variant of its own and has a variant of that name\n(`docs/site/specs/model-fallback-lists.md`).",
@@ -129,6 +226,27 @@
   "additionalProperties": false,
   "description": "`onboarding.run`: sets the model fields given and installs the kit when\nasked, as one change. Refused with `onboarding_incomplete`, writing\nnothing, when the daemon would not be set up afterwards.",
   "properties": {
+    "acp_agents": {
+      "description": "ACP agents to declare (client protocol 1.74.0); a declaration of the\nsame ID at the same place is replaced.",
+      "items": {
+        "$ref": "#/$defs/OnboardingAcpAgentInput"
+      },
+      "maxItems": 64,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "default_agent": {
+      "description": "`[agents] default` to set (client protocol 1.74.0).",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "default_model": {
       "anyOf": [
         {
@@ -153,6 +271,17 @@
     },
     "install_kit": {
       "type": "boolean"
+    },
+    "mcp_servers": {
+      "description": "MCP servers to add (client protocol 1.74.0); a name already taken\nat that place is refused.",
+      "items": {
+        "$ref": "#/$defs/OnboardingMcpServerInput"
+      },
+      "maxItems": 64,
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "small_model": {
       "anyOf": [

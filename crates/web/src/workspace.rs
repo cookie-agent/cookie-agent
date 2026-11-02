@@ -954,7 +954,7 @@ impl Workspace {
                 return;
             }
             ClientDelivery::OnboardingChanged(status) => {
-                self.apply_onboarding_change(status.clone());
+                self.apply_onboarding_change((**status).clone());
                 return;
             }
             ClientDelivery::PluginEvent(event) => {

@@ -818,6 +818,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::OnboardingRunParams,
     ) -> Result<cookie_agent_protocol::OnboardingRunResult, ServerFault>;
+    /// Starts a declared ACP agent and opens a session to see it works.
+    async fn check_acp_agent(
+        &self,
+        params: cookie_agent_protocol::AcpCheckParams,
+    ) -> Result<cookie_agent_protocol::AcpCheckResult, ServerFault>;
     /// Moves an executing call to the background.
     async fn background_tool(
         &self,
@@ -1860,6 +1865,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::ONBOARDING_RUN_METHOD => {
             value(server.run_onboarding(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ACP_CHECK_METHOD => {
+            value(server.check_acp_agent(decode(params)?).await?)
         }
         cookie_agent_protocol::RUN_TOOL_BACKGROUND_METHOD => {
             value(server.background_tool(decode(params)?, context).await?)
