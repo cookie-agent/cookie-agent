@@ -31,8 +31,9 @@ residency janitor (`crates/engine/src/runtime/sessions/residency.rs`).
 
 **Two problems:**
 
-1. **ACP sessions are closed too early.** Claude Code compacts its own
-   context on its own as its one-hour cache nears expiry. Cookie closes the
+1. **ACP sessions are closed too early.** Interactive Claude Code compacts
+   its own context as its one-hour cache nears expiry. Over ACP it does not
+   (section 11.1). Cookie closes the
    ACP session after 30 idle minutes, before that can happen. The next turn
    resumes a session that never compacted.
 2. **Idle sessions waiting on a scheduled job pay a full cache write.** Take
@@ -125,6 +126,8 @@ Section 10 records the answers to the remaining questions.
   The Claude Code preset leaves `cache_ttl` unset, *if* the phase 0 probe
   confirms that Claude Code compacts on its own while idle. If the probe
   shows it does not, the preset sets `cache_ttl = "1h"` instead.
+  *Phase 0 showed it does not (section 11.1), so the preset sets
+  `cache_ttl = "1h"`.*
 - **D7. The checkpoint records why it was made.** Clients show
   "Compacted before the cache expired · next scheduled prompt 03:00".
   Section 4.4.
@@ -209,6 +212,10 @@ hold:
    committed since the latest turn.
 6. **This idle period has not had a try yet.** A failed attempt is not
    repeated until the session runs again.
+7. **The cache is still warm.** It is not yet `expiry` when the summary
+   request would start. A timer that wakes late, after a suspend or a busy
+   daemon, compacts nothing, as Claude Code's own idle compactor does
+   (section 11.1).
 
 **Why the default token floor is 40k.** With context `C`, a summary of output `O`, and a
 compacted context `C'` of about 25k tokens (summary plus the 16k recent
@@ -422,3 +429,61 @@ The tests use explicit values, never the defaults.
   - it does not mark the session unread;
   - it sends no push notification.
 - **Phase 0:** the probe runs before phase 1, and its result settles D6.
+
+## 11. Implementation notes
+
+### 11.1 Phase 0: Claude Code's idle compaction (2026-11-02)
+
+**What was checked.** The JavaScript bundled in the Claude Code binary that
+`@agentclientprotocol/claude-agent-acp` 0.100.0 runs: the
+`@anthropic-ai/claude-agent-sdk-linux-x64` binary of SDK 0.3.316, the same
+2.1.3xx line as the installed CLI. This was a reading of the code. No live
+run was made: the code gates the feature by an environment check (below),
+so a live run could only confirm the gate.
+
+**There are two idle compactors.** Both are on by default, and the
+`idleCompaction` setting (`false` in `settings.json`) turns both off. Both
+also need auto-compact on.
+
+- **The interactive REPL's** (`tengu_idle_compact_fired`):
+  - **Only on a one-hour TTL:** the last request must have used `ttl: "1h"`.
+  - **Timing:** it fires at 90% of the cache's life,
+    `lastActivityAt + 0.9 × (expiresAt − lastActivityAt)`, which is 54
+    minutes for a one-hour cache.
+  - **Floor:** `max(100k, CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS ?? 200k)`
+    context tokens.
+  - **It refuses when:**
+    - the cache is no longer warm, or the timer runs more than 60 s late;
+    - the prefix changed;
+    - a newer request went out;
+    - the account is near its usage limit;
+    - the session is busy, or held by another process;
+    - the transcript has moved on;
+    - the user was present recently.
+  - **The note it leaves:** "Compacted while idle, before the prompt cache
+    expired".
+- **The headless one** (`SleepCompactor`, `tengu_sleep_compact_fired`) is
+  the one in the stream-json loop the SDK drives. It enqueues `/compact`
+  as a meta prompt:
+  - **Timing:** at 90% of the TTL, as above.
+  - **Floor:** `max(60k, CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS ?? 150k)`.
+  - **When it is wired in:** only when `CLAUDE_CODE_SLEEP_COMPACT` is set
+    *and* `isSleepCompactionHost()` holds, which needs `CLAUDE_CODE_REMOTE`.
+    That makes it a feature of Claude Code's cloud sessions.
+  - **Neither the SDK nor the ACP adapter sets these variables.**
+
+**Result.** Under cookie's ACP agent, Claude Code never compacts on its own
+while idle. Setting the two variables ourselves would also switch on
+`CLAUDE_CODE_REMOTE`'s other behaviour, so we do not. Per D6, the Claude
+Code preset declares `cache_ttl = "1h"`, and cookie drives `/compact`
+before expiry (section 4.4).
+
+**Their rule, for comparison:**
+
+| | Claude Code | This spec |
+|---|---|---|
+| When it fires | 90% of the TTL | `min(5m, ttl / 5)` before expiry, which is 91.7% of a one-hour TTL |
+| Which TTLs | One hour only | Any TTL |
+| Floor | 150k to 200k tokens | `min_tokens`, default 40k |
+| When it gives up | The timer is more than 60 s late, or the cache has lapsed | Section 4.2 |
+
