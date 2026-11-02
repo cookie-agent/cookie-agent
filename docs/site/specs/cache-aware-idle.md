@@ -163,7 +163,7 @@ For each session, cookie keeps two values:
 | Anthropic, Bedrock | The resolved rolling marker: `5m` or `1h`. If the marker is `off`, the session has no clock and is skipped. |
 | OpenAI and Azure Responses with the GPT-5.6 controls | The controls' `ttl`: `30m` or `12h`. |
 | OpenAI with `prompt_cache_retention = "24h"` | `24h`. |
-| ChatGPT sign-in (the `chatgpt` provider) | No expiry (section 11.2): the session has no clock and is skipped. A model override's `cache_ttl` replaces it, should the claim stop holding. |
+| ChatGPT sign-in (the `chatgpt` provider) | `30m`, the documented GPT-5.6+ default. The announced "forever" for Codex sign-ins is unconfirmed (section 11.2). A model override's `cache_ttl` replaces it. |
 | Any other binding (OpenAI's in-memory retention, Gemini's implicit caching, OpenAI-compatible endpoints, DeepSeek, …) | The model override's `cache_ttl` if set, else `fallback_ttl`. |
 
 A `cache_ttl` of `0s` or less, in a model override or an ACP agent's
@@ -496,7 +496,7 @@ backend with Codex's sign-in token was not made.
 - **The Codex preset** leaves `cache_ttl` unset, so cookie never compacts
   Codex sessions (D6).
 - **The `chatgpt` provider**, which uses the same backend and sign-in,
-  counts as never expiring (section 4.1's table).
-- **If the claim stops holding,** a model override's `cache_ttl` replaces
-  it.
+  assumes `30m`, to be safe *(user decision of 2026-11-02)*. The announced
+  "forever" is not relied on until it is documented. A model override's
+  `cache_ttl` replaces it, `0s` for no expiry.
 
