@@ -366,6 +366,15 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     // A Shift+click ranges over these rows.
     workspace.picking.shown.set_value(Some(listed));
     on_cleanup(move || workspace.picking.shown.set_value(None));
+    // The filter left every section empty: the list says so above them,
+    // with the way to change it. A memo of its own, so the sections, which
+    // change as a session opens, never draw the list anew: that would lose
+    // the list's scroll, which the browser keeps on a row it shows.
+    let offer = Memo::new(move |_| {
+        !searching.get()
+            && projects::sections_hold_none(sections)
+            && (workspace.filter_changes() > 0 || workspace.has_older_sessions.get())
+    });
     view! {
         // `relative`: a desktop's filter opens over the list, under its
         // button.
@@ -378,13 +387,8 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         <nav class="flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto px-2 pb-3" aria-label="Sessions" node_ref=list>
             {move || {
                 if workspace.has_projects.get() {
-                    // The filter left every section empty: say so above
-                    // them, with the way to change it.
-                    let offer = !searching.get()
-                        && projects::sections_hold_none(sections)
-                        && (workspace.filter_changes() > 0 || workspace.has_older_sessions.get());
                     return view! {
-                        {offer.then(|| filter_offer(workspace, icondata::LuListFilter, "No sessions in this time range or filter."))}
+                        {move || offer.get().then(|| filter_offer(workspace, icondata::LuListFilter, "No sessions in this time range or filter."))}
                         {projects::project_list(rows, sections, searching, headers)}
                     }
                     .into_any();
