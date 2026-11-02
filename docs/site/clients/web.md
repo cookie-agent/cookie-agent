@@ -727,11 +727,15 @@ was updated; when it is deleted, they say so and no longer open. A link of
 the form `#session=<id>&asset=<handle>`, which the TUI prints, opens the
 session on the page's own daemon and opens the asset as its card does.
 
-**The Assets view** lists the assets kept for a project (or for sessions
-in no project), newest first, with their total size: filter them by kind,
-search by title or file name, open one to see it, rename, download, or
-delete it (after asking). Choose the project at its top; it opens on the
-open session's. A session's own assets are not listed there.
+**The Assets view** lists every project's and every session's assets,
+newest first, with the count and size of what it shows. Its filter (the
+funnel, with a dot while it narrows the list) chooses a project, no
+project, or all, and a level: a session's own assets, those kept for a
+project, or both. Chips by kind and a search of titles and file names
+narrow further; the list shows 100 rows at a time, with *Show more*. Each
+row says where the asset lives (its project, and a session's own its
+session, a link to it) and who saved it; open one as a figure, rename,
+download, or delete it (after asking).
 
 ## Managing the daemon
 

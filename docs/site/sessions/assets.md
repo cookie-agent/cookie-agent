@@ -43,7 +43,7 @@ deleted asset showed, it says it was deleted.
 ~/.cookie-agent/
   projects/<project-id>/assets/     a project's assets
   assets/                           the assets of sessions in no project
-  sessions/<month>/<root-id>/assets/  a session tree's own
+  session-assets/<root-id>/          a session tree's own
 ```
 
 ## Permissions
@@ -80,10 +80,13 @@ from, so your `read` rules decide which files can become assets. See
 - **Handles.** A handle the agent names in its reply is a chip that opens
   the asset, and every card can copy its handle, to give the asset back
   to an agent.
-- **The Assets view** on the rail lists a project's assets (or those of
-  sessions in no project), filtered by kind and searched by title. Each
-  opens to show it, and can be renamed, downloaded, or deleted. A
-  session's own assets are not listed there.
+- **The Assets view** on the rail lists every project's and every
+  session's assets, newest first. Its filter narrows them to a project (or
+  no project) and to a level: a session's own, or those kept for a
+  project. Chips by kind and a search of titles and file names narrow
+  further. Each row says where the asset lives, a session's own naming
+  its session, and opens to show it, or is renamed, downloaded, or
+  deleted.
 
 See [the web client](../clients/web.md#assets).
 

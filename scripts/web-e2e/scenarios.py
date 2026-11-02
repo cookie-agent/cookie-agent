@@ -1395,20 +1395,50 @@ def asset_figures(browser):
 
 
 def assets_tab(browser):
-    """The Assets tab lists the assets kept for the project (here the
-    shared store of sessions in no project), not a session's own; filters
-    and searches them, opens one as a figure, renames it, and deletes it
-    after asking."""
+    """The Assets tab lists every project's and every session's assets: a
+    filter narrows them to a project or none and to a level, session or
+    project, and kinds and a search narrow further; a session's own name
+    their session. One opens as a figure, is renamed, and is deleted after
+    asking."""
     new_session(browser)
     send(browser, "save a project report")
     idle(browser, "the saving call")
+    # And one the session keeps to itself.
+    send(browser, "show a report")
+    idle(browser, "the showing call")
     view(browser, "assets")
     row = "#assets-page [data-asset-row]"
-    browser.wait("the project's asset", lambda: "Shared report" in browser.text("#assets-page"), timeout=60)
-    # Only what was kept for the project: a session's own assets stay out.
     titles = lambda: browser.script(
         "return [...document.querySelectorAll('#assets-page [data-asset-row-title]')].map((e) => e.innerText)"
     )
+    places = lambda: browser.script(
+        "return [...document.querySelectorAll('#assets-page [data-asset-place]')].map((e) => e.dataset.assetPlace)"
+    )
+    # Both levels at first.
+    browser.wait(
+        "the project's and the session's assets",
+        lambda: "Shared report" in titles() and "session" in places(),
+        timeout=60,
+    )
+    assert count(browser, "#assets-page [data-filter-dot]") == 0
+    assert count(browser, "#assets-page [data-asset-tree]") >= 1, "a session's own names its session"
+    browser.shot("assets-tab-all")
+    # Narrowed to a level by the filter.
+    browser.click("#assets-filter-toggle")
+    browser.wait("the filter", lambda: count(browser, "#assets-filter") == 1)
+    browser.click("#assets-filter [data-asset-filter=level][data-value='Session']")
+    browser.wait(
+        "the sessions' own",
+        lambda: titles() and "Shared report" not in titles() and set(places()) == {"session"},
+    )
+    assert count(browser, "#assets-page [data-filter-dot]") == 1
+    browser.click("#assets-filter [data-asset-filter=project][data-value='No project']")
+    browser.wait("no project's sessions' own", lambda: titles() and set(places()) == {"session"})
+    browser.click("#assets-filter [data-asset-filter=level][data-value='Project']")
+    browser.wait("the kept asset", lambda: titles() == ["Shared report"])
+    browser.shot("assets-tab-filter")
+    browser.click("#assets-filter-toggle")
+    browser.wait("the closed filter", lambda: count(browser, "#assets-filter") == 0)
     assert titles() == ["Shared report"], titles()
     assert "1 asset" in browser.text("[data-assets-total]")
     browser.click("#assets-page [data-asset-kind='Images']")

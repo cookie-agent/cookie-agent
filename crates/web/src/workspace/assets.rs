@@ -1,59 +1,67 @@
 //! The Assets tab's reads and changes (`docs/site/specs/assets.md` section
-//! 8.3): a store's assets (`assets.list`), renaming (`asset.rename`), and
-//! deleting (`asset.delete`). `assets.changed` reads the listing again.
+//! 8.3): the assets its filter lists (`assets.search`), renaming
+//! (`asset.rename`), and deleting (`asset.delete`). `assets.changed` lists
+//! them again, a moment after the last of a burst.
 
+use cookie_agent_client_state::assets::AssetFilter;
 use cookie_agent_protocol::{AssetId, AssetRenameParams, AssetStore};
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
 
-impl Workspace {
-    /// The store the tab shows first: the open session's project's, or
-    /// the shared store of sessions in no project.
-    pub fn default_asset_store(self) -> AssetStore {
-        let project = self.selected.get_untracked().and_then(|selected| {
-            self.sessions.with_untracked(|sessions| {
-                sessions
-                    .iter()
-                    .find(|meta| meta.session_id == selected)
-                    .and_then(|meta| meta.project.clone())
-            })
-        });
-        match project {
-            Some(project) => AssetStore::Project { project },
-            None => AssetStore::Shared,
-        }
-    }
+/// How many rows the tab shows at first, and how many more each *Show
+/// more* adds.
+pub const ASSET_ROWS: usize = 100;
 
-    /// Opens the tab: on the open session's project the first time.
+/// How long the tab waits after an `assets.changed` before it lists again,
+/// so a burst of writes lists once.
+const CHANGED_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
+impl Workspace {
+    /// Opens the tab, listing its assets.
     pub(super) fn open_assets(self) {
-        if self.asset_store.get_untracked().is_none() {
-            self.asset_store.set(Some(self.default_asset_store()));
-        }
+        self.assets_opened.set(true);
         self.poll_assets();
     }
 
-    /// Shows `store`'s assets.
-    pub fn choose_asset_store(self, store: AssetStore) {
-        self.asset_store.set(Some(store));
+    /// Lists what `filter` chooses.
+    pub fn choose_asset_filter(self, filter: AssetFilter) {
+        if self.asset_filter.get_untracked() == filter {
+            return;
+        }
+        self.asset_filter.set(filter);
         self.asset_list.set(None);
+        self.asset_rows.set(ASSET_ROWS);
         self.asset_open.set(None);
         self.asset_renaming.set(None);
         self.asset_deleting.set(None);
         self.poll_assets();
     }
 
-    /// Reads the shown store's assets.
+    /// Lists the tab's assets again once no other `assets.changed` came
+    /// for a moment.
+    pub(super) fn assets_changed_later(self) {
+        let mark = self.assets_changed_at.get_value().wrapping_add(1);
+        self.assets_changed_at.set_value(mark);
+        spawn_local(async move {
+            gloo_timers::future::sleep(CHANGED_SETTLE).await;
+            if self.assets_changed_at.try_get_value() == Some(mark) {
+                self.poll_assets();
+            }
+        });
+    }
+
+    /// Reads the assets the tab's filter lists.
     pub(super) fn poll_assets(self) {
         let read = self.begin_read(|reads| &mut reads.assets);
-        let (Some(client), Some(store)) = (self.client(), self.asset_store.get_untracked()) else {
+        let Some(client) = self.client() else {
             return;
         };
+        let params = self.asset_filter.get_untracked().params();
         spawn_local(async move {
             let result = client
-                .list_assets(store)
+                .search_assets(params)
                 .await
-                .map(|result| result.assets)
                 .map_err(|error| crate::errors::describe_full(&error));
             if self.read_is_current(|reads| &mut reads.assets, read) {
                 self.asset_list.set(Some(result));

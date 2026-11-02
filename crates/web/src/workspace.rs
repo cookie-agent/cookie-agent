@@ -35,6 +35,7 @@ use crate::{browser, connect::EVENT_LEVEL_KEY};
 
 mod acp;
 mod assets;
+pub use assets::ASSET_ROWS;
 mod attachments;
 mod background;
 mod cards;
@@ -244,10 +245,17 @@ pub struct Workspace {
     pub skill_list_session: RwSignal<bool>,
     /// The Skills view's search.
     pub skill_list_query: RwSignal<String>,
-    /// The Assets tab's store, once it was opened.
-    pub asset_store: RwSignal<Option<cookie_agent_protocol::AssetStore>>,
-    /// The Assets tab's listing.
-    pub asset_list: RwSignal<Option<Result<Vec<cookie_agent_protocol::Asset>, String>>>,
+    /// What the Assets tab lists, whether it was opened, and whether its
+    /// filter is open.
+    pub asset_filter: RwSignal<cookie_agent_client_state::assets::AssetFilter>,
+    pub assets_opened: RwSignal<bool>,
+    pub asset_filter_open: RwSignal<bool>,
+    /// The Assets tab's listing, and how many of its rows it shows.
+    pub asset_list: RwSignal<Option<Result<cookie_agent_protocol::AssetsSearchResult, String>>>,
+    pub asset_rows: RwSignal<usize>,
+    /// The latest `assets.changed`, which the tab waits a moment after to
+    /// list again, once for a burst.
+    pub assets_changed_at: StoredValue<u64>,
     /// The Assets tab's search, and the kind it shows.
     pub asset_query: RwSignal<String>,
     pub asset_kind: RwSignal<Option<cookie_agent_client_state::assets::AssetKind>>,
@@ -554,8 +562,12 @@ impl Workspace {
             skill_list: RwSignal::new(None),
             skill_list_session: RwSignal::new(false),
             skill_list_query: RwSignal::new(String::new()),
-            asset_store: RwSignal::new(None),
+            asset_filter: RwSignal::new(Default::default()),
+            assets_opened: RwSignal::new(false),
+            asset_filter_open: RwSignal::new(false),
             asset_list: RwSignal::new(None),
+            asset_rows: RwSignal::new(ASSET_ROWS),
+            assets_changed_at: StoredValue::new(0),
             asset_query: RwSignal::new(String::new()),
             asset_kind: RwSignal::new(None),
             asset_open: RwSignal::new(None),
@@ -962,8 +974,8 @@ impl Workspace {
             }
             ClientDelivery::AssetsChanged(_) => {
                 crate::assets::refresh(self);
-                if self.asset_store.get_untracked().is_some() {
-                    self.poll_assets();
+                if self.assets_opened.get_untracked() {
+                    self.assets_changed_later();
                 }
                 return;
             }
