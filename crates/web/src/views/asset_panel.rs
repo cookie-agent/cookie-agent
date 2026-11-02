@@ -8,11 +8,10 @@ use leptos::{html, prelude::*};
 
 use crate::{assets::OpenAsset, icons::Glyph, workspace::Workspace};
 
-const BUTTON: &str = "inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+const BUTTON: &str = "inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs hover:bg-hover active:bg-press";
 const TAB: &str = "inline-flex min-h-8 items-center rounded-md border px-2 text-xs";
-const TAB_ON: &str =
-    "border-espresso bg-espresso text-cream dark:border-maple dark:bg-maple dark:text-night";
-const TAB_OFF: &str = "border-crust hover:bg-toasted dark:border-smoke dark:hover:bg-ember";
+const TAB_ON: &str = "border-fg bg-accent text-on-accent";
+const TAB_OFF: &str = "border-line-2 hover:bg-hover";
 
 /// The panel, open while `workspace.asset_panel` holds an asset. A session
 /// opened in its place closes it.
@@ -80,9 +79,9 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
     };
     let class = move || {
         if full.get() {
-            "fixed inset-0 z-50 flex flex-col bg-parchment outline-none dark:bg-char"
+            "fixed inset-0 z-50 flex flex-col bg-surface-2 outline-none"
         } else {
-            "fixed inset-0 z-40 flex flex-col bg-parchment outline-none lg:static lg:z-auto lg:w-[min(48rem,48%)] lg:shrink-0 lg:border-l lg:border-toasted dark:bg-char lg:dark:border-ember"
+            "fixed inset-0 z-40 flex flex-col bg-surface-2 outline-none lg:static lg:z-auto lg:w-[min(48rem,48%)] lg:shrink-0 lg:border-l lg:border-line"
         }
     };
     view! {
@@ -105,10 +104,10 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                 }
             }
         >
-            <div class="flex min-w-0 shrink-0 flex-wrap items-center gap-1 border-b border-toasted px-2 py-1.5 dark:border-ember">
+            <div class="flex min-w-0 shrink-0 flex-wrap items-center gap-1 border-b border-line px-2 py-1.5">
                 <span class="flex min-w-0 flex-1 flex-col px-1">
                     <span class="truncate text-sm font-bold" id="asset-panel-title">{title}</span>
-                    <span class="truncate font-mono text-[0.6875rem] text-ink select-all dark:text-sand" id="asset-panel-handle">
+                    <span class="truncate font-mono text-[0.6875rem] text-muted select-all" id="asset-panel-handle">
                         {handle}
                     </span>
                 </span>

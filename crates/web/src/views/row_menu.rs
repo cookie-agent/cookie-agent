@@ -180,7 +180,7 @@ fn menu(
     };
     view! {
         <div
-            class="fixed inset-0 z-50 compact:bg-espresso/30 compact:dark:bg-night/60"
+            class="fixed inset-0 z-50 compact:bg-scrim"
             data-row-menu-backdrop
             on:click=move |_| close(false)
             // A wheel would scroll the list from under the menu.
@@ -189,13 +189,13 @@ fn menu(
         <div
             role="menu"
             aria-label=title
-            class="fixed top-(--menu-top) right-(--menu-right) bottom-(--menu-bottom) z-50 flex min-w-48 flex-col rounded-lg border border-toasted bg-cream p-1 text-espresso shadow-lg dark:border-ember dark:bg-night dark:text-latte compact:top-auto compact:right-0 compact:bottom-0 compact:left-0 compact:min-w-0 compact:rounded-none compact:rounded-t-2xl compact:border-x-0 compact:border-b-0 compact:p-2 compact:pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+            class="fixed top-(--menu-top) right-(--menu-right) bottom-(--menu-bottom) z-50 flex min-w-48 flex-col rounded-lg border border-line bg-surface p-1 text-fg shadow-lg compact:top-auto compact:right-0 compact:bottom-0 compact:left-0 compact:min-w-0 compact:rounded-none compact:rounded-t-2xl compact:border-x-0 compact:border-b-0 compact:p-2 compact:pb-[max(0.5rem,env(safe-area-inset-bottom))]"
             style=move || place.get()
             data-row-menu-list
             node_ref=list
             on:keydown=on_keydown
         >
-            <span class="mx-auto mb-1 hidden h-1 w-10 rounded-full bg-crust compact:block dark:bg-smoke" aria-hidden="true"></span>
+            <span class="mx-auto mb-1 hidden h-1 w-10 rounded-full bg-line-2 compact:block" aria-hidden="true"></span>
             <p class="hidden truncate px-3 pt-1 pb-2 text-sm font-bold compact:block" aria-hidden="true">{heading}</p>
             {items
                 .into_iter()
@@ -205,14 +205,14 @@ fn menu(
                         <button
                             type="button"
                             role="menuitem"
-                            class="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm whitespace-nowrap hover:bg-toasted focus-visible:bg-toasted active:bg-crust dark:hover:bg-ember dark:focus-visible:bg-ember dark:active:bg-smoke compact:min-h-12"
+                            class="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm whitespace-nowrap hover:bg-hover focus-visible:bg-hover active:bg-press compact:min-h-12"
                             data-menu-item=item.id
                             on:click=move |_| {
                                 close(false);
                                 act.run(());
                             }
                         >
-                            <Glyph icon=item.icon class="w-5 justify-center text-caramel dark:text-maple" />
+                            <Glyph icon=item.icon class="w-5 justify-center text-accent" />
                             <span>{item.label}</span>
                         </button>
                     }

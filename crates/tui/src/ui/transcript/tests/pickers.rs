@@ -372,7 +372,7 @@ async fn global_out_of_chain_models_render_and_select_at_normal_and_narrow_width
 
     for (width, theme) in [
         (100, Theme::new(ThemeKind::Default, ColorLevel::TrueColor)),
-        (48, Theme::new(ThemeKind::Mono, ColorLevel::None)),
+        (48, Theme::new(ThemeKind::Default, ColorLevel::None)),
     ] {
         app.theme = theme;
         app.modal = Modal::Models;

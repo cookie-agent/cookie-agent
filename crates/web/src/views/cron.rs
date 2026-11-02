@@ -31,13 +31,14 @@ use crate::{
 };
 
 /// A select, as the form's fields.
-const SELECT: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px-2 text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const SELECT: &str = "min-h-11 w-full rounded-md border border-line-2 bg-surface px-2 text-sm hover:border-accent focus:border-accent focus:outline-none";
 
 /// A field's label above it.
 const LABEL: &str = "flex flex-col gap-1 text-sm";
 
 /// A detail that opens a session.
-const LINK: &str = "text-left font-bold text-caramel underline-offset-2 hover:underline focus-visible:underline dark:text-maple";
+const LINK: &str =
+    "text-left font-bold text-accent underline-offset-2 hover:underline focus-visible:underline";
 
 pub fn cron_page(workspace: Workspace) -> impl IntoView {
     // "in 5 minutes" moves on while the view shows.
@@ -153,7 +154,7 @@ fn job_row(
         <div
             class=move || format!(
                 "cron-job flex flex-col gap-1 rounded-lg border p-1 {}",
-                if selected.get() { "border-caramel dark:border-maple" } else { "border-toasted dark:border-ember" }
+                if selected.get() { "border-accent" } else { "border-line" }
             )
             data-cron-job=id.to_string()
             data-title=title.clone()
@@ -168,7 +169,7 @@ fn job_row(
                 <span class="flex w-full items-center gap-2">
                     <Glyph
                         icon=if enabled { icondata::FaClockSolid } else { icondata::FaClockRegular }
-                        class=if enabled { "text-caramel dark:text-maple" } else { "opacity-50" }
+                        class=if enabled { "text-accent" } else { "opacity-50" }
                     />
                     <span class="min-w-0 flex-1 truncate text-sm font-bold" data-cron-title>{title.clone()}</span>
                     <span class=STATE data-cron-state>{state}</span>
@@ -230,7 +231,7 @@ fn job_details(
                 None => detail.value.into_any(),
             };
             view! {
-                <dt class="text-xs font-bold text-ink dark:text-sand">{detail.label}</dt>
+                <dt class="text-xs font-bold text-muted">{detail.label}</dt>
                 <dd class="min-w-0 text-sm break-words" data-cron-detail=detail.label>{value}</dd>
             }
         })
@@ -260,8 +261,8 @@ fn job_details(
         <div class="flex flex-col gap-3 px-3 pb-2" data-cron-details>
             <dl class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1">{lines}</dl>
             <div class="flex flex-col gap-1">
-                <span class="text-xs font-bold text-ink dark:text-sand">"Prompt"</span>
-                <p class="rounded-md bg-toasted px-3 py-2 text-sm whitespace-pre-wrap break-words dark:bg-ember" data-cron-prompt>
+                <span class="text-xs font-bold text-muted">"Prompt"</span>
+                <p class="rounded-md bg-sunken px-3 py-2 text-sm whitespace-pre-wrap break-words" data-cron-prompt>
                     {prompt}
                 </p>
             </div>
@@ -313,7 +314,7 @@ fn job_details(
                 </div>
             </Show>
             <div class="flex flex-col gap-1" data-cron-history>
-                <span class="text-xs font-bold text-ink dark:text-sand">"History"</span>
+                <span class="text-xs font-bold text-muted">"History"</span>
                 {history}
             </div>
         </div>
@@ -468,7 +469,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                 <span class="font-bold">"Prompt"</span>
                 <textarea
                     id="cron-prompt"
-                    class="min-h-[8rem] w-full resize-y rounded-md border border-crust bg-cream p-2 text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple"
+                    class="min-h-[8rem] w-full resize-y rounded-md border border-line-2 bg-surface p-2 text-sm hover:border-accent focus:border-accent focus:outline-none"
                     prop:value=move || prompt.get()
                     on:input=move |event| prompt.set(event_target_value(&event))
                 ></textarea>
@@ -519,7 +520,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                                     type="button"
                                     id="cron-target-session"
                                     role="radio"
-                                    class=move || format!("{BUTTON} {}", if new.get() { "" } else { "bg-toasted dark:bg-ember" })
+                                    class=move || format!("{BUTTON} {}", if new.get() { "" } else { "bg-sunken" })
                                     aria-checked=move || (!new.get()).to_string()
                                     on:click=move |_| new.set(false)
                                 >
@@ -530,7 +531,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                                 type="button"
                                 id="cron-target-new"
                                 role="radio"
-                                class=move || format!("{BUTTON} {}", if new.get() { "bg-toasted dark:bg-ember" } else { "" })
+                                class=move || format!("{BUTTON} {}", if new.get() { "bg-sunken" } else { "" })
                                 aria-checked=move || new.get().to_string()
                                 on:click=move |_| new.set(true)
                             >
@@ -644,7 +645,7 @@ pub fn clock_mark(workspace: Workspace, cron: cookie_agent_protocol::SessionCron
     };
     view! {
         <span
-            class="hit-area relative inline-flex shrink-0 text-caramel opacity-80 hover:opacity-100 dark:text-maple"
+            class="hit-area relative inline-flex shrink-0 text-accent opacity-80 hover:opacity-100"
             role="link"
             tabindex="0"
             aria-label=title.clone()

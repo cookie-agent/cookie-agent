@@ -27,7 +27,7 @@ const HUES: [&str; 8] = [
 ];
 
 /// The grey of "no workspace".
-const GREY: &str = "border-crust text-ink dark:border-smoke dark:text-sand";
+const GREY: &str = "border-line-2 text-muted";
 
 /// Each hue's dot.
 const DOTS: [&str; 8] = [

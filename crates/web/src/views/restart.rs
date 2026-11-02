@@ -26,9 +26,9 @@ pub(crate) fn RestartBanner(workspace: Workspace) -> impl IntoView {
                             id="restart-banner"
                             role="status"
                             data-restarting
-                            class="flex shrink-0 items-center gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember"
+                            class="flex shrink-0 items-center gap-2 border-b border-accent bg-sunken px-3 py-2 text-sm"
                         >
-                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
+                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-accent" />
                             <span class="min-w-0 flex-1">{text}</span>
                         </div>
                     }
@@ -41,9 +41,9 @@ pub(crate) fn RestartBanner(workspace: Workspace) -> impl IntoView {
                         id="restart-banner"
                         role="region"
                         aria-label="Restart needed"
-                        class="flex shrink-0 flex-wrap items-center gap-2 border-b border-toasted bg-parchment py-1 pr-1 pl-3 text-sm dark:border-ember dark:bg-char"
+                        class="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface-2 py-1 pr-1 pl-3 text-sm"
                     >
-                        <Glyph icon=icondata::FaTriangleExclamationSolid class="text-caramel dark:text-maple" />
+                        <Glyph icon=icondata::FaTriangleExclamationSolid class="text-accent" />
                         <span class="min-w-0 flex-1 py-2" id="restart-needed">{text}</span>
                         <button
                             type="button"
@@ -70,13 +70,13 @@ pub(crate) fn RestartDialog(workspace: Workspace) -> impl IntoView {
     let close = move || workspace.restart_confirm.set(false);
     view! {
         <Show when=move || workspace.restart_confirm.get()>
-            <div class="fixed inset-0 z-40 bg-espresso/30 dark:bg-black/50" on:click=move |_| close()></div>
+            <div class="fixed inset-0 z-40 bg-scrim dark:bg-black/50" on:click=move |_| close()></div>
             <div
                 id="restart-dialog"
                 role="alertdialog"
                 aria-modal="true"
                 aria-labelledby="restart-title"
-                class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col gap-3 overflow-y-auto rounded-t-xl border border-toasted bg-cream p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-sm shadow-lg sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl dark:border-ember dark:bg-night"
+                class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col gap-3 overflow-y-auto rounded-t-xl border border-line bg-surface p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-sm shadow-lg sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
                 on:keydown=move |event| {
                     if event.key() == "Escape" {
                         close();
@@ -84,7 +84,7 @@ pub(crate) fn RestartDialog(workspace: Workspace) -> impl IntoView {
                 }
             >
                 <p id="restart-title" class="font-bold">"Restart the daemon?"</p>
-                <p class="text-ink dark:text-sand" id="restart-explanation">{move || restart_explanation(running())}</p>
+                <p class="text-muted" id="restart-explanation">{move || restart_explanation(running())}</p>
                 <div class="flex flex-col gap-2 sm:flex-row-reverse sm:flex-wrap">
                     <button
                         type="button"

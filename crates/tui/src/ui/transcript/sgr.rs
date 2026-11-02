@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn a_theme_without_colour_keeps_only_the_modifiers() {
-        let mono = Theme::new(crate::theme::ThemeKind::Mono, ColorLevel::None);
+        let mono = Theme::new(crate::theme::ThemeKind::Default, ColorLevel::None);
         assert_eq!(
             runs("\u{1b}[1;31;44;38;5;196;48;2;1;2;3mx", &mono),
             vec![(

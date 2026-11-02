@@ -244,8 +244,8 @@ fn diagnostic_wrapping_preserves_span_styles_indentation_and_graphemes() {
 fn full_diagnostic_copy_omits_narrow_headers_but_preserves_literal_tags() {
     for theme in [
         Theme::default(),
-        Theme::new(ThemeKind::Mono, ColorLevel::None),
-        Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        Theme::new(ThemeKind::Default, ColorLevel::None),
+        Theme::new(ThemeKind::Dark, ColorLevel::Ansi16),
     ] {
         for (role, header) in [
             (Role::Debug, "[D]"),

@@ -92,13 +92,7 @@ pub(crate) fn show(element: &web_sys::Element, url: &str, media_type: &str, alt:
     } else if media_type.starts_with("audio/") {
         ("audio", &[("controls", "")])
     } else {
-        (
-            "a",
-            &[
-                ("download", ""),
-                ("class", "text-caramel underline dark:text-maple"),
-            ],
-        )
+        ("a", &[("download", ""), ("class", "text-accent underline")])
     };
     let Ok(shown) = document.create_element(tag) else {
         return;
@@ -151,7 +145,7 @@ fn opener(
         ("title", "Open in the viewer"),
         (
             "class",
-            "media-open group relative block max-w-full cursor-zoom-in rounded hover:ring-2 hover:ring-caramel focus-visible:ring-2 focus-visible:ring-caramel dark:hover:ring-maple dark:focus-visible:ring-maple",
+            "media-open group relative block max-w-full cursor-zoom-in rounded hover:ring-2 hover:ring-accent focus-visible:ring-2 focus-visible:ring-accent",
         ),
     ] {
         let _ = button.set_attribute(attribute, value);

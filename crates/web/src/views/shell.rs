@@ -30,7 +30,7 @@ use crate::{
 
 /// A rail button: an icon in a 44 px square, its name in a tooltip beside
 /// it (`data-tip`).
-const RAIL_BUTTON: &str = "relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink hover:bg-toasted hover:text-espresso active:bg-crust dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
+const RAIL_BUTTON: &str = "relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg active:bg-press";
 
 /// The icon of a view on the rail.
 pub fn view_icon(view: View) -> crate::icons::Icon {
@@ -65,10 +65,8 @@ pub fn Rail(
                 <button
                     type="button"
                     class=RAIL_BUTTON
-                    class:bg-toasted=current
-                    class:text-espresso=current
-                    class:dark:bg-ember=current
-                    class:dark:text-latte=current
+                    class:bg-sel=current
+                    class:text-fg=current
                     aria-label=view.label()
                     data-tip=view.label()
                     data-view=view.id()
@@ -78,7 +76,7 @@ pub fn Rail(
                 >
                     // The active view's mark: a bar at the rail's edge.
                     <span
-                        class="absolute top-2 bottom-2 -left-1.5 w-1 rounded-r bg-caramel dark:bg-maple"
+                        class="absolute top-2 bottom-2 -left-1.5 w-1 rounded-r bg-accent"
                         class:hidden=move || !current()
                         aria-hidden="true"
                     ></span>
@@ -86,7 +84,7 @@ pub fn Rail(
                     // A session is unread: a dot on the Chat button.
                     <Show when=move || view == View::Chat && workspace.any_unread()>
                         <span
-                            class="absolute top-2 right-2 h-2 w-2 rounded-full bg-caramel dark:bg-maple"
+                            class="absolute top-2 right-2 h-2 w-2 rounded-full bg-accent"
                             data-unread-any
                             aria-hidden="true"
                         ></span>
@@ -98,7 +96,7 @@ pub fn Rail(
     view! {
         <nav
             aria-label="Views"
-            class="rail flex w-14 shrink-0 flex-col items-center gap-1 border-r border-toasted bg-parchment py-2 dark:border-ember dark:bg-char short:overflow-y-auto"
+            class="rail flex w-14 shrink-0 flex-col items-center gap-1 border-r border-line bg-surface-2 py-2 short:overflow-y-auto"
             data-rail="primary"
         >
             <img src="icons/icon.svg" alt="" class="mb-1 h-7 w-7 short:hidden" />
@@ -188,7 +186,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
             class="flex min-w-0 flex-1 flex-col"
             data-view=move || workspace.view.get().id()
         >
-            <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
+            <div class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2">
                 <Show when=sidebar_button>
                     <SidebarButton workspace=workspace />
                 </Show>
@@ -241,8 +239,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                 <button
                     type="button"
                     class=format!("{ROW} min-h-12")
-                    class:bg-toasted=current
-                    class:dark:bg-ember=current
+                    class:bg-sel=current
                     aria-current=move || current().then_some("page")
                     data-section=section.id()
                     on:click=move |_| workspace.open_section(Some(section))
@@ -260,7 +257,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
         <div class="flex min-h-0 flex-1">
             <nav
                 aria-label="Settings sections"
-                class="flex w-full shrink-0 flex-col gap-1 overflow-y-auto p-2 sm:w-60 sm:border-r sm:border-toasted sm:dark:border-ember"
+                class="flex w-full shrink-0 flex-col gap-1 overflow-y-auto p-2 sm:w-60 sm:border-r sm:border-line"
                 class:hidden=move || workspace.shown_section().is_some() && workspace.narrow.get()
             >
                 <Show when=move || workspace.onboarding.status.with(Option::is_some)>

@@ -64,7 +64,7 @@ fn mono_and_tiny_transcripts_keep_one_header_and_no_standalone_blocks() {
             None,
             width,
             &Theme::new(
-                crate::theme::ThemeKind::Mono,
+                crate::theme::ThemeKind::Default,
                 crate::theme::ColorLevel::None,
             ),
             &PlainHighlighter,

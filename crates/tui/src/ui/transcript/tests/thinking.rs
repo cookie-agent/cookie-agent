@@ -183,7 +183,7 @@ fn thinking_lays_out_as_a_panel_collapsed_and_expanded() {
     );
     // A theme only changes colours: mono keeps the same panel layout, and
     // copying still skips the uncoloured margin.
-    let mono = Theme::new(ThemeKind::Mono, ColorLevel::None);
+    let mono = Theme::new(ThemeKind::Default, ColorLevel::None);
     let mono_layout = transcript_layout_with(
         &state,
         Some(&expanded),

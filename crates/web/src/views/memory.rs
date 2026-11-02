@@ -150,7 +150,7 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                     </div>
                 }
             })}
-            <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
+            <div class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
                 <label class="flex flex-col gap-1 text-sm">
                     <span class="font-bold">"New memory"</span>
                     <input
@@ -191,7 +191,7 @@ fn memory_row(
                 data-memory-layer=layer.as_str()
                 on:click=move |_| new_url.set(prefix.clone())
             >
-                <span class="flex items-center gap-2 text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">
+                <span class="flex items-center gap-2 text-xs font-bold tracking-wide text-muted uppercase">
                     <Glyph icon=layer_icon(layer) class="opacity-70" />
                     {layer_title(layer)}
                 </span>
@@ -237,7 +237,7 @@ fn memory_row(
                 <div
                     class=move || format!(
                         "memory-row flex items-center gap-2 rounded-md {indent} {}",
-                        if focused.get() { "ring-2 ring-caramel dark:ring-maple" } else { "" }
+                        if focused.get() { "ring-2 ring-accent" } else { "" }
                     )
                     data-memory=memory.url.clone()
                     data-revision=memory.revision.clone()
@@ -249,7 +249,7 @@ fn memory_row(
                             <Glyph icon=icondata::FaFileLinesRegular class="opacity-60" />
                             <span class="min-w-0 truncate">{memory_name(&memory).to_owned()}</span>
                             {over.then(|| view! {
-                                <span class="shrink-0 rounded bg-red-100 px-1.5 font-sans text-xs text-red-800 dark:bg-red-950 dark:text-red-300" title=OVER_LIMIT_NOTE>
+                                <span class="shrink-0 rounded bg-bad-soft px-1.5 font-sans text-xs text-bad" title=OVER_LIMIT_NOTE>
                                     {OVER_LIMIT}
                                 </span>
                             })}
@@ -371,7 +371,7 @@ fn project_folder(
                     />
                     <Glyph
                         icon=if open { icondata::FaFolderOpenSolid } else { icondata::FaFolderSolid }
-                        class="text-caramel dark:text-maple"
+                        class="text-accent"
                     />
                     <span class="min-w-0 flex-1 truncate font-bold">{name.clone()}</span>
                     <span class=STATE>{memories.to_string()}</span>
@@ -449,7 +449,7 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
                 view! {
                     <p
                         id="memory-description"
-                        class="flex items-start gap-2 rounded-md border border-dashed border-crust px-3 py-2 text-sm dark:border-smoke"
+                        class="flex items-start gap-2 rounded-md border border-dashed border-line-2 px-3 py-2 text-sm"
                         title="The daemon keeps it: the agent's own description"
                     >
                         <Glyph icon=icondata::FaLockSolid class="mt-1 text-xs opacity-60" />
@@ -488,9 +488,9 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
             };
             view! {
                 <div class="flex flex-col gap-1" data-memory-fields>
-                    <span class="text-xs font-bold text-ink dark:text-sand">"Description"</span>
+                    <span class="text-xs font-bold text-muted">"Description"</span>
                     {description}
-                    <span class="mt-1 text-xs font-bold text-ink dark:text-sand">"Keywords"</span>
+                    <span class="mt-1 text-xs font-bold text-muted">"Keywords"</span>
                     {fixed}
                     <input
                         type="text"
@@ -503,7 +503,7 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
                     {parts.owned_description.then(|| view! {
                         <p class=NOTE>"The daemon owns the description and the first keywords (the agent and its mode); the rest are yours."</p>
                     })}
-                    <span class="mt-1 text-xs font-bold text-ink dark:text-sand">"Memory"</span>
+                    <span class="mt-1 text-xs font-bold text-muted">"Memory"</span>
                 </div>
                 <textarea id="memory-text" class=EDITOR spellcheck="false">{parts.body.clone()}</textarea>
             }

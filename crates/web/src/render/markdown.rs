@@ -112,7 +112,7 @@ fn push_events<'a>(html: &mut String, events: impl Iterator<Item = Event<'a>>, a
 fn link_tags(url: &str, title: &str) -> (String, String) {
     if !safe_link(url) || url.is_empty() {
         return (
-            "<span class=\"text-ink dark:text-sand\">".to_owned(),
+            "<span class=\"text-muted\">".to_owned(),
             "</span>".to_owned(),
         );
     }
@@ -123,7 +123,7 @@ fn link_tags(url: &str, title: &str) -> (String, String) {
     };
     (
         format!(
-            "<a href=\"{}\"{title} target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-caramel underline hover:text-espresso dark:text-maple dark:hover:text-latte\">",
+            "<a href=\"{}\"{title} target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-accent underline hover:text-fg\">",
             escape(url)
         ),
         "</a>".to_owned(),

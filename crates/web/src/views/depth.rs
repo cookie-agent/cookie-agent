@@ -26,10 +26,9 @@ use crate::{
 
 /// The attach and camera buttons, round inside the composer's box: 36 px
 /// to see, 44 px to hit.
-const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink hover:bg-toasted hover:text-espresso active:bg-crust disabled:cursor-not-allowed disabled:opacity-40 dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
-const BAR: &str =
-    "flex flex-wrap items-center gap-2 border-t border-toasted px-3 py-1 text-sm dark:border-ember";
-pub(super) const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-40";
+const BAR: &str = "flex flex-wrap items-center gap-2 border-t border-line px-3 py-1 text-sm";
+pub(super) const FIELD: &str = "min-h-11 rounded-md border border-line-2 bg-surface px-3 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
 
 /// The root session's goal, with the controls its status allows.
 #[component]
@@ -68,7 +67,7 @@ pub fn GoalBar(workspace: Workspace) -> impl IntoView {
                                 on:click=move |_| workspace.panel.set(Some(crate::workspace::Panel::Goal))
                             >
                                 <span class="flex w-full items-center gap-2">
-                                    <Glyph icon=icondata::FaBullseyeSolid class="text-caramel dark:text-maple" />
+                                    <Glyph icon=icondata::FaBullseyeSolid class="text-accent" />
                                     <span class="min-w-0 flex-1 truncate">{summary}</span>
                                 </span>
                             </button>
@@ -93,7 +92,7 @@ pub fn BackgroundBar(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| workspace.run_command(Command::Background)
                 >
                     <span class="flex w-full items-center gap-2">
-                    <Glyph icon=icondata::FaHourglassHalfSolid class="text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaHourglassHalfSolid class="text-accent" />
                     <span class="min-w-0 flex-1 truncate">
                         {move || {
                             let calls = calls.get();
@@ -130,8 +129,8 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                 .get()
                 .map(|offer| {
                     view! {
-                        <div id="downscale-offer" class=format!("{BAR} bg-parchment dark:bg-char")>
-                            <Glyph icon=icondata::FaTriangleExclamationSolid class="text-caramel dark:text-maple" />
+                        <div id="downscale-offer" class=format!("{BAR} bg-surface-2")>
+                            <Glyph icon=icondata::FaTriangleExclamationSolid class="text-accent" />
                             <span class="min-w-0 flex-1">
                                 {format!("{}. Downscale and attach?", offer.reason.trim_end_matches('.'))}
                             </span>
@@ -151,7 +150,7 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                 })
         }}
         <Show when=move || !workspace.attachments.with(Vec::is_empty)>
-            <div id="draft-files" class="flex flex-wrap gap-1 border-t border-toasted px-3 py-1 dark:border-ember">
+            <div id="draft-files" class="flex flex-wrap gap-1 border-t border-line px-3 py-1">
                 {move || {
                     workspace
                         .attachments
@@ -160,12 +159,12 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                         .map(|artifact| {
                             let sha256 = artifact.sha256.clone();
                             view! {
-                                <span class="attachment-chip flex items-center gap-1 rounded-full bg-toasted pl-3 font-mono text-xs dark:bg-ember">
+                                <span class="attachment-chip flex items-center gap-1 rounded-full bg-sunken pl-3 font-mono text-xs">
                                     <Glyph icon=icondata::FaPaperclipSolid class="opacity-70" />
                                     {attachment_chip(&artifact)}
                                     <button
                                         type="button"
-                                        class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full hover:bg-crust active:bg-smoke dark:hover:bg-smoke dark:active:bg-night"
+                                        class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full hover:bg-press active:bg-press"
                                         aria-label="Remove"
                                         title="Remove"
                                         on:click=move |_| workspace.remove_attachment(&sha256)
@@ -269,7 +268,7 @@ pub fn compact_sheet(workspace: Workspace) -> impl IntoView {
             "Replaces the history so far with a summary, so the session has room to go on. A focus says what the summary must keep."
         </p>
         <label class="flex flex-col gap-1 text-sm">
-            <span class="font-bold">"Focus " <span class="font-normal text-ink dark:text-sand">"(optional)"</span></span>
+            <span class="font-bold">"Focus " <span class="font-normal text-muted">"(optional)"</span></span>
             <textarea
                 id="compact-focus"
                 rows="2"
@@ -295,7 +294,7 @@ pub fn compact_sheet(workspace: Workspace) -> impl IntoView {
             </button>
             <Show when=compacting>
                 <span class="inline-flex min-h-11 items-center gap-2 text-sm" role="status">
-                    <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-accent" />
                     "Compacting…"
                 </span>
                 <button
@@ -328,7 +327,7 @@ pub fn deferred_prompt_sheet(workspace: Workspace) -> impl IntoView {
         match prompt {
             Some(prompt) => view! {
                 <pre
-                    class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-parchment p-2 font-mono text-xs dark:bg-char"
+                    class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-2 p-2 font-mono text-xs"
                     data-deferred-prompt
                 >
                     {prompt}
@@ -363,7 +362,7 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                     .collect_view();
                 view! {
                     <p class="flex items-center gap-2 text-sm font-bold">
-                        <Glyph icon=icondata::FaBullseyeSolid class="text-caramel dark:text-maple" />
+                        <Glyph icon=icondata::FaBullseyeSolid class="text-accent" />
                         {format!("Goal ({})", status_name(goal.status))}
                     </p>
                     <p id="goal-objective" class="text-sm whitespace-pre-wrap">{goal.objective.clone()}</p>
@@ -457,7 +456,7 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
                 let job = call.job.clone();
                 let elapsed = u64::try_from(now.get().duration_since(call.detached_at).as_secs()).unwrap_or(0);
                 view! {
-                    <div class="background-call flex items-center gap-2 border-b border-toasted py-2 dark:border-ember">
+                    <div class="background-call flex items-center gap-2 border-b border-line py-2">
                         <div class="min-w-0 flex-1">
                             <p class="truncate font-mono text-sm">{format!("{} · {}", call.job, call.tool)}</p>
                             <p class=format!("truncate {NOTE}")>
@@ -522,8 +521,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=ROW
-                            class:bg-toasted=current.clone()
-                            class:dark:bg-ember=current
+                            class:bg-sel=current.clone()
                             data-skill=skill.name.clone()
                             on:click=move |_| workspace.skill_pick.set(Some(picked.clone()))
                         >
@@ -561,7 +559,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                 .map(|skill| {
                     let hint = skill.argument_hint.clone().unwrap_or_else(|| "arguments".into());
                     view! {
-                        <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
+                        <div class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
                             <p class="font-mono text-sm font-bold">{skill.name.clone()}</p>
                             <input
                                 type="text"
@@ -669,7 +667,7 @@ impl RuleForm {
 /// rule names one.
 fn rule_key_view(row: &PermissionRow) -> impl IntoView + use<> {
     let runtime = row.runtime.as_ref().map(|runtime| {
-        view! { <span class="text-ink dark:text-sand" data-rule-runtime>{format!("@{runtime}")}</span> }
+        view! { <span class="text-muted" data-rule-runtime>{format!("@{runtime}")}</span> }
     });
     view! {
         <span class="font-bold">{row.action.to_string()}</span>
@@ -699,10 +697,9 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                             view! {
                                 <button
                                     type="button"
-                                    class="min-h-11 min-w-11 px-2 text-xs hover:bg-toasted active:bg-crust disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-ember dark:active:bg-smoke"
+                                    class="min-h-11 min-w-11 px-2 text-xs hover:bg-hover active:bg-press disabled:cursor-not-allowed disabled:opacity-50"
                                     class:font-bold=active
-                                    class:bg-toasted=active
-                                    class:dark:bg-ember=active
+                                    class:bg-sel=active
                                     aria-pressed=active.to_string()
                                     data-effect=effect_label(effect)
                                     disabled=!editable
@@ -756,7 +753,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                     // narrow screen or a long name needs.
                     view! {
                         <div
-                            class="permission-row flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-toasted py-2 dark:border-ember"
+                            class="permission-row flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-line py-2"
                             data-rule=name.clone()
                         >
                             <span class="min-w-0 flex-1 basis-32 font-mono text-xs wrap-anywhere">
@@ -765,7 +762,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                                 <span>{row.resource.clone()}</span>
                             </span>
                             <span class="flex min-w-0 flex-wrap items-center gap-2">
-                                <span class="inline-flex shrink-0 overflow-hidden rounded-md border border-crust dark:border-smoke" role="group" aria-label="Effect">
+                                <span class="inline-flex shrink-0 overflow-hidden rounded-md border border-line-2" role="group" aria-label="Effect">
                                     {segments}
                                 </span>
                                 <span class=format!("min-w-14 wrap-anywhere {NOTE}")>{source_label(row.source)}</span>
@@ -800,7 +797,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
         </Show>
         {table}
         <Show when=move || workspace.writable()>
-            <div id="permission-form" class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
+            <div id="permission-form" class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
                 <p class="text-sm font-bold">
                     {move || if form.editing.get().is_some() { "Edit the rule" } else { "New rule" }}
                 </p>
@@ -864,7 +861,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                         }
                     }
                 />
-                <div class="inline-flex self-start overflow-hidden rounded-md border border-crust dark:border-smoke" role="group" aria-label="Effect">
+                <div class="inline-flex self-start overflow-hidden rounded-md border border-line-2" role="group" aria-label="Effect">
                     {EFFECTS
                         .iter()
                         .map(|effect| {
@@ -872,10 +869,9 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                             view! {
                                 <button
                                     type="button"
-                                    class="min-h-11 min-w-11 px-3 text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                                    class="min-h-11 min-w-11 px-3 text-sm hover:bg-hover active:bg-press"
                                     class:font-bold=move || form.effect.get() == effect
-                                    class:bg-toasted=move || form.effect.get() == effect
-                                    class:dark:bg-ember=move || form.effect.get() == effect
+                                    class:bg-sel=move || form.effect.get() == effect
                                     aria-pressed=move || (form.effect.get() == effect).to_string()
                                     data-new-effect=effect_label(effect)
                                     on:click=move |_| form.effect.set(effect)

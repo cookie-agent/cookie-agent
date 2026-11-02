@@ -339,8 +339,8 @@ async fn page_keys_scroll_conversation_by_viewport_height() {
 async fn chrome_stays_coherent_across_themes_and_tiny_terminals() {
     for theme in [
         Theme::default(),
-        Theme::new(ThemeKind::Mono, ColorLevel::None),
-        Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        Theme::new(ThemeKind::Default, ColorLevel::None),
+        Theme::new(ThemeKind::Dark, ColorLevel::Ansi16),
     ] {
         let mut app = test_app().await;
         let kind = theme.key();

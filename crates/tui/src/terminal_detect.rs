@@ -177,10 +177,6 @@ fn requested_theme(
     match cookie_theme.as_deref() {
         None | Some("auto") => RequestedTheme::Auto,
         Some("dark" | "dark-roast" | "darkroast") => RequestedTheme::Explicit(ThemeKind::Dark),
-        Some("mono" | "monochrome") => RequestedTheme::Explicit(ThemeKind::Mono),
-        Some("high-contrast" | "high_contrast" | "contrast") => {
-            RequestedTheme::Explicit(ThemeKind::HighContrast)
-        }
         Some("default") => RequestedTheme::Explicit(ThemeKind::Default),
         // Preserve the previous fail-open behavior for unknown explicit values.
         Some(_) => RequestedTheme::Explicit(ThemeKind::Default),
@@ -415,6 +411,7 @@ fn query_osc11() -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ColorLevel;
 
     struct CannedQuery {
         response: Option<Vec<u8>>,
@@ -545,8 +542,8 @@ mod tests {
     #[test]
     fn themes_without_a_terminal_come_from_preference_then_cookie_theme() {
         assert_eq!(
-            kind_without_terminal_detection(Some(ThemePreference::HighContrast), Some("mono")),
-            ThemeKind::HighContrast
+            kind_without_terminal_detection(Some(ThemePreference::Default), Some("dark")),
+            ThemeKind::Default
         );
         assert_eq!(
             kind_without_terminal_detection(None, Some("dark")),
@@ -668,7 +665,8 @@ mod tests {
         assert_eq!(detection.kind, ThemeKind::Dark);
         let theme =
             Theme::from_kind_environment(detection.kind, true, "xterm-256color", "truecolor");
-        assert_eq!(theme.key().kind, ThemeKind::Mono);
+        assert_eq!(theme.key().kind, ThemeKind::Dark);
+        assert_eq!(theme.key().colors, ColorLevel::None);
     }
 
     #[cfg(windows)]

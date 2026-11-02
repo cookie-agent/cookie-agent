@@ -34,8 +34,9 @@ impl BlockPlace<'_> {
     }
 }
 
-const PRE: &str = "overflow-x-auto whitespace-pre rounded border border-toasted bg-cream p-2 font-mono text-sm dark:border-ember dark:bg-night";
-const NOTE: &str = "text-xs text-ink dark:text-sand";
+const PRE: &str =
+    "overflow-x-auto whitespace-pre rounded border border-line bg-surface p-2 font-mono text-sm";
+const NOTE: &str = "text-xs text-muted";
 
 /// A stored file shown inline: a placeholder the page fills with the
 /// artifact's image, video, audio, or download link once it is read.
@@ -56,7 +57,7 @@ pub fn media_html(sha256: &str, media_type: &str, byte_length: u64, label: Optio
 /// until then.
 pub fn asset_html(asset: &cookie_agent_protocol::AssetBlock) -> String {
     format!(
-        "<div class=\"asset-figure flex min-w-0 flex-col gap-1 rounded-md border border-toasted p-2 dark:border-ember\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\"><div class=\"flex min-w-0 items-center gap-2\" data-asset-head><span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span></div><div class=\"min-w-0\" data-asset-body><span class=\"{NOTE}\">{} ({}, {})</span></div></div>",
+        "<div class=\"asset-figure flex min-w-0 flex-col gap-1 rounded-md border border-line p-2\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\"><div class=\"flex min-w-0 items-center gap-2\" data-asset-head><span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span></div><div class=\"min-w-0\" data-asset-body><span class=\"{NOTE}\">{} ({}, {})</span></div></div>",
         escape(&asset.asset.to_string()),
         escape(&serde_json::to_string(&asset.store).unwrap_or_default()),
         escape(&asset.sha256),
@@ -95,7 +96,7 @@ pub fn plan_html(entries: &[cookie_agent_protocol::PlanEntry]) -> String {
         };
         let priority = match entry.priority {
             Some(PlanEntryPriority::High) => {
-                format!(" <span class=\"{NOTE} text-caramel dark:text-maple\">high</span>")
+                format!(" <span class=\"{NOTE} text-accent\">high</span>")
             }
             Some(PlanEntryPriority::Low) => format!(" <span class=\"{NOTE}\">low</span>"),
             Some(PlanEntryPriority::Medium | PlanEntryPriority::Unknown) | None => String::new(),
@@ -223,13 +224,13 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
                 .filter(|label| !label.is_empty())
                 .map(|label| {
                     format!(
-                        "<span class=\"min-w-0 truncate text-ink dark:text-sand\">— {}</span>",
+                        "<span class=\"min-w-0 truncate text-muted\">— {}</span>",
                         escape(label)
                     )
                 })
                 .unwrap_or_default();
             format!(
-                "<button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"inline-flex min-h-11 max-w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span class=\"shrink-0 font-mono underline decoration-dotted underline-offset-2\">{url}</span>{label}</button>",
+                "<button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"inline-flex min-h-11 max-w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-hover active:bg-press\"><span class=\"shrink-0 font-mono underline decoration-dotted underline-offset-2\">{url}</span>{label}</button>",
                 url = escape(url),
             )
         }
@@ -237,7 +238,7 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             let text = escape(label.as_deref().unwrap_or(url));
             if safe_link(url) {
                 format!(
-                    "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-caramel underline hover:text-espresso dark:text-maple dark:hover:text-latte\">{text}</a>",
+                    "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-accent underline hover:text-fg\">{text}</a>",
                     escape(url)
                 )
             } else {
@@ -249,7 +250,7 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             short_id,
             label,
         } => format!(
-            "<button type=\"button\" data-action=\"open-session\" data-session=\"{session_id}\" class=\"rounded border border-crust px-2 py-1 font-mono text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke\">{}</button>",
+            "<button type=\"button\" data-action=\"open-session\" data-session=\"{session_id}\" class=\"rounded border border-line-2 px-2 py-1 font-mono text-sm hover:bg-hover active:bg-press\">{}</button>",
             escape(
                 label
                     .as_deref()
@@ -273,7 +274,7 @@ fn full_content_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
     };
     let action = |label: &str| {
         format!(
-            "<button type=\"button\" data-action=\"full\" data-call=\"{}\" data-block=\"{}\" class=\"mt-1 min-h-11 rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke\">{label}</button>",
+            "<button type=\"button\" data-action=\"full\" data-call=\"{}\" data-block=\"{}\" class=\"mt-1 min-h-11 rounded border border-line-2 px-3 py-1 text-sm hover:bg-hover active:bg-press\">{label}</button>",
             escape(call_id),
             place.index
         )
@@ -340,7 +341,7 @@ fn numbered_code<'a>(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "<div class=\"flex overflow-x-auto rounded border border-toasted bg-cream font-mono text-sm dark:border-ember dark:bg-night\"><pre class=\"select-none border-r border-toasted p-2 text-right text-ink dark:border-ember dark:text-sand\">{gutter}</pre><pre class=\"flex-1 whitespace-pre p-2\"><code{class}>{code}</code></pre></div>"
+        "<div class=\"flex overflow-x-auto rounded border border-line bg-surface font-mono text-sm\"><pre class=\"select-none border-r border-line p-2 text-right text-muted\">{gutter}</pre><pre class=\"flex-1 whitespace-pre p-2\"><code{class}>{code}</code></pre></div>"
     )
 }
 
@@ -358,7 +359,7 @@ pub fn diff_html(diff: &DiffBlock) -> String {
         None => escape(&diff.path),
     };
     let mut html = format!(
-        "<div class=\"{NOTE} font-mono\">{path} · {change} · <span class=\"text-green-700 dark:text-green-400\">+{}</span> <span class=\"text-red-700 dark:text-red-400\">−{}</span></div>",
+        "<div class=\"{NOTE} font-mono\">{path} · {change} · <span class=\"text-ok\">+{}</span> <span class=\"text-bad\">−{}</span></div>",
         diff.added, diff.removed
     );
     if diff.hunks.is_empty() {
@@ -366,10 +367,10 @@ pub fn diff_html(diff: &DiffBlock) -> String {
             "<div class=\"{NOTE}\">no line changes to show</div>"
         ));
     }
-    html.push_str("<div class=\"overflow-x-auto rounded border border-toasted font-mono text-sm dark:border-ember\"><table class=\"diff w-full border-collapse\">");
+    html.push_str("<div class=\"overflow-x-auto rounded border border-line font-mono text-sm\"><table class=\"diff w-full border-collapse\">");
     for hunk in &diff.hunks {
         html.push_str(&format!(
-            "<tr class=\"bg-parchment text-ink dark:bg-char dark:text-sand\"><td colspan=\"3\" class=\"px-2\">@@ -{},{} +{},{} @@</td></tr>",
+            "<tr class=\"bg-surface-2 text-muted\"><td colspan=\"3\" class=\"px-2\">@@ -{},{} +{},{} @@</td></tr>",
             hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
         ));
         let (mut old, mut new) = (hunk.old_start, hunk.new_start);
@@ -383,27 +384,17 @@ pub fn diff_html(diff: &DiffBlock) -> String {
                 }
                 DiffLineOp::Remove => {
                     old += 1;
-                    (
-                        Some(old - 1),
-                        None,
-                        '-',
-                        " class=\"bg-red-100 dark:bg-red-950\"",
-                    )
+                    (Some(old - 1), None, '-', " class=\"bg-bad-soft\"")
                 }
                 DiffLineOp::Add => {
                     new += 1;
-                    (
-                        None,
-                        Some(new - 1),
-                        '+',
-                        " class=\"bg-green-100 dark:bg-green-950\"",
-                    )
+                    (None, Some(new - 1), '+', " class=\"bg-ok-soft\"")
                 }
             };
             let number =
                 |number: Option<u64>| number.map(|number| number.to_string()).unwrap_or_default();
             html.push_str(&format!(
-                "<tr{class}><td class=\"select-none px-2 text-right text-ink dark:text-sand\">{}</td><td class=\"select-none px-2 text-right text-ink dark:text-sand\">{}</td><td class=\"whitespace-pre px-2\">{sign}{}</td></tr>",
+                "<tr{class}><td class=\"select-none px-2 text-right text-muted\">{}</td><td class=\"select-none px-2 text-right text-muted\">{}</td><td class=\"whitespace-pre px-2\">{sign}{}</td></tr>",
                 number(old_number),
                 number(new_number),
                 escape(&line.text)
@@ -467,7 +458,7 @@ fn table_html(columns: &[String], rows: &[Vec<String>], omitted: Option<u64>) ->
         "<div class=\"overflow-x-auto\"><table class=\"border-collapse text-sm\"><thead><tr>",
     );
     for column in columns {
-        html.push_str("<th class=\"border border-toasted px-2 text-left dark:border-ember\">");
+        html.push_str("<th class=\"border border-line px-2 text-left\">");
         push_escaped(&mut html, column);
         html.push_str("</th>");
     }
@@ -475,7 +466,7 @@ fn table_html(columns: &[String], rows: &[Vec<String>], omitted: Option<u64>) ->
     for row in rows {
         html.push_str("<tr>");
         for cell in row {
-            html.push_str("<td class=\"border border-toasted px-2 dark:border-ember\">");
+            html.push_str("<td class=\"border border-line px-2\">");
             push_escaped(&mut html, cell);
             html.push_str("</td>");
         }

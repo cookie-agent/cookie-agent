@@ -85,43 +85,43 @@ const BAR_RETURN: Duration = Duration::from_millis(250);
 
 /// Every button is at least 44 px square, with a hover and a pressed state.
 /// A labelled button, bordered.
-const BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md border border-crust px-3 text-sm hover:bg-toasted active:bg-crust disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
+const BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md border border-line-2 px-3 text-sm hover:bg-hover active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
 /// The main action of a form or the composer.
-const PRIMARY: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md bg-espresso px-3 text-sm font-bold text-cream hover:bg-caramel active:bg-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-espresso dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand dark:disabled:hover:bg-latte";
+const PRIMARY: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md bg-accent px-3 text-sm font-bold text-on-accent hover:bg-accent active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-accent";
 /// A button that is only an icon: it has an `aria-label` and a `title`.
-const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted hover:text-espresso active:bg-crust disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
+const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
 /// A bottom bar control showing its current value: the agent, the model,
 /// and the permission mode share it. 32 px to see, 44 px to hit.
-const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
+const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-line-2 bg-surface px-3 text-sm hover:border-accent hover:bg-hover active:bg-press";
 /// A status bar indicator that does something when clicked.
-const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-hover active:bg-press";
 /// A session row's buttons (move, rename, delete), which show only over
 /// the hovered (or focused) row: side by side, centred on its two lines,
 /// laid over the row's right end on the row's hover colour, which fades in
 /// from their left. The row keeps its layout underneath: only the part
 /// they cover is hidden.
-const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 rounded-r-md pr-0.5 pl-6 bg-[linear-gradient(to_right,transparent,var(--color-toasted)_1.5rem)] dark:bg-[linear-gradient(to_right,transparent,var(--color-ember)_1.5rem)]";
+const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 rounded-r-md pr-0.5 pl-6 bg-[linear-gradient(to_right,transparent,var(--color-hover-solid)_1.5rem)]";
 /// One of them: at rest in the row's hover colour so it blends in (the
 /// open row's hover colour is the same), one palette step darker on hover
 /// (lighter in dark), and further still when pressed. 44 px square.
-const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-toasted text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:bg-ember dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
+const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-sunken text-muted hover:bg-press hover:text-fg active:bg-press";
 /// A button of a row's actions a long press revealed: narrower than
 /// [`BUTTON`], so that ⋮, Rename, Delete, and ✕ share a phone's line.
-const REVEALED: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-crust px-2 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
+const REVEALED: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-line-2 px-2 text-sm hover:bg-hover active:bg-press";
 /// A session's title as a field: in a session row, and in the title bar.
-const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-md border border-caramel bg-cream px-2 text-sm font-bold text-espresso focus:outline-none dark:border-maple dark:bg-night dark:text-latte";
+const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-md border border-accent bg-surface px-2 text-sm font-bold text-fg focus:outline-none";
 /// "Use the automatic title", under an emptied title field.
-const AUTO_TITLE: &str = "inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-bold text-caramel hover:bg-crust active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:text-maple dark:hover:bg-smoke";
+const AUTO_TITLE: &str = "inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-bold text-accent hover:bg-press active:bg-press";
 /// A row of a list: two lines, the second a note.
-const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
-const NOTE: &str = "text-xs text-ink dark:text-sand";
+const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left hover:bg-hover active:bg-press";
+const NOTE: &str = "text-xs text-muted";
 /// A message about something that went wrong.
-const ERROR: &str = "rounded-md border border-red-700/30 bg-red-50 px-3 py-2 text-sm whitespace-pre-wrap break-words text-red-800 dark:border-red-400/30 dark:bg-red-950/40 dark:text-red-300";
+const ERROR: &str = "rounded-md border border-bad/30 bg-bad-soft px-3 py-2 text-sm whitespace-pre-wrap break-words text-bad";
 
 /// What a sheet shows when it has nothing to list.
 fn empty_state(icon: icons::Icon, text: &'static str) -> impl IntoView {
     view! {
-        <div class="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-ink dark:text-sand">
+        <div class="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted">
             <Glyph icon=icon class="text-2xl opacity-70" />
             <p>{text}</p>
         </div>
@@ -131,7 +131,7 @@ fn empty_state(icon: icons::Icon, text: &'static str) -> impl IntoView {
 /// What a sheet shows while it reads what it lists.
 fn loading(text: &'static str) -> impl IntoView {
     view! {
-        <p class="flex items-center gap-2 py-4 text-sm text-ink dark:text-sand">
+        <p class="flex items-center gap-2 py-4 text-sm text-muted">
             <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
             {text}
         </p>
@@ -180,7 +180,7 @@ pub fn WorkspaceView(
             </div>
             <div class="flex min-w-0 flex-1" class:relative=sessions_page class:hidden=move || !chat()>
                 <aside
-                    class="shrink-0 flex-col border-r border-toasted bg-parchment dark:border-ember dark:bg-char"
+                    class="shrink-0 flex-col border-r border-line bg-surface-2"
                     class:hidden=move || !sessions_page()
                     class:flex=sessions_page
                     class:absolute=sessions_page
@@ -190,7 +190,7 @@ pub fn WorkspaceView(
                     id="sidebar"
                 >
                     <Show when=sessions_page>
-                        <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
+                        <div class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2">
                             <SidebarButton workspace=workspace />
                             <h1 class="min-w-0 flex-1 truncate px-1 text-lg font-bold">"Sessions"</h1>
                         </div>
@@ -572,7 +572,7 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                 // A dot while the filter narrows the list beyond its
                 // default.
                 <Show when=move || { filter_changes.get() > 0 }>
-                    <span class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-caramel ring-2 ring-parchment dark:bg-maple dark:ring-char" data-filter-dot></span>
+                    <span class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-surface-2" data-filter-dot></span>
                 </Show>
             </button>
             <span
@@ -589,7 +589,7 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                 inert=move || (!searching()).then_some("")
             >
                 <label class="relative flex min-w-0 flex-1 items-center">
-                    <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-ink dark:text-sand" />
+                    <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-muted" />
                     <input
                         // Text, not `search`: the browser's own clear
                         // button would sit beside the ×.
@@ -597,7 +597,7 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                         role="searchbox"
                         enterkeyhint="search"
                         id="session-search"
-                        class="min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream pr-3 pl-9 text-sm text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
+                        class="min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface pr-3 pl-9 text-sm text-fg hover:border-accent focus:border-accent focus:outline-none"
                         aria-label="Search sessions by title"
                         placeholder="Search by title"
                         node_ref=field
@@ -718,9 +718,9 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                 class=move || format!(
                     "inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border px-3 text-sm lg:min-h-9 {}",
                     if chosen.get() {
-                        "border-espresso bg-espresso text-cream hover:bg-caramel dark:border-latte dark:bg-latte dark:text-night dark:hover:bg-maple"
+                        "border-fg bg-accent text-on-accent hover:bg-accent"
                     } else {
-                        "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        "border-line-2 hover:bg-hover active:bg-press"
                     },
                 )
                 aria-pressed=move || chosen.get().to_string()
@@ -735,7 +735,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
             </button>
         }
     };
-    let heading = "text-xs font-bold text-ink dark:text-sand";
+    let heading = "text-xs font-bold text-muted";
     // The range the filter lists, while it lists one.
     let range = move || {
         workspace.session_filter.with(|filter| match filter.within {
@@ -753,12 +753,12 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                 .unwrap_or_default()
         };
         view! {
-            <label class="flex min-w-36 flex-1 flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
+            <label class="flex min-w-36 flex-1 flex-col gap-1 text-xs font-bold text-muted">
                 <span>{label}</span>
                 <input
                     type="date"
                     id=id
-                    class="min-h-11 w-full rounded-md border border-crust bg-cream px-2 text-sm font-normal text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
+                    class="min-h-11 w-full rounded-md border border-line-2 bg-surface px-2 text-sm font-normal text-fg hover:border-accent focus:border-accent focus:outline-none"
                     max=move || crate::workspace::local_today().to_string()
                     prop:value=value
                     on:change=move |event| {
@@ -794,7 +794,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                     id="session-filter"
                     role="dialog"
                     aria-label="Filter sessions"
-                    class="flex flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-espresso dark:border-ember dark:bg-night dark:text-latte lg:shadow-lg"
+                    class="flex flex-col gap-3 rounded-lg border border-line bg-surface p-3 text-fg lg:shadow-lg"
                 >
                     <div class="flex flex-col gap-1.5">
                         <span class=heading id="filter-within">"Last active"</span>
@@ -812,9 +812,9 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                                             class=move || format!(
                                                 "inline-flex min-h-11 items-center rounded-full border px-3 text-sm lg:min-h-9 {}",
                                                 if chosen.get() {
-                                                    "border-espresso bg-espresso text-cream dark:border-latte dark:bg-latte dark:text-night"
+                                                    "border-fg bg-accent text-on-accent"
                                                 } else {
-                                                    "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                                                    "border-line-2 hover:bg-hover active:bg-press"
                                                 },
                                             )
                                             aria-checked=move || chosen.get().to_string()
@@ -834,9 +834,9 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                                 class=move || format!(
                                     "inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-sm lg:min-h-9 {}",
                                     if ranged() {
-                                        "border-espresso bg-espresso text-cream dark:border-latte dark:bg-latte dark:text-night"
+                                        "border-fg bg-accent text-on-accent"
                                     } else {
-                                        "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                                        "border-line-2 hover:bg-hover active:bg-press"
                                     },
                                 )
                                 aria-checked=move || ranged().to_string()
@@ -865,13 +865,13 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                             let newest = crate::workspace::date_label(crate::workspace::local_date(newest), today);
                             view! {
                                 <p class=format!("flex items-center gap-1.5 {NOTE}") data-rolled-back>
-                                    <Glyph icon=icondata::FaClockRotateLeftSolid class="text-caramel dark:text-maple" />
+                                    <Glyph icon=icondata::FaClockRotateLeftSolid class="text-accent" />
                                     {format!("Nothing in the last 7 days: listing the 7 days up to the newest session ({newest}), and on to now.")}
                                 </p>
                             }
                         })}
                         <p class=format!("flex items-center gap-1.5 {NOTE}")>
-                            <Glyph icon=icondata::FaThumbtackSolid class="text-caramel dark:text-maple" />
+                            <Glyph icon=icondata::FaThumbtackSolid class="text-accent" />
                             "Pinned, unread, and busy sessions always show."
                         </p>
                     </div>
@@ -918,7 +918,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                             <span class=heading>"Workspace"</span>
                             <select
                                 id="place-filter"
-                                class="min-h-11 rounded-md border border-crust bg-cream px-2 text-sm font-normal text-espresso hover:border-caramel dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple"
+                                class="min-h-11 rounded-md border border-line-2 bg-surface px-2 text-sm font-normal text-fg hover:border-accent"
                                 on:change=move |event| {
                                     let value = event_target_value(&event);
                                     workspace.directory_filter.set((!value.is_empty()).then_some(value));
@@ -942,7 +942,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                             </select>
                         </label>
                     </Show>
-                    <div class="flex items-center justify-end gap-1.5 border-t border-toasted pt-2 dark:border-ember">
+                    <div class="flex items-center justify-end gap-1.5 border-t border-line pt-2">
                         <button
                             type="button"
                             class=BUTTON
@@ -966,7 +966,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
 /// button that opens the filter.
 fn filter_offer(workspace: Workspace, icon: icons::Icon, text: &'static str) -> impl IntoView {
     view! {
-        <div class="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-ink dark:text-sand" data-filter-offer>
+        <div class="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted" data-filter-offer>
             <Glyph icon=icon class="text-2xl opacity-70" />
             <p>{text}</p>
             <button
@@ -1042,7 +1042,7 @@ fn selection_bar(workspace: Workspace, listed: Memo<Vec<SessionId>>) -> impl Int
                 </button>
             </div>
             <Show when=move || picking.confirming.get() fallback=actions>
-                <div class="flex flex-col gap-2 rounded-lg border border-caramel bg-cream p-2 text-sm dark:border-maple dark:bg-night" role="alertdialog" data-delete-picked-box>
+                <div class="flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-delete-picked-box>
                     <p>
                         {move || {
                             let sessions = match count() {
@@ -1263,7 +1263,7 @@ fn session_row(
             class=move || format!(
                 "session-row group relative {}",
                 if lifted() {
-                    "pointer-events-none z-30 rounded-md bg-cream shadow-xl ring-2 ring-caramel dark:bg-night dark:ring-maple"
+                    "pointer-events-none z-30 rounded-md bg-surface shadow-xl ring-2 ring-accent"
                 } else {
                     ""
                 },
@@ -1296,8 +1296,8 @@ fn session_row(
                 // One class closure for all of it: `class:` toggles beside
                 // it would be dropped each time it changes.
                 class=move || format!(
-                    "{ROW} no-callout select-none pr-3 {} group-hover:bg-toasted group-has-focus-visible:bg-toasted dark:group-hover:bg-ember dark:group-has-focus-visible:bg-ember",
-                    if current() || (picking() && picked()) { "bg-toasted dark:bg-ember" } else { "" },
+                    "{ROW} no-callout select-none pr-3 {} group-hover:bg-hover group-has-focus-visible:bg-hover",
+                    if current() || (picking() && picked()) { "bg-sunken" } else { "" },
                 )
                 aria-current=move || current().then_some("true")
                 aria-pressed=move || picking().then(|| picked().to_string())
@@ -1335,7 +1335,7 @@ fn session_row(
                 <span class="flex w-full items-center gap-2">
                     // In select mode, whether the row is selected.
                     <Show when=picking>
-                        <span class="inline-flex shrink-0 text-caramel dark:text-maple" data-pick=move || picked().to_string()>
+                        <span class="inline-flex shrink-0 text-accent" data-pick=move || picked().to_string()>
                             <Glyph icon=Signal::derive(move || if picked() { icondata::FaSquareCheckSolid } else { icondata::FaSquareRegular }) />
                         </span>
                     </Show>
@@ -1350,7 +1350,7 @@ fn session_row(
                     // end on hover.
                     {unread.then(|| view! {
                         <span
-                            class="h-2 w-2 shrink-0 rounded-full bg-caramel dark:bg-maple"
+                            class="h-2 w-2 shrink-0 rounded-full bg-accent"
                             data-unread
                             title="Unread: it finished, or asked for you, while you were away"
                         ></span>
@@ -1358,7 +1358,7 @@ fn session_row(
                     })}
                     {pinned.then(|| view! {
                         <span
-                            class="inline-flex shrink-0 rotate-45 text-xs text-caramel dark:text-maple"
+                            class="inline-flex shrink-0 rotate-45 text-xs text-accent"
                             data-pinned-session
                             title="Pinned: listed with the sessions at work, whatever its age"
                         >
@@ -1490,7 +1490,7 @@ fn session_row(
             </div>
         </Show>
         <Show when=move || confirming.get() == Some(session_id)>
-            <div class="mx-2 mb-1 flex flex-col gap-2 rounded-lg border border-caramel bg-cream p-2 text-sm dark:border-maple dark:bg-night" role="alertdialog" data-delete-confirm-box>
+            <div class="mx-2 mb-1 flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-delete-confirm-box>
                 <p>{format!("Delete “{confirm_label}” and its subagents? This cannot be undone.")}</p>
                 <div class="flex flex-wrap gap-2">
                     <button
@@ -1582,7 +1582,7 @@ fn rename_row<B: IntoView + 'static>(
     let empty = move || draft.with(|draft| draft.trim().is_empty());
     view! {
         <div
-            class="flex min-h-11 w-full flex-col items-start gap-1 rounded-md bg-toasted px-3 py-2 dark:bg-ember"
+            class="flex min-h-11 w-full flex-col items-start gap-1 rounded-md bg-sunken px-3 py-2"
             data-renaming=session_id.to_string()
             on:focusout=move |event: ev::FocusEvent| {
                 // Leaving the row keeps the title; moving within it does not.
@@ -1710,8 +1710,7 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                                 <button
                                     type="button"
                                     class=ROW.replace("w-full", "min-w-0 flex-1")
-                                    class:bg-toasted=current
-                                    class:dark:bg-ember=current
+                                    class:bg-sel=current
                                     aria-current=move || current().then_some("true")
                                     data-tree-session=session_id.to_string()
                                     on:click=move |_| workspace.open_session(session_id)
@@ -1903,7 +1902,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
         })
     };
     view! {
-        <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
+        <div class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2">
             <SidebarButton workspace=workspace />
             {move || {
                 crumbs().last().cloned().map(|(parent, label)| view! {
@@ -1929,7 +1928,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                             view! {
                             <button
                                 type="button"
-                                class="inline-flex min-h-11 max-w-[14rem] min-w-0 items-center rounded-md px-2 text-sm text-ink hover:bg-toasted hover:text-espresso active:bg-crust dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke"
+                                class="inline-flex min-h-11 max-w-[14rem] min-w-0 items-center rounded-md px-2 text-sm text-muted hover:bg-hover hover:text-fg active:bg-press"
                                 title=tip
                                 data-crumb=session_id.to_string()
                                 on:click=move |_| workspace.open_session(session_id)
@@ -1954,7 +1953,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                             }>
                                 <button
                                     type="button"
-                                    class="flex min-h-11 min-w-0 items-center rounded-md px-1 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                                    class="flex min-h-11 min-w-0 items-center rounded-md px-1 text-left hover:bg-hover active:bg-press"
                                     title=move || format!("{} (click to rename)", title())
                                     data-title-edit
                                     on:click=move |_| workspace.begin_title_edit()
@@ -1968,7 +1967,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                     <TitleField workspace=workspace />
                 </Show>
                 <Show when=read_only>
-                    <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-toasted px-2 py-1 text-xs dark:bg-ember" title="read-only snapshot">
+                    <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-sunken px-2 py-1 text-xs" title="read-only snapshot">
                         <Glyph icon=icondata::FaLockSolid />
                         <span class="max-sm:sr-only">"read-only snapshot"</span>
                     </span>
@@ -2635,7 +2634,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }>
                     <div
                         id="working"
-                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-caramel dark:text-maple"
+                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-accent"
                         role="status"
                     >
                         <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
@@ -2646,7 +2645,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 <Show when=move || !running(workspace) && workspace.held_line().is_some()>
                     <div
                         id="held"
-                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-caramel dark:text-maple"
+                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-accent"
                         role="status"
                         data-held
                     >
@@ -2664,7 +2663,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }>
                     <button
                         type="button"
-                        class="pointer-events-auto absolute right-0 bottom-1 inline-flex min-h-11 items-center gap-2 rounded-full border border-crust bg-cream px-3 text-sm shadow-md hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:bg-ember dark:active:bg-smoke"
+                        class="pointer-events-auto absolute right-0 bottom-1 inline-flex min-h-11 items-center gap-2 rounded-full border border-line-2 bg-surface px-3 text-sm shadow-md hover:bg-hover active:bg-press"
                         title="Jump to the latest and follow it"
                         data-jump-latest
                         on:click=jump
@@ -3259,7 +3258,7 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
     let queue = Memo::new(move |_| workspace.queue());
     view! {
         <Show when=move || !queue.with(Vec::is_empty)>
-            <div class="flex max-h-32 flex-col gap-1 overflow-y-auto border-t border-toasted px-3 py-1 dark:border-ember" id="queue" aria-label="Pending and queued messages">
+            <div class="flex max-h-32 flex-col gap-1 overflow-y-auto border-t border-line px-3 py-1" id="queue" aria-label="Pending and queued messages">
                 {move || {
                     queue
                         .get()
@@ -3278,7 +3277,7 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
                                         on:click=move |_| workspace.recall(seq)
                                     >
                                         <span class="flex w-full items-center gap-2">
-                                            <Glyph icon=icondata::FaClockSolid class="text-caramel dark:text-maple" />
+                                            <Glyph icon=icondata::FaClockSolid class="text-accent" />
                                             <span class="min-w-0 flex-1 truncate">{text}</span>
                                             <Glyph icon=icondata::FaRotateLeftSolid class="opacity-60" />
                                         </span>
@@ -3287,7 +3286,7 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
                                     .into_any()
                             } else {
                                 view! {
-                                    <div class="flex items-center gap-2 px-3 font-mono text-xs text-ink dark:text-sand">
+                                    <div class="flex items-center gap-2 px-3 font-mono text-xs text-muted">
                                         <Glyph icon=icondata::FaClockSolid />
                                         <span class="min-w-0 truncate">{text}</span>
                                     </div>
@@ -3305,9 +3304,11 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
 /// A round button inside the composer: 36 px to see, 44 px to hit.
 const COMPOSER_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40";
 /// The composer's main action: Send, Steer, or Stop.
-const COMPOSER_PRIMARY: &str = "bg-espresso text-cream hover:bg-caramel active:bg-ink disabled:hover:bg-espresso dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand dark:disabled:hover:bg-latte";
+const COMPOSER_PRIMARY: &str =
+    "bg-accent text-on-accent hover:bg-accent active:bg-accent-press disabled:hover:bg-accent";
 /// Its second action: Queue.
-const COMPOSER_SECONDARY: &str = "border border-crust bg-parchment text-espresso hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-char dark:text-latte dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
+const COMPOSER_SECONDARY: &str =
+    "border border-line-2 bg-surface-2 text-fg hover:border-accent hover:bg-hover active:bg-press";
 
 /// The composer's text sizes: a line, and the padding above and below.
 const COMPOSER_LINE: f64 = 20.0;
@@ -3466,7 +3467,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             // the buttons sit in its bottom corners.
             <div
                 id="composer-box"
-                class="relative rounded-xl border border-crust bg-cream hover:border-caramel focus-within:border-caramel dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus-within:border-maple"
+                class="relative rounded-xl border border-line-2 bg-surface hover:border-accent focus-within:border-accent"
                 class:opacity-60=disabled
             >
                 <textarea
@@ -3681,7 +3682,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     view! {
         <div
             id="status-bar"
-            class="flex flex-wrap items-center gap-x-1 bg-parchment px-2 text-xs compact:-order-1 compact:flex-nowrap compact:bg-transparent short:order-none short:w-[22rem] short:shrink-0 dark:bg-char compact:dark:bg-transparent"
+            class="flex flex-wrap items-center gap-x-1 bg-surface-2 px-2 text-xs compact:-order-1 compact:flex-nowrap compact:bg-transparent short:order-none short:w-[22rem] short:shrink-0 compact:dark:bg-transparent"
             class:compact:hidden=move || composing.get()
         >
             <button
@@ -3692,7 +3693,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 title=move || format!("Agent: {} (click to change)", agent())
                 on:click=move |_| workspace.panel.set(Some(Panel::Agents))
             >
-                <Glyph icon=icondata::FaRobotSolid class="text-caramel dark:text-maple" />
+                <Glyph icon=icondata::FaRobotSolid class="text-accent" />
                 <span class="min-w-0 truncate max-[23.75rem]:sr-only">{agent}</span>
                 <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
@@ -3704,7 +3705,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 title=move || format!("Model: {} (click to change)", model())
                 on:click=move |_| workspace.panel.set(Some(Panel::Models))
             >
-                <Glyph icon=icondata::FaMicrochipSolid class="text-caramel dark:text-maple" />
+                <Glyph icon=icondata::FaMicrochipSolid class="text-accent" />
                 <span class="min-w-0 flex-1 truncate text-left">{model}</span>
                 <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
@@ -3717,7 +3718,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 title=move || format!("Permission mode: {} (click to change)", mode_label())
                 on:click=move |_| workspace.panel.set(Some(Panel::Modes))
             >
-                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-caramel dark:text-maple" />
+                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-accent" />
                 // A phone shows the shield alone.
                 <span class="min-w-0 truncate compact:sr-only">{mode_label}</span>
                 <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
@@ -3737,7 +3738,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     {move || {
                         let runtimes = workspace.places_runtimes();
                         if runtimes.is_empty() {
-                            view! { <Glyph icon=icondata::FaFolderOpenSolid class="text-caramel dark:text-maple" /> }.into_any()
+                            view! { <Glyph icon=icondata::FaFolderOpenSolid class="text-accent" /> }.into_any()
                         } else {
                             view! {
                                 <span class="inline-flex shrink-0 items-center gap-0.5" data-places-dots>
@@ -3759,7 +3760,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 <button
                     type="button"
                     id="approvals-badge"
-                    class="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full bg-caramel px-3 font-bold text-cream hover:bg-espresso active:bg-ink compact:hidden dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand"
+                    class="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full bg-accent px-3 font-bold text-on-accent hover:bg-accent active:bg-accent-press compact:hidden"
                     title="Approvals waiting: click to answer"
                     on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
                 >
@@ -3771,7 +3772,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             {move || context().map(|(tokens, window)| view! {
                 <span
                     id="context"
-                    class="inline-flex min-h-11 items-center gap-1.5 px-2 text-ink compact:hidden dark:text-sand"
+                    class="inline-flex min-h-11 items-center gap-1.5 px-2 text-muted compact:hidden"
                     title=context_title(tokens, window)
                 >
                     <Glyph icon=icondata::FaGaugeSimpleHighSolid />
@@ -3787,7 +3788,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     title="Session cost: click for usage"
                     on:click=move |_| workspace.run_command(Command::Usage)
                 >
-                    <Glyph icon=icondata::FaCoinsSolid class="text-caramel dark:text-maple compact:hidden" />
+                    <Glyph icon=icondata::FaCoinsSolid class="text-accent compact:hidden" />
                     <span class="font-mono compact:hidden">{cost_label(cost)}</span>
                     <span class="hidden font-mono compact:inline">{compact_cost(cost)}</span>
                 </button>
@@ -3806,12 +3807,12 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
         <Show when=move || { approvals.get() > 0 }>
             <div
                 id="status-line"
-                class="hidden min-h-11 items-center gap-1 border-t border-toasted px-2 text-xs compact:flex dark:border-ember"
+                class="hidden min-h-11 items-center gap-1 border-t border-line px-2 text-xs compact:flex"
             >
                 <button
                     type="button"
                     data-approvals
-                    class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full bg-caramel px-3 font-bold text-cream hover:bg-espresso active:bg-ink dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand"
+                    class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full bg-accent px-3 font-bold text-on-accent hover:bg-accent active:bg-accent-press"
                     title="Approvals waiting: tap to answer"
                     on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
                 >
@@ -3862,7 +3863,7 @@ fn StatusTip(workspace: Workspace) -> impl IntoView {
             id="status"
             role="status"
             aria-hidden=move || (!live()).then_some("true")
-            class="status-tip pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-md border border-toasted bg-parchment px-2 py-1 text-xs break-words text-ink shadow-md dark:border-ember dark:bg-char dark:text-sand"
+            class="status-tip pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-md border border-line bg-surface-2 px-2 py-1 text-xs break-words text-muted shadow-md"
             class:status-tip-gone=move || !live()
         >
             {move || workspace.status.get()}
@@ -3915,7 +3916,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <Show when=move || workspace.panel.get().is_some()>
-            <div class="fixed inset-0 z-10 bg-espresso/30 sm:bg-espresso/10 dark:bg-night/60 sm:dark:bg-night/30" on:click=close></div>
+            <div class="fixed inset-0 z-10 bg-scrim sm:bg-scrim" on:click=close></div>
             // A phone's sheet rises from the bottom of what the keyboard
             // leaves; a wider window's stands on the right.
             <div class=move || format!(
@@ -3927,12 +3928,12 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                     role="dialog"
                     aria-label=title
                     class=move || format!(
-                        "pointer-events-auto flex max-h-full flex-col overflow-y-auto border-toasted bg-cream shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l dark:border-ember dark:bg-night {}",
+                        "pointer-events-auto flex max-h-full flex-col overflow-y-auto border-line bg-surface shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l {}",
                         if tall() { "h-full" } else { "rounded-t-2xl border-t" },
                     )
                 >
-                    <div class="sticky top-0 z-10 flex flex-col border-b border-toasted bg-parchment dark:border-ember dark:bg-char">
-                        <span class="mx-auto mt-1.5 h-1 w-10 rounded-full bg-crust sm:hidden dark:bg-smoke" aria-hidden="true"></span>
+                    <div class="sticky top-0 z-10 flex flex-col border-b border-line bg-surface-2">
+                        <span class="mx-auto mt-1.5 h-1 w-10 rounded-full bg-line-2 sm:hidden" aria-hidden="true"></span>
                         <div class="flex items-center gap-2 py-1 pr-1 pl-4">
                             <h2 class="flex-1 text-lg font-bold">{title}</h2>
                             <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=close>
@@ -3977,7 +3978,7 @@ fn choice_line(label: String, current: bool, class: &'static str) -> impl IntoVi
         <span class="flex w-full items-center gap-2">
             <span class=format!("min-w-0 flex-1 truncate {class}")>{label}</span>
             {current.then(|| view! {
-                <Glyph icon=icondata::FaCheckSolid class="text-caramel dark:text-maple" />
+                <Glyph icon=icondata::FaCheckSolid class="text-accent" />
                 <span class="sr-only">"(current)"</span>
             })}
         </span>
@@ -3997,10 +3998,9 @@ fn document_id(name: &str, id: &str, class: &'static str) -> Option<impl IntoVie
 
 /// A row's document ID: one muted line under its name, cut with an
 /// ellipsis where the sheet is narrow.
-const DOC_ID_ROW: &str = "block w-full truncate font-mono text-xs text-ink dark:text-sand";
+const DOC_ID_ROW: &str = "block w-full truncate font-mono text-xs text-muted";
 /// A chip's document ID, beside its name.
-const DOC_ID_CHIP: &str =
-    "min-w-0 max-w-[10rem] truncate font-mono text-xs text-ink dark:text-sand";
+const DOC_ID_CHIP: &str = "min-w-0 max-w-[10rem] truncate font-mono text-xs text-muted";
 
 fn agents_sheet(workspace: Workspace) -> impl IntoView {
     let current = workspace.draft.get_untracked().map(|draft| draft.agent);
@@ -4018,7 +4018,7 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
         .map(|(index, agent)| {
             let divider = (divider == Some(index)).then(|| {
                 view! {
-                    <p class=format!("border-t border-toasted pt-2 dark:border-ember {NOTE}") data-agents-divider>
+                    <p class=format!("border-t border-line pt-2 {NOTE}") data-agents-divider>
                         "Cannot run now"
                     </p>
                 }
@@ -4049,8 +4049,7 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     class=ROW
-                    class:bg-toasted=chosen
-                    class:dark:bg-ember=chosen
+                    class:bg-sel=chosen
                     class:opacity-50=!pickable
                     class:cursor-not-allowed=!pickable
                     data-agent=agent.id.to_string()
@@ -4120,8 +4119,7 @@ fn agent_runtime_options(
                 <button
                     type="button"
                     class=CHIP
-                    class:bg-toasted=here
-                    class:dark:bg-ember=here
+                    class:bg-sel=here
                     class:opacity-50=!usable
                     class:cursor-not-allowed=!usable
                     aria-pressed=here.to_string()
@@ -4143,8 +4141,7 @@ fn agent_runtime_options(
     view! {
         <div
             class=format!("{ROW} cursor-default hover:bg-transparent active:bg-transparent dark:hover:bg-transparent dark:active:bg-transparent")
-            class:bg-toasted=chosen
-            class:dark:bg-ember=chosen
+            class:bg-sel=chosen
             data-agent=agent.id.to_string()
         >
             {choice_line(agent.id.to_string(), chosen, "font-mono text-sm font-bold")}
@@ -4180,7 +4177,7 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
                     let option_id = option.id.clone();
                     let label = format!("{}: {}", option.name, if on { "off" } else { "on" });
                     return view! {
-                        <div class="flex items-center gap-2 border-b border-toasted px-3 pb-2 dark:border-ember" data-agent-option=option.id.clone()>
+                        <div class="flex items-center gap-2 border-b border-line px-3 pb-2" data-agent-option=option.id.clone()>
                             <span class="flex min-w-0 flex-1 flex-col">
                                 <span class="text-sm font-bold">{option.name.clone()}</span>
                                 {option.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
@@ -4189,8 +4186,7 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
                                 type="button"
                                 role="switch"
                                 class=BUTTON
-                                class:bg-toasted=on
-                                class:dark:bg-ember=on
+                                class:bg-sel=on
                                 aria-checked=on.to_string()
                                 aria-label=option.name.clone()
                                 data-option-toggle=on.to_string()
@@ -4219,8 +4215,7 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
                             <button
                                 type="button"
                                 class=BUTTON
-                                class:bg-toasted=chosen
-                                class:dark:bg-ember=chosen
+                                class:bg-sel=chosen
                                 aria-pressed=chosen.to_string()
                                 data-option-value=value.value.clone()
                                 title=value.description.clone().unwrap_or_default()
@@ -4240,7 +4235,7 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
                     })
                     .collect_view();
                 view! {
-                    <div class="flex flex-col gap-1 border-b border-toasted pb-2 dark:border-ember" data-agent-option=option.id.clone()>
+                    <div class="flex flex-col gap-1 border-b border-line pb-2" data-agent-option=option.id.clone()>
                         <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
                         {option.description.clone().map(|description| view! { <span class=format!("px-3 {NOTE}")>{description}</span> })}
                         <div class="flex flex-wrap gap-2 px-3">{values}</div>
@@ -4281,8 +4276,7 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=ROW
-                            class:bg-toasted=chosen
-                            class:dark:bg-ember=chosen
+                            class:bg-sel=chosen
                             data-acp-model=value.value.clone()
                             on:click=choose(&option, value)
                         >
@@ -4304,8 +4298,7 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=BUTTON
-                            class:bg-toasted=chosen
-                            class:dark:bg-ember=chosen
+                            class:bg-sel=chosen
                             aria-pressed=chosen.to_string()
                             data-acp-effort=value.value.clone()
                             title=value.description.clone().unwrap_or_default()
@@ -4318,7 +4311,7 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                 })
                 .collect_view();
             view! {
-                <div class="flex flex-col gap-1 border-b border-toasted pb-2 dark:border-ember">
+                <div class="flex flex-col gap-1 border-b border-line pb-2">
                     <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
                     <div class="flex flex-wrap gap-2 px-3">{values}</div>
                 </div>
@@ -4346,7 +4339,7 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
             .into_any();
         }
         view! {
-            <div class="flex flex-col gap-1 border-b border-toasted pb-2 dark:border-ember">{models}</div>
+            <div class="flex flex-col gap-1 border-b border-line pb-2">{models}</div>
             {efforts}
             <button
                 type="button"
@@ -4396,8 +4389,7 @@ fn models_sheet(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=BUTTON
-                            class:bg-toasted=chosen
-                            class:dark:bg-ember=chosen
+                            class:bg-sel=chosen
                             aria-pressed=chosen.to_string()
                             data-variant=variant.id.to_string()
                             on:click=move |_| {
@@ -4413,12 +4405,11 @@ fn models_sheet(workspace: Workspace) -> impl IntoView {
                 .collect_view();
             let chosen = current.as_ref().is_some_and(|current| current.model == key);
             view! {
-                <div class="flex flex-col gap-1 border-b border-toasted pb-2 dark:border-ember">
+                <div class="flex flex-col gap-1 border-b border-line pb-2">
                     <button
                         type="button"
                         class=ROW
-                        class:bg-toasted=chosen
-                        class:dark:bg-ember=chosen
+                        class:bg-sel=chosen
                         on:click=move |_| {
                             workspace.pick_model(base.clone());
                             workspace.panel.set(None);
@@ -4446,8 +4437,7 @@ fn presets_sheet(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     class=ROW
-                    class:bg-toasted=chosen
-                    class:dark:bg-ember=chosen
+                    class:bg-sel=chosen
                     on:click=move |_| {
                         workspace.pick_preset(preset.clone());
                         workspace.panel.set(None);
@@ -4572,15 +4562,15 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                 };
                 let source = approval_source(workspace, &approval).map(|source| {
                     view! {
-                        <span class="inline-flex shrink-0 items-center rounded-full bg-toasted px-2 py-0.5 text-xs font-normal dark:bg-ember" data-approval-source>
+                        <span class="inline-flex shrink-0 items-center rounded-full bg-sunken px-2 py-0.5 text-xs font-normal" data-approval-source>
                             {source}
                         </span>
                     }
                 });
                 view! {
-                    <div class="approval flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char">
+                    <div class="approval flex flex-col gap-2 rounded-lg border border-accent bg-surface-2 p-3">
                         <p class="flex items-center gap-2 font-mono text-sm font-bold">
-                            <Glyph icon=icon class="text-caramel dark:text-maple" />
+                            <Glyph icon=icon class="text-accent" />
                             <span class="min-w-0 break-words">{title}</span>
                             {source}
                         </p>
@@ -4588,7 +4578,7 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                         {reviewer}
                         <input
                             type="text"
-                            class="min-h-9 w-full min-w-0 rounded-md border border-crust bg-cream px-2 text-sm focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:focus:border-maple"
+                            class="min-h-9 w-full min-w-0 rounded-md border border-line-2 bg-surface px-2 text-sm focus:border-accent focus:outline-none"
                             data-approval-note
                             placeholder="Note for the agent, sent with a rejection"
                             prop:value=move || note.get()
@@ -4641,11 +4631,11 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
                     <dl class="grid grid-cols-2 text-sm">
                         {rows.into_iter()
                             .map(|(name, value)| view! {
-                                <dt class="border-b border-toasted py-1 text-ink dark:border-ember dark:text-sand">{name}</dt>
-                                <dd class="border-b border-toasted py-1 text-right font-mono dark:border-ember">{value}</dd>
+                                <dt class="border-b border-line py-1 text-muted">{name}</dt>
+                                <dd class="border-b border-line py-1 text-right font-mono">{value}</dd>
                             })
                             .collect_view()}
-                        <dt class="pt-1 text-ink dark:text-sand">"cache hit rate"</dt>
+                        <dt class="pt-1 text-muted">"cache hit rate"</dt>
                         <dd
                             class="pt-1 text-right font-mono"
                             class:opacity-60=hit.rate.is_none()
@@ -4680,7 +4670,7 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
             view! {
                 {context.map(|tokens| view! {
                     <p class="flex items-center gap-2 text-sm" id="usage-context">
-                        <Glyph icon=icondata::FaGaugeSimpleHighSolid class="text-caramel dark:text-maple" />
+                        <Glyph icon=icondata::FaGaugeSimpleHighSolid class="text-accent" />
                         {format!("Context: {} tokens in the last request", format_count(tokens))}
                     </p>
                 })}
@@ -4709,7 +4699,7 @@ fn usage_models(
         .map(|(model, usage)| {
             let hit = CacheHit::of_model(usage);
             view! {
-                <tbody class="border-b border-toasted dark:border-ember">
+                <tbody class="border-b border-line">
                     <tr>
                         <td colspan="6" class="break-all pt-1 font-mono">{model.to_string()}</td>
                     </tr>
@@ -4728,8 +4718,8 @@ fn usage_models(
     Some(view! {
         <div class="overflow-x-auto pb-1">
             <table class="w-full text-sm" data-usage-models=scope>
-                <thead class="text-xs text-ink dark:text-sand">
-                    <tr class="border-b border-toasted dark:border-ember">
+                <thead class="text-xs text-muted">
+                    <tr class="border-b border-line">
                         {["requests", "input", "output", "reasoning", "cache hit", "cost"]
                             .map(|name| view! { <th class="whitespace-nowrap py-1 pl-3 text-right font-normal first:pl-0">{name}</th> })
                             .collect_view()}
@@ -4755,8 +4745,7 @@ fn events_sheet(workspace: Workspace) -> impl IntoView {
             <button
                 type="button"
                 class=ROW
-                class:bg-toasted=chosen
-                class:dark:bg-ember=chosen
+                class:bg-sel=chosen
                 aria-pressed=move || chosen().to_string()
                 on:click=move |_| workspace.set_level(level)
             >
@@ -4787,8 +4776,7 @@ fn transcript_sheet(workspace: Workspace) -> impl IntoView {
             <button
                 type="button"
                 class=ROW
-                class:bg-toasted=chosen
-                class:dark:bg-ember=chosen
+                class:bg-sel=chosen
                 aria-pressed=move || chosen().to_string()
                 data-transcript-mode=mode.name()
                 on:click=move |_| workspace.set_transcript(mode)
@@ -4830,7 +4818,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
                         }
                     >
                         <span class="flex w-full items-center gap-3">
-                            <Glyph icon=entry.icon class="w-5 justify-center text-caramel dark:text-maple" />
+                            <Glyph icon=entry.icon class="w-5 justify-center text-accent" />
                             <span class="flex min-w-0 flex-1 flex-col">
                                 <span class="text-sm font-bold">{entry.label}</span>
                                 <span class=NOTE>{entry.description}</span>
@@ -4875,7 +4863,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
                         >
                             <span class="flex w-full min-w-0 flex-col">
                                 <span class="flex flex-wrap items-baseline gap-x-2">
-                                    <span class="agent-badge rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
+                                    <span class="agent-badge rounded border border-accent px-1 text-[0.625rem] uppercase">"agent"</span>
                                     <span class="font-mono text-sm font-bold">{cookie_agent_client_state::acp::command_label(&name)}</span>
                                     <span class=format!("font-mono {NOTE}")>{hint}</span>
                                 </span>
@@ -4921,12 +4909,12 @@ fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
         .unwrap_or_else(|| "Input for the command".to_owned());
     view! {
         <p class="flex flex-wrap items-baseline gap-x-2">
-            <span class="agent-badge rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
+            <span class="agent-badge rounded border border-accent px-1 text-[0.625rem] uppercase">"agent"</span>
             <span id="agent-command-name" class="font-mono text-sm font-bold">{cookie_agent_client_state::acp::command_label(&command.name)}</span>
         </p>
         <p class=NOTE>{command.description.clone()}</p>
         <label class="flex flex-col gap-1 text-sm">
-            <span class="font-bold">"Input " <span class="font-normal text-ink dark:text-sand">"(optional)"</span></span>
+            <span class="font-bold">"Input " <span class="font-normal text-muted">"(optional)"</span></span>
             <textarea
                 id="agent-command-input"
                 rows="2"
@@ -4975,8 +4963,7 @@ fn modes_sheet(workspace: Workspace) -> impl IntoView {
                     <button
                         type="button"
                         class=ROW
-                        class:bg-toasted=chosen
-                        class:dark:bg-ember=chosen
+                        class:bg-sel=chosen
                         aria-pressed=move || chosen().to_string()
                         data-mode=choice.name
                         on:click=move |_| {
@@ -4985,7 +4972,7 @@ fn modes_sheet(workspace: Workspace) -> impl IntoView {
                         }
                     >
                         <span class="flex w-full items-center gap-3">
-                            <Glyph icon=icons::permission_mode(choice.mode).0 class="w-5 justify-center text-caramel dark:text-maple" />
+                            <Glyph icon=icons::permission_mode(choice.mode).0 class="w-5 justify-center text-accent" />
                             <span class="flex min-w-0 flex-1 flex-col">
                                 {move || choice_line(choice.name.to_owned(), chosen(), "font-mono text-sm font-bold")}
                                 <span class=NOTE>{choice.description}</span>
@@ -4995,7 +4982,7 @@ fn modes_sheet(workspace: Workspace) -> impl IntoView {
                 }
             })
             .collect_view()}
-        <p class=format!("mt-2 flex items-start gap-2 border-t border-toasted px-3 pt-3 dark:border-ember {NOTE}")>
+        <p class=format!("mt-2 flex items-start gap-2 border-t border-line px-3 pt-3 {NOTE}")>
             <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5" />
             {FOOTNOTE}
         </p>
@@ -5025,8 +5012,7 @@ fn agent_modes_sheet(
                 <button
                     type="button"
                     class=ROW
-                    class:bg-toasted=chosen
-                    class:dark:bg-ember=chosen
+                    class:bg-sel=chosen
                     aria-pressed=chosen.to_string()
                     data-agent-mode=value.value.clone()
                     on:click=move |_| {
@@ -5044,7 +5030,7 @@ fn agent_modes_sheet(
         .collect_view();
     view! {
         {rows}
-        <p class=format!("mt-2 flex items-start gap-2 border-t border-toasted px-3 pt-3 dark:border-ember {NOTE}")>
+        <p class=format!("mt-2 flex items-start gap-2 border-t border-line px-3 pt-3 {NOTE}")>
             <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5" />
             "The agent decides in this mode what it asks you. Cookie still refuses what your deny rules deny and allows what your allow rules allow."
         </p>

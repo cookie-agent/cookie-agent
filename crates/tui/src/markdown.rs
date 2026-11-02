@@ -615,8 +615,8 @@ impl SyntectHighlighter {
 
 fn syntect_theme_name(theme: &Theme) -> &'static str {
     match theme.key().kind {
-        ThemeKind::Dark | ThemeKind::HighContrast => "base16-eighties.dark",
-        ThemeKind::Default | ThemeKind::Mono => "InspiredGitHub",
+        ThemeKind::Dark => "base16-eighties.dark",
+        ThemeKind::Default => "InspiredGitHub",
     }
 }
 

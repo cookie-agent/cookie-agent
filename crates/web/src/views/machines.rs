@@ -361,7 +361,7 @@ pub(super) fn shared_agents(workspace: Workspace, manage: Manage) -> impl IntoVi
     let global = RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a runtime ID");
     let listed = global.clone();
     view! {
-        <section class="flex flex-col gap-2 rounded-lg border border-toasted p-3 dark:border-ember" data-shared-acp>
+        <section class="flex flex-col gap-2 rounded-lg border border-line p-3" data-shared-acp>
             <div class="flex flex-wrap items-center gap-2">
                 <h3 class="min-w-0 flex-1 text-sm font-bold">"ACP agents on every runtime"</h3>
                 <button
@@ -645,9 +645,9 @@ fn machine_cards(
                 .map(|card| runtime_row(workspace, card, names.clone(), form, dragging, manage))
                 .collect_view();
             view! {
-                <section class="rounded-xl border border-toasted dark:border-ember" data-unplaced>
-                    <div class="flex items-center gap-3 border-b border-toasted px-3 py-2 dark:border-ember">
-                        <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-toasted dark:bg-ember">
+                <section class="rounded-xl border border-line" data-unplaced>
+                    <div class="flex items-center gap-3 border-b border-line px-3 py-2">
+                        <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sunken">
                             <Glyph icon=icondata::FaCircleQuestionRegular class="text-lg" />
                         </span>
                         <div class="min-w-0 flex-1">
@@ -731,7 +731,6 @@ fn machine_card(
         let key = key.clone();
         move || dragging.over.get().as_deref() == Some(key.as_str())
     };
-    let over_dark = over.clone();
     let over_ring = over.clone();
     // Another machine's runtime is dragged: this card can take it.
     let target = {
@@ -747,7 +746,6 @@ fn machine_card(
                 && dragging.over.get().as_deref() != Some(key.as_str())
         }
     };
-    let target_dark = target.clone();
     let empty = runtimes.is_empty();
     let rows = runtimes
         .into_iter()
@@ -756,17 +754,15 @@ fn machine_card(
     let form_entry = entry.clone();
     view! {
         <section
-            class="machine-card rounded-xl border border-toasted bg-parchment transition-colors dark:border-ember dark:bg-char"
+            class="machine-card rounded-xl border border-line bg-surface-2 transition-colors"
             class:ring-2=over_ring
-            class:ring-caramel=over.clone()
-            class:dark:ring-maple=over_dark
+            class:ring-accent=over.clone()
             class:border-dashed=target.clone()
-            class:border-caramel=target
-            class:dark:border-maple=target_dark
+            class:border-accent=target
             data-machine-drop=key.clone()
         >
-            <div class="machine-row flex items-center gap-3 border-b border-toasted py-1 pr-1 pl-3 dark:border-ember" data-machine-entry=key.clone()>
-                <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-toasted dark:bg-ember" title=platform.clone().unwrap_or_else(|| "operating system not reported".into())>
+            <div class="machine-row flex items-center gap-3 border-b border-line py-1 pr-1 pl-3" data-machine-entry=key.clone()>
+                <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sunken" title=platform.clone().unwrap_or_else(|| "operating system not reported".into())>
                     <Glyph icon=platform_icon(platform.as_deref()) class="text-lg" />
                 </span>
                 <div class="min-w-0 flex-1 py-1">
@@ -804,7 +800,7 @@ fn machine_form(
     });
     let submit = move || submit.with_value(|submit| submit());
     view! {
-        <div class="flex flex-col gap-2 border-b border-toasted p-3 dark:border-ember">
+        <div class="flex flex-col gap-2 border-b border-line p-3">
             <label class="flex flex-col gap-1 text-sm">
                 <span>{title}</span>
                 <input
@@ -938,10 +934,7 @@ fn runtime_acp_agent_list(
     }
     let dot = |available: bool| {
         if available {
-            (
-                icondata::FaCircleSolid,
-                "text-green-700 dark:text-green-400",
-            )
+            (icondata::FaCircleSolid, "text-ok")
         } else {
             (icondata::FaCircleRegular, "opacity-60")
         }
@@ -976,7 +969,7 @@ fn runtime_acp_agent_list(
                     view! {
                         <button
                             type="button"
-                            class="font-mono text-[0.7rem] text-caramel underline-offset-2 hover:underline dark:text-maple"
+                            class="font-mono text-[0.7rem] text-accent underline-offset-2 hover:underline"
                             data-acp-document=path.clone()
                             on:click=move |_| workspace.open_agent_document(&opened, String::new())
                         >
@@ -1152,7 +1145,7 @@ fn runtime_acp_agent_list(
         })
         .collect_view();
     view! {
-        <div class="flex flex-col gap-1 rounded-md bg-parchment px-2 py-1.5 dark:bg-char" data-runtime-acp>
+        <div class="flex flex-col gap-1 rounded-md bg-surface-2 px-2 py-1.5" data-runtime-acp>
             <span class="text-xs font-bold opacity-70">"ACP agents"</span>
             <ul class="flex flex-col gap-1">{declared}{shared_rows}{offered}</ul>
         </div>
@@ -1190,15 +1183,11 @@ fn runtime_row(
         })
         .unwrap_or_default();
     let (status_icon, status_class, status) = if card.connected {
-        (
-            icondata::FaCircleSolid,
-            "text-green-700 dark:text-green-400",
-            "connected",
-        )
+        (icondata::FaCircleSolid, "text-ok", "connected")
     } else if message.is_some() {
         (
             icondata::FaCircleExclamationSolid,
-            "text-red-700 dark:text-red-400",
+            "text-bad",
             "not connected",
         )
     } else {
@@ -1300,16 +1289,14 @@ fn runtime_row(
     });
     view! {
         <li
-            class="runtime-entry no-callout relative flex cursor-grab touch-manipulation items-center gap-2 border-b border-toasted py-1 pr-1 pl-2 select-none last:border-b-0 dark:border-ember"
+            class="runtime-entry no-callout relative flex cursor-grab touch-manipulation items-center gap-2 border-b border-line py-1 pr-1 pl-2 select-none last:border-b-0"
             class:z-30=lifted.clone()
             class:rounded-lg=lifted.clone()
             class:shadow-xl=lifted.clone()
             class:pointer-events-none=lifted.clone()
-            class:bg-cream=lifted.clone()
-            class:dark:bg-night=lifted.clone()
+            class:bg-surface=lifted.clone()
             class:ring-2=lifted.clone()
-            class:ring-caramel=lifted.clone()
-            class:dark:ring-maple=lifted.clone()
+            class:ring-accent=lifted.clone()
             data-offline=offline.then_some("true")
             style:transform={
                 let lifted = lifted.clone();
@@ -1335,7 +1322,7 @@ fn runtime_row(
         >
             <Glyph icon=icondata::FaGripVerticalSolid class="opacity-40" />
             <span
-                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-toasted dark:bg-ember"
+                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-sunken"
                 class:opacity-60=!card.connected
                 title=lifetime.map_or("not listed", lifetime_label)
             >
@@ -1358,7 +1345,7 @@ fn runtime_row(
                 {(!capabilities.is_empty()).then(|| view! {
                     <span class="flex flex-wrap gap-1">
                         {capabilities.into_iter().map(|capability| view! {
-                            <span class="rounded bg-toasted px-1.5 font-mono text-[0.7rem] dark:bg-ember">{capability}</span>
+                            <span class="rounded bg-sunken px-1.5 font-mono text-[0.7rem]">{capability}</span>
                         }).collect_view()}
                     </span>
                 })}
@@ -1384,7 +1371,7 @@ fn runtime_row(
                 })}
                 {runtime_manage_buttons(manage, card.id.clone())}
                 {offline_note}
-                {message.map(|message| view! { <span class="text-xs break-words text-red-800 dark:text-red-300">{message}</span> })}
+                {message.map(|message| view! { <span class="text-xs break-words text-bad">{message}</span> })}
             </div>
             {connection}
             <button
@@ -1605,7 +1592,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                  placeholder: &'static str,
                  value: RwSignal<String>| {
         view! {
-            <label class="flex min-w-0 flex-1 flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
+            <label class="flex min-w-0 flex-1 flex-col gap-1 text-xs font-bold text-muted">
                 <span>{label}</span>
                 <input
                     type="text"
@@ -1630,12 +1617,12 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                         href=guide.url()
                         target="_blank"
                         rel="noopener noreferrer"
-                        class="flex min-h-11 items-start gap-2 rounded-md px-2 py-1.5 hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                        class="flex min-h-11 items-start gap-2 rounded-md px-2 py-1.5 hover:bg-hover active:bg-press"
                         data-guide
                     >
                         <Glyph icon=icondata::FaArrowUpRightFromSquareSolid class="mt-1 text-xs opacity-70" />
                         <span class="flex min-w-0 flex-col">
-                            <span class="text-sm font-bold text-caramel underline-offset-2 hover:underline dark:text-maple">{guide.title}</span>
+                            <span class="text-sm font-bold text-accent underline-offset-2 hover:underline">{guide.title}</span>
                             <span class=NOTE>{guide.note}</span>
                         </span>
                     </a>
@@ -1645,7 +1632,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
         .collect_view();
     let heading = "flex items-center gap-2 text-sm font-bold";
     view! {
-        <section id="add-runtime" class="flex flex-col gap-3 rounded-xl border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char">
+        <section id="add-runtime" class="flex flex-col gap-3 rounded-xl border border-accent bg-surface-2 p-3">
             <div class="flex items-center gap-2">
                 <h3 class="min-w-0 flex-1 font-bold">"Add a runtime"</h3>
                 <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=move |_| adding.set(false)>
@@ -1667,7 +1654,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                 {field("Only workspaces under (optional)", "ssh-root", "~/src", root)}
                 {move || match template() {
                     Ok(template) => view! {
-                        <pre id="ssh-preview" class="overflow-x-auto rounded-md border border-crust bg-cream p-2 font-mono text-xs dark:border-smoke dark:bg-night">{template.toml()}</pre>
+                        <pre id="ssh-preview" class="overflow-x-auto rounded-md border border-line-2 bg-surface p-2 font-mono text-xs">{template.toml()}</pre>
                     }
                     .into_any(),
                     Err(error) => view! {
@@ -1699,7 +1686,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                 </div>
                 {move || outcome.get().map(|outcome| match outcome {
                     Ok(done) => view! {
-                        <p id="ssh-outcome" class="flex items-start gap-2 text-sm text-green-800 dark:text-green-300">
+                        <p id="ssh-outcome" class="flex items-start gap-2 text-sm text-ok">
                             <Glyph icon=icondata::FaCheckSolid class="mt-1" />
                             {done}
                         </p>
@@ -1708,7 +1695,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     Err(error) => view! { <p id="ssh-outcome" class=ERROR>{error}</p> }.into_any(),
                 })}
             </div>
-            <div class="flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember" data-add="dial-in">
+            <div class="flex flex-col gap-2 border-t border-line pt-3" data-add="dial-in">
                 <h4 class=heading>
                     <Glyph icon=icondata::FaPlugSolid />
                     "Let one dial in"
@@ -1725,7 +1712,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     id="dial-in-command"
                     readonly
                     rows="2"
-                    class="w-full resize-none rounded-md border border-crust bg-cream p-2 font-mono text-xs dark:border-smoke dark:bg-night"
+                    class="w-full resize-none rounded-md border border-line-2 bg-surface p-2 font-mono text-xs"
                     prop:value=shown_command
                 ></textarea>
                 <div class="flex flex-wrap gap-2">
@@ -1765,7 +1752,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                 </Show>
                 </div>
             </div>
-            <div class="flex flex-col gap-1 border-t border-toasted pt-3 dark:border-ember" data-add="guides">
+            <div class="flex flex-col gap-1 border-t border-line pt-3" data-add="guides">
                 <h4 class=heading>
                     <Glyph icon=icondata::FaBookOpenSolid />
                     "Guides"

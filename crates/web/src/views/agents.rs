@@ -54,7 +54,7 @@ pub fn agents_page(workspace: Workspace) -> impl IntoView {
         <div class="flex min-h-0 flex-1">
             <aside
                 id="agents-sidebar"
-                class="shrink-0 flex-col border-r border-toasted bg-parchment dark:border-ember dark:bg-char"
+                class="shrink-0 flex-col border-r border-line bg-surface-2"
                 class:hidden=move || !listing()
                 class:flex=listing
                 class:w-full=listing
@@ -128,7 +128,7 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
                 </button>
             </div>
             <Show when=move || creating.get()>
-                <label class="flex flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
+                <label class="flex flex-col gap-1 text-xs font-bold text-muted">
                     <span>"Document"</span>
                     <input
                         type="text"
@@ -182,7 +182,7 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
                             .collect_view();
                         view! {
                             <h3
-                                class="mt-2 flex items-center gap-2 px-3 text-xs font-bold tracking-wide text-ink uppercase dark:text-sand"
+                                class="mt-2 flex items-center gap-2 px-3 text-xs font-bold tracking-wide text-muted uppercase"
                                 data-preset=group.preset.clone().unwrap_or_default()
                             >
                                 <Glyph icon=icon class="opacity-70" />
@@ -296,7 +296,7 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
                     })
                     .collect_view();
                 view! {
-                    <h3 class="mt-2 flex items-center gap-2 px-3 text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">
+                    <h3 class="mt-2 flex items-center gap-2 px-3 text-xs font-bold tracking-wide text-muted uppercase">
                         {each.label()}
                     </h3>
                     {rows}
@@ -312,7 +312,7 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
 }
 
 /// A panel row's action: small, beside the others.
-const PANEL_BUTTON: &str = "inline-flex min-h-11 items-center rounded-md border border-crust px-2 text-xs hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
+const PANEL_BUTTON: &str = "inline-flex min-h-11 items-center rounded-md border border-line-2 px-2 text-xs hover:bg-hover active:bg-press";
 
 /// An agent's row: its mode's icon, its ID, whether it is off or has an
 /// edit the daemon refused, and its description; a click opens it.
@@ -343,14 +343,12 @@ fn agent_row(workspace: Workspace, agent: AgentEntry) -> impl IntoView {
         .or_else(|| summary.mode.clone())
         .unwrap_or_default();
     let current_class = current.clone();
-    let current_dark = current.clone();
     view! {
         <div data-config-path=path.clone()>
             <button
                 type="button"
                 class=ROW
-                class:bg-toasted=current_class
-                class:dark:bg-ember=current_dark
+                class:bg-sel=current_class
                 aria-current=move || current().then_some("true")
                 title=title
                 on:click=move |_| {
@@ -363,7 +361,7 @@ fn agent_row(workspace: Workspace, agent: AgentEntry) -> impl IntoView {
                     <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{agent.id}</span>
                     {(!summary.enabled).then(|| view! { <span class=STATE>"off"</span> })}
                     <Show when=draft.clone()>
-                        <span class="text-xs text-caramel dark:text-maple">"not applied"</span>
+                        <span class="text-xs text-accent">"not applied"</span>
                     </Show>
                 </span>
                 <span class=format!("w-full truncate pl-6 {NOTE}")>{note}</span>
@@ -384,7 +382,7 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
             confirm_delete.set(false);
             return view! {
                 {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
-                <div class="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-ink dark:text-sand" data-agents-empty>
+                <div class="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted" data-agents-empty>
                     <Glyph icon=icondata::FaRobotSolid class="text-3xl opacity-70" />
                     <p>"Pick an agent to edit its document, or create one with New agent."</p>
                     <button

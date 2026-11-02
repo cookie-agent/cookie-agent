@@ -503,7 +503,7 @@ pub fn App() -> impl IntoView {
     let shows_workspace =
         Memo::new(move |_| connected.get() || reconnecting_reason.with(Option::is_some));
     view! {
-        <div class="app-frame flex flex-col overflow-hidden bg-cream text-espresso dark:bg-night dark:text-latte">
+        <div class="app-frame flex flex-col overflow-hidden bg-surface text-fg">
             <OAuthLanding landing=landing />
             {move || {
                 // Only a change of screen remounts what the page shows: the
@@ -521,8 +521,8 @@ pub fn App() -> impl IntoView {
                 }
                 view! {
                     <Show when=move || reconnecting_reason.get().is_some()>
-                        <div id="reconnecting" role="status" class="flex items-center gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember">
-                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
+                        <div id="reconnecting" role="status" class="flex items-center gap-2 border-b border-accent bg-sunken px-3 py-2 text-sm">
+                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-accent" />
                             <span class="min-w-0 flex-1">
                                 {move || {
                                     match connection.daemon.get().filter(daemon_status::is_starting) {
@@ -565,8 +565,8 @@ fn DaemonNotice(connection: Connection) -> impl IntoView {
     });
     view! {
         <Show when=move || notice.get().is_some()>
-            <div id="daemon-status" role="status" class="flex items-center gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember">
-                <Glyph icon=icondata::FaGearsSolid class="text-caramel dark:text-maple" />
+            <div id="daemon-status" role="status" class="flex items-center gap-2 border-b border-accent bg-sunken px-3 py-2 text-sm">
+                <Glyph icon=icondata::FaGearsSolid class="text-accent" />
                 <span class="min-w-0 flex-1">{move || notice.get().unwrap_or_default()}</span>
             </div>
             <StartingProgress connection=connection />
@@ -599,8 +599,8 @@ fn StartingProgress(connection: Connection) -> impl IntoView {
                 .into_iter()
                 .map(|(label, fraction)| {
                     view! {
-                        <div class="h-1 w-full bg-crust dark:bg-smoke" role="progressbar" aria-label=label aria-valuemin="0" aria-valuemax="100" aria-valuenow=format!("{:.0}", fraction * 100.0)>
-                            <div class="h-1 bg-caramel dark:bg-maple" style=format!("width: {:.1}%", fraction * 100.0)></div>
+                        <div class="h-1 w-full bg-line-2" role="progressbar" aria-label=label aria-valuemin="0" aria-valuemax="100" aria-valuenow=format!("{:.0}", fraction * 100.0)>
+                            <div class="h-1 bg-accent" style=format!("width: {:.1}%", fraction * 100.0)></div>
                         </div>
                     }
                 })
@@ -610,13 +610,13 @@ fn StartingProgress(connection: Connection) -> impl IntoView {
 }
 
 /// An icon-only button in the header.
-const HEADER_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-ink hover:bg-toasted hover:text-espresso active:bg-crust dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
+const HEADER_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-fg active:bg-press";
 
 /// The connect screen's header; once connected, the rail has these.
 #[component]
 fn Header(connection: Connection, theme: RwSignal<ThemePreference>) -> impl IntoView {
     view! {
-        <header class="flex items-center gap-2 border-b border-toasted bg-parchment px-3 dark:border-ember dark:bg-char">
+        <header class="flex items-center gap-2 border-b border-line bg-surface-2 px-3">
             <span class="flex min-w-0 flex-1 items-center gap-2 font-mono font-bold whitespace-nowrap">
                 <img src="icons/icon.svg" alt="" class="h-6 w-6 shrink-0" />
                 "Cookie Agent"
@@ -703,9 +703,9 @@ pub(crate) fn ConnectionStatus(
         }
     };
     let tone = move || match connection.phase.get() {
-        Phase::Connected { .. } => "text-green-700 dark:text-green-400",
-        Phase::Connecting | Phase::Reconnecting { .. } => "text-caramel dark:text-maple",
-        Phase::Idle | Phase::Failed { .. } => "text-ink dark:text-sand",
+        Phase::Connected { .. } => "text-ok",
+        Phase::Connecting | Phase::Reconnecting { .. } => "text-accent",
+        Phase::Idle | Phase::Failed { .. } => "text-muted",
     };
     let details = move || match connection.phase.get() {
         Phase::Connected {
@@ -743,7 +743,7 @@ pub(crate) fn ConnectionStatus(
                     };
                     format!("Connection: {state}")
                 }
-                class=move || format!("inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke {} {}", if compact { "" } else { "px-3" }, tone())
+                class=move || format!("inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full hover:bg-hover active:bg-press {} {}", if compact { "" } else { "px-3" }, tone())
                 aria-haspopup="dialog"
                 aria-expanded=move || open.get().to_string()
                 title=summary
@@ -760,9 +760,9 @@ pub(crate) fn ConnectionStatus(
                     role="dialog"
                     aria-label="Connection"
                     class=if compact {
-                        "fixed bottom-3 left-3 z-40 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-sm shadow-lg sm:left-16 dark:border-ember dark:bg-night"
+                        "fixed bottom-3 left-3 z-40 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-line bg-surface p-3 text-sm shadow-lg sm:left-16"
                     } else {
-                        "absolute top-full right-0 z-40 mt-1 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-sm shadow-lg dark:border-ember dark:bg-night"
+                        "absolute top-full right-0 z-40 mt-1 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-line bg-surface p-3 text-sm shadow-lg"
                     }
                 >
                     <div class="flex items-center gap-2">
@@ -784,7 +784,7 @@ pub(crate) fn ConnectionStatus(
                                 .into_iter()
                                 .map(|(name, value)| {
                                     view! {
-                                        <dt class="text-ink dark:text-sand">{name}</dt>
+                                        <dt class="text-muted">{name}</dt>
                                         <dd class="min-w-0 font-mono text-xs break-all">{value}</dd>
                                     }
                                 })
@@ -802,7 +802,7 @@ pub(crate) fn ConnectionStatus(
                             type="button"
                             id=primary.then_some("connection-restart")
                             data-connection-restart
-                            class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-crust px-3 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                            class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-line-2 px-3 text-sm hover:bg-hover active:bg-press"
                             on:click=move |_| {
                                 close();
                                 connection.workspace.ask_restart();
@@ -839,7 +839,7 @@ pub(crate) fn ForgetDaemon(
                         type="button"
                         id=primary.then_some("forget")
                         data-forget
-                        class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-crust px-3 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-line-2 px-3 text-sm hover:bg-hover active:bg-press"
                         on:click=move |_| confirming.set(true)
                     >
                         <Glyph icon=icondata::FaRightFromBracketSolid />
@@ -848,14 +848,14 @@ pub(crate) fn ForgetDaemon(
                 }
             }
         >
-            <div class="flex flex-col gap-2 rounded-md border border-caramel p-2 text-sm dark:border-maple">
+            <div class="flex flex-col gap-2 rounded-md border border-accent p-2 text-sm">
                 <p>"Delete this daemon's token from the browser, stop its notifications here, and disconnect? Connecting again takes a new link from `cookie web`."</p>
                 <div class="flex flex-wrap gap-2">
                     <button
                         type="button"
                         id=primary.then_some("forget-confirm")
                         data-forget-confirm
-                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-espresso px-3 font-bold text-cream hover:bg-caramel active:bg-ink dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-accent px-3 font-bold text-on-accent hover:bg-accent active:bg-accent-press"
                         on:click=move |_| {
                             on_forget();
                             connection.forget();
@@ -865,7 +865,7 @@ pub(crate) fn ForgetDaemon(
                     </button>
                     <button
                         type="button"
-                        class="inline-flex min-h-11 items-center justify-center rounded-md border border-crust px-3 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        class="inline-flex min-h-11 items-center justify-center rounded-md border border-line-2 px-3 hover:bg-hover active:bg-press"
                         on:click=move |_| confirming.set(false)
                     >
                         "Keep it"
@@ -886,11 +886,16 @@ const LINKS: [(&str, &str); 3] = [
 
 /// What the page is built from and under which licences, as Settings ›
 /// About lists it: each with a link to its licence.
-const ATTRIBUTIONS: [(&str, &str, &str); 3] = [
+const ATTRIBUTIONS: [(&str, &str, &str); 4] = [
     (
         "Icons: Font Awesome Free by Fonticons, Inc.",
         "CC BY 4.0",
         "https://fontawesome.com/license/free",
+    ),
+    (
+        "Interface font: Inter by The Inter Project Authors",
+        "SIL Open Font License 1.1",
+        "fonts/Inter-OFL.txt",
     ),
     (
         "Code font: JetBrains Mono by JetBrains s.r.o.",
@@ -952,7 +957,7 @@ pub(crate) fn about_section(connection: Connection) -> impl IntoView {
                 rows()
                     .into_iter()
                     .map(|(name, value)| view! {
-                        <dt class="text-ink dark:text-sand">{name}</dt>
+                        <dt class="text-muted">{name}</dt>
                         <dd class="min-w-0 font-mono text-xs break-all" data-about=name>{value}</dd>
                     })
                     .collect_view()
@@ -969,10 +974,10 @@ pub(crate) fn about_section(connection: Connection) -> impl IntoView {
                             target="_blank"
                             rel="noopener noreferrer"
                             data-about-link=*name
-                            class="inline-flex min-h-11 items-center gap-2 underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
+                            class="inline-flex min-h-11 items-center gap-2 underline decoration-line-2 underline-offset-2 hover:text-accent"
                         >
                             {*name}
-                            <span class="font-mono text-xs text-ink no-underline dark:text-sand">{*url}</span>
+                            <span class="font-mono text-xs text-muted no-underline">{*url}</span>
                         </a>
                     </li>
                 })
@@ -991,7 +996,7 @@ pub(crate) fn about_section(connection: Connection) -> impl IntoView {
                             target="_blank"
                             rel="noopener noreferrer"
                             data-about-license=*file
-                            class="inline-flex min-h-11 items-center underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
+                            class="inline-flex min-h-11 items-center underline decoration-line-2 underline-offset-2 hover:text-accent"
                         >
                             {*license}
                         </a>
@@ -1011,7 +1016,7 @@ pub(crate) fn about_section(connection: Connection) -> impl IntoView {
                             href=*url
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="inline-flex min-h-11 items-center underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
+                            class="inline-flex min-h-11 items-center underline decoration-line-2 underline-offset-2 hover:text-accent"
                         >
                             {*licence}
                         </a>
@@ -1022,7 +1027,7 @@ pub(crate) fn about_section(connection: Connection) -> impl IntoView {
     }
 }
 
-const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 py-2 font-mono text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple";
+const FIELD: &str = "min-h-11 rounded-md border border-line-2 bg-surface px-3 py-2 font-mono text-fg hover:border-accent focus:border-accent focus:outline-none";
 
 #[component]
 fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
@@ -1041,7 +1046,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
     view! {
         <div class="flex w-full max-w-xl flex-col gap-3">
             <form
-                class="flex flex-col gap-4 rounded-lg border border-toasted bg-parchment p-6 dark:border-ember dark:bg-char"
+                class="flex flex-col gap-4 rounded-lg border border-line bg-surface-2 p-6"
                 on:submit=move |event| {
                     event.prevent_default();
                     connection.connect();
@@ -1051,7 +1056,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                     <img src="icons/icon.svg" alt="" class="h-10 w-10 shrink-0" />
                     <div>
                         <h1 class="text-xl font-bold">"Connect to a cookie daemon"</h1>
-                        <p class="text-sm text-ink dark:text-sand">
+                        <p class="text-sm text-muted">
                             "Open the link `cookie web` prints, or enter the daemon's URL and token."
                         </p>
                     </div>
@@ -1090,9 +1095,9 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                         .filter(|status| starting.is_some() && daemon_status::is_starting(status))
                         .map(|status| {
                             view! {
-                                <div id="daemon-starting" role="status" class="flex flex-col gap-2 rounded-md border border-caramel bg-cream p-3 text-sm dark:border-maple dark:bg-night">
+                                <div id="daemon-starting" role="status" class="flex flex-col gap-2 rounded-md border border-accent bg-surface p-3 text-sm">
                                     <p class="flex items-center gap-2">
-                                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-caramel dark:text-maple" />
+                                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-accent" />
                                         {daemon_status::starting_text(&status)}
                                     </p>
                                     <StartingProgress connection=connection />
@@ -1103,8 +1108,8 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                 {notice
                     .map(|(message, hint)| {
                         view! {
-                            <div role="alert" class="flex gap-2 rounded-md border border-caramel bg-cream p-3 text-sm dark:border-maple dark:bg-night">
-                                <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 text-caramel dark:text-maple" />
+                            <div role="alert" class="flex gap-2 rounded-md border border-accent bg-surface p-3 text-sm">
+                                <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 text-accent" />
                                 <div class="min-w-0">
                                     <p>{message}</p>
                                     {hint.map(|hint| view! { <p class="mt-2 font-mono break-words">{hint}</p> })}
@@ -1116,7 +1121,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                     <button
                         type="submit"
                         disabled=busy
-                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-espresso px-4 font-bold text-cream hover:bg-caramel active:bg-ink disabled:cursor-not-allowed disabled:opacity-50 dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-accent px-4 font-bold text-on-accent hover:bg-accent active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         <Glyph
                             icon=if busy { icondata::FaCircleNotchSolid } else { icondata::FaPlugSolid }
@@ -1126,7 +1131,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                     </button>
                     <button
                         type="button"
-                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-crust px-4 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line-2 px-4 hover:bg-hover active:bg-press"
                         title="Delete the stored token for this URL"
                         on:click=move |_| connection.forget()
                     >
@@ -1194,7 +1199,8 @@ async fn land(callback: oauth::Callback, workspace: Workspace, landing: RwSignal
 /// The banner of a tab the authorization server sent back.
 #[component]
 fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
-    const BANNER: &str = "flex items-start gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember";
+    const BANNER: &str =
+        "flex items-start gap-2 border-b border-accent bg-sunken px-3 py-2 text-sm";
     let dismiss = move || {
         view! {
             <button
@@ -1213,14 +1219,14 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
         landing.get().map(|shown| match shown {
             Landing::HandingOver => view! {
                 <div id="oauth-landing" data-landing="handing-over" role="status" class=BANNER>
-                    <Glyph icon=icondata::FaArrowsRotateSolid class="mt-0.5 shrink-0 animate-spin text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaArrowsRotateSolid class="mt-0.5 shrink-0 animate-spin text-accent" />
                     <span class="min-w-0 flex-1">"Finishing the sign-in…"</span>
                 </div>
             }
             .into_any(),
             Landing::HandedOver { server } => view! {
                 <div id="oauth-landing" data-landing="handed-over" role="status" class=BANNER>
-                    <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-accent" />
                     <span class="min-w-0 flex-1">
                         {format!("The sign-in to {server} finishes in the tab that started it. You can close this tab.")}
                     </span>
@@ -1230,7 +1236,7 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
             .into_any(),
             Landing::Expired { server } => view! {
                 <div id="oauth-landing" data-landing="expired" role="alert" class=BANNER>
-                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-accent" />
                     <span class="min-w-0 flex-1">
                         {format!("The sign-in to {server} waited too long and was not finished. Start it again from Settings › MCP servers.")}
                     </span>
@@ -1242,7 +1248,7 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
                 let copied = url.clone();
                 view! {
                     <div id="oauth-landing" data-landing="unknown" role="alert" class=BANNER>
-                        <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                        <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-accent" />
                         <div class="flex min-w-0 flex-1 flex-col gap-2">
                             <span>
                                 "This sign-in was not started in this browser, or it has already ended, so it was not finished here. If you started it in the installed app or another browser, copy this address and paste it there, under Settings › MCP servers."
@@ -1251,13 +1257,13 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
                                 id="oauth-landing-address"
                                 readonly
                                 rows="2"
-                                class="w-full resize-none rounded-md border border-crust bg-cream p-2 font-mono text-xs break-all dark:border-smoke dark:bg-night"
+                                class="w-full resize-none rounded-md border border-line-2 bg-surface p-2 font-mono text-xs break-all"
                                 prop:value=url
                             ></textarea>
                             <button
                                 type="button"
                                 id="oauth-landing-copy"
-                                class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-crust bg-cream px-3 text-sm hover:bg-parchment active:bg-crust dark:border-smoke dark:bg-night dark:hover:bg-char dark:active:bg-smoke"
+                                class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-line-2 bg-surface px-3 text-sm hover:bg-hover active:bg-press"
                                 on:click=move |_| {
                                     let text = copied.clone();
                                     spawn_local(async move {

@@ -1,5 +1,6 @@
 /* The page's styles: Tailwind utilities from the class names in src, the
-   palette as theme tokens, and the bundled fonts. */
+   Quiet Ink palette as semantic tokens (docs/site/specs/quiet-ink.md,
+   section 3), and the bundled fonts. */
 
 @import "tailwindcss" source(none);
 @source "../src";
@@ -26,23 +27,24 @@
    system's, when the user overrides it, in the palette's colours. */
 html {
   color-scheme: light;
-  scrollbar-color: var(--color-crust) var(--color-parchment);
+  scrollbar-color: var(--color-line-2) transparent;
 }
 
 html.dark {
   color-scheme: dark;
-  scrollbar-color: var(--color-smoke) var(--color-char);
 }
 
 /* Keyboard focus shows on every control in the palette's accent; text
    fields keep their border highlight. Controls that act show a pointer. */
 @layer base {
   :where(button, a[href], summary, select, input[type="checkbox"]):focus-visible {
-    outline: 2px solid var(--color-caramel);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
   }
-  .dark :where(button, a[href], summary, select, input[type="checkbox"]):focus-visible {
-    outline-color: var(--color-maple);
+  body {
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   :where(button:not(:disabled), summary, select, a[href]) {
     cursor: pointer;
@@ -68,18 +70,14 @@ html.dark {
     transform: translateY(-50%);
     white-space: nowrap;
     border-radius: 0.375rem;
-    background: var(--color-espresso);
-    color: var(--color-cream);
+    background: var(--color-fg);
+    color: var(--color-surface);
     padding: 0.25rem 0.5rem;
     font-size: 0.75rem;
     line-height: 1rem;
     pointer-events: none;
     opacity: 0;
     transition: opacity 120ms;
-  }
-  .dark .rail [data-tip]::after {
-    background: var(--color-latte);
-    color: var(--color-night);
   }
   @media (hover: hover) {
     .rail [data-tip]:hover::after {
@@ -166,29 +164,105 @@ html.pressing * {
   user-select: none !important;
 }
 
-/* The landing site's palette, which is the TUI's (crates/tui/src/theme.rs). */
+/* Quiet Ink's colours, by role. Each token switches with the `dark` class,
+   so a class names a role once (`bg-raised`), never a light and a dark
+   colour. The TUI's palette tables hold the same values
+   (crates/tui/src/theme.rs). */
+:root {
+  --qi-surface: #ffffff;
+  --qi-surface-2: #fafafa;
+  --qi-raised: #ffffff;
+  --qi-sunken: #f4f4f5;
+  --qi-fg: #09090b;
+  --qi-fg-2: #3f3f46;
+  --qi-muted: #71717a;
+  --qi-faint: #a1a1aa;
+  --qi-line: rgb(9 9 11 / 0.08);
+  --qi-line-2: rgb(9 9 11 / 0.14);
+  --qi-hover: rgb(9 9 11 / 0.045);
+  --qi-press: rgb(9 9 11 / 0.08);
+  --qi-sel: rgb(91 91 214 / 0.09);
+  --qi-accent: #5b5bd6;
+  --qi-accent-press: #4a4ac2;
+  --qi-accent-soft: rgb(91 91 214 / 0.12);
+  --qi-on-accent: #ffffff;
+  --qi-ok: #26935f;
+  --qi-ok-soft: rgb(38 147 95 / 0.1);
+  --qi-bad: #d1343b;
+  --qi-bad-soft: rgb(209 52 59 / 0.08);
+  --qi-warn: #b26b00;
+  --qi-warn-soft: rgb(214 138 0 / 0.12);
+  --qi-scrim: rgb(9 9 11 / 0.25);
+  --qi-shadow-menu: 0 12px 32px -8px rgb(0 0 0 / 0.18), 0 2px 6px -2px rgb(0 0 0 / 0.08);
+  --qi-shadow-sheet: 0 24px 60px -12px rgb(0 0 0 / 0.22), 0 8px 20px -8px rgb(0 0 0 / 0.1);
+}
+.dark {
+  --qi-surface: #0e0e10;
+  --qi-surface-2: #0a0a0c;
+  --qi-raised: #17171a;
+  --qi-sunken: #1b1b1f;
+  --qi-fg: #ededef;
+  --qi-fg-2: #b4b4bc;
+  --qi-muted: #86868f;
+  --qi-faint: #5c5c66;
+  --qi-line: rgb(255 255 255 / 0.07);
+  --qi-line-2: rgb(255 255 255 / 0.12);
+  --qi-hover: rgb(255 255 255 / 0.045);
+  --qi-press: rgb(255 255 255 / 0.08);
+  --qi-sel: rgb(124 124 255 / 0.13);
+  --qi-accent: #7c7cff;
+  --qi-accent-press: #9393ff;
+  --qi-accent-soft: rgb(124 124 255 / 0.16);
+  --qi-on-accent: #ffffff;
+  --qi-ok: #4cc38a;
+  --qi-ok-soft: rgb(76 195 138 / 0.12);
+  --qi-bad: #f2555a;
+  --qi-bad-soft: rgb(242 85 90 / 0.12);
+  --qi-warn: #e5a93b;
+  --qi-warn-soft: rgb(229 169 59 / 0.13);
+  --qi-scrim: rgb(0 0 0 / 0.5);
+  --qi-shadow-menu: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
+  --qi-shadow-sheet: 0 30px 70px -10px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(255 255 255 / 0.06);
+}
+
+@theme inline {
+  --color-surface: var(--qi-surface);
+  --color-surface-2: var(--qi-surface-2);
+  --color-raised: var(--qi-raised);
+  --color-sunken: var(--qi-sunken);
+  --color-fg: var(--qi-fg);
+  --color-fg-2: var(--qi-fg-2);
+  --color-muted: var(--qi-muted);
+  --color-faint: var(--qi-faint);
+  --color-line: var(--qi-line);
+  --color-line-2: var(--qi-line-2);
+  --color-hover: var(--qi-hover);
+  --color-press: var(--qi-press);
+  --color-sel: var(--qi-sel);
+  /* Opaque hover and press over the sidebar, for covers that must hide
+     what is under them (a row's actions over its title). */
+  --color-hover-solid: color-mix(in srgb, var(--qi-fg) 4.5%, var(--qi-surface-2));
+  --color-press-solid: color-mix(in srgb, var(--qi-fg) 8%, var(--qi-surface-2));
+  --color-accent: var(--qi-accent);
+  --color-accent-press: var(--qi-accent-press);
+  --color-accent-soft: var(--qi-accent-soft);
+  --color-on-accent: var(--qi-on-accent);
+  --color-ok: var(--qi-ok);
+  --color-ok-soft: var(--qi-ok-soft);
+  --color-bad: var(--qi-bad);
+  --color-bad-soft: var(--qi-bad-soft);
+  --color-warn: var(--qi-warn);
+  --color-warn-soft: var(--qi-warn-soft);
+  --color-scrim: var(--qi-scrim);
+  --shadow-menu: var(--qi-shadow-menu);
+  --shadow-sheet: var(--qi-shadow-sheet);
+}
+
 @theme {
-  --color-cream: #fbf4e6;
-  --color-parchment: #f2e5cc;
-  --color-toasted: #e6ce9e;
-  --color-crust: #c9ae85;
-  --color-espresso: #46301f;
-  --color-ink: #625240;
-  --color-caramel: #9c5a10;
-
-  --color-night: #201c16;
-  --color-char: #29251d;
-  --color-ember: #393326;
-  --color-smoke: #63563b;
-  --color-latte: #edc7ab;
-  --color-sand: #c9b59c;
-  --color-maple: #e78c33;
-
   /* Badge hues (client_state::badges::badge_hue): a machine's or a
      runtime's colour wherever it shows. Each light hue keeps 4.6:1 or
-     more against a badge's tint over parchment and toasted (a row at rest,
-     and hovered or open), each dark one against its tint over char and
-     ember. */
+     more against its badge's tint over the light surfaces, each dark one
+     against its tint over the dark surfaces. */
   --color-hue-0: #1a4486;
   --color-hue-1: #005559;
   --color-hue-2: #245720;
@@ -206,8 +280,19 @@ html.pressing * {
   --color-hue-6-dark: #ffb57a;
   --color-hue-7-dark: #ffa093;
 
-  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Inter, one variable file for every weight, Latin only. */
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
@@ -282,22 +367,23 @@ body {
   padding-left: 1.5rem;
 }
 .markdown blockquote {
-  border-left: 3px solid var(--color-crust);
+  border-left: 2px solid var(--color-line-2);
   padding-left: 0.75rem;
+  color: var(--color-fg-2);
 }
 .markdown code {
   font-family: var(--font-mono);
-  font-size: 0.875em;
-  background: var(--color-parchment);
-  border-radius: 0.25rem;
-  padding: 0 0.25rem;
+  font-size: 0.86em;
+  background: var(--color-sunken);
+  border-radius: 0.3rem;
+  padding: 0.1em 0.3em;
 }
 .markdown pre {
   overflow-x: auto;
-  border: 1px solid var(--color-toasted);
-  border-radius: 0.25rem;
-  padding: 0.5rem;
-  background: var(--color-cream);
+  border: 1px solid var(--color-line);
+  border-radius: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--color-surface-2);
 }
 .markdown pre code {
   background: transparent;
@@ -310,19 +396,21 @@ body {
 }
 .markdown th,
 .markdown td {
-  border: 1px solid var(--color-toasted);
-  padding: 0 0.5rem;
+  border: 1px solid var(--color-line);
+  padding: 0.125rem 0.5rem;
 }
-.dark .markdown code {
-  background: var(--color-char);
+.markdown th {
+  background: var(--color-surface-2);
+  font-weight: 600;
 }
-.dark .markdown pre {
-  background: var(--color-night);
-  border-color: var(--color-ember);
+.markdown a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-color: var(--color-accent-soft);
+  text-underline-offset: 2px;
 }
-.dark .markdown th,
-.dark .markdown td {
-  border-color: var(--color-ember);
+.markdown li::marker {
+  color: var(--color-faint);
 }
 
 /* Terminal output: stderr, and the 16 standard SGR colours, readable on
@@ -373,10 +461,7 @@ body {
 }
 
 .terminal .stderr {
-  color: #a3361f;
-}
-.dark .terminal .stderr {
-  color: #f08a6c;
+  color: var(--color-bad);
 }
 .sgr-fg-0 { color: #3b3b3b; }
 .sgr-fg-1 { color: #b3261e; }
@@ -443,61 +528,60 @@ body {
 .dark .sgr-bg-14 { background: #125c61; }
 .dark .sgr-bg-15 { background: #5e5e5e; }
 
-/* highlight.js tokens in the palette. */
+/* highlight.js tokens, on Quiet Ink's surfaces. */
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-built_in,
 .hljs-literal {
-  color: #9c5a10;
-  font-weight: 600;
+  color: #5b5bd6;
 }
 .hljs-string,
 .hljs-regexp,
 .hljs-attr {
-  color: #5d7a1f;
+  color: #26935f;
 }
 .hljs-number,
 .hljs-symbol {
-  color: #a3361f;
+  color: #b26b00;
 }
 .hljs-comment,
 .hljs-quote {
-  color: #8a7a66;
+  color: #8b8b94;
   font-style: italic;
 }
 .hljs-title,
 .hljs-section,
 .hljs-type {
-  color: #1d4f91;
+  color: #1d6fb8;
 }
 .hljs-meta,
 .hljs-variable,
 .hljs-template-variable {
-  color: #8e3a8e;
+  color: #a3398e;
 }
 .dark .hljs-keyword,
 .dark .hljs-selector-tag,
 .dark .hljs-built_in,
 .dark .hljs-literal {
-  color: #e78c33;
+  color: #9d9dff;
 }
 .dark .hljs-string,
 .dark .hljs-regexp,
 .dark .hljs-attr {
-  color: #b5cf6b;
+  color: #6fd3a0;
 }
 .dark .hljs-number,
 .dark .hljs-symbol {
-  color: #f08a6c;
+  color: #e5a93b;
 }
 .dark .hljs-comment,
 .dark .hljs-quote {
-  color: #9a8b74;
+  color: #6e6e78;
 }
 .dark .hljs-title,
 .dark .hljs-section,
 .dark .hljs-type {
-  color: #79a8ff;
+  color: #79b8ff;
 }
 .dark .hljs-meta,
 .dark .hljs-variable,

@@ -4,13 +4,6 @@ use super::{ColorLevel, Theme, ThemeKind};
 
 #[test]
 fn environment_selects_themes_and_disables_color_safely() {
-    assert_eq!(
-        Theme::from_environment("high-contrast", false, "xterm-256color", "").key(),
-        super::ThemeKey {
-            kind: ThemeKind::HighContrast,
-            colors: ColorLevel::Ansi16,
-        }
-    );
     for requested in ["dark", "dark-roast", "darkroast"] {
         assert_eq!(
             Theme::from_environment(requested, false, "xterm-256color", "").key(),
@@ -20,17 +13,40 @@ fn environment_selects_themes_and_disables_color_safely() {
             }
         );
     }
-    for theme in [
-        Theme::from_environment("mono", false, "xterm-256color", "truecolor"),
-        Theme::from_environment("default", true, "xterm-256color", "truecolor"),
-        Theme::from_environment("default", false, "dumb", "truecolor"),
-        Theme::from_environment("dark", true, "xterm-256color", "truecolor"),
-        Theme::from_environment("dark-roast", false, "dumb", "truecolor"),
-        Theme::new(ThemeKind::Mono, ColorLevel::TrueColor),
+    // The removed `mono` and `high-contrast` values are unknown: the light
+    // default at the terminal's own depth.
+    for requested in ["mono", "high-contrast", "auto", "nonsense"] {
+        assert_eq!(
+            Theme::from_environment(requested, false, "xterm-256color", "").key(),
+            super::ThemeKey {
+                kind: ThemeKind::Default,
+                colors: ColorLevel::Ansi256,
+            }
+        );
+    }
+    // `NO_COLOR` and `TERM=dumb` take the colour away and keep the kind.
+    for (theme, kind) in [
+        (
+            Theme::from_environment("default", true, "xterm-256color", "truecolor"),
+            ThemeKind::Default,
+        ),
+        (
+            Theme::from_environment("default", false, "dumb", "truecolor"),
+            ThemeKind::Default,
+        ),
+        (
+            Theme::from_environment("dark", true, "xterm-256color", "truecolor"),
+            ThemeKind::Dark,
+        ),
+        (
+            Theme::from_environment("dark-roast", false, "dumb", "truecolor"),
+            ThemeKind::Dark,
+        ),
     ] {
-        assert_eq!(theme.key().kind, ThemeKind::Mono);
+        assert_eq!(theme.key().kind, kind);
         assert_eq!(theme.key().colors, ColorLevel::None);
         assert!(theme.assistant().fg.is_none());
+        assert!(theme.surface().bg.is_none());
     }
 }
 

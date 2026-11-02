@@ -37,15 +37,15 @@ const DROP: &str = "[data-project-drop]";
 /// A header's button (pencil, trash, `+`): clear at rest, so it shows the
 /// header's own colour (hovered or pressed with it), one step darker under
 /// the pointer, darker still pressed. Pressing it never presses the header.
-const HEADER_ACTION: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
+const HEADER_ACTION: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-press hover:text-fg active:bg-press";
 
 /// What the pencil and trash lie on over the header's name: the header's
 /// hover colour, fading in from their left, and its pressed colour while
 /// the name is pressed.
-const HEADER_COVER: &str = "pl-6 bg-[linear-gradient(to_right,transparent,var(--color-toasted)_1.5rem)] dark:bg-[linear-gradient(to_right,transparent,var(--color-ember)_1.5rem)] group-has-[[data-section-toggle]:active]:bg-[linear-gradient(to_right,transparent,var(--color-crust)_1.5rem)] dark:group-has-[[data-section-toggle]:active]:bg-[linear-gradient(to_right,transparent,var(--color-smoke)_1.5rem)]";
+const HEADER_COVER: &str = "pl-6 bg-[linear-gradient(to_right,transparent,var(--color-hover-solid)_1.5rem)] group-has-[[data-section-toggle]:active]:bg-[linear-gradient(to_right,transparent,var(--color-press-solid)_1.5rem)]";
 
 /// A text field of the editor.
-const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface px-3 text-sm hover:border-accent focus:border-accent focus:outline-none";
 
 /// The project a section key names: `None` for "No project".
 fn project_of_key(key: &str) -> Option<Option<ProjectId>> {
@@ -668,7 +668,7 @@ fn project_header(
         <div
             class=move || format!(
                 "project-header group relative flex rounded-md {}",
-                if ring() { "bg-toasted ring-2 ring-caramel dark:bg-ember dark:ring-maple" } else { "" },
+                if ring() { "bg-sunken ring-2 ring-accent" } else { "" },
             )
             data-project-drop=key.clone()
             data-project-header=project_id.as_ref().map_or_else(|| "none".to_owned(), ToString::to_string)
@@ -687,7 +687,7 @@ fn project_header(
             <Show when=picking>
                 <button
                     type="button"
-                    class="inline-flex min-h-11 w-9 shrink-0 items-center justify-center self-start rounded-md text-caramel hover:bg-crust active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:text-maple dark:hover:bg-smoke dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]"
+                    class="inline-flex min-h-11 w-9 shrink-0 items-center justify-center self-start rounded-md text-accent hover:bg-press active:bg-press"
                     role="checkbox"
                     aria-checked=move || pick_state.get().aria_checked()
                     aria-label=pick_label.clone()
@@ -707,7 +707,7 @@ fn project_header(
             </Show>
             <button
                 type="button"
-                class="no-callout flex min-w-0 flex-1 flex-col items-stretch rounded-md text-left select-none hover:bg-toasted active:bg-crust group-hover:bg-toasted dark:hover:bg-ember dark:active:bg-smoke dark:group-hover:bg-ember"
+                class="no-callout flex min-w-0 flex-1 flex-col items-stretch rounded-md text-left select-none hover:bg-hover active:bg-press group-hover:bg-hover"
                 aria-expanded=move || open.get().to_string()
                 title=tooltip
                 data-section-toggle
@@ -743,10 +743,10 @@ fn project_header(
                     </span>
                     {match emoji.clone() {
                         Some(emoji) => view! { <span class="w-5 shrink-0 text-center text-base leading-none" data-project-emoji>{emoji}</span> }.into_any(),
-                        None if editable => view! { <Glyph icon=icondata::FaFolderSolid class="w-5 justify-center text-caramel dark:text-maple" /> }.into_any(),
+                        None if editable => view! { <Glyph icon=icondata::FaFolderSolid class="w-5 justify-center text-accent" /> }.into_any(),
                         None => view! { <Glyph icon=icondata::FaFolderOpenRegular class="w-5 justify-center opacity-70" /> }.into_any(),
                     }}
-                    <span class=move || format!("min-w-0 flex-1 truncate text-sm font-bold {}", if editable { "" } else { "text-ink dark:text-sand" }) data-project-name>
+                    <span class=move || format!("min-w-0 flex-1 truncate text-sm font-bold {}", if editable { "" } else { "text-muted" }) data-project-name>
                         {label.clone()}
                     </span>
                 </span>
@@ -811,7 +811,7 @@ fn project_header(
                 let question = confirm_project.as_ref().map(delete_question).unwrap_or_default();
                 let project = confirm_project.as_ref().map(|project| project.id.clone());
                 view! {
-                    <div class="mx-2 mb-1 flex flex-col gap-2 rounded-lg border border-caramel bg-cream p-2 text-sm dark:border-maple dark:bg-night" role="alertdialog" data-project-confirm-box>
+                    <div class="mx-2 mb-1 flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-project-confirm-box>
                         <p>{question}</p>
                         <div class="flex flex-wrap gap-2">
                             <button
@@ -872,8 +872,7 @@ pub(super) fn move_sheet(workspace: Workspace) -> impl IntoView {
             <button
                 type="button"
                 class=ROW
-                class:bg-toasted=chosen
-                class:dark:bg-ember=chosen
+                class:bg-sel=chosen
                 data-move-to=id.as_ref().map_or_else(|| "none".to_owned(), ToString::to_string)
                 on:click=move |_| {
                     workspace.move_session(session_id, id.clone());
@@ -900,7 +899,7 @@ pub(super) fn move_sheet(workspace: Workspace) -> impl IntoView {
 fn project_mark(emoji: Option<String>, project: bool) -> impl IntoView {
     match emoji {
         Some(emoji) => view! { <span class="w-5 shrink-0 text-center text-base leading-none">{emoji}</span> }.into_any(),
-        None if project => view! { <Glyph icon=icondata::FaFolderSolid class="w-5 justify-center text-caramel dark:text-maple" /> }.into_any(),
+        None if project => view! { <Glyph icon=icondata::FaFolderSolid class="w-5 justify-center text-accent" /> }.into_any(),
         None => view! { <Glyph icon=icondata::FaFolderOpenRegular class="w-5 justify-center opacity-70" /> }.into_any(),
     }
 }
@@ -920,12 +919,12 @@ pub(super) fn NewSessionProject(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <Show when=move || workspace.has_projects.get()>
-            <label class="flex flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
+            <label class="flex flex-col gap-1 text-xs font-bold text-muted">
                 <span>"Project"</span>
                 <select
                     id="new-session-project"
                     node_ref=select
-                    class="min-h-11 rounded-md border border-crust bg-cream px-2 text-sm font-normal text-espresso hover:border-caramel dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple"
+                    class="min-h-11 rounded-md border border-line-2 bg-surface px-2 text-sm font-normal text-fg hover:border-accent"
                     prop:value=current
                     on:change=move |event| {
                         let value = event_target_value(&event);
@@ -1035,7 +1034,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                 workspace.project_editor.with(|editor| {
                     let editor = editor.as_ref()?;
                     editor.confirm_close.then(|| view! {
-                        <div class="flex flex-col gap-2 rounded-lg border border-caramel bg-cream p-2 text-sm dark:border-maple dark:bg-night" role="alertdialog" data-discard-box>
+                        <div class="flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-discard-box>
                             <p>"Discard your changes to this project?"</p>
                             <div class="flex flex-wrap gap-2">
                                 <button type="button" class=PRIMARY data-discard on:click=move |_| workspace.discard_panel()>
@@ -1106,7 +1105,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                             workspace.project_editor.with(|editor| {
                                 match editor.as_ref().and_then(|editor| editor.emoji.clone()) {
                                     Some(emoji) => view! { <span data-chosen-emoji>{emoji}</span> }.into_any(),
-                                    None => view! { <Glyph icon=icondata::FaFolderSolid class="text-base text-caramel dark:text-maple" /> }.into_any(),
+                                    None => view! { <Glyph icon=icondata::FaFolderSolid class="text-base text-accent" /> }.into_any(),
                                 }
                             })
                         }}
@@ -1151,7 +1150,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| agents_open.update(|open| *open = !*open)
                 >
                     <span class="flex min-w-0 items-center gap-2">
-                        <Glyph icon=icondata::FaRobotSolid class="text-caramel dark:text-maple" />
+                        <Glyph icon=icondata::FaRobotSolid class="text-accent" />
                         <span class="truncate font-mono" data-project-agent>{agent_label}</span>
                     </span>
                     <Glyph icon=icondata::FaChevronDownSolid class="text-xs opacity-70" />
@@ -1203,7 +1202,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                     </button>
                 }
             })}
-            <div class="sticky bottom-0 -mx-3 -mb-3 flex flex-wrap items-center gap-2 border-t border-toasted bg-parchment px-3 py-2 dark:border-ember dark:bg-char">
+            <div class="sticky bottom-0 -mx-3 -mb-3 flex flex-wrap items-center gap-2 border-t border-line bg-surface-2 px-3 py-2">
                 <button
                     type="button"
                     id="project-save"
@@ -1239,12 +1238,11 @@ fn agent_choices(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
     agents.sort_by(|left, right| (&left.preset, &left.id).cmp(&(&right.preset, &right.id)));
     let none_chosen = current.0.is_none() && current.1.is_none();
     view! {
-        <div class="flex flex-col gap-1 rounded-lg border border-toasted p-1 dark:border-ember" data-agent-choices>
+        <div class="flex flex-col gap-1 rounded-lg border border-line p-1" data-agent-choices>
             <button
                 type="button"
                 class=ROW
-                class:bg-toasted=none_chosen
-                class:dark:bg-ember=none_chosen
+                class:bg-sel=none_chosen
                 data-agent-choice=""
                 on:click=move |_| {
                     workspace.edit_editor(|editor| {
@@ -1268,8 +1266,7 @@ fn agent_choices(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                     <button
                         type="button"
                         class=ROW
-                        class:bg-toasted=chosen
-                        class:dark:bg-ember=chosen
+                        class:bg-sel=chosen
                         data-agent-choice=label.clone()
                         on:click=move |_| {
                             let (id, preset) = (id.clone(), preset.clone());
@@ -1332,14 +1329,14 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
     };
     view! {
         // A phone's sheet covers the page below a dimmed backdrop.
-        <div class="fixed inset-0 z-30 bg-espresso/30 sm:hidden dark:bg-night/60" on:click=move |_| open.set(false)></div>
+        <div class="fixed inset-0 z-30 bg-scrim sm:hidden" on:click=move |_| open.set(false)></div>
         <div
             id="emoji-picker"
             role="dialog"
             aria-label="Choose an emoji"
-            class="fixed inset-x-0 bottom-0 z-40 flex max-h-[75dvh] flex-col gap-2 rounded-t-2xl border-t border-toasted bg-cream p-3 shadow-xl sm:static sm:z-auto sm:max-h-96 sm:rounded-lg sm:border sm:shadow-md dark:border-ember dark:bg-night"
+            class="fixed inset-x-0 bottom-0 z-40 flex max-h-[75dvh] flex-col gap-2 rounded-t-2xl border-t border-line bg-surface p-3 shadow-xl sm:static sm:z-auto sm:max-h-96 sm:rounded-lg sm:border sm:shadow-md"
         >
-            <span class="mx-auto h-1 w-10 shrink-0 rounded-full bg-crust sm:hidden dark:bg-smoke" aria-hidden="true"></span>
+            <span class="mx-auto h-1 w-10 shrink-0 rounded-full bg-line-2 sm:hidden" aria-hidden="true"></span>
             <div class="flex items-center gap-2">
                 <input
                     type="search"
@@ -1365,12 +1362,12 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                         .into_iter()
                         .map(|(group, emoji)| view! {
                             <div class="flex flex-col gap-1 pb-2">
-                                <span class=format!("sticky top-0 bg-cream py-0.5 font-bold dark:bg-night {NOTE}")>{group}</span>
+                                <span class=format!("sticky top-0 bg-surface py-0.5 font-bold {NOTE}")>{group}</span>
                                 <div class="grid grid-cols-[repeat(auto-fill,minmax(2.75rem,1fr))]">
                                     {emoji.into_iter().map(|(emoji, name)| view! {
                                         <button
                                             type="button"
-                                            class="inline-flex h-11 w-11 items-center justify-center rounded-md text-2xl hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                                            class="inline-flex h-11 w-11 items-center justify-center rounded-md text-2xl hover:bg-hover active:bg-press"
                                             aria-label=name
                                             data-emoji=emoji
                                             on:pointerenter=move |_| pointed.set(Some((emoji, name)))
@@ -1393,7 +1390,7 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                     <span class="truncate">{name}</span>
                 })}
             </p>
-            <div class="flex flex-wrap items-start gap-2 border-t border-toasted pt-2 dark:border-ember">
+            <div class="flex flex-wrap items-start gap-2 border-t border-line pt-2">
                 <div class="flex min-w-0 flex-1 flex-col gap-1">
                     <input
                         type="text"
@@ -1412,7 +1409,7 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                         }
                     />
                     {move || typed_error().map(|reason| view! {
-                        <span class="text-xs text-red-800 dark:text-red-300" data-emoji-error>{format!("Not one emoji: {reason}.")}</span>
+                        <span class="text-xs text-bad" data-emoji-error>{format!("Not one emoji: {reason}.")}</span>
                     })}
                 </div>
                 <button

@@ -90,8 +90,8 @@ fn code_line_numbers_never_reach_copied_text() {
     // Banded, framed with colors, and framed without any colors.
     for theme in [
         Theme::default(),
-        Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
-        Theme::new(ThemeKind::Mono, ColorLevel::None),
+        Theme::new(ThemeKind::Dark, ColorLevel::Ansi16),
+        Theme::new(ThemeKind::Default, ColorLevel::None),
     ] {
         let source = (1..=10)
             .map(|line| format!("{line} x"))
@@ -223,7 +223,7 @@ fn extraction_keeps_code_indentation_behind_real_gutters() {
 
 #[test]
 fn extraction_keeps_high_contrast_content_sharing_the_border_foreground() {
-    let theme = Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16);
+    let theme = Theme::new(ThemeKind::Dark, ColorLevel::Ansi16);
     let border = theme.code_border();
     // High contrast paints fence grids and syntect's quantized plain
     // code foreground the same white; only the border's DIM|BOLD set
@@ -911,7 +911,7 @@ async fn ctrl_a_selects_the_whole_draft_for_copy_typing_and_paste() {
 #[test]
 fn inline_code_caps_never_reach_copied_text() {
     // High contrast is the theme that still draws chip caps.
-    let theme = Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16);
+    let theme = Theme::new(ThemeKind::Dark, ColorLevel::Ansi16);
     let lines = crate::markdown::render_markdown_width(
         &MarkdownDocument::new("run `cargo test` or `a``b` now".into()),
         &theme,
@@ -945,8 +945,8 @@ fn transcript_code_blocks_copy_without_markers_or_line_numbers() {
         Theme::default(),
         Theme::new(ThemeKind::Dark, ColorLevel::TrueColor),
         Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
-        Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
-        Theme::new(ThemeKind::Mono, ColorLevel::None),
+        Theme::new(ThemeKind::Dark, ColorLevel::Ansi16),
+        Theme::new(ThemeKind::Default, ColorLevel::None),
     ] {
         let layout = transcript_layout_with(
             &state,

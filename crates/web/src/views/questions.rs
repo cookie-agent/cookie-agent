@@ -17,9 +17,10 @@ use leptos::{html, prelude::*};
 use super::{BUTTON, ERROR, NOTE, PRIMARY};
 use crate::{icons::Glyph, workspace::Workspace};
 
-const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface px-3 text-sm hover:border-accent focus:border-accent focus:outline-none";
 /// A radio or checkbox row: the whole row is the hit area.
-const OPTION: &str = "flex min-h-11 cursor-pointer items-start gap-2 rounded-md px-2 py-2 hover:bg-toasted dark:hover:bg-ember";
+const OPTION: &str =
+    "flex min-h-11 cursor-pointer items-start gap-2 rounded-md px-2 py-2 hover:bg-hover";
 
 /// `url` split around its host, for showing the host highlighted: the part
 /// before it, the host, and the rest. Without a host the whole URL comes
@@ -131,10 +132,10 @@ fn question_card(
             data-question=id
             role="region"
             aria-label=region_label
-            class="flex flex-col gap-2 rounded-lg border-2 border-caramel bg-parchment p-3 dark:border-maple dark:bg-char"
+            class="flex flex-col gap-2 rounded-lg border-2 border-accent bg-surface-2 p-3"
         >
             <p class="flex items-center gap-2 text-sm font-bold">
-                <Glyph icon=icondata::FaCircleQuestionSolid class="text-caramel dark:text-maple" />
+                <Glyph icon=icondata::FaCircleQuestionSolid class="text-accent" />
                 <span class="min-w-0 flex-1 break-words" data-question-heading>{heading}</span>
                 {move || queue_label(count.get()).map(|label| view! { <span class=NOTE>{label}</span> })}
             </p>
@@ -180,13 +181,13 @@ fn url_view(url: &str) -> impl IntoView {
     let warnings = url_warnings(url);
     let host_label = url_host(url).unwrap_or("the page").to_owned();
     view! {
-        <p class="rounded-md bg-cream px-3 py-2 font-mono text-sm break-all dark:bg-night" data-question-url>
+        <p class="rounded-md bg-surface px-3 py-2 font-mono text-sm break-all" data-question-url>
             <span class="opacity-70">{before}</span>
-            <strong class="text-espresso dark:text-latte" data-question-host>{host}</strong>
+            <strong class="text-fg" data-question-host>{host}</strong>
             <span class="opacity-70">{after}</span>
         </p>
         {(!warnings.is_empty()).then(|| view! {
-            <ul class="flex flex-col gap-1 text-sm text-red-800 dark:text-red-300" data-question-warnings>
+            <ul class="flex flex-col gap-1 text-sm text-bad" data-question-warnings>
                 {warnings.into_iter().map(|warning| view! {
                     <li class="flex items-start gap-2">
                         <Glyph icon=icondata::FaTriangleExclamationSolid />
@@ -348,7 +349,7 @@ fn field_view(
         <div class="flex flex-col gap-1" data-field=field.name.clone()>
             <span class="text-sm font-bold">
                 {field.label().to_owned()}
-                {field.required.then(|| view! { <span class="text-caramel dark:text-maple" aria-hidden="true">" *"</span> })}
+                {field.required.then(|| view! { <span class="text-accent" aria-hidden="true">" *"</span> })}
             </span>
             {field.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
             {(!hint.is_empty()).then(|| view! { <span class=NOTE data-field-hint>{hint}</span> })}

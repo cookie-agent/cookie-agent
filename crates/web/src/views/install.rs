@@ -92,11 +92,11 @@ fn ios_steps() -> impl IntoView {
         <div data-install-steps class="flex flex-col gap-2 text-sm">
             <ol class="flex flex-col gap-1">
                 <li class="flex items-center gap-2">
-                    <Glyph icon=icondata::FaArrowUpFromBracketSolid class="w-4 justify-center text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaArrowUpFromBracketSolid class="w-4 justify-center text-accent" />
                     <span>"Tap " <b>"Share"</b> " in the browser's toolbar."</span>
                 </li>
                 <li class="flex items-center gap-2">
-                    <Glyph icon=icondata::FaSquarePlusRegular class="w-4 justify-center text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaSquarePlusRegular class="w-4 justify-center text-accent" />
                     <span>"Choose " <b>"Add to Home Screen"</b> ", then " <b>"Add"</b> "."</span>
                 </li>
             </ol>
@@ -131,7 +131,7 @@ pub(crate) fn install_section() -> impl IntoView {
             };
             view! {
                 <p class="flex items-center gap-2 text-sm">
-                    <Glyph icon=icondata::FaCircleCheckSolid class="text-green-700 dark:text-green-400" />
+                    <Glyph icon=icondata::FaCircleCheckSolid class="text-ok" />
                     {text}
                 </p>
             }
@@ -147,7 +147,7 @@ pub(crate) fn install_section() -> impl IntoView {
         InstallOffer::AddToHomeScreen => ios_steps().into_any(),
         InstallOffer::NeedsHttps => view! {
             <p class="flex items-start gap-2 text-sm">
-                <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-caramel dark:text-maple" />
+                <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-accent" />
                 <span>
                     "Installing needs HTTPS, e.g. "
                     <code class="font-mono text-xs">"tailscale serve --bg 7419"</code>
@@ -197,7 +197,7 @@ pub(crate) fn InstallAction() -> impl IntoView {
             _ => ().into_any(),
         }}
         <Show when=move || steps.get() && install.offer() == InstallOffer::AddToHomeScreen>
-            <div class="w-full rounded-md border border-toasted bg-cream p-3 dark:border-ember dark:bg-night">
+            <div class="w-full rounded-md border border-line bg-surface p-3">
                 {ios_steps()}
             </div>
         </Show>
@@ -229,12 +229,12 @@ pub(crate) fn InstallBanner() -> impl IntoView {
                     } else {
                         "items-center"
                     };
-                    format!("flex shrink-0 {align} gap-2 border-b border-toasted bg-parchment py-1 pr-1 pl-3 text-sm dark:border-ember dark:bg-char")
+                    format!("flex shrink-0 {align} gap-2 border-b border-line bg-surface-2 py-1 pr-1 pl-3 text-sm")
                 }
             >
                 <div class="flex min-w-0 flex-1 flex-col gap-1 py-2">
                     <p class="flex items-center gap-2 font-bold">
-                        <Glyph icon=icondata::FaMobileScreenButtonSolid class="text-caramel dark:text-maple" />
+                        <Glyph icon=icondata::FaMobileScreenButtonSolid class="text-accent" />
                         "Install Cookie Agent"
                     </p>
                     {move || (install.offer() == InstallOffer::AddToHomeScreen).then(ios_steps)}

@@ -42,8 +42,6 @@ pub enum ThemePreference {
     Auto,
     Default,
     Dark,
-    Mono,
-    HighContrast,
 }
 
 impl ThemePreference {
@@ -52,8 +50,6 @@ impl ThemePreference {
             Self::Auto => None,
             Self::Default => Some(ThemeKind::Default),
             Self::Dark => Some(ThemeKind::Dark),
-            Self::Mono => Some(ThemeKind::Mono),
-            Self::HighContrast => Some(ThemeKind::HighContrast),
         }
     }
 }
@@ -143,8 +139,6 @@ enum ThemeName {
     Auto,
     Default,
     Dark,
-    Mono,
-    HighContrast,
 }
 
 impl From<LevelName> for EventLevel {
@@ -164,8 +158,6 @@ impl From<ThemeName> for ThemePreference {
             ThemeName::Auto => Self::Auto,
             ThemeName::Default => Self::Default,
             ThemeName::Dark => Self::Dark,
-            ThemeName::Mono => Self::Mono,
-            ThemeName::HighContrast => Self::HighContrast,
         }
     }
 }
@@ -324,17 +316,13 @@ mod tests {
     fn full_document_and_empty_document_parse() {
         let path = Path::new("tui.toml");
         let config = parse(
-            "minimum_event_level = \"debug\"\ntheme = \"high-contrast\"\n",
+            "minimum_event_level = \"debug\"\ntheme = \"default\"\n",
             path,
         )
         .expect("full config");
         assert_eq!(config.minimum_event_level, EventLevel::Debug);
-        assert_eq!(config.theme, Some(ThemePreference::HighContrast));
+        assert_eq!(config.theme, Some(ThemePreference::Default));
         assert_eq!(parse("", path).expect("empty"), TuiConfig::default());
-        assert_eq!(
-            parse("theme = \"mono\"\n", path).expect("theme only").theme,
-            Some(ThemePreference::Mono)
-        );
         assert_eq!(
             parse("theme = \"dark\"\n", path).expect("dark theme").theme,
             Some(ThemePreference::Dark)
@@ -404,7 +392,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
 
             let unreadable = directory.path().join("unreadable.toml");
-            std::fs::write(&unreadable, "theme = \"mono\"\n").expect("write");
+            std::fs::write(&unreadable, "theme = \"dark\"\n").expect("write");
             std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
                 .expect("remove permissions");
             let error = load_from(&unreadable).expect_err("permission error");
@@ -413,6 +401,18 @@ mod tests {
                     .to_string()
                     .contains(&unreadable.display().to_string())
             );
+        }
+    }
+
+    /// `mono` and `high-contrast` were removed with Quiet Ink: they fail as
+    /// any unknown theme does.
+    #[test]
+    fn theme_takes_auto_default_and_dark_only() {
+        let path = Path::new("tui.toml");
+        for value in ["mono", "high-contrast", "light", "Dark"] {
+            let text = format!("theme = \"{value}\"\n");
+            let message = parse(&text, path).expect_err("unknown theme").to_string();
+            assert!(message.contains("theme"), "{message}");
         }
     }
 
@@ -435,7 +435,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let path = directory.path().join("tui.toml");
         let written =
-            "# my settings\ntheme = \"mono\" # keep\n\n# level\nminimum_event_level = \"info\"\n";
+            "# my settings\ntheme = \"dark\" # keep\n\n# level\nminimum_event_level = \"info\"\n";
         std::fs::write(&path, written).expect("write");
         save_transcript_to(&path, TranscriptMode::Full).expect("save");
         let saved = std::fs::read_to_string(&path).expect("read");

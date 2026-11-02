@@ -46,6 +46,12 @@ ASSETS = [
         "https://github.com/JetBrains/JetBrainsMono",
     ),
     (
+        "Inter (interface font), by The Inter Project Authors",
+        "OFL-1.1",
+        "crates/web/assets/fonts/Inter-OFL.txt",
+        "https://github.com/rsms/inter",
+    ),
+    (
         "highlight.js (code highlighting)",
         "BSD-3-Clause",
         "crates/web/assets/vendor/highlight.js-LICENSE.txt",

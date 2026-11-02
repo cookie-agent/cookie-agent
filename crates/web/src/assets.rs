@@ -39,8 +39,9 @@ const FRAME_MAX_SHARE: f64 = 0.8;
 /// Height changes smaller than this are ignored, so a page sized in `vh`
 /// cannot oscillate.
 const FRAME_TOLERANCE: f64 = 4.0;
-const NOTE: &str = "text-xs text-ink dark:text-sand";
-const BUTTON: &str = "inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+const NOTE: &str = "text-xs text-muted";
+const BUTTON: &str =
+    "inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs hover:bg-hover active:bg-press";
 
 thread_local! {
     /// What was read of each content, by its digest: a `Blob` URL, and the
@@ -713,7 +714,7 @@ fn excerpt(target: &web_sys::Element, text: &str) {
         .nth(EXCERPT_CHARS)
         .map_or(text, |(at, _)| &text[..at]);
     target.set_inner_html(&format!(
-        "<div class=\"markdown pointer-events-none\">{}</div><div class=\"pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-linear-to-t from-cream dark:from-char\"></div>",
+        "<div class=\"markdown pointer-events-none\">{}</div><div class=\"pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-linear-to-t from-surface\"></div>",
         crate::render::markdown::markdown_html(cut)
     ));
 }
@@ -734,7 +735,7 @@ fn card_state(element: &web_sys::Element, asset: &Asset, shown: &Placeholder) {
         let _ = element.insert_adjacent_html(
             "beforeend",
             &format!(
-                "<span class=\"pointer-events-none absolute top-1.5 left-1.5 z-20 rounded-full bg-caramel px-1.5 text-[0.6875rem] text-cream dark:bg-maple dark:text-night\" title=\"updated {} ago\" data-asset-updated>updated</span>",
+                "<span class=\"pointer-events-none absolute top-1.5 left-1.5 z-20 rounded-full bg-accent px-1.5 text-[0.6875rem] text-on-accent\" title=\"updated {} ago\" data-asset-updated>updated</span>",
                 escape(&cookie_agent_protocol::memory_age(
                     asset.updated.at,
                     jiff::Timestamp::now()
@@ -754,7 +755,7 @@ fn card_gone(element: &web_sys::Element) {
     {
         let _ = element.insert_adjacent_html(
             "beforeend",
-            "<span class=\"pointer-events-none absolute top-1.5 left-1.5 z-20 rounded-full bg-ink px-1.5 text-[0.6875rem] text-cream dark:bg-sand dark:text-night\" data-asset-deleted>deleted</span>",
+            "<span class=\"pointer-events-none absolute top-1.5 left-1.5 z-20 rounded-full bg-muted px-1.5 text-[0.6875rem] text-on-accent\" data-asset-deleted>deleted</span>",
         );
     }
     if let Ok(Some(mark)) = element.query_selector(":scope > [data-asset-updated]") {
@@ -849,10 +850,10 @@ fn download_card(target: &web_sys::Element, asset: &Asset, url: &str, note: Opti
         .map(|note| format!(" · {}", escape(note)))
         .unwrap_or_default();
     target.set_inner_html(&format!(
-        "<a download=\"{}\" href=\"{}\" class=\"flex items-center gap-3 rounded-md border border-toasted p-3 hover:bg-toasted dark:border-ember dark:hover:bg-ember\" data-asset-download>{}<span class=\"flex min-w-0 flex-col\"><span class=\"truncate text-sm\">{}</span><span class=\"{NOTE}\">{} · {}{note}</span></span></a>",
+        "<a download=\"{}\" href=\"{}\" class=\"flex items-center gap-3 rounded-md border border-line p-3 hover:bg-hover\" data-asset-download>{}<span class=\"flex min-w-0 flex-col\"><span class=\"truncate text-sm\">{}</span><span class=\"{NOTE}\">{} · {}{note}</span></span></a>",
         escape(&download_name(asset)),
         escape(url),
-        crate::icons::svg(icondata::FaFileArrowDownSolid, "text-2xl text-caramel dark:text-maple"),
+        crate::icons::svg(icondata::FaFileArrowDownSolid, "text-2xl text-accent"),
         escape(&download_name(asset)),
         escape(&asset.media_type),
         escape(&cookie_agent_protocol::human_bytes(asset.byte_length)),
@@ -863,7 +864,7 @@ fn download_card(target: &web_sys::Element, asset: &Asset, url: &str, note: Opti
 /// shows whole, without the button.
 fn document(target: &web_sys::Element, text: &str) {
     target.set_inner_html(&format!(
-        "<div class=\"asset-document markdown relative max-h-[480px] overflow-hidden\" data-asset-document data-cut=\"true\">{}<div class=\"asset-fade pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-linear-to-t from-cream dark:from-night\"></div></div><button type=\"button\" data-action=\"asset-show-all\" class=\"{BUTTON} mt-1\">Show all</button>",
+        "<div class=\"asset-document markdown relative max-h-[480px] overflow-hidden\" data-asset-document data-cut=\"true\">{}<div class=\"asset-fade pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-linear-to-t from-surface\"></div></div><button type=\"button\" data-action=\"asset-show-all\" class=\"{BUTTON} mt-1\">Show all</button>",
         crate::render::markdown::markdown_html(text)
     ));
     crate::highlight::highlight_within(target);
@@ -910,7 +911,7 @@ fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>, fixed: Option<Fixed
     let start = format!("height: {FRAME_START}px");
     let (class, style) = match fixed {
         None => (
-            "block w-full rounded border border-toasted bg-white dark:border-ember",
+            "block w-full rounded border border-line bg-white",
             start.as_str(),
         ),
         Some(Fixed::Thumbnail) => (
@@ -1082,7 +1083,7 @@ fn full_screen(figure: &web_sys::Element) {
     let _ = overlay.set_attribute("aria-label", &title);
     let _ = overlay.set_attribute(
         "class",
-        "fixed inset-0 z-50 flex flex-col gap-2 bg-cream p-3 text-ink dark:bg-night dark:text-sand",
+        "fixed inset-0 z-50 flex flex-col gap-2 bg-surface p-3 text-muted",
     );
     overlay.set_inner_html(&format!(
         "<div class=\"flex min-w-0 items-center gap-2\"><span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span><button type=\"button\" id=\"asset-full-close\" class=\"{BUTTON}\" title=\"Close (Escape)\">{}<span>Close</span></button></div><div class=\"min-h-0 flex-1 overflow-auto\" data-asset-body></div>",

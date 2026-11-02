@@ -288,7 +288,7 @@ fn a_reply_with_no_work_has_no_row() {
 async fn the_command_and_ctrl_o_switch_the_mode_and_save_it() {
     let directory = tempfile::tempdir().expect("tempdir");
     let path = directory.path().join("tui.toml");
-    std::fs::write(&path, "# mine\ntheme = \"mono\"\n").expect("write");
+    std::fs::write(&path, "# mine\ntheme = \"dark\"\n").expect("write");
     let mut app = test_app().await;
     app.transcript_config_path = Some(path.clone());
     let session = SessionId::new_v7();
@@ -302,7 +302,7 @@ async fn the_command_and_ctrl_o_switch_the_mode_and_save_it() {
     assert_eq!(app.status, "transcript: reduced");
     assert_eq!(
         std::fs::read_to_string(&path).expect("read"),
-        "# mine\ntheme = \"mono\"\ntranscript = \"reduced\"\n"
+        "# mine\ntheme = \"dark\"\ntranscript = \"reduced\"\n"
     );
     // Work rows fold again; other blocks stay as they were.
     assert_eq!(
@@ -315,7 +315,7 @@ async fn the_command_and_ctrl_o_switch_the_mode_and_save_it() {
     assert_eq!(app.tui_config.transcript, TranscriptMode::Full);
     assert_eq!(
         std::fs::read_to_string(&path).expect("read"),
-        "# mine\ntheme = \"mono\"\ntranscript = \"full\"\n"
+        "# mine\ntheme = \"dark\"\ntranscript = \"full\"\n"
     );
 }
 

@@ -32,20 +32,22 @@ use crate::{
     workspace::{PANEL_POLL, RUNTIMES_POLL, Workspace},
 };
 
-pub(super) const FIELD: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+pub(super) const FIELD: &str = "min-h-11 w-full rounded-md border border-line-2 bg-surface px-3 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
 /// A document's text: it fills what its page leaves.
-pub(super) const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-md border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+pub(super) const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-md border border-line-2 bg-surface p-2 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
 /// A small label for a thing's state.
-pub(super) const STATE: &str = "shrink-0 rounded-full bg-toasted px-2 py-0.5 text-xs dark:bg-ember";
+pub(super) const STATE: &str = "shrink-0 rounded-full bg-sunken px-2 py-0.5 text-xs";
 /// An action of one row in a list, such as a runtime's MCP server: quiet
 /// text, so a row's several actions stay out of its way, on a full touch
 /// target.
-pub(super) const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 text-xs font-bold text-caramel hover:bg-crust active:bg-crust dark:text-maple dark:hover:bg-smoke dark:active:bg-smoke";
+pub(super) const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 text-xs font-bold text-accent hover:bg-press active:bg-press";
 /// An editor's page: the text fills it and the actions stay at its foot.
 pub(super) const EDITOR_PAGE: &str = "flex min-h-full flex-1 flex-col gap-2";
-pub(super) const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-toasted bg-cream px-3 py-2 dark:border-ember dark:bg-night";
+pub(super) const EDITOR_ACTIONS: &str =
+    "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-line bg-surface px-3 py-2";
 /// A confirmation before something cannot be undone.
-pub(super) const CONFIRM: &str = "flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char";
+pub(super) const CONFIRM: &str =
+    "flex flex-col gap-2 rounded-lg border border-accent bg-surface-2 p-3";
 
 /// Calls `poll` every `every` while the sheet is open, as the TUI polls
 /// its open `/runtime` and `/mcp` panels.
@@ -120,12 +122,12 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                 let detach_name = row.attachment.name.clone();
                 let retry_row = row.clone();
                 view! {
-                    <div class="runtime-row flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-attachment=row.attachment.name.to_string()>
+                    <div class="runtime-row flex flex-col gap-1 border-b border-line py-2" data-attachment=row.attachment.name.to_string()>
                         <div class="flex items-center gap-2">
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">
                                 {format!("{} · {}", row.attachment.name, row.attachment.kind)}
                             </span>
-                            <span class=STATE class:text-red-700=failed class:dark:text-red-400=failed>
+                            <span class=STATE class:text-bad=failed class:dark:text-red-400=failed>
                                 {status_label(status)}
                             </span>
                         </div>
@@ -286,7 +288,7 @@ fn server_tools(
         let label = name.to_owned();
         let chip = view! {
             <span
-                class="rounded bg-toasted px-1.5 font-mono text-[0.7rem] dark:bg-ember"
+                class="rounded bg-sunken px-1.5 font-mono text-[0.7rem]"
                 class:line-through=filtered
                 class:opacity-50=filtered
             >
@@ -309,7 +311,7 @@ fn server_tools(
                     Some(workspace) => view! {
                         <button
                             type="button"
-                            class="rounded hover:outline hover:outline-1 hover:outline-caramel dark:hover:outline-maple"
+                            class="rounded hover:outline hover:outline-1 hover:outline-accent"
                             aria-label=format!("{} {name}", if filtered { "Take back" } else { "Leave out" })
                             data-mcp-tool-toggle
                             on:click=move |_| workspace.toggle_mcp_tool(&toggled, &tool, !filtered)
@@ -353,9 +355,9 @@ pub(crate) fn runtime_mcp_servers(
         .map(|server| {
             let tone = server_tone(&server);
             let (dot, dot_class) = match tone {
-                StateTone::Ready => (icondata::FaCircleSolid, "text-green-700 dark:text-green-400"),
-                StateTone::Pending => (icondata::FaCircleHalfStrokeSolid, "text-amber-700 dark:text-amber-400"),
-                StateTone::Failed => (icondata::FaCircleExclamationSolid, "text-red-700 dark:text-red-400"),
+                StateTone::Ready => (icondata::FaCircleSolid, "text-ok"),
+                StateTone::Pending => (icondata::FaCircleHalfStrokeSolid, "text-warn"),
+                StateTone::Failed => (icondata::FaCircleExclamationSolid, "text-bad"),
                 StateTone::Off => (icondata::FaCircleRegular, "opacity-60"),
             };
             let failed = tone == StateTone::Failed;
@@ -380,11 +382,11 @@ pub(crate) fn runtime_mcp_servers(
                         <Glyph icon=dot class=format!("shrink-0 text-[0.6rem] {dot_class}") />
                         <span class="min-w-16 flex-1 truncate font-mono text-sm">{server.name.clone()}</span>
                         {(!waiting).then(|| view! { <span class=format!("shrink-0 {NOTE}")>{server_tools_label(&server)}</span> })}
-                        <span class=STATE class:text-red-700=failed class:dark:text-red-400=failed>{server_state_label(&server)}</span>
+                        <span class=STATE class:text-bad=failed class:dark:text-red-400=failed>{server_state_label(&server)}</span>
                     </div>
                     {scope_note(&server).map(|note| view! {
                         <span class=format!("pl-4 {NOTE}") data-mcp-scope-note>
-                            <span class="rounded bg-toasted px-1.5 text-[0.7rem] dark:bg-ember">{note}</span>
+                            <span class="rounded bg-sunken px-1.5 text-[0.7rem]">{note}</span>
                             " one process every workspace of the runtime shares"
                         </span>
                     })}
@@ -410,7 +412,7 @@ pub(crate) fn runtime_mcp_servers(
                     {server_message(&server).map(|message| view! {
                         <span
                             class=if failed {
-                                "pl-4 text-xs whitespace-pre-wrap break-words text-red-800 dark:text-red-300"
+                                "pl-4 text-xs whitespace-pre-wrap break-words text-bad"
                             } else {
                                 "pl-4 text-xs whitespace-pre-wrap break-words opacity-80"
                             }
@@ -424,7 +426,7 @@ pub(crate) fn runtime_mcp_servers(
         })
         .collect_view();
     view! {
-        <div class="runtime-mcp flex flex-col gap-1 rounded-md bg-parchment px-2 py-1.5 dark:bg-char" data-runtime-mcp>
+        <div class="runtime-mcp flex flex-col gap-1 rounded-md bg-surface-2 px-2 py-1.5" data-runtime-mcp>
             <span class="text-xs font-bold opacity-70">"MCP servers"</span>
             <ul class="flex flex-col gap-1">{items}</ul>
         </div>
@@ -441,20 +443,20 @@ pub(crate) fn edit_dialog(
     body: impl IntoView + 'static,
 ) -> impl IntoView {
     view! {
-        <div class="fixed inset-0 z-40 hidden bg-espresso/30 sm:block dark:bg-black/50" on:click=move |_| close()></div>
+        <div class="fixed inset-0 z-40 hidden bg-scrim sm:block dark:bg-black/50" on:click=move |_| close()></div>
         <div
             id=id
             role="dialog"
             aria-modal="true"
             data-edit-dialog
-            class="fixed inset-0 z-50 flex flex-col overflow-y-auto bg-cream pb-[env(safe-area-inset-bottom)] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:max-h-[85vh] sm:w-[36rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl sm:border sm:border-toasted sm:pb-0 sm:shadow-lg dark:bg-night sm:dark:border-ember"
+            class="fixed inset-0 z-50 flex flex-col overflow-y-auto bg-surface pb-[env(safe-area-inset-bottom)] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:max-h-[85vh] sm:w-[36rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl sm:border sm:border-line sm:pb-0 sm:shadow-lg"
             on:keydown=move |event| {
                 if event.key() == "Escape" {
                     close();
                 }
             }
         >
-            <div class="sticky top-0 z-10 flex items-center border-b border-toasted bg-parchment p-1 sm:justify-end sm:border-0 sm:bg-cream dark:border-ember dark:bg-char sm:dark:bg-night">
+            <div class="sticky top-0 z-10 flex items-center border-b border-line bg-surface-2 p-1 sm:justify-end sm:border-0 sm:bg-surface">
                 <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" data-edit-dialog-close on:click=move |_| close()>
                     <span class="inline-flex sm:hidden"><Glyph icon=icondata::FaArrowLeftSolid /></span>
                     <span class="hidden sm:inline-flex"><Glyph icon=icondata::FaXmarkSolid /></span>
@@ -492,7 +494,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                 let reconnected = server.clone();
                 let editable = refusal.is_none();
                 view! {
-                    <div class="mcp-server flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-server=name.clone()>
+                    <div class="mcp-server flex flex-col gap-1 border-b border-line py-2" data-server=name.clone()>
                         <div class="flex items-center gap-2">
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{name.clone()}</span>
                             <span class=format!("mcp-state {STATE}")>{mcp_state_label(server.state)}</span>
@@ -611,7 +613,7 @@ fn sign_in_offer(workspace: Workspace, server: &cookie_agent_protocol::McpServer
             </span>
             {warns.then(|| view! {
                 <p class=format!("{NOTE} flex items-start gap-1.5") data-https-warning>
-                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-accent" />
                     <span>
                         "This page is on plain http away from this machine, and most sign-in servers refuse to send you back to such an address. Put the daemon behind https, for example with "
                         <code>"tailscale serve"</code>
@@ -620,7 +622,7 @@ fn sign_in_offer(workspace: Workspace, server: &cookie_agent_protocol::McpServer
                             href=format!("{}daemon/remote-access/", crate::machines::DOCS)
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="font-bold text-caramel underline-offset-2 hover:underline dark:text-maple"
+                            class="font-bold text-accent underline-offset-2 hover:underline"
                         >
                             "remote access guide"
                         </a>
@@ -656,12 +658,12 @@ fn sign_in_outcome(workspace: Workspace) -> impl IntoView {
                 role="status"
                 data-outcome=if ok { "signed-in" } else { "failed" }
                 class=if ok {
-                    "flex items-start gap-2 rounded-md border border-caramel bg-parchment px-3 py-2 text-sm dark:border-maple dark:bg-char"
+                    "flex items-start gap-2 rounded-md border border-accent bg-surface-2 px-3 py-2 text-sm"
                 } else {
                     ERROR
                 }
             >
-                {ok.then(|| view! { <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" /> })}
+                {ok.then(|| view! { <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-accent" /> })}
                 <span class="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
             </div>
         }
@@ -691,7 +693,7 @@ fn sign_ins(workspace: Workspace) -> impl IntoView {
                 view! {
                     <div class=format!("{CONFIRM} mb-2") data-sign-in=server.clone()>
                         <span class="flex items-center gap-2 text-sm font-bold">
-                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
+                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-accent" />
                             {format!("Signing in to {server}")}
                         </span>
                         <span class=NOTE>
@@ -1008,7 +1010,7 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
                                             <span class=PROVIDER_ID>{provider.id.to_string()}</span>
                                         </span>
                                         {matches!(state, ProviderRowState::ConnectedReconnect | ProviderRowState::Configured).then(|| view! {
-                                            <Glyph icon=icondata::FaPlugSolid class="text-green-700 dark:text-green-400" />
+                                            <Glyph icon=icondata::FaPlugSolid class="text-ok" />
                                         })}
                                     </span>
                                     <span class=NOTE>{detail}</span>
@@ -1025,7 +1027,7 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
 }
 
 /// A provider id beside its name, in small type.
-const PROVIDER_ID: &str = "font-mono text-xs font-normal text-ink dark:text-sand";
+const PROVIDER_ID: &str = "font-mono text-xs font-normal text-muted";
 
 /// A provider's name with its id beside it.
 fn provider_heading(provider: &ProviderDescriptor) -> impl IntoView + use<> {
@@ -1053,17 +1055,17 @@ fn provider_models_list(workspace: Workspace, provider: ProviderDescriptor) -> i
                     view! {
                         <li class="flex min-w-0 items-baseline gap-2 py-0.5" data-model=model.key.to_string()>
                             {name.map(|name| view! { <span class="min-w-0 truncate text-sm">{name}</span> })}
-                            <span class="min-w-0 truncate font-mono text-xs text-ink dark:text-sand">{id}</span>
+                            <span class="min-w-0 truncate font-mono text-xs text-muted">{id}</span>
                         </li>
                     }
                 })
                 .collect_view();
             view! {
                 <section class="flex flex-col gap-1" id="provider-models">
-                    <h3 class="text-xs font-bold uppercase tracking-wide text-ink dark:text-sand">
+                    <h3 class="text-xs font-bold uppercase tracking-wide text-muted">
                         {format!("Models ({})", listed.len())}
                     </h3>
-                    <ul class="max-h-64 overflow-y-auto rounded-md border border-crust px-3 py-1 dark:border-smoke">
+                    <ul class="max-h-64 overflow-y-auto rounded-md border border-line-2 px-3 py-1">
                         {rows}
                     </ul>
                 </section>
@@ -1494,7 +1496,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
             {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
             {config.status.error.clone().map(|error| view! { <p class=ERROR>{format!("The running configuration has an error: {error}")}</p> })}
             {(!config.status.diagnostics.is_empty() || !config.status.native_compaction.is_empty() || !config.status.deferred_tools.is_empty()).then(|| view! {
-                <ul class="flex flex-col gap-1 text-sm text-caramel dark:text-maple" id="config-diagnostics">
+                <ul class="flex flex-col gap-1 text-sm text-accent" id="config-diagnostics">
                     {config.status.diagnostics.iter().cloned().chain(cookie_agent_client_state::config::record_lines(&config.status)).map(|line| view! { <li>{line}</li> }).collect_view()}
                 </ul>
             })}
@@ -1504,10 +1506,10 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                         <Glyph icon=icondata::FaFileLinesRegular class="opacity-70" />
                         {label}
                     </span>
-                    {draft.then(|| view! { <span class="text-xs text-caramel dark:text-maple">"not applied"</span> })}
+                    {draft.then(|| view! { <span class="text-xs text-accent">"not applied"</span> })}
                 </button>
             </div>
-            <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
+            <div class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
                 <div class="flex flex-wrap gap-2">
                     <button type="button" id="config-reload" class=BUTTON on:click=move |_| workspace.reload_config()>
                         <Glyph icon=icondata::FaArrowsRotateSolid />
@@ -1571,7 +1573,7 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
             .map(|plugin| {
                 let name = plugin.name.clone();
                 view! {
-                    <div class="plugin flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-plugin=plugin.name.clone()>
+                    <div class="plugin flex flex-col gap-1 border-b border-line py-2" data-plugin=plugin.name.clone()>
                         <div class="flex items-center gap-2">
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{plugin.name.clone()}</span>
                             <span class=format!("plugin-state {STATE}")>{plugin_state_label(plugin.state)}</span>

@@ -619,11 +619,11 @@ fn markdown_text_snapshot_is_stable_across_color_themes() {
     for theme in [
         Theme::default(),
         Theme::new(
-            crate::theme::ThemeKind::Mono,
+            crate::theme::ThemeKind::Default,
             crate::theme::ColorLevel::None,
         ),
         Theme::new(
-            crate::theme::ThemeKind::HighContrast,
+            crate::theme::ThemeKind::Dark,
             crate::theme::ColorLevel::Ansi16,
         ),
     ] {
@@ -861,12 +861,12 @@ fn table_cells_never_inject_control_sequences() {
 fn inline_code_text_drops_or_keeps_its_markers_by_theme() {
     let document = MarkdownDocument::new("before `let x = 1;` after".into());
     for (theme, expected) in [
-        // Bakery palettes: no marker in the text.
+        // Subtle colours: no marker in the text.
         (Theme::default(), "before let x = 1; after"),
-        // High contrast: half-block caps.
+        // Sixteen colours: half-block caps on the code band.
         (
             Theme::new(
-                crate::theme::ThemeKind::HighContrast,
+                crate::theme::ThemeKind::Dark,
                 crate::theme::ColorLevel::Ansi16,
             ),
             "before ▐let x = 1;▌ after",
@@ -874,7 +874,7 @@ fn inline_code_text_drops_or_keeps_its_markers_by_theme() {
         // No colour at all: the backticks stay.
         (
             Theme::new(
-                crate::theme::ThemeKind::Mono,
+                crate::theme::ThemeKind::Default,
                 crate::theme::ColorLevel::None,
             ),
             "before `let x = 1;` after",

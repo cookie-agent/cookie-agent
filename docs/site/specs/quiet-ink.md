@@ -73,9 +73,36 @@ and an interactive preview of the chosen one:
   fail as unknown strings do. `NO_COLOR` and `TERM=dumb` keep working: they
   drop the colour depth to none on the selected light or dark theme, which
   then shows state by bold, italic, underline, and reverse only.
+- **D14, Back on a phone (added 2026-11-02).** Android's Back gesture and
+  button, and a browser's Back, step back through the page instead of
+  leaving it: an open menu, sheet, dialog, or the session panel closes
+  first, then an editor or a Settings section, then the drawer, then a
+  view other than the conversation returns to it. Only Back from the
+  conversation with nothing open leaves the installed app. The page's
+  existing history layers (`workspace/nav.rs`) grow to cover these.
+- **D15, right-click on a desktop (added 2026-11-02).** With a mouse or
+  trackpad, right-clicking anything that has actions opens them as a
+  context menu at the pointer: the same actions as its ⋮ button or a
+  touch long press (session rows, project headers, messages, agents,
+  memories, assets, runtimes, schedules). One menu component serves them
+  all, closes on Escape, a click outside, or Back (D14), and takes the
+  arrow keys. The browser's own menu stays where it is the useful one:
+  over selected text, links, text fields, and code, and with Shift held.
 - **D13, the site stays.** The landing site and the documentation theme
   keep the cookie palette for now; only the client screenshots they show
   are refreshed.
+
+The [interactive preview](quiet-ink/preview.html) shows every screen in
+both themes (the web's and the TUI's, with a switch for each); it is the
+reference for what the phases build, with these exceptions decided after
+it: no command palette (D4), the back and right-click behaviour (D14,
+D15).
+
+![The session view](quiet-ink/web-session-light.webp)
+![An approval in the composer's place, dark](quiet-ink/web-approval-dark.webp)
+![The session panel at its Goal tab](quiet-ink/web-session-panel.webp)
+![The TUI's session view, dark](quiet-ink/tui-session-dark.webp)
+![The TUI's approval, light](quiet-ink/tui-approval-light.webp)
 
 ## 3. Tokens
 
@@ -134,7 +161,8 @@ curve; every animation stops under `prefers-reduced-motion`.
   every empty state an icon, one sentence, and an action. Onboarding and
   Connect are centred cards on a soft accent glow.
 - **Phone.** The sidebar is a drawer; menus and the session panel are
-  bottom sheets.
+  bottom sheets. Back steps out of the innermost open thing first
+  (D14).
 
 ## 5. TUI
 
@@ -176,10 +204,11 @@ Each phase is looked at in light and dark (`scripts/web-screenshots.sh
    bundled. TUI: the new palette tables, the two themes removed. The layout
    stays as it is.
 2. **Web shell.** The one sidebar, the session header with its badges, the
-   session panel.
-3. **Web session.** Transcript, composer, approval card, chip menus.
+   session panel, and the context menu of D15 on the sidebar's rows.
+3. **Web session.** Transcript, composer, approval card, chip menus, and
+   the context menu on messages.
 4. **Web views and phone.** Every other view, onboarding, connect, the
-   phone layout.
+   phone layout, and Back (D14).
 5. **TUI session.** Frames removed, the composer's edge, the status line
    with its live parts, the approval box.
 6. **TUI overlays and panels.**

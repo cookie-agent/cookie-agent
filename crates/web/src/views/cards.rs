@@ -14,16 +14,16 @@ use crate::{
     workspace::{CardSet, Workspace},
 };
 
-const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface px-3 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
 
 /// A card's frame, with its selected look.
 fn card_class(selected: bool, offline: bool) -> String {
     let state = if selected {
-        "border-caramel bg-toasted dark:border-maple dark:bg-ember"
+        "border-accent bg-sunken"
     } else if offline {
-        "border-toasted opacity-60 dark:border-ember"
+        "border-line opacity-60"
     } else {
-        "border-crust bg-cream hover:border-caramel hover:bg-parchment dark:border-smoke dark:bg-night dark:hover:border-maple dark:hover:bg-char"
+        "border-line-2 bg-surface hover:border-accent hover:bg-hover"
     };
     let cursor = if offline && !selected {
         "cursor-not-allowed"
@@ -35,9 +35,9 @@ fn card_class(selected: bool, offline: bool) -> String {
 
 fn state_class(state: CardState) -> &'static str {
     match state {
-        CardState::Ready => "text-green-700 dark:text-green-400",
-        CardState::StartsOnUse => "text-caramel dark:text-maple",
-        CardState::Offline => "text-ink dark:text-sand",
+        CardState::Ready => "text-ok",
+        CardState::StartsOnUse => "text-accent",
+        CardState::Offline => "text-muted",
     }
 }
 
@@ -90,7 +90,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                     <p id="start-blocker" class=NOTE>{blocker}</p>
                 })}
                 <p class="flex items-start gap-2 text-sm" id="draft-places">
-                    <Glyph icon=icondata::FaFolderOpenSolid class="mt-0.5 text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaFolderOpenSolid class="mt-0.5 text-accent" />
                     <span class="min-w-0 break-words font-mono" data-draft-places>
                         {move || workspace.places_label().unwrap_or_default()}
                     </span>
@@ -109,7 +109,7 @@ pub fn DraftNotice(workspace: Workspace) -> impl IntoView {
             {move || {
                 if workspace.creating.get() {
                     Some(view! {
-                        <p id="draft-creating" role="status" class="mx-3 mt-2 flex items-center gap-2 text-sm text-caramel dark:text-maple">
+                        <p id="draft-creating" role="status" class="mx-3 mt-2 flex items-center gap-2 text-sm text-accent">
                             <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
                             "Creating the session…"
                         </p>
@@ -144,7 +144,7 @@ pub(super) fn group_view(workspace: Workspace, group: Group, set: CardSet) -> im
         <div class="@container flex flex-col gap-2" data-group=name data-open=move || shown.get().to_string()>
             <button
                 type="button"
-                class="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                class="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-hover active:bg-press"
                 aria-expanded=move || shown.get().to_string()
                 data-group-toggle=toggle_name
                 on:click=move |_| workspace.toggle_group(&header, set)
@@ -155,7 +155,7 @@ pub(super) fn group_view(workspace: Workspace, group: Group, set: CardSet) -> im
                 >
                     <Glyph icon=icondata::FaChevronRightSolid class="text-xs" />
                 </span>
-                <Glyph icon=if group.daemon { icondata::FaHouseSolid } else { icondata::FaComputerSolid } class="text-caramel dark:text-maple" />
+                <Glyph icon=if group.daemon { icondata::FaHouseSolid } else { icondata::FaComputerSolid } class="text-accent" />
                 <span class="min-w-0 flex-1 truncate text-sm" data-group-summary>{summary}</span>
             </button>
             <Show when=move || shown.get()>
@@ -217,7 +217,7 @@ fn card_view(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
                 >
                     <Glyph
                         icon=Signal::derive(move || if selected.get() { icondata::FaCircleCheckSolid } else { icondata::FaCircleRegular })
-                        class="mt-0.5 text-lg text-caramel dark:text-maple"
+                        class="mt-0.5 text-lg text-accent"
                     />
                     <span class="flex min-w-0 flex-1 flex-col">
                         <span class="flex min-w-0 items-center gap-1.5">

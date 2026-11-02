@@ -10,15 +10,14 @@ theme = "dark"
 |---|---|
 | `"auto"` | Detect the terminal background, ignoring `COOKIE_THEME` |
 | `"default"` | Light palette |
-| `"dark"` | Curated dark palette |
-| `"mono"` | Monochrome |
-| `"high-contrast"` | Terminal-driven bright ANSI colors |
+| `"dark"` | Dark palette |
 
 Any file preference takes precedence over `COOKIE_THEME`, including `"auto"`.
 When the key is omitted, `COOKIE_THEME` can select a palette; if that variable
 is also unset or `auto`, selection uses automatic detection: OSC 11,
 the last `COLORFGBG` field, and finally the light default. `NO_COLOR` and
-`TERM=dumb` force monochrome after selection.
+`TERM=dumb` turn colour off after selection: the chosen palette then shows
+state by bold, italic, underline, and reverse video only.
 
 Colour depth is detected separately. `COLORTERM=truecolor` (or `24bit`) selects
 24-bit colour; when `COLORTERM` is unset, Windows Terminal (`WT_SESSION`, also
@@ -28,6 +27,7 @@ selects 256 colours, and anything else 16. Set `COLORTERM=truecolor` to opt a
 capable terminal in, for example over SSH, where these variables are not
 forwarded.
 
-Unknown strings and non-string values fail. There are no nested fields or
+Unknown strings and non-string values fail, including `"mono"` and
+`"high-contrast"`, which were removed with the Quiet Ink palette. There are no nested fields or
 workspace overrides. Use the scalar `theme`, not a `[theme]` table; see
 [tui.toml](configuration.md) for file loading.

@@ -47,9 +47,9 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
                 class=move || format!(
                     "inline-flex min-h-11 items-center rounded-full border px-3 text-sm lg:min-h-9 {}",
                     if chosen() {
-                        "border-espresso bg-espresso text-cream dark:border-latte dark:bg-latte dark:text-night"
+                        "border-fg bg-accent text-on-accent"
                     } else {
-                        "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        "border-line-2 hover:bg-hover active:bg-press"
                     },
                 )
                 aria-checked=move || chosen().to_string()
@@ -98,7 +98,7 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
                         view! {
                             <section class="flex flex-col" data-skill-group=format!("{source:?}").to_lowercase()>
                                 <h2 class="flex items-center gap-2 pt-3 pb-1 text-sm font-bold">
-                                    <Glyph icon=source_icon(source) class="text-caramel dark:text-maple" />
+                                    <Glyph icon=source_icon(source) class="text-accent" />
                                     {source_label(source)}
                                 </h2>
                                 {rows}
@@ -140,12 +140,12 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
                 view! { <p class=if failed { ERROR } else { NOTE } data-skills-update-note>{text}</p> }
             })}
             <label class="relative flex items-center">
-                <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-ink dark:text-sand" />
+                <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-muted" />
                 <input
                     type="text"
                     role="searchbox"
                     id="skills-search"
-                    class="min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream pr-3 pl-9 text-sm text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
+                    class="min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface pr-3 pl-9 text-sm text-fg hover:border-accent focus:border-accent focus:outline-none"
                     aria-label="Search skills by name or description"
                     placeholder="Search by name or description"
                     prop:value=move || workspace.skill_list_query.get_untracked()
@@ -191,7 +191,7 @@ fn skill_row(skill: &SkillDescriptor, home: Option<&str>) -> impl IntoView + use
     let location = display_path(&skill.location, home);
     view! {
         <div
-            class="flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember"
+            class="flex flex-col gap-1 border-b border-line py-2"
             class:opacity-60=!skill.precedence_winner
             data-skill=skill.name.clone()
         >

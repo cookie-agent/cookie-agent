@@ -346,7 +346,7 @@ pub struct Delegate {
     pub activity: Option<crate::tree::Activity>,
 }
 
-const NOTE: &str = "text-xs text-ink dark:text-sand";
+const NOTE: &str = "text-xs text-muted";
 
 /// The maps and sets a pass fills, under a fast fixed hash: their keys are
 /// hashes and IDs already, and a pass looks up every part of every row.
@@ -464,7 +464,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 // The row is the whole band at the bubble's height: a mouse
                 // over it shows the ⋯ (style/main.css), whose room stays;
                 // a touch screen long-presses the bubble instead.
-                "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-toasted px-3 py-2 dark:bg-ember\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div></div>",
+                "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover active:bg-press\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div></div>",
                 svg(icondata::FaEllipsisSolid, ""),
                 document_html(markdown)
             )
@@ -495,9 +495,9 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 return None;
             }
             let class = match level {
-                EventLevel::Error => "text-red-700 dark:text-red-400",
-                EventLevel::Warning => "text-caramel dark:text-maple",
-                EventLevel::Info | EventLevel::Debug => "text-ink dark:text-sand",
+                EventLevel::Error => "text-bad",
+                EventLevel::Warning => "text-accent",
+                EventLevel::Info | EventLevel::Debug => "text-muted",
             };
             let repeat = if *repeat > 1 {
                 format!(" ×{repeat}")
@@ -675,7 +675,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         TranscriptItem::MemoryChange { change, url, .. } => {
             let url = escape(url);
             format!(
-                "<div class=\"{NOTE}\" data-memory-change><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}<span>{}</span><span class=\"font-mono underline decoration-dotted underline-offset-2\">{url}</span></button></div>",
+                "<div class=\"{NOTE}\" data-memory-change><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-left hover:bg-hover active:bg-press\">{}<span>{}</span><span class=\"font-mono underline decoration-dotted underline-offset-2\">{url}</span></button></div>",
                 svg(icondata::FaBrainSolid, "opacity-70"),
                 change.verb()
             )
@@ -708,16 +708,10 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         TranscriptItem::AcpNotice { notice, .. } => {
             use cookie_agent_protocol::AcpNoticeSeverity;
             let (class, icon) = match notice.severity {
-                AcpNoticeSeverity::Error => (
-                    "text-red-700 dark:text-red-400",
-                    icondata::FaCircleExclamationSolid,
-                ),
-                AcpNoticeSeverity::Warning => (
-                    "text-caramel dark:text-maple",
-                    icondata::FaTriangleExclamationSolid,
-                ),
+                AcpNoticeSeverity::Error => ("text-bad", icondata::FaCircleExclamationSolid),
+                AcpNoticeSeverity::Warning => ("text-accent", icondata::FaTriangleExclamationSolid),
                 AcpNoticeSeverity::Info | AcpNoticeSeverity::Unknown => {
-                    ("text-ink dark:text-sand", icondata::FaCircleInfoSolid)
+                    ("text-muted", icondata::FaCircleInfoSolid)
                 }
             };
             let description = notice
@@ -731,7 +725,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 })
                 .unwrap_or_default();
             format!(
-                "<div class=\"agent-notice rounded border-l-4 border-crust px-3 py-1 dark:border-smoke\" data-severity=\"{}\"><div class=\"flex items-center gap-2 text-sm {class}\">{}<span>{}</span></div>{description}</div>",
+                "<div class=\"agent-notice rounded border-l-4 border-line-2 px-3 py-1\" data-severity=\"{}\"><div class=\"flex items-center gap-2 text-sm {class}\">{}<span>{}</span></div>{description}</div>",
                 match notice.severity {
                     AcpNoticeSeverity::Error => "error",
                     AcpNoticeSeverity::Warning => "warning",
@@ -742,8 +736,8 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             )
         }
         TranscriptItem::Plan { entries, .. } => format!(
-            "<div class=\"agent-plan rounded border-l-4 border-caramel px-3 py-1 dark:border-maple\"><div class=\"mb-1 flex items-center gap-2 text-sm font-bold\">{}<span>Plan</span></div>{}</div>",
-            svg(icondata::FaListCheckSolid, "text-caramel dark:text-maple"),
+            "<div class=\"agent-plan rounded border-l-4 border-accent px-3 py-1\"><div class=\"mb-1 flex items-center gap-2 text-sm font-bold\">{}<span>Plan</span></div>{}</div>",
+            svg(icondata::FaListCheckSolid, "text-accent"),
             super::blocks::plan_html(entries)
         ),
         TranscriptItem::Goal {
@@ -753,11 +747,8 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 // The goal the user set, rebuilt from the activation event:
                 // shown like a message, with no message menu.
                 format!(
-                    "<div class=\"goal-activation ml-auto max-w-[90%] rounded-lg border border-caramel px-3 py-2 text-sm whitespace-pre-wrap dark:border-maple\">{}<span class=\"font-bold\">Goal:</span> {}</div>",
-                    svg(
-                        icondata::FaBullseyeSolid,
-                        "mr-1.5 text-caramel dark:text-maple"
-                    ),
+                    "<div class=\"goal-activation ml-auto max-w-[90%] rounded-lg border border-accent px-3 py-2 text-sm whitespace-pre-wrap\">{}<span class=\"font-bold\">Goal:</span> {}</div>",
+                    svg(icondata::FaBullseyeSolid, "mr-1.5 text-accent"),
                     escape(&goal.objective)
                 )
             } else {
@@ -782,11 +773,8 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                         .collect()
                 };
                 format!(
-                    "<div class=\"goal-state rounded border-l-4 border-caramel px-3 py-1 dark:border-maple\"><div class=\"flex items-start gap-2 text-sm whitespace-pre-wrap\">{}<span>{}</span></div><div class=\"{NOTE}\">status: {} · {finished}/{} finished</div>{checklist}</div>",
-                    svg(
-                        icondata::FaBullseyeSolid,
-                        "mt-1 text-caramel dark:text-maple"
-                    ),
+                    "<div class=\"goal-state rounded border-l-4 border-accent px-3 py-1\"><div class=\"flex items-start gap-2 text-sm whitespace-pre-wrap\">{}<span>{}</span></div><div class=\"{NOTE}\">status: {} · {finished}/{} finished</div>{checklist}</div>",
+                    svg(icondata::FaBullseyeSolid, "mt-1 text-accent"),
                     escape(&goal.objective),
                     goal_status_label(goal.status),
                     goal.items.len()
@@ -1257,7 +1245,7 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
         .failed_label()
         .map(|failed| {
             format!(
-                "<span class=\"text-caramel dark:text-maple\" data-work-failed>{}</span>",
+                "<span class=\"text-accent\" data-work-failed>{}</span>",
                 escape(&failed)
             )
         })
@@ -1282,7 +1270,7 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
                 .as_deref()
                 .map(|text| {
                     format!(
-                        "<span class=\"work-line block min-w-0 truncate pl-5 text-sm text-ink/85 dark:text-sand/85\" data-key=\"t{:x}\" data-work-text>{}</span>",
+                        "<span class=\"work-line block min-w-0 truncate pl-5 text-sm text-muted/85\" data-key=\"t{:x}\" data-work-text>{}</span>",
                         line_key(text),
                         escape(text)
                     )
@@ -1310,10 +1298,7 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
     // A live row spins in place of the trailing working row, which the page
     // hides while the run's latest work is this row's.
     let spinner = if summary.live {
-        svg(
-            icondata::FaCircleNotchSolid,
-            "animate-spin text-caramel dark:text-maple",
-        )
+        svg(icondata::FaCircleNotchSolid, "animate-spin text-accent")
     } else {
         String::new()
     };
@@ -1321,15 +1306,12 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
     // fold again, and the page pins a copy of it to the top while its work
     // (`[data-work-in]`) scrolls past.
     let (open_attribute, surface) = if open {
-        (
-            " data-open",
-            "rounded-md bg-toasted hover:bg-crust/70 dark:bg-ember dark:hover:bg-smoke/70",
-        )
+        (" data-open", "rounded-md bg-sunken hover:bg-press/70")
     } else {
-        ("", "rounded-md hover:bg-toasted dark:hover:bg-ember")
+        ("", "rounded-md hover:bg-hover")
     };
     format!(
-        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-ink active:bg-crust dark:text-sand dark:active:bg-smoke\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}</span>{lines}</button></div>",
+        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-muted active:bg-press\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}</span>{lines}</button></div>",
         if summary.live { "live" } else { "done" },
         svg(chevron, "text-[0.625rem] opacity-70"),
         escape(&summary.label()),
@@ -1417,7 +1399,7 @@ pub fn pinned_rows(
                 MAX_SYSTEM_PROMPT_BODY_BYTES,
             );
             let mut html = format!(
-                "<pre class=\"max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-parchment p-2 font-mono text-xs dark:bg-char\" data-system-prompt>{}</pre>",
+                "<pre class=\"max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-2 p-2 font-mono text-xs\" data-system-prompt>{}</pre>",
                 escape(&body.lines.join("\n"))
             );
             if body.omitted_lines > 0 {
@@ -1447,7 +1429,7 @@ pub fn pinned_rows(
                     for (index, tool) in shown.iter().enumerate() {
                         let slot = hues.and_then(|hues| hues.get(index)).copied();
                         let colour = slot.map_or(
-                            "border-toasted dark:border-ember",
+                            "border-line",
                             |slot| {
                                 crate::badges::hue_class(Some(
                                     u8::try_from(slot % 8).unwrap_or_default(),
@@ -1481,7 +1463,7 @@ pub fn pinned_rows(
                     let link = if cookie_agent_client_state::rows::deferred_tools_prompt(state)
                         .is_some()
                     {
-                        " <button type=\"button\" data-action=\"deferred-prompt\" class=\"rounded px-1 underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-deferred-prompt-link>[see full prompt]</button>"
+                        " <button type=\"button\" data-action=\"deferred-prompt\" class=\"rounded px-1 underline decoration-dotted underline-offset-2 hover:bg-press active:bg-surface-2\" data-deferred-prompt-link>[see full prompt]</button>"
                     } else {
                         ""
                     };
@@ -1522,15 +1504,13 @@ fn pinned_row(
     };
     let width = if open { "w-full" } else { "min-w-0 max-w-full" };
     let mut html = format!(
-        "<div class=\"collapsible-row {width}\" data-pinned=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"hit-area flex h-7 max-w-full items-center gap-1.5 rounded-md px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}{}<span class=\"min-w-0 truncate\">{}</span></button>",
+        "<div class=\"collapsible-row {width}\" data-pinned=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"hit-area flex h-7 max-w-full items-center gap-1.5 rounded-md px-2 text-left {NOTE} hover:bg-hover active:bg-press\">{}{}<span class=\"min-w-0 truncate\">{}</span></button>",
         svg(chevron, "text-[0.625rem] opacity-70"),
         svg(icon, ""),
         escape(header)
     );
     if open {
-        html.push_str(
-            "<div class=\"mt-1 flex flex-col gap-1 border-l border-toasted pl-3 dark:border-ember\">",
-        );
+        html.push_str("<div class=\"mt-1 flex flex-col gap-1 border-l border-line pl-3\">");
         html.push_str(&body());
         html.push_str("</div>");
     }
@@ -1559,7 +1539,7 @@ fn collapsible(
         icondata::FaChevronRightSolid
     };
     let mut html = format!(
-        "<div class=\"collapsible-row\" data-block-key=\"{}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}{}<span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
+        "<div class=\"collapsible-row\" data-block-key=\"{}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left {NOTE} hover:bg-hover active:bg-press\">{}{}<span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
         escape(key),
         escape(key),
         svg(chevron, "text-[0.625rem] opacity-70"),
@@ -1567,7 +1547,7 @@ fn collapsible(
         escape(header)
     );
     if expanded {
-        html.push_str("<div class=\"border-l border-toasted pl-3 dark:border-ember\">");
+        html.push_str("<div class=\"border-l border-line pl-3\">");
         if let Some(detail) = detail {
             html.push_str(&format!(
                 "<div class=\"{NOTE} whitespace-pre-wrap\">{}</div>",
@@ -1620,7 +1600,7 @@ fn child_html(view: &TranscriptView<'_>, item_id: u64, child: &AssistantChild) -
                 file.filename.as_deref(),
             ),
             PersistedFileSource::Url { url } if super::safe_link(url) => format!(
-                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-caramel underline hover:text-espresso dark:text-maple dark:hover:text-latte\">{}</a>",
+                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-accent underline hover:text-fg\">{}</a>",
                 escape(url),
                 escape(file.filename.as_deref().unwrap_or(url))
             ),
@@ -1697,7 +1677,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     // approvals from there.
     let approval = if view.waiting_approval(tool) {
         format!(
-            "<button type=\"button\" data-action=\"approvals\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-full bg-caramel px-3 text-xs font-bold text-cream hover:bg-espresso active:bg-ink dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand\">{}approve?</button>",
+            "<button type=\"button\" data-action=\"approvals\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-full bg-accent px-3 text-xs font-bold text-on-accent hover:bg-accent active:bg-accent-press\">{}approve?</button>",
             svg(icondata::FaBellSolid, "")
         )
     } else {
@@ -1710,7 +1690,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         && !tool.backgrounded
     {
         format!(
-            "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}background</button>",
+            "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs hover:bg-hover active:bg-press\">{}background</button>",
             escape(&id),
             svg(icondata::FaLayerGroupSolid, "")
         )
@@ -1732,7 +1712,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     ));
     let icon = line_box(svg(
         icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
-        "text-caramel dark:text-maple",
+        "text-accent",
     ));
     let header = tool_header_text(view, tool);
     // An open call's header wraps to show its whole title and argument, its
@@ -1751,7 +1731,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         .and_then(|url| header.find(url).map(|at| (at, url)));
     let toggle = match link {
         None => format!(
-            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
+            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-sm hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
             escape(&id),
             escape(&header),
         ),
@@ -1766,7 +1746,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
                 )
             };
             format!(
-                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-toasted dark:hover:bg-ember\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg {pad} pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-crust active:bg-parchment dark:hover:bg-smoke dark:active:bg-char\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg {pad} pr-2 pl-2 text-left font-mono text-sm active:bg-crust dark:active:bg-smoke\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
+                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-hover\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg {pad} pl-2 text-left font-mono text-sm active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-press active:bg-surface-2\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg {pad} pr-2 pl-2 text-left font-mono text-sm active:bg-press\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
                 escape(header[..at].trim_end()),
                 id = escape(&id),
                 url = escape(url),
@@ -1774,14 +1754,14 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         }
     };
     let mut html = format!(
-        "<div class=\"rounded-lg border border-toasted dark:border-ember\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex {align}\">{toggle}{approval}{background}</div>",
+        "<div class=\"rounded-lg border border-line\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex {align}\">{toggle}{approval}{background}</div>",
         escape(&id),
     );
     if let Some(delegate) = view.delegates.get(&tool.id) {
         html.push_str(&delegate_html(delegate, tool.status == ToolStatus::Running));
     }
     if expanded {
-        html.push_str("<div class=\"flex flex-col gap-1 border-t border-toasted px-2 pt-1 pb-2 dark:border-ember\" data-tool-body>");
+        html.push_str("<div class=\"flex flex-col gap-1 border-t border-line px-2 pt-1 pb-2\" data-tool-body>");
         let arguments = tool.shown_arguments();
         if arguments.is_empty() {
             // As in the TUI: a presentation with argument blocks or a
@@ -1805,7 +1785,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         }
         if let Some(failure) = &tool.failure {
             html.push_str(&format!(
-                "<div class=\"text-sm text-red-700 dark:text-red-400\">{}</div>",
+                "<div class=\"text-sm text-bad\">{}</div>",
                 escape(failure)
             ));
         }
@@ -1829,7 +1809,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         html.push_str(&cut_result_html(&id, tool.cut.as_ref()));
         if let Some(notice) = notice {
             html.push_str(&format!(
-                "<button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" data-more-lines class=\"min-h-11 rounded-md px-2 text-left text-xs text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button>",
+                "<button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" data-more-lines class=\"min-h-11 rounded-md px-2 text-left text-xs text-muted hover:bg-hover active:bg-press\">{}</button>",
                 escape(&all_key),
                 escape(&notice)
             ));
@@ -1853,7 +1833,7 @@ fn cut_result_html(
     let size = cookie_agent_protocol::human_bytes(cut.bytes);
     let button = |label: String| {
         format!(
-            "<button type=\"button\" data-action=\"cut-result\" data-call=\"{}\" class=\"min-h-11 rounded-md px-2 text-left text-xs text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button>",
+            "<button type=\"button\" data-action=\"cut-result\" data-call=\"{}\" class=\"min-h-11 rounded-md px-2 text-left text-xs text-muted hover:bg-hover active:bg-press\">{}</button>",
             escape(call_id),
             escape(&label)
         )
@@ -1890,7 +1870,7 @@ fn history_html(before: u64, skipped: Option<u64>, loading: bool, failed: Option
     // Never the row the browser keeps in place as rows arrive above it:
     // the history it loads takes its place.
     format!(
-        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{} style=\"overflow-anchor: none\" class=\"min-h-11 rounded-md px-2 text-left text-xs text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke w-full text-center\">{}</button>",
+        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{} style=\"overflow-anchor: none\" class=\"min-h-11 rounded-md px-2 text-left text-xs text-muted hover:bg-hover active:bg-press w-full text-center\">{}</button>",
         if failed.is_some() {
             " data-history-failed"
         } else {
@@ -1908,14 +1888,14 @@ fn delegate_html(delegate: &Delegate, running: bool) -> String {
         .filter(|_| running)
         .map(|activity| {
             format!(
-                "<span class=\"inline-flex items-center gap-1 text-caramel dark:text-maple\" data-delegate-activity>{}{}</span>",
+                "<span class=\"inline-flex items-center gap-1 text-accent\" data-delegate-activity>{}{}</span>",
                 svg(icondata::FaCircleNotchSolid, "animate-spin"),
                 activity.label()
             )
         })
         .unwrap_or_default();
     format!(
-        "<div class=\"flex flex-wrap items-center gap-2 px-2 pb-1 {NOTE}\" data-delegate=\"{}\"><span class=\"font-mono\">{}{}</span>{activity}<button type=\"button\" data-action=\"open-session\" data-session=\"{}\" class=\"inline-flex min-h-11 items-center gap-1 rounded-md px-2 hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}open</button></div>",
+        "<div class=\"flex flex-wrap items-center gap-2 px-2 pb-1 {NOTE}\" data-delegate=\"{}\"><span class=\"font-mono\">{}{}</span>{activity}<button type=\"button\" data-action=\"open-session\" data-session=\"{}\" class=\"inline-flex min-h-11 items-center gap-1 rounded-md px-2 hover:bg-hover active:bg-press\">{}open</button></div>",
         delegate.session_id,
         escape(&delegate.agent),
         delegate

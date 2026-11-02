@@ -41,7 +41,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
         match offer {
             PushOffer::NeedsHttps => view! {
                 <p class="flex items-start gap-2 text-sm">
-                    <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-caramel dark:text-maple" />
+                    <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-accent" />
                     <span>"Notifications need HTTPS, as installing the app does."</span>
                 </p>
             }
@@ -118,14 +118,14 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                 };
                 view! {
                     <p class="flex items-center gap-2 text-sm">
-                        <Glyph icon=icondata::FaCircleCheckSolid class="text-green-700 dark:text-green-400" />
+                        <Glyph icon=icondata::FaCircleCheckSolid class="text-ok" />
                         "Notifications are on in this browser."
                     </p>
                     <label class="flex flex-col gap-1 text-sm">
                         <span class=NOTE>"This device's name in the list"</span>
                         <input
                             id="notifications-label"
-                            class="min-h-11 rounded-md border border-crust bg-cream px-3 text-sm dark:border-smoke dark:bg-night"
+                            class="min-h-11 rounded-md border border-line-2 bg-surface px-3 text-sm"
                             maxlength="80"
                             prop:value=move || label_draft.get().unwrap_or_else(current_label)
                             on:input=move |event| label_draft.set(Some(event_target_value(&event)))
@@ -229,14 +229,14 @@ fn device_row(
     );
     let id = device.id.clone();
     view! {
-        <li class="flex items-center gap-2 rounded-md border border-toasted px-3 py-2 dark:border-ember" data-push-subscription=device.id.clone()>
+        <li class="flex items-center gap-2 rounded-md border border-line px-3 py-2" data-push-subscription=device.id.clone()>
             <div class="flex min-w-0 flex-1 flex-col">
                 <span class="truncate text-sm font-bold">
                     {device.label.clone()}
                     {mine.then(|| view! { <span class="ml-2 text-xs font-normal">"(this browser)"</span> })}
                 </span>
                 <span class=NOTE>{format!("{} · {sent}", device.push_service)}</span>
-                {device.last_error.clone().map(|error| view! { <span class="text-xs text-red-800 dark:text-red-300">{error}</span> })}
+                {device.last_error.clone().map(|error| view! { <span class="text-xs text-bad">{error}</span> })}
             </div>
             <button
                 type="button"

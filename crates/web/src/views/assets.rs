@@ -13,12 +13,12 @@ use leptos::prelude::*;
 use super::{BUTTON, ERROR, NOTE, empty_state, loading};
 use crate::{icons::Glyph, workspace::Workspace};
 
-const ROW_BUTTON: &str = "inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+const ROW_BUTTON: &str =
+    "inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-xs hover:bg-hover active:bg-press";
 const CHIP: &str =
     "inline-flex min-h-9 max-w-full items-center gap-1.5 rounded-full border px-3 text-sm";
-const CHIP_ON: &str =
-    "border-espresso bg-espresso text-cream dark:border-latte dark:bg-latte dark:text-night";
-const CHIP_OFF: &str = "border-crust hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
+const CHIP_ON: &str = "border-fg bg-accent text-on-accent";
+const CHIP_OFF: &str = "border-line-2 hover:bg-hover active:bg-press";
 
 /// A choice of the filter or the kinds: a chip, filled while chosen.
 fn chip(
@@ -49,7 +49,7 @@ fn chip(
 /// The filter: whose assets (every project's, no project's, or one
 /// project's), and of which level.
 fn filter_panel(workspace: Workspace) -> impl IntoView {
-    let heading = "text-xs font-bold text-ink dark:text-sand";
+    let heading = "text-xs font-bold text-muted";
     let project_chip =
         move |label: String, project: Option<AssetProjectFilter>, data: &'static str| {
             let wanted = project.clone();
@@ -89,7 +89,7 @@ fn filter_panel(workspace: Workspace) -> impl IntoView {
             id="assets-filter"
             role="dialog"
             aria-label="Filter assets"
-            class="flex flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 dark:border-ember dark:bg-night"
+            class="flex flex-col gap-3 rounded-lg border border-line bg-surface p-3"
         >
             <div class="flex flex-col gap-1.5">
                 <span class=heading>"Project"</span>
@@ -262,7 +262,7 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
                     <Glyph icon=icondata::FaFilterSolid />
                     // A dot while the filter narrows the list.
                     <Show when=narrowed>
-                        <span class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-caramel ring-2 ring-cream dark:bg-maple dark:ring-night" data-filter-dot></span>
+                        <span class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-surface" data-filter-dot></span>
                     </Show>
                 </button>
                 <span class=format!("min-w-0 flex-1 truncate {NOTE}") data-assets-summary>
@@ -277,12 +277,12 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
                 {AssetKind::ALL.into_iter().map(|kind| kind_button(Some(kind))).collect_view()}
             </div>
             <label class="relative flex items-center">
-                <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-ink dark:text-sand" />
+                <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-muted" />
                 <input
                     type="text"
                     role="searchbox"
                     id="assets-search"
-                    class="min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream pr-3 pl-9 text-sm text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
+                    class="min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface pr-3 pl-9 text-sm text-fg hover:border-accent focus:border-accent focus:outline-none"
                     aria-label="Search assets by title or file name"
                     placeholder="Search by title or file name"
                     prop:value=move || workspace.asset_query.get_untracked()
@@ -345,7 +345,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
         Some(session) => view! {
             <button
                 type="button"
-                class=format!("{NOTE} underline decoration-dotted underline-offset-2 hover:text-espresso dark:hover:text-latte")
+                class=format!("{NOTE} underline decoration-dotted underline-offset-2 hover:text-fg")
                 data-asset-session=session.to_string()
                 on:click=move |_| {
                     workspace.open_session(session);
@@ -378,7 +378,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
             <span class=NOTE>"·"</span>
             <button
                 type="button"
-                class=format!("{NOTE} min-w-0 truncate underline decoration-dotted underline-offset-2 hover:text-espresso dark:hover:text-latte")
+                class=format!("{NOTE} min-w-0 truncate underline decoration-dotted underline-offset-2 hover:text-fg")
                 data-asset-tree=session.to_string()
                 title="Open the session"
                 on:click=move |_| {
@@ -391,16 +391,16 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
         }
     });
     view! {
-        <div class="flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-asset-row=asset.handle.to_string()>
+        <div class="flex flex-col gap-1 border-b border-line py-2" data-asset-row=asset.handle.to_string()>
             <div class="flex min-w-0 flex-wrap items-center gap-2">
-                <Glyph icon=crate::icons::asset_icon(kind) class="text-caramel dark:text-maple" />
+                <Glyph icon=crate::icons::asset_icon(kind) class="text-accent" />
                 <span class="min-w-0 flex-1 truncate text-sm font-bold" data-asset-row-title>{title.clone()}</span>
                 <span class=NOTE>{format!("{} · {}", asset.media_type, human_bytes(asset.byte_length))}</span>
             </div>
             <div class="flex min-w-0 items-center gap-1" data-asset-place=level>
                 <Glyph
                     icon=if level == "session" { icondata::FaCommentsSolid } else { icondata::FaFolderSolid }
-                    class="text-xs text-ink dark:text-sand"
+                    class="text-xs text-muted"
                 />
                 <span class=format!("{NOTE} shrink-0") data-asset-project>{place.project}</span>
                 {tree}
@@ -472,7 +472,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                             <input
                                 type="text"
                                 id="asset-rename-title"
-                                class="min-h-11 min-w-0 flex-1 rounded-md border border-crust bg-cream px-3 text-sm dark:border-smoke dark:bg-night"
+                                class="min-h-11 min-w-0 flex-1 rounded-md border border-line-2 bg-surface px-3 text-sm"
                                 maxlength="200"
                                 aria-label="The asset's title"
                                 prop:value=move || {
@@ -509,7 +509,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                             </p>
                             <button
                                 type="button"
-                                class=format!("{BUTTON} border-red-700 text-red-800 dark:border-red-400 dark:text-red-300")
+                                class=format!("{BUTTON} border-bad text-bad")
                                 id="asset-delete-confirm"
                                 on:click={
                                     let delete_store = delete_store.clone();

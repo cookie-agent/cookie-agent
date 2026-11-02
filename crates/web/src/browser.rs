@@ -191,10 +191,10 @@ pub fn set_dark(dark: bool) {
 }
 
 /// The browser's colour around the page (`theme-color`) in the light and
-/// the dark theme: the palette's cream and night, as in `index.html` and
+/// the dark theme: Quiet Ink's light and dark surface, as in `index.html` and
 /// the manifest.
-const THEME_LIGHT: &str = "#fbf4e6";
-const THEME_DARK: &str = "#201c16";
+const THEME_LIGHT: &str = "#ffffff";
+const THEME_DARK: &str = "#0e0e10";
 
 /// Sets every `theme-color` of the page to `colour`, so the browser's bar,
 /// or an installed app's title bar, follows the user's theme rather than

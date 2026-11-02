@@ -143,10 +143,10 @@ impl StatusMark {
     }
 }
 
-const RUNNING: &str = "text-caramel dark:text-maple";
-const DONE: &str = "text-green-700 dark:text-green-400";
-const FAILED: &str = "text-red-700 dark:text-red-400";
-const QUIET: &str = "text-ink dark:text-sand";
+const RUNNING: &str = "text-accent";
+const DONE: &str = "text-ok";
+const FAILED: &str = "text-bad";
+const QUIET: &str = "text-muted";
 
 /// A tool call's status.
 pub fn tool_status(status: &ToolStatus, backgrounded: bool) -> StatusMark {

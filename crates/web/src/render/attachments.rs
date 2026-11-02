@@ -18,15 +18,16 @@ use cookie_agent_protocol::{AssetBlock, AttachmentOutcome, PersistedFileSource};
 use super::{escape, markdown::ATTACH_MARKER};
 use crate::icons::svg;
 
-const NOTE: &str = "text-xs text-ink dark:text-sand";
+const NOTE: &str = "text-xs text-muted";
 /// A card's surface.
-const SURFACE: &str = "asset-card group relative flex min-w-0 overflow-hidden rounded-xl border border-toasted bg-cream shadow-sm dark:border-ember dark:bg-char";
+const SURFACE: &str = "asset-card group relative flex min-w-0 overflow-hidden rounded-xl border border-line bg-surface shadow-sm";
 /// A card's corner button, shown while the pointer is over the card (and
 /// always on a touch screen).
-const CORNER: &str = "absolute top-1.5 right-1.5 z-20 inline-flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-md bg-cream/90 px-1.5 text-xs opacity-0 shadow-sm group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-toasted focus-visible:opacity-100 [@media(hover:none)]:opacity-100 dark:bg-char/90 dark:hover:bg-ember";
+const CORNER: &str = "absolute top-1.5 right-1.5 z-20 inline-flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-md bg-surface/90 px-1.5 text-xs opacity-0 shadow-sm group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-hover focus-visible:opacity-100 [@media(hover:none)]:opacity-100";
 /// A small label of a card's file type.
-const PILL: &str = "shrink-0 rounded-full border border-toasted px-1.5 font-mono text-[0.6875rem] text-ink dark:border-ember dark:text-sand";
-const BUTTON: &str = "inline-flex min-h-9 items-center gap-1 rounded-md border border-crust px-2.5 text-xs hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
+const PILL: &str =
+    "shrink-0 rounded-full border border-line px-1.5 font-mono text-[0.6875rem] text-muted";
+const BUTTON: &str = "inline-flex min-h-9 items-center gap-1 rounded-md border border-line-2 px-2.5 text-xs hover:bg-hover active:bg-press";
 
 /// How a card shows its file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -379,7 +380,7 @@ fn waiting_html(state: &CardState) -> String {
     };
     format!(
         "<span class=\"{SURFACE} flex-col gap-0.5 px-2.5 py-2\" data-attach-state=\"{status}\"><span class=\"flex min-w-0 items-center gap-2\">{}<span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span></span><span class=\"line-clamp-3 {NOTE}\">{}</span>{actions}</span>",
-        svg(icon, "shrink-0 text-caramel dark:text-maple"),
+        svg(icon, "shrink-0 text-accent"),
         escape(label),
         escape(&line),
     )
@@ -398,7 +399,7 @@ fn deck_html(files: &[&CardFile]) -> String {
             " hidden".to_owned()
         };
         cards.push_str(&format!(
-            "<span class=\"asset-deck-card absolute inset-0 flex items-center justify-center overflow-hidden rounded-xl border border-toasted bg-cream shadow-md dark:border-ember dark:bg-char\" {} data-index=\"{index}\"{layer}><span class=\"px-3 text-center {NOTE}\" data-asset-body>{}</span></span>",
+            "<span class=\"asset-deck-card absolute inset-0 flex items-center justify-center overflow-hidden rounded-xl border border-line bg-surface shadow-md\" {} data-index=\"{index}\"{layer}><span class=\"px-3 text-center {NOTE}\" data-asset-body>{}</span></span>",
             file.placeholder("thumb"),
             escape(&file.title),
         ));
@@ -434,7 +435,7 @@ fn deck_html(files: &[&CardFile]) -> String {
 /// that opens it beside the chat.
 fn page_html(file: &CardFile) -> String {
     format!(
-        "<span class=\"{SURFACE} flex-col transition-[translate,box-shadow] hover:-translate-y-0.5 hover:shadow-md\" {}><span class=\"relative block h-[132px] overflow-hidden border-b border-toasted bg-white dark:border-ember\" data-asset-body></span>{}<span class=\"px-2.5 pb-2 text-xs text-caramel dark:text-maple\" data-asset-note>Open beside the chat →</span><button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Open {} beside the chat\"></button>{}</span>",
+        "<span class=\"{SURFACE} flex-col transition-[translate,box-shadow] hover:-translate-y-0.5 hover:shadow-md\" {}><span class=\"relative block h-[132px] overflow-hidden border-b border-line bg-white\" data-asset-body></span>{}<span class=\"px-2.5 pb-2 text-xs text-accent\" data-asset-note>Open beside the chat →</span><button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Open {} beside the chat\"></button>{}</span>",
         file.placeholder("page"),
         title_row(file),
         escape(&file.title),
@@ -445,7 +446,7 @@ fn page_html(file: &CardFile) -> String {
 /// A document's card: its title and first lines.
 fn document_html(file: &CardFile) -> String {
     format!(
-        "<span class=\"{SURFACE} flex-col transition-[translate,box-shadow] hover:-translate-y-0.5 hover:shadow-md\" {}>{}<span class=\"asset-excerpt relative mx-2.5 mb-2 block h-[84px] overflow-hidden text-xs text-ink dark:text-sand\" data-asset-body></span><span class=\"px-2.5 pb-2 text-xs text-caramel dark:text-maple\" data-asset-note>Read beside the chat →</span><button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Read {} beside the chat\"></button>{}</span>",
+        "<span class=\"{SURFACE} flex-col transition-[translate,box-shadow] hover:-translate-y-0.5 hover:shadow-md\" {}>{}<span class=\"asset-excerpt relative mx-2.5 mb-2 block h-[84px] overflow-hidden text-xs text-muted\" data-asset-body></span><span class=\"px-2.5 pb-2 text-xs text-accent\" data-asset-note>Read beside the chat →</span><button type=\"button\" data-action=\"asset-panel\" class=\"absolute inset-0 z-10 rounded-xl\" aria-label=\"Read {} beside the chat\"></button>{}</span>",
         file.placeholder("doc"),
         title_row(file),
         escape(&file.title),
@@ -469,7 +470,7 @@ fn file_html(file: &CardFile) -> String {
     let hue = crate::badges::hue_class(Some(cookie_agent_client_state::badges::badge_hue(&label)));
     let name = file.filename.as_deref().unwrap_or(&file.title);
     format!(
-        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\">{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-ink dark:text-sand\" data-asset-note>{}</span></span><button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-caramel hover:bg-toasted dark:text-maple dark:hover:bg-ember\" aria-label=\"Download {}\" title=\"Download\">{}</button>{}</span>",
+        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\">{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-muted\" data-asset-note>{}</span></span><button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-accent hover:bg-hover\" aria-label=\"Download {}\" title=\"Download\">{}</button>{}</span>",
         file.placeholder("file"),
         escape(&label),
         escape(name),
@@ -486,7 +487,7 @@ fn title_row(file: &CardFile) -> String {
         "<span class=\"flex min-w-0 items-center gap-2 px-2.5 pt-2 pb-1\">{}<span class=\"min-w-0 flex-1 truncate text-sm font-bold\" data-asset-title>{}</span><span class=\"{PILL}\">{}</span></span>",
         svg(
             crate::icons::asset_icon(AssetKind::of(&file.media_type)),
-            "shrink-0 text-caramel dark:text-maple"
+            "shrink-0 text-accent"
         ),
         escape(&file.title),
         escape(&file.type_label()),
@@ -498,10 +499,10 @@ fn title_row(file: &CardFile) -> String {
 fn chip_html(block: &AssetBlock) -> String {
     let handle = escape(block.handle.as_str());
     format!(
-        "<span role=\"button\" tabindex=\"0\" data-action=\"asset-chip\" data-asset-handle=\"{handle}\" title=\"{handle}\" class=\"asset-chip inline-flex max-w-full cursor-pointer items-center gap-1 rounded-full border border-crust bg-parchment px-2 align-baseline text-[0.8125rem] leading-snug hover:bg-toasted dark:border-smoke dark:bg-ember dark:hover:bg-smoke\">{}<span class=\"truncate select-none\">{}</span><span class=\"sr-only\">{handle}</span></span>",
+        "<span role=\"button\" tabindex=\"0\" data-action=\"asset-chip\" data-asset-handle=\"{handle}\" title=\"{handle}\" class=\"asset-chip inline-flex max-w-full cursor-pointer items-center gap-1 rounded-full border border-line-2 bg-surface-2 px-2 align-baseline text-[0.8125rem] leading-snug hover:bg-hover\">{}<span class=\"truncate select-none\">{}</span><span class=\"sr-only\">{handle}</span></span>",
         svg(
             crate::icons::asset_icon(AssetKind::of(&block.media_type)),
-            "shrink-0 text-caramel dark:text-maple"
+            "shrink-0 text-accent"
         ),
         escape(&block.title),
     )

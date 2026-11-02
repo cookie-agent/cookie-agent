@@ -509,7 +509,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     type="range"
                     id="media-viewer-seek"
                     aria-label="Position"
-                    class="h-11 min-w-32 flex-1 cursor-pointer accent-caramel dark:accent-maple"
+                    class="h-11 min-w-32 flex-1 cursor-pointer accent-accent"
                     min="0"
                     step="any"
                     disabled=move || !known()

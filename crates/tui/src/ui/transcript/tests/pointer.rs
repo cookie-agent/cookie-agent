@@ -102,23 +102,18 @@ fn is_transcript(target: PointerTarget) -> bool {
 
 /// Every theme kind at every colour level.
 fn every_theme() -> impl Iterator<Item = Theme> {
-    [
-        ThemeKind::Default,
-        ThemeKind::Dark,
-        ThemeKind::Mono,
-        ThemeKind::HighContrast,
-    ]
-    .into_iter()
-    .flat_map(|kind| {
-        [
-            ColorLevel::None,
-            ColorLevel::Ansi16,
-            ColorLevel::Ansi256,
-            ColorLevel::TrueColor,
-        ]
+    [ThemeKind::Default, ThemeKind::Dark]
         .into_iter()
-        .map(move |level| Theme::new(kind, level))
-    })
+        .flat_map(|kind| {
+            [
+                ColorLevel::None,
+                ColorLevel::Ansi16,
+                ColorLevel::Ansi256,
+                ColorLevel::TrueColor,
+            ]
+            .into_iter()
+            .map(move |level| Theme::new(kind, level))
+        })
 }
 
 /// Sweep every cell of the frame. Wherever the pointer resolves a target,

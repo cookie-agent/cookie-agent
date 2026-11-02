@@ -432,8 +432,8 @@ fn expanded_tool_rows_form_a_title_and_output_panel() {
         Theme::new(ThemeKind::Dark, ColorLevel::TrueColor),
         Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
         Theme::new(ThemeKind::Dark, ColorLevel::Ansi256),
-        Theme::new(ThemeKind::Mono, ColorLevel::None),
-        Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        Theme::new(ThemeKind::Default, ColorLevel::None),
+        Theme::new(ThemeKind::Dark, ColorLevel::Ansi16),
     ] {
         let at = |blocks, level| {
             let layout =

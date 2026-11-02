@@ -148,8 +148,8 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
             aria-labelledby="onboarding-title"
             class="fixed inset-0 z-50 flex items-stretch justify-center bg-black/40 sm:items-center sm:p-4"
         >
-            <div class="flex h-full w-full min-w-0 flex-col bg-cream text-espresso sm:h-auto sm:max-h-[90vh] sm:max-w-2xl sm:rounded-xl sm:border sm:border-toasted dark:bg-night dark:text-latte sm:dark:border-ember">
-                <header class="flex items-center gap-2 border-b border-toasted px-4 py-2 dark:border-ember">
+            <div class="flex h-full w-full min-w-0 flex-col bg-surface text-fg sm:h-auto sm:max-h-[90vh] sm:max-w-2xl sm:rounded-xl sm:border sm:border-line">
+                <header class="flex items-center gap-2 border-b border-line px-4 py-2">
                     <h2 id="onboarding-title" class="min-w-0 flex-1 truncate text-base font-bold">"Set up Cookie"</h2>
                     <Show when=move || onboarding.result.with(Option::is_none)>
                         <button type="button" id="onboarding-not-now" class=BUTTON on:click=move |_| workspace.dismiss_onboarding()>
@@ -160,7 +160,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                 {move || match onboarding.result.get() {
                     Some(result) => summary(workspace, &result).into_any(),
                     None => view! {
-                        <nav aria-label="Onboarding steps" class="grid grid-cols-2 gap-1 border-b border-toasted px-4 py-2 sm:flex sm:flex-wrap dark:border-ember">
+                        <nav aria-label="Onboarding steps" class="grid grid-cols-2 gap-1 border-b border-line px-4 py-2 sm:flex sm:flex-wrap">
                             {move || paths.get().steps()
                                 .into_iter()
                                 .enumerate()
@@ -175,17 +175,16 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                     view! {
                                         <button
                                             type="button"
-                                            class="inline-flex min-h-11 min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                                            class="inline-flex min-h-11 min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-sm hover:bg-hover active:bg-press"
                                             class:font-bold=current
-                                            class:bg-toasted=current
-                                            class:dark:bg-ember=current
+                                            class:bg-sel=current
                                             aria-current=move || current().then_some("step")
                                             data-step=step_id(each)
                                             data-done=move || done().to_string()
                                             on:click=move |_| step.set(each)
                                         >
                                             {move || if done() {
-                                                view! { <Glyph icon=icondata::FaCircleCheckSolid class="text-green-700 dark:text-green-400" /> }.into_any()
+                                                view! { <Glyph icon=icondata::FaCircleCheckSolid class="text-ok" /> }.into_any()
                                             } else {
                                                 view! { <span class="inline-flex size-5 items-center justify-center rounded-full border border-current text-xs">{index + 1}</span> }.into_any()
                                             }}
@@ -206,7 +205,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                 OnboardingStep::UtilityModel => model_step(workspace, Slot::Utility, utility_choice).into_any(),
                             }}
                         </div>
-                        <footer class="flex flex-col gap-2 border-t border-toasted px-4 py-2 dark:border-ember">
+                        <footer class="flex flex-col gap-2 border-t border-line px-4 py-2">
                             {move || onboarding.error.get().map(|message| view! { <p class=ERROR id="onboarding-error">{message}</p> })}
                             <div class="flex flex-wrap items-center gap-2">
                                 <button
@@ -294,8 +293,7 @@ fn start_step(paths: RwSignal<PathChoice>) -> impl IntoView {
             <button
                 type="button"
                 class=ROW
-                class:bg-toasted=on
-                class:dark:bg-ember=on
+                class:bg-sel=on
                 aria-pressed=move || on().to_string()
                 data-path=id
                 on:click=move |_| paths.update(|chosen| *chosen = chosen.toggled(models))
@@ -418,8 +416,7 @@ fn acp_step(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=BUTTON
-                            class:bg-toasted=on
-                            class:dark:bg-ember=on
+                            class:bg-sel=on
                             aria-pressed=move || on().to_string()
                             data-acp-preset=preset.id.to_string()
                             on:click=move |_| pick(Some(index))
@@ -432,8 +429,7 @@ fn acp_step(workspace: Workspace) -> impl IntoView {
             <button
                 type="button"
                 class=BUTTON
-                class:bg-toasted=move || picked.get().is_none()
-                class:dark:bg-ember=move || picked.get().is_none()
+                class:bg-sel=move || picked.get().is_none()
                 aria-pressed=move || picked.get().is_none().to_string()
                 data-acp-preset="other"
                 on:click=move |_| pick(None)
@@ -454,8 +450,7 @@ fn acp_step(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=BUTTON
-                            class:bg-toasted=on
-                            class:dark:bg-ember=on
+                            class:bg-sel=on
                             aria-pressed=move || on().to_string()
                             data-acp-where=match each {
                                 AcpPlace::EveryMachine => "every",
@@ -554,7 +549,7 @@ fn acp_declarations(workspace: Workspace) -> impl IntoView {
             })
             .collect_view();
         view! {
-            <h3 class="pt-2 text-xs font-bold uppercase tracking-wide text-ink dark:text-sand">"Linked ACP agents"</h3>
+            <h3 class="pt-2 text-xs font-bold uppercase tracking-wide text-muted">"Linked ACP agents"</h3>
             <ul class="flex flex-col gap-2" id="onboarding-acp-agents">{rows}</ul>
         }
     })
@@ -751,7 +746,7 @@ fn provider_step(workspace: Workspace) -> impl IntoView {
                             .into_iter()
                             .map(|line| view! {
                                 <li class="flex items-center gap-2 text-sm">
-                                    <Glyph icon=icondata::FaPlugSolid class="text-green-700 dark:text-green-400" />
+                                    <Glyph icon=icondata::FaPlugSolid class="text-ok" />
                                     {line}
                                 </li>
                             })
@@ -824,8 +819,7 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                 <button
                     type="button"
                     class=BUTTON
-                    class:bg-toasted=on.clone()
-                    class:dark:bg-ember=on.clone()
+                    class:bg-sel=on.clone()
                     aria-pressed=move || on().to_string()
                     data-same-as=field_name(earlier)
                     on:click=toggle
@@ -906,8 +900,7 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                                             <button
                                                 type="button"
                                                 class=BUTTON
-                                                class:bg-toasted=on
-                                                class:dark:bg-ember=on
+                                                class:bg-sel=on
                                                 aria-pressed=on.to_string()
                                                 data-variant=variant.to_string()
                                                 on:click=move |_| choice.update(|chosen| {
@@ -930,8 +923,7 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                                     <button
                                         type="button"
                                         class=ROW
-                                        class:bg-toasted=selected
-                                        class:dark:bg-ember=selected
+                                        class:bg-sel=selected
                                         aria-pressed=selected.to_string()
                                         data-model=model.key.to_string()
                                         data-position=index.map(|index| (index + 1).to_string())
@@ -955,7 +947,7 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
                         .collect_view();
                     view! {
                         <section class="flex flex-col gap-1" data-provider-group=group.provider.to_string()>
-                            <h3 class="pt-2 text-xs font-bold uppercase tracking-wide text-ink dark:text-sand">{group.provider.to_string()}</h3>
+                            <h3 class="pt-2 text-xs font-bold uppercase tracking-wide text-muted">{group.provider.to_string()}</h3>
                             {rows}
                         </section>
                     }
@@ -980,7 +972,7 @@ fn summary(
                 {lines.into_iter().map(|line| view! { <li class="text-sm">{line}</li> }).collect_view()}
             </ul>
         </div>
-        <footer class="flex flex-wrap gap-2 border-t border-toasted px-4 py-2 dark:border-ember">
+        <footer class="flex flex-wrap gap-2 border-t border-line px-4 py-2">
             <button type="button" id="onboarding-first-session" class=PRIMARY on:click=move |_| workspace.start_first_session()>
                 "Start your first session"
             </button>
