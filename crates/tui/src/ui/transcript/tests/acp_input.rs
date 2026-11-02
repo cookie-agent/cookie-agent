@@ -76,7 +76,10 @@ async fn a_new_session_draft_picks_the_agents_model_and_effort_and_sends_them() 
     // The variant segment cycles the effort option.
     app.cycle_draft_variant();
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("claude · on local • opus![high!]"), "{rendered}");
+    assert!(
+        rendered.contains("claude · on local • opus![high!]"),
+        "{rendered}"
+    );
 
     let recorded_for_response = recorded.clone();
     let response = tokio::spawn(async move {
