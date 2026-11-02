@@ -130,8 +130,8 @@ as subagents have handles (`subagent-handles.md`):
   assets/               the shared store of sessions in no project
     index.json
     blobs/<sha256>
-  sessions/<month>/<root-id>/
-    assets/             the session tree's own assets
+  session-assets/
+    <root-id>/          a session tree's own assets
       index.json
       blobs/<sha256>
 ```
@@ -148,13 +148,18 @@ There are three kinds of store, all with the same index and blobs:
   starts. A subagent uses its root's.
 - **Session assets** (`scope: "session"`, the default) are for something
   quick that does not belong to the project. They belong to the **session
-  tree** (decided 2026-11-01) and live in its root's folder:
+  tree** (decided 2026-11-01) and live in `session-assets/<root-id>/`,
+  which the tree's first asset makes:
   - every session of the tree, the root and its subagents, can show, read,
     list, write, and delete them. Sessions of other trees never see them;
-  - the Assets tab never lists them, but their figures show and download
-    in the tree's transcripts as any figure does;
+  - the Assets tab lists them under their session (section 8.3);
   - they are deleted with the tree, and they move with it when its root
     changes project.
+
+  They live apart from the session's folder, and from the project stores,
+  so that listing `session-assets/` finds every tree that has assets
+  without reading any session (decided 2026-11-01). Project stores do not
+  move.
 
 ### 4.2 Blobs and references
 
@@ -177,7 +182,7 @@ There are three kinds of store, all with the same index and blobs:
 
 | Event | Assets |
 |---|---|
-| A session tree is deleted | Project assets stay, and the tab shows "written in a deleted session". Its session assets are deleted with it. |
+| A session tree is deleted | Project assets stay, and the tab shows "written in a deleted session". Its session assets are deleted with it: `session-assets/<root-id>/` is removed. |
 | A session tree moves to another project | Project assets stay in the project where they were written, and its figures of them still render, because a figure names its store (section 10). Its session assets move with it. |
 | A project is deleted | They are deleted with it. `project.delete` reports `deleted_assets`, and its confirmation names the count. |
 | An asset is deleted | Its figures show "deleted", with who deleted it and when. Model history does not change. |
@@ -247,8 +252,8 @@ write_asset(
 > something you saved before by its handle rather than saving it again.
 > `scope` is `session` by default: the asset belongs to this conversation
 > and its subagents, and is deleted with it. Use `project` for something
-> the user will want to find again, in the Assets tab or from another
-> session of the project. Saving does not show the asset: pass
+> to keep after this conversation, which every session of the project
+> can use. Saving does not show the asset: pass
 > `show: true`, with an optional `caption`, or call show_asset. A shown
 > asset shows under the next text you write; name it there by its handle
 > to link to it.
@@ -588,17 +593,33 @@ web page (daemon origin, holds the token)
   new tab. There are no forms, no top navigation, no downloads from the
   frame, and never `allow-same-origin`.
 
-### 8.3 The Assets tab (phase 4)
+### 8.3 The Assets tab
 
-- **A rail entry, "Assets."** It lists the current project's assets (or
-  the shared store's), newest first, with a filter by type and a search by
-  title.
-- **Each row** shows the asset's type icon or thumbnail, title, size, the
-  session that last wrote it (a link to that session), and when.
+Revised 2026-11-01: the tab lists session assets too, with a filter like
+the session list's.
+
+- **A rail entry, "Assets."** It lists assets newest first, every
+  project's and every session's when it opens.
+- **The filter,** behind a button with a dot while it narrows the list:
+  - **Project:** all projects, no project, or one project. A session's
+    own assets go by its root's project;
+  - **Level:** all, session (a tree's own), or project (kept for the
+    project, or the shared store).
+- **Kind and search:** chips by type, and a search of titles and file
+  names, both in the page.
+- **Each row** shows the asset's type icon, title, size, where it lives
+  (the project, "No project", or the session, a link to it), the session
+  that last wrote it (a link to that session), and when.
 - **Opening a row** shows the asset as a figure does, full width.
 - **Row actions:** rename (the title), download, and delete. The user's
   delete never asks for permission, but it is confirmed like any delete.
-- **A project's total size** heads the list.
+- **The total** of what is listed, its count and size, heads the list,
+  and the list shows 100 rows at a time, with *Show more*.
+- **One request per filter:** `assets.search` (section 10). The daemon
+  answers from its listing of `session-assets/` and the project stores,
+  each store's index kept in memory and read again only when its file
+  changed; it never reads a session to find assets. `assets.changed`
+  searches again, a moment after the last change.
 
 ### 8.4 Links
 
@@ -672,8 +693,12 @@ connects as usual, and one that does not shows the connect screen first.
     when the daemon knows the asset, else `asset (deleted)`.
 - **The hint `figure`** joins the documented presentation hints.
 - **Methods:**
-  - `assets.list { store }` returns the assets' fields. The Assets tab
-    lists only project and shared stores;
+  - `assets.list { store }` returns the assets' fields;
+  - `assets.search { project?, scope? }` (1.71.0) returns the assets of
+    many stores, newest first: `project` is `{ project: ProjectId }` or
+    `{ no_project }`, every one when absent, and `scope` is `session` or
+    `project`, both when absent. It also returns each session tree whose
+    assets it lists, with its title and project, to name it;
   - `asset.get { store, asset }` returns one asset's fields, or
     `asset_not_found`;
   - `asset.read { store, asset, offset, length }` reads like
@@ -778,8 +803,8 @@ client shows something.
   and can go full screen; a handle can always be copied.
 - **Session assets, the default scope.** `scope: "session"` keeps an asset
   to the session tree that wrote it: every session of the tree can use
-  it, other trees cannot reach it, the Assets tab does not show it, and it
-  is deleted with the tree. `scope: "project"` is the option.
+  it, other trees cannot reach it, the Assets tab did not show it (until
+  the revision below), and it is deleted with the tree. `scope: "project"` is the option.
 - **The scope never changes** for now.
 - **The asset tools are deferred by default,** as a built-in group.
 - **IDs:** a UUIDv7 inside cookie, and an `asset_<8 hex>` handle for the
@@ -795,6 +820,12 @@ client shows something.
   the URL it attached with.
 - **`write_asset` takes a file only,** never a string of content. A session
   with no machine to read from cannot save assets (section 5.2).
+- **The Assets tab lists session assets too** (revised 2026-11-01), with
+  a filter by project (all, none, one) and by level (all, session,
+  project), and a search of titles.
+- **Session assets live in `session-assets/<root-id>/`** (revised
+  2026-11-01), apart from their sessions, so the daemon never sweeps the
+  sessions to find them. Project stores stay where they are.
 
 No questions are open.
 
@@ -893,9 +924,10 @@ runtime protocol 1.15.0). Where the code differs from the sections above:
 - **Only `#session=<id>&asset=<handle>` links exist.** Section 8.4's
   `#project=<id>&asset=<handle>` is not implemented: nothing prints one,
   since the TUI links to a figure in its session.
-- **The Assets view** opens on the open session's project, and shows no
-  session's own assets, as section 8.3 says; it has no thumbnails, only an
-  icon by kind.
+- **The Assets view** has no thumbnails, only an icon by kind.
+- **Session stores of the first version** lived in the session's folder,
+  `sessions/<month>/<root-id>/assets/`. They are not moved: the daemon no
+  longer reads them, and they go with their sessions.
 - **The TUI's page URL** comes from the handshake when the TUI starts, or
   from the address it attached at. A daemon whose `page_url` changes later
   is seen at the TUI's next start.
