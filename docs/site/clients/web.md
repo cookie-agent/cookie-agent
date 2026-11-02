@@ -106,7 +106,7 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   each icon names itself in a tooltip, and the view shown is marked by a
   bar at the rail's edge:
   - **Chat** (the default): the sessions sidebar and the transcript;
-  - **Assets** (the pictures): a project's assets (see [Figures](#figures));
+  - **Assets** (the pictures): a project's assets (see [Assets](#assets));
   - **Agents**: the agent documents and their presets, in a sidebar beside
     the one open;
   - **Skills** (the book): the skills sessions can use;
@@ -690,33 +690,46 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   reports, delegation reports, plugins) show as one folded line with their
   summary; click one to read it whole.
 
-### Figures
+### Assets
 
-An agent shows you a file as a figure ([Assets and figures](../sessions/assets.md)),
-under its call, outside the reduced mode's folded work and whether the
-call's row is folded or open. The figure has its caption, then each asset
-with its title, *Full screen*, and *Download*:
+When an agent shows you files ([Assets](../sessions/assets.md)), its calls
+fold into the work like any other, and the files show as cards on a shelf,
+**From this reply**, under the first text the agent writes after them. The
+cards share rows where they fit:
 
-- **Images, SVG, and video** show inline and open in the media viewer.
-- **A Markdown document** is rendered as a reply is (raw HTML escaped,
-  images as links). A document taller than 480 px is cut, with *Show all*.
-- **An HTML page** runs in a sandboxed frame of `viewer.html`, served with
-  its own policy: its scripts run and it reaches the network, but its
-  origin is opaque, so it has no access to the page, its storage, the
-  daemon's token, or the connection, and it cannot move another figure. It
-  grows with its content, from 120 px up to 80% of the window. *Reload*
-  runs it again, and *Full screen* runs it in a frame over the whole page;
-  Escape closes it.
-- **Any other file** is a download card.
+- **Images, SVG, and video** are a deck: stacked cards that fan out under
+  the pointer. A click opens the media viewer at the card clicked; its
+  arrows, ← and → on an image, and its filmstrip step through the deck.
+- **An HTML page** is a card with a live thumbnail of the page. A click
+  opens it in the side panel.
+- **A Markdown document** is a card with its first lines. A click opens it
+  in the side panel, rendered as a reply is (raw HTML escaped, images as
+  links).
+- **Audio** is a card with a player.
+- **Any other file** is a chip with its type, name, size, and a download
+  button.
 
-When an asset is written again, its figures show the new content and say
-when it was updated; when it is deleted, they say so. A link of the form
-`#session=<id>&asset=<handle>`, which the TUI prints, opens the session on
-the page's own daemon and shows the figure full screen.
+**The side panel** opens beside the chat on a desktop, and over it on a
+narrower window. Its head has the asset's title and handle, *Preview* and
+*Source*, *Copy handle*, *Full screen*, *Download*, and *Close* (or
+Escape). An HTML page runs there in a sandboxed frame of `viewer.html`,
+served with its own policy: its scripts run and it reaches the network,
+but its origin is opaque, so it has no access to the page, its storage,
+the daemon's token, or the connection.
+
+**Handles.** A handle the agent names in its reply, such as
+`asset_3f9a1c2e`, is a chip with the asset's title that opens it as its
+card does; text copied across it holds the handle. Each card also has
+*Copy handle* in its corner, to give the asset back to an agent.
+
+When an asset is written again, its cards show the new content and say it
+was updated; when it is deleted, they say so and no longer open. A link of
+the form `#session=<id>&asset=<handle>`, which the TUI prints, opens the
+session on the page's own daemon and opens the asset as its card does.
 
 **The Assets view** lists the assets kept for a project (or for sessions
 in no project), newest first, with their total size: filter them by kind,
-search by title or file name, open one as a figure, rename, download, or
+search by title or file name, open one to see it, rename, download, or
 delete it (after asking). Choose the project at its top; it opens on the
 open session's. A session's own assets are not listed there.
 

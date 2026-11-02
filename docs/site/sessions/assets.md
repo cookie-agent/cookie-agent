@@ -1,11 +1,12 @@
-# Assets and Figures
+# Assets
 
 An agent can give you a file: a chart, a diagram, an HTML page, a Markdown
 report, or anything else. It saves the file as an **asset** and shows it
-in the conversation as a **figure**. The web client shows images, SVG,
-video, audio, Markdown, and live HTML pages inline; the TUI shows each
-figure with a link that opens it in the web client. The
-[spec](../specs/assets.md) has the details.
+in the conversation, as a card under the text it writes next. The web
+client shows images and video as a deck, HTML pages and Markdown
+documents as cards that open beside the chat, and other files as
+downloads; the TUI lists them with links that open them in the web
+client. The [spec](../specs/assets.md) has the details.
 
 ## How an agent uses them
 
@@ -17,13 +18,13 @@ them when it needs them:
   25 MiB, and returns its handle, such as `asset_3f9a1c2e`. Given a handle,
   it replaces that asset instead. With `show: true` it shows the asset at
   once.
-- **`show_asset`** shows one to twelve assets as one figure, with a
-  caption.
+- **`show_asset`** shows one to twelve assets, with a caption. They show
+  under the next text the agent writes, which may name them by handle.
 - **`read_asset`**, **`list_assets`**, and **`delete_asset`** read, list,
   and delete them.
 
-The model gets one line back from each call, never the file, so showing a
-figure costs almost nothing of its context.
+The model gets one line back from each call, never the file, so showing
+an asset costs almost nothing of its context.
 
 ## Session and project assets
 
@@ -34,9 +35,9 @@ the tree. An agent saves something the project should keep with
 stays when the session is deleted. Sessions in no project share one store
 for those.
 
-There are no versions. Writing an asset again replaces it, and every figure
-of it shows the new content and says when it was updated. A deleted
-asset's figures say it was deleted.
+There are no versions. Writing an asset again replaces it, and everywhere
+it shows, it shows the new content and says it was updated. Where a
+deleted asset showed, it says it was deleted.
 
 ```text
 ~/.cookie-agent/
@@ -66,27 +67,33 @@ from, so your `read` rules decide which files can become assets. See
 
 ## In the web client
 
-- **Figures** show in the transcript, outside the reduced mode's folded
-  work, with the asset's title, *Full screen*, *Download*, and for an HTML
-  page *Reload*. A Markdown document longer than 480 px shows *Show all*.
-- **HTML pages** run in a sandboxed frame with their scripts and network
-  access. The frame has no access to the page, its storage, or its
-  connection to the daemon, and it grows with its content up to 80% of the
-  window. A page must be one self-contained file.
+- **The shelf.** A run's calls that show assets fold into its work, and
+  the assets show as cards under the text that follows them, sharing rows
+  where they fit: images and video as a deck the media viewer steps
+  through, an HTML page as a live thumbnail, a Markdown document as its
+  first lines, audio as a player, any other file as a download chip.
+- **The side panel.** A page or document card opens beside the chat, with
+  *Preview* and *Source*, *Full screen*, and *Download*. An HTML page runs
+  there in a sandboxed frame with its scripts and network access, with no
+  access to the page, its storage, or its connection to the daemon. A
+  page must be one self-contained file.
+- **Handles.** A handle the agent names in its reply is a chip that opens
+  the asset, and every card can copy its handle, to give the asset back
+  to an agent.
 - **The Assets view** on the rail lists a project's assets (or those of
   sessions in no project), filtered by kind and searched by title. Each
-  opens as a figure, and can be renamed, downloaded, or deleted. A
+  opens to show it, and can be renamed, downloaded, or deleted. A
   session's own assets are not listed there.
 
-See [the web client](../clients/web.md#figures).
+See [the web client](../clients/web.md#assets).
 
 ## In the TUI
 
-A figure lists its caption and each asset with a link into the daemon's web
-page, such as
+The shelf lists each asset with its caption and a link into the daemon's
+web page, such as
 `http://127.0.0.1:7419/#session=<id>&asset=asset_3f9a1c2e`. Click it, or
 press Enter on it, to open it in your browser. The link is the daemon's
 [`[server] page_url`](../engine/server.md) when set, for a tunnel, or the
 page at the address the TUI reached the daemon at. It carries no token. A
 TUI running its own daemon has no web page, so it says to open the web
-client instead. See [the TUI](../clients/tui.md#figures).
+client instead. See [the TUI](../clients/tui.md#assets).

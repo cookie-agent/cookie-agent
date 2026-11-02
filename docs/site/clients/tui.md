@@ -504,18 +504,19 @@ agents validate the transport parts while using the text for summaries,
 approval decisions, and titles. Older saved turns may lack witnesses that were
 not captured at the time; historical events are not rewritten to invent them.
 
-### Figures
+### Assets
 
-A call that shows you an asset ([Assets and figures](../sessions/assets.md))
-lists its caption and each asset (title, file, type, size) under its
-header, folded or open, and outside the reduced mode's fold. Under each
-asset is a link into the daemon's web page, such as
+A call that shows you an asset ([Assets](../sessions/assets.md)) folds
+into the work like any other, and the asset shows on a shelf, **From this
+reply**, under the first text the agent writes after it: its title, file,
+type, size, and caption, images and video grouped under one line. Under
+each asset is a link into the daemon's web page, such as
 `↗ http://127.0.0.1:7419/#session=<id>&asset=asset_3f9a1c2e`: click it, or
 press Enter on it, to open it with the system opener, or copy it. The link
 uses the daemon's `[server] page_url` when it has one, else the address
 the TUI reached the daemon at, and never carries the token. A TUI with a
 daemon inside its own process has no web page: it says to open the web
-client instead.
+client instead. Open, the call lists its assets without links.
 
 ## Error details
 

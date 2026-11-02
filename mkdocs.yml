@@ -104,7 +104,7 @@ nav:
       - Sessions: sessions/index.md
       - Delegating to runtimes: sessions/delegation.md
       - Attaching media: sessions/media.md
-      - Assets and figures: sessions/assets.md
+      - Assets: sessions/assets.md
       - Compaction: sessions/compaction.md
       - Goal mode: sessions/goals.md
       - Memory: sessions/memory.md
