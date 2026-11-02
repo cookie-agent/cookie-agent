@@ -163,7 +163,11 @@ For each session, cookie keeps two values:
 | Anthropic, Bedrock | The resolved rolling marker: `5m` or `1h`. If the marker is `off`, the session has no clock and is skipped. |
 | OpenAI and Azure Responses with the GPT-5.6 controls | The controls' `ttl`: `30m` or `12h`. |
 | OpenAI with `prompt_cache_retention = "24h"` | `24h`. |
+| ChatGPT sign-in (the `chatgpt` provider) | No expiry (section 11.2): the session has no clock and is skipped. A model override's `cache_ttl` replaces it, should the claim stop holding. |
 | Any other binding (OpenAI's in-memory retention, Gemini's implicit caching, OpenAI-compatible endpoints, DeepSeek, …) | The model override's `cache_ttl` if set, else `fallback_ttl`. |
+
+A `cache_ttl` of `0s` or less, in a model override or an ACP agent's
+table, means the cache never expires, so no compaction is due.
 
 **`expiry = last_request_at + ttl`**. A new request resets the clock, since
 a cache hit refreshes the TTL.
@@ -298,6 +302,8 @@ cache_ttl = "1h"              # optional; for providers cookie cannot read a TTL
 ```
 
 - **Durations** use the existing compact form (`ms`, `s`, `m`, `h`, `d`).
+- **`cache_ttl = "0s"`** (or less) declares a cache that never expires.
+  Section 4 then never compacts that model's or agent's sessions.
 - **`slack`** must be positive. It applies as `min(slack, ttl / 5)`.
 - **`min_tokens`** is an integer and **`min_cost_usd`** a number of
   dollars. Each is off at 0 or less; section 4.2, condition 4, combines
@@ -464,4 +470,33 @@ before expiry (section 4.4).
 | Which TTLs | One hour only | Any TTL |
 | Floor | 150k to 200k tokens | `min_tokens`, default 40k |
 | When it gives up | The timer is more than 60 s late, or the cache has lapsed | Section 4.2 |
+
+### 11.2 Codex and ChatGPT sign-ins (2026-11-02)
+
+**What Codex sends.** Codex 0.165.0, the build the ACP adapter runs, sends
+a `prompt_cache_key` and nothing else about caching. It sets no
+`prompt_cache_retention` and no `prompt_cache_options.ttl`; those names
+appear in its binary only inside a bundled docs skill.
+
+**What OpenAI says.** On 2026-10-20 Tibo Sottiaux, who leads Codex, wrote
+on X that "for logged in users across Codex & Work we keep cache forever".
+He added that resuming an old conversation is "guaranteed to hit the
+cache". He posted it on the same day the Responses API gained its `12h`
+lifetime. OpenAI's prompt caching guide does not mention it, and still
+says "Cache entries are not stored indefinitely". One public report
+describes cache misses after an overnight pause.
+
+**Why there was no live measurement.** Codex's turns open several
+connections and seem to warm the cache before the real request, so the
+turn usage `codex exec` reports cannot show a miss. A direct call to the
+backend with Codex's sign-in token was not made.
+
+**What cookie does:**
+
+- **The Codex preset** leaves `cache_ttl` unset, so cookie never compacts
+  Codex sessions (D6).
+- **The `chatgpt` provider**, which uses the same backend and sign-in,
+  counts as never expiring (section 4.1's table).
+- **If the claim stops holding,** a model override's `cache_ttl` replaces
+  it.
 
