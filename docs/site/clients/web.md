@@ -549,7 +549,9 @@ refreshes no longer change). Reset and Replace ask once more.
   - **Images and videos** in messages, replies, and tool output open in the
     media viewer when clicked. It shows the file's size in pixels and zooms
     with the wheel, a pinch, its buttons, or `+`, `-`, and `0` (fit). A drag
-    moves the zoomed file, and a double click zooms in or back to fit.
+    moves the zoomed file, and a double click zooms in or back to fit. With
+    the file at its fitted size, a swipe or a drag across it steps to the
+    next or the previous file of its group, which slides in from that side.
     Zoomed pixels show crisp rather than blurred. A video plays in the
     viewer, with play and pause (Space), a frame back or forward (`,` and
     `.`), five seconds back or forward (Left and Right), a seek bar, its
@@ -751,8 +753,8 @@ a card's size; two share a line; three or more make a grid, three across
 (two on a phone).
 
 - **Images, SVG, and video** open the media viewer at the card clicked;
-  its arrows, ← and → on an image, and its filmstrip step through the
-  gallery's images and video.
+  its arrows, ← and → on an image, its filmstrip, and a swipe step through
+  the gallery's images and video.
 - **An HTML page** is a card with a live thumbnail of the page. A click
   opens it in the side panel.
 - **A Markdown document** is a card with its first lines. A click opens it

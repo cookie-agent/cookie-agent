@@ -1416,9 +1416,20 @@ def asset_figures(browser):
     browser.type("#media-viewer", ARROW_LEFT)
     browser.wait("the first image", lambda: browser.text("#media-viewer-position") == "1 / 2")
     assert browser.text("#media-viewer-title") == "First image"
+    # A finger swiping left across the fitted file brings the next one; it
+    # does not move the file around.
+    perform(browser, [{
+        "type": "pointer", "id": "finger", "parameters": {"pointerType": "touch"}, "actions": [
+            {"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find("#media-viewer-stage")}, "x": 120, "y": 0},
+            {"type": "pointerDown", "button": 0},
+            {"type": "pointerMove", "duration": 120, "origin": "pointer", "x": -260, "y": 6},
+            {"type": "pointerUp", "button": 0},
+        ],
+    }])
+    browser.wait("the swiped-to image", lambda: browser.text("#media-viewer-position") == "2 / 2")
     browser.click("#media-viewer-close")
     browser.wait("the closed viewer", lambda: count(browser, "#media-viewer") == 0)
-    print("images are cards of one gallery the viewer steps through from the one clicked")
+    print("images are cards of one gallery the viewer steps through from the one clicked, and by a swipe")
 
     # Written over, the page's card shows the new content and says it was
     # updated.

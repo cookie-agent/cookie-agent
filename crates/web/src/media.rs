@@ -254,6 +254,27 @@ impl Zoom {
     }
 }
 
+/// Where a one-finger drag across a file at its fitted size takes the
+/// viewer when it ends: `1` to the next file, `-1` to the one before, `0`
+/// back where it was. It turns when the drag went sideways more than up or
+/// down, and far (a fifth of the stage, `width`) or fast (a flick of half a
+/// pixel a millisecond over at least 24 px, in `millis`); a drag to the
+/// left brings the next file, as a page turns.
+#[must_use]
+pub fn swipe_turn(dx: f64, dy: f64, width: f64, millis: f64) -> i8 {
+    let across = dx.abs();
+    if across <= dy.abs() {
+        return 0;
+    }
+    let far = width > 0.0 && across >= width / 5.0;
+    let fast = millis > 0.0 && across >= 24.0 && across / millis >= 0.5;
+    match (far || fast, dx < 0.0) {
+        (false, _) => 0,
+        (true, true) => 1,
+        (true, false) => -1,
+    }
+}
+
 /// A video's position as `m:ss.ss`, or `h:mm:ss.ss` past an hour; `0:00.00`
 /// for a position not known yet.
 pub fn clock(seconds: f64) -> String {
@@ -275,6 +296,19 @@ pub fn clock(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_swipe_turns_when_it_goes_far_or_fast_and_sideways() {
+        // Far enough, slowly: a fifth of a 400 px stage.
+        assert_eq!(swipe_turn(-80.0, 10.0, 400.0, 900.0), 1);
+        assert_eq!(swipe_turn(80.0, 10.0, 400.0, 900.0), -1);
+        assert_eq!(swipe_turn(-79.0, 10.0, 400.0, 900.0), 0);
+        // A flick: short but fast, though not a twitch.
+        assert_eq!(swipe_turn(-30.0, 0.0, 400.0, 50.0), 1);
+        assert_eq!(swipe_turn(-20.0, 0.0, 400.0, 10.0), 0);
+        // Up or down more than sideways turns nothing.
+        assert_eq!(swipe_turn(-150.0, 160.0, 400.0, 100.0), 0);
+    }
 
     #[test]
     fn zooming_keeps_the_point_under_the_pointer() {

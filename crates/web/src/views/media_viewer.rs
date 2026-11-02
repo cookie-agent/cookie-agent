@@ -5,10 +5,13 @@
 //! a frame back or forward (`,` and `.`), five seconds back or forward
 //! (Left and Right), a seek bar, its speed, and its sound. The bar on top
 //! names the file and its size in pixels. Escape, ✕, or a click beside the
-//! file closes it. A shelf's deck opens as a group the viewer steps
-//! through: its arrows, Left and Right on an image, and its filmstrip.
+//! file closes it. A reply's pictures and videos open as a group the
+//! viewer steps through: its arrows, Left and Right on an image, its
+//! filmstrip, and a swipe across the file at its fitted size, which the
+//! file follows until it slides away and the next comes in from that side
+//! (a finger only pans a zoomed file, and a lone one springs back).
 
-use std::collections::HashMap;
+use std::{cell::Cell, collections::HashMap};
 
 use leptos::{ev, html, prelude::*};
 use wasm_bindgen::{JsCast as _, closure::Closure};
@@ -27,6 +30,15 @@ const FRAME: f64 = 1.0 / 30.0;
 
 /// The speeds a video plays at.
 const SPEEDS: [f64; 6] = [0.1, 0.25, 0.5, 1.0, 1.5, 2.0];
+
+/// How long a swiped file takes to slide away or back.
+const GLIDE: std::time::Duration = std::time::Duration::from_millis(180);
+
+thread_local! {
+    /// The side the next viewer's file comes in from: `1` after a step to
+    /// the next, `-1` to the one before, `0` opened anew.
+    static ENTER: Cell<i8> = const { Cell::new(0) };
+}
 
 /// The viewer, open while `workspace.media_viewer` holds a file.
 #[component]
@@ -79,9 +91,11 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
     };
     let turn = move |by: isize| {
         if let Some(at) = at.filter(|_| stepping) {
+            ENTER.with(|enter| enter.set(by.signum() as i8));
             go((at as isize + by).rem_euclid(count as isize) as usize);
         }
     };
+    let entering = ENTER.with(|enter| enter.replace(0));
     let zoom = RwSignal::new(Zoom::default());
     let root = NodeRef::<html::Div>::new();
     let stage = NodeRef::<html::Div>::new();
@@ -160,6 +174,17 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
 
     // The pointers down on the stage, by ID: one drags, two pinch.
     let pointers = StoredValue::new(HashMap::<i32, (f64, f64)>::new());
+    // A one-finger drag across the file at its fitted size: how far it went
+    // sideways, which the file follows, and where and when it started; and
+    // whether the file glides to rest after it.
+    let swipe = RwSignal::new(None::<f64>);
+    let swipe_from = StoredValue::new(None::<(f64, f64, f64)>);
+    let gliding = RwSignal::new(false);
+    let stage_width = move || {
+        stage
+            .get_untracked()
+            .map_or(0.0, |stage| stage.get_bounding_client_rect().width())
+    };
     // How far the pointers moved since the press, to tell a drag from a
     // click, and whether the press was on the file.
     let travel = StoredValue::new(0.0_f64);
@@ -179,9 +204,21 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
             // No text or image selection under a drag.
             event.prevent_default();
         }
-        if pointers.with_value(HashMap::is_empty) {
+        let first = pointers.with_value(HashMap::is_empty);
+        if first {
             travel.set_value(0.0);
             on_file.set_value(pressed_on_file(&event));
+        }
+        // A finger swipes the file at its fitted size; a second one pinches.
+        if first && zoom.get_untracked() == Zoom::default() {
+            swipe_from.set_value(Some((
+                f64::from(event.client_x()),
+                f64::from(event.client_y()),
+                js_sys::Date::now(),
+            )));
+        } else if swipe_from.get_value().is_some() {
+            swipe_from.set_value(None);
+            swipe.set(None);
         }
         if let Some(stage) = stage.get_untracked() {
             let _ = stage.set_pointer_capture(event.pointer_id());
@@ -228,13 +265,57 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     };
                 });
             }
-            None => zoom.update(|zoom| *zoom = zoom.panned(now.0 - was.0, now.1 - was.1)),
+            None => match swipe_from.get_value() {
+                // A lone file has nothing to turn to: it gives a little.
+                Some((x, _, _)) => {
+                    let across = now.0 - x;
+                    swipe.set(Some(if stepping { across } else { across * 0.25 }));
+                }
+                None => zoom.update(|zoom| *zoom = zoom.panned(now.0 - was.0, now.1 - was.1)),
+            },
         }
     };
     let on_pointerup = move |event: ev::PointerEvent| {
         pointers.update_value(|pointers| {
             pointers.remove(&event.pointer_id());
         });
+        if !pointers.with_value(HashMap::is_empty) {
+            return;
+        }
+        let Some((x, y, at)) = swipe_from.get_value() else {
+            return;
+        };
+        swipe_from.set_value(None);
+        let (dx, dy) = (
+            f64::from(event.client_x()) - x,
+            f64::from(event.client_y()) - y,
+        );
+        if dx.abs() < 1.0 {
+            swipe.set(None);
+            return;
+        }
+        let width = stage_width();
+        let by = if stepping {
+            crate::media::swipe_turn(dx, dy, width, js_sys::Date::now() - at)
+        } else {
+            0
+        };
+        gliding.set(true);
+        if by == 0 {
+            swipe.set(Some(0.0));
+            set_timeout(
+                move || {
+                    if gliding.try_get_untracked() == Some(true) {
+                        swipe.set(None);
+                        gliding.set(false);
+                    }
+                },
+                GLIDE,
+            );
+        } else {
+            swipe.set(Some(-f64::from(by) * width));
+            set_timeout(move || turn(isize::from(by)), GLIDE);
+        }
     };
 
     // A click on a video plays or pauses it, a click beside the file
@@ -262,6 +343,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
         if !on_file.get_value() {
             return;
         }
+        swipe.set(None);
         let (x, y) = from_centre(event.client_x(), event.client_y());
         zoom.update(|zoom| {
             *zoom = if *zoom == Zoom::default() {
@@ -389,9 +471,19 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
     };
     let resized = window_event_listener(ev::resize, move |_| measure());
     on_cleanup(move || resized.remove());
+    let entrance = match entering {
+        1 => "viewer-from-next",
+        -1 => "viewer-from-previous",
+        _ => "",
+    };
     let file_class = move || {
         format!(
-            "max-h-full max-w-full select-none object-contain will-change-transform {} {}",
+            "max-h-full max-w-full select-none object-contain will-change-transform {entrance} {} {} {}",
+            if gliding.get() {
+                "transition-transform duration-[180ms] ease-out"
+            } else {
+                ""
+            },
             if is_video && zoom.get() == Zoom::default() {
                 "cursor-pointer"
             } else {
@@ -404,7 +496,10 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
             }
         )
     };
-    let transform = move || zoom.get().transform();
+    let transform = move || match swipe.get() {
+        Some(across) => format!("translate({across:.1}px, 0px)"),
+        None => zoom.get().transform(),
+    };
     let url = viewing.url.clone();
     let file = if is_video {
         view! {

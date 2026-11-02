@@ -954,3 +954,31 @@ body {
     filter: none;
   }
 }
+
+/* The media viewer's next file comes in from the side it was swiped or
+   stepped toward (views/media_viewer.rs); `translate` composes with the
+   zoom's `transform`. */
+@keyframes viewer-from-next {
+  from {
+    opacity: 0.2;
+    translate: 3rem 0;
+  }
+}
+@keyframes viewer-from-previous {
+  from {
+    opacity: 0.2;
+    translate: -3rem 0;
+  }
+}
+.viewer-from-next {
+  animation: viewer-from-next 240ms var(--ease-out-quint) both;
+}
+.viewer-from-previous {
+  animation: viewer-from-previous 240ms var(--ease-out-quint) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .viewer-from-next,
+  .viewer-from-previous {
+    animation: none;
+  }
+}
