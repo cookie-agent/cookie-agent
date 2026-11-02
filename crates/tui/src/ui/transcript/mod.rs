@@ -412,12 +412,11 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         block: u32,
     },
-    /// A shelf's link to the asset the call's `asset` block at this index
-    /// showed, which opens it in the web page.
-    ToolAsset {
-        call_id: cookie_agent_protocol::ToolCallId,
-        block: u32,
-    },
+    /// An attachment's link into the web page, which opens it there.
+    AttachmentOpen(AttachmentKey),
+    /// *Allow* and *Deny* of an attachment that waits for the user.
+    AttachmentAllow(AttachmentKey),
+    AttachmentDeny(AttachmentKey),
     CommittedTool {
         turn_seq: u64,
         content_index: u32,
@@ -644,9 +643,6 @@ pub(super) struct LayoutCache {
     /// Each live work row's lines, by its fold's lead and line (0 the
     /// text, 1 the call), with when each was first drawn.
     work_lines: HashMap<(WorkKey, u8), (String, jiff::Timestamp)>,
-    /// The transcript's shelves, and the projection's generation and
-    /// version they were found at.
-    shelves: Option<(u64, u64, std::sync::Arc<Shelves>)>,
     #[cfg(test)]
     pub(super) item_layout_passes: u64,
     #[cfg(test)]
@@ -654,44 +650,33 @@ pub(super) struct LayoutCache {
     pub(super) assistant_part_layout_passes: u64,
 }
 
-/// A transcript's shelves, by the block each shows in.
-type Shelves = HashMap<u64, Vec<cookie_agent_client_state::assets::Shelf>>;
-
-impl LayoutCache {
-    /// `state`'s shelves, found again only once its version moved.
-    fn shelves(&mut self, state: &SessionState) -> std::sync::Arc<Shelves> {
-        match &self.shelves {
-            Some((generation, version, shelves))
-                if *generation == state.generation && *version == state.version =>
-            {
-                std::sync::Arc::clone(shelves)
-            }
-            _ => {
-                let shelves =
-                    std::sync::Arc::new(cookie_agent_client_state::assets::shelves(state));
-                self.shelves = Some((
-                    state.generation,
-                    state.version,
-                    std::sync::Arc::clone(&shelves),
-                ));
-                shelves
-            }
-        }
-    }
-}
-
-/// A hash of the shelves the block `item_id` shows, for its layout key; 0
-/// for none.
-fn shelf_key(shelves: &Shelves, item_id: u64) -> u64 {
-    use std::hash::Hasher as _;
-    let Some(shelves) = shelves.get(&item_id) else {
+/// A hash of what the attach tags of `item`'s texts resolved to, for its
+/// layout key; 0 for none.
+fn attachments_key(state: &SessionState, item: &TranscriptItem) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let TranscriptItem::Assistant { children, .. } = item else {
         return 0;
     };
     let mut hasher = std::hash::DefaultHasher::new();
-    for shelf in shelves {
-        shelf.hash_shown(&mut hasher);
+    let mut any = false;
+    for child in children {
+        if let AssistantChild::Text { id, .. } = child
+            && let Some(attachments) = state.attachments_of(*id)
+        {
+            any = true;
+            (id, format!("{attachments:?}")).hash(&mut hasher);
+        }
     }
-    hasher.finish()
+    if any { hasher.finish() } else { 0 }
+}
+
+/// Where an `<attach …/>` tag stands: its turn, its text part, and its
+/// order there.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct AttachmentKey {
+    pub(super) model_turn_seq: u64,
+    pub(super) content_index: u32,
+    pub(super) ordinal: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -816,7 +801,9 @@ impl LayoutCache {
                                 | BlockId::History(_)
                                 | BlockId::ToolSession { .. }
                                 | BlockId::ToolMemory { .. }
-                                | BlockId::ToolAsset { .. }
+                                | BlockId::AttachmentOpen(_)
+                                | BlockId::AttachmentAllow(_)
+                                | BlockId::AttachmentDeny(_)
                         )
                     })
                     .flat_map(|region| {
@@ -1115,8 +1102,6 @@ struct TranscriptRenderContext<'a> {
     deferred_highlights: &'a mut Vec<DeferredRows>,
     /// Where a figure's link points.
     figure_links: FigureLinks<'a>,
-    /// The shelves the item shows.
-    shelves: &'a [cookie_agent_client_state::assets::Shelf],
 }
 
 /// What a figure's link into the web page is made of: the page's address,
@@ -1128,6 +1113,16 @@ pub(super) struct FigureLinks<'a> {
 }
 
 impl FigureLinks<'_> {
+    /// The link that shows the stored file `sha256` an attachment kept,
+    /// when there is a page.
+    pub(super) fn attachment(&self, sha256: &str) -> Option<String> {
+        Some(cookie_agent_client_state::assets::attachment_link(
+            self.page_url?,
+            self.session?,
+            sha256,
+        ))
+    }
+
     /// The link that shows the asset `handle`, when there is a page.
     pub(super) fn link(&self, handle: &cookie_agent_protocol::AssetHandle) -> Option<String> {
         Some(cookie_agent_client_state::assets::asset_link(
@@ -1306,9 +1301,8 @@ pub(super) fn ensure_cached_transcript_layout_in(
         folds: &folds,
         live,
     };
-    let shelves = cache.shelves(state);
     let fold_key = |item: &TranscriptItem| {
-        item_fold_key(&folds, &work_rows, item, expanded) ^ shelf_key(&shelves, item.id())
+        item_fold_key(&folds, &work_rows, item, expanded) ^ attachments_key(state, item)
     };
     let key = LayoutCacheKey {
         session_id,
@@ -1472,7 +1466,6 @@ pub(super) fn ensure_cached_transcript_layout_in(
                     page_url,
                     session: Some(session_id),
                 },
-                shelves: shelves.get(&item.id()).map_or(&[], Vec::as_slice),
             };
             // Unchanged parts and tool rows come back from their caches by
             // reference, so this re-renders only what changed.
@@ -2456,26 +2449,48 @@ impl App {
                 self.watch_session(session);
                 return;
             }
-            BlockId::ToolAsset { call_id, block } => {
-                let handle = self
-                    .store
-                    .sessions
-                    .get(&session_id)
-                    .and_then(|state| state.tools.get(&call_id))
-                    .and_then(|tool| match tool.shown_display().get(block as usize) {
-                        Some(cookie_agent_protocol::Open::Known(
-                            cookie_agent_protocol::DisplayBlock::Asset(asset),
-                        )) => Some(asset.handle.clone()),
+            BlockId::AttachmentOpen(key) => {
+                use cookie_agent_protocol::{AttachmentOutcome, PersistedFileSource};
+                let outcome = self.store.sessions.get(&session_id).and_then(|state| {
+                    state
+                        .attachments
+                        .get(&(key.model_turn_seq, key.content_index))
+                        .and_then(|attachments| attachments.get(&key.ordinal))
+                        .map(|attachment| attachment.outcome.clone())
+                });
+                let link = match (outcome, self.page_url.as_deref()) {
+                    (Some(AttachmentOutcome::Shown { asset }), Some(page)) => Some((
+                        asset.handle.to_string(),
+                        cookie_agent_client_state::assets::asset_link(
+                            page,
+                            session_id,
+                            &asset.handle,
+                        ),
+                    )),
+                    (Some(AttachmentOutcome::Attached { file }), Some(page)) => match file.source {
+                        PersistedFileSource::Artifact { sha256, .. } => Some((
+                            file.filename.unwrap_or_else(|| "the file".to_owned()),
+                            cookie_agent_client_state::assets::attachment_link(
+                                page,
+                                session_id,
+                                sha256.as_str(),
+                            ),
+                        )),
                         _ => None,
-                    });
-                if let (Some(handle), Some(page)) = (handle, self.page_url.as_deref()) {
-                    let link =
-                        cookie_agent_client_state::assets::asset_link(page, session_id, &handle);
+                    },
+                    _ => None,
+                };
+                if let Some((name, link)) = link {
                     self.status = match crate::ui::open_link::open(&link) {
-                        Ok(()) => format!("Opened {handle} in the browser"),
+                        Ok(()) => format!("Opened {name} in the browser"),
                         Err(error) => format!("The browser did not open ({error}): {link}"),
                     };
                 }
+                return;
+            }
+            BlockId::AttachmentAllow(key) | BlockId::AttachmentDeny(key) => {
+                let allow = matches!(block_id, BlockId::AttachmentAllow(_));
+                self.decide_attachment(session_id, key, allow);
                 return;
             }
             BlockId::ToolMemory { call_id, block } => {
@@ -2889,7 +2904,6 @@ pub(super) fn transcript_layout_viewed(
             .collect(),
     };
     let mut layout = TranscriptLayout::default();
-    let shelves = cookie_agent_client_state::assets::shelves(state);
     let mut assistant_parts = HashMap::new();
     let mut tool_rows = HashMap::new();
     let mut assistant_part_layout_passes = 0;
@@ -2938,7 +2952,6 @@ pub(super) fn transcript_layout_viewed(
                 defer_highlights: false,
                 deferred_highlights: &mut deferred_highlights,
                 figure_links: FigureLinks::default(),
-                shelves: shelves.get(&item.id()).map_or(&[], Vec::as_slice),
             },
         );
         append_item_layout(&mut layout, item_layout);
@@ -3193,7 +3206,9 @@ pub(super) fn block_hit_at<'a>(
                 | BlockId::History(_)
                 | BlockId::ToolSession { .. }
                 | BlockId::ToolMemory { .. }
-                | BlockId::ToolAsset { .. }
+                | BlockId::AttachmentOpen(_)
+                | BlockId::AttachmentAllow(_)
+                | BlockId::AttachmentDeny(_)
         ) {
             // Action regions are single clickable rows of a tool body.
             (region.start_line >= scroll_offset).then(|| {

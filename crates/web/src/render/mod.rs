@@ -5,11 +5,11 @@
 //! `data-action` attributes, which one click handler on the transcript
 //! dispatches.
 
+pub mod attachments;
 pub mod blocks;
 pub mod budget;
 pub mod markdown;
 pub mod sgr;
-pub mod shelf;
 pub mod transcript;
 
 /// `text` with the HTML-special characters escaped, for element content and

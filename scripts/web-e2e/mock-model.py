@@ -31,14 +31,16 @@ otherwise the last user text decides.
 - containing "long session <n>": a reply of <n> steps, each a sentence and
   a `read` call, then the "stream only" answer at 1,500 lines, for the
   page's frame time on a long transcript;
-- containing "show a figure": a `write_asset` of `figure.html`, shown; containing
-  "show a report": one of `report.md`, shown; containing "replace the figure"
+- containing "show a figure": a `write_asset` of `figure.html`; containing
+  "show a report": one of `report.md`; containing "replace the figure"
   and an asset's handle: a `write_asset` of `report.md` over that asset;
   containing "save a project report": a `write_asset` of `report.md` kept
   for the project, titled "Shared report"; after any of these, the reply
-  names the asset's handle, as the tool descriptions ask;
+  names the asset's handle, and shows a new one with `<attach asset/>`;
 - containing "show two images": `write_asset`s of `one.png` and
-  `two.png`, shown, then a reply;
+  `two.png`, then a reply that shows both, next to each other;
+- containing "attach a file": a reply that attaches `report.md` and a
+  file that is not there with `<attach src/>`;
 - containing "remember": a `memory_write` of `user://e2e-build`; containing
   "revise": a `memory_edit` of it; containing "forget": a `memory_delete`
   of it;
@@ -162,8 +164,10 @@ def two_images_step(messages):
             break
         done += message.get("role") == "tool"
     if done == 1:
-        return tool_reply("write_asset", {"path": "two.png", "title": "Second image", "show": True})
-    return text_reply(["Both are above."])
+        return tool_reply("write_asset", {"path": "two.png", "title": "Second image"})
+    handles = re.findall(r"asset_[0-9a-f]{8}", json.dumps([m for m in messages if m.get("role") == "tool"][-2:]))
+    tags = " ".join('<attach asset="%s"/>' % handle for handle in dict.fromkeys(handles))
+    return text_reply(["Two plots:\n\n" + tags])
 
 
 def reply(request):
@@ -177,7 +181,10 @@ def reply(request):
             return two_images_step(messages)
         handle = re.search(r"asset_[0-9a-f]{8}", str(messages[-1].get("content")))
         if handle and "write_asset" in json.dumps(messages[-2:]):
-            return text_reply(["Saved it as `%s` for you." % handle.group(0)])
+            shown = ""
+            if "new" in str(messages[-1].get("content")) and "project scope" not in str(messages[-1].get("content")):
+                shown = '\n\n<attach asset="%s"/>' % handle.group(0)
+            return text_reply(["Saved it as `%s` for you.%s" % (handle.group(0), shown)])
         return text_reply(["The tool ran."])
     if not request.get("tools"):
         # A compaction or other tool-less request: a summary.
@@ -244,22 +251,18 @@ def reply(request):
     if "picture" in text:
         return tool_reply("read", {"filePath": "dot.png"})
     if "show a figure" in text:
-        return tool_reply(
-            "write_asset",
-            {"path": "figure.html", "title": "Live page", "show": True, "caption": "A page that runs."},
-        )
+        return tool_reply("write_asset", {"path": "figure.html", "title": "Live page"})
     if "replace the figure" in text:
         handle = re.search(r"asset_[0-9a-f]{8}", text)
         return tool_reply("write_asset", {"path": "report.md", "asset": handle.group(0) if handle else ""})
     if "save a project report" in text:
         return tool_reply("write_asset", {"path": "report.md", "scope": "project", "title": "Shared report"})
     if "show two images" in text:
-        return tool_reply(
-            "write_asset",
-            {"path": "one.png", "title": "First image", "show": True, "caption": "Two plots."},
-        )
+        return tool_reply("write_asset", {"path": "one.png", "title": "First image"})
     if "show a report" in text:
-        return tool_reply("write_asset", {"path": "report.md", "show": True})
+        return tool_reply("write_asset", {"path": "report.md"})
+    if "attach a file" in text:
+        return text_reply(['The report: <attach src="report.md" title="The report"/>\n\n<attach src="gone.png"/>'])
     if "remember" in text:
         return tool_reply(
             "memory_write",

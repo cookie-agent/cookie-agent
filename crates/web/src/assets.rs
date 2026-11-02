@@ -58,21 +58,43 @@ struct Content {
     media_type: String,
 }
 
-/// What a placeholder names: the asset, what it was when shown, and how
-/// it shows.
+/// What a placeholder names: an asset, or a file an attachment stored in
+/// the session's artifacts; what it was when shown; and how it shows.
+#[derive(Clone)]
 struct Placeholder {
-    store: AssetStore,
-    asset: AssetId,
+    source: Source,
     shown_sha: String,
     title: String,
     view: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Source {
+    /// An asset, shown as it is now.
+    Asset { store: AssetStore, asset: AssetId },
+    /// A stored file, which never changes.
+    Artifact {
+        sha256: String,
+        media_type: String,
+        name: String,
+    },
+}
+
 fn placeholder(element: &web_sys::Element) -> Option<Placeholder> {
-    let store = serde_json::from_str(&element.get_attribute("data-asset-store")?).ok()?;
+    let source = if element.get_attribute("data-asset")? == "artifact" {
+        Source::Artifact {
+            sha256: element.get_attribute("data-artifact-sha")?,
+            media_type: element.get_attribute("data-asset-type").unwrap_or_default(),
+            name: element.get_attribute("data-asset-name").unwrap_or_default(),
+        }
+    } else {
+        Source::Asset {
+            store: serde_json::from_str(&element.get_attribute("data-asset-store")?).ok()?,
+            asset: element.get_attribute("data-asset")?.parse().ok()?,
+        }
+    };
     Some(Placeholder {
-        store,
-        asset: element.get_attribute("data-asset")?.parse().ok()?,
+        source,
         shown_sha: element.get_attribute("data-asset-sha").unwrap_or_default(),
         title: element
             .get_attribute("data-asset-title")
@@ -83,12 +105,44 @@ fn placeholder(element: &web_sys::Element) -> Option<Placeholder> {
     })
 }
 
+impl Placeholder {
+    /// The stored file as the card code reads an asset: its title, type,
+    /// name, and content; it is never replaced.
+    fn artifact_asset(&self) -> Option<Asset> {
+        let Source::Artifact {
+            sha256,
+            media_type,
+            name,
+        } = &self.source
+        else {
+            return None;
+        };
+        let stamp = cookie_agent_protocol::AssetStamp {
+            at: jiff::Timestamp::now(),
+            session: cookie_agent_protocol::SessionId::new_v7(),
+            agent: None,
+        };
+        Some(Asset {
+            id: AssetId::new_v7(),
+            handle: cookie_agent_protocol::AssetHandle::new("asset_00000000").ok()?,
+            store: AssetStore::Shared,
+            title: self.title.clone(),
+            media_type: media_type.clone(),
+            byte_length: 0,
+            sha256: sha256.clone(),
+            filename: Some(name.clone()).filter(|name| !name.is_empty()),
+            created: stamp.clone(),
+            updated: stamp,
+        })
+    }
+}
+
 /// An asset open in the side panel: which, and what it was when the card
 /// that opened it showed it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenAsset {
-    pub store: AssetStore,
-    pub asset: AssetId,
+    pub source: Source,
+    /// The asset's handle; empty for a stored file.
     pub handle: String,
     pub title: String,
     pub media_type: String,
@@ -96,12 +150,11 @@ pub struct OpenAsset {
 }
 
 impl OpenAsset {
-    /// The asset the placeholder `element` shows.
+    /// The asset, or stored file, the placeholder `element` shows.
     pub fn of(element: &web_sys::Element) -> Option<Self> {
         let shown = placeholder(element)?;
         Some(Self {
-            store: shown.store,
-            asset: shown.asset,
+            source: shown.source,
             handle: element
                 .get_attribute("data-asset-handle")
                 .unwrap_or_default(),
@@ -119,12 +172,22 @@ impl OpenAsset {
     /// The side panel's placeholder of it: shown whole, or its `source`.
     pub fn placeholder_html(&self, source: bool) -> String {
         let view = if source { "source" } else { "panel" };
+        let named = match &self.source {
+            Source::Asset { store, asset } => format!(
+                "data-asset=\"{}\" data-asset-store=\"{}\" data-asset-handle=\"{}\"",
+                escape(&asset.to_string()),
+                escape(&serde_json::to_string(store).unwrap_or_default()),
+                escape(&self.handle),
+            ),
+            Source::Artifact { sha256, name, .. } => format!(
+                "data-asset=\"artifact\" data-artifact-sha=\"{}\" data-asset-name=\"{}\"",
+                escape(sha256),
+                escape(name),
+            ),
+        };
         format!(
-            "<div class=\"flex min-h-full flex-col\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\" data-asset-type=\"{}\" data-asset-view=\"{view}\"><div class=\"flex min-h-0 flex-1 flex-col\" data-asset-body><span class=\"p-3 {NOTE}\">Loading…</span></div></div>",
-            escape(&self.asset.to_string()),
-            escape(&serde_json::to_string(&self.store).unwrap_or_default()),
+            "<div class=\"flex min-h-full flex-col\" {named} data-asset-sha=\"{}\" data-asset-title=\"{}\" data-asset-type=\"{}\" data-asset-view=\"{view}\"><div class=\"flex min-h-0 flex-1 flex-col\" data-asset-body><span class=\"p-3 {NOTE}\">Loading…</span></div></div>",
             escape(&self.shown_sha),
-            escape(&self.handle),
             escape(&self.title),
             escape(&self.media_type),
         )
@@ -201,7 +264,7 @@ fn last(selector: &str) -> Option<web_sys::Element> {
 /// The newest shelf card of the asset `handle`, once filled.
 fn card_of(handle: &str) -> Option<web_sys::Element> {
     last(&format!(
-        "#transcript [data-shelf] [data-asset][data-asset-handle=\"{}\"][data-shown]:not([data-shown=\"loading\"])",
+        "#transcript [data-attach-row] [data-asset][data-asset-handle=\"{}\"][data-shown]:not([data-shown=\"loading\"])",
         handle.replace(['"', '\\'], "")
     ))
 }
@@ -262,7 +325,36 @@ pub fn act(
             if let Some(card) = card()
                 && let Some(shown) = placeholder(&card)
             {
-                download_stored(workspace, shown.store, shown.asset);
+                download_source(workspace, shown.source, shown.title);
+            }
+        }
+        "attachment-allow" | "attachment-deny" => {
+            if let Some(key) = attach_key(target) {
+                workspace.decide_attachment(key, action == "attachment-allow");
+            }
+        }
+        // Saving asks where first: this session's assets or the project's.
+        "attachment-save" => {
+            if let Some(key) = target.get_attribute("data-attach-key") {
+                target.set_inner_html(&format!(
+                    "<span class=\"flex items-center gap-1\"><span role=\"button\" tabindex=\"0\" class=\"{BUTTON}\" data-action=\"attachment-save-session\" data-attach-key=\"{key}\">Save for this session</span><span role=\"button\" tabindex=\"0\" class=\"{BUTTON}\" data-action=\"attachment-save-project\" data-attach-key=\"{key}\">for the project</span></span>",
+                    key = escape(&key),
+                ));
+                let _ = target.set_attribute("data-action", "attachment-saving");
+                let _ = target.class_list().remove_1("opacity-0");
+            }
+        }
+        "attachment-save-session" | "attachment-save-project" => {
+            if let Some(key) = attach_key(target) {
+                let scope = if action == "attachment-save-project" {
+                    cookie_agent_protocol::AssetScope::Project
+                } else {
+                    cookie_agent_protocol::AssetScope::Session
+                };
+                workspace.save_attachment(key, scope);
+                if let Ok(Some(corner)) = target.closest("[data-action='attachment-saving']") {
+                    corner.remove();
+                }
             }
         }
         "asset-copy" => {
@@ -362,6 +454,36 @@ fn open_deck(deck: &web_sys::Element, index: usize, workspace: Workspace) {
     workspace.media_viewer.set(Some(first));
 }
 
+/// The attachment `target` names, `turn:content:ordinal`.
+fn attach_key(target: &web_sys::Element) -> Option<(u64, u32, u32)> {
+    let key = target.get_attribute("data-attach-key")?;
+    let mut parts = key.split(':');
+    Some((
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ))
+}
+
+/// Brings the newest card of the stored file `sha256` into view and opens
+/// it as a click does, as a `#…&attachment=` link asks; it waits up to 30 s
+/// for the session's transcript to show it.
+pub fn reveal_attachment(sha256: String, workspace: Workspace) {
+    spawn_local(async move {
+        let sha256 = sha256.replace(['"', '\\'], "");
+        for _ in 0..120 {
+            gloo_timers::future::sleep(std::time::Duration::from_millis(250)).await;
+            if let Some(card) = last(&format!(
+                "#transcript [data-attach-row] [data-artifact-sha=\"{sha256}\"][data-shown]:not([data-shown=\"loading\"])"
+            )) {
+                card.scroll_into_view();
+                open_card(&card, None, workspace);
+                return;
+            }
+        }
+    });
+}
+
 /// Copies the handle `handle`, for the user to give an agent; where the
 /// browser cannot copy, the status line says it.
 pub fn copy_handle(handle: String, workspace: Workspace) {
@@ -375,8 +497,24 @@ pub fn copy_handle(handle: String, workspace: Workspace) {
     });
 }
 
-/// Saves the asset `asset` of `store` as a file, as it is now.
-pub fn download_stored(workspace: Workspace, store: AssetStore, asset: AssetId) {
+/// Saves what `source` names as a file: an asset as it is now, or a
+/// stored file.
+pub fn download_source(workspace: Workspace, source: Source, title: String) {
+    if let Source::Artifact { .. } = &source {
+        let shown = Placeholder {
+            source: source.clone(),
+            shown_sha: String::new(),
+            title,
+            view: "file".into(),
+        };
+        if let Some(asset) = shown.artifact_asset() {
+            download_from(workspace, asset, source);
+        }
+        return;
+    }
+    let Source::Asset { store, asset } = source else {
+        return;
+    };
     spawn_local(async move {
         match workspace.get_asset(store, asset).await {
             Ok(Some(asset)) => download(workspace, asset),
@@ -403,14 +541,18 @@ pub fn refresh(workspace: Workspace) {
         else {
             continue;
         };
+        // A stored file never changes.
         let Some(shown) = placeholder(&element) else {
+            continue;
+        };
+        let Source::Asset { store, asset } = shown.source.clone() else {
             continue;
         };
         let current = element
             .get_attribute("data-asset-current")
             .unwrap_or_default();
         spawn_local(async move {
-            match workspace.get_asset(shown.store.clone(), shown.asset).await {
+            match workspace.get_asset(store, asset).await {
                 Ok(Some(asset)) if asset.sha256 == current => {
                     // The same content: only its title may have changed.
                     set_head(&element, &asset, &shown);
@@ -431,17 +573,23 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
         body(element).set_text_content(Some(&format!("the asset could not be read: {error}")));
         let _ = element.set_attribute("data-shown", "failed");
     };
-    let asset = match workspace.get_asset(shown.store.clone(), shown.asset).await {
-        Ok(Some(asset)) => asset,
-        Ok(None) if figure => {
-            gone(&element, &shown);
-            return;
-        }
-        Ok(None) => {
-            card_gone(&element);
-            return;
-        }
-        Err(error) => return failed(&element, error.to_string()),
+    let asset = match &shown.source {
+        Source::Artifact { .. } => match shown.artifact_asset() {
+            Some(asset) => asset,
+            None => return failed(&element, "it names no file".into()),
+        },
+        Source::Asset { store, asset } => match workspace.get_asset(store.clone(), *asset).await {
+            Ok(Some(asset)) => asset,
+            Ok(None) if figure => {
+                gone(&element, &shown);
+                return;
+            }
+            Ok(None) => {
+                card_gone(&element);
+                return;
+            }
+            Err(error) => return failed(&element, error.to_string()),
+        },
     };
     // A file's chip shows what the asset is, not what it holds.
     if shown.view == "file" {
@@ -450,7 +598,7 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
         let _ = element.set_attribute("data-shown", "yes");
         return;
     }
-    let content = match content(&asset, workspace).await {
+    let content = match content(&asset, &shown.source, workspace).await {
         Ok(content) => content,
         Err(error) => return failed(&element, error),
     };
@@ -996,13 +1144,20 @@ fn close_full_screen(document: &web_sys::Document) {
 
 /// Reads `asset`'s content whole, once per digest, as a `Blob` URL, with
 /// its text when it is a document or a page.
-async fn content(asset: &Asset, workspace: Workspace) -> Result<Content, String> {
+async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result<Content, String> {
     if let Some(content) = CONTENTS.with(|contents| contents.borrow().get(&asset.sha256).cloned()) {
         return Ok(content);
     }
-    let (bytes, sha256, media_type) = workspace
-        .read_asset_bytes(asset.store.clone(), asset.id)
-        .await?;
+    let (bytes, sha256, media_type) = match source {
+        Source::Asset { store, asset } => workspace.read_asset_bytes(store.clone(), *asset).await?,
+        // A stored file's type is what its attachment found it to be.
+        Source::Artifact {
+            sha256, media_type, ..
+        } => {
+            let (bytes, _) = workspace.read_media(sha256.clone()).await?;
+            (bytes, sha256.clone(), media_type.clone())
+        }
+    };
     let text = (media_type == "text/markdown" || media_type == "text/html")
         .then(|| String::from_utf8(bytes.clone()).ok())
         .flatten()
@@ -1035,10 +1190,19 @@ fn blob_url(bytes: &[u8], media_type: &str) -> Result<String, JsValue> {
 /// Saves `asset`'s current content as a file: read, then handed to the
 /// browser's download.
 pub fn download(workspace: Workspace, asset: Asset) {
+    let source = Source::Asset {
+        store: asset.store.clone(),
+        asset: asset.id,
+    };
+    download_from(workspace, asset, source);
+}
+
+/// Saves `asset`, read from `source`, as a file.
+fn download_from(workspace: Workspace, asset: Asset, source: Source) {
     spawn_local(async move {
         let url = match CONTENTS.with(|contents| contents.borrow().get(&asset.sha256).cloned()) {
             Some(content) => content.url,
-            None => match content(&asset, workspace).await {
+            None => match content(&asset, &source, workspace).await {
                 Ok(content) => content.url,
                 Err(error) => {
                     workspace

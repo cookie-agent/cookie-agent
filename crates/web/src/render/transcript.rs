@@ -10,7 +10,6 @@ use std::{
     sync::Arc,
 };
 
-use cookie_agent_client_state::assets::Shelf;
 use cookie_agent_client_state::transcript_mode::{
     self, BlockFold, ChildFold, FoldPlan, ItemFold, TranscriptMode, WorkKey,
 };
@@ -166,10 +165,8 @@ struct Pass<'a, 'v> {
     waiting: FastSet<ToolCallId>,
     /// The reduced mode's folds; none in the full mode.
     folds: Arc<FoldPlan>,
-    /// The transcript's shelves, by the block each shows in.
-    shelves: HashMap<u64, Vec<Shelf>>,
-    /// Every shelved asset by handle, which the replies' chips name, and a
-    /// hash of them.
+    /// Every asset a reply showed, by handle, which the replies' chips
+    /// name, and a hash of them.
     handles: HashMap<String, cookie_agent_protocol::AssetBlock>,
     handles_key: u64,
 }
@@ -190,16 +187,14 @@ impl<'a, 'v> Pass<'a, 'v> {
                 TranscriptMode::Reduced => view.state.fold_plan(),
                 TranscriptMode::Full => Arc::default(),
             },
-            shelves: HashMap::new(),
             handles: HashMap::new(),
             handles_key: 0,
         }
-        .with_shelves()
+        .with_handles()
     }
 
-    fn with_shelves(mut self) -> Self {
-        self.shelves = cookie_agent_client_state::assets::shelves(self.view.state);
-        self.handles = super::shelf::shelved_handles(self.shelves.values().flatten());
+    fn with_handles(mut self) -> Self {
+        self.handles = cookie_agent_client_state::assets::shown_assets(self.view.state);
         let mut handles = self
             .handles
             .iter()
@@ -216,23 +211,32 @@ impl<'a, 'v> Pass<'a, 'v> {
         self
     }
 
-    /// The shelves the block `item_id` shows.
-    fn shelves_of(&self, item_id: u64) -> &[Shelf] {
-        self.shelves.get(&item_id).map_or(&[], Vec::as_slice)
-    }
-
-    /// A text's markdown blocks as HTML, each handle a shelf shows that
-    /// it names a chip.
+    /// The text child `child_id`'s markdown blocks as HTML: each attach
+    /// tag a card, as its attachment stands, and each handle of a shown
+    /// asset it names a chip.
     fn text_html(
         &self,
+        child_id: u64,
         markdown: &cookie_agent_client_state::markdown::MarkdownDocument,
     ) -> PartHtml {
+        let state = self.view.state;
+        let part = super::attachments::PartAttachments {
+            attachments: state.attachments_of(child_id),
+            place: state.text_part(child_id),
+            tags: cookie_agent_protocol::attach_tags(markdown.as_str()),
+        };
+        let mut next = 0;
         PartHtml::Markdown(
             markdown
                 .blocks()
                 .map(|block| {
-                    let html = block_html(block);
-                    match super::shelf::with_chips(&html, &self.handles) {
+                    let mut html = block_html(block);
+                    if let Some(cards) =
+                        super::attachments::with_attachments(&html, &part, &mut next)
+                    {
+                        html = Arc::from(cards);
+                    }
+                    match super::attachments::with_chips(&html, &self.handles) {
                         Some(chips) => Arc::from(chips),
                         None => html,
                     }
@@ -241,8 +245,20 @@ impl<'a, 'v> Pass<'a, 'v> {
         )
     }
 
-    /// Whether `markdown` may name a shelved asset, so its HTML depends on
-    /// the shelves.
+    /// Hashes the attachments of the text child `child_id`, which its HTML
+    /// shows.
+    fn hash_attachments(&self, child_id: u64, hasher: &mut impl std::hash::Hasher) {
+        if let Some(attachments) = self.view.state.attachments_of(child_id) {
+            for (ordinal, attachment) in attachments {
+                ordinal.hash(hasher);
+                format!("{attachment:?}").hash(hasher);
+            }
+            self.view.state.text_part(child_id).hash(hasher);
+        }
+    }
+
+    /// Whether `markdown` may name a shown asset, so its HTML depends on
+    /// them.
     fn names_assets(
         &self,
         markdown: &cookie_agent_client_state::markdown::MarkdownDocument,
@@ -378,8 +394,11 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
         }
     }
     if let TranscriptItem::Assistant { id, children, .. } = item {
-        for shelf in pass.shelves_of(*id) {
-            shelf.hash_shown(&mut hasher);
+        // What its texts' attach tags resolved to.
+        for child in children {
+            if let AssistantChild::Text { id: part, .. } = child {
+                pass.hash_attachments(*part, &mut hasher);
+            }
         }
         // The footer's inputs: metrics can land after the reply settles.
         view.state.assistant_metrics.get(id).hash(&mut hasher);
@@ -900,10 +919,19 @@ pub fn to_fill_in(old: &Rows, new: &Rows) -> Vec<String> {
                     _ => FastMap::default(),
                 };
                 for (part, html) in parts.iter() {
-                    if let PartHtml::Html(html) = html
-                        && !matches!(old.get(part), Some(PartHtml::Html(old)) if old == html)
-                        && fills_in(html)
-                    {
+                    let fills = match html {
+                        PartHtml::Html(html) => {
+                            !matches!(old.get(part), Some(PartHtml::Html(old)) if old == html)
+                                && fills_in(html)
+                        }
+                        // A text's attachment cards fill in once drawn too;
+                        // its code it highlights as it adds each block.
+                        PartHtml::Markdown(blocks) => {
+                            !matches!(old.get(part), Some(PartHtml::Markdown(old)) if old == blocks)
+                                && blocks.iter().any(|block| block.contains("data-asset"))
+                        }
+                    };
+                    if fills {
                         found.push(part_element_id(id, *part));
                     }
                 }
@@ -999,6 +1027,7 @@ fn part_key(pass: &Pass<'_, '_>, item_id: u64, child: &AssistantChild) -> u64 {
             if pass.names_assets(markdown) {
                 pass.handles_key.hash(&mut hasher);
             }
+            pass.hash_attachments(*id, &mut hasher);
         }
         AssistantChild::CommittedTool {
             turn_seq,
@@ -1181,7 +1210,7 @@ fn reply_parts(
                     Some(html) => html.clone(),
                     None => match child {
                         // Each block is drawn once, and kept with its block.
-                        AssistantChild::Text { markdown, .. } => pass.text_html(markdown),
+                        AssistantChild::Text { id, markdown, .. } => pass.text_html(*id, markdown),
                         _ => {
                             cache.drawn += 1;
                             PartHtml::Html(Arc::from(child_html(pass.view, item_id, child)))
@@ -1193,9 +1222,7 @@ fn reply_parts(
                 (id, html)
             });
         }
-        push_shelves(pass, item_id, Some(index), &mut parts);
     }
-    push_shelves(pass, item_id, None, &mut parts);
     // Drawn with its row, whose key holds what it shows; folded, only on a
     // fold's last block.
     if let Some(footer) = fold
@@ -1212,26 +1239,6 @@ fn reply_parts(
         parts: parts.into(),
         work,
         keys,
-    }
-}
-
-/// Adds the shelves of the block `item_id` that show after its child
-/// `after` (after its last, `None`) to `parts`. A shelf's part is named by
-/// its first call, so it keeps its node as it moves from under the work to
-/// under the text that follows.
-fn push_shelves(
-    pass: &Pass<'_, '_>,
-    item_id: u64,
-    after: Option<usize>,
-    parts: &mut Vec<(u64, PartHtml)>,
-) {
-    for shelf in pass.shelves_of(item_id) {
-        if shelf.after == after {
-            parts.push((
-                foldhash::fast::FixedState::default().hash_one((9u8, shelf.first_call())),
-                PartHtml::Html(Arc::from(super::shelf::shelf_html(shelf))),
-            ));
-        }
     }
 }
 
@@ -1657,14 +1664,6 @@ fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
 }
 
 /// A tool call: one header line, collapsed until clicked, as in the TUI.
-/// Whether `tool` shows the user something: its hint is `figure`.
-fn is_figure(tool: &ToolCallState) -> bool {
-    tool.presentation
-        .hint
-        .as_ref()
-        .is_some_and(|hint| hint.as_str() == cookie_agent_protocol::ToolHint::FIGURE)
-}
-
 /// The header has the hint's icon, the title and the primary argument it
 /// does not name, the latest progress while it runs, and the status; the
 /// open row adds the arguments and the output, within the row budget.
@@ -1781,7 +1780,6 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     if let Some(delegate) = view.delegates.get(&tool.id) {
         html.push_str(&delegate_html(delegate, tool.status == ToolStatus::Running));
     }
-    let figure = is_figure(tool);
     if expanded {
         html.push_str("<div class=\"flex flex-col gap-1 border-t border-toasted px-2 pt-1 pb-2 dark:border-ember\" data-tool-body>");
         let arguments = tool.shown_arguments();
@@ -1814,13 +1812,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         let all_key = all_output_key(&id);
         let all = view.expanded.all_output(&tool.id);
         let budget = if all { ALL_OUTPUT_LINES } else { OUTPUT_LINES };
-        // A figure's assets show on its shelf: here, a line each.
-        let (shown, omitted) = if figure {
-            html.push_str(&figure_lines_html(tool.shown_display()));
-            (Vec::new(), 0)
-        } else {
-            within_budget(tool.shown_display(), budget)
-        };
+        let (shown, omitted) = within_budget(tool.shown_display(), budget);
         html.push_str(&display_html(&shown, |index| BlockPlace {
             call_id: Some(&id),
             index,
@@ -1845,36 +1837,6 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         html.push_str("</div>");
     }
     html.push_str("</div>");
-    html
-}
-
-/// What a figure call showed, open: its caption, and a line for each asset,
-/// which its shelf shows.
-fn figure_lines_html(
-    display: &[cookie_agent_protocol::Open<cookie_agent_protocol::DisplayBlock>],
-) -> String {
-    use cookie_agent_protocol::{DisplayBlock, Open};
-    let mut html = String::new();
-    for block in display {
-        match block {
-            Open::Known(DisplayBlock::Text { text, .. }) => html.push_str(&format!(
-                "<p class=\"text-sm\" data-figure-caption>{}</p>",
-                escape(text)
-            )),
-            Open::Known(DisplayBlock::Asset(asset)) => html.push_str(&format!(
-                "<div class=\"flex min-w-0 items-center gap-2 text-sm\" data-asset-line=\"{}\">{}<span class=\"min-w-0 truncate\">{}</span><span class=\"shrink-0 {NOTE}\">{} · {} · shown below</span></div>",
-                escape(asset.handle.as_str()),
-                svg(
-                    icons::asset_icon(cookie_agent_client_state::assets::AssetKind::of(&asset.media_type)),
-                    "shrink-0 text-caramel dark:text-maple"
-                ),
-                escape(&asset.title),
-                escape(&super::shelf::type_label(asset)),
-                escape(&cookie_agent_protocol::human_bytes(asset.byte_length)),
-            )),
-            block => html.push_str(&display_html(std::slice::from_ref(block), BlockPlace::plain)),
-        }
-    }
     html
 }
 
@@ -3044,43 +3006,25 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(old, new));
     }
 
-    /// A figure call's assets show on a shelf after the text that follows
-    /// the call, the text's handle of one a chip, and both draw again when
-    /// the shelf changes.
+    /// A reply's attach tag is a card where it is, as its attachment stands,
+    /// and the part draws again when the attachment resolves.
     #[test]
-    fn a_figures_assets_show_on_a_shelf_after_the_text_that_follows() {
+    fn an_attach_tag_is_a_card_that_follows_its_attachment() {
         use cookie_agent_client_state::AssistantChild;
-        let (mut state, call_id) = streaming_reply();
-        let block = cookie_agent_protocol::AssetBlock {
-            store: cookie_agent_protocol::AssetStore::Shared,
-            asset: cookie_agent_protocol::AssetId::new_v7(),
-            handle: cookie_agent_protocol::AssetHandle::new("asset_3f9a1c2e").expect("handle"),
-            title: "Run explorer".into(),
-            media_type: "text/html".into(),
-            byte_length: 42,
-            sha256: "a".repeat(64),
-            filename: Some("runs.html".into()),
-        };
-        let tool = state.tools.get_mut(&call_id).expect("the call");
-        tool.status = cookie_agent_client_state::ToolStatus::Completed;
-        tool.presentation.hint = Some(
-            cookie_agent_protocol::ToolHint::new(cookie_agent_protocol::ToolHint::FIGURE)
-                .expect("hint"),
-        );
-        tool.display = vec![cookie_agent_protocol::Open::Known(
-            cookie_agent_protocol::DisplayBlock::Asset(block.clone()),
-        )];
-        tool.revision += 1;
+        let (mut state, _) = streaming_reply();
         let TranscriptItem::Assistant { children, .. } = &mut state.transcript[0] else {
             unreachable!()
         };
         let mut markdown = cookie_agent_client_state::markdown::MarkdownDocument::default();
-        markdown.append("See `asset_3f9a1c2e`.");
+        markdown.append(
+            "Here:\n\n<attach src=\"runs/loss.png\"/>\n\nAnd `<attach src=\"x\"/>` is code.",
+        );
         children[2] = AssistantChild::Text {
             id: 3,
             version: 0,
-            markdown,
+            markdown: markdown.finished(),
         };
+        state.text_parts.insert(3, (5, 2));
         let names = ModelDisplayNames::default();
         let expanded = Expanded::default();
         let session_id = cookie_agent_protocol::SessionId::new_v7();
@@ -3110,27 +3054,41 @@ mod tests {
             super::PartHtml::Markdown(blocks) => blocks.concat(),
         };
         let (key, parts) = draw(&state);
-        // Thinking, the call, the text, then the shelf.
-        assert_eq!(parts.len(), 4);
-        let shelf = html(&parts[3].1);
-        assert!(shelf.contains("data-shelf"), "{shelf}");
-        assert!(shelf.contains("data-asset-view=\"page\""), "{shelf}");
         let text = html(&parts[2].1);
-        assert!(text.contains("data-action=\"asset-chip\""), "{text}");
-        // The call's own row says what it showed in a line, not the asset.
-        assert!(!html(&parts[1].1).contains("data-asset="));
-        // Renamed, the shelf and the chip draw again.
-        let mut renamed = block;
-        renamed.title = "Explorer".into();
-        let tool = state.tools.get_mut(&call_id).expect("the call");
-        tool.display = vec![cookie_agent_protocol::Open::Known(
-            cookie_agent_protocol::DisplayBlock::Asset(renamed),
-        )];
-        tool.revision += 1;
-        let (renamed_key, parts) = draw(&state);
-        assert_ne!(renamed_key, key);
-        assert!(html(&parts[2].1).contains(">Explorer<"));
-        assert!(html(&parts[3].1).contains(">Explorer<"));
+        // One card, attaching; the tag in code stays text.
+        assert_eq!(text.matches("data-attach-row").count(), 1, "{text}");
+        assert!(text.contains("data-attach-state=\"attaching\""), "{text}");
+        assert!(
+            text.contains("<code>&lt;attach src=\"x\"/&gt;</code>"),
+            "{text}"
+        );
+        assert!(
+            text.contains(">loss.png<"),
+            "the card names its file: {text}"
+        );
+        // Attached, the card shows the file.
+        let mut attachments = std::collections::BTreeMap::new();
+        attachments.insert(
+            0,
+            cookie_agent_client_state::MessageAttachment {
+                tag: cookie_agent_protocol::AttachTag {
+                    source: cookie_agent_protocol::AttachSource::Path {
+                        path: "runs/loss.png".into(),
+                        machine: None,
+                    },
+                    title: None,
+                },
+                outcome: cookie_agent_protocol::AttachmentOutcome::Failed {
+                    reason: "it does not exist".into(),
+                },
+            },
+        );
+        state.attachments.insert((5, 2), attachments);
+        let (failed_key, parts) = draw(&state);
+        assert_ne!(failed_key, key, "a resolved attachment draws the row again");
+        let text = html(&parts[2].1);
+        assert!(text.contains("data-attach-state=\"failed\""), "{text}");
+        assert!(text.contains("it does not exist"), "{text}");
     }
 
     #[test]

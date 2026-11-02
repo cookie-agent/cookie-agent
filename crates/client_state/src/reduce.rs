@@ -1732,6 +1732,20 @@ pub(super) fn reduce_event_from(
                 }
             }
         }
+        // The engine telling the model which attachments failed shows as
+        // the warning it is, its lines as the model reads them.
+        EventPayload::MessageInjected { content, .. }
+            if attachment_notes(&user_content_text(&content)).is_some() =>
+        {
+            let text = user_content_text(&content);
+            let notes = attachment_notes(&text).unwrap_or_default();
+            push_event(
+                state,
+                EventLevel::Warning,
+                format!("The agent was told:\n{notes}"),
+                timestamp,
+            );
+        }
         EventPayload::MessageInjected { role, content } => {
             push_item(state, timestamp, |id| TranscriptItem::PluginMessage {
                 id,
@@ -3159,6 +3173,17 @@ fn push_model_input(
         header,
         text,
     });
+}
+
+/// The lines of a message the engine wrote to tell the model of failed
+/// attachments, without its marker; `None` for any other message.
+fn attachment_notes(text: &str) -> Option<&str> {
+    let notes = text
+        .strip_prefix(cookie_agent_protocol::model_text::TOOL_EMITTED_SYSTEM_USER_MARKER)?
+        .trim_start_matches('\n');
+    notes
+        .starts_with("[attachment not attached]")
+        .then_some(notes)
 }
 
 pub(super) fn push_event(

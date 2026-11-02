@@ -1256,29 +1256,30 @@ def media_viewer(browser):
 
 
 def asset_figures(browser):
-    """Assets a run shows: its calls fold as any do, and the assets show as
-    cards on a shelf under the text that follows them. An HTML page's card
-    is a live thumbnail that opens in the side panel, where the page runs
-    sandboxed, its scripts running but reaching neither the page's storage
-    nor the page itself; a Markdown document's card shows its first lines;
-    images are a deck the media viewer steps through. The reply's handles
-    are chips that open their asset; a replaced asset's card says so, and a
-    link opens the asset."""
+    """Assets and files a reply shows with `<attach …/>` tags: the calls
+    fold as any do, and each tag is a card where it is, tags next to each
+    other one row. An HTML page's card is a live thumbnail that opens in the
+    side panel, where the page runs sandboxed, its scripts running but
+    reaching neither the page's storage nor the page itself; a Markdown
+    document's card shows its first lines; images are a deck the media
+    viewer steps through. The reply's handles are chips that open their
+    asset; a replaced asset's card says so, and a link opens the asset. A
+    file attached from a machine shows the same, saves as an asset, and one
+    that fails says why and is told to the model."""
     choose_transcript(browser, "reduced")
     new_session(browser)
     send(browser, "show a figure")
     idle(browser, "the figure's call")
-    card = "#transcript [data-shelf] [data-asset-view='page']"
+    card = "#transcript [data-attach-row] [data-asset-view='page']"
     browser.wait("the page's card", lambda: count(browser, card + "[data-shown='yes']") == 1, timeout=60)
-    # The call folded into the work row; the shelf is under the reply.
+    # The call folded into the work row; the card is in the reply's text.
     works, tools = count(browser, "#transcript [data-work]"), count(browser, "#transcript [data-tool]")
     assert works >= 1 and tools == 0, (works, tools)
-    order = browser.script(
-        "const shelf = document.querySelector('#transcript [data-shelf]');"
-        "const reply = [...document.querySelectorAll('#transcript .markdown')].find((e) => e.innerText.includes('Saved it as'));"
-        "return reply && (reply.compareDocumentPosition(shelf) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0"
+    inside = browser.script(
+        "const row = document.querySelector('#transcript [data-attach-row]');"
+        "return !!row.closest('.markdown') && row.closest('.markdown').innerText.includes('Saved it as')"
     )
-    assert order, "the shelf follows the reply"
+    assert inside, "the card is where its tag is"
     assert count(browser, card + " iframe[data-asset-frame][data-fixed]") == 1
     handle = browser.script("return document.querySelector(arguments[0]).dataset.assetHandle", card)
     # The reply named it: a chip, which copies as the handle.
@@ -1329,7 +1330,7 @@ def asset_figures(browser):
     # A Markdown asset's card shows its first lines and reads in the panel.
     send(browser, "show a report")
     idle(browser, "the report's call")
-    document = "#transcript [data-shelf] [data-asset-view='doc']"
+    document = "#transcript [data-attach-row] [data-asset-view='doc']"
     browser.wait(
         "the report's card",
         lambda: "All good." in browser.text(document + " [data-asset-body]"),
@@ -1347,7 +1348,7 @@ def asset_figures(browser):
     # Two images are one deck, which the viewer steps through.
     send(browser, "show two images")
     idle(browser, "the images' calls")
-    deck = "#transcript [data-shelf] [data-deck='2']"
+    deck = "#transcript [data-attach-row] [data-deck='2']"
     browser.wait(
         "the deck",
         lambda: count(browser, deck + " [data-asset][data-shown='yes']") == 2,
@@ -1391,6 +1392,35 @@ def asset_figures(browser):
     browser.wait("the closed panel", lambda: count(browser, "#asset-panel") == 0)
     assert "asset=" not in browser.script("return location.hash")
     print("a link to an asset opens its session and the asset")
+
+    # A file attached from the machine: its card, saved as an asset; one not
+    # there fails, says why, and the model hears of it.
+    send(browser, "attach a file")
+    idle(browser, "the attaching reply")
+    attached = "#transcript [data-attach-row] [data-asset='artifact'][data-asset-view='doc']"
+    browser.wait(
+        "the attached report",
+        lambda: "All good." in browser.text(attached + " [data-asset-body]"),
+        timeout=60,
+    )
+    browser.wait(
+        "the file that is not there",
+        lambda: "gone.png" in browser.text("#transcript [data-attach-state='failed']"),
+        timeout=60,
+    )
+    browser.shot("attachment-cards")
+    browser.script("document.querySelector(arguments[0]).click()", attached + " [data-action='attachment-save']")
+    browser.wait("the save choices", lambda: count(browser, "[data-action='attachment-save-session']") == 1)
+    browser.click("[data-action='attachment-save-session']")
+    browser.wait("the saved asset", lambda: "saved as asset_" in browser.text("#status"))
+    send(browser, "and now?")
+    idle(browser, "the next reply")
+    browser.wait(
+        "the failure told to the model",
+        lambda: "[attachment not attached]" in browser.text("#transcript") and "gone.png" in browser.text("#transcript"),
+        timeout=30,
+    )
+    print("a file attached from the machine shows, saves as an asset, and a failed one is told")
     choose_transcript(browser, "full")
 
 

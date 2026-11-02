@@ -27,7 +27,7 @@ pub(super) fn assistant_item_layout(
     // block's footer.
     let Some(ItemFold::Block(fold)) = context.folds.get(item_id) else {
         layout.lines.push_lines(header(context));
-        for (index, child) in children.iter().enumerate() {
+        for child in children {
             push_assistant_child(
                 state,
                 item_id,
@@ -36,15 +36,7 @@ pub(super) fn assistant_item_layout(
                 &mut previous_is_prose,
                 context,
             );
-            push_shelves(
-                state,
-                Some(index),
-                &mut layout,
-                &mut previous_is_prose,
-                context,
-            );
         }
-        push_shelves(state, None, &mut layout, &mut previous_is_prose, context);
         return finish_assistant_layout(state, item_id, layout, context);
     };
     let fold = fold.clone();
@@ -68,13 +60,6 @@ pub(super) fn assistant_item_layout(
                 state,
                 item_id,
                 child,
-                &mut layout,
-                &mut previous_is_prose,
-                context,
-            );
-            push_shelves(
-                state,
-                Some(index),
                 &mut layout,
                 &mut previous_is_prose,
                 context,
@@ -125,15 +110,7 @@ pub(super) fn assistant_item_layout(
             // Rows spliced in before a folded child land below the row.
             context.assistant_child_lines.push(layout.lines.len());
         }
-        push_shelves(
-            state,
-            Some(index),
-            &mut layout,
-            &mut previous_is_prose,
-            context,
-        );
     }
-    push_shelves(state, None, &mut layout, &mut previous_is_prose, context);
     layout
         .regions
         .extend(bands.into_iter().map(|(key, start, end)| BlockRegion {
@@ -149,162 +126,154 @@ pub(super) fn assistant_item_layout(
     layout
 }
 
-/// Appends the shelves the block shows after its child `after` (after its
-/// last, `None`): the assets its run's figures showed, under the text that
-/// follows them (assets spec section 9).
-fn push_shelves(
+/// The attachments of the text child `child_id`
+/// (`docs/site/specs/message-attachments.md` section 6), under its text: a
+/// line each, what it is, why it waits, or why it failed; an attached one's
+/// link into the web page, or *Allow* and *Deny* for one that waits for the
+/// user.
+fn attachment_layout(
     state: &SessionState,
-    after: Option<usize>,
-    layout: &mut ChunkedItem,
-    previous_is_prose: &mut Option<bool>,
+    child_id: u64,
+    markdown: &crate::markdown::MarkdownDocument,
     context: &TranscriptRenderContext<'_>,
-) {
-    for shelf in context.shelves.iter().filter(|shelf| shelf.after == after) {
-        if previous_is_prose.is_some() {
-            layout.lines.push_lines(assistant_body_line(
-                Line::default(),
-                context.width,
-                context.theme,
-            ));
-        }
-        layout.push_layout(shelf_layout(state, shelf, context));
-        *previous_is_prose = Some(false);
+) -> Option<ItemLayout> {
+    use cookie_agent_protocol::{AttachmentOutcome, PersistedFileSource};
+    let tags = cookie_agent_protocol::attach_tags(markdown.as_str());
+    if tags.is_empty() {
+        return None;
     }
-}
-
-/// A shelf: a muted label, then each asset with its link into the web
-/// page; images and video under one line naming them.
-fn shelf_layout(
-    state: &SessionState,
-    shelf: &cookie_agent_client_state::assets::Shelf,
-    context: &TranscriptRenderContext<'_>,
-) -> ItemLayout {
-    use cookie_agent_client_state::assets::ShelfEntry;
     let (width, theme) = (context.width, context.theme);
-    let mut lines =
-        assistant_body_line(Line::styled("From this reply", theme.muted()), width, theme);
+    let attachments = state.attachments_of(child_id);
+    let place = state.text_part(child_id);
+    let mut lines = Vec::new();
     let mut regions = Vec::new();
-    let pictures = |entry: &&ShelfEntry| {
-        entry.block.media_type.starts_with("image/") || entry.block.media_type.starts_with("video/")
-    };
-    let deck = shelf.entries.iter().filter(pictures).collect::<Vec<_>>();
-    let mut link = |entry: &ShelfEntry, lines: &mut Vec<Line<'static>>| {
+    let mut target = |lines: &mut Vec<Line<'static>>, line: Line<'static>, id: Option<BlockId>| {
         let start = lines.len();
-        match context.figure_links.link(&entry.block.handle) {
-            Some(link) => {
-                lines.extend(assistant_body_line(
-                    Line::styled(format!("   ↗ {link}"), theme.link()),
-                    width,
-                    theme,
-                ));
-                // The call's display block it is, which a click opens.
-                let block = state.tools.get(&entry.call_id).and_then(|tool| {
-                    tool.shown_display().iter().position(|block| {
-                        matches!(
-                            block,
-                            cookie_agent_protocol::Open::Known(
-                                cookie_agent_protocol::DisplayBlock::Asset(asset)
-                            ) if asset.asset == entry.block.asset
-                        )
-                    })
-                });
-                if let Some(block) = block {
-                    regions.push(BlockRegion {
-                        id: BlockId::ToolAsset {
-                            call_id: entry.call_id,
-                            block: u32::try_from(block).unwrap_or(u32::MAX),
-                        },
-                        start_line: start,
-                        end_line: lines.len(),
-                        header_lines: None,
-                        header_gutter: Some(2),
-                    });
-                }
-            }
-            None => lines.extend(assistant_body_line(
-                Line::styled(
-                    format!("   Open the web client to see {}", entry.block.handle),
-                    theme.muted(),
-                ),
-                width,
-                theme,
-            )),
+        lines.extend(assistant_body_line(line, width, theme));
+        if let Some(id) = id {
+            regions.push(BlockRegion {
+                id,
+                start_line: start,
+                end_line: lines.len(),
+                header_lines: None,
+                header_gutter: Some(2),
+            });
         }
     };
-    let caption = |caption: Option<&str>, lines: &mut Vec<Line<'static>>| {
-        if let Some(caption) = caption {
-            lines.extend(assistant_body_line(
-                Line::styled(
-                    format!("   {}", flatten_header_argument(caption)),
-                    theme.muted(),
-                ),
-                width,
-                theme,
-            ));
-        }
-    };
-    let mut decked = false;
-    for entry in &shelf.entries {
-        if pictures(&entry) {
-            if std::mem::replace(&mut decked, true) {
-                continue;
-            }
-            let what = if deck.len() == 1 {
-                String::new()
-            } else if deck
-                .iter()
-                .all(|entry| entry.block.media_type.starts_with("video/"))
-            {
-                format!("{} videos — ", deck.len())
-            } else {
-                format!("{} images — ", deck.len())
-            };
-            let titles = deck
-                .iter()
-                .map(|entry| flatten_header_argument(&entry.block.title))
-                .collect::<Vec<_>>()
-                .join(" · ");
-            lines.extend(assistant_body_line(
-                Line::raw(format!(" {what}{titles}")),
-                width,
-                theme,
-            ));
-            caption(
-                deck.iter().find_map(|entry| entry.caption.as_deref()),
+    for (index, tag) in tags.iter().enumerate() {
+        let ordinal = u32::try_from(index).unwrap_or(u32::MAX);
+        let key = place.map(|(model_turn_seq, content_index)| AttachmentKey {
+            model_turn_seq,
+            content_index,
+            ordinal,
+        });
+        let label = flatten_header_argument(&tag.label());
+        let about = |name: &str, media_type: &str, bytes: u64| {
+            format!(
+                " — {} ({media_type}, {})",
+                flatten_header_argument(name),
+                cookie_agent_protocol::human_bytes(bytes)
+            )
+        };
+        let link = |url: Option<String>| match url {
+            Some(url) => Line::styled(format!("   ↗ {url}"), theme.link()),
+            None => Line::styled("   Open the web client to see it", theme.muted()),
+        };
+        match attachments
+            .and_then(|attachments| attachments.get(&ordinal))
+            .map(|attachment| &attachment.outcome)
+        {
+            None => target(
                 &mut lines,
-            );
-            for entry in &deck {
-                link(entry, &mut lines);
+                Line::styled(format!(" 📎 {label} — attaching…"), theme.muted()),
+                None,
+            ),
+            Some(AttachmentOutcome::PendingApproval) => {
+                target(
+                    &mut lines,
+                    Line::from(vec![
+                        Span::raw(format!(" 📎 {label}")),
+                        Span::styled(" — the agent wants to attach this file", theme.muted()),
+                    ]),
+                    None,
+                );
+                target(
+                    &mut lines,
+                    Line::styled("   ✓ Allow", theme.link()),
+                    key.map(BlockId::AttachmentAllow),
+                );
+                target(
+                    &mut lines,
+                    Line::styled("   ✗ Deny", theme.link()),
+                    key.map(BlockId::AttachmentDeny),
+                );
             }
-            continue;
-        }
-        let block = &entry.block;
-        lines.extend(assistant_body_line(
-            Line::from(vec![
-                Span::raw(format!(" {} ", flatten_header_argument(&block.title))),
-                Span::styled(
-                    format!(
-                        "— {} ({}, {})",
-                        flatten_header_argument(
-                            block.filename.as_deref().unwrap_or(block.handle.as_str())
-                        ),
-                        block.media_type,
-                        cookie_agent_protocol::human_bytes(block.byte_length)
+            Some(AttachmentOutcome::Failed { reason }) => target(
+                &mut lines,
+                Line::from(vec![
+                    Span::raw(format!(" 📎 {label}")),
+                    Span::styled(
+                        format!(" — not attached: {}", flatten_header_argument(reason)),
+                        theme.warning(),
                     ),
-                    theme.muted(),
-                ),
-            ]),
-            width,
-            theme,
-        ));
-        caption(entry.caption.as_deref(), &mut lines);
-        link(entry, &mut lines);
+                ]),
+                None,
+            ),
+            Some(AttachmentOutcome::Attached { file }) => {
+                let (bytes, sha256) = match &file.source {
+                    PersistedFileSource::Artifact {
+                        byte_length,
+                        sha256,
+                        ..
+                    } => (*byte_length, Some(sha256.as_str().to_owned())),
+                    _ => (0, None),
+                };
+                target(
+                    &mut lines,
+                    Line::from(vec![
+                        Span::raw(format!(" 📎 {label}")),
+                        Span::styled(
+                            about(
+                                file.filename.as_deref().unwrap_or(&label),
+                                file.media_type.as_str(),
+                                bytes,
+                            ),
+                            theme.muted(),
+                        ),
+                    ]),
+                    None,
+                );
+                let url = sha256.and_then(|sha256| context.figure_links.attachment(&sha256));
+                let id = url.as_ref().and(key).map(BlockId::AttachmentOpen);
+                target(&mut lines, link(url), id);
+            }
+            Some(AttachmentOutcome::Shown { asset }) => {
+                target(
+                    &mut lines,
+                    Line::from(vec![
+                        Span::raw(format!(" 📎 {}", flatten_header_argument(&asset.title))),
+                        Span::styled(
+                            about(
+                                asset.filename.as_deref().unwrap_or(asset.handle.as_str()),
+                                &asset.media_type,
+                                asset.byte_length,
+                            ),
+                            theme.muted(),
+                        ),
+                    ]),
+                    None,
+                );
+                let url = context.figure_links.link(&asset.handle);
+                let id = url.as_ref().and(key).map(BlockId::AttachmentOpen);
+                target(&mut lines, link(url), id);
+            }
+        }
     }
-    ItemLayout {
+    Some(ItemLayout {
         regions,
         lines,
         user_seq: None,
-    }
+    })
 }
 
 /// Closes an assistant block's layout with its footer.
@@ -422,6 +391,12 @@ fn push_assistant_child(
                 context.assistant_part_cache.insert(child.id(), cached);
                 *context.assistant_part_layout_passes =
                     context.assistant_part_layout_passes.wrapping_add(1);
+            }
+            // A text's attachments, under it.
+            if let AssistantChild::Text { id, markdown, .. } = child
+                && let Some(attachments) = attachment_layout(state, *id, markdown, context)
+            {
+                layout.push_layout(attachments);
             }
         }
         AssistantChild::Tool { call_id } => {

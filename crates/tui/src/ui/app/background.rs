@@ -62,6 +62,35 @@ impl App {
         });
     }
 
+    /// Answers the attachment `key` of `session_id` that waits for the
+    /// user (`docs/site/specs/message-attachments.md` section 6).
+    pub(in crate::ui) fn decide_attachment(
+        &mut self,
+        session_id: cookie_agent_protocol::SessionId,
+        key: crate::ui::transcript::AttachmentKey,
+        allow: bool,
+    ) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let update = match client
+                .decide_attachment(cookie_agent_protocol::AttachmentDecideParams {
+                    session_id,
+                    model_turn_seq: key.model_turn_seq,
+                    content_index: key.content_index,
+                    ordinal: key.ordinal,
+                    allow,
+                })
+                .await
+            {
+                Ok(_) if allow => RpcUpdate::Notice("the file is attaching".into()),
+                Ok(_) => RpcUpdate::Notice("the file was not attached".into()),
+                Err(error) => RpcUpdate::failure(&error),
+            };
+            let _ = updates.send(update);
+        });
+    }
+
     pub(super) fn render_background_bar(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         self.hit_map.background_bar = None;
         if area.width == 0 || area.height == 0 {

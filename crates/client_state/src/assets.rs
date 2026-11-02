@@ -1,157 +1,27 @@
-//! Assets in clients (`docs/site/specs/assets.md`): the shelves a
-//! transcript shows the assets its figures showed on (section 8.1), the
-//! links into the web page the TUI prints (section 9), and how the web's
+//! Assets in clients (`docs/site/specs/assets.md`): the assets replies show
+//! with `<attach asset="…"/>` (`docs/site/specs/message-attachments.md`),
+//! the links into the web page the TUI prints (section 9), and how the web's
 //! Assets tab sorts out what it lists (section 8.3).
 
 use std::collections::HashMap;
 
-use cookie_agent_protocol::{AssetBlock, AssetHandle, DisplayBlock, Open, SessionId, ToolCallId};
+use cookie_agent_protocol::{AssetBlock, AssetHandle, SessionId};
 
-use crate::{AssistantChild, SessionState, TranscriptItem, transcript_mode};
+use crate::SessionState;
 
-/// The assets a run's `figure` calls showed, under the first text the run
-/// wrote after them: the message that comes out of their work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Shelf {
-    /// The child of its block the shelf shows after; `None` after the
-    /// block's last, under its work, while no text followed the calls yet.
-    pub after: Option<usize>,
-    /// The assets, once each, in the order first shown.
-    pub entries: Vec<ShelfEntry>,
-}
-
-/// One asset on a shelf.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ShelfEntry {
-    /// The call that showed it last.
-    pub call_id: ToolCallId,
-    /// The asset as that call showed it.
-    pub block: AssetBlock,
-    /// The caption of the call that first showed it, on the first asset
-    /// that call showed.
-    pub caption: Option<String>,
-}
-
-impl Shelf {
-    /// Hashes what the shelf shows, for a client's cache keys.
-    pub fn hash_shown(&self, hasher: &mut impl std::hash::Hasher) {
-        use std::hash::Hash as _;
-        self.after.hash(hasher);
-        for entry in &self.entries {
-            entry.call_id.hash(hasher);
-            entry.block.asset.hash(hasher);
-            entry.block.sha256.hash(hasher);
-            entry.block.title.hash(hasher);
-            entry.caption.hash(hasher);
-        }
-    }
-
-    /// The first entry's call, which names the shelf while it moves from
-    /// under the work to under the text that follows.
-    #[must_use]
-    pub fn first_call(&self) -> Option<&ToolCallId> {
-        self.entries.first().map(|entry| &entry.call_id)
-    }
-}
-
-/// The shelves of `state`'s transcript, under the ID of the block each
-/// shows in. A run's blocks are one stretch however far apart they are; a
-/// block of no run is a stretch of its own. The text a shelf goes under is
-/// any but [`transcript_mode::filler`], with the texts right after it in
-/// its block.
+/// Every asset an `<attach asset="…"/>` tag of `state` showed, by handle,
+/// as the latest showed it: what a reply's handles name, as chips.
 #[must_use]
-pub fn shelves(state: &SessionState) -> HashMap<u64, Vec<Shelf>> {
-    let mut stretches: Vec<Vec<(u64, &[AssistantChild])>> = Vec::new();
-    let mut runs = HashMap::new();
-    for item in &state.transcript {
-        let TranscriptItem::Assistant { id, children, .. } = item else {
-            continue;
-        };
-        let at = match state.assistant_runs.get(id) {
-            Some(run) => *runs.entry(*run).or_insert_with(|| {
-                stretches.push(Vec::new());
-                stretches.len() - 1
-            }),
-            None => {
-                stretches.push(Vec::new());
-                stretches.len() - 1
-            }
-        };
-        stretches[at].push((*id, children.as_slice()));
-    }
-    let mut shelves: HashMap<u64, Vec<Shelf>> = HashMap::new();
-    for blocks in stretches {
-        let mut entries: Vec<ShelfEntry> = Vec::new();
-        for (id, children) in &blocks {
-            let mut index = 0;
-            while index < children.len() {
-                match &children[index] {
-                    AssistantChild::Tool { call_id } => shelve(state, call_id, &mut entries),
-                    AssistantChild::Text { markdown, .. }
-                        if !entries.is_empty() && !transcript_mode::filler(markdown.as_str()) =>
-                    {
-                        while matches!(children.get(index + 1), Some(AssistantChild::Text { .. })) {
-                            index += 1;
-                        }
-                        shelves.entry(*id).or_default().push(Shelf {
-                            after: Some(index),
-                            entries: std::mem::take(&mut entries),
-                        });
-                    }
-                    _ => {}
-                }
-                index += 1;
+pub fn shown_assets(state: &SessionState) -> HashMap<String, AssetBlock> {
+    let mut shown = HashMap::new();
+    for attachments in state.attachments.values() {
+        for attachment in attachments.values() {
+            if let cookie_agent_protocol::AttachmentOutcome::Shown { asset } = &attachment.outcome {
+                shown.insert(asset.handle.to_string(), asset.clone());
             }
         }
-        if let Some((id, _)) = blocks.last()
-            && !entries.is_empty()
-        {
-            shelves.entry(*id).or_default().push(Shelf {
-                after: None,
-                entries,
-            });
-        }
     }
-    shelves
-}
-
-/// Adds what the call `call_id` showed, when it is a figure, to `entries`.
-fn shelve(state: &SessionState, call_id: &ToolCallId, entries: &mut Vec<ShelfEntry>) {
-    if !transcript_mode::is_figure(state, call_id) {
-        return;
-    }
-    let Some(tool) = state.tools.get(call_id) else {
-        return;
-    };
-    let mut caption = tool.shown_display().iter().find_map(|block| match block {
-        Open::Known(DisplayBlock::Text { text, .. }) if !text.trim().is_empty() => {
-            Some(text.clone())
-        }
-        _ => None,
-    });
-    for block in tool.shown_display() {
-        let Open::Known(DisplayBlock::Asset(block)) = block else {
-            continue;
-        };
-        match entries
-            .iter_mut()
-            .find(|entry| entry.block.asset == block.asset)
-        {
-            // Shown again: where it first showed, as the latest call shows it.
-            Some(entry) => {
-                entry.call_id = *call_id;
-                entry.block = block.clone();
-                if entry.caption.is_none() {
-                    entry.caption = caption.take();
-                }
-            }
-            None => entries.push(ShelfEntry {
-                call_id: *call_id,
-                block: block.clone(),
-                caption: caption.take(),
-            }),
-        }
-    }
+    shown
 }
 
 /// The web page's link that opens `session` and shows its figure of the
@@ -162,6 +32,16 @@ pub fn asset_link(page_url: &str, session: SessionId, handle: &AssetHandle) -> S
     let page = page_url.split('#').next().unwrap_or(page_url);
     let separator = if page.ends_with('/') { "" } else { "/" };
     format!("{page}{separator}#session={session}&asset={handle}")
+}
+
+/// The web page's link that opens `session` and the file an attachment of
+/// it stored, by its `sha256`, on the page at `page_url`
+/// (`docs/site/specs/message-attachments.md` section 6).
+#[must_use]
+pub fn attachment_link(page_url: &str, session: SessionId, sha256: &str) -> String {
+    let page = page_url.split('#').next().unwrap_or(page_url);
+    let separator = if page.ends_with('/') { "" } else { "/" };
+    format!("{page}{separator}#session={session}&attachment={sha256}")
 }
 
 /// What kind of file an asset is, as the Assets tab groups and filters

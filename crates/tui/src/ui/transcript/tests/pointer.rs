@@ -260,10 +260,11 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
             .extend(tall_transcript_state(40).transcript);
         state.transcript.extend(done.transcript);
         state.tools.extend(done.tools);
-        // A figure, whose shelf's link opens it in the web page.
-        let figure = super::figures::figure_call();
-        state.transcript.extend(figure.transcript);
-        state.tools.extend(figure.tools);
+        // An attached file, whose link opens it in the web page.
+        let attached = super::figures::attachment_state(Some(super::figures::attached()));
+        state.transcript.extend(attached.transcript);
+        state.text_parts.extend(attached.text_parts);
+        state.attachments.extend(attached.attachments);
         // A memory call, whose title row links to the memory, and an open
         // search whose results open theirs.
         let (memory, search) = memory_calls();
@@ -378,29 +379,35 @@ async fn every_clickable_element_hovers_visibly() {
     assert_eq!(app.modal, Modal::GoalDetail);
     seen.extend(sweep(&mut app, "goal detail"));
 
-    // A shelf's link to its asset.
-    let (mut shelved, shelved_session, _) = app_with_active_run().await;
-    shelved.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
-    shelved.page_url = Some("http://127.0.0.1:7419/".into());
-    {
-        let figure = super::figures::figure_call();
-        let state = shelved
-            .store
-            .sessions
-            .get_mut(&shelved_session)
-            .expect("session");
-        state.transcript.extend(figure.transcript);
-        state.tools.extend(figure.tools);
+    // An attachment's link to its file, and Allow and Deny of one that
+    // waits for the user.
+    for outcome in [
+        super::figures::attached(),
+        cookie_agent_protocol::AttachmentOutcome::PendingApproval,
+    ] {
+        let (mut shown, shown_session, _) = app_with_active_run().await;
+        shown.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+        shown.page_url = Some("http://127.0.0.1:7419/".into());
+        {
+            let attached = super::figures::attachment_state(Some(outcome));
+            let state = shown
+                .store
+                .sessions
+                .get_mut(&shown_session)
+                .expect("session");
+            state.transcript.extend(attached.transcript);
+            state.text_parts.extend(attached.text_parts);
+            state.attachments.extend(attached.attachments);
+        }
+        seen.extend(sweep(&mut shown, "attachment"));
+        assert!(
+            shown.hit_map.blocks.iter().any(|hit| matches!(
+                hit.id,
+                BlockId::AttachmentOpen(_) | BlockId::AttachmentAllow(_)
+            )),
+            "an attachment's target on screen"
+        );
     }
-    seen.extend(sweep(&mut shelved, "shelf"));
-    assert!(
-        shelved
-            .hit_map
-            .blocks
-            .iter()
-            .any(|hit| matches!(hit.id, BlockId::ToolAsset { .. })),
-        "a shelf's link on screen"
-    );
 
     // The expanded tools row's link opens the deferred tools prompt.
     let (mut deferred, _) = deferred_tools_app().await;

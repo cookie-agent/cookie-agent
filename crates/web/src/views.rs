@@ -2474,7 +2474,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             "deferred-prompt" => workspace.panel.set(Some(Panel::DeferredPrompt)),
-            action if action.starts_with("asset-") => {
+            action if action.starts_with("asset-") || action.starts_with("attachment-") => {
                 let clicked = event
                     .target()
                     .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
@@ -3118,7 +3118,16 @@ fn ReplyPart(
         };
         drawn.update_value(|drawn| draw_blocks(&element, drawn, &blocks));
     });
-    view! { <div class="markdown" data-part data-work-in=work node_ref=node></div> }.into_any()
+    view! {
+        <div
+            class="markdown"
+            data-part
+            data-work-in=work
+            id=part_element_id(row, id)
+            node_ref=node
+        ></div>
+    }
+    .into_any()
 }
 
 /// Whether `event` is a key on an element that acts as a button without

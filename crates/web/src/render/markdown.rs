@@ -11,24 +11,45 @@ use pulldown_cmark::{CowStr, Event, Tag, TagEnd};
 
 use super::{escape, safe_link};
 
-/// The document as HTML.
+/// Where an `<attach …/>` tag of a reply stands in its HTML, which the
+/// transcript replaces with the attachment's card, in the tags' order.
+pub const ATTACH_MARKER: &str = "<span data-attach-marker></span>";
+
+/// The document as HTML, raw HTML in it shown as text, tags included.
 pub fn document_html(document: &MarkdownDocument) -> String {
     document
         .blocks()
-        .map(block_html)
+        .map(plain_block_html)
         .collect::<Vec<_>>()
         .concat()
 }
 
-/// One block of a document as HTML, drawn once per block: a block never
-/// changes, and a settled one lasts while the text after it streams on.
-pub fn block_html(block: &MarkdownBlock) -> Arc<str> {
-    let slot = block
-        .renderer_cache()
-        .get_or_default::<OnceLock<Arc<str>>>();
-    Arc::clone(slot.get_or_init(|| {
+/// A block's HTML as a document shows it, kept with the block.
+#[derive(Default)]
+struct PlainHtml(OnceLock<Arc<str>>);
+
+/// A block's HTML as a reply shows it, each attach tag an
+/// [`ATTACH_MARKER`], kept with the block.
+#[derive(Default)]
+struct ReplyHtml(OnceLock<Arc<str>>);
+
+fn plain_block_html(block: &MarkdownBlock) -> Arc<str> {
+    let slot = block.renderer_cache().get_or_default::<PlainHtml>();
+    Arc::clone(slot.0.get_or_init(|| {
         let mut html = String::new();
-        push_events(&mut html, block.events().iter().cloned());
+        push_events(&mut html, block.events().iter().cloned(), false);
+        Arc::from(html)
+    }))
+}
+
+/// One block of a reply as HTML, drawn once per block: a block never
+/// changes, and a settled one lasts while the text after it streams on.
+/// Each `<attach …/>` tag is an [`ATTACH_MARKER`].
+pub fn block_html(block: &MarkdownBlock) -> Arc<str> {
+    let slot = block.renderer_cache().get_or_default::<ReplyHtml>();
+    Arc::clone(slot.0.get_or_init(|| {
+        let mut html = String::new();
+        push_events(&mut html, block.events().iter().cloned(), true);
         Arc::from(html)
     }))
 }
@@ -38,11 +59,31 @@ pub fn markdown_html(text: &str) -> String {
     document_html(&MarkdownDocument::new(text.to_owned()).finished())
 }
 
-fn push_events<'a>(html: &mut String, events: impl Iterator<Item = Event<'a>>) {
+fn push_events<'a>(html: &mut String, events: impl Iterator<Item = Event<'a>>, attach: bool) {
     let mut link_closers = Vec::new();
+    // A reply's attach tags become markers; the rest of its raw HTML, and
+    // all of a document's, shows as text.
+    let events = events.flat_map(|event| match event {
+        Event::Html(raw) | Event::InlineHtml(raw) if attach && raw.contains("<attach") => {
+            cookie_agent_protocol::split_attach_tags(&raw)
+                .into_iter()
+                .map(|piece| match piece {
+                    cookie_agent_protocol::HtmlPiece::Text(text) => {
+                        Event::Text(CowStr::from(text.to_owned()))
+                    }
+                    cookie_agent_protocol::HtmlPiece::Tag(_) => {
+                        Event::Html(CowStr::from(ATTACH_MARKER))
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+        event => vec![event],
+    });
     let events = events.map(|event| match event {
         // Raw HTML from the text shows as text.
-        Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
+        Event::Html(raw) | Event::InlineHtml(raw) if raw.as_ref() != ATTACH_MARKER => {
+            Event::Text(raw)
+        }
         Event::Start(Tag::Link {
             dest_url, title, ..
         }) => {

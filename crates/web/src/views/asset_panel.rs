@@ -64,7 +64,8 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
     let label = title.clone();
     let handle = open.handle.clone();
     let copy = handle.clone();
-    let (store, asset) = (open.store.clone(), open.asset);
+    let (origin, file_title) = (open.source.clone(), open.title.clone());
+    let copyable = !handle.is_empty();
     let tab = move |is_source: bool| {
         move || {
             format!(
@@ -135,16 +136,22 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                         </button>
                     </span>
                 </Show>
-                <button
-                    type="button"
-                    id="asset-panel-copy"
-                    class=BUTTON
-                    title="Copy the handle"
-                    aria-label="Copy the handle"
-                    on:click=move |_| crate::assets::copy_handle(copy.clone(), workspace)
-                >
-                    <Glyph icon=icondata::FaCopyRegular />
-                </button>
+                // A stored file has no handle to copy.
+                <Show when=move || copyable>
+                    <button
+                        type="button"
+                        id="asset-panel-copy"
+                        class=BUTTON
+                        title="Copy the handle"
+                        aria-label="Copy the handle"
+                        on:click={
+                            let copy = copy.clone();
+                            move |_| crate::assets::copy_handle(copy.clone(), workspace)
+                        }
+                    >
+                        <Glyph icon=icondata::FaCopyRegular />
+                    </button>
+                </Show>
                 <button
                     type="button"
                     id="asset-panel-full"
@@ -168,7 +175,7 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                     class=BUTTON
                     title="Download"
                     aria-label="Download"
-                    on:click=move |_| crate::assets::download_stored(workspace, store.clone(), asset)
+                    on:click=move |_| crate::assets::download_source(workspace, origin.clone(), file_title.clone())
                 >
                     <Glyph icon=icondata::FaDownloadSolid />
                 </button>

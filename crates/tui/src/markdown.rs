@@ -1337,6 +1337,23 @@ impl<'a> MarkdownRenderer<'a> {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(*tag),
+            // An attach tag of a reply is its file's name, which the lines
+            // under the text list (message attachments spec section 6).
+            Event::Html(text) | Event::InlineHtml(text) if text.contains("<attach") => {
+                for piece in cookie_agent_protocol::split_attach_tags(text) {
+                    match piece {
+                        cookie_agent_protocol::HtmlPiece::Text(text) => self.text(text),
+                        cookie_agent_protocol::HtmlPiece::Tag(tag) => self.span(
+                            format!("📎 {}", tag.label()),
+                            self.styles
+                                .last()
+                                .copied()
+                                .unwrap_or_default()
+                                .patch(self.theme.link()),
+                        ),
+                    }
+                }
+            }
             Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.text(text),
             // Inline code is marked by its own colour where the theme has
             // one, by a tinted chip widened with half-block caps where the

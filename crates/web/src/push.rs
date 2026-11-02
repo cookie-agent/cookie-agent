@@ -124,7 +124,7 @@ pub use cookie_agent_client_state::presence::daemon_has_push;
 pub fn fragment_without_session(fragment: &str) -> String {
     let fragment = fragment.strip_prefix('#').unwrap_or(fragment);
     let rest = url::form_urlencoded::parse(fragment.as_bytes())
-        .filter(|(name, _)| name != "session" && name != "asset")
+        .filter(|(name, _)| name != "session" && name != "asset" && name != "attachment")
         .collect::<Vec<_>>();
     if rest.is_empty() {
         return String::new();
@@ -145,15 +145,32 @@ pub fn session_from_fragment(fragment: &str) -> Option<String> {
         .filter(|session| !session.is_empty())
 }
 
-/// The asset a page's `location.hash` asks to show, with its session, as
-/// `#session=<id>&asset=<handle>`: a link the TUI prints for a figure
-/// (`docs/site/specs/assets.md` section 8.4).
-pub fn asset_from_fragment(fragment: &str) -> Option<String> {
+/// What a link into a session asks to show once it opens.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkTarget {
+    /// `asset=<handle>`: an asset a reply shows.
+    Asset(String),
+    /// `attachment=<sha256>`: a file a reply attached
+    /// (`docs/site/specs/message-attachments.md` section 6).
+    Attachment(String),
+}
+
+/// What a page's `location.hash` asks to show, with its session, as
+/// `#session=<id>&asset=<handle>` or `#session=<id>&attachment=<sha256>`:
+/// links the TUI prints (`docs/site/specs/assets.md` section 8.4).
+pub fn link_target(fragment: &str) -> Option<LinkTarget> {
     let fragment = fragment.strip_prefix('#').unwrap_or(fragment);
-    url::form_urlencoded::parse(fragment.as_bytes())
-        .find(|(name, _)| name == "asset")
-        .map(|(_, value)| value.trim().to_owned())
-        .filter(|asset| !asset.is_empty())
+    url::form_urlencoded::parse(fragment.as_bytes()).find_map(|(name, value)| {
+        let value = value.trim().to_owned();
+        if value.is_empty() {
+            return None;
+        }
+        match name.as_ref() {
+            "asset" => Some(LinkTarget::Asset(value)),
+            "attachment" => Some(LinkTarget::Attachment(value)),
+            _ => None,
+        }
+    })
 }
 
 /// What a page opened from a notification connects to: the daemon its push
@@ -290,10 +307,19 @@ mod tests {
     fn an_asset_link_names_its_session_and_asset_and_leaves_the_rest() {
         let link = "#session=01JB&asset=asset_3f9a1c2e&x=1";
         assert_eq!(session_from_fragment(link).as_deref(), Some("01JB"));
-        assert_eq!(asset_from_fragment(link).as_deref(), Some("asset_3f9a1c2e"));
+        assert_eq!(
+            link_target(link),
+            Some(LinkTarget::Asset("asset_3f9a1c2e".into()))
+        );
         assert_eq!(fragment_without_session(link), "#x=1");
-        assert_eq!(asset_from_fragment("#session=01JB"), None);
-        assert_eq!(asset_from_fragment("#asset="), None);
+        let attached = "#session=01JB&attachment=ab12";
+        assert_eq!(
+            link_target(attached),
+            Some(LinkTarget::Attachment("ab12".into()))
+        );
+        assert_eq!(fragment_without_session(attached), "");
+        assert_eq!(link_target("#session=01JB"), None);
+        assert_eq!(link_target("#asset="), None);
     }
 
     #[test]

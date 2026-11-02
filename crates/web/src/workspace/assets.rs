@@ -69,6 +69,60 @@ impl Workspace {
         });
     }
 
+    /// Answers the viewed session's attachment `key` (`turn`, `content`,
+    /// `ordinal`) that waits for the user.
+    pub fn decide_attachment(self, key: (u64, u32, u32), allow: bool) {
+        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
+        else {
+            return;
+        };
+        spawn_local(async move {
+            if let Err(error) = client
+                .decide_attachment(cookie_agent_protocol::AttachmentDecideParams {
+                    session_id,
+                    model_turn_seq: key.0,
+                    content_index: key.1,
+                    ordinal: key.2,
+                    allow,
+                })
+                .await
+            {
+                self.status.set(crate::errors::describe(&error));
+            }
+        });
+    }
+
+    /// Makes an asset of the viewed session's attached file `key`, kept in
+    /// `scope`, and says its handle.
+    pub fn save_attachment(self, key: (u64, u32, u32), scope: cookie_agent_protocol::AssetScope) {
+        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
+        else {
+            return;
+        };
+        spawn_local(async move {
+            match client
+                .save_attachment_asset(cookie_agent_protocol::AttachmentSaveAssetParams {
+                    session_id,
+                    model_turn_seq: key.0,
+                    content_index: key.1,
+                    ordinal: key.2,
+                    scope,
+                })
+                .await
+            {
+                Ok(saved) => self.status.set(format!(
+                    "saved as {}, {}",
+                    saved.asset.handle,
+                    match scope {
+                        cookie_agent_protocol::AssetScope::Project => "kept for the project",
+                        cookie_agent_protocol::AssetScope::Session => "kept for this session",
+                    }
+                )),
+                Err(error) => self.status.set(crate::errors::describe(&error)),
+            }
+        });
+    }
+
     /// Gives an asset of `store` the title `title`.
     pub fn rename_asset(self, store: AssetStore, asset: AssetId, title: String) {
         let Some(client) = self.client() else {

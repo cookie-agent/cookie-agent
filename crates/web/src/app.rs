@@ -74,8 +74,9 @@ pub(crate) struct Connection {
     /// The session a notification asked to open, until a connection opens
     /// it.
     pending_session: StoredValue<Option<String>>,
-    /// The figure a `#…&asset=` link asked to show once its session opens.
-    pending_asset: StoredValue<Option<String>>,
+    /// The asset or attached file a `#…&asset=` or `#…&attachment=` link
+    /// asked to show once its session opens.
+    pending_asset: StoredValue<Option<push::LinkTarget>>,
     /// The daemon's status (client protocol 1.65.0): how its start goes
     /// while the page waits for it, then what it is busy with.
     daemon: RwSignal<Option<DaemonStatus>>,
@@ -104,7 +105,7 @@ impl Connection {
         let pending_session = push::session_from_fragment(&address_fragment);
         // A figure's link is the page of the daemon that shows it, unlike a
         // notification's, which is on the daemon that pushed it.
-        let pending_asset = push::asset_from_fragment(&address_fragment);
+        let pending_asset = push::link_target(&address_fragment);
         if pending_session.is_some() && pending_asset.is_none() && store.is_none() {
             let daemon =
                 push::notification_daemon(&url, browser::load(PUSH_DAEMON_URL_KEY).as_deref());
@@ -264,8 +265,14 @@ impl Connection {
             .flatten()
         {
             self.workspace.open_notified_session(&session);
-            if let Some(handle) = self.pending_asset.try_update_value(Option::take).flatten() {
-                crate::assets::reveal(handle, self.workspace);
+            match self.pending_asset.try_update_value(Option::take).flatten() {
+                Some(push::LinkTarget::Asset(handle)) => {
+                    crate::assets::reveal(handle, self.workspace);
+                }
+                Some(push::LinkTarget::Attachment(sha256)) => {
+                    crate::assets::reveal_attachment(sha256, self.workspace);
+                }
+                None => {}
             }
         }
         self.attached.set(true);

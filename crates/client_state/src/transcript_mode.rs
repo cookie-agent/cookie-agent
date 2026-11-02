@@ -76,19 +76,6 @@ pub fn reply_start(children: &[AssistantChild]) -> Option<usize> {
         .map(|index| index + 1)
 }
 
-/// Whether the call `call_id` shows the user something (its presentation
-/// hint is `figure`, such as `show_asset`): its assets go on a shelf
-/// ([`crate::assets::shelves`]), while the call folds as any other does.
-#[must_use]
-pub fn is_figure(state: &SessionState, call_id: &ToolCallId) -> bool {
-    state.tools.get(call_id).is_some_and(|tool| {
-        tool.presentation
-            .hint
-            .as_ref()
-            .is_some_and(|hint| hint.as_str() == cookie_agent_protocol::ToolHint::FIGURE)
-    })
-}
-
 /// Whether the call `call_id` waits on the user's approval, so it shows
 /// outside its block's fold until answered: an approval escalated to the
 /// user that has not expired.
