@@ -1035,6 +1035,16 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn search_assets(
+        &self,
+        params: cookie_agent_protocol::AssetsSearchParams,
+    ) -> Result<cookie_agent_protocol::AssetsSearchResult> {
+        self.engine
+            .search_assets(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn get_asset(
         &self,
         params: cookie_agent_protocol::AssetGetParams,

@@ -544,6 +544,13 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::AssetsListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+
+    async fn search_assets(
+        &self,
+        _: cookie_agent_protocol::AssetsSearchParams,
+    ) -> Result<cookie_agent_protocol::AssetsSearchResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn get_asset(
         &self,
         _: cookie_agent_protocol::AssetGetParams,

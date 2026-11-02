@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.70.0",
+    "protocol_version": "1.71.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.70.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.71.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -324,6 +324,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `artifact.upload.cancel` | `upload_id` | Empty object |
 | `artifact.read` | Session ID, `sha256`, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
 | `assets.list` | `store` (since 1.67.0; see [Assets](#assets)) | The store's `assets`, newest first |
+| `assets.search` | `project?`, `scope?` (since 1.71.0; see [Assets](#assets)) | The `assets` of many stores, newest first, and the `sessions` whose own they list |
 | `asset.get` | `store`, `asset` ID | The `asset` as it is now, or `asset_not_found` |
 | `asset.read` | `store`, `asset` ID, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
 | `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
@@ -799,6 +800,15 @@ has the presentation hint `figure`. A store the request names that does not
 exist, or a session store named by a session that is not a root, is
 `-32602`; an asset the store does not hold is `asset_not_found`. Each change
 sends `assets.changed` to every connection.
+
+Since 1.71.0 `assets.search` lists many stores at once, as the web's
+Assets tab does. `project` is a tagged `AssetProjectFilter`, `{ "type":
+"project", "project": … }` or `{ "type": "no_project" }` (sessions in no
+project and the shared store), every project's and no project's when
+absent; a session tree's own assets go by its root's project. `scope` is
+`session` or `project`, both when absent. The result's `sessions` names
+each tree whose own assets it lists: its root `session`, `title`, and
+`project`. A project the daemon does not have is `-32602`.
 
 ### Cron jobs
 

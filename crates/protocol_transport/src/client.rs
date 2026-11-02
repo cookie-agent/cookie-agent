@@ -967,6 +967,16 @@ impl Client {
         .await
     }
 
+    /// The assets of many stores, newest first (`assets.search`, client
+    /// protocol 1.71.0).
+    pub async fn search_assets(
+        &self,
+        params: cookie_agent_protocol::AssetsSearchParams,
+    ) -> Result<cookie_agent_protocol::AssetsSearchResult, ClientError> {
+        self.call(cookie_agent_protocol::ASSETS_SEARCH_METHOD, &params)
+            .await
+    }
+
     /// One asset as it is now (`asset.get`).
     pub async fn get_asset(
         &self,

@@ -561,6 +561,18 @@ impl SessionStore {
 
     /// A pinned root's entry from its own `metadata`: one small read, and
     /// none for a root that is gone.
+    /// The root `id`'s list entry as it is now: its projection's while it
+    /// is in memory, else its own `metadata`, without reading its log or
+    /// any journal. `None` for a session that is not a root, or is gone.
+    #[must_use]
+    pub fn root_meta(&self, id: SessionId) -> Option<SessionMeta> {
+        if let Some(session) = self.get_resident(id) {
+            return matches!(session.meta.origin, SessionOrigin::Root)
+                .then(|| session.meta.clone());
+        }
+        self.pinned_root_meta(id)
+    }
+
     fn pinned_root_meta(&self, id: SessionId) -> Option<SessionMeta> {
         let dir = self.root_path(id);
         match self.read_meta(id, &dir) {

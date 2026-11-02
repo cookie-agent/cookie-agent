@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "AssetProjectFilter": {
+      "description": "Which project's assets `assets.search` lists: a session tree's own by\nthe project of its root.",
+      "oneOf": [
+        {
+          "properties": {
+            "project": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sessions in no project, and their shared store.",
+          "properties": {
+            "type": {
+              "const": "no_project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AssetScope": {
+      "description": "Who an asset belongs to: the session tree that wrote it, or every\nsession of its project (section 4.1).",
+      "enum": [
+        "session",
+        "project"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Lists the assets of many stores at once, newest first, as the web's\nAssets tab does (client protocol 1.71.0): those of one project, of the\nsessions in no project, or of every one, and of one scope or both.",
+  "properties": {
+    "project": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssetProjectFilter"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Whose assets; every project's and those of sessions in no project\nwhen absent."
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssetScope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The session trees' own assets, the projects' kept assets, or both\nwhen absent."
+    }
+  },
+  "title": "AssetsSearchParams",
+  "type": "object"
+}

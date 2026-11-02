@@ -368,6 +368,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(SESSION_UNREAD_SET_METHOD, ToDaemon, SessionUnreadSetParams => SessionUnreadSetResult),
         request!(SESSION_PIN_SET_METHOD, ToDaemon, SessionPinSetParams => SessionPinSetResult),
         request!(ASSETS_LIST_METHOD, ToDaemon, AssetsListParams => AssetsListResult),
+        request!(ASSETS_SEARCH_METHOD, ToDaemon, AssetsSearchParams => AssetsSearchResult),
         request!(ASSET_GET_METHOD, ToDaemon, AssetGetParams => AssetGetResult),
         request!(ASSET_READ_METHOD, ToDaemon, AssetReadParams => AssetReadResult),
         request!(ASSET_RENAME_METHOD, ToDaemon, AssetRenameParams => AssetRenameResult),

@@ -1,14 +1,16 @@
 //! The engine's asset requests (`docs/site/specs/assets.md`): the client
-//! methods `assets.list`, `asset.get`, `asset.read`, `asset.rename`, and
-//! `asset.delete`, and the stores a session's asset tools use.
+//! methods `assets.list`, `assets.search`, `asset.get`, `asset.read`,
+//! `asset.rename`, and `asset.delete`, and the stores a session's asset
+//! tools use.
 
 use std::sync::Arc;
 
 use base64::Engine as _;
 use cookie_agent_protocol::{
-    Asset, AssetDeleteParams, AssetDeleteResult, AssetGetParams, AssetGetResult, AssetReadParams,
-    AssetReadResult, AssetRenameParams, AssetRenameResult, AssetStore, AssetsListParams,
-    AssetsListResult, SessionId,
+    Asset, AssetDeleteParams, AssetDeleteResult, AssetGetParams, AssetGetResult,
+    AssetProjectFilter, AssetReadParams, AssetReadResult, AssetRenameParams, AssetRenameResult,
+    AssetScope, AssetSession, AssetStore, AssetsListParams, AssetsListResult, AssetsSearchParams,
+    AssetsSearchResult, SessionId,
 };
 
 use super::{Engine, EngineError};
@@ -113,6 +115,79 @@ impl Engine {
             Ok(AssetsListResult {
                 assets: stores.list(&params.store)?,
             })
+        })
+        .await
+    }
+
+    /// `assets.search`: the session trees' own stores, found by listing
+    /// `session-assets/` and filtered by their root's project, and the
+    /// projects' stores, newest first. No session's log is read, and each
+    /// store's index comes from memory while its file is unchanged.
+    pub async fn search_assets(
+        &self,
+        params: AssetsSearchParams,
+    ) -> Result<AssetsSearchResult, EngineError> {
+        self.assets_blocking(move |engine, stores| {
+            let mut result = AssetsSearchResult::default();
+            if params.scope != Some(AssetScope::Project) {
+                for root in stores.session_roots()? {
+                    // A tree deleted by an older build, or not a root.
+                    let Some(meta) = engine.inner.store.root_meta(root) else {
+                        continue;
+                    };
+                    let project = meta
+                        .project
+                        .filter(|project| engine.project_exists(project));
+                    let wanted = match &params.project {
+                        None => true,
+                        Some(AssetProjectFilter::NoProject) => project.is_none(),
+                        Some(AssetProjectFilter::Project { project: wanted }) => {
+                            project.as_ref() == Some(wanted)
+                        }
+                    };
+                    if !wanted {
+                        continue;
+                    }
+                    let assets = stores.list(&AssetStore::Session { session: root })?;
+                    if assets.is_empty() {
+                        continue;
+                    }
+                    result.sessions.push(AssetSession {
+                        session: root,
+                        title: meta.title,
+                        project,
+                    });
+                    result.assets.extend(assets);
+                }
+            }
+            if params.scope != Some(AssetScope::Session) {
+                let kept = match &params.project {
+                    None => {
+                        let mut projects = engine.project_ids().into_iter().collect::<Vec<_>>();
+                        projects.sort();
+                        projects
+                            .into_iter()
+                            .map(|project| AssetStore::Project { project })
+                            .chain([AssetStore::Shared])
+                            .collect()
+                    }
+                    Some(AssetProjectFilter::NoProject) => vec![AssetStore::Shared],
+                    Some(AssetProjectFilter::Project { project }) => {
+                        let store = AssetStore::Project {
+                            project: project.clone(),
+                        };
+                        engine.check_client_store(&store)?;
+                        vec![store]
+                    }
+                };
+                for store in kept {
+                    result.assets.extend(stores.list(&store)?);
+                }
+            }
+            result
+                .assets
+                .sort_by_key(|asset| std::cmp::Reverse(asset.updated.at));
+            Ok(result)
         })
         .await
     }

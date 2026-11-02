@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.71.0
+
+- Assets across stores ([Assets](../specs/assets.md) section 8.3):
+  `assets.search { project?, scope? }` returns the assets of many stores,
+  newest first, with `sessions`, an `AssetSession` (`session`, `title?`,
+  `project?`) for each session tree whose own assets it lists. `project` is
+  an `AssetProjectFilter` (`project` or `no_project`), every one when
+  absent; `scope` an `AssetScope`, both when absent.
+
 ## 1.70.0
 
 - Where an ACP agent runs

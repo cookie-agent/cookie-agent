@@ -114,6 +114,14 @@
       "result": "AssetsListResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "assets.search",
+      "params": "AssetsSearchParams",
+      "params_role": "command",
+      "result": "AssetsSearchResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "background.changed",

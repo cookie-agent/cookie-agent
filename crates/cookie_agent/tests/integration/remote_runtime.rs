@@ -1441,6 +1441,70 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
     assert_eq!(shared.len(), 1, "a session in no project shares one store");
     assert_eq!(shared[0].media_type, "text/markdown");
     assert_eq!(shared[0].filename.as_deref(), Some("report.md"));
+    // The tree's own store lives apart from its session.
+    assert!(
+        fixture
+            .root
+            .path()
+            .join("data/session-assets")
+            .join(session.to_string())
+            .join("index.json")
+            .is_file()
+    );
+
+    // A search across stores, by project and by level.
+    let search = |project, scope| {
+        let engine = fixture.engine.clone();
+        async move {
+            engine
+                .search_assets(cookie_agent_protocol::AssetsSearchParams { project, scope })
+                .await
+        }
+    };
+    let titles = |result: &cookie_agent_protocol::AssetsSearchResult| {
+        let mut titles = result
+            .assets
+            .iter()
+            .map(|asset| asset.title.clone())
+            .collect::<Vec<_>>();
+        titles.sort();
+        titles
+    };
+    let everything = search(None, None).await.unwrap();
+    assert_eq!(titles(&everything), ["Loss curves", "report.md"]);
+    assert_eq!(everything.sessions.len(), 1);
+    assert_eq!(everything.sessions[0].session, session);
+    assert_eq!(everything.sessions[0].project, None);
+    use cookie_agent_protocol::{AssetProjectFilter, AssetScope};
+    assert_eq!(
+        titles(&search(None, Some(AssetScope::Session)).await.unwrap()),
+        ["Loss curves"]
+    );
+    let kept = search(None, Some(AssetScope::Project)).await.unwrap();
+    assert_eq!(titles(&kept), ["report.md"]);
+    assert!(kept.sessions.is_empty());
+    assert_eq!(
+        titles(
+            &search(Some(AssetProjectFilter::NoProject), None)
+                .await
+                .unwrap()
+        ),
+        ["Loss curves", "report.md"]
+    );
+    assert!(
+        search(
+            Some(AssetProjectFilter::Project {
+                project: cookie_agent_protocol::ProjectId::new(
+                    "0192f0c4-7d6e-7a1b-9c2d-3e4f5a6b7c8d"
+                )
+                .unwrap()
+            }),
+            None
+        )
+        .await
+        .is_err(),
+        "a project the daemon does not have"
+    );
 
     // The figure is an `asset` block of a call the clients keep open.
     let (events, _) = fixture.engine.subscribe(session, None).await.unwrap();
@@ -1508,7 +1572,10 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
     assert_ne!(replaced.sha256, plot.sha256);
     let old_blobs = files_holding(&fixture.root.path().join("data"), b"<rect/>")
         .into_iter()
-        .filter(|path| path.components().any(|part| part.as_os_str() == "assets"))
+        .filter(|path| {
+            path.components()
+                .any(|part| part.as_os_str() == "assets" || part.as_os_str() == "session-assets")
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         old_blobs,
@@ -1526,6 +1593,18 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
             .assets
             .is_empty()
     );
+    // Deleting the tree deletes its own assets.
+    let last = fixture.engine.get_session(session).unwrap().last_event_seq;
+    fixture.engine.delete_session(session, last).await.unwrap();
+    assert!(
+        !fixture
+            .root
+            .path()
+            .join("data/session-assets")
+            .join(session.to_string())
+            .exists()
+    );
+    assert!(search(None, None).await.unwrap().assets.is_empty());
     fixture.engine.shutdown().await;
     drop(fixture.root);
 }

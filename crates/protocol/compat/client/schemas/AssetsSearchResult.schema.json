@@ -1,0 +1,202 @@
+{
+  "$defs": {
+    "Asset": {
+      "description": "One asset as it is now (section 3).",
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created": {
+          "$ref": "#/$defs/AssetStamp"
+        },
+        "filename": {
+          "description": "The name of the file the asset was last written from.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handle": {
+          "description": "An asset's handle: `asset_` and eight lowercase hexadecimal digits.",
+          "maxLength": 14,
+          "minLength": 1,
+          "pattern": "^asset_[0-9a-f]{8}$",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "media_type": {
+          "description": "The media type of the current content, such as `image/png`,\n`text/html`, or `text/markdown`.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the current content. It changes when the\nasset is written again, so a client knows to read it again.",
+          "type": "string"
+        },
+        "store": {
+          "$ref": "#/$defs/AssetStore"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated": {
+          "$ref": "#/$defs/AssetStamp"
+        }
+      },
+      "required": [
+        "id",
+        "handle",
+        "store",
+        "title",
+        "media_type",
+        "byte_length",
+        "sha256",
+        "created",
+        "updated"
+      ],
+      "type": "object"
+    },
+    "AssetSession": {
+      "description": "A session tree whose own assets `assets.search` listed.",
+      "properties": {
+        "project": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session": {
+          "description": "The tree's root.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "AssetStamp": {
+      "description": "When an asset was written, and by which session and agent.",
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "session": {
+          "description": "The session whose call wrote it. It may have been deleted since.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "session"
+      ],
+      "type": "object"
+    },
+    "AssetStore": {
+      "description": "Where an asset is kept (section 4.1). A store's assets are listed,\nread, and changed together; an asset never moves between stores.",
+      "oneOf": [
+        {
+          "description": "A session tree's own assets (scope `session`), named by the tree's\nroot. They are deleted with the tree.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "session",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A project's assets (scope `project`).",
+          "properties": {
+            "project": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The assets of every session in no project (scope `project`).",
+          "properties": {
+            "type": {
+              "const": "shared",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/Asset"
+      },
+      "type": "array"
+    },
+    "sessions": {
+      "description": "The root of each session store the assets come from, to name it.",
+      "items": {
+        "$ref": "#/$defs/AssetSession"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "assets",
+    "sessions"
+  ],
+  "title": "AssetsSearchResult",
+  "type": "object"
+}

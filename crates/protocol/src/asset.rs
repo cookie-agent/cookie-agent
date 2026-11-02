@@ -9,9 +9,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AssetHandle, AssetId, ProjectId, SessionId, human_bytes};
+use crate::{AgentId, AssetHandle, AssetId, ProjectId, SessionId, SessionTitle, human_bytes};
 
 pub const ASSETS_LIST_METHOD: &str = "assets.list";
+pub const ASSETS_SEARCH_METHOD: &str = "assets.search";
 pub const ASSET_GET_METHOD: &str = "asset.get";
 pub const ASSET_READ_METHOD: &str = "asset.read";
 pub const ASSET_RENAME_METHOD: &str = "asset.rename";
@@ -193,6 +194,52 @@ pub struct AssetsListParams {
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AssetsListResult {
     pub assets: Vec<Asset>,
+}
+
+/// Lists the assets of many stores at once, newest first, as the web's
+/// Assets tab does (client protocol 1.71.0): those of one project, of the
+/// sessions in no project, or of every one, and of one scope or both.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetsSearchParams {
+    /// Whose assets; every project's and those of sessions in no project
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<AssetProjectFilter>,
+    /// The session trees' own assets, the projects' kept assets, or both
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<AssetScope>,
+}
+
+/// Which project's assets `assets.search` lists: a session tree's own by
+/// the project of its root.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AssetProjectFilter {
+    Project {
+        project: ProjectId,
+    },
+    /// Sessions in no project, and their shared store.
+    NoProject,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AssetsSearchResult {
+    pub assets: Vec<Asset>,
+    /// The root of each session store the assets come from, to name it.
+    pub sessions: Vec<AssetSession>,
+}
+
+/// A session tree whose own assets `assets.search` listed.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AssetSession {
+    /// The tree's root.
+    pub session: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<SessionTitle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
 }
 
 /// One asset as it is now.
