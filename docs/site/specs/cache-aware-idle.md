@@ -1,4 +1,4 @@
-# Cache-aware idle sessions: longer ACP residency and compaction before the cache expires
+# Cache-aware idle sessions: compaction before the cache expires
 
 Status: **approved** (2026-11-02), with the user's decisions in
 [section 2](#2-decisions-2026-11-02); phase 0 (a probe) still to run. Builds on [cron jobs](cron.md) (sections
@@ -31,11 +31,10 @@ residency janitor (`crates/engine/src/runtime/sessions/residency.rs`).
 
 **Two problems:**
 
-1. **ACP sessions are closed too early.** Interactive Claude Code compacts
-   its own context as its one-hour cache nears expiry. Over ACP it does not
-   (section 11.1). Cookie closes the
-   ACP session after 30 idle minutes, before that can happen. The next turn
-   resumes a session that never compacted.
+1. **ACP agents do not compact while idle.** Interactive Claude Code
+   compacts its own context as its one-hour cache nears expiry, but not
+   over ACP (section 11.1). An idle Claude Code session's next turn
+   re-caches its whole context.
 2. **Idle sessions waiting on a scheduled job pay a full cache write.** Take
    a session with 150k tokens of context and a cron job that fires in 3
    hours. The cache has long expired by then, so the fire re-sends and
@@ -53,11 +52,12 @@ residency janitor (`crates/engine/src/runtime/sessions/residency.rs`).
 
 **This spec:**
 
-- keeps sessions that run an ACP agent resident longer (default `90m`);
 - compacts an idle session shortly before its cache expires (default 5
   minutes before, at most a fifth of the TTL) when a scheduled job will wake it only after the cache is
   gone;
-- adds a knob for each, and a per-model TTL for providers cookie cannot
+- does the same for ACP agents that declare a cache TTL, with the agent's
+  `/compact`;
+- adds a knob for it, and a per-model TTL for providers cookie cannot
   read one from.
 
 **Out of scope:**
@@ -65,21 +65,23 @@ residency janitor (`crates/engine/src/runtime/sessions/residency.rs`).
 - keeping the cache warm with pings (section 6 explains why, and how it
   could fit later);
 - predicting when the user will come back;
-- changing `[acp] idle_shutdown_ms`.
+- changing `[acp] idle_shutdown_ms`;
+- a residency window of their own for ACP sessions (D1, withdrawn).
 
 ## 2. Decisions (2026-11-02)
 
-The user accepted D1, D4, D6, D7, and D8 as proposed, made `off` the
+The user accepted D4, D6, D7, and D8 as proposed, withdrew D1 once phase
+0 showed Claude Code does not compact while idle over ACP, made `off` the
 default mode (D2), set the slack to five minutes capped at a fifth of the
 TTL (D3), and asked for a token floor and a cost floor side by side (D5).
 Section 10 records the answers to the remaining questions.
 
-- **D1. The ACP residency window.**
-  - A new key, `[acp] session_idle_eviction_after`, default `90m`.
-  - A per-agent override, `[acp.agents.<id>] idle_eviction_after`.
-  - A tree waits for the longest window among its resident sessions.
-
-  Section 3.
+- **D1. ~~The ACP residency window~~ (withdrawn 2026-11-02).** The
+  proposal was `[acp] session_idle_eviction_after`, default `90m`, so that
+  Claude Code could compact itself before cookie closed its session. Phase
+  0 showed it never does over ACP. Cookie compacts ACP sessions itself
+  (D6), and reloading one leaves the provider's cache as it was. ACP
+  sessions keep `[server] session_idle_eviction_after`. Section 3.
 - **D2. The knob.** `[context_compaction.cache_expiry] mode` takes three
   values:
   - `off` (the default; a compaction the user did not ask for is opt-in);
@@ -122,7 +124,7 @@ Section 10 records the answers to the remaining questions.
 - **D6. ACP sessions.** Cookie compacts an ACP session before expiry only
   when its agent declares a TTL (`[acp.agents.<id>] cache_ttl`). It does
   so with the agent's own `/compact` command. Without a declared TTL, the
-  agent manages its own context, and cookie only keeps it resident (D1).
+  agent manages its own context.
   The Claude Code preset leaves `cache_ttl` unset, *if* the phase 0 probe
   confirms that Claude Code compacts on its own while idle. If the probe
   shows it does not, the preset sets `cache_ttl = "1h"` instead.
@@ -133,27 +135,13 @@ Section 10 records the answers to the remaining questions.
   Section 4.4.
 - **D8. Keep-warm pings stay out of v1.** Section 6.
 
-## 3. ACP residency
+## 3. ACP residency (withdrawn)
 
-- **The window.** A session whose agent is an ACP agent waits
-  `[acp.agents.<id>] idle_eviction_after` if set, else
-  `[acp] session_idle_eviction_after` (default `90m`). Other root sessions
-  keep `[server] session_idle_eviction_after`.
-- **Trees.** `root_tree_idle` gives each resident session in the tree its
-  own window instead of the root's. The tree pages out only when every
-  session in it has passed its own window, so an ACP subagent under a
-  native root holds the tree for its 90 minutes. A delegated session that
-  runs an ACP agent waits the longer of its ACP window and
-  `[delegation] idle_eviction_after`.
-- **Unchanged:**
-  - pending work, live tails, and producer pins still keep a session in
-    memory;
-  - a cron job still never pins a session;
-  - the ACP process still stops `idle_shutdown_ms` after its last live
-    session closes. A resident ACP session is a live one, so the process
-    stays up for as long as the session does.
-- **Changes apply at once** from the next janitor check, as
-  `session_idle_eviction_after` does today.
+ACP sessions page out like every other session, after
+`[server] session_idle_eviction_after`. A session paged out between its
+last turn and its compaction is loaded again at the due time (section
+4.3). The compaction resumes or loads the ACP session, and the provider's
+cache is still there. This section once proposed a longer window (D1).
 
 ## 4. Compacting before the cache expires
 
@@ -302,11 +290,7 @@ fallback_ttl = "30m"
 min_tokens = 40000      # <= 0: no token floor
 min_cost_usd = 0.0      # <= 0: no cost floor; priced models only
 
-[acp]
-session_idle_eviction_after = "90m"
-
 [acp.agents.claude]
-idle_eviction_after = "90m"   # optional; overrides [acp] for this agent
 cache_ttl = "1h"              # optional; turns on section 4 for this agent
 
 [models.<provider>.<model>]
@@ -318,8 +302,7 @@ cache_ttl = "1h"              # optional; for providers cookie cannot read a TTL
 - **`min_tokens`** is an integer and **`min_cost_usd`** a number of
   dollars. Each is off at 0 or less; section 4.2, condition 4, combines
   them.
-- **`mode = "off"`** turns section 4 off. ACP residency (section 3) is its
-  own knob.
+- **`mode = "off"`** turns section 4 off, for ACP agents too.
 - **Per-agent settings.** `cache_expiry` follows
   `[context_compaction]`'s per-agent inheritance. An agent document's
   table can turn it off for that agent.
@@ -388,13 +371,9 @@ The tests use explicit values, never the defaults.
   Its checkpoint carries `reason.cache_expiry`.
 - **Restart.** Entries for job targets are computed again from the stamped
   `cache_ttl_secs`.
-- **ACP residency:**
-  - an ACP root outlives a native root's window;
-  - a native root with an ACP subagent waits for the subagent's window;
-  - a per-agent override wins.
 - **ACP compaction:**
   - with a declared `cache_ttl`, the agent's `/compact` runs at the due
-    time;
+    time, on a session that paged out too;
   - without one, nothing runs.
 
 ## 9. Phases
@@ -402,10 +381,9 @@ The tests use explicit values, never the defaults.
 0. **Probe.** Confirm over ACP that Claude Code (`claude-agent-acp`)
    compacts on its own while idle near its one-hour mark, and note when.
    The result settles D6.
-1. **ACP residency** (section 3). Small, and useful on its own.
-2. **The cache clock and compaction before expiry**, engine and protocol
+1. **The cache clock and compaction before expiry**, engine and protocol
    (sections 4, 5, and 7).
-3. **Clients and docs:** the checkpoint row in the TUI and web;
+2. **Clients and docs:** the checkpoint row in the TUI and web;
    `engine/context_compaction.md`, `engine/server.md`, the ACP agents
    guide, and `sessions/scheduling.md`.
 
