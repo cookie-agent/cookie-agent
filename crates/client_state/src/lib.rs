@@ -1531,12 +1531,15 @@ impl SessionState {
     }
 
     /// Whether the assistant block `item_id` still takes output: it is its
-    /// run's open block and no row has split it off.
+    /// run's open block. A row after it only makes a split pending; the
+    /// block works on (its streaming part, its running calls) until the
+    /// run's next segment opens a block below the row and seals it.
     pub fn assistant_live(&self, item_id: u64) -> bool {
         !self.assistant_ends.contains_key(&item_id)
-            && self.open_run_assistant.as_ref().is_some_and(|projection| {
-                projection.item_id == item_id && !projection.split_pending
-            })
+            && self
+                .open_run_assistant
+                .as_ref()
+                .is_some_and(|projection| projection.item_id == item_id)
     }
 
     /// How the assistant block `item_id` ended, once it did.

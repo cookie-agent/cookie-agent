@@ -5991,10 +5991,28 @@ fn an_assistant_block_ends_at_the_row_that_split_it_or_at_its_runs_end() {
             .map(TranscriptItem::id)
             .collect::<Vec<_>>()
     };
+    // Until the next turn opens a block below the row, the block above
+    // still works: its run is open.
+    let state = reduce_session_events(session, 0, &events[..3]);
+    let [open] = blocks(&state)[..] else {
+        panic!("one block: {:?}", state.transcript);
+    };
+    assert!(state.assistant_live(open));
+    let summary = crate::transcript_mode::work_summary(
+        &state,
+        open,
+        &[],
+        jiff::Timestamp::new(16, 0).unwrap(),
+    );
+    assert_eq!(
+        (summary.live, summary.elapsed),
+        (true, Duration::from_secs(15))
+    );
     let state = reduce_session_events(session, 0, &events);
     let [above, below] = blocks(&state)[..] else {
         panic!("two blocks: {:?}", state.transcript);
     };
+    assert_eq!(above, open);
     assert_eq!(
         state.assistant_end(above),
         Some(AssistantEnd {

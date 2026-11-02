@@ -716,7 +716,14 @@ impl FoldPlan {
                 self.add(state, done, position);
             }
         }
-        if let Some(done) = stretch {
+        if let Some(mut done) = stretch {
+            // The rows after a block that still works are its run's too, such
+            // as a background command that ended while a call of its runs:
+            // its work takes them in now, not once the run's next block opens.
+            let last = done.blocks.last().map(|(id, _)| *id);
+            if last.is_some_and(|last| state.assistant_live(last)) {
+                done.rows.append(&mut done.pending);
+            }
             self.add(state, done, state.transcript.len());
         }
         self.live.sort_unstable();
@@ -773,6 +780,14 @@ impl FoldPlan {
                     .map(|(child, part)| Unit::Child(*id, child, part)),
             );
         }
+        // The rows after the last block, which a block that works takes in.
+        units.extend(
+            stretch
+                .rows
+                .iter()
+                .filter(|(_, before)| *before == stretch.blocks.len())
+                .map(|(row, _)| Unit::Row(*row)),
+        );
         let (last, last_children) = *stretch.blocks.last().expect("a stretch has a block");
         // The reply: once the run's work ends, the last block's trailing
         // text, all of it when the block holds no work. While it works, text
@@ -1000,7 +1015,7 @@ impl FoldPlan {
 /// A run's stretch being gathered: its run, its blocks so far, the rows
 /// between them (each with how many blocks came before it), and the rows
 /// since its last block, which join it only if another of its blocks
-/// follows.
+/// follows or its last block still works.
 struct Building<'a> {
     /// The position of its first block.
     start: usize,
@@ -1011,7 +1026,7 @@ struct Building<'a> {
 }
 
 /// Whether `item` is a background row a run's stretch takes in when the run
-/// goes on past it: an ACP agent's background command that ended, a
+/// goes on past it, or while the run's block before it still works: an ACP agent's background command that ended, a
 /// background call's report, a diagnostic below the warning level, or a
 /// producer message not shown yet.
 fn background_row(item: &TranscriptItem) -> bool {

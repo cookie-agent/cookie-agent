@@ -415,6 +415,66 @@ fn a_runs_blocks_fold_into_one_across_its_background_rows() {
 }
 
 #[test]
+fn a_working_blocks_work_takes_in_the_background_rows_after_it() {
+    // A background command ended while the run's call still runs: the row
+    // made a split pending, but the block works on.
+    let mut state = transcript(
+        vec![
+            block(1, vec![thinking("**Plan**"), committed_tool("bash")]),
+            background_ended(2),
+        ],
+        &[(1, 0)],
+    );
+    let Some(TranscriptItem::Assistant { attribution, .. }) = state.transcript.first() else {
+        unreachable!()
+    };
+    state.open_run_assistant = Some(crate::RunAssistantProjection {
+        run_id: state.assistant_runs[&1],
+        item_id: 1,
+        committed_prefix: 0,
+        current_model: attribution.resolved_model.clone(),
+        split_pending: true,
+        split_at: Some(jiff::Timestamp::UNIX_EPOCH),
+    });
+    let plan = FoldPlan::of(&state);
+    assert_eq!(
+        at(&plan, 1),
+        folded(true, true, vec![work(1, 0, true), work(1, 0, false)])
+    );
+    assert_eq!(at(&plan, 2), Some(ItemFold::Row { key: key(1, 0) }));
+    assert_eq!(plan.live_keys().collect::<Vec<_>>(), [key(1, 0)]);
+    let row = plan
+        .work_row(&state, key(1, 0), jiff::Timestamp::UNIX_EPOCH, 80)
+        .expect("a work row");
+    assert!(row.summary.live);
+    // A refreshed plan reads the same.
+    state.version += 1;
+    let _ = state.fold_plan();
+    state.transcript.push(background_ended(3));
+    state.version += 1;
+    assert_eq!(*state.fold_plan(), FoldPlan::of(&state));
+    assert_eq!(
+        at(&state.fold_plan(), 3),
+        Some(ItemFold::Row { key: key(1, 0) })
+    );
+    // The run ended with nothing after the rows: they stand after its work.
+    state.open_run_assistant = None;
+    state.assistant_ends.insert(
+        1,
+        crate::AssistantEnd {
+            at: jiff::Timestamp::UNIX_EPOCH,
+            stopped: false,
+        },
+    );
+    state.version += 1;
+    assert_eq!(*state.fold_plan(), FoldPlan::of(&state));
+    let plan = state.fold_plan();
+    assert_eq!(at(&plan, 2), None);
+    assert_eq!(at(&plan, 3), None);
+    assert!(plan.live_keys().next().is_none());
+}
+
+#[test]
 fn only_ellipses_or_blank_text_is_filler() {
     for source in ["", " \n", "…", "...", " … \n…"] {
         assert!(filler(source), "{source:?}");
