@@ -5894,7 +5894,8 @@ def onboarding(browser):
     assert steps == ["start", "acp-agent", "tools"], steps
     browser.click("#onboarding-next")
     browser.wait("the ACP agent step", lambda: count(browser, "#onboarding-acp-add") == 1)
-    # This daemon has no presets: another agent's fields.
+    # Another agent's fields, whatever presets the daemon found.
+    browser.click("#onboarding [data-acp-preset=other]")
     assert browser.script(
         "return document.querySelector('#onboarding [data-acp-preset=other]').getAttribute('aria-pressed')"
     ) == "true"
@@ -5915,11 +5916,9 @@ def onboarding(browser):
     browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
     print("the ACP path links an agent and keeps the sheet open")
 
-    # The Agents view lists the linked agent with where its document comes
-    # from: none yet, and no template on a daemon without official agents.
+    # The Agents view lists the linked agent.
     view(browser, "agents")
     browser.wait("the agents panel", lambda: count(browser, "#agent-panel [data-agent-document=gemini]") == 1)
-    assert "no document" in browser.text("#agent-panel [data-agent-document=gemini]")
     browser.shot("agents-panel-desktop")
     print("the agents panel lists the linked ACP agent")
 
