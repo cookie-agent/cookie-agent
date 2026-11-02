@@ -73,8 +73,9 @@ use cookie_agent_protocol::{
 };
 use ratatui::{
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
+    widgets::Paragraph,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -2260,52 +2261,84 @@ impl App {
                 user_message_hit(*region, line_at, viewport, self.conversation_scroll.offset)
             }));
         let filter = self.tui_config.minimum_event_level.name();
-        // Conversation and Message border titles carry no instructional
-        // drag/hotkey prose.
-        let title_spans = vec![
-            Span::raw("Conversation · "),
-            Span::styled(format!("events ≥ {filter}"), self.theme.link()),
-        ];
-        let filter_span = 1;
-        let title_area = Rect::new(
+        // No frame: the pane's top row is its header, the session's title
+        // on the left and on the right the events filter, behind a loud
+        // note while the viewport no longer follows live output with the
+        // truthful way back. The other edges are blank margin, so every
+        // geometry below keeps its place.
+        let title = if self.new_session_draft.is_some() {
+            "New session".to_owned()
+        } else {
+            viewed
+                .map(|session_id| self.current_session_title(session_id))
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| "cookie".to_owned())
+        };
+        let mut right = Vec::new();
+        if !self.conversation_scroll.following {
+            right.push(Span::styled(
+                "↑ scrolled · PgDn: bottom",
+                self.theme.warning(),
+            ));
+            right.push(Span::raw("   "));
+        }
+        let filter_span = right.len();
+        right.push(Span::styled(
+            format!("events ≥ {filter}"),
+            self.theme.muted().add_modifier(Modifier::UNDERLINED),
+        ));
+        let header = Rect::new(
             area.x.saturating_add(1),
             area.y,
             area.width.saturating_sub(2),
             u16::from(area.height > 0),
         );
+        let right_width = right
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum::<usize>()
+            .min(usize::from(header.width)) as u16;
+        let right_x = header
+            .x
+            .saturating_add(header.width)
+            .saturating_sub(right_width.saturating_add(crate::ui::PANEL_TITLE_PAD));
         self.hit_map.event_level_filter = {
-            let mut column = title_area.x.saturating_add(crate::ui::PANEL_TITLE_PAD);
-            title_spans.iter().enumerate().find_map(|(index, span)| {
+            let mut column = right_x;
+            right.iter().enumerate().find_map(|(index, span)| {
                 let width =
                     UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
                 let hit = (index == filter_span).then(|| {
-                    let visible = title_area
+                    let visible = header
                         .x
-                        .saturating_add(title_area.width)
+                        .saturating_add(header.width)
                         .saturating_sub(column)
                         .min(width);
-                    (visible > 0).then(|| Rect::new(column, title_area.y, visible, 1))
+                    (visible > 0).then(|| Rect::new(column, header.y, visible, 1))
                 });
                 column = column.saturating_add(width);
                 hit.flatten()
             })
         };
-        let mut block = crate::ui::panel_block()
-            .border_style(self.theme.panel_border())
-            .title(crate::ui::panel_title(title_spans));
-        // A viewport that no longer follows live output says so loudly, in
-        // the title row, with the truthful way back — never buried in the
-        // muted status line.
-        if !self.conversation_scroll.following {
-            block = block.title(
-                crate::ui::panel_title(Span::styled(
-                    "↑ scrolled · PgDn: bottom",
-                    self.theme.warning(),
-                ))
-                .right_aligned(),
+        if header.height > 0 {
+            let left_room =
+                right_x.saturating_sub(header.x.saturating_add(crate::ui::PANEL_TITLE_PAD));
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("◆ ", self.theme.accent()),
+                    Span::styled(title, self.theme.heading()),
+                ])),
+                Rect::new(
+                    header.x.saturating_add(crate::ui::PANEL_TITLE_PAD),
+                    header.y,
+                    left_room.saturating_sub(1),
+                    1,
+                ),
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(right)),
+                Rect::new(right_x, header.y, right_width, 1),
             );
         }
-        frame.render_widget(block, area);
         // Rendering borrowed Lines avoids viewport clones. Line::style paints
         // the full row, so future background or REVERSED line styles must be
         // reviewed as row-wide rather than span-local styling.

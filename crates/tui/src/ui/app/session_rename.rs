@@ -26,7 +26,7 @@ pub(in crate::ui) const TITLE_HINT: &str =
 
 impl App {
     /// The title `session_id` has now, as its title field starts.
-    fn current_session_title(&self, session_id: SessionId) -> String {
+    pub(in crate::ui) fn current_session_title(&self, session_id: SessionId) -> String {
         self.sessions
             .iter()
             .find(|session| session.session_id == session_id)

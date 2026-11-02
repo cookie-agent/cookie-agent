@@ -174,11 +174,22 @@ impl App {
             .min(usize::from(area.width));
         let details_width = usize::from(area.width).saturating_sub(controls_width);
         let prefix = if area.width >= 12 && details_width >= 8 {
-            "🎯: "
+            "◎ "
         } else {
             ""
         };
-        let summary = single_line(&goal.objective);
+        // The checklist's progress follows the objective, as the web's
+        // badge counts it.
+        let done = goal.items.iter().filter(|item| item.finished).count();
+        let summary = if goal.items.is_empty() {
+            single_line(&goal.objective)
+        } else {
+            format!(
+                "{}  {done}/{}",
+                single_line(&goal.objective),
+                goal.items.len()
+            )
+        };
         let objective_width = details_width.saturating_sub(UnicodeWidthStr::width(prefix));
         let mut details = truncate_with_ellipsis(&summary, objective_width);
         details.push_str(
@@ -190,7 +201,7 @@ impl App {
             self.theme.assistant()
         };
         let mut spans = vec![
-            Span::styled(prefix, self.theme.internal()),
+            Span::styled(prefix, self.theme.accent()),
             Span::styled(details, details_style),
         ];
         if details_width > 0 {

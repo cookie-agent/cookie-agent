@@ -363,7 +363,9 @@ async fn chrome_stays_coherent_across_themes_and_tiny_terminals() {
             if width >= 40 {
                 assert!(rendered.contains("Type a message"), "{kind:?}: {rendered}");
             }
-            assert!(rendered.contains("Conversation"), "{kind:?}: {rendered}");
+            if width >= 40 {
+                assert!(rendered.contains("events ≥"), "{kind:?}: {rendered}");
+            }
         }
         // A detached viewport announces itself in every theme.
         app.store

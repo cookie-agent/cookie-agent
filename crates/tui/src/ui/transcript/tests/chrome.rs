@@ -119,7 +119,7 @@ async fn bottom_bar_renders_cwd_context_and_narrow_degradation_order() {
 
     let wide = rendered_row(&mut app, 100, 24, 23);
     assert!(wide.contains("/workspace"));
-    assert!(wide.contains("auto-approve    $0.18    ctx 48.2K (24%)    `ctrl+p` commands"));
+    assert!(wide.contains("auto-approve    $0.18    ctx 48.2K (24%)    ctrl+p commands"));
 
     let without_hint = rendered_row(&mut app, 55, 24, 23);
     assert!(without_hint.contains("auto-approve    $0.18    ctx 48.2K (24%)"));
@@ -728,7 +728,7 @@ async fn bottom_bar_permission_mode_is_shared_by_tree_and_child_click_updates_ro
     let child_row = rendered_row(&mut app, 80, 24, 23);
     // Without token data the bar shows no placeholder segment — just
     // the mode and the commands hint.
-    assert!(child_row.contains("ask    `ctrl+p` commands"));
+    assert!(child_row.contains("ask    ctrl+p commands"));
     assert!(!child_row.contains("ctx"), "{child_row}");
     let hit = app.hit_map.permission_mode.expect("permission mode hit");
     app.handle_click(hit.x, hit.y).await;

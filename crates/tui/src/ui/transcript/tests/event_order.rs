@@ -89,18 +89,13 @@ async fn replayed_app(root: SessionId, child: SessionId, events: &[StoredEvent])
 /// padding. Other panes (the agents tree) legitimately differ between a live
 /// view and a replay, so they are left out.
 fn conversation_rows(app: &mut App) -> Vec<String> {
-    let mut rows = frame_rows(app, WIDTH, HEIGHT)
+    let mut rows = super::support::conversation_rows(app, WIDTH, HEIGHT)
         .into_iter()
         .map(|row| row.trim_end().to_owned())
-        .skip_while(|row| !row.starts_with("╭ Conversation"))
-        .take_while(|row| !row.starts_with('╰'))
         .collect::<Vec<_>>();
     // The pane's height follows the other panes; its empty tail does not
     // matter.
-    while rows
-        .last()
-        .is_some_and(|row| row.trim_end_matches(['│', ' ']).is_empty())
-    {
+    while rows.last().is_some_and(String::is_empty) {
         rows.pop();
     }
     rows
@@ -492,20 +487,7 @@ async fn scrolled_view_stays_put_below_spliced_rows_when_the_layout_grows() {
     let mut app = replayed_app(root, child, &events).await;
     // The rows' text, without the scrollbar: its thumb shrinks as the
     // transcript grows.
-    let visible = |app: &mut App| {
-        frame_rows(app, WIDTH, 40)
-            .into_iter()
-            .skip_while(|row| !row.starts_with("╭ Conversation"))
-            .skip(1)
-            .take_while(|row| !row.starts_with('╰'))
-            .map(|row| {
-                let chars = row.chars().collect::<Vec<_>>();
-                chars[..chars.len().saturating_sub(2)]
-                    .iter()
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-    };
+    let visible = |app: &mut App| super::support::conversation_rows(app, WIDTH, 40);
     visible(&mut app);
     // Scroll up into the second turn, well below the spliced warning.
     app.conversation_scroll.following = false;

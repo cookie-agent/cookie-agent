@@ -248,6 +248,19 @@ impl App {
         } else if let Some(question) = self.current_question().cloned() {
             self.render_question(frame, &question, frame.area(), layout.input.bottom());
         }
+        // A modal or the command palette floats over the screen, which
+        // steps back behind it.
+        if self.modal != Modal::None || self.command_palette_visible() {
+            let buffer = frame.buffer_mut();
+            let area = buffer.area;
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    let cell = &mut buffer[(x, y)];
+                    let style = self.theme.dimmed(cell.style());
+                    cell.set_style(style);
+                }
+            }
+        }
         match self.modal {
             Modal::GoalDetail => self.render_goal_detail(frame),
             Modal::Background => self.render_background_panel(frame),
@@ -608,7 +621,7 @@ impl App {
             |option| cookie_agent_client_state::acp::current_name(&option),
         );
         let mode = mode_label.as_str();
-        let hint = "`ctrl+p` commands";
+        let hint = "ctrl+p commands";
         #[derive(Clone, Copy)]
         struct Candidate<'a> {
             cost: Option<&'a str>,
@@ -677,7 +690,7 @@ impl App {
             let project = truncate_with_ellipsis(&project, left_width);
             used = UnicodeWidthStr::width(project.as_str());
             project_span = Some(spans.len());
-            spans.push(Span::styled(project, self.theme.link()));
+            spans.push(Span::styled(project, self.theme.assistant()));
         }
         let rest_width = if project_span.is_some() {
             left_width.saturating_sub(used + 3)
@@ -699,7 +712,7 @@ impl App {
         ));
         let mode_text = selected.map_or(right.as_str(), |_| mode);
         let mode_span = (!mode_text.is_empty()).then_some(spans.len());
-        spans.push(Span::styled(mode_text.to_owned(), self.theme.link()));
+        spans.push(Span::styled(mode_text.to_owned(), self.theme.accent()));
         let mut cost_span = None;
         if let Some(candidate) = selected {
             if let Some(cost) = candidate.cost {
@@ -713,7 +726,9 @@ impl App {
             }
             if candidate.hint {
                 spans.push(Span::styled("    ", self.theme.muted()));
-                spans.push(Span::styled(hint, self.theme.muted()));
+                let (key, label) = hint.split_once(' ').unwrap_or((hint, ""));
+                spans.push(Span::styled(key, self.theme.body()));
+                spans.push(Span::styled(format!(" {label}"), self.theme.muted()));
             }
         }
         BottomBarRender {

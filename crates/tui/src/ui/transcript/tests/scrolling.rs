@@ -293,7 +293,8 @@ async fn an_empty_conversation_reserves_the_same_columns_as_an_overflowing_one()
     assert_eq!(app.scrollbar_geometry, None, "nothing to scroll yet");
     let cells = frame_cells(&mut app, 80, 24);
     let border = usize::from(empty.x + empty.width + SCROLLBAR_RESERVE);
-    assert_eq!(cells[usize::from(empty.y)][border], "│");
+    // The pane has no frame: its edge past the track is blank margin.
+    assert_eq!(cells[usize::from(empty.y)][border], " ");
     for row in empty.y..empty.bottom() {
         for column in empty.right()..track.right() {
             assert_eq!(

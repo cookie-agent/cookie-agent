@@ -673,7 +673,7 @@ pub(super) fn text_part_lines(
         markdown_body_width(width),
         defer,
     );
-    let body_line = |line: MarkdownLine| markdown_body_line(line, width, theme.assistant());
+    let body_line = |line: MarkdownLine| markdown_body_line(line, width, theme.gutter());
     let mut lines = LineChunks::default();
     let mut wrapped_blocks = Vec::with_capacity(blocks.len());
     let mut separator: Option<Chunk> = None;
@@ -883,7 +883,7 @@ pub(super) fn assistant_body_line(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let prefix = (width >= 3).then(|| vec![Span::styled("│ ", theme.assistant())]);
+    let prefix = (width >= 3).then(|| vec![Span::styled("│ ", theme.gutter())]);
     repeated_prefixed_wrapped_line(prefix.unwrap_or_default(), line, width)
 }
 
@@ -950,7 +950,7 @@ fn thinking_text_rows(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static
     }
     let prefix = if width >= 5 {
         vec![
-            Span::styled("│ ", theme.assistant()),
+            Span::styled("│ ", theme.gutter()),
             Span::styled("│ ", style),
         ]
     } else if width >= 3 {
@@ -1027,7 +1027,7 @@ fn margin_rows(
     background: Option<ratatui::style::Color>,
 ) -> (Vec<Line<'static>>, usize) {
     let prefix = vec![
-        Span::styled("│ ", theme.assistant()),
+        Span::styled("│ ", theme.gutter()),
         margin_span(theme, background),
     ];
     let wrap_width = width - 1;

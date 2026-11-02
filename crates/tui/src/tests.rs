@@ -571,7 +571,7 @@ async fn app_draws_conversation_approval_tree_and_input() {
         assert!(rendered.contains("Permission needed"));
         assert!(!rendered.contains("Agents"));
         if width >= 80 {
-            assert!(rendered.contains("Conversation"));
+            assert!(rendered.contains("events ≥"));
         }
         if (width, height) == (80, 24) {
             // The approval docks over the composer, which has nothing to

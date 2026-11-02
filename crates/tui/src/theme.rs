@@ -470,6 +470,33 @@ impl Theme {
         self.semantic(self.palette().muted, Modifier::DIM)
     }
 
+    /// The `│` gutter beside a reply: a hairline, quieter than the text it
+    /// marks.
+    pub fn gutter(&self) -> Style {
+        self.semantic(self.palette().line_strong, Modifier::empty())
+    }
+
+    /// `style` stepped back behind a modal: its colours most of the way
+    /// into the surface where true colour can blend them, else dim.
+    pub fn dimmed(&self, style: Style) -> Style {
+        let surface = self.swatch_color(self.palette().surface);
+        let blend = |color: Option<Color>| match (color, surface) {
+            (Some(Color::Rgb(r, g, b)), Some(Color::Rgb(sr, sg, sb))) => {
+                let mix = |from: u8, to: u8| {
+                    let mixed = (u16::from(from) * 2 + u16::from(to) * 3) / 5;
+                    u8::try_from(mixed).unwrap_or(u8::MAX)
+                };
+                Some(Color::Rgb(mix(r, sr), mix(g, sg), mix(b, sb)))
+            }
+            _ => None,
+        };
+        let Some(fg) = blend(style.fg) else {
+            return style.add_modifier(Modifier::DIM);
+        };
+        let dimmed = style.fg(fg);
+        blend(style.bg).map_or(dimmed, |bg| dimmed.bg(bg))
+    }
+
     /// The faintest text: separators, line numbers, hints beside a hint.
     pub fn faint(&self) -> Style {
         self.semantic(self.palette().faint, Modifier::DIM)

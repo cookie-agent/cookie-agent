@@ -702,7 +702,7 @@ async fn goal_responses_stay_with_their_session_and_do_not_replace_newer_events(
 }
 
 #[tokio::test]
-async fn goal_bar_formats_each_status_without_progress() {
+async fn goal_bar_formats_each_status_with_its_progress() {
     use ratatui::{Terminal, backend::TestBackend};
 
     let (mut app, _) = app_with_replies(Vec::new()).await;
@@ -718,14 +718,13 @@ async fn goal_bar_formats_each_status_without_progress() {
         terminal
             .draw(|frame| app.render_goal_bar(frame, frame.area()))
             .unwrap();
-        // Skip the continuation cell occupied by the double-width emoji.
         let line = (0..80)
-            .filter(|&x| x != 1)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect::<String>();
-        assert!(line.starts_with("🎯: finish the parser"), "{line}");
+        assert!(line.starts_with("◎ finish the parser"), "{line}");
         assert!(line.trim_end().ends_with(suffix), "{line}");
-        assert!(!line.contains('/'));
+        // One of the checklist's two items is finished.
+        assert!(line.contains("1/2"), "{line}");
     }
 }
 
@@ -743,17 +742,15 @@ async fn goal_bar_is_bounded_and_has_non_overlapping_hits_at_tiny_widths() {
         terminal
             .draw(|frame| app.render_goal_bar(frame, Rect::new(0, 0, width, 1)))
             .unwrap();
-        // Skip the emoji continuation cell only while the prefix is visible.
         let line = (0..width)
-            .filter(|&x| x != 1 || width < 12)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect::<String>();
         assert!(UnicodeWidthStr::width(line.as_str()) <= usize::from(width));
         assert!(!line.contains(['\n', '\t']));
         if width >= 12 {
-            assert!(line.starts_with("🎯: Lon"), "{line}");
+            assert!(line.starts_with("◎ Lon"), "{line}");
         }
-        assert_eq!(line.starts_with("🎯: "), width >= 12, "{line}");
+        assert_eq!(line.starts_with("◎ "), width >= 12, "{line}");
         assert!(
             app.hit_map
                 .goal_actions

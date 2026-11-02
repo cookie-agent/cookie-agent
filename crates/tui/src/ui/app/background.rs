@@ -116,7 +116,7 @@ impl App {
         };
         let details_width = width.saturating_sub(UnicodeWidthStr::width(controls));
         let mut text = truncate_with_ellipsis(
-            &format!("⏳ {} in background: {summary}", calls.len()),
+            &format!("⧗ {} in background: {summary}", calls.len()),
             details_width,
         );
         text.push_str(
@@ -125,7 +125,7 @@ impl App {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(text, self.theme.assistant()),
-                Span::styled(controls, self.theme.link()),
+                Span::styled(controls, self.theme.accent()),
             ]))
             .style(self.theme.panel()),
             area,
