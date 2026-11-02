@@ -2177,8 +2177,6 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     let container = NodeRef::<html::Div>::new();
     let content = NodeRef::<html::Div>::new();
     let follow = StoredValue::new(Follow::default());
-    // Where the rows in view were when history was asked for.
-    let history_anchor = StoredValue::new(None::<HistoryAnchor>);
     // Whether the view follows the end, for the jump-to-latest button.
     let following = RwSignal::new(true);
     let metrics = move || {
@@ -2364,8 +2362,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
             pin();
             if let Some((element, _)) = metrics() {
-                keep_history_anchor(&element, workspace, history_anchor);
-                load_history_in_view(&element, workspace, history_anchor);
+                load_history_in_view(&element, workspace);
             }
             if let Some(key) = reveal.try_update_value(Option::take).flatten() {
                 reveal_work_row(container, content, pinned_work, &key);
@@ -2409,7 +2406,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 {
                     match metrics() {
                         Some((scroller, _)) => {
-                            load_history(&scroller, &target, before, workspace, history_anchor);
+                            load_history(&scroller, before, workspace);
                         }
                         None => workspace.load_history(before),
                     }
@@ -2548,7 +2545,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 if let Some((element, at)) = metrics() {
                     follow.update_value(|follow| follow.scrolled(at));
                     shown();
-                    load_history_in_view(&element, workspace, history_anchor);
+                    keep_off_top(&element, workspace);
+                    load_history_in_view(&element, workspace);
                 }
             }
             on:wheel=move |event: ev::WheelEvent| {
@@ -2776,19 +2774,11 @@ fn reveal_work_row(
     }
 }
 
-/// Values by ID, each in a signal of its own, for the transcript's rows and
-/// a reply's parts. Were every row (or part) to read one shared memo, each
-/// change would wake them all, and each one's resubscription costs the
-/// number of readers: a frame of a long transcript would cost the square
-/// of its rows. A change here wakes only the readers of what changed.
 /// Reads the history a row of history not loaded stands for once the row
-/// shows in `scroller`, the transcript: the user scrolled up to it. A row
-/// whose read failed waits for a click.
-fn load_history_in_view(
-    scroller: &web_sys::Element,
-    workspace: Workspace,
-    anchor: StoredValue<Option<HistoryAnchor>>,
-) {
+/// comes within a screen above `scroller`'s view, the transcript, so it
+/// mostly arrives before the user scrolls up to it. A row whose read
+/// failed waits for a click.
+fn load_history_in_view(scroller: &web_sys::Element, workspace: Workspace) {
     let Ok(rows) = scroller.query_selector_all("[data-history]:not([data-history-failed])") else {
         return;
     };
@@ -2801,99 +2791,32 @@ fn load_history_in_view(
             continue;
         };
         let at = row.get_bounding_client_rect();
-        if at.bottom() > view.top()
+        if at.bottom() > view.top() - view.height()
             && at.top() < view.bottom()
             && let Some(before) = row
                 .get_attribute("data-history")
                 .and_then(|before| before.parse().ok())
         {
-            load_history(scroller, &row, before, workspace, anchor);
+            load_history(scroller, before, workspace);
             return;
         }
     }
 }
 
-/// Where the transcript's rows were when history was asked for: each row
-/// then in view with its offset from the view's top, and the scroll height
-/// and position. The history arrives above them.
-#[derive(Clone, Debug)]
-struct HistoryAnchor {
-    rows: Vec<(String, f64)>,
-    height: i32,
-    top: i32,
-}
-
-/// Reads the history `row`, a row of history not loaded, stands for, and
-/// notes where the rows in view are: the history arrives above them, and
-/// `keep_history_anchor` keeps them there. The browser's own anchoring does
-/// not act while the view rests at its top.
-fn load_history(
-    scroller: &web_sys::Element,
-    row: &web_sys::Element,
-    before: u64,
-    workspace: Workspace,
-    anchor: StoredValue<Option<HistoryAnchor>>,
-) {
-    let placeholder = row.closest("[id^=row-]").ok().flatten().map(|row| row.id());
-    let view = scroller.get_bounding_client_rect();
-    let mut rows = Vec::new();
-    if let Ok(found) = scroller.query_selector_all("[id^=row-]") {
-        for index in 0..found.length() {
-            let Some(found) = found
-                .item(index)
-                .and_then(|found| found.dyn_into::<web_sys::Element>().ok())
-            else {
-                continue;
-            };
-            let at = found.get_bounding_client_rect();
-            // The rows in view, the placeholder aside: a row's ID can change
-            // as older items join it (a reply cut by a page, a fold), so
-            // every one of them is a candidate.
-            if at.bottom() > view.top()
-                && at.top() < view.bottom()
-                && Some(found.id()) != placeholder
-            {
-                rows.push((found.id(), at.top() - view.top()));
-            }
-        }
-    }
-    anchor.set_value(Some(HistoryAnchor {
-        rows,
-        height: scroller.scroll_height(),
-        top: scroller.scroll_top(),
-    }));
+/// Reads the history before `before`. The browser keeps the rows in view
+/// where they are as it arrives above them (`overflow-anchor`), which also
+/// keeps a fling going; see `keep_off_top`.
+fn load_history(scroller: &web_sys::Element, before: u64, workspace: Workspace) {
     workspace.load_history(before);
+    keep_off_top(scroller, workspace);
 }
 
-/// Puts the rows noted by `load_history` back where they were, once rows
-/// arrived above them: the first of them still on the page, else by how
-/// much the transcript grew. The note goes once the history is read and
-/// drawn.
-fn keep_history_anchor(
-    scroller: &web_sys::Element,
-    workspace: Workspace,
-    anchor: StoredValue<Option<HistoryAnchor>>,
-) {
-    let Some(noted) = anchor.get_value() else {
+/// Moves the view a pixel off its top while history is read: the browser
+/// anchors no row while the view rests at its top, and the history would
+/// push the rows in view down.
+fn keep_off_top(scroller: &web_sys::Element, workspace: Workspace) {
+    if scroller.scroll_top() > 0 {
         return;
-    };
-    let document = web_sys::window().and_then(|window| window.document());
-    let view_top = scroller.get_bounding_client_rect().top();
-    let kept = noted.rows.iter().find_map(|(id, offset)| {
-        let row = document.as_ref()?.get_element_by_id(id)?;
-        Some(row.get_bounding_client_rect().top() - view_top - offset)
-    });
-    let height = scroller.scroll_height();
-    match kept {
-        Some(moved) if moved.abs() >= 1.0 => {
-            scroller.set_scroll_top(scroller.scroll_top() + moved.round() as i32);
-        }
-        Some(_) => {}
-        // None of the rows is left: the history arrived above them all.
-        None if height > noted.height => {
-            scroller.set_scroll_top(noted.top + (height - noted.height));
-        }
-        None => {}
     }
     let loading = workspace
         .selected
@@ -2908,13 +2831,16 @@ fn keep_history_anchor(
                 })
             })
         });
-    // Kept until the history is drawn: a drawing before it arrives must not
-    // drop the note.
-    if !loading && height != noted.height {
-        anchor.set_value(None);
+    if loading {
+        scroller.set_scroll_top(1);
     }
 }
 
+/// Values by ID, each in a signal of its own, for the transcript's rows and
+/// a reply's parts. Were every row (or part) to read one shared memo, each
+/// change would wake them all, and each one's resubscription costs the
+/// number of readers: a frame of a long transcript would cost the square
+/// of its rows. A change here wakes only the readers of what changed.
 struct Slots<V: Send + Sync + 'static> {
     map: StoredValue<HashMap<u64, ArcRwSignal<Option<V>>>>,
 }
