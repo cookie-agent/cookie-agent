@@ -74,6 +74,8 @@ pub(crate) struct Connection {
     /// The session a notification asked to open, until a connection opens
     /// it.
     pending_session: StoredValue<Option<String>>,
+    /// The figure a `#…&asset=` link asked to show once its session opens.
+    pending_asset: StoredValue<Option<String>>,
     /// The daemon's status (client protocol 1.65.0): how its start goes
     /// while the page waits for it, then what it is busy with.
     daemon: RwSignal<Option<DaemonStatus>>,
@@ -100,7 +102,10 @@ impl Connection {
         // A notification opens the page at `#session=<id>`: its session
         // is on the daemon that pushed it (push notifications spec 9.3).
         let pending_session = push::session_from_fragment(&address_fragment);
-        if pending_session.is_some() && store.is_none() {
+        // A figure's link is the page of the daemon that shows it, unlike a
+        // notification's, which is on the daemon that pushed it.
+        let pending_asset = push::asset_from_fragment(&address_fragment);
+        if pending_session.is_some() && pending_asset.is_none() && store.is_none() {
             let daemon =
                 push::notification_daemon(&url, browser::load(PUSH_DAEMON_URL_KEY).as_deref());
             if daemon != url {
@@ -131,6 +136,7 @@ impl Connection {
             workspace: Workspace::new(),
             attached: RwSignal::new(false),
             pending_session: StoredValue::new(pending_session),
+            pending_asset: StoredValue::new(pending_asset),
             daemon: RwSignal::new(None),
         }
     }
@@ -258,6 +264,9 @@ impl Connection {
             .flatten()
         {
             self.workspace.open_notified_session(&session);
+            if let Some(handle) = self.pending_asset.try_update_value(Option::take).flatten() {
+                crate::assets::reveal(handle);
+            }
         }
         self.attached.set(true);
         self.phase.set(Phase::Connected {

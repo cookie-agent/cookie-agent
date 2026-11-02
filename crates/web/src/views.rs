@@ -2377,6 +2377,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 if let Some(changed) = document.get_element_by_id(&id) {
                     crate::highlight::highlight_within(&changed);
                     crate::media::show_within(&changed, workspace);
+                    crate::assets::show_within(&changed, workspace);
                 }
             }
         });
@@ -2470,6 +2471,9 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             "deferred-prompt" => workspace.panel.set(Some(Panel::DeferredPrompt)),
+            "asset-full" | "asset-reload" | "asset-show-all" => {
+                crate::assets::act(&target, &action);
+            }
             "open-media" => {
                 if let Some(url) = target.get_attribute("data-src") {
                     workspace.media_viewer.set(Some(crate::media::Viewing {

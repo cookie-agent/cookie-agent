@@ -51,6 +51,24 @@ pub fn media_html(sha256: &str, media_type: &str, byte_length: u64, label: Optio
     )
 }
 
+/// An asset shown as a figure: a placeholder the page fills with the asset
+/// as it is now (`crate::assets`), saying what it was when it was shown
+/// until then.
+pub fn asset_html(asset: &cookie_agent_protocol::AssetBlock) -> String {
+    format!(
+        "<div class=\"asset-figure flex min-w-0 flex-col gap-1 rounded-md border border-toasted p-2 dark:border-ember\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\"><div class=\"flex min-w-0 items-center gap-2\" data-asset-head><span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span></div><div class=\"min-w-0\" data-asset-body><span class=\"{NOTE}\">{} ({}, {})</span></div></div>",
+        escape(&asset.asset.to_string()),
+        escape(&serde_json::to_string(&asset.store).unwrap_or_default()),
+        escape(&asset.sha256),
+        escape(asset.handle.as_str()),
+        escape(&asset.title),
+        escape(&asset.title),
+        escape(asset.filename.as_deref().unwrap_or(asset.handle.as_str())),
+        escape(&asset.media_type),
+        escape(&cookie_agent_protocol::human_bytes(asset.byte_length)),
+    )
+}
+
 /// A plan as a checklist: each step with its status (done, in progress,
 /// pending) and a high or low priority.
 pub fn plan_html(entries: &[cookie_agent_protocol::PlanEntry]) -> String {
@@ -185,9 +203,7 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             omitted_rows,
         } => table_html(columns, rows, *omitted_rows),
         DisplayBlock::Plan { entries } => plan_html(entries),
-        DisplayBlock::Asset(asset) => {
-            format!("<div class=\"{NOTE}\">{}</div>", escape(&asset.to_text()))
-        }
+        DisplayBlock::Asset(asset) => asset_html(asset),
         DisplayBlock::Json { value } => format!(
             "<pre class=\"{PRE}\"><code class=\"language-json\">{}</code></pre>",
             escape(&serde_json::to_string_pretty(value).unwrap_or_default())
@@ -612,6 +628,31 @@ mod tests {
             "{media}"
         );
         assert!(media.contains("data-media-type=\"image/png\""), "{media}");
+
+        // An asset is a placeholder naming its store, the asset, and what it
+        // was when shown; the page fills it with the asset as it is now.
+        let id = cookie_agent_protocol::AssetId::new_v7();
+        let asset = html(DisplayBlock::Asset(cookie_agent_protocol::AssetBlock {
+            store: cookie_agent_protocol::AssetStore::Shared,
+            asset: id,
+            handle: cookie_agent_protocol::AssetHandle::new("asset_3f9a1c2e").unwrap(),
+            title: "<Loss> curves".into(),
+            media_type: "text/html".into(),
+            byte_length: 2048,
+            sha256: "b".repeat(64),
+            filename: Some("loss.html".into()),
+        }));
+        assert!(asset.contains(&format!("data-asset=\"{id}\"")), "{asset}");
+        assert!(
+            asset.contains("data-asset-store=\"{&quot;type&quot;:&quot;shared&quot;}\""),
+            "{asset}"
+        );
+        assert!(
+            asset.contains(&format!("data-asset-sha=\"{}\"", "b".repeat(64))),
+            "{asset}"
+        );
+        assert!(asset.contains("&lt;Loss&gt; curves"), "{asset}");
+        assert!(!asset.contains("<Loss>"), "{asset}");
 
         let link = html(DisplayBlock::Link {
             url: "https://example.org".into(),

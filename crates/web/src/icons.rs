@@ -108,6 +108,7 @@ pub fn hint_icon(hint: Option<&str>) -> Icon {
         ToolHint::MESSAGE => icondata::FaEnvelopeSolid,
         ToolHint::SKILL => icondata::FaWandMagicSparklesSolid,
         ToolHint::GOAL => icondata::FaBullseyeSolid,
+        ToolHint::FIGURE => icondata::FaImageSolid,
         _ => icondata::FaWrenchSolid,
     }
 }

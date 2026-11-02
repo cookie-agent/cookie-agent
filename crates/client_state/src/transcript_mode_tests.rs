@@ -752,3 +752,43 @@ fn a_refreshed_fold_plan_plans_a_stretch_a_removed_row_moved_back() {
     assert!(plan.get(4).is_some());
     assert_eq!(*plan, FoldPlan::of(&state));
 }
+
+/// A call whose hint is `figure` shows the user something: it stays out of
+/// its block's fold, as media does, while the work around it folds.
+#[test]
+fn a_figure_shows_outside_the_fold_of_the_work_around_it() {
+    let mut state = transcript(Vec::new(), &[(1, 0)]);
+    let before = call(&mut state, "bash", crate::ToolStatus::Completed);
+    let figure = call(&mut state, "show_asset", crate::ToolStatus::Completed);
+    let AssistantChild::Tool { call_id } = &figure else {
+        unreachable!("a call");
+    };
+    state
+        .tools
+        .get_mut(call_id)
+        .expect("the figure's call")
+        .presentation
+        .hint = Some(
+        cookie_agent_protocol::ToolHint::new(cookie_agent_protocol::ToolHint::FIGURE)
+            .expect("hint"),
+    );
+    assert!(is_figure(&state, call_id));
+    state.transcript = vec![block(
+        1,
+        vec![thinking("**Plot**"), before, figure, text("Here.")],
+    )];
+    let plan = FoldPlan::of(&state);
+    assert_eq!(
+        at(&plan, 1),
+        folded(
+            true,
+            true,
+            vec![
+                work(1, 0, true),
+                work(1, 0, false),
+                ChildFold::Shown,
+                ChildFold::Shown
+            ]
+        )
+    );
+}

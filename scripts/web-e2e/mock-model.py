@@ -31,6 +31,9 @@ otherwise the last user text decides.
 - containing "long session <n>": a reply of <n> steps, each a sentence and
   a `read` call, then the "stream only" answer at 1,500 lines, for the
   page's frame time on a long transcript;
+- containing "show a figure": a `write_asset` of `figure.html`, shown; containing
+  "show a report": one of `report.md`, shown; containing "replace the figure"
+  and an asset's handle: a `write_asset` of `report.md` over that asset;
 - containing "remember": a `memory_write` of `user://e2e-build`; containing
   "revise": a `memory_edit` of it; containing "forget": a `memory_delete`
   of it;
@@ -217,6 +220,16 @@ def reply(request):
         return tool_reply("bash", {"command": "sleep 60; printf 'woke up\\n'"})
     if "picture" in text:
         return tool_reply("read", {"filePath": "dot.png"})
+    if "show a figure" in text:
+        return tool_reply(
+            "write_asset",
+            {"path": "figure.html", "title": "Live page", "show": True, "caption": "A page that runs."},
+        )
+    if "replace the figure" in text:
+        handle = re.search(r"asset_[0-9a-f]{8}", text)
+        return tool_reply("write_asset", {"path": "report.md", "asset": handle.group(0) if handle else ""})
+    if "show a report" in text:
+        return tool_reply("write_asset", {"path": "report.md", "show": True})
     if "remember" in text:
         return tool_reply(
             "memory_write",

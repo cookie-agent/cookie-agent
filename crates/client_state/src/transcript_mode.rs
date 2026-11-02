@@ -76,6 +76,19 @@ pub fn reply_start(children: &[AssistantChild]) -> Option<usize> {
         .map(|index| index + 1)
 }
 
+/// Whether the call `call_id` shows the user something (its presentation
+/// hint is `figure`, such as `show_asset`), so it always shows, outside
+/// any fold, as media does (`docs/site/specs/assets.md` section 8.1).
+#[must_use]
+pub fn is_figure(state: &SessionState, call_id: &ToolCallId) -> bool {
+    state.tools.get(call_id).is_some_and(|tool| {
+        tool.presentation
+            .hint
+            .as_ref()
+            .is_some_and(|hint| hint.as_str() == cookie_agent_protocol::ToolHint::FIGURE)
+    })
+}
+
 /// Whether the call `call_id` waits on the user's approval, so it shows
 /// outside its block's fold until answered: an approval escalated to the
 /// user that has not expired.
@@ -787,7 +800,7 @@ impl FoldPlan {
                 },
                 _ => FoldEnd::Run { item: last },
             };
-            if let Some(key) = self.fold(&units[start..at], end, &mut places, &mut rows) {
+            if let Some(key) = self.fold(state, &units[start..at], end, &mut places, &mut rows) {
                 planned.folds.push(key);
                 folded = true;
             }
@@ -828,6 +841,7 @@ impl FoldPlan {
     /// thinking part or a tool call; its key when it did.
     fn fold(
         &mut self,
+        state: &SessionState,
         units: &[Unit<'_>],
         end: FoldEnd,
         places: &mut Map<(u64, usize), ChildFold>,
@@ -859,8 +873,11 @@ impl FoldPlan {
         let mut children = Vec::new();
         for unit in units {
             match unit {
-                // What the model sends as media always shows.
+                // What the model sends as media always shows, and so does
+                // a figure.
                 Unit::Child(_, _, AssistantChild::MediaFile { .. }) => {}
+                Unit::Child(_, _, AssistantChild::Tool { call_id })
+                    if is_figure(state, call_id) => {}
                 Unit::Child(id, index, _) => {
                     places.insert(
                         (*id, *index),

@@ -1239,6 +1239,102 @@ def media_viewer(browser):
     print("a video in the media viewer plays, pauses, and steps a frame")
 
 
+def asset_figures(browser):
+    """A figure of an HTML asset: shown in the transcript outside a folded
+    turn, run in a sandboxed frame whose scripts run but reach neither the
+    page's storage nor the page itself, sized to its content, and not moved
+    by a message that does not come from its own frame."""
+    new_session(browser)
+    send(browser, "show a figure")
+    idle(browser, "the figure's call")
+    frame = "#transcript iframe[data-asset-frame]"
+    browser.wait("the figure's frame", lambda: count(browser, frame) == 1, timeout=60)
+    # The page reports its height: about 300 px of content, well under the
+    # 480 px the frame starts at.
+    height = lambda: browser.script("return document.querySelector(arguments[0]).offsetHeight", frame)
+    browser.wait("the frame sized to its page", lambda: 250 < height() < 420)
+    # Inside: the viewer, then the agent's page.
+    element = browser.find(frame)
+    call("POST", browser.path("/frame"), {"id": {ELEMENT: element}})
+    inner = call("POST", browser.path("/element"), {"using": "css selector", "value": "iframe"})[ELEMENT]
+    call("POST", browser.path("/frame"), {"id": {ELEMENT: inner}})
+    try:
+        browser.wait("the page's script", lambda: browser.text("#state").startswith("ran"))
+        state = browser.text("#state")
+    finally:
+        call("POST", browser.path("/frame"), {"id": None})
+    assert "storage-blocked" in state, state
+    assert "page-blocked" in state, state
+    # The page asked to be 9999 px tall from outside its frame's channel:
+    # the frame kept its content's height.
+    time.sleep(1.5)
+    assert 250 < height() < 420, height()
+    # A message the page posts as the frame would, without its token, moves
+    # nothing either.
+    browser.script(
+        "window.postMessage({type: 'cookie-asset-height', token: 'guess', height: 2000}, '*')"
+    )
+    time.sleep(0.5)
+    assert 250 < height() < 420, height()
+    # The figure's own buttons: full screen and back.
+    browser.click("#transcript [data-asset] [data-action='asset-full']")
+    browser.wait("the full-screen figure", lambda: count(browser, "#asset-full iframe[data-asset-frame]") == 1)
+    full = lambda: browser.script("return document.querySelector('#asset-full iframe').offsetHeight")
+    browser.wait("the page filling the screen", lambda: full() > 500)
+    browser.shot("asset-figure-full")
+    browser.click("#asset-full-close")
+    browser.wait("the figure back in place", lambda: count(browser, "#asset-full") == 0)
+    assert 250 < height() < 420, height()
+    print("an HTML figure runs sandboxed, sizes to its page, and ignores messages from outside it")
+
+    # A Markdown asset reads as a document.
+    send(browser, "show a report")
+    idle(browser, "the report's call")
+    browser.wait(
+        "the rendered report",
+        lambda: "All good." in browser.text("#transcript [data-asset-document]"),
+        timeout=60,
+    )
+    assert count(browser, "#transcript [data-asset-document] h1") >= 1
+    # A short document shows whole, without Show all.
+    assert count(browser, "#transcript [data-action='asset-show-all']") == 0
+    browser.shot("asset-report")
+    if SCREENSHOTS:
+        browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "dark"}]})
+        browser.script("document.querySelector('#transcript [data-figure]').scrollIntoView({block: 'start'})")
+        browser.shot("asset-figures-dark")
+        browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "light"}]})
+    print("a Markdown asset is a rendered document")
+
+    # Written over, the asset's figures show its new content at once, and
+    # say they were updated.
+    handle = browser.script(
+        "return document.querySelector('#transcript [data-asset-handle]').dataset.assetHandle"
+    )
+    send(browser, "replace the figure %s" % handle)
+    idle(browser, "the replacing call")
+    first = "#transcript [data-asset-handle='%s']" % handle
+    browser.wait(
+        "the figure updated in place",
+        lambda: count(browser, first + " [data-asset-updated]") >= 1
+        and "All good." in browser.text(first + " [data-asset-document]"),
+        timeout=60,
+    )
+    print("a replaced asset's figures show its new content")
+
+    # The TUI's link to a figure opens its session and shows it full screen.
+    session = browser.script("return document.querySelector('aside [data-session][aria-current=true]').dataset.session")
+    # As a new tab opens it: a load of its own, not a change of fragment.
+    browser.go("about:blank")
+    browser.go(LINK.split("#")[0] + "#session=%s&asset=%s" % (session, handle))
+    # It is a Markdown document since it was replaced.
+    browser.wait("the linked figure full screen", lambda: "All good." in browser.text("#asset-full"), timeout=60)
+    browser.type("#asset-full", ESCAPE)
+    browser.wait("the closed figure", lambda: count(browser, "#asset-full") == 0)
+    assert "asset=" not in browser.script("return location.hash")
+    print("a link to a figure opens its session and shows it")
+
+
 def session_depth(browser):
     """Subagents, history edits, goals, background calls, media, skills, and
     permission overrides."""
@@ -6386,6 +6482,7 @@ SCENARIOS = [
     ("skills_view", skills_view, "chat", []),
     ("rows_stay_put", rows_stay_put, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
+    ("asset_figures", asset_figures, "chat", []),
     ("open_tool_header", open_tool_header, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),

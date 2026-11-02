@@ -803,9 +803,9 @@ pub fn part_element_id(row: u64, part: u64) -> String {
 }
 
 /// Whether HTML holds what the page fills in after drawing it: a code
-/// block to highlight, or media to read.
+/// block to highlight, or media or an asset to read.
 pub fn fills_in(html: &str) -> bool {
-    html.contains("language-") || html.contains("data-media")
+    html.contains("language-") || html.contains("data-media") || html.contains("data-asset")
 }
 
 /// The DOM IDs of the rows, and of the parts of replies, whose HTML changed
@@ -1562,6 +1562,14 @@ fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
 }
 
 /// A tool call: one header line, collapsed until clicked, as in the TUI.
+/// Whether `tool` shows the user something: its hint is `figure`.
+fn is_figure(tool: &ToolCallState) -> bool {
+    tool.presentation
+        .hint
+        .as_ref()
+        .is_some_and(|hint| hint.as_str() == cookie_agent_protocol::ToolHint::FIGURE)
+}
+
 /// The header has the hint's icon, the title and the primary argument it
 /// does not name, the latest progress while it runs, and the status; the
 /// open row adds the arguments and the output, within the row budget.
@@ -1678,6 +1686,31 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     if let Some(delegate) = view.delegates.get(&tool.id) {
         html.push_str(&delegate_html(delegate, tool.status == ToolStatus::Running));
     }
+    // A figure shows what it shows, folded or open (assets spec 8.1).
+    let figure = is_figure(tool) && !tool.shown_display().is_empty();
+    if figure {
+        html.push_str("<div class=\"flex flex-col gap-2 px-2 pb-2\" data-figure>");
+        for (index, block) in tool.shown_display().iter().enumerate() {
+            match block {
+                // The caption is a line of text, not output.
+                cookie_agent_protocol::Open::Known(cookie_agent_protocol::DisplayBlock::Text {
+                    text,
+                    ..
+                }) => html.push_str(&format!(
+                    "<p class=\"text-sm text-ink dark:text-sand\" data-figure-caption>{}</p>",
+                    escape(text)
+                )),
+                block => {
+                    html.push_str(&display_html(std::slice::from_ref(block), |_| BlockPlace {
+                        call_id: Some(&id),
+                        index,
+                        full: tool.full_content(index),
+                    }))
+                }
+            }
+        }
+        html.push_str("</div>");
+    }
     if expanded {
         html.push_str("<div class=\"flex flex-col gap-1 border-t border-toasted px-2 pt-1 pb-2 dark:border-ember\" data-tool-body>");
         let arguments = tool.shown_arguments();
@@ -1710,7 +1743,11 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         let all_key = all_output_key(&id);
         let all = view.expanded.all_output(&tool.id);
         let budget = if all { ALL_OUTPUT_LINES } else { OUTPUT_LINES };
-        let (shown, omitted) = within_budget(tool.shown_display(), budget);
+        let (shown, omitted) = if figure {
+            (Vec::new(), 0)
+        } else {
+            within_budget(tool.shown_display(), budget)
+        };
         html.push_str(&display_html(&shown, |index| BlockPlace {
             call_id: Some(&id),
             index,

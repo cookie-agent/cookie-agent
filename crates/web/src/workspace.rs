@@ -933,6 +933,10 @@ impl Workspace {
                 self.refresh_open_panel(&delivery);
                 return;
             }
+            ClientDelivery::AssetsChanged(_) => {
+                crate::assets::refresh(self);
+                return;
+            }
             ClientDelivery::McpChanged(_)
             | ClientDelivery::RuntimesChanged(_)
             | ClientDelivery::PluginsChanged(_)
@@ -2820,6 +2824,62 @@ impl Workspace {
     }
 
     /// A media block's bytes, read in chunks, with its media type.
+    /// The asset `asset` of `store` as it is now; `None` once it is gone.
+    pub async fn get_asset(
+        self,
+        store: cookie_agent_protocol::AssetStore,
+        asset: cookie_agent_protocol::AssetId,
+    ) -> Result<Option<cookie_agent_protocol::Asset>, String> {
+        let Some(client) = self.client() else {
+            return Err("not connected".into());
+        };
+        match client.get_asset(store, asset).await {
+            Ok(result) => Ok(Some(result.asset)),
+            Err(error) if error.is(&cookie_agent_protocol::errors::ASSET_NOT_FOUND) => Ok(None),
+            Err(error) => Err(crate::errors::describe_full(&error)),
+        }
+    }
+
+    /// An asset's whole content, its digest, and its media type, read one
+    /// content: a chunk of content written in between starts the read over.
+    pub async fn read_asset_bytes(
+        self,
+        store: cookie_agent_protocol::AssetStore,
+        asset: cookie_agent_protocol::AssetId,
+    ) -> Result<(Vec<u8>, String, String), String> {
+        use base64::Engine as _;
+        let Some(client) = self.client() else {
+            return Err("not connected".into());
+        };
+        let mut bytes = Vec::new();
+        let mut digest: Option<String> = None;
+        loop {
+            let read = client
+                .read_asset(cookie_agent_protocol::AssetReadParams {
+                    store: store.clone(),
+                    asset,
+                    offset: bytes.len() as u64,
+                    length: cookie_agent_protocol::ASSET_CHUNK_BYTES,
+                })
+                .await
+                .map_err(|error| crate::errors::describe_full(&error))?;
+            if digest.as_ref().is_some_and(|digest| *digest != read.sha256) {
+                bytes.clear();
+                digest = None;
+                continue;
+            }
+            digest = Some(read.sha256.clone());
+            let chunk = base64::engine::general_purpose::STANDARD
+                .decode(read.data)
+                .map_err(|error| error.to_string())?;
+            let done = chunk.is_empty() || bytes.len() + chunk.len() >= read.total_bytes as usize;
+            bytes.extend(chunk);
+            if done {
+                return Ok((bytes, read.sha256, read.media_type));
+            }
+        }
+    }
+
     pub async fn read_media(self, sha256: String) -> Result<(Vec<u8>, String), String> {
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {

@@ -8,6 +8,7 @@
 
 pub mod agents;
 mod app;
+pub mod assets;
 pub mod attach;
 pub mod badges;
 pub mod browser;

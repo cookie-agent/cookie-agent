@@ -226,6 +226,22 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 32, 8, 2
 png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)
 PY
+    # The pages the scripted agent saves as assets: one that probes its
+    # sandbox, and a Markdown report.
+    cat >"$allowing/workspace/figure.html" <<'HTML'
+<!doctype html><html><head><style>body { margin: 0; }</style></head><body>
+<p id="state">waiting</p><div style="height: 260px; background: #eee"></div>
+<script>
+var notes = [];
+try { localStorage.setItem("probe", "1"); notes.push("storage-open"); } catch (e) { notes.push("storage-blocked"); }
+try { void top.document.title; notes.push("page-open"); } catch (e) { notes.push("page-blocked"); }
+document.getElementById("state").textContent = "ran " + notes.join(" ");
+// Neither may resize the frame: neither comes from the viewer with its token.
+top.postMessage({type: "cookie-asset-height", height: 9999}, "*");
+top.postMessage({type: "cookie-asset-height", token: "guess", height: 9999}, "*");
+</script></body></html>
+HTML
+    printf '# Report\n\nAll good.\n' >"$allowing/workspace/report.md"
     # The runtime_mcp group's `local` runtime hosts the stdio fixture MCP
     # server, one that cannot start, and the fixture once for the runtime
     # (`scope = "runtime"`), which the runtime panels list.

@@ -1244,9 +1244,16 @@ mod authentication_tests {
                 asset.path
             );
             assert_eq!(body, asset.bytes, "{}", asset.path);
+            // The viewer of HTML assets has a policy of its own.
             assert_eq!(
                 headers["content-security-policy"],
-                cookie_agent_web_assets::content_security_policy()
+                if asset.path == cookie_agent_web_assets::VIEWER_PATH {
+                    cookie_agent_web_assets::VIEWER_POLICY
+                } else {
+                    cookie_agent_web_assets::content_security_policy()
+                },
+                "{}",
+                asset.path
             );
             assert!(!headers.contains_key("content-encoding"), "{}", asset.path);
             // A browser that takes gzip gets the compressed copy, under a

@@ -552,6 +552,10 @@ impl ToolProvider for AssetTools {
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false));
         let title = match call.name.as_str() {
+            WRITE if shows => match text("title") {
+                Some(title) => format!("Show {title}"),
+                None => "Show an asset".to_owned(),
+            },
             WRITE => match (text("asset"), text("title")) {
                 (Some(asset), _) => format!("Replace asset {asset}"),
                 (None, Some(title)) => format!("Save asset {title}"),

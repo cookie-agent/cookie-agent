@@ -54,7 +54,11 @@ pub(super) async fn page(method: Method, uri: Uri, headers: HeaderMap) -> Respon
     );
     response_headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(cookie_agent_web_assets::content_security_policy()),
+        HeaderValue::from_static(if path == cookie_agent_web_assets::VIEWER_PATH {
+            cookie_agent_web_assets::VIEWER_POLICY
+        } else {
+            cookie_agent_web_assets::content_security_policy()
+        }),
     );
     if asset.gzip.is_some() {
         response_headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));

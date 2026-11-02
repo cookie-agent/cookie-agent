@@ -124,7 +124,7 @@ pub use cookie_agent_client_state::presence::daemon_has_push;
 pub fn fragment_without_session(fragment: &str) -> String {
     let fragment = fragment.strip_prefix('#').unwrap_or(fragment);
     let rest = url::form_urlencoded::parse(fragment.as_bytes())
-        .filter(|(name, _)| name != "session")
+        .filter(|(name, _)| name != "session" && name != "asset")
         .collect::<Vec<_>>();
     if rest.is_empty() {
         return String::new();
@@ -143,6 +143,17 @@ pub fn session_from_fragment(fragment: &str) -> Option<String> {
         .find(|(name, _)| name == "session")
         .map(|(_, value)| value.trim().to_owned())
         .filter(|session| !session.is_empty())
+}
+
+/// The asset a page's `location.hash` asks to show, with its session, as
+/// `#session=<id>&asset=<handle>`: a link the TUI prints for a figure
+/// (`docs/site/specs/assets.md` section 8.4).
+pub fn asset_from_fragment(fragment: &str) -> Option<String> {
+    let fragment = fragment.strip_prefix('#').unwrap_or(fragment);
+    url::form_urlencoded::parse(fragment.as_bytes())
+        .find(|(name, _)| name == "asset")
+        .map(|(_, value)| value.trim().to_owned())
+        .filter(|asset| !asset.is_empty())
 }
 
 /// What a page opened from a notification connects to: the daemon its push
@@ -273,6 +284,16 @@ mod tests {
         ] {
             assert_eq!(device_label(agent, touches), label, "{agent}");
         }
+    }
+
+    #[test]
+    fn an_asset_link_names_its_session_and_asset_and_leaves_the_rest() {
+        let link = "#session=01JB&asset=asset_3f9a1c2e&x=1";
+        assert_eq!(session_from_fragment(link).as_deref(), Some("01JB"));
+        assert_eq!(asset_from_fragment(link).as_deref(), Some("asset_3f9a1c2e"));
+        assert_eq!(fragment_without_session(link), "#x=1");
+        assert_eq!(asset_from_fragment("#session=01JB"), None);
+        assert_eq!(asset_from_fragment("#asset="), None);
     }
 
     #[test]

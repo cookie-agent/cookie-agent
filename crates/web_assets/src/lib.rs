@@ -35,6 +35,22 @@ pub fn assets() -> &'static [Asset] {
     ASSETS
 }
 
+/// The page an HTML asset is shown in (`docs/site/specs/assets.md` section
+/// 8.2), served with [`VIEWER_POLICY`] instead of the page's.
+pub const VIEWER_PATH: &str = "viewer.html";
+
+/// The Content-Security-Policy of [`VIEWER_PATH`]: sandboxed without
+/// `allow-same-origin`, so its origin is opaque and it reaches nothing of
+/// the page's, framed only by the page, and otherwise open, network
+/// included: an agent's page may load scripts, styles, and data from
+/// anywhere.
+pub const VIEWER_POLICY: &str = "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; \
+     script-src * data: blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; \
+     style-src * data: blob: 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; \
+     media-src * data: blob:; connect-src * ws: wss: data: blob:; worker-src * data: blob:; \
+     frame-src * data: blob: about:; object-src 'none'; form-action 'none'; \
+     frame-ancestors 'self'; sandbox allow-scripts allow-popups";
+
 /// The Content-Security-Policy the page is served with: its own origin,
 /// its inline scripts by hash, WebAssembly, `blob:` media, WebSocket
 /// connections to any daemon, and its service worker from its own origin.
@@ -63,5 +79,19 @@ mod tests {
         assert!(policy.contains("worker-src 'self';"), "{policy}");
         assert!(policy.contains("manifest-src 'self';"), "{policy}");
         assert!(super::get("missing.js").is_none());
+    }
+
+    #[test]
+    fn the_viewer_is_sandboxed_without_its_origin_and_framed_only_by_the_page() {
+        let policy = super::VIEWER_POLICY;
+        assert!(
+            policy.contains("sandbox allow-scripts allow-popups"),
+            "{policy}"
+        );
+        assert!(!policy.contains("allow-same-origin"), "{policy}");
+        assert!(policy.contains("frame-ancestors 'self'"), "{policy}");
+        assert!(policy.contains("form-action 'none'"), "{policy}");
+        // An agent's page reaches the network.
+        assert!(policy.contains("connect-src * ws: wss:"), "{policy}");
     }
 }

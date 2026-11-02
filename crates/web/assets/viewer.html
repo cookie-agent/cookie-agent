@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The same policy the daemon sends with this file, for a bundle on a
+     static host: a <meta> policy cannot carry `sandbox` or
+     `frame-ancestors`, so there the iframe's sandbox alone isolates the
+     page. docs/site/specs/assets.md section 8.2. -->
+<meta http-equiv="Content-Security-Policy" content="default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; script-src * data: blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src * data: blob: 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; media-src * data: blob:; connect-src * data: blob:; worker-src * data: blob:; frame-src * data: blob: about:; object-src 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Page</title>
+<style>
+html, body { height: 100%; margin: 0; padding: 0; background: transparent; }
+iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+</style>
+</head>
+<body>
+<script>
+// The viewer of an HTML asset (docs/site/specs/assets.md section 8.2). It
+// holds nothing: the page that frames it reads the asset over its own
+// connection and sends it here with a token, and this puts it in an inner
+// frame under this file's policy and sandbox. The inner page's height
+// comes back tagged with that token, so no page speaks for another.
+(function () {
+  "use strict";
+  var frame = null;
+  var token = null;
+  // Reports the inner page's height whenever it changes. It is the only
+  // thing added to the agent's page.
+  var height =
+    // The root element's own box, not its scroll height, which is never less
+    // than the frame's: a page shorter than the frame could not shrink it.
+    "<script>(function(){var last=-1;function report(){var root=document.documentElement;" +
+    "var h=Math.ceil(root.getBoundingClientRect().height);" +
+    "if(h!==last){last=h;parent.postMessage({type:'cookie-asset-height',height:h},'*');}}" +
+    "addEventListener('load',report);if(typeof ResizeObserver==='function'){" +
+    "new ResizeObserver(report).observe(document.documentElement);}setTimeout(report,0);" +
+    "setInterval(report,1000);})();<\/script>";
+  addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || typeof data !== "object") {
+      return;
+    }
+    if (event.source === parent && parent !== window && data.type === "cookie-asset-page"
+        && typeof data.html === "string" && typeof data.token === "string") {
+      token = data.token;
+      if (frame) {
+        frame.remove();
+      }
+      frame = document.createElement("iframe");
+      frame.setAttribute("sandbox", "allow-scripts allow-popups");
+      frame.setAttribute("referrerpolicy", "no-referrer");
+      frame.title = "Page";
+      frame.srcdoc = data.html + height;
+      document.body.appendChild(frame);
+    } else if (frame && event.source === frame.contentWindow && data.type === "cookie-asset-height"
+        && typeof data.height === "number" && isFinite(data.height) && token !== null) {
+      parent.postMessage({ type: "cookie-asset-height", token: token, height: data.height }, "*");
+    }
+  });
+})();
+</script>
+</body>
+</html>

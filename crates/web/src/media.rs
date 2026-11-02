@@ -64,7 +64,7 @@ fn blob_url(bytes: &[u8], media_type: &str) -> Result<String, JsValue> {
     web_sys::Url::create_object_url_with_blob(&blob)
 }
 
-fn show(element: &web_sys::Element, url: &str, media_type: &str, alt: &str) {
+pub(crate) fn show(element: &web_sys::Element, url: &str, media_type: &str, alt: &str) {
     let Some(document) = element.owner_document() else {
         return;
     };
