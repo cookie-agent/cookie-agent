@@ -22,7 +22,7 @@ use crate::{
 pub(super) const NAV_ROW: &str = "hit-area group relative flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[0.8125rem] text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press aria-[current=page]:bg-sel aria-[current=page]:font-semibold aria-[current=page]:text-fg";
 
 /// An icon-only button of the sidebar's foot.
-const FOOT_BUTTON: &str = "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press compact:h-11 compact:w-11";
+const FOOT_BUTTON: &str = "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press lg:h-8 lg:w-8";
 
 /// A view's entry on a phone, where the views are a grid of tiles so the
 /// sessions keep the room.

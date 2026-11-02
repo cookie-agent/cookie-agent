@@ -88,11 +88,11 @@ const BAR_RETURN: Duration = Duration::from_millis(250);
 
 /// Every button is at least 44 px square, with a hover and a pressed state.
 /// A labelled button, bordered.
-const BUTTON: &str = "inline-flex min-h-9 min-w-9 items-center justify-center gap-2 rounded-lg bg-raised px-3 text-[0.8125rem] font-medium text-fg shadow-[0_0_0_1px_var(--color-line-2),0_1px_2px_rgb(0_0_0/0.04)] transition-colors hover:bg-sunken active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-raised compact:min-h-11 compact:min-w-11";
+const BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg bg-raised px-3 text-[0.8125rem] font-medium text-fg shadow-[0_0_0_1px_var(--color-line-2),0_1px_2px_rgb(0_0_0/0.04)] transition-colors hover:bg-sunken active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-raised lg:min-h-9 lg:min-w-9";
 /// The main action of a form or the composer.
-const PRIMARY: &str = "inline-flex min-h-9 min-w-9 items-center justify-center gap-2 rounded-lg bg-accent px-3 text-[0.8125rem] font-semibold text-on-accent shadow-[inset_0_1px_0_rgb(255_255_255/0.14),0_1px_2px_rgb(0_0_0/0.12)] transition-[filter,background-color] hover:brightness-110 active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100 compact:min-h-11 compact:min-w-11";
+const PRIMARY: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg bg-accent px-3 text-[0.8125rem] font-semibold text-on-accent shadow-[inset_0_1px_0_rgb(255_255_255/0.14),0_1px_2px_rgb(0_0_0/0.12)] transition-[filter,background-color] hover:brightness-110 active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100 lg:min-h-9 lg:min-w-9";
 /// A button that is only an icon: it has an `aria-label` and a `title`.
-const ICON_BUTTON: &str = "inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent compact:min-h-11 compact:min-w-11";
+const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent lg:min-h-9 lg:min-w-9";
 /// A bottom bar control showing its current value: the agent, the model,
 /// and the permission mode share it. 32 px to see, 44 px to hit.
 const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[14rem] shrink-0 items-center gap-1.5 rounded-lg px-2 text-[0.8125rem] whitespace-nowrap text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press aria-expanded:bg-hover";
@@ -1355,7 +1355,11 @@ fn session_row(
                         return;
                     }
                     if !drag.take_click() {
-                        if current() && workspace.sidebar_open.get_untracked() && !workspace.new_session.get_untracked() {
+                        // From another view, the open session's row goes
+                        // back to its conversation.
+                        if current() && workspace.view.get_untracked() != View::Chat {
+                            workspace.open_session(session_id);
+                        } else if current() && workspace.sidebar_open.get_untracked() && !workspace.new_session.get_untracked() {
                             // The sessions as the page, over the open
                             // session: its row goes back to it.
                             workspace.sidebar_open.set(false);
@@ -2577,7 +2581,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         <div
             node_ref=container
             id="transcript"
-            class="min-h-0 flex-1 overflow-y-auto px-3 pt-4 pb-6 sm:px-6"
+            class="min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-6"
             on:click=on_click
             on:scroll=move |_| {
                 if let Some((element, at)) = metrics() {

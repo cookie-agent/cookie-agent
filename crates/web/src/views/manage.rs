@@ -32,7 +32,7 @@ use crate::{
     workspace::{PANEL_POLL, RUNTIMES_POLL, Workspace},
 };
 
-pub(super) const FIELD: &str = "min-h-9 w-full rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none compact:min-h-11";
+pub(super) const FIELD: &str = "min-h-11 w-full rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none lg:min-h-9";
 /// A document's text: it fills what its page leaves.
 pub(super) const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-lg bg-surface-2 p-3 font-mono text-[0.8125rem] leading-relaxed shadow-[inset_0_0_0_1px_var(--color-line)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none";
 /// A small label for a thing's state.
@@ -41,7 +41,7 @@ pub(super) const STATE: &str =
 /// An action of one row in a list, such as a runtime's MCP server: quiet
 /// text, so a row's several actions stay out of its way, on a full touch
 /// target.
-pub(super) const ROW_ACTION: &str = "inline-flex min-h-9 min-w-9 items-center justify-center gap-1 rounded-lg px-2 text-xs font-medium text-accent transition-colors hover:bg-accent-soft active:bg-press compact:min-h-11 compact:min-w-11";
+pub(super) const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-lg px-2 text-xs font-medium text-accent transition-colors hover:bg-accent-soft active:bg-press lg:min-h-9 lg:min-w-9";
 /// An editor's page: the text fills it and the actions stay at its foot.
 pub(super) const EDITOR_PAGE: &str = "flex min-h-full flex-1 flex-col gap-2";
 pub(super) const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-line bg-surface/90 px-3 py-2 backdrop-blur";

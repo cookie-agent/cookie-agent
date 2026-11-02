@@ -27,7 +27,7 @@ use crate::{
 /// to see, 44 px to hit.
 const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-40";
 const BAR: &str = "flex flex-wrap items-center gap-2 border-t border-line px-3 py-1 text-sm";
-pub(super) const FIELD: &str = "min-h-9 rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none compact:min-h-11";
+pub(super) const FIELD: &str = "min-h-11 rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none lg:min-h-9";
 
 /// The draft's files as chips, and an offer to downscale an image too
 /// large to attach.

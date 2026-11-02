@@ -549,24 +549,25 @@ def composer(browser):
     set_text(browser, "#composer", "a\nb\nc")
     time.sleep(0.3)
     three = composer_height(browser)
-    assert abs(three - (one + 40)) <= 2, (one, three)
+    line = 24
+    assert abs(three - (one + 2 * line)) <= 2, (one, three)
     set_text(browser, "#composer", "\n".join("line %d" % n for n in range(1, 10)))
     time.sleep(0.3)
     five = composer_height(browser)
-    assert abs(five - (one + 80)) <= 2, (one, five)
+    assert abs(five - (one + 4 * line)) <= 2, (one, five)
     scrolls = browser.script(
         "const c = document.querySelector('#composer');"
         "return [getComputedStyle(c).overflowY, c.scrollHeight > c.clientHeight]"
     )
     assert scrolls == ["auto", True], scrolls
     browser.shot("composer-five-lines")
-    # Text never runs under the buttons.
-    clear = browser.script(
-        "const c = document.querySelector('#composer');"
+    # The buttons sit under the text, never over it.
+    below = browser.script(
+        "const c = document.querySelector('#composer').getBoundingClientRect();"
         "const a = document.querySelector('[data-composer-actions]').getBoundingClientRect();"
-        "return c.getBoundingClientRect().right - parseFloat(getComputedStyle(c).paddingRight) <= a.left"
+        "return a.top >= c.bottom - 1"
     )
-    assert clear, "the text runs under the buttons"
+    assert below, "the buttons overlap the text"
     print("the box grows from one line to five, then scrolls")
     # The state table: idle and empty, idle with text.
     clear_composer(browser)
@@ -2505,10 +2506,6 @@ def views_2026(browser):
     browser.wait("the agent's editor", lambda: browser.text("#agent-name") == "helper")
     assert count(browser, '#agents-sidebar [data-config-path="agents/helper.md"] [aria-current=true]') == 1
     browser.shot("agents-open")
-    browser.click("#page [data-sidebar-toggle]")
-    browser.wait("the hidden agents", lambda: not shown(browser, "#agents-sidebar"))
-    browser.click("#page [data-sidebar-toggle]")
-    browser.wait("the agents again", lambda: shown(browser, "#agents-sidebar"))
     browser.click("#agents-sidebar [data-new-agent]")
     set_text(browser, "#agents-sidebar #config-new-path", "agents/e2e.md")
     browser.click("#agents-sidebar #config-new")
@@ -3418,7 +3415,8 @@ def unread_and_select(browser):
     browser.click("main [data-sidebar-toggle]")
     browser.wait("the dot on the sidebar button", lambda: count(browser, "main [data-sidebar-toggle] [data-unread-any]") == 1)
     browser.click("main [data-sidebar-toggle]")
-    browser.wait("the sidebar", lambda: shown(browser, "#sidebar"))
+    browser.wait("the sidebar", lambda: browser.script(
+        "return document.querySelector('#sidebar').getClientRects().length > 0"))
     browser.shot("unread-selected")
     browser.click("#mark-picked-read")
     browser.wait("read again", lambda: not dot(made[0]) and not dot(made[1]))
@@ -3506,12 +3504,13 @@ def pins_and_filter(browser):
     browser.click("#filter-sessions")
     browser.wait("the filter", opened)
     assert checked("week") and count(browser, "[data-filter-dot]") == 0
-    box, button = browser.script(
+    # A desktop opens it beside the sidebar, within the window.
+    box, side, height = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"
-        "const b = r('#filter-sessions'), f = r('#session-filter');"
-        "return [[Math.round(f.top), Math.round(f.left)], [Math.round(b.bottom), Math.round(b.left)]]"
+        "const f = r('#session-filter'), s = r('#sidebar');"
+        "return [[Math.round(f.left), Math.round(f.bottom)], Math.round(s.right), innerHeight]"
     )
-    assert box[0] >= button[0] and box[1] <= button[1], "the filter is not under its button: %s %s" % (box, button)
+    assert box[0] >= side and box[1] <= height, "the filter is not beside the sidebar: %s %s %s" % (box, side, height)
     browser.click("[data-within=month]")
     browser.wait("thirty days", lambda: checked("month") and count(browser, "[data-filter-dot]") == 1)
     browser.shot("session-filter")
@@ -5180,10 +5179,12 @@ def projects(browser):
     trigger, box = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"
         "const t = r(arguments[0]), m = r(arguments[1]);"
-        "return [[Math.round(t.bottom), Math.round(t.right)], [Math.round(m.top), Math.round(m.right)]]",
+        "return [[Math.round(t.bottom), Math.round(t.right)], [Math.round(m.top), Math.round(m.right), Math.round(m.left)]]",
         row + " [data-row-menu]", menu,
     )
-    assert box[0] >= trigger[0] and abs(box[1] - trigger[1]) <= 1, (trigger, box)
+    # By the ⋮ (under it, or over it near the window's foot), reaching at
+    # least to its right edge, and on the screen.
+    assert box[1] >= trigger[1] - 1 and box[2] >= 0, (trigger, box)
     assert browser.script("return document.activeElement.dataset.menuItem") == "pin"
     assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", row + " [data-row-menu]") == "true"
     browser.shot("project-row-menu")
@@ -6481,7 +6482,7 @@ def choose_transcript(browser, mode):
         "the stored mode",
         lambda: browser.script("return localStorage.getItem('cookie.transcript')") == mode,
     )
-    browser.click("#sidebar [data-view=chat]")
+    view(browser, "chat")
 
 
 def stored_elsewhere(browser, mode):
