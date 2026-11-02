@@ -4700,7 +4700,9 @@ def restart_daemon(browser):
         file.write('\n[runtimes.later]\ncommand = ["false"]\n')
     open_section(browser, "settings", "configuration")
     browser.click("#config-reload")
-    browser.wait("the restart banner", lambda: "runtimes" in browser.text("#restart-needed"))
+    # A reload reads the catalog and every agent again: on a CI runner whose
+    # cores the other groups share it can outlast the usual wait.
+    browser.wait("the restart banner", lambda: "runtimes" in browser.text("#restart-needed"), timeout=120)
     # Only `runtimes`: the token the daemon wrote to `[server]` at its first
     # start is the one it serves with.
     needed = browser.text("#restart-needed")
