@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cache heat badge: draft</title>
+<style>
+  :root {
+    --bg:#ffffff; --bg2:#fafafa; --raised:#ffffff; --sunken:#f4f4f5;
+    --fg:#09090b; --fg2:#3f3f46; --muted:#71717a; --faint:#a1a1aa;
+    --line:rgba(0,0,0,.075); --line2:rgba(0,0,0,.13);
+    --accent:#5b5bd6; --ok:#26935f; --bad:#d1343b; --warn:#b26b00;
+    --warn-soft:rgba(178,107,0,.10); --accent-soft:rgba(91,91,214,.10); --hover:rgba(0,0,0,.045);
+    --hot:#c2410c; --hot-soft:rgba(194,65,12,.09);
+  }
+  .dark {
+    --bg:#0e0e10; --bg2:#0a0a0c; --raised:#17171a; --sunken:#1b1b1f;
+    --fg:#ededef; --fg2:#b4b4bc; --muted:#86868f; --faint:#5c5c66;
+    --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.12);
+    --accent:#7c7cff; --ok:#4cc38a; --bad:#f2555a; --warn:#e5a93b;
+    --warn-soft:rgba(229,169,59,.12); --accent-soft:rgba(124,124,255,.12); --hover:rgba(255,255,255,.06);
+    --hot:#fb923c; --hot-soft:rgba(251,146,60,.12);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13.5px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; background:#e9e9ee; color:#09090b; }
+  .page { max-width:1180px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .lede { color:#52525b; margin:0 0 22px; }
+  h2 { font-size:14.5px; margin:30px 0 10px; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:900px){ .cols { grid-template-columns:1fr; } }
+  .theme { background:var(--bg); color:var(--fg); border-radius:12px; border:1px solid var(--line2); overflow:hidden; }
+  .theme-label { font-size:12px; color:var(--muted); padding:8px 14px 0; }
+
+  /* header */
+  .hdr { display:flex; align-items:center; gap:10px; height:44px; padding:0 10px 0 14px; border-bottom:1px solid var(--line); }
+  .crumb { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+  .crumb b { color:var(--fg); font-weight:550; }
+  .badges { display:flex; align-items:center; gap:2px; }
+  .badge { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 8px; border-radius:6px; font-size:12px; font-weight:500; color:var(--fg2); font-variant-numeric:tabular-nums; position:relative; cursor:pointer; white-space:nowrap; }
+  .badge:hover { background:var(--hover); color:var(--fg); }
+  .badge svg { width:14px; height:14px; flex:none; }
+  .badge .num { color:var(--muted); }
+  .kebab { color:var(--muted); padding:0 6px; }
+  .row-note { font-size:12px; color:var(--muted); padding:6px 14px 12px; }
+  .row-note code { font:12px "JetBrains Mono", ui-monospace, monospace; }
+
+  /* heat states */
+  .heat-hot  svg { color:var(--hot); }  .heat-hot  .num { color:var(--fg2); }
+  .heat-warm svg { color:var(--hot); opacity:.6; }
+  .heat-cool svg { color:var(--muted); }
+  .heat-cool .num { color:var(--warn); }
+  .heat-cold svg { color:var(--faint); } .heat-cold .num { color:var(--faint); }
+  .heat-assumed .num::before { content:"~"; }
+  .heat-compacting svg { color:var(--accent); animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce){ .heat-compacting svg { animation:none; } }
+  /* heat bar: three cells that drain */
+  .bar { display:inline-flex; gap:1.5px; align-items:flex-end; height:11px; }
+  .bar i { width:3px; border-radius:1px; background:var(--line2); display:block; }
+  .bar i:nth-child(1){ height:5px; } .bar i:nth-child(2){ height:8px; } .bar i:nth-child(3){ height:11px; }
+  .b3 i { background:var(--hot); } .b2 i:nth-child(-n+2){ background:var(--hot); } .b1 i:nth-child(1){ background:var(--warn); }
+  .planned { width:5px; height:5px; border-radius:50%; background:var(--accent); position:absolute; top:5px; right:4px; }
+
+  /* tooltip */
+  .tip { position:relative; display:inline-block; margin:12px 14px 16px; padding:10px 12px; width:300px; background:var(--raised); border:1px solid var(--line2); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.12); font-size:12.5px; color:var(--fg2); }
+  .tip b { color:var(--fg); font-weight:600; }
+  .tip .dim { color:var(--muted); }
+
+  /* states table */
+  table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  td, th { text-align:left; padding:7px 10px; border-top:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; border-top:0; }
+
+  /* panel */
+  .panel { display:grid; grid-template-columns:1fr 340px; min-height:300px; }
+  .panel .transcript { border-right:1px solid var(--line); padding:18px; color:var(--faint); font-size:12.5px; }
+  .sheet { background:var(--raised); padding:0 0 16px; }
+  .tabs { display:flex; gap:2px; padding:10px 10px 0; border-bottom:1px solid var(--line); font-size:12.5px; }
+  .tabs span { padding:6px 9px; color:var(--muted); border-bottom:2px solid transparent; }
+  .tabs .on { color:var(--fg); border-color:var(--accent); }
+  .card { margin:14px 14px 0; border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .card h3 { margin:0 0 8px; font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:8px; }
+  .card h3 svg { width:14px; height:14px; color:var(--hot); }
+  .meter { height:6px; border-radius:3px; background:var(--sunken); overflow:hidden; position:relative; margin:4px 0 4px; }
+  .meter > div { position:absolute; left:0; top:0; bottom:0; background:linear-gradient(90deg, var(--warn), var(--hot)); border-radius:3px; }
+  .meter .slack { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--accent); }
+  .ticks { display:flex; justify-content:space-between; font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:10px 0 0; font-size:12.5px; }
+  dt { color:var(--muted); } dd { margin:0; color:var(--fg2); font-variant-numeric:tabular-nums; }
+  .pill { display:inline-block; font-size:11.5px; padding:1px 7px; border-radius:999px; background:var(--accent-soft); color:var(--accent); }
+
+  /* tui */
+  .term { font:12.5px/1.6 "JetBrains Mono", ui-monospace, monospace; background:var(--bg); color:var(--fg2); padding:10px 14px 14px; white-space:pre; overflow-x:auto; }
+  .t-acc { color:var(--accent); } .t-mut { color:var(--muted); } .t-hot { color:var(--hot); } .t-warn { color:var(--warn); } .t-faint { color:var(--faint); } .t-body { color:var(--fg); }
+  .ruler { color:var(--faint); }
+  .notes { background:#fff; border-radius:12px; border:1px solid rgba(0,0,0,.1); padding:14px 18px; font-size:13px; color:#3f3f46; }
+  .notes li { margin:4px 0; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="flame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></symbol>
+    <symbol id="snow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="2" x2="22" y1="12" y2="12"/><line x1="12" x2="12" y1="2" y2="22"/><path d="m20 16-4-4 4-4"/><path d="m4 8 4 4-4 4"/><path d="m16 4-4 4-4-4"/><path d="m8 20 4-4 4 4"/></symbol>
+    <symbol id="target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+    <symbol id="loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+  </defs>
+</svg>
+
+<div class="page">
+  <h1>Cache heat badge: draft</h1>
+  <p class="lede">A new badge in the session header, beside the goal and context badges: how long the session's prompt cache stays warm. It shows only when cookie knows, or assumes, the session's TTL.</p>
+
+  <h2>1 · The header, in both themes</h2>
+  <div class="cols">
+    <div class="theme">
+      <div class="theme-label">Light: a warm cache with 41 min left, and a compaction planned before expiry (the dot)</div>
+      <div class="hdr">
+        <div class="crumb">cookie-agent / <b>Nightly dependency check</b></div>
+        <div class="badges">
+          <span class="badge"><svg style="color:var(--accent)"><use href="#target"/></svg><span>3/5</span></span>
+          <span class="badge heat-hot" title="Prompt cache"><svg><use href="#flame"/></svg><span class="num">41m</span><span class="planned"></span></span>
+          <span class="badge"><svg viewBox="0 0 16 16" style="transform:rotate(-90deg)"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--line2)" stroke-width="2.25"/><circle cx="8" cy="8" r="6" fill="none" stroke="var(--accent)" stroke-width="2.25" stroke-linecap="round" stroke-dasharray="37.7" stroke-dashoffset="22.2"/></svg><span class="num">41%</span></span>
+          <span class="kebab">⋮</span>
+        </div>
+      </div>
+      <div class="tip">
+        <b>Prompt cache warm</b> · 41 min left<br>
+        <span class="dim">Last request 13:02 · 1 h TTL (Anthropic) · expires 14:02</span><br>
+        Next scheduled prompt at <b>15:00</b>, after the cache expires: compacts at <b>13:57</b>.<br>
+        <span class="dim">Click for details</span>
+      </div>
+    </div>
+    <div class="theme dark">
+      <div class="theme-label">Dark: the same session at 3 min left, while it compacts</div>
+      <div class="hdr">
+        <div class="crumb">cookie-agent / <b>Nightly dependency check</b></div>
+        <div class="badges">
+          <span class="badge"><svg style="color:var(--accent)"><use href="#target"/></svg><span>3/5</span></span>
+          <span class="badge heat-compacting"><svg><use href="#loader"/></svg><span class="num">compacting</span></span>
+          <span class="badge"><svg viewBox="0 0 16 16" style="transform:rotate(-90deg)"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--line2)" stroke-width="2.25"/><circle cx="8" cy="8" r="6" fill="none" stroke="var(--accent)" stroke-width="2.25" stroke-linecap="round" stroke-dasharray="37.7" stroke-dashoffset="22.2"/></svg><span class="num">41%</span></span>
+          <span class="kebab">⋮</span>
+        </div>
+      </div>
+      <div class="tip">
+        <b>Compacting before the cache expires</b><br>
+        <span class="dim">Cache expires 14:02 · next scheduled prompt 15:00</span>
+      </div>
+    </div>
+  </div>
+
+  <h2>2 · Every state</h2>
+  <div class="cols">
+    <div class="theme">
+      <div class="theme-label">Light</div>
+      <table>
+        <tr><th>State</th><th>Badge</th><th>When</th></tr>
+        <tr><td>Hot</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg><span class="num">52m</span></span></td><td>More than half the TTL left</td></tr>
+        <tr><td>Warm</td><td><span class="badge heat-warm"><svg><use href="#flame"/></svg><span class="num">18m</span></span></td><td>A fifth to a half left</td></tr>
+        <tr><td>Cooling</td><td><span class="badge heat-cool"><svg><use href="#flame"/></svg><span class="num">3m</span></span></td><td>Less than a fifth left: the next prompt still hits</td></tr>
+        <tr><td>Expired</td><td><span class="badge heat-cold"><svg><use href="#snow"/></svg><span class="num">cache expired</span></span></td><td>Expired: the next prompt writes the cache again</td></tr>
+        <tr><td>Assumed TTL</td><td><span class="badge heat-warm heat-assumed"><svg><use href="#flame"/></svg><span class="num">24m</span></span></td><td><code>fallback_ttl</code>, the <code>chatgpt</code> provider, or an ACP agent's <code>cache_ttl</code></td></tr>
+        <tr><td>Compaction planned</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg><span class="num">41m</span><span class="planned"></span></span></td><td>A compaction is due before expiry</td></tr>
+        <tr><td>Compacting</td><td><span class="badge heat-compacting"><svg><use href="#loader"/></svg><span class="num">compacting</span></span></td><td>That compaction is running</td></tr>
+        <tr><td>Running</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg></span></td><td>A run is in progress: no countdown</td></tr>
+        <tr><td>Never expires</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg><span class="num">∞</span></span></td><td><code>cache_ttl = "0s"</code></td></tr>
+        <tr><td>No clock</td><td class="dim" style="color:var(--muted)">no badge</td><td>No request yet, or the rolling marker is <code>off</code></td></tr>
+      </table>
+    </div>
+    <div class="theme dark">
+      <div class="theme-label">Dark</div>
+      <table>
+        <tr><th>State</th><th>Badge</th><th>When</th></tr>
+        <tr><td>Hot</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg><span class="num">52m</span></span></td><td>More than half left</td></tr>
+        <tr><td>Warm</td><td><span class="badge heat-warm"><svg><use href="#flame"/></svg><span class="num">18m</span></span></td><td>A fifth to a half left</td></tr>
+        <tr><td>Cooling</td><td><span class="badge heat-cool"><svg><use href="#flame"/></svg><span class="num">3m</span></span></td><td>Under a fifth left</td></tr>
+        <tr><td>Expired</td><td><span class="badge heat-cold"><svg><use href="#snow"/></svg><span class="num">cache expired</span></span></td><td>Expired</td></tr>
+        <tr><td>Assumed TTL</td><td><span class="badge heat-warm heat-assumed"><svg><use href="#flame"/></svg><span class="num">24m</span></span></td><td>TTL assumed, not known</td></tr>
+        <tr><td>Compaction planned</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg><span class="num">41m</span><span class="planned"></span></span></td><td>Compaction due before expiry</td></tr>
+        <tr><td>Compacting</td><td><span class="badge heat-compacting"><svg><use href="#loader"/></svg><span class="num">compacting</span></span></td><td>Running</td></tr>
+        <tr><td>Running</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg></span></td><td>No countdown during a run</td></tr>
+        <tr><td>Never expires</td><td><span class="badge heat-hot"><svg><use href="#flame"/></svg><span class="num">∞</span></span></td><td><code>cache_ttl = "0s"</code></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h2>3 · Clicked: the session panel's Usage tab gains a Prompt cache card</h2>
+  <div class="cols">
+    <div class="theme">
+      <div class="panel">
+        <div class="transcript">…transcript…</div>
+        <div class="sheet">
+          <div class="tabs"><span class="on">Usage</span><span>Permissions</span><span>Runtimes</span><span>Goal</span></div>
+          <div class="card">
+            <h3><svg><use href="#flame"/></svg>Prompt cache · warm <span class="pill">compaction planned</span></h3>
+            <div class="meter"><div style="width:68%"></div><span class="slack" style="left:91.7%"></span></div>
+            <div class="ticks"><span>13:02 last request</span><span>13:57 compacts</span><span>14:02 expires</span></div>
+            <dl>
+              <dt>TTL</dt><dd>1 h · Anthropic rolling marker</dd>
+              <dt>Cached</dt><dd>148,210 tokens</dd>
+              <dt>Next prompt</dt><dd>15:00 · Nightly dependency check</dd>
+              <dt>If it expires</dt><dd>≈ $1.48 to cache again</dd>
+              <dt>Before expiry</dt><dd>compacts at 13:57 (<code>scheduled</code> mode, 5 min slack)</dd>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="theme dark">
+      <div class="panel">
+        <div class="transcript">…transcript…</div>
+        <div class="sheet">
+          <div class="tabs"><span class="on">Usage</span><span>Permissions</span><span>Runtimes</span><span>Goal</span></div>
+          <div class="card">
+            <h3><svg style="color:var(--muted)"><use href="#flame"/></svg>Prompt cache · about 24 min left</h3>
+            <div class="meter"><div style="width:20%"></div></div>
+            <div class="ticks"><span>13:30 last turn</span><span>14:00 expires (assumed)</span></div>
+            <dl>
+              <dt>TTL</dt><dd>30 min · assumed (Codex <code>cache_ttl</code>)</dd>
+              <dt>Next prompt</dt><dd>none scheduled</dd>
+              <dt>Before expiry</dt><dd>off · <code>[context_compaction.cache_expiry] mode</code></dd>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>4 · The TUI's status line (right side)</h2>
+  <div class="theme">
+    <div class="theme-label">Light, at three widths: the cache part goes after cost and before the context, and drops after the cost when space runs out</div>
+<div class="term"><span class="t-mut">project · ~/src/cookie                       </span><span class="t-acc">auto</span><span class="t-mut">    $0.42    </span><span class="t-hot">🔥 41m</span><span class="t-acc">•</span><span class="t-mut">    ctx 82k (41%)    </span><span class="t-body">ctrl+p</span><span class="t-mut"> commands</span>
+<span class="t-mut">project · ~/src/cookie                       </span><span class="t-acc">auto</span><span class="t-mut">    </span><span class="t-hot">🔥 41m</span><span class="t-acc">•</span><span class="t-mut">    ctx 82k (41%)</span>
+<span class="t-mut">project · ~/s…                               </span><span class="t-acc">auto</span><span class="t-mut">    </span><span class="t-hot">🔥 41m</span><span class="t-mut">    ctx 82k</span></div>
+  </div>
+  <div class="cols" style="margin-top:18px">
+    <div class="theme">
+      <div class="theme-label">Every state, light</div>
+<div class="term"><span class="t-acc">auto</span>    <span class="t-hot">🔥 52m</span>      <span class="t-mut">hot: more than half left</span>
+<span class="t-acc">auto</span>    <span class="t-hot">🔥</span><span class="t-mut"> 18m</span>      <span class="t-mut">warm</span>
+<span class="t-acc">auto</span>    <span class="t-warn">🔥 3m</span>       <span class="t-mut">cooling</span>
+<span class="t-acc">auto</span>    <span class="t-faint">❄ cache expired</span>  <span class="t-mut">expired</span>
+<span class="t-acc">auto</span>    <span class="t-hot">🔥</span><span class="t-mut"> ~24m</span>     <span class="t-mut">assumed TTL</span>
+<span class="t-acc">auto</span>    <span class="t-hot">🔥 41m</span><span class="t-acc">•</span>     <span class="t-mut">compaction planned</span>
+<span class="t-acc">auto</span>    <span class="t-acc">◐ compacting</span> <span class="t-mut">compacting before expiry</span>
+<span class="t-acc">auto</span>    <span class="t-hot">🔥 ∞</span>        <span class="t-mut">never expires</span></div>
+    </div>
+    <div class="theme dark">
+      <div class="theme-label">Dark; with <code>NO_COLOR</code>, the glyph, the countdown, and bold for "cooling" carry the state</div>
+<div class="term"><span class="t-acc">auto</span>    <span class="t-hot">🔥 52m</span>      <span class="t-mut">hot</span>
+<span class="t-acc">auto</span>    <span class="t-hot">🔥</span><span class="t-mut"> 18m</span>      <span class="t-mut">warm</span>
+<span class="t-acc">auto</span>    <span class="t-warn"><b>🔥 3m</b></span>       <span class="t-mut">cooling</span>
+<span class="t-acc">auto</span>    <span class="t-faint">❄ cache expired</span>  <span class="t-mut">expired</span>
+<span class="t-acc">auto</span>    <span class="t-acc">◐ compacting</span>
+<span class="t-mut">click the cache part: the usage panel, with its cache card</span></div>
+    </div>
+  </div>
+
+  <h2>Notes</h2>
+  <div class="notes">
+    <ul>
+      <li><b>Heat</b> is the share of the TTL left: hot above ½, warm from ⅕ to ½, cooling under ⅕, then "cache expired". The countdown counts minutes (hours above 90 min: <code>11h</code>), and seconds in its last minute.</li>
+      <li><b>No state by colour alone:</b> the flame or snowflake and the countdown carry it; colour only grades the heat (orange, faded orange, amber).</li>
+      <li><b>The dot</b> marks a compaction planned before expiry; the tooltip and the card say when, and for which scheduled prompt.</li>
+      <li><b>"~"</b> marks a TTL cookie assumes (<code>fallback_ttl</code>, the <code>chatgpt</code> provider's 30 min, an ACP agent's <code>cache_ttl</code>) rather than one it set on the request.</li>
+      <li><b>Where the numbers come from:</b> the daemon sends a small cache clock with the session view: last request, TTL and its source, the compaction due time, and the next fire. Clients only count down, with no rules of their own.</li>
+      <li>Shown for the main session only; a subagent's badge appears when you open the subagent.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

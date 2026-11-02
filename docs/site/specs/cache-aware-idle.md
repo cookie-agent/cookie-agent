@@ -135,6 +135,12 @@ Section 10 records the answers to the remaining questions.
   "Compacted before the cache expired · next scheduled prompt 03:00".
   Section 4.4.
 - **D8. Keep-warm pings stay out of v1.** Section 6.
+- **D9. A cache badge in the session header** *(approved 2026-11-02)*. It
+  shows how long the prompt cache stays warm, as section 4.5 describes,
+  and the [preview](cache-aware-idle/preview.html) shows. The daemon
+  computes the clock, and clients only count down. "Hot" gets a colour
+  token of its own. The badge shows whenever a session has a clock, with
+  any `mode`.
 
 ## 3. ACP residency (withdrawn)
 
@@ -285,6 +291,82 @@ the five-minute one (1.25× input): about $0.25 on Opus, a matching
 - **Cost** is recorded the same way as any compaction's
   (`internal_agent_usage_recorded`).
 
+### 4.5 Showing the cache's heat (D9)
+
+The [preview](cache-aware-idle/preview.html) shows every state below, in
+both themes and both clients.
+
+**The badge.** The session header (Quiet Ink D6) gains a badge between
+the goal and the context ring:
+
+- **The icon:** a flame (Lucide `Flame`) while the cache is warm. Once it
+  has expired, a snowflake (`Snowflake`) with the words "cache expired".
+- **The countdown:** minutes left, such as `41m`. Above 90 minutes it shows
+  hours (`11h`), and in the last minute, seconds.
+- **The colour grades the heat:** the share of `ttl` left decides it.
+  - hot: more than half is left. The badge uses a new `hot` token
+    (`#c2410c` light, `#fb923c` dark), since amber already means an
+    approval is waiting.
+  - warm: a fifth to a half is left. The same colour, faded.
+  - cooling: less than a fifth is left. The countdown turns `warn`.
+
+  The icon and the countdown say the same thing without the colour.
+- **Marks:**
+  - `~` before the countdown when the TTL is assumed (`fallback_ttl`,
+    the `chatgpt` provider's `30m`) or declared (a model's or an ACP
+    agent's `cache_ttl`), rather than set by cookie on the request;
+  - an accent dot when a compaction before expiry is planned;
+  - `∞` for a TTL of `0s` or less.
+- **During a run:** the flame shows with no countdown.
+- **While a compaction before expiry runs:** a spinner and "compacting".
+- **No badge** when there is no clock: before the first request, or with
+  the rolling marker `off`.
+- **The badge shows in any `mode`, `off` included.** The clock is useful
+  on its own.
+- **Which session's clock:** the one shown. A subagent's clock shows when
+  its session is opened.
+
+**The tooltip** gives:
+
+- the state and the time left;
+- when the last request went out, the TTL and where it came from, and
+  when the cache expires;
+- when a job is scheduled, its time, and when the compaction will run.
+
+**A click** opens the session panel's Usage tab. It gains a *Prompt
+cache* card:
+
+- a meter from the last request to expiry, with a tick at the planned
+  compaction;
+- the TTL and its source;
+- the tokens cached;
+- the next scheduled prompt;
+- what caching again would cost, by section 4.2's cost measure;
+- the `mode`, and the compaction's time when one is planned.
+
+**The TUI.** The status line shows `🔥 41m` or `❄ cache expired` in the
+same states, after the cost and before the context. When the line is too
+narrow, it is dropped after the cost. Under `NO_COLOR`:
+
+- the glyph and the countdown carry the state;
+- bold marks cooling.
+
+Clicking the cache part opens the usage panel.
+
+**The clock comes from the daemon.** A session's view carries an optional
+`cache_clock`:
+
+- `last_request_at`;
+- `ttl_secs`: `null` for never expiring;
+- `ttl_source`: `set`, `declared`, or `assumed`;
+- `compaction_at`, when a compaction before expiry is planned;
+- `next_fire` and `job_id`, when a scheduled job decides it;
+- `compacting`.
+
+A transient `session_cache_clock` event sends a changed clock to those
+watching. Clients compute only the countdown and its heat from
+`last_request_at` and `ttl_secs`. They need no rules of their own.
+
 ## 5. Configuration
 
 ```toml
@@ -344,6 +426,8 @@ cheapest option: nothing, ping, or compact.
   then.
 - **`ContextCheckpointCommit.reason`:** optional; section 4.4.
 - **Diagnostic kind** `cache_expiry_compaction`.
+- **The session view's `cache_clock`** and the transient
+  `session_cache_clock` event (section 4.5).
 - **Configuration schema:** the keys in section 5.
 - **Versions.** All additive, so this is a client protocol minor bump. The
   plugin protocol follows the event changes, as it does for every event
@@ -382,6 +466,19 @@ The tests use explicit values, never the defaults.
   - with a declared `cache_ttl`, the agent's `/compact` runs at the due
     time, on a session that paged out too;
   - without one, nothing runs.
+- **The cache clock and the badge** (section 4.5). These test what the
+  badge is made from, never how it looks:
+  - **the clock the daemon sends:** its source for each row of 4.1's
+    table, `compaction_at` and `next_fire` when the rule plans a
+    compaction, and a `session_cache_clock` event when a run, a job, or a
+    compaction changes it;
+  - **the client's arithmetic:**
+    - the heat boundaries (a half and a fifth of the TTL, and expiry);
+    - the countdown's units (minutes, hours above 90 minutes, seconds in
+      the last minute);
+    - no countdown during a run;
+    - no badge without a clock;
+  - **the TUI's status line:** the cache part drops after the cost.
 
 ## 9. Phases
 
@@ -390,9 +487,13 @@ The tests use explicit values, never the defaults.
    The result settles D6.
 1. **The cache clock and compaction before expiry**, engine and protocol
    (sections 4, 5, and 7).
-2. **Clients and docs:** the checkpoint row in the TUI and web;
-   `engine/context_compaction.md`, `engine/server.md`, the ACP agents
-   guide, and `sessions/scheduling.md`.
+2. **Clients and docs:**
+   - the cache badge, its tooltip, and the Usage tab's card on the web;
+   - the status line part and the usage panel in the TUI;
+   - the checkpoint row in both clients;
+   - the docs:
+     `engine/context_compaction.md`, `engine/server.md`, the ACP agents
+     guide, and `sessions/scheduling.md`.
 
 ## 10. Resolved questions (2026-11-02)
 
