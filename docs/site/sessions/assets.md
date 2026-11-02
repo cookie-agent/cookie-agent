@@ -1,12 +1,47 @@
-# Assets
+# Assets and attachments
 
 An agent can give you a file: a chart, a diagram, an HTML page, a Markdown
-report, or anything else. It saves the file as an **asset** and shows it
-in the conversation, as a card under the text it writes next. The web
-client shows images and video as a deck, HTML pages and Markdown
+report, or anything else.
+
+- **An attachment** is a file it shows you once, where it writes it in its
+  reply: `<attach src="runs/loss.png"/>`. The file is read once from the
+  machine and kept with the conversation. See
+  [Attachments](#attachments-in-a-reply).
+- **An asset** is a file it saves to keep, which it can replace and you
+  can find in the Assets view; it shows one with
+  `<attach asset="asset_3f9a1c2e"/>`, always as the asset is now.
+
+The web client shows images and video as a deck, HTML pages and Markdown
 documents as cards that open beside the chat, and other files as
 downloads; the TUI lists them with links that open them in the web
-client. The [spec](../specs/assets.md) has the details.
+client. The specs have the details: [assets](../specs/assets.md) and
+[attachments](../specs/message-attachments.md).
+
+## Attachments in a reply
+
+An agent writes a tag where a file should show:
+
+| Tag | Shows |
+|---|---|
+| `<attach src="runs/loss.png"/>` | A file of the session's workspace machine; add `machine="name"` for another machine |
+| `<attach artifact="<sha256>"/>` | An artifact of the conversation, such as tool output kept aside |
+| `<attach asset="asset_3f9a1c2e"/>` | An asset, live |
+
+`title="…"` names it. A tag in code is text. When the agent's message
+ends, each tag is resolved once:
+
+- **A file** is read as the agent's `read` rules allow: allowed, it is
+  attached; denied, it fails; when the rule asks, its card asks you, with
+  *Allow* and *Deny*. Up to 25 MiB, and 12 attachments a message.
+- **An artifact** is attached as it is, and **an asset** shown as the
+  `asset` rules allow.
+- **A failure** says why on its card, and the agent is told before its
+  next request, in a line the transcript shows.
+- **Save as asset** on a file's card keeps it as an asset of the session
+  or the project.
+
+ACP agents (Claude Code, Codex) attach files the same way, from their own
+machine.
 
 ## How an agent uses them
 
@@ -16,10 +51,8 @@ them when it needs them:
 
 - **`write_asset`** saves a file from one of the session's machines, up to
   25 MiB, and returns its handle, such as `asset_3f9a1c2e`. Given a handle,
-  it replaces that asset instead. With `show: true` it shows the asset at
-  once.
-- **`show_asset`** shows one to twelve assets, with a caption. They show
-  under the next text the agent writes, which may name them by handle.
+  it replaces that asset instead. The agent shows it with
+  `<attach asset="…"/>` in its reply.
 - **`read_asset`**, **`list_assets`**, and **`delete_asset`** read, list,
   and delete them.
 
@@ -49,7 +82,7 @@ deleted asset showed, it says it was deleted.
 ## Permissions
 
 The tools check the `asset` action, whose resource is what a call does:
-`read` (`read_asset`, `show_asset`, `list_assets`), `write`
+`read` (`read_asset`, `list_assets`, and an `<attach asset/>` tag), `write`
 (`write_asset`), or `delete` (`delete_asset`). A root run is allowed them
 all by default, and a subagent is denied them, so its asset tools are
 hidden unless its agent document grants them:
@@ -67,11 +100,11 @@ from, so your `read` rules decide which files can become assets. See
 
 ## In the web client
 
-- **The shelf.** A run's calls that show assets fold into its work, and
-  the assets show as cards under the text that follows them, sharing rows
-  where they fit: images and video as a deck the media viewer steps
-  through, an HTML page as a live thumbnail, a Markdown document as its
-  first lines, audio as a player, any other file as a download chip.
+- **Cards.** Each tag of a reply is a card where it is, tags next to each
+  other one row whose cards share lines: images and video as a deck the
+  media viewer steps through, an HTML page as a live thumbnail, a Markdown
+  document as its first lines, audio as a player, any other file as a
+  download chip.
 - **The side panel.** A page or document card opens beside the chat, with
   *Preview* and *Source*, *Full screen*, and *Download*. An HTML page runs
   there in a sandboxed frame with its scripts and network access, with no
@@ -92,9 +125,11 @@ See [the web client](../clients/web.md#assets).
 
 ## In the TUI
 
-The shelf lists each asset with its caption and a link into the daemon's
-web page, such as
-`http://127.0.0.1:7419/#session=<id>&asset=asset_3f9a1c2e`. Click it, or
+A tag shows as `📎` and its name in the text, and under the text each
+attachment has a line with a link into the daemon's web page, such as
+`http://127.0.0.1:7419/#session=<id>&asset=asset_3f9a1c2e` (an asset) or
+`…#session=<id>&attachment=<sha256>` (an attached file), or *Allow* and
+*Deny* while it waits for you. Click a link, or
 press Enter on it, to open it in your browser. The link is the daemon's
 [`[server] page_url`](../engine/server.md) when set, for a tunnel, or the
 page at the address the TUI reached the daemon at. It carries no token. A

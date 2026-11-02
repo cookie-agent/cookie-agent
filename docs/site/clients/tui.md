@@ -506,17 +506,17 @@ not captured at the time; historical events are not rewritten to invent them.
 
 ### Assets
 
-A call that shows you an asset ([Assets](../sessions/assets.md)) folds
-into the work like any other, and the asset shows on a shelf, **From this
-reply**, under the first text the agent writes after it: its title, file,
-type, size, and caption, images and video grouped under one line. Under
-each asset is a link into the daemon's web page, such as
-`↗ http://127.0.0.1:7419/#session=<id>&asset=asset_3f9a1c2e`: click it, or
-press Enter on it, to open it with the system opener, or copy it. The link
-uses the daemon's `[server] page_url` when it has one, else the address
-the TUI reached the daemon at, and never carries the token. A TUI with a
-daemon inside its own process has no web page: it says to open the web
-client instead. Open, the call lists its assets without links.
+A reply's `<attach …/>` tag ([Assets and attachments](../sessions/assets.md))
+shows as `📎` and the file's name in the text. Under the text, each
+attachment has a line: its title, file, type, and size, then a link into
+the daemon's web page, such as
+`↗ http://127.0.0.1:7419/#session=<id>&asset=asset_3f9a1c2e` or
+`…&attachment=<sha256>`: click it, or press Enter on it, to open it with
+the system opener, or copy it. One that waits for you shows *Allow* and
+*Deny*, and one that failed says why. The link uses the daemon's
+`[server] page_url` when it has one, else the address the TUI reached the
+daemon at, and never carries the token. A TUI with a daemon inside its own
+process has no web page: it says to open the web client instead.
 
 ## Error details
 

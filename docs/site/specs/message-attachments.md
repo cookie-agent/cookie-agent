@@ -1,7 +1,8 @@
 # Attachments in assistant messages
 
-Status: **approved** (2026-11-01), not implemented. The user's decisions
-are in section 10.
+Status: **implemented** (2026-11-02; client protocol 1.73.0, plugin
+protocol 1.38.0). The user's decisions are in section 10, and the
+[implementation notes](#implementation-notes) say where the code differs.
 Related: [Assets](assets.md), whose cards, sandbox, and permission
 checks this reuses.
 
@@ -290,3 +291,28 @@ No questions are open.
    asset* and `attachment.save_asset`, the link.
 3. TUI: the line, the link, *Allow* and *Deny*.
 4. Docs and the browser scenario.
+
+## Implementation notes
+
+Implemented on 2026-11-02. Where the code differs from the sections above:
+
+- **The tag's parser is shared:** `cookie_agent_protocol::attach_tags` and
+  `split_attach_tags` read tags from the Markdown's HTML events, with the
+  options every client parses replies with
+  (`cookie_agent_protocol::markdown_options`).
+- **Rules and the permission mode:** a tag's read is checked as a tool's
+  would be, so the session's permission mode applies: in yolo mode nothing
+  asks. A rule that asks never goes to the approval reviewer; the card
+  asks the user.
+- **Failures waiting to be told are held in memory:** a daemon restart
+  between a failure and the model's next request drops them. An answer to
+  a tag that waits finds the tag in the log after a restart.
+- **The failure note** is a `message_injected` user message, which clients
+  show as a warning row, "The agent was told:" and its lines. An ACP agent
+  reads it at the start of its next prompt, beside the machines note.
+- **The prompt section** is the `read_artifact` provider's, "Attachments",
+  in the tool instructions, so it reaches ACP agents with the rest.
+- **The TUI** names a tag `📎` and its label in the text, and lists the
+  part's attachments under it, each a line; its *Allow* and *Deny* are
+  lines of their own, each a click target.
+

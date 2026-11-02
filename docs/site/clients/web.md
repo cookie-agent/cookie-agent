@@ -692,10 +692,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 
 ### Assets
 
-When an agent shows you files ([Assets](../sessions/assets.md)), its calls
-fold into the work like any other, and the files show as cards on a shelf,
-**From this reply**, under the first text the agent writes after them. The
-cards share rows where they fit:
+When an agent shows you files with `<attach …/>` tags
+([Assets and attachments](../sessions/assets.md)), each tag is a card
+where it is in the reply, and tags next to each other one row whose cards
+share lines:
 
 - **Images, SVG, and video** are a deck: stacked cards that fan out under
   the pointer. A click opens the media viewer at the card clicked; its
@@ -708,6 +708,11 @@ cards share rows where they fit:
 - **Audio** is a card with a player.
 - **Any other file** is a chip with its type, name, size, and a download
   button.
+- **A file waiting for you** (the agent's `read` rule asks) says what it
+  is, with *Allow* and *Deny*; **a failed one** says why.
+
+A file's card has *Save as asset* in its corner: choose this session or
+the project, and the status line names the new asset's handle.
 
 **The side panel** opens beside the chat on a desktop, and over it on a
 narrower window. Its head has the asset's title and handle, *Preview* and
@@ -723,9 +728,10 @@ card does; text copied across it holds the handle. Each card also has
 *Copy handle* in its corner, to give the asset back to an agent.
 
 When an asset is written again, its cards show the new content and say it
-was updated; when it is deleted, they say so and no longer open. A link of
-the form `#session=<id>&asset=<handle>`, which the TUI prints, opens the
-session on the page's own daemon and opens the asset as its card does.
+was updated; when it is deleted, they say so and no longer open. Links of
+the form `#session=<id>&asset=<handle>` and
+`#session=<id>&attachment=<sha256>`, which the TUI prints, open the session
+on the page's own daemon and the file as its card does.
 
 **The Assets view** lists every project's and every session's assets,
 newest first, with the count and size of what it shows. Its filter (the
