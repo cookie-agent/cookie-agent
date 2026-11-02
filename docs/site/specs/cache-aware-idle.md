@@ -1,0 +1,424 @@
+# Cache-aware idle sessions: longer ACP residency and compaction before the cache expires
+
+Status: **approved** (2026-11-02), with the user's decisions in
+[section 2](#2-decisions-2026-11-02); phase 0 (a probe) still to run. Builds on [cron jobs](cron.md) (sections
+4 and 5), [native compaction](native-compaction.md), [ACP agents](acp-agents.md)
+(section 7, sessions and processes; section 15, compaction), and the
+residency janitor (`crates/engine/src/runtime/sessions/residency.rs`).
+
+## 1. Goal and scope
+
+**Today:**
+
+- **Residency.** The janitor checks every minute. It pages out a root
+  session's tree once the whole tree has gone
+  `[server] session_idle_eviction_after` (default `30m`) with no event, no
+  live tail, and no pending work. Delegated sessions also have their own
+  window, `[delegation] idle_eviction_after` (default `1h`). Paging out a
+  session that runs an ACP agent sends `session/close`. Its next turn
+  resumes or loads the ACP session, or starts a new one. The agent's
+  process stops `[acp] idle_shutdown_ms` (default 5 minutes) after its last
+  live session closes.
+- **Compaction** happens for three reasons only: the context passes its
+  size trigger, the user runs `/compact`, or a request overflows the
+  context. Nothing looks at how long ago the provider last cached the
+  session.
+- **Cache TTLs** are known per request. Root sessions on Anthropic and
+  Bedrock put a one-hour rolling marker on the conversation, and delegated
+  sessions a five-minute one (`CacheTtls::defaults`). OpenAI's GPT-5.6
+  controls cache for `30m` or `12h`, and `prompt_cache_retention = "24h"`
+  keeps a cache for a day. Every other provider caches on its own terms.
+
+**Two problems:**
+
+1. **ACP sessions are closed too early.** Claude Code compacts its own
+   context on its own as its one-hour cache nears expiry. Cookie closes the
+   ACP session after 30 idle minutes, before that can happen. The next turn
+   resumes a session that never compacted.
+2. **Idle sessions waiting on a scheduled job pay a full cache write.** Take
+   a session with 150k tokens of context and a cron job that fires in 3
+   hours. The cache has long expired by then, so the fire re-sends and
+   re-caches all 150k tokens. On Opus, that write costs about $1.50 at the
+   one-hour write price. Compacting just before the cache expires costs
+   less:
+   - reading the warm prefix: about $0.08;
+   - the summary's output: about $0.13;
+   - writing the smaller context (about 25k tokens) at the fire: about
+     $0.25.
+
+   That is roughly $0.45 in total. The compaction call also refreshes the
+   one-hour system and tools markers, so a fire within the next hour still
+   reads those from cache.
+
+**This spec:**
+
+- keeps sessions that run an ACP agent resident longer (default `90m`);
+- compacts an idle session shortly before its cache expires (default 5
+  minutes before, at most a fifth of the TTL) when a scheduled job will wake it only after the cache is
+  gone;
+- adds a knob for each, and a per-model TTL for providers cookie cannot
+  read one from.
+
+**Out of scope:**
+
+- keeping the cache warm with pings (section 6 explains why, and how it
+  could fit later);
+- predicting when the user will come back;
+- changing `[acp] idle_shutdown_ms`.
+
+## 2. Decisions (2026-11-02)
+
+The user accepted D1, D4, D6, D7, and D8 as proposed, made `off` the
+default mode (D2), set the slack to five minutes capped at a fifth of the
+TTL (D3), and asked for a token floor and a cost floor side by side (D5).
+Section 10 records the answers to the remaining questions.
+
+- **D1. The ACP residency window.**
+  - A new key, `[acp] session_idle_eviction_after`, default `90m`.
+  - A per-agent override, `[acp.agents.<id>] idle_eviction_after`.
+  - A tree waits for the longest window among its resident sessions.
+
+  Section 3.
+- **D2. The knob.** `[context_compaction.cache_expiry] mode` takes three
+  values:
+  - `off` (the default; a compaction the user did not ask for is opt-in);
+  - `scheduled`: only sessions a scheduled job will wake
+    after the cache expires;
+  - `always`: every idle session, whether or not a job will wake it. This
+    is what the user reports Claude Code does, and it pays for a summary of
+    every session left idle.
+
+  Section 4.
+- **D3. Slack.** `slack = "5m"`, capped at 20% of the TTL:
+  `effective_slack = min(slack, ttl / 5)`. A one-hour TTL compacts 5
+  minutes before expiry, a ten-minute TTL 2 minutes before, and a
+  five-minute TTL 1 minute before. The compaction starts at
+  `expiry - effective_slack`, and the summary request has to start before
+  expiry.
+  The scheduler wakes at that time; it does not wait for the next one-minute
+  janitor check.
+- **D4. Unknown TTLs.**
+  - `fallback_ttl = "30m"` for providers whose TTL cookie does not set and
+    cannot read.
+  - A model override `cache_ttl = "<duration>"` declares a TTL where cookie
+    sets none. Where cookie sets the TTL itself (Anthropic and Bedrock
+    markers, OpenAI's GPT-5.6 controls or 24h retention), its own value
+    wins.
+
+  Section 4.1.
+- **D5. When compaction is worth it: two floors.** `min_tokens` (default
+  `40000`) and `min_cost_usd` (default `0`). Either can be turned off with
+  a value of 0 or less:
+  - **both off:** every session that meets the other conditions is
+    compacted;
+  - **one on:** that floor alone decides;
+  - **both on:** reaching either floor is enough.
+
+  The cost floor applies only to models with prices; a model with no price
+  never reaches it. So a positive `min_cost_usd` with `min_tokens = 0`
+  compacts only priced models, and only above that cost. Section 4.2
+  defines both measures.
+- **D6. ACP sessions.** Cookie compacts an ACP session before expiry only
+  when its agent declares a TTL (`[acp.agents.<id>] cache_ttl`). It does
+  so with the agent's own `/compact` command. Without a declared TTL, the
+  agent manages its own context, and cookie only keeps it resident (D1).
+  The Claude Code preset leaves `cache_ttl` unset, *if* the phase 0 probe
+  confirms that Claude Code compacts on its own while idle. If the probe
+  shows it does not, the preset sets `cache_ttl = "1h"` instead.
+- **D7. The checkpoint records why it was made.** Clients show
+  "Compacted before the cache expired · next scheduled prompt 03:00".
+  Section 4.4.
+- **D8. Keep-warm pings stay out of v1.** Section 6.
+
+## 3. ACP residency
+
+- **The window.** A session whose agent is an ACP agent waits
+  `[acp.agents.<id>] idle_eviction_after` if set, else
+  `[acp] session_idle_eviction_after` (default `90m`). Other root sessions
+  keep `[server] session_idle_eviction_after`.
+- **Trees.** `root_tree_idle` gives each resident session in the tree its
+  own window instead of the root's. The tree pages out only when every
+  session in it has passed its own window, so an ACP subagent under a
+  native root holds the tree for its 90 minutes. A delegated session that
+  runs an ACP agent waits the longer of its ACP window and
+  `[delegation] idle_eviction_after`.
+- **Unchanged:**
+  - pending work, live tails, and producer pins still keep a session in
+    memory;
+  - a cron job still never pins a session;
+  - the ACP process still stops `idle_shutdown_ms` after its last live
+    session closes. A resident ACP session is a live one, so the process
+    stays up for as long as the session does.
+- **Changes apply at once** from the next janitor check, as
+  `session_idle_eviction_after` does today.
+
+## 4. Compacting before the cache expires
+
+### 4.1 The cache clock
+
+For each session, cookie keeps two values:
+
+- **`last_request_at`:** when the session's own model loop last sent a
+  request: the timestamp of its latest `model_usage_recorded`. Requests
+  from internal agents do not count: the approval reviewer and the title
+  agent use their own conversations.
+- **`ttl`:** the cache TTL that request used. Section 7 stamps it on the
+  usage event when the event is written, so a reload or a restart does not
+  have to work it out again from the configuration. The table below shows
+  where the TTL comes from.
+
+| Binding | `ttl` |
+|---|---|
+| Anthropic, Bedrock | The resolved rolling marker: `5m` or `1h`. If the marker is `off`, the session has no clock and is skipped. |
+| OpenAI and Azure Responses with the GPT-5.6 controls | The controls' `ttl`: `30m` or `12h`. |
+| OpenAI with `prompt_cache_retention = "24h"` | `24h`. |
+| Any other binding (OpenAI's in-memory retention, Gemini's implicit caching, OpenAI-compatible endpoints, DeepSeek, …) | The model override's `cache_ttl` if set, else `fallback_ttl`. |
+
+**`expiry = last_request_at + ttl`**. A new request resets the clock, since
+a cache hit refreshes the TTL.
+
+### 4.2 The rule
+
+A session is **due** for compaction at `expiry - effective_slack` (D3) when all of these
+hold:
+
+1. **The mode allows it.**
+   - Under `scheduled`, the session is the target of an enabled
+     in-session job, and that job's earliest `next_fire` comes after
+     `expiry`. A fire before `expiry` reads a warm cache, so there is
+     nothing to save.
+   - Under `always`, no job is needed.
+2. **The session is idle.** It has no pending work, as the residency
+   janitor defines it (`session_has_pending_work`), and its tree has no
+   running session.
+3. **It is not held** ([held sessions](held-sessions.md)). A held session
+   skips its fires, so under `scheduled` nothing will wake it.
+4. **The context is worth compacting** (D5). Two measures, each taken
+   from the latest turn:
+   - **tokens:** the reported input plus output tokens, the same measure
+     the size trigger uses;
+   - **cost:** what re-caching that context at the next request would cost:
+     the tokens times the model's cache-write rate (`cache_write`), or its
+     input rate when it has no cache-write rate *(user decision of
+     2026-11-02)*, whatever `ttl` is. A model with neither has no cost.
+
+   With `min_tokens` and `min_cost_usd` both 0 or less, this condition
+   always holds. Otherwise, it holds when tokens reach a positive
+   `min_tokens`, or when cost reaches a positive `min_cost_usd`.
+5. **There is something new to compact.** No checkpoint has been
+   committed since the latest turn.
+6. **This idle period has not had a try yet.** A failed attempt is not
+   repeated until the session runs again.
+
+**Why the default token floor is 40k.** With context `C`, a summary of output `O`, and a
+compacted context `C'` of about 25k tokens (summary plus the 16k recent
+tail), compaction pays when:
+
+```text
+C × write  >  C × read + O × output + C' × write
+```
+
+On Anthropic's one-hour prices (write 2×, read 0.1×, output 5× the input
+price) and `O` around 5k, the break-even point is near `C = 40k`. The
+cost measure prices those 40k tokens at the catalog's `cache_write` rate,
+the five-minute one (1.25× input): about $0.25 on Opus, a matching
+`min_cost_usd` for anyone who would rather set the floor by cost.
+
+### 4.3 The scheduler
+
+- **One timer task for the whole engine**, built like the cron scheduler.
+  It keeps an in-memory map of `session → due_at`, sleeps until the
+  earliest entry, and wakes early when the map changes.
+- **These events recompute a session's entry:**
+  - a run ending or a usage event being recorded;
+  - a run starting, which drops the entry;
+  - a job being created, updated, deleted, fired, enabled, or disabled;
+  - a session being held, resumed, or deleted;
+  - `config.reload`.
+- **Residency.** An entry does not keep its session in memory, matching the
+  cron spec's rule. At the due time the session is loaded again if it was
+  paged out. A native root pages out at 30 minutes and its one-hour cache
+  is due at 58, so this is the usual case. Loading reads only the disk.
+  The cache lives at the provider, so it is still warm.
+- **At daemon start:**
+  - under `scheduled`, the scheduler computes entries for the targets of
+    enabled in-session jobs, reading each target's latest usage event;
+  - under `always`, it computes entries only for sessions that are in
+    memory and for job targets. Sessions that paged out before a restart
+    are not scanned.
+- **At the due time** the scheduler checks the rule again under the
+  session's residency lock, then compacts.
+
+### 4.4 The compaction
+
+- **The compaction itself** is the ordinary path that `session.compact`
+  without a focus takes. The internal summary and, on Responses models,
+  native compaction run side by side. The summary request is a prefix of
+  the session's latest request, so it reads the warm cache.
+- **Its origin is the system, not the user.** The checkpoint records why it
+  was made, in a new optional field:
+
+  ```json
+  "reason": {
+    "cache_expiry": {
+      "expires_at": "…",
+      "next_fire": "…",
+      "job_id": "k3v9q2xa"
+    }
+  }
+  ```
+
+  Under `always`, `next_fire` and `job_id` are absent.
+- **Clients** show the checkpoint row as "Compacted before the cache
+  expired", followed by "· next scheduled prompt <local time>" when a job
+  is waiting.
+- **Input during compaction.** A user message or a job fire that arrives
+  while it runs waits for it to finish, as with manual compaction. Cancel
+  stops it the same way.
+- **On failure:**
+  - a runless diagnostic is recorded, kind `cache_expiry_compaction`;
+  - rule 7 stops a retry;
+  - it does not count toward automatic compaction's three-failure counter.
+- **ACP sessions** with a declared `cache_ttl` compact through
+  `compact_acp_session` (`/compact`). Cookie does not see their requests,
+  so `last_request_at` is the end of their last run.
+- **Cost** is recorded the same way as any compaction's
+  (`internal_agent_usage_recorded`).
+
+## 5. Configuration
+
+```toml
+[context_compaction.cache_expiry]
+mode = "off"            # off (default) | scheduled | always
+slack = "5m"            # capped at ttl / 5
+fallback_ttl = "30m"
+min_tokens = 40000      # <= 0: no token floor
+min_cost_usd = 0.0      # <= 0: no cost floor; priced models only
+
+[acp]
+session_idle_eviction_after = "90m"
+
+[acp.agents.claude]
+idle_eviction_after = "90m"   # optional; overrides [acp] for this agent
+cache_ttl = "1h"              # optional; turns on section 4 for this agent
+
+[models.<provider>.<model>]
+cache_ttl = "1h"              # optional; for providers cookie cannot read a TTL from
+```
+
+- **Durations** use the existing compact form (`ms`, `s`, `m`, `h`, `d`).
+- **`slack`** must be positive. It applies as `min(slack, ttl / 5)`.
+- **`min_tokens`** is an integer and **`min_cost_usd`** a number of
+  dollars. Each is off at 0 or less; section 4.2, condition 4, combines
+  them.
+- **`mode = "off"`** turns section 4 off. ACP residency (section 3) is its
+  own knob.
+- **Per-agent settings.** `cache_expiry` follows
+  `[context_compaction]`'s per-agent inheritance. An agent document's
+  table can turn it off for that agent.
+
+## 6. Keep-warm pings (not in v1)
+
+**What a ping is.** Instead of compacting, cookie could send a minimal
+request (the same prefix, one output token) shortly before expiry. That
+reads the cache and resets its TTL.
+
+**What it costs.** Each TTL period costs `C × read`, about 0.1× of a cache
+write's 2×. Pinging until the fire costs about `(fire − now) / ttl × 0.1C`.
+
+**When it pays:**
+
+- **Cheaper than a rewrite** for gaps shorter than about 19 TTLs. With a
+  one-hour TTL, that is a fire within about 19 hours.
+- **Cheaper than compacting** only for short gaps, about 3 to 4 TTLs.
+- **It keeps the whole context**, where compaction loses detail.
+
+**Why it is left out.** It sends requests that do no work, at regular
+intervals. Some providers' terms or rate limits may not welcome that. It
+also needs a rule for choosing among three options, not two.
+
+**How it could fit later.** The rule in 4.2 could become a choice of the
+cheapest option: nothing, ping, or compact.
+
+## 7. Protocol and history
+
+- **`ModelUsageRecorded.cache_ttl_secs`:** optional, stamped when the event
+  is written. Older logs lack it, and the TTL is resolved from the binding
+  then.
+- **`ContextCheckpointCommit.reason`:** optional; section 4.4.
+- **Diagnostic kind** `cache_expiry_compaction`.
+- **Configuration schema:** the keys in section 5.
+- **Versions.** All additive, so this is a client protocol minor bump. The
+  plugin protocol follows the event changes, as it does for every event
+  change.
+
+## 8. Tests
+
+The tests use explicit values, never the defaults.
+
+- **Due time:**
+  - a job firing before expiry leaves the session with no entry;
+  - a job firing after expiry makes it due at `expiry - effective_slack`,
+    with `slack` above and below `ttl / 5`;
+  - several jobs: the earliest `next_fire` decides.
+- **Each skip in 4.2:**
+  - the session is held;
+  - it is running, or another session in its tree is;
+  - each combination of the floors: both off, only tokens, only cost, and
+    both, with sessions below and above each floor;
+  - a positive cost floor on a model with no price;
+  - the cost using the cache-write rate, and the input rate when the
+    model has no cache-write rate;
+  - a checkpoint is already newer than its latest turn;
+  - its idle period already had a failed try;
+  - its rolling marker is `off`.
+- **The entry changes:**
+  - a user turn before the due time drops it;
+  - the next run sets it again.
+- **TTL resolution.** One test per row of 4.1's table, and a declared
+  `cache_ttl` losing to a TTL cookie sets itself.
+- **A paged-out session** is loaded again at the due time and compacted.
+  Its checkpoint carries `reason.cache_expiry`.
+- **Restart.** Entries for job targets are computed again from the stamped
+  `cache_ttl_secs`.
+- **ACP residency:**
+  - an ACP root outlives a native root's window;
+  - a native root with an ACP subagent waits for the subagent's window;
+  - a per-agent override wins.
+- **ACP compaction:**
+  - with a declared `cache_ttl`, the agent's `/compact` runs at the due
+    time;
+  - without one, nothing runs.
+
+## 9. Phases
+
+0. **Probe.** Confirm over ACP that Claude Code (`claude-agent-acp`)
+   compacts on its own while idle near its one-hour mark, and note when.
+   The result settles D6.
+1. **ACP residency** (section 3). Small, and useful on its own.
+2. **The cache clock and compaction before expiry**, engine and protocol
+   (sections 4, 5, and 7).
+3. **Clients and docs:** the checkpoint row in the TUI and web;
+   `engine/context_compaction.md`, `engine/server.md`, the ACP agents
+   guide, and `sessions/scheduling.md`.
+
+## 10. Resolved questions (2026-11-02)
+
+- **`always` after a restart:** it covers sessions in memory and job
+  targets only. There is no scan of sessions that paged out before the
+  restart.
+- **Opting a job out:** not possible. The mode (default `off`) and
+  per-agent inheritance are the only controls.
+- **Native roots staying in memory until their cache expires:** no. Loading
+  again is cheap, and the cache lives at the provider.
+- **Compaction on a different model** (an authored `compaction.md` off
+  `${parent_model}`): it goes ahead anyway. It still shrinks what the fire
+  has to cache.
+- **A watched session:** compacted anyway. Watching is not using.
+- **Activity:** a compaction before expiry is not activity:
+  - the idle clock for paging out counts from the session's last run
+    (`root_tree_idle` ignores the compaction's events);
+  - it does not move the session up in session lists;
+  - it does not mark the session unread;
+  - it sends no push notification.
+- **Phase 0:** the probe runs before phase 1, and its result settles D6.
