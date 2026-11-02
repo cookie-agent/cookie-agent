@@ -213,24 +213,34 @@ fn loading_every_page_shows_what_the_whole_display_view_shows() {
 
 #[test]
 fn rows_already_shown_keep_their_ids_when_older_history_arrives() {
-    let events = log(CODING);
-    let mut store = StateStore::default();
-    let window = display_view::tail_window(&events, EventsView::Display, 16 * 1024);
-    let session_id = open(&mut store, &events, window);
-    let ids = |store: &StateStore| {
-        store.sessions[&session_id]
-            .transcript
-            .iter()
-            .filter(|item| !matches!(item, TranscriptItem::History { .. }))
-            .map(|item| (item.id(), format!("{:?}", std::mem::discriminant(item))))
-            .collect::<Vec<_>>()
-    };
-    let before = ids(&store);
-    let older = store.next_history(session_id).unwrap();
-    load(&mut store, &events, session_id, older, 16 * 1024);
-    let after = ids(&store);
-    assert!(after.len() > before.len());
-    assert!(after.ends_with(&before), "{before:?}\n{after:?}");
+    // Pages this small start at model attempts inside a run, so a reply
+    // shown in part starts again in the page before it: that reply is the
+    // one row a page may give a new id.
+    for history in [CODING, DELEGATION] {
+        let events = log(history);
+        let budget = 2 * 1024;
+        let mut store = StateStore::default();
+        let window = display_view::tail_window(&events, EventsView::Display, budget);
+        let session_id = open(&mut store, &events, window);
+        let ids = |store: &StateStore| {
+            store.sessions[&session_id]
+                .transcript
+                .iter()
+                .filter(|item| !matches!(item, TranscriptItem::History { .. }))
+                .map(TranscriptItem::id)
+                .collect::<Vec<_>>()
+        };
+        let mut pages = 0;
+        while let Some(older) = store.next_history(session_id) {
+            let before = ids(&store);
+            load(&mut store, &events, session_id, older, budget);
+            let after = ids(&store);
+            let lost = before.iter().filter(|id| !after.contains(id)).count();
+            assert!(lost <= 1, "page {pages} renumbered {lost} rows:\n{before:?}\n{after:?}");
+            pages += 1;
+        }
+        assert!(pages > 3, "{pages} pages");
+    }
 }
 
 #[test]
@@ -434,3 +444,4 @@ fn held_live_state_keeps_the_newest_of_each_until_its_end() {
     );
     assert!(kept(&held).is_empty());
 }
+

@@ -1359,7 +1359,11 @@ pub struct SessionState {
     pub voided_inputs: Vec<VoidedInput>,
     /// Inputs queued behind the running run, from every client.
     pub queued_inputs: cookie_agent_protocol::QueuedInputs,
+    /// The id of the transcript item pushed last (see `push_item`).
     pub next_transcript_id: u64,
+    /// The sequence of the event being reduced, which the ids of the
+    /// transcript items it pushes derive from (see `push_item`).
+    pub item_id_seq: u64,
     /// Ids handed to parts opened by live-only output, which has no durable
     /// sequence to derive one from. See `LIVE_PART_ID_BASE`.
     pub next_live_part_id: u64,
@@ -1700,6 +1704,7 @@ fn catch_up(state: &mut SessionState, events: Vec<Replayed>) {
 /// An event a newer daemon wrote that this build cannot read changes
 /// nothing; the debug view shows a dim row naming its type.
 fn push_unknown_event_row(state: &mut SessionState, event: &cookie_agent_protocol::UnknownEvent) {
+    state.item_id_seq = event.seq;
     push_event(
         state,
         EventLevel::Debug,
@@ -1975,7 +1980,7 @@ impl StateStore {
                         Staged::Held(events) => {
                             let history =
                                 replay.history.map(|history| *history).unwrap_or_default();
-                            let mut held = history::HeldHistory::from_window(
+                            let held = history::HeldHistory::from_window(
                                 history.window.unwrap_or_default(),
                                 &history.cut,
                                 events,

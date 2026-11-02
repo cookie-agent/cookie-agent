@@ -79,38 +79,6 @@ pub(crate) struct HeldHistory {
     cut: BTreeMap<u64, (ToolCallId, u64)>,
     older_cursor: Option<u64>,
     gap: Option<HistoryGap>,
-    /// The ids the fold numbers its rows and parts from.
-    base: Ids,
-    /// The ids the last fold had reached at the events older history joins
-    /// at: its first held event, and the gap's newer side.
-    anchors: Vec<(u64, Ids)>,
-    /// Where the page just added joins the held history: the next fold
-    /// numbers from there as the last did, so the rows a client shows keep
-    /// their ids, and with them what it expanded.
-    joined_at: Option<u64>,
-}
-
-/// The next transcript row and assistant part ids of a projection.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct Ids {
-    rows: u64,
-    parts: u64,
-}
-
-impl Ids {
-    /// Where a first fold starts: far enough up that the rows of every
-    /// older page fit below.
-    const FIRST: Self = Self {
-        rows: 1 << 40,
-        parts: 1 << 40,
-    };
-
-    fn of(state: &SessionState) -> Self {
-        Self {
-            rows: state.next_transcript_id,
-            parts: state.next_live_part_id,
-        }
-    }
 }
 
 impl HeldHistory {
@@ -124,7 +92,6 @@ impl HeldHistory {
             header: window.header,
             older_cursor: window.older_cursor,
             gap: window.gap,
-            base: Ids::FIRST,
             ..Self::default()
         };
         held.extend(events, cut);
@@ -258,7 +225,6 @@ impl HeldHistory {
             .collect::<Vec<_>>();
         let shown = events.len() as u64;
         self.extend(events, &page.cut);
-        self.joined_at = Some(before);
         if self.older_cursor == Some(before) {
             self.older_cursor = page.older_cursor;
             self.header = match page.header_kind {
@@ -284,35 +250,9 @@ impl HeldHistory {
     }
 
     /// The projection the held history folds to (see the module docs).
-    /// After a page joined, its rows are numbered so the rows already shown
-    /// keep their ids.
-    pub(crate) fn fold(&mut self, session_id: SessionId, generation: u64) -> SessionState {
-        if let Some(joined) = self.joined_at.take()
-            && let Some((_, before)) = self.anchors.iter().find(|(seq, _)| *seq == joined)
-        {
-            let before = *before;
-            let (_, dry) = self.fold_from(session_id, generation, Ids::default(), Some(joined));
-            if let Some((_, reached)) = dry.iter().find(|(seq, _)| *seq == joined) {
-                self.base = Ids {
-                    rows: before.rows.wrapping_sub(reached.rows),
-                    parts: before.parts.wrapping_sub(reached.parts),
-                };
-            }
-        }
-        let (state, anchors) = self.fold_from(session_id, generation, self.base, None);
-        self.anchors = anchors;
-        state
-    }
-
-    /// [`Self::fold`] numbering from `base`, with the ids reached at each
-    /// event older history can join at, and at `joined`.
-    fn fold_from(
-        &self,
-        session_id: SessionId,
-        generation: u64,
-        base: Ids,
-        joined: Option<u64>,
-    ) -> (SessionState, Vec<(u64, Ids)>) {
+    /// Its rows keep their ids from fold to fold: an item's id derives
+    /// from the event that pushed it (`push_item`).
+    pub(crate) fn fold(&self, session_id: SessionId, generation: u64) -> SessionState {
         let first = self.events.keys().next().copied();
         let mut seed = SessionState {
             generation,
@@ -334,8 +274,6 @@ impl HeldHistory {
             );
         }
         let mut state = SessionState::seeded(seed);
-        state.next_transcript_id = base.rows;
-        state.next_live_part_id = base.parts;
         let first_time = self
             .events
             .values()
@@ -351,7 +289,6 @@ impl HeldHistory {
                 failed: None,
             });
         }
-        let mut anchors = Vec::new();
         let mut gap = self.gap;
         for held in self.events.values() {
             if let Some(open) = gap
@@ -366,10 +303,6 @@ impl HeldHistory {
                     failed: None,
                 });
                 gap = None;
-                anchors.push((open.before_seq, Ids::of(&state)));
-            }
-            if Some(held.seq()) == first || Some(held.seq()) == joined {
-                anchors.push((held.seq(), Ids::of(&state)));
             }
             state.last_seq = held.seq();
             match held {
@@ -405,7 +338,7 @@ impl HeldHistory {
             loading: None,
             failed: None,
         };
-        (state, anchors)
+        state
     }
 
     /// Replaces the cut result at `seq` with the whole event.

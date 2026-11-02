@@ -117,6 +117,7 @@ pub(super) fn reduce_event_from(
     origin: Option<cookie_agent_protocol::EventOrigin>,
     payload: EventPayload,
 ) {
+    state.item_id_seq = sequence;
     // The queued lane is the protocol's own reduction, shared with the
     // engine; what it voids goes back to its authors.
     let voided = state
@@ -3145,12 +3146,30 @@ pub(super) fn push_item(
     timestamp: jiff::Timestamp,
     item: impl FnOnce(u64) -> TranscriptItem,
 ) {
-    state.next_transcript_id = state.next_transcript_id.wrapping_add(1).max(1);
+    state.next_transcript_id = next_item_id(state.next_transcript_id, state.item_id_seq);
     let id = state.next_transcript_id;
     state.item_times.insert(id, timestamp);
     let item = item(id);
     state.busy.pushed(&item);
     state.transcript.push(item);
+}
+
+/// The bits of a transcript item's id below its event's sequence: the
+/// item's ordinal among the items that event pushed.
+const ITEM_ORDINAL_BITS: u32 = 20;
+
+/// The id of the item an event of sequence `seq` pushes after the item
+/// `last`: the event's sequence and the item's ordinal among those it
+/// pushed. An item keeps its id however much older history a fold holds
+/// before it, or folds into an item before it, so a client keeps its row.
+/// An item pushed without a newer event, such as one of live output,
+/// comes after `last`.
+pub(super) fn next_item_id(last: u64, seq: u64) -> u64 {
+    if last >> ITEM_ORDINAL_BITS >= seq {
+        last.wrapping_add(1)
+    } else {
+        (seq << ITEM_ORDINAL_BITS) | 1
+    }
 }
 
 /// Adds a row for input the engine gives the model beyond the

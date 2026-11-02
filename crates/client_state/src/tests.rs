@@ -2100,7 +2100,7 @@ fn input_rows_follow_application_order_without_changing_queue_identity() {
     }
     assert_eq!(
         inputs.iter().map(|item| item.id()).collect::<Vec<_>>(),
-        [2, 3, 1]
+        [2, 3, 1].map(first_item_of)
     );
     assert!(state.pending_inputs.is_empty());
     assert!(state.voided_inputs.is_empty());
@@ -3211,6 +3211,11 @@ fn producer_can_be_readmitted_after_interruption_but_not_to_terminal_run() {
     ));
 }
 
+/// The id of the first transcript item the event of sequence `seq` pushes.
+fn first_item_of(seq: u64) -> u64 {
+    crate::reduce::next_item_id(0, seq)
+}
+
 #[test]
 fn sequenced_projection_rows_use_transcript_allocator_ids() {
     let session_id = SessionId::new_v7();
@@ -3271,7 +3276,7 @@ fn sequenced_projection_rows_use_transcript_allocator_ids() {
             .iter()
             .map(TranscriptItem::id)
             .collect::<Vec<_>>(),
-        vec![50, 51, 52]
+        vec![50, first_item_of(1), first_item_of(2)]
     );
 }
 
@@ -3338,7 +3343,7 @@ fn producer_queue_identity_survives_admission_reordering_timing_pruning_and_repl
         [
             TranscriptItem::ProducerMessage {
                 summary: None,
-                id: 2,
+                id: second_row,
                 seq: 2,
                 accepted_at: second_accepted_at,
                 message_id: row_second_id,
@@ -3347,7 +3352,7 @@ fn producer_queue_identity_survives_admission_reordering_timing_pruning_and_repl
             },
             TranscriptItem::ProducerMessage {
                 summary: None,
-                id: 1,
+                id: first_row,
                 seq: 1,
                 accepted_at: first_accepted_at,
                 message_id: row_first_id,
@@ -3356,6 +3361,8 @@ fn producer_queue_identity_survives_admission_reordering_timing_pruning_and_repl
             }
         ] if *row_first_id == first_message_id
             && *row_second_id == second_message_id
+            && *first_row == first_item_of(1)
+            && *second_row == first_item_of(2)
             && *first_accepted_at == jiff::Timestamp::new(1, 0).expect("timestamp")
             && *second_accepted_at == jiff::Timestamp::new(2, 0).expect("timestamp")
     ));

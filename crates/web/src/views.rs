@@ -2946,8 +2946,9 @@ fn keep_off_top(scroller: &web_sys::Element, workspace: Workspace) {
 }
 
 /// Once a page of older history drew: when the browser kept no row in
-/// view in place (its rows were drawn anew), puts the view back as far
-/// from the end as it stood, which history arriving above does not move.
+/// view in place, puts the view back as far from the end as it stood,
+/// which history arriving above does not move. The row at the top is often
+/// a reply the page split, which starts in the page and is a new row.
 /// A page that drew nothing (a run's end, a setting) reads the next one,
 /// as the user asked for history to show.
 fn restore_after_history(
