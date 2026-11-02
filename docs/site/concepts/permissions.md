@@ -20,7 +20,9 @@ Each tool declares a permission *action* and names the *resource* of each call:
   `subagent`, or `new`;
 - `list_runtimes`: nothing to name; any rule pattern matches;
 - `attach` (`attach_machine`, `detach_machine`): the workspace, checked on
-  the target runtime (`attach@labpc`).
+  the target runtime (`attach@labpc`);
+- `asset` (the [asset tools](../sessions/assets.md)): what the call does,
+  `read`, `write`, or `delete`.
 
 Actions are free-form labels, a lowercase letter then up to 31 lowercase
 letters, digits, or underscores, so a runtime's or a plugin's tools can
@@ -99,6 +101,13 @@ any agent but an internal one, and none for a delegated run, so a subagent
 attaches machines only when its document grants `attach`. A run attaches to
 its own session only. See
 [Attaching from a session](runtimes.md#attaching-from-a-session).
+
+The `asset` action has a default by whether the run is delegated too:
+`asset: allow` for a root run of any agent but an internal one, and
+`asset: deny` for a delegated run at any depth, so a subagent sees the
+asset tools only when its document grants them. Assets have no owner: a
+rule applies the same to every asset a session can see. See
+[Assets and figures](../sessions/assets.md#permissions).
 
 ## How the levels combine
 

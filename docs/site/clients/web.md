@@ -101,11 +101,12 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 
 ## Layout
 
-- **The rail.** An icon strip on the far left switches between eight
+- **The rail.** An icon strip on the far left switches between nine
   views (a window too short for them all scrolls it);
   each icon names itself in a tooltip, and the view shown is marked by a
   bar at the rail's edge:
   - **Chat** (the default): the sessions sidebar and the transcript;
+  - **Assets** (the pictures): a project's assets (see [Figures](#figures));
   - **Agents**: the agent documents and their presets, in a sidebar beside
     the one open;
   - **Skills** (the book): the skills sessions can use;
@@ -688,6 +689,36 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 - **Messages from producers** (goal control and reminders, background-call
   reports, delegation reports, plugins) show as one folded line with their
   summary; click one to read it whole.
+
+### Figures
+
+An agent shows you a file as a figure ([Assets and figures](../sessions/assets.md)),
+under its call, outside the reduced mode's folded work and whether the
+call's row is folded or open. The figure has its caption, then each asset
+with its title, *Full screen*, and *Download*:
+
+- **Images, SVG, and video** show inline and open in the media viewer.
+- **A Markdown document** is rendered as a reply is (raw HTML escaped,
+  images as links). A document taller than 480 px is cut, with *Show all*.
+- **An HTML page** runs in a sandboxed frame of `viewer.html`, served with
+  its own policy: its scripts run and it reaches the network, but its
+  origin is opaque, so it has no access to the page, its storage, the
+  daemon's token, or the connection, and it cannot move another figure. It
+  grows with its content, from 120 px up to 80% of the window. *Reload*
+  runs it again, and *Full screen* runs it in a frame over the whole page;
+  Escape closes it.
+- **Any other file** is a download card.
+
+When an asset is written again, its figures show the new content and say
+when it was updated; when it is deleted, they say so. A link of the form
+`#session=<id>&asset=<handle>`, which the TUI prints, opens the session on
+the page's own daemon and shows the figure full screen.
+
+**The Assets view** lists the assets kept for a project (or for sessions
+in no project), newest first, with their total size: filter them by kind,
+search by title or file name, open one as a figure, rename, download, or
+delete it (after asking). Choose the project at its top; it opens on the
+open session's. A session's own assets are not listed there.
 
 ## Managing the daemon
 

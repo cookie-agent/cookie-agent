@@ -507,7 +507,9 @@ each call, and delegates to no subagent unless its document names one. Memory ha
 the run is delegated rather than by mode (see
 [Memory permissions](#memory-permissions)). `cron` defaults the same way:
 a root run may manage cron jobs and a delegated one may not (see
-[Cron permissions](#cron-permissions)).
+[Cron permissions](#cron-permissions)), and so does `asset`: a root run may
+read, show, write, and delete assets, and a delegated one is denied them
+(see [Assets and figures](../sessions/assets.md#permissions)).
 
 ## Agent presets
 

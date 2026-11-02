@@ -104,6 +104,7 @@ nav:
       - Sessions: sessions/index.md
       - Delegating to runtimes: sessions/delegation.md
       - Attaching media: sessions/media.md
+      - Assets and figures: sessions/assets.md
       - Compaction: sessions/compaction.md
       - Goal mode: sessions/goals.md
       - Memory: sessions/memory.md
@@ -166,6 +167,7 @@ nav:
       - Status and scope: specs/index.md
       - Implemented:
           - ACP agent permissions: specs/acp-permissions.md
+          - "Assets: files agents give the user": specs/assets.md
           - Session pins and filters: specs/session-pins-and-filters.md
           - Daemon startup and status: specs/daemon-startup.md
           - "`cookie update`: self-update by channel": specs/self-update.md
@@ -196,7 +198,6 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - "Assets: files agents give the user": specs/assets.md
           - ACP agents across several machines: specs/acp-several-runtimes.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md

@@ -1,7 +1,9 @@
 # Assets: files agents give the user, and figures in the conversation
 
-Status: **approved** (2026-11-01), being implemented. The user's decisions
-are in section 12, and section 13 compares Hermes Agent.
+Status: **implemented** (2026-11-01; client protocol 1.67.0, plugin
+protocol 1.35.0, runtime protocol 1.15.0). The user's decisions are in
+section 12, section 13 compares Hermes Agent, and the
+[implementation notes](#implementation-notes) say where the code differs.
 
 ## 1. Problem
 
@@ -809,3 +811,30 @@ Read from NousResearch/hermes-agent at `c7da41dd` (2026-11-01):
   call's arguments in history.
 - **Routed runtime tools.** Rejected: ACP agents take no routed tools, and
   the daemon can already read files from runtimes.
+
+## Implementation notes
+
+Implemented on 2026-11-01 (client protocol 1.67.0, plugin protocol 1.35.0,
+runtime protocol 1.15.0). Where the code differs from the sections above:
+
+- **`assets.changed` is an empty notification,** coalesced like
+  `memory.changed`, instead of section 10's `{ store, upserted, removed }`:
+  figures read their assets again with `asset.get`, and the Assets tab
+  lists its store again with `assets.list`.
+- **The `asset` block also carries `handle` and `sha256`.** A figure
+  compares the `sha256` it was shown with with the asset's current one to
+  say it was updated.
+- **The store lock is the process's,** as for cron jobs: two daemons
+  sharing a data root are not serialized.
+- **Full screen on the web** is an overlay over the whole page with a frame
+  of its own, so an HTML page runs again there; closing it leaves the
+  figure's own frame as it was.
+- **Only `#session=<id>&asset=<handle>` links exist.** Section 8.4's
+  `#project=<id>&asset=<handle>` is not implemented: nothing prints one,
+  since the TUI links to a figure in its session.
+- **The Assets view** opens on the open session's project, and shows no
+  session's own assets, as section 8.3 says; it has no thumbnails, only an
+  icon by kind.
+- **The TUI's page URL** comes from the handshake when the TUI starts, or
+  from the address it attached at. A daemon whose `page_url` changes later
+  is seen at the TUI's next start.
