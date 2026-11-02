@@ -21,6 +21,7 @@ pub(super) fn draft_title(draft: &RunSelection) -> String {
 pub(super) fn agent_picker_row(
     agent: &AgentDescriptor,
     attached: &[cookie_agent_protocol::RuntimeId],
+    runtime: Option<&cookie_agent_protocol::RuntimeId>,
     width: usize,
     selected: bool,
     theme: &Theme,
@@ -34,11 +35,11 @@ pub(super) fn agent_picker_row(
         id_style
     };
     // An ACP agent that cannot be picked now is dimmed.
-    let pickable = cookie_agent_client_state::acp::pickable(agent, attached, None);
+    let pickable = cookie_agent_client_state::acp::pickable(agent, attached, runtime);
     let id_style = if pickable { id_style } else { theme.muted() };
     let mut spans = vec![Span::styled(id, id_style)];
     let mut used = id_width;
-    if let Some(note) = cookie_agent_client_state::acp::runtime_note(agent, attached, None)
+    if let Some(note) = cookie_agent_client_state::acp::runtime_note(agent, attached, runtime)
         && used < width
     {
         let note = truncate_with_ellipsis(&format!(" [{note}]"), width - used);
@@ -833,7 +834,7 @@ impl App {
     }
 
     pub(super) async fn handle_agent_picker_key(&mut self, key: KeyEvent) {
-        let count = self.filtered_agent_picker_candidates().len();
+        let count = self.filtered_agent_choices().len();
         if self.agent_search.focus() == SearchPickerFocus::Input {
             match key.code {
                 KeyCode::Esc => self.close_agent_picker(),
@@ -983,34 +984,38 @@ impl App {
                     return;
                 }
                 let attached = self.agent_runtimes();
-                let agent = self
-                    .filtered_agent_picker_candidates()
-                    .get(index)
-                    .map(|agent| {
-                        (cookie_agent_client_state::acp::pickable(agent, &attached, None))
-                            .then(|| agent.id.clone())
-                            .ok_or_else(|| {
-                                cookie_agent_client_state::acp::unpickable_reason(
-                                    agent, &attached, None,
-                                )
-                            })
-                    });
+                let agent = self.filtered_agent_choices().get(index).map(|choice| {
+                    let host = choice.runtime.as_ref();
+                    (cookie_agent_client_state::acp::pickable(choice.agent, &attached, host))
+                        .then(|| (choice.agent.id.clone(), choice.runtime.clone()))
+                        .ok_or_else(|| {
+                            cookie_agent_client_state::acp::unpickable_reason(
+                                choice.agent,
+                                &attached,
+                                host,
+                            )
+                        })
+                });
                 if let Some(Err(reason)) = agent {
                     self.status = reason;
                     return;
                 }
-                if let Some(Ok(agent)) = agent {
-                    self.set_draft_agent(agent);
+                if let Some(Ok((agent, runtime))) = agent {
+                    match runtime {
+                        Some(runtime) => {
+                            if !self.pick_agent_on(agent, runtime) {
+                                return;
+                            }
+                        }
+                        None => self.set_draft_agent(agent),
+                    }
                     self.agent_search.reset();
                     self.modal = Modal::None;
-                    // An ACP agent several runtimes offer asks where it runs.
-                    self.open_runs_on();
                     // Agent selection only updates the client-side draft.
                     // Creation is deferred until the first prompt so the
                     // session and its first run follow one admission flow.
                 }
             }
-            Modal::RunsOn => self.choose_runs_on(index),
             Modal::Presets => {
                 let preset = if index == 0 {
                     Some(None)

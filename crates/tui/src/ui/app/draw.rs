@@ -19,14 +19,16 @@ impl App {
                 let (model, effort) = self
                     .acp_model_and_effort()
                     .unwrap_or_else(|| ("agent's model".to_owned(), None));
+                // Where it runs: `claude · on local`, one segment with the
+                // agent, whose picker chooses both.
+                let agent = match self.runs_on_label() {
+                    Some(runtime) => format!("{} · on {runtime}", draft.agent),
+                    None => draft.agent.to_string(),
+                };
                 let mut spans = vec![Span::styled(
-                    draft.agent.to_string(),
+                    agent,
                     Style::default().add_modifier(Modifier::BOLD),
                 )];
-                // Where it runs, when several runtimes offer it.
-                if let Some(runtime) = self.runs_on_label() {
-                    spans.push(Span::styled(format!("@{runtime}"), regular));
-                }
                 spans.push(Span::styled(" • ", regular));
                 spans.push(Span::styled(model, regular));
                 if let Some(effort) = effort {
@@ -178,22 +180,12 @@ impl App {
         self.hit_map.title_segments = if self.new_session_draft.is_none() && self.draft.is_none() {
             Vec::new()
         } else {
-            let segments = if self.draft_is_acp() && self.runs_on_label().is_some() {
-                vec![
-                    Some(TitleSegment::Agent),
-                    Some(TitleSegment::RunsOn),
-                    None,
-                    Some(TitleSegment::Model),
-                    Some(TitleSegment::Variant),
-                ]
-            } else {
-                vec![
-                    Some(TitleSegment::Agent),
-                    None,
-                    Some(TitleSegment::Model),
-                    Some(TitleSegment::Variant),
-                ]
-            };
+            let segments = [
+                Some(TitleSegment::Agent),
+                None,
+                Some(TitleSegment::Model),
+                Some(TitleSegment::Variant),
+            ];
             rendered_input
                 .title_rect
                 .map_or_else(Vec::new, |title_rect| {
@@ -315,31 +307,6 @@ impl App {
                     entries,
                     Some("The agent offers no options."),
                     area,
-                    Some("↑↓ move · enter: select · esc: close"),
-                );
-            }
-            Modal::RunsOn => {
-                let current = self.runs_on_label();
-                let entries = self
-                    .runs_on_rows()
-                    .into_iter()
-                    .map(|(runtime, available)| {
-                        let mut entry = runtime.to_string();
-                        if Some(&runtime) == current.as_ref() {
-                            entry.push_str(" (current)");
-                        }
-                        if !available {
-                            entry.push_str(" · away or disabled");
-                        }
-                        entry
-                    })
-                    .collect();
-                self.render_picker(
-                    frame,
-                    "Runs on — where the agent runs for this session",
-                    entries,
-                    None,
-                    centered(frame.area(), 48, 40),
                     Some("↑↓ move · enter: select · esc: close"),
                 );
             }
@@ -637,12 +604,7 @@ impl App {
         // An ACP agent's own mode is the session's permission mode.
         let mode_label = self.agent_mode().map_or_else(
             || permission_mode_label(self.displayed_permission_mode()).to_owned(),
-            |option| {
-                format!(
-                    "{} · agent",
-                    cookie_agent_client_state::acp::current_name(&option)
-                )
-            },
+            |option| cookie_agent_client_state::acp::current_name(&option),
         );
         let mode = mode_label.as_str();
         let hint = "`ctrl+p` commands";
@@ -1106,17 +1068,18 @@ impl App {
         self.clamp_picker_selection();
         let selected = self.picker_state.selected();
         let total = self.agent_picker_candidates().len();
-        let agents = self.filtered_agent_picker_candidates();
-        let match_count = agents.len();
+        let choices = self.filtered_agent_choices();
+        let match_count = self.filtered_agent_picker_candidates().len();
         let row_width = usize::from(inner_rect(picker).width.saturating_sub(2));
         let attached = self.agent_runtimes();
-        let entries = agents
+        let entries = choices
             .iter()
             .enumerate()
-            .map(|(index, agent)| {
+            .map(|(index, choice)| {
                 agent_picker_row(
-                    agent,
+                    choice.agent,
                     &attached,
+                    choice.runtime.as_ref(),
                     row_width,
                     selected == Some(index),
                     &self.theme,

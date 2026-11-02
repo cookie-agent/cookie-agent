@@ -5943,6 +5943,8 @@ def acp_agents(browser):
     browser.shot("acp-agent-picker")
     browser.click(fixture)
     browser.wait("the picked agent", lambda: "fixture" in browser.text("#agent-chip"))
+    # The chip names where the agent runs.
+    assert "fixture · on local" in browser.text("#agent-chip"), browser.text("#agent-chip")
     send(browser, "work")
     browser.wait("the agent's turn", lambda: "Done." in browser.text("#transcript"), timeout=60)
     statuses = browser.script(
@@ -6053,7 +6055,7 @@ def acp_agents(browser):
 
     # The agent's mode is the session's permission mode: the mode chip shows
     # it, and its sheet lists the agent's modes and picks one.
-    browser.wait("the agent's mode", lambda: "Plan · agent" in browser.text("#permission-mode"), timeout=40)
+    browser.wait("the agent's mode", lambda: "Plan" in browser.text("#permission-mode"), timeout=40)
     browser.click("#permission-mode")
     default_mode = '#sheet [data-agent-mode="default"]'
     browser.wait("the agent's modes", lambda: count(browser, default_mode) == 1)
@@ -6061,7 +6063,7 @@ def acp_agents(browser):
     settle(browser)
     browser.shot("acp-agent-modes")
     browser.click(default_mode)
-    browser.wait("the agent's default mode", lambda: "Default · agent" in browser.text("#permission-mode"), timeout=40)
+    browser.wait("the agent's default mode", lambda: "Default" in browser.text("#permission-mode"), timeout=40)
     print("the mode chip shows and picks the agent's own mode")
 
     # What cookie's rules leave open goes to the user with the agent's own

@@ -462,7 +462,7 @@ async fn options_toggles_a_boolean_option_in_place() {
 }
 
 #[tokio::test]
-async fn an_agent_several_runtimes_offer_asks_where_it_runs_until_it_starts() {
+async fn an_agent_several_runtimes_offer_has_a_picker_row_for_each() {
     let (mut app, session) = acp_session_app().await;
     // `claude` is offered by `local` and `lab` too.
     let lab = RuntimeId::new("lab").unwrap();
@@ -474,38 +474,38 @@ async fn an_agent_several_runtimes_offer_asks_where_it_runs_until_it_starts() {
             agent.runtime = None;
         }
     }
-    // The viewed session started it on `local`: that is settled.
     app.draft = app.default_draft_selection();
     app.set_draft_agent(AgentId::new("claude").unwrap());
-    assert!(app.agent_host_settled());
+    // The title names where it runs, and the picker lists it once for each
+    // runtime.
     assert_eq!(app.runs_on_label(), Some(RuntimeId::new("local").unwrap()));
-    app.open_runs_on();
-    assert_ne!(
-        app.modal,
-        Modal::RunsOn,
-        "a started agent stays where it runs"
-    );
-    // A session that has not started it asks where it runs, and the choice
-    // goes with the selection.
+    let rows = app
+        .filtered_agent_choices()
+        .iter()
+        .filter(|choice| choice.agent.id.as_str() == "claude")
+        .map(|choice| choice.runtime.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let index_of = |app: &App, runtime: &RuntimeId| {
+        app.filtered_agent_choices()
+            .iter()
+            .position(|choice| {
+                choice.agent.id.as_str() == "claude" && choice.runtime.as_ref() == Some(runtime)
+            })
+            .unwrap()
+    };
+    // The viewed session started it on `local`: the `lab` row is refused.
+    app.open_selection_modal(Modal::Agents);
+    let index = index_of(&app, &lab);
+    app.choose_picker_entry(index).await;
+    assert_eq!(app.runs_on_label(), Some(RuntimeId::new("local").unwrap()));
+    assert!(app.status.contains("start a new session"), "{}", app.status);
+    // A session that has not started it takes the row's runtime.
     let state = app.store.sessions.get_mut(&session).unwrap();
     state.acp.agent = None;
     state.acp.runtime_id = None;
-    assert!(!app.agent_host_settled());
-    let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(
-        app.hit_map
-            .title_segments
-            .iter()
-            .any(|hit| hit.segment == crate::ui::app::TitleSegmentForTests::RunsOn),
-        "{rendered}"
-    );
-    app.open_runs_on();
-    assert_eq!(app.modal, Modal::RunsOn);
-    let index = app
-        .runs_on_rows()
-        .iter()
-        .position(|(runtime, _)| *runtime == lab)
-        .unwrap();
+    app.open_selection_modal(Modal::Agents);
+    let index = index_of(&app, &lab);
     app.choose_picker_entry(index).await;
     assert_eq!(app.modal, Modal::None);
     assert_eq!(app.draft.as_ref().unwrap().acp_runtime, Some(lab.clone()));

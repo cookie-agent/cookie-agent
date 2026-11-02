@@ -153,21 +153,10 @@ impl App {
         state.acp.agent.as_ref() == Some(&draft.agent) && state.acp.runtime_id.is_some()
     }
 
-    /// The runtimes the Runs on step offers for the draft's ACP agent, each
-    /// with whether it can run it now.
-    pub(in crate::ui) fn runs_on_rows(&self) -> Vec<(cookie_agent_protocol::RuntimeId, bool)> {
-        self.draft_acp_agent()
-            .map(cookie_agent_client_state::acp::runs_on_choices)
-            .unwrap_or_default()
-    }
-
     /// The runtime the draft's ACP agent runs on, as the composer title
-    /// names it, when more than one runtime offers it.
+    /// names it (`claude · on local`).
     pub(in crate::ui) fn runs_on_label(&self) -> Option<cookie_agent_protocol::RuntimeId> {
         let agent = self.draft_acp_agent()?;
-        if cookie_agent_client_state::acp::runs_on_choices(agent).len() < 2 {
-            return None;
-        }
         cookie_agent_client_state::acp::placed_runtime(
             agent,
             &self.agent_runtimes(),
@@ -176,53 +165,38 @@ impl App {
         .map(|runtime| runtime.runtime_id.clone())
     }
 
-    /// Opens the Runs on step for the draft's ACP agent, unless where it
-    /// runs is settled.
-    pub(in crate::ui) fn open_runs_on(&mut self) {
-        if self.agent_host_settled() {
-            if let Some(runtime) = self.runs_on_label() {
-                self.status = format!(
-                    "the agent runs on {runtime} for this session; start a new session to run it \
-                     elsewhere"
-                );
-            }
-            return;
+    /// Picks `agent` to run on `runtime` from the agent picker, unless its
+    /// session started it elsewhere: it never moves
+    /// (`docs/site/specs/acp-several-runtimes.md` section 3.7).
+    pub(in crate::ui) fn pick_agent_on(
+        &mut self,
+        agent: cookie_agent_protocol::AgentId,
+        runtime: cookie_agent_protocol::RuntimeId,
+    ) -> bool {
+        let current = self
+            .new_session_draft
+            .as_ref()
+            .or(self.draft.as_ref())
+            .map(|draft| draft.agent.clone());
+        if current.as_ref() == Some(&agent)
+            && self.agent_host_settled()
+            && let Some(host) = self.runs_on_label().filter(|host| *host != runtime)
+        {
+            self.status = format!(
+                "{agent} runs on {host} for this session; start a new session to run it on \
+                 {runtime}"
+            );
+            return false;
         }
-        let rows = self.runs_on_rows();
-        if rows.len() < 2 {
-            return;
-        }
-        let current = self.runs_on_label();
-        let index = rows
-            .iter()
-            .position(|(runtime, _)| Some(runtime) == current.as_ref())
-            .unwrap_or(0);
-        self.modal = Modal::RunsOn;
-        self.picker_state.select(Some(index));
-    }
-
-    /// Row `index` of the Runs on step: the draft's agent runs there, which
-    /// the daemon attaches when the session does not.
-    pub(in crate::ui) fn choose_runs_on(&mut self, index: usize) {
-        let Some((runtime, available)) = self.runs_on_rows().get(index).cloned() else {
-            return;
-        };
-        if !available {
-            self.status =
-                format!("the agent cannot run on {runtime} now: it is away or disabled there");
-            return;
-        }
-        self.modal = Modal::None;
+        self.set_draft_agent(agent);
         if let Some(draft) = &mut self.new_session_draft {
             draft.acp_runtime = Some(runtime.clone());
-            self.status = format!("The new session's agent runs on {runtime}");
-            return;
-        }
-        if let Some(draft) = &mut self.draft {
-            draft.acp_runtime = Some(runtime.clone());
-            self.status = format!("The agent runs on {runtime}");
+            self.status = format!("New session agent: {} · on {runtime}", draft.agent);
+        } else if let Some(draft) = &mut self.draft {
+            draft.acp_runtime = Some(runtime);
             self.publish_draft_selection();
         }
+        true
     }
 
     /// The options of the draft's ACP agent (`docs/site/specs/acp-agents.md`

@@ -42,6 +42,31 @@ impl App {
             .collect()
     }
 
+    /// The agent picker's rows: each agent, and an ACP agent several
+    /// runtimes offer once for each of them.
+    pub(in crate::ui) fn filtered_agent_choices(&self) -> Vec<AgentChoice<'_>> {
+        self.filtered_agent_picker_candidates()
+            .into_iter()
+            .flat_map(|agent| {
+                let runtimes = cookie_agent_client_state::acp::runs_on_choices(agent);
+                if runtimes.len() > 1 {
+                    runtimes
+                        .into_iter()
+                        .map(|(runtime, _)| AgentChoice {
+                            agent,
+                            runtime: Some(runtime),
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![AgentChoice {
+                        agent,
+                        runtime: None,
+                    }]
+                }
+            })
+            .collect()
+    }
+
     pub(in crate::ui) fn filtered_agent_picker_candidates(&self) -> Vec<&AgentDescriptor> {
         self.agent_picker_candidates()
             .into_iter()
@@ -300,11 +325,15 @@ impl App {
                             .as_ref()
                             .or(self.draft.as_ref())
                             .map(|draft| &draft.agent);
+                        // The current agent's row: its runtime's, for one
+                        // several runtimes offer.
+                        let runtime = self.runs_on_label();
                         let row = active_agent
                             .and_then(|agent| {
-                                self.agent_picker_candidates()
-                                    .iter()
-                                    .position(|candidate| &candidate.id == agent)
+                                self.filtered_agent_choices().iter().position(|choice| {
+                                    &choice.agent.id == agent
+                                        && (choice.runtime.is_none() || choice.runtime == runtime)
+                                })
                             })
                             .unwrap_or(0);
                         self.picker_state.select(Some(row));
@@ -1178,3 +1207,10 @@ pub(in crate::ui) struct DescendantEvent {
 }
 
 use cookie_agent_client_state::session_actions::next_permission_mode;
+
+/// One row of the agent picker: an agent, and for an ACP agent several
+/// runtimes offer, the runtime the row runs it on.
+pub(in crate::ui) struct AgentChoice<'a> {
+    pub(in crate::ui) agent: &'a AgentDescriptor,
+    pub(in crate::ui) runtime: Option<cookie_agent_protocol::RuntimeId>,
+}

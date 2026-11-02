@@ -158,10 +158,12 @@ both offer the one agent `claude`. A session runs it on one runtime, its
 ([ACP agents across several machines](../specs/acp-several-runtimes.md)):
 
 - **Where you choose.** When more than one runtime offers the agent, the
-  web's **Runs on** chip beside the agent chip, and the TUI's **Runs on**
-  step after the agent picker (and the `@lab` segment of the composer's
-  title), choose the runtime. A runtime the session does not attach yet is
-  attached at its home when the session starts or the choice is made.
+  agent picker offers it once for each: the web's agent sheet lists **on
+  local** and **on lab** under `claude`, and the TUI's picker has a row for
+  each. A runtime the session does not attach yet is attached at its home
+  when the session starts or the choice is made. The agent chip (web) and
+  the composer's title (TUI) read `claude · on local`, and the permission
+  mode shows the agent's own mode by its name (`Auto`).
 - **Without a choice,** the first attached runtime, in attach order, that
   offers the agent and can run it. A session that attaches `local` (the
   default for a new session) runs `claude` on the daemon's machine. With no
@@ -481,7 +483,7 @@ allow}` covers an `exa` server whether cookie or the agent connects it.
   per argument: one for cookie's `bash` stops it asking about cookie's
   `bash` on every machine. Only your `deny` rules still apply then.
 - **The agent's mode is the session's permission mode.** The TUI's bottom
-  bar and the web's mode chip show the agent's mode (`Default · agent`),
+  bar and the web's mode chip show the agent's mode (`Default`),
   `m` in the TUI cycles it, and the web's mode sheet lists the agent's
   modes. Cookie's own modes (`auto-approve`, `ask`, `yolo`, ...) and the
   approval reviewer do not apply to an ACP session; the tree's mode still

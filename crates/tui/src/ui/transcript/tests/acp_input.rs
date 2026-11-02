@@ -60,7 +60,10 @@ async fn a_new_session_draft_picks_the_agents_model_and_effort_and_sends_them() 
         "acp/claude"
     );
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("claude • sonnet![low!]"), "{rendered}");
+    assert!(
+        rendered.contains("claude · on local • sonnet![low!]"),
+        "{rendered}"
+    );
 
     // The model picker lists the model option's values.
     app.open_selection_modal(Modal::Models);
@@ -73,7 +76,7 @@ async fn a_new_session_draft_picks_the_agents_model_and_effort_and_sends_them() 
     // The variant segment cycles the effort option.
     app.cycle_draft_variant();
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("claude • opus![high!]"), "{rendered}");
+    assert!(rendered.contains("claude · on local • opus![high!]"), "{rendered}");
 
     let recorded_for_response = recorded.clone();
     let response = tokio::spawn(async move {
@@ -112,7 +115,10 @@ async fn a_draft_of_an_agent_that_never_started_says_where_its_options_come_from
         .unwrap();
     app.choose_picker_entry(index).await;
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("claude • agent's model"), "{rendered}");
+    assert!(
+        rendered.contains("claude · on local • agent's model"),
+        "{rendered}"
+    );
     app.open_selection_modal(Modal::Models);
     assert_eq!(app.modal, Modal::None);
     assert!(
@@ -136,7 +142,10 @@ async fn a_sessions_model_picker_sets_the_agents_model_option() {
     app.open_selection_modal(Modal::Agents);
     app.choose_picker_entry(index).await;
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("claude • sonnet![low!]"), "{rendered}");
+    assert!(
+        rendered.contains("claude · on local • sonnet![low!]"),
+        "{rendered}"
+    );
     app.open_selection_modal(Modal::Models);
     app.choose_picker_entry(1).await;
     wait_for_method(&recorded, "session.agent_option.set", 1).await;

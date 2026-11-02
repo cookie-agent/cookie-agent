@@ -121,14 +121,11 @@ impl Workspace {
         })
     }
 
-    /// Where the draft's ACP agent runs, for the Runs on chip: its
-    /// runtime, and whether that is settled (its session started it there).
-    /// `None` unless several runtimes offer it.
-    pub fn runs_on(self) -> Option<(RuntimeId, bool)> {
+    /// Where the draft's ACP agent runs, for the agent chip: its runtime,
+    /// and whether that is settled (its session started it there, so it
+    /// stays there).
+    pub fn agent_place(self) -> Option<(RuntimeId, bool)> {
         let agent = self.draft_acp_agent()?;
-        if cookie_agent_client_state::acp::runs_on_choices(&agent).len() < 2 {
-            return None;
-        }
         let host = self.agent_host();
         let runtime = cookie_agent_client_state::acp::placed_runtime(
             &agent,
@@ -137,16 +134,20 @@ impl Workspace {
         )?
         .runtime_id
         .clone();
-        let settled = !self.new_session.get()
+        Some((runtime, self.agent_settled(&agent.id)))
+    }
+
+    /// Whether the viewed session has started its ACP agent `agent`, so
+    /// where it runs is settled.
+    pub fn agent_settled(self, agent: &cookie_agent_protocol::AgentId) -> bool {
+        !self.new_session.get()
             && self.selected.get().is_some_and(|session_id| {
                 self.with_store(|store| {
                     store.sessions.get(&session_id).is_some_and(|state| {
-                        state.acp.agent.as_ref() == Some(&agent.id)
-                            && state.acp.runtime_id.is_some()
+                        state.acp.agent.as_ref() == Some(agent) && state.acp.runtime_id.is_some()
                     })
                 })
-            });
-        Some((runtime, settled))
+            })
     }
 
     pub(crate) fn draft_acp_agent(self) -> Option<AgentDescriptor> {

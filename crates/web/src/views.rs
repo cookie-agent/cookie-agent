@@ -3681,12 +3681,15 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 .map(|tokens| (tokens, viewed.context_window))
         })
     };
+    // An ACP agent names where it runs: `claude · on local`.
     let agent = move || {
-        workspace
-            .draft
-            .get()
-            .map(|draft| draft.agent.to_string())
-            .unwrap_or_else(|| "agent".into())
+        let Some(draft) = workspace.draft.get() else {
+            return "agent".into();
+        };
+        match workspace.agent_place() {
+            Some((runtime, _)) => format!("{} · on {runtime}", draft.agent),
+            None => draft.agent.to_string(),
+        }
     };
     let model = move || {
         // An ACP agent chooses its own model, one of its options.
@@ -3708,12 +3711,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let mode_label = move || {
         cookie_agent_client_state::acp::mode_option(&workspace.acp_options()).map_or_else(
             || mode_name(mode()).to_owned(),
-            |option| {
-                format!(
-                    "{} · agent",
-                    cookie_agent_client_state::acp::current_name(option)
-                )
-            },
+            cookie_agent_client_state::acp::current_name,
         )
     };
     view! {
@@ -3734,29 +3732,6 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 <span class="min-w-0 truncate max-[23.75rem]:sr-only">{agent}</span>
                 <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
-            // Where an ACP agent runs, when several runtimes offer it.
-            {move || workspace.runs_on().map(|(runtime, settled)| {
-                let label = format!("on {runtime}");
-                let title = if settled {
-                    format!("The agent runs on {runtime} for this session; start a new session to run it elsewhere")
-                } else {
-                    format!("The agent runs on {runtime} (click to choose another)")
-                };
-                view! {
-                    <button
-                        type="button"
-                        id="runs-on-chip"
-                        class=CHIP
-                        aria-label=format!("Runs on: {runtime}")
-                        title=title
-                        disabled=settled
-                        on:click=move |_| workspace.panel.set(Some(Panel::RunsOn))
-                    >
-                        <Glyph icon=icondata::FaServerSolid class="text-caramel dark:text-maple" />
-                        <span class="min-w-0 truncate">{label}</span>
-                    </button>
-                }
-            })}
             <button
                 type="button"
                 id="model-chip"
@@ -3954,7 +3929,6 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Compact) => "Compact context",
         Some(Panel::AgentCommand) => "The agent's command",
         Some(Panel::Modes) => "Permission mode",
-        Some(Panel::RunsOn) => "Runs on",
         Some(Panel::Background) => "Background calls",
         Some(Panel::Skills) => "Skills",
         Some(Panel::Permissions) => "Permissions",
@@ -4016,7 +3990,6 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::Compact) => compact_sheet(workspace).into_any(),
                             Some(Panel::AgentCommand) => agent_command_sheet(workspace).into_any(),
                             Some(Panel::Modes) => modes_sheet(workspace).into_any(),
-                            Some(Panel::RunsOn) => runs_on_sheet(workspace).into_any(),
                             Some(Panel::Background) => background_sheet(workspace).into_any(),
                             Some(Panel::Skills) => skills_sheet(workspace).into_any(),
                             Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
@@ -4081,6 +4054,12 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
             let attached = workspace.agent_runtimes();
             // The draft's host stands only for the agent it was chosen for.
             let host = workspace.agent_host().filter(|_| chosen);
+            let choices = cookie_agent_client_state::acp::runs_on_choices(&agent);
+            // Several runtimes offer it: one option under it for each.
+            if choices.len() > 1 {
+                return agent_runtime_options(workspace, &agent, chosen, host, &attached, choices)
+                    .into_any();
+            }
             let pickable = cookie_agent_client_state::acp::pickable(&agent, &attached, host.as_ref());
             let note = cookie_agent_client_state::acp::runtime_note(&agent, &attached, host.as_ref());
             let reason = (!pickable).then(|| {
@@ -4109,9 +4088,90 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
                     <span class=NOTE>{agent.description.clone()}</span>
                 </button>
             }
+            .into_any()
         })
         .collect_view()
         .into_any()
+}
+
+/// An ACP agent several runtimes offer, in the agent sheet: its name and
+/// description, then an option for each runtime it runs on
+/// (`docs/site/specs/acp-several-runtimes.md` section 3.7). Once a session
+/// started it, the others are dimmed: it never moves.
+fn agent_runtime_options(
+    workspace: Workspace,
+    agent: &cookie_agent_protocol::AgentDescriptor,
+    chosen: bool,
+    host: Option<cookie_agent_protocol::RuntimeId>,
+    attached: &[cookie_agent_protocol::RuntimeId],
+    choices: Vec<(cookie_agent_protocol::RuntimeId, bool)>,
+) -> impl IntoView {
+    let current = chosen
+        .then(|| {
+            cookie_agent_client_state::acp::placed_runtime(agent, attached, host.as_ref())
+                .map(|offer| offer.runtime_id.clone())
+        })
+        .flatten();
+    let settled = chosen && workspace.agent_settled(&agent.id);
+    let options = choices
+        .into_iter()
+        .map(|(runtime, available)| {
+            let here = current.as_ref() == Some(&runtime);
+            let usable = agent.runnable_as_root && available && (!settled || here);
+            let reason = if settled && !here {
+                Some(format!(
+                    "{} runs on {} for this session; start a new session to run it elsewhere",
+                    agent.id,
+                    current
+                        .as_ref()
+                        .map_or("another runtime".into(), ToString::to_string)
+                ))
+            } else if !available {
+                Some(format!(
+                    "{} is away, or the agent is disabled there",
+                    runtime
+                ))
+            } else {
+                None
+            };
+            let picked = agent.clone();
+            let label = format!("on {runtime}");
+            view! {
+                <button
+                    type="button"
+                    class=CHIP
+                    class:bg-toasted=here
+                    class:dark:bg-ember=here
+                    class:opacity-50=!usable
+                    class:cursor-not-allowed=!usable
+                    aria-pressed=here.to_string()
+                    aria-disabled=(!usable).to_string()
+                    data-runs-on=runtime.to_string()
+                    title=reason
+                    on:click=move |_| {
+                        if usable {
+                            workspace.pick_agent_on(&picked, runtime.clone());
+                            workspace.panel.set(None);
+                        }
+                    }
+                >
+                    {choice_line(label, here, "font-mono text-xs")}
+                </button>
+            }
+        })
+        .collect_view();
+    view! {
+        <div
+            class=format!("{ROW} cursor-default hover:bg-transparent active:bg-transparent dark:hover:bg-transparent dark:active:bg-transparent")
+            class:bg-toasted=chosen
+            class:dark:bg-ember=chosen
+            data-agent=agent.id.to_string()
+        >
+            {choice_line(agent.id.to_string(), chosen, "font-mono text-sm font-bold")}
+            <span class=NOTE>{agent.description.clone()}</span>
+            <div class="flex flex-wrap gap-2 pt-1">{options}</div>
+        </div>
+    }
 }
 
 /// What the ACP sheets say before the agent has offered any options.
@@ -4916,51 +4976,6 @@ fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
         </div>
     }
     .into_any()
-}
-
-/// Where the draft's ACP agent runs: every runtime that offers it, the
-/// current one checked, the ones that cannot run it dimmed; a click picks
-/// one, which the daemon attaches when the session does not.
-fn runs_on_sheet(workspace: Workspace) -> impl IntoView {
-    let Some(agent) = workspace.draft_acp_agent() else {
-        return empty_state(
-            icondata::FaServerSolid,
-            "The agent runs where it is offered.",
-        )
-        .into_any();
-    };
-    let current = workspace.runs_on().map(|(runtime, _)| runtime);
-    cookie_agent_client_state::acp::runs_on_choices(&agent)
-        .into_iter()
-        .map(|(runtime, available)| {
-            let chosen = current.as_ref() == Some(&runtime);
-            let picked = runtime.clone();
-            view! {
-                <button
-                    type="button"
-                    class=ROW
-                    class:bg-toasted=chosen
-                    class:dark:bg-ember=chosen
-                    class:opacity-50=!available
-                    aria-pressed=chosen.to_string()
-                    aria-disabled=(!available).to_string()
-                    data-runs-on=runtime.to_string()
-                    on:click=move |_| {
-                        if available {
-                            workspace.pick_runs_on(picked.clone());
-                            workspace.panel.set(None);
-                        }
-                    }
-                >
-                    <span class="flex min-w-0 flex-1 flex-col">
-                        {choice_line(runtime.to_string(), chosen, "font-mono text-sm font-bold")}
-                        {(!available).then(|| view! { <span class=NOTE>"away, or the agent is disabled there"</span> })}
-                    </span>
-                </button>
-            }
-        })
-        .collect_view()
-        .into_any()
 }
 
 /// The permission mode picker: every mode with its shield and what it

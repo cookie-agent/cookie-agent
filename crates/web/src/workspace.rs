@@ -97,8 +97,6 @@ pub enum Panel {
     Permissions,
     /// The permission mode picker.
     Modes,
-    /// Where the draft's ACP agent runs, when several runtimes offer it.
-    RunsOn,
     /// A user message's actions: copy, revert, fork.
     Message,
     /// The session's attached runtimes.
@@ -1466,13 +1464,17 @@ impl Workspace {
         self.draft.set(self.default_draft());
     }
 
-    /// Runs the draft's ACP agent on `runtime`, which the daemon attaches
-    /// when the session does not (`docs/site/specs/acp-several-runtimes.md`
-    /// section 3.7).
-    pub fn pick_runs_on(self, runtime: cookie_agent_protocol::RuntimeId) {
+    /// Picks ACP agent `agent` to run on `runtime`, which the daemon
+    /// attaches when the session does not
+    /// (`docs/site/specs/acp-several-runtimes.md` section 3.7).
+    pub fn pick_agent_on(self, agent: &AgentDescriptor, runtime: cookie_agent_protocol::RuntimeId) {
+        self.pick_agent(agent);
         let Some(mut draft) = self.draft.get_untracked() else {
             return;
         };
+        if draft.agent != agent.id {
+            return;
+        }
         draft.acp_runtime = Some(runtime);
         self.set_draft(draft);
     }

@@ -471,9 +471,13 @@ What the implementation does differently from the sections above, or adds:
 - **A chosen runtime not attached** is attached at its home, both when a
   session is created and on `session.select_model`; a project's default
   workspace for it is already attached by the project's defaults.
-- **After the agent starts**, the web's Runs on chip is disabled with the
-  reason as its tooltip, and the TUI's `@runtime` title segment answers a
-  click with the reason in the status line.
+- **No separate Runs on control** (revised 2026-11-01 at the user's
+  request): the agent picker lists an ACP agent several runtimes offer once
+  per runtime (the web's agent sheet as options under the agent, the TUI's
+  picker as a row each), and the agent chip and the TUI's composer title
+  read `claude · on local` for any ACP agent. Once the agent has started,
+  the other runtimes' options are dimmed (web) or refused with the reason
+  (TUI). The permission mode shows the agent's mode by its plain name.
 - **`<machines_changed>`** (D3) carries the whole machines block as it
   stands, with the paragraph, rather than only the new machine's element or
   the name that left. It is recorded as one of the agent's session notices

@@ -498,10 +498,9 @@ impl App {
         match self.modal {
             Modal::Sessions => self.session_search_ids().len(),
             Modal::Presets => self.preset_names().len() + 1,
-            Modal::RunsOn => self.runs_on_rows().len(),
             Modal::AgentOptions => self.agent_option_row_count(),
             Modal::Projects => self.project_picker_choices().len(),
-            Modal::Agents => self.filtered_agent_picker_candidates().len(),
+            Modal::Agents => self.filtered_agent_choices().len(),
             Modal::Models => self.filtered_draft_models().len(),
             Modal::Variants => self.variant_step_options().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
