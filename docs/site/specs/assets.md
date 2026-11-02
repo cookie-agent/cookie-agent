@@ -249,7 +249,9 @@ write_asset(
 > and its subagents, and is deleted with it. Use `project` for something
 > the user will want to find again, in the Assets tab or from another
 > session of the project. Saving does not show the asset: pass
-> `show: true`, with an optional `caption`, or call show_asset.
+> `show: true`, with an optional `caption`, or call show_asset. A shown
+> asset shows under the next text you write; name it there by its handle
+> to link to it.
 
 **Parameter descriptions:**
 
@@ -285,7 +287,7 @@ write_asset(
   - or `…, replaced.`
   - and, with `show`, ` Shown to the user.` after either.
 - **In the transcript:** without `show`, one short row, "Saved *Loss
-  curves*". With `show`, the figure (section 8.1).
+  curves*". With `show`, the asset goes on the shelf (section 8.1).
 - **Refusals** are made before anything is stored, and each says why:
   - a file that is missing, is a folder, or is too large;
   - a handle that does not resolve, with the assets listed;
@@ -307,13 +309,14 @@ show_asset(
 **Description:**
 
 > Show one or more assets to the user in the conversation, by their
-> handles. The user sees each asset as it is now: images, SVG, and video
-> inline, a Markdown document rendered, an HTML page rendered live, and
-> any other file as a download card. Several assets show together, in the order given. `caption` is one
+> handles. They show as cards under the next text you write, as they are
+> now: images, SVG, and video as pictures, an HTML page live, a Markdown
+> document rendered, and any other file as a download. `caption` is one
 > short line on what they show. The user may be on a phone, or in a
-> terminal where a figure is a link, so still say in your reply what they
-> show. You get nothing back but a confirmation: use read_asset to look at
-> an asset yourself.
+> terminal where an asset is a link, so still say in your reply what they
+> show. Naming an asset by its handle in your reply, such as
+> `asset_3f9a1c2e`, makes it a link the user can open. You get nothing
+> back but a confirmation: use read_asset to look at an asset yourself.
 
 **Parameter descriptions:**
 
@@ -452,27 +455,73 @@ the run is delegated, as `cron`'s and memory's do:
 
 ## 8. The web client
 
-### 8.1 Figures
+### 8.1 The shelf
 
-- **A figure card:** the caption, then each asset with its title. An
-  asset's buttons are *Full screen* and *Download*, and HTML also gets
-  *Reload*, which runs its scripts again. A download card has *Download*
-  alone.
-- **Several assets** show in the order given. Images, SVG, and video sit
-  side by side in a grid of thumbnails, each opening in the full-screen
-  viewer, which steps through the card's assets. HTML pages and download
-  cards are stacked at full width.
-- **Outside the fold.** In the reduced transcript, a `figure` row stays
-  outside the `Working…` fold, as approvals do, so the user sees it while
-  the agent works and after. In the full transcript the tool row is open
-  by default.
-- **No client checks a tool's name.** The hint `figure` joins the
-  documented presentation hints, and an `asset` block shows the same
-  wherever it comes from.
-- **Live:** a figure follows `assets_changed` (section 10). When its asset
-  is replaced, it reloads and shows "updated 3 min ago". When it is
-  deleted, it shows "deleted".
-- **Images and video** reuse the existing inline rendering and viewer.
+Revised 2026-11-01 after the first version shipped: a figure showed as a
+tool row that looked the same folded or open. The user chose the shelf
+(mockup "Inspiration 1"):
+
+```text
+▸ Worked for 1m 12s · 6 tool calls          ← write_asset and show_asset fold here
+Run 14 converges fastest: …                  ← the reply
+FROM THIS REPLY
+[ deck of 3 images ] [ page card ] [ doc card ]
+[ file chip ] [ file chip ]
+```
+
+- **The calls fold like any other.** A `figure` call has no place of its
+  own: it folds into the work row, and open it shows each asset as one
+  line ("shown below").
+- **A shelf under the text that follows.** The assets a run's `figure`
+  calls showed go on a shelf, "From this reply", under the first text the
+  run writes after them: the message that comes out of their work, an
+  intermediate one or the reply. Each asset is there once, in the order
+  first shown, as the latest call showed it. Until that text comes, the
+  shelf sits under the work (decided by the user 2026-11-01: it does not
+  move down to the reply when the run ends). A text that is only `…` does
+  not count.
+- **One wrapping row of cards** whose widths let them share rows: the
+  Markdown card sits beside the image and page cards, and file chips two
+  to a row.
+  - **Images, SVG, and video:** two or more are a **deck**, stacked
+    cards that fan out on hover, with a count; one is a single card. A
+    click opens the media viewer at the card clicked, which steps through
+    the deck with its arrows, ← and → on an image, and its filmstrip.
+  - **An HTML page:** a **page card**, a live thumbnail of the page (its
+    sandboxed frame, scaled down, taking no input) over its title. A click
+    opens it in the side panel.
+  - **A Markdown document:** a **document card**, its title and first
+    lines. A click opens it in the side panel.
+  - **Audio:** a card with a player.
+  - **Any other file:** a **file chip**: its type, name, size, and a
+    download button.
+- **The caption** of a call shows under the deck or card of its first
+  asset.
+- **The side panel** opens beside the transcript on a desktop's width, and
+  over it, full screen, on narrower windows. Its head has the asset's
+  title and handle, *Preview* and *Source* tabs, *Copy handle*, *Full
+  screen* (the whole window, as a figure's did), *Download*, and *Close*
+  (Escape too). Preview shows the asset as a figure does (the page
+  in its sandbox, filling the panel; the whole document); Source shows the
+  file's text.
+- **Links in the reply.** A handle the reply's text names (`asset_…`), of
+  an asset on a shelf of the session, is a chip with the asset's icon and
+  title, which opens it as its card does. The tool descriptions tell the
+  model it may name an asset by its handle.
+- **Copying a handle,** to give it back to an agent:
+  - every card has *Copy handle* in its corner, the side panel in its
+    head, and the media viewer in its bar;
+  - a chip's tooltip names its handle, and text copied across a chip
+    holds the handle, not the title, as the reply's own text does;
+  - where the browser cannot copy (a page not served over HTTPS or from
+    localhost), *Copy handle* names the handle in the status line, and the
+    side panel's head shows it to select.
+- **No client checks a tool's name.** The hint `figure` decides what goes
+  on the shelf, and an `asset` block shows the same wherever it comes
+  from.
+- **Live:** a card follows `assets.changed` (section 10). When its asset
+  is replaced, it reloads and says it was updated. When it is deleted, it
+  says so and no longer opens.
 - **Markdown** renders with the transcript's own Markdown renderer
   (`render/markdown.rs`), under the same rules as a reply:
   - raw HTML is escaped, not rendered;
@@ -480,10 +529,7 @@ the run is delegated, as `cron`'s and memory's do:
   - images are links, so a document never loads a remote image by itself;
   - code blocks are highlighted.
 
-  Inline, the document is cut to 480 px with a fade and *Show all*, which
-  opens it at full width over the page. A document over 1 MiB gets the
-  download card instead, saying it is too large to show. In a gallery, it
-  stacks at full width like an HTML page.
+  A document over 1 MiB is a file chip.
 
 ### 8.2 HTML in a sandbox
 
@@ -557,7 +603,9 @@ web page (daemon origin, holds the token)
 ### 8.4 Links
 
 - `#session=<id>&asset=<handle>` opens the session, scrolls to the
-  asset's latest figure, and opens it full screen.
+  shelf that last showed the asset, and opens it as its card does: an
+  image or video in the media viewer, a page or document in the side
+  panel.
 - `#project=<id>&asset=<handle>` opens the asset in the Assets tab, or
   full screen until the tab exists.
 
@@ -567,18 +615,23 @@ connects as usual, and one that does not shows the connect screen first.
 ## 9. The TUI
 
 ```text
-╭ 🖼  Training loss and validation accuracy over 40 epochs.
-│  Loss curves — loss.html (HTML, 48 KB)
-│    http://127.0.0.1:7300/#session=01JC…&asset=asset_3f9a1c2e
-│  Confusion matrix — confusion.png (PNG, 120 KB)
-│    http://127.0.0.1:7300/#session=01JC…&asset=asset_8b01d7aa
-╰
+│ ▸ Worked for 1m 12s · 6 tool calls
+│ Run 14 converges fastest: validation loss under 0.32 by epoch 25.
+│
+│ From this reply
+│  3 images — Loss curves · Accuracy · Confusion matrix
+│    Loss, accuracy, and confusion.
+│    ↗ http://127.0.0.1:7300/#session=01JC…&asset=asset_3f9a1c2e
+│    ↗ http://127.0.0.1:7300/#session=01JC…&asset=asset_8b01d7aa
+│    ↗ …
+│  Run explorer — runs.html (text/html, 42 KB)
+│    ↗ http://127.0.0.1:7300/#session=01JC…&asset=asset_77c0e1a4
 ```
 
-- **A figure row,** shown by the same `figure` hint and kept outside the
-  reduced fold, as on the web: the caption, then one line and one link per
-  asset. A replaced asset's row says "updated", and
-  a deleted asset's says "deleted".
+- **The calls fold like any other,** and their assets show on a shelf
+  under the text that follows them, as on the web: one row per asset
+  (images and video grouped under one line naming them), each with its
+  caption and link. Open, a call lists its assets, without links.
 - **The link:** clicking it, or pressing Enter on it, opens it with the
   system opener (`xdg-open` or `open`) when the TUI's machine has one. The
   URL is always printed in full, so it can be copied over SSH. The TUI
@@ -715,6 +768,14 @@ client shows something.
   download card, PDFs included for now.
 - **Interactive figures** are left for a later round.
 - **Markdown** assets render as documents.
+- **The shelf** (revised 2026-11-01, mockup "Inspiration 1"): figure
+  calls fold like any other, and a run's assets show as cards under its
+  reply: a deck for images and video, a page card and a document card
+  that open in a side panel, file chips; one wrapping row whose cards
+  share rows. Chips for handles named in the reply.
+  The user added: the shelf shows under the text that comes out of the
+  work, and stays there; the side panel is beside the chat on a desktop
+  and can go full screen; a handle can always be copied.
 - **Session assets, the default scope.** `scope: "session"` keeps an asset
   to the session tree that wrote it: every session of the tree can use
   it, other trees cannot reach it, the Assets tab does not show it, and it
