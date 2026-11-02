@@ -45,7 +45,7 @@ const HEADER_ACTION: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center
 const HEADER_COVER: &str = "pl-6 bg-[linear-gradient(to_right,transparent,var(--color-hover-solid)_1.5rem)] group-has-[[data-section-toggle]:active]:bg-[linear-gradient(to_right,transparent,var(--color-press-solid)_1.5rem)]";
 
 /// A text field of the editor.
-const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface px-3 text-sm hover:border-accent focus:border-accent focus:outline-none";
+const FIELD: &str = "min-h-11 w-full min-w-0 rounded-lg bg-surface px-3 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
 
 /// The project a section key names: `None` for "No project".
 fn project_of_key(key: &str) -> Option<Option<ProjectId>> {
@@ -816,7 +816,7 @@ fn project_header(
                 let question = confirm_project.as_ref().map(delete_question).unwrap_or_default();
                 let project = confirm_project.as_ref().map(|project| project.id.clone());
                 view! {
-                    <div class="mx-2 mb-1 flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-project-confirm-box>
+                    <div class="mx-2 mb-1 flex flex-col gap-2 rounded-xl p-2 text-sm bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]" role="alertdialog" data-project-confirm-box>
                         <p>{question}</p>
                         <div class="flex flex-wrap gap-2">
                             <button
@@ -938,7 +938,7 @@ pub(super) fn NewSessionProject(workspace: Workspace) -> impl IntoView {
                 <select
                     id="new-session-project"
                     node_ref=select
-                    class="min-h-11 rounded-md border border-line-2 bg-surface px-2 text-sm font-normal text-fg hover:border-accent"
+                    class="min-h-11 rounded-lg bg-surface px-2 text-sm font-normal text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                     prop:value=current
                     on:change=move |event| {
                         let value = event_target_value(&event);
@@ -1048,7 +1048,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                 workspace.project_editor.with(|editor| {
                     let editor = editor.as_ref()?;
                     editor.confirm_close.then(|| view! {
-                        <div class="flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-discard-box>
+                        <div class="flex flex-col gap-2 rounded-xl p-2 text-sm bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]" role="alertdialog" data-discard-box>
                             <p>"Discard your changes to this project?"</p>
                             <div class="flex flex-wrap gap-2">
                                 <button type="button" class=PRIMARY data-discard on:click=move |_| workspace.discard_panel()>
@@ -1252,7 +1252,7 @@ fn agent_choices(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
     agents.sort_by(|left, right| (&left.preset, &left.id).cmp(&(&right.preset, &right.id)));
     let none_chosen = current.0.is_none() && current.1.is_none();
     view! {
-        <div class="flex flex-col gap-1 rounded-lg border border-line p-1" data-agent-choices>
+        <div class="flex flex-col gap-1 rounded-xl p-1 bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]" data-agent-choices>
             <button
                 type="button"
                 class=ROW

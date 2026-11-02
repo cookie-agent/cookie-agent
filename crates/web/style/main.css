@@ -859,3 +859,19 @@ body {
     animation: none;
   }
 }
+
+/* What takes the composer's place (an approval) rises into it. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    translate: 0 0.625rem;
+  }
+}
+.rise-in {
+  animation: rise-in 340ms var(--ease-out-quint) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rise-in {
+    animation: none;
+  }
+}

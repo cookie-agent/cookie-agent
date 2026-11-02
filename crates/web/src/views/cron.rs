@@ -31,7 +31,7 @@ use crate::{
 };
 
 /// A select, as the form's fields.
-const SELECT: &str = "min-h-11 w-full rounded-md border border-line-2 bg-surface px-2 text-sm hover:border-accent focus:border-accent focus:outline-none";
+const SELECT: &str = "min-h-11 w-full rounded-lg bg-surface px-2 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
 
 /// A field's label above it.
 const LABEL: &str = "flex flex-col gap-1 text-sm";
@@ -150,11 +150,68 @@ fn job_row(
                 .then(|| job_details(workspace, job.clone(), now, confirm_delete))
         }
     };
+    // A right-click offers the job's actions without opening it.
+    let context = RwSignal::new(None);
+    let context_items = {
+        let job = job.clone();
+        move || {
+            use super::row_menu::MenuItem;
+            let (edited, toggled, ran, asked) =
+                (job.clone(), job.id.clone(), job.id.clone(), job.id.clone());
+            let enabled = job.enabled;
+            vec![
+                MenuItem {
+                    id: "edit",
+                    label: "Edit",
+                    icon: icondata::LuPencil,
+                    act: Callback::new(move |()| workspace.edit_cron(edited.clone())),
+                    danger: false,
+                },
+                MenuItem {
+                    id: if enabled { "disable" } else { "enable" },
+                    label: if enabled { "Disable" } else { "Enable" },
+                    icon: if enabled {
+                        icondata::LuPause
+                    } else {
+                        icondata::LuPlay
+                    },
+                    act: Callback::new(move |()| {
+                        workspace.set_cron_enabled(toggled.clone(), !enabled)
+                    }),
+                    danger: false,
+                },
+                MenuItem {
+                    id: "run",
+                    label: "Run now",
+                    icon: icondata::LuSkipForward,
+                    act: Callback::new(move |()| workspace.run_cron(ran.clone())),
+                    danger: false,
+                },
+                MenuItem {
+                    id: "delete",
+                    label: "Delete…",
+                    icon: icondata::LuTrash2,
+                    act: Callback::new(move |()| {
+                        // The confirmation is in the job's details.
+                        workspace.cron_selected.set(Some(asked.clone()));
+                        confirm_delete.set(Some(asked.clone()));
+                    }),
+                    danger: true,
+                },
+            ]
+        }
+    };
     view! {
+        {super::row_menu::context_menu(context, (), title.clone(), context_items)}
         <div
+            on:contextmenu=super::row_menu::on_context(context)
             class=move || format!(
-                "cron-job flex flex-col gap-1 rounded-lg border p-1 {}",
-                if selected.get() { "border-accent" } else { "border-line" }
+                "cron-job flex flex-col gap-1 rounded-xl p-1 transition-shadow {}",
+                if selected.get() {
+                    "bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]"
+                } else {
+                    "bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]"
+                }
             )
             data-cron-job=id.to_string()
             data-title=title.clone()
@@ -469,7 +526,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                 <span class="font-bold">"Prompt"</span>
                 <textarea
                     id="cron-prompt"
-                    class="min-h-[8rem] w-full resize-y rounded-md border border-line-2 bg-surface p-2 text-sm hover:border-accent focus:border-accent focus:outline-none"
+                    class="min-h-[8rem] w-full resize-y rounded-lg bg-surface p-2 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                     prop:value=move || prompt.get()
                     on:input=move |event| prompt.set(event_target_value(&event))
                 ></textarea>

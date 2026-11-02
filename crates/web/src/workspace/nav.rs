@@ -187,6 +187,9 @@ impl Workspace {
         if self.panel.with(Option::is_some) {
             layers.push(Layer::Panel);
         }
+        if self.transient.get() {
+            layers.push(Layer::Transient);
+        }
         layers
     }
 
@@ -234,6 +237,16 @@ impl Workspace {
 
     fn close_layer(self, layer: Layer) {
         match layer {
+            Layer::Transient => {
+                self.transient.set(false);
+                if let Some(close) = self
+                    .transient_close
+                    .try_update_value(Option::take)
+                    .flatten()
+                {
+                    close.run(());
+                }
+            }
             Layer::View => self.open_view(View::Chat, None),
             Layer::Panel => self.close_panel(),
             Layer::Sidebar => self.sidebar_open.set(false),
@@ -245,6 +258,21 @@ impl Workspace {
                 self.memory_pending.set(None);
                 self.cron_form.set(None);
             }
+        }
+    }
+
+    /// A small overlay opened: Back closes it with `close` before anything
+    /// under it.
+    pub fn open_transient(self, close: Callback<()>) {
+        self.transient_close.set_value(Some(close));
+        self.transient.set(true);
+    }
+
+    /// The small overlay closed by other means than Back.
+    pub fn transient_closed(self) {
+        self.transient_close.set_value(None);
+        if self.transient.get_untracked() {
+            self.transient.set(false);
         }
     }
 

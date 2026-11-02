@@ -847,7 +847,7 @@ fn download_card(target: &web_sys::Element, asset: &Asset, url: &str, note: Opti
         .map(|note| format!(" · {}", escape(note)))
         .unwrap_or_default();
     target.set_inner_html(&format!(
-        "<a download=\"{}\" href=\"{}\" class=\"flex items-center gap-3 rounded-md border border-line p-3 hover:bg-hover\" data-asset-download>{}<span class=\"flex min-w-0 flex-col\"><span class=\"truncate text-sm\">{}</span><span class=\"{NOTE}\">{} · {}{note}</span></span></a>",
+        "<a download=\"{}\" href=\"{}\" class=\"flex items-center gap-3 rounded-xl p-3 hover:bg-hover bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]\" data-asset-download>{}<span class=\"flex min-w-0 flex-col\"><span class=\"truncate text-sm\">{}</span><span class=\"{NOTE}\">{} · {}{note}</span></span></a>",
         escape(&download_name(asset)),
         escape(url),
         crate::icons::svg(icondata::LuFileDown, "text-2xl text-accent"),

@@ -283,8 +283,46 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
                                 }
                             })
                             .collect_view();
+                        // A right-click offers the same actions; one that
+                        // asks first asks on the row, as its button does.
+                        let context = RwSignal::new(None);
+                        let context_items = {
+                            let info = info.clone();
+                            move || {
+                                actions(&info)
+                                    .into_iter()
+                                    .map(|action| {
+                                        let (id, preset, path) =
+                                            (info.id.clone(), info.preset.clone(), info.path.clone());
+                                        super::row_menu::MenuItem {
+                                            id: "agent-action",
+                                            label: action.label(),
+                                            icon: icondata::LuBot,
+                                            act: Callback::new(move |()| {
+                                                if action.confirms() {
+                                                    pending.set(Some((id.clone(), action)));
+                                                } else {
+                                                    workspace.agent_document_action(
+                                                        action,
+                                                        id.clone(),
+                                                        preset.clone(),
+                                                        path.clone(),
+                                                    );
+                                                }
+                                            }),
+                                            danger: action.confirms(),
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                            }
+                        };
                         view! {
-                            <div class="flex flex-col gap-1 rounded-md px-3 py-1" data-agent-document=info.id.clone()>
+                            {super::row_menu::context_menu(context, (), info.id.clone(), context_items)}
+                            <div
+                                class="flex flex-col gap-1 rounded-lg px-3 py-1.5 transition-colors hover:bg-hover"
+                                data-agent-document=info.id.clone()
+                                on:contextmenu=super::row_menu::on_context(context)
+                            >
                                 <span class="flex w-full items-center gap-2">
                                     <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{info.id.clone()}</span>
                                     <span class=STATE>{origin_label(&info)}</span>
@@ -312,7 +350,7 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
 }
 
 /// A panel row's action: small, beside the others.
-const PANEL_BUTTON: &str = "inline-flex min-h-11 items-center rounded-md border border-line-2 px-2 text-xs hover:bg-hover active:bg-press";
+const PANEL_BUTTON: &str = "inline-flex min-h-11 items-center rounded-lg px-2 text-xs hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]";
 
 /// An agent's row: its mode's icon, its ID, whether it is off or has an
 /// edit the daemon refused, and its description; a click opens it.
@@ -410,7 +448,7 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
             <div class=EDITOR_PAGE>
                 <div class="flex items-center gap-2">
                     <Glyph icon=mode_icon(agent_summary(&edit.text).mode.as_deref()) class="text-lg opacity-80" />
-                    <h2 class="min-w-0 truncate text-lg font-bold" id="agent-name">{agent_id(&path).to_owned()}</h2>
+                    <h2 class="min-w-0 truncate text-xl font-semibold tracking-tight" id="agent-name">{agent_id(&path).to_owned()}</h2>
                     {preset.map(|preset| view! {
                         <span class=STATE>
                             {format!("preset {preset}")}

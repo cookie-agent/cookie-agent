@@ -214,3 +214,55 @@ Each phase is looked at in light and dark (`scripts/web-screenshots.sh
 6. **TUI overlays and panels.**
 7. **Pictures and docs.** The bundled screenshots, the landing page's
    client pictures, and user docs that describe the old rail or sheets.
+
+## 8. Implementation notes
+
+- **Phase 1 (2026-11-02).** The web's colours are semantic tokens
+  (`--qi-*` custom properties, switched by `.dark`, exposed to Tailwind
+  through `@theme inline`); a class pair such as `bg-toasted
+  dark:bg-ember` became `bg-sunken`. Inter ships as one variable woff2
+  subset to Latin (116 KB), credited in Settings › About and the
+  third-party notices. The TUI's palette tables are by role (`surface`,
+  `sunken`, `line`, `fg`, `muted`, `accent`, …) instead of by bakery hue;
+  without colour, `semantic` keeps `DIM` so quiet roles stay quieter.
+- **Phase 2 (2026-11-02).** Beyond the decisions: the icons moved from
+  Font Awesome's solid set to Lucide's outlines (ISC), drawn at a 1.75
+  stroke, with Font Awesome kept for the brand logos Lucide lacks; Agents'
+  list stopped borrowing the sessions' sidebar and became a first-level
+  list like Memory's; the sidebar button carries the unread dot the rail's
+  Chat button had. Back's history layers are `View`, `Section`, `Editor`,
+  `Sidebar`, and `Panel`, outermost first. The session panel's tabs open
+  their sheets through the commands the ⋮ menu runs, so each reads what it
+  shows. Browser scenarios that pinned the rail's layout were rewritten as
+  short checks of the sidebar and Back, or dropped.
+- **Phase 3 (2026-11-02).** The composer is one card: the text, then a row
+  of the attach buttons, the agent, model, mode, folder, and cost chips
+  (the bottom bar's, folded in), and the actions; the scrollbar gutter the
+  buttons used to dodge went with it. A waiting approval replaces the
+  card (`ApprovalDock`, the oldest approval and how many more wait), and
+  the phone's separate approvals line is gone. The agent, model, and mode
+  pickers keep their sheet (`#sheet`) but draw it as a menu over their
+  chip on wider windows (`data-anchored`). Replies' headers are the
+  agent's name, then its model, in the sans; tool rows are raised cards
+  on a hairline ring; the transcript and the composer share the 720 px
+  column.
+- **Phase 4 (2026-11-02).** Buttons, fields, rows, panels, confirmations,
+  and empty states restyle through their shared constants and a pass over
+  the remaining bordered boxes; Settings' list has icons, with each
+  section's note on a phone only. Back reaches every small overlay through
+  one `Transient` layer that a row's menu, a context menu, and the media
+  viewer register their close with. Right-click menus cover memories,
+  schedules, assets, the agents panel's rows, runtimes, and your messages
+  (their message menu). On a phone the sidebar's views are a four-column
+  grid of tiles, so the sessions keep their room.
+- **Phases 5 and 6 (2026-11-02).** The conversation pane keeps its
+  one-cell margin but draws no frame: the top row is a header (the
+  session's title; the events filter and the scrolled note on the right),
+  so every geometry and hit region stays put. Replies' `│` gutter is a
+  hairline (`Theme::gutter`); the user's keeps the accent. The goal bar
+  leads with `◎` and its checklist's progress, the background bar with
+  `⧗`; they stay their own rows rather than joining the status line,
+  whose width-fitting already spends the row. The status line's mode is
+  the accent, its hint `ctrl+p commands`. Every modal and the command
+  palette dim the screen behind them (`Theme::dimmed`, a blend toward the
+  surface in true colour, `DIM` elsewhere).

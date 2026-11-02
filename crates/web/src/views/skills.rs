@@ -144,7 +144,7 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
                     type="text"
                     role="searchbox"
                     id="skills-search"
-                    class="min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface pr-3 pl-9 text-sm text-fg hover:border-accent focus:border-accent focus:outline-none"
+                    class="min-h-11 w-full min-w-0 rounded-lg bg-surface pr-3 pl-9 text-sm text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                     aria-label="Search skills by name or description"
                     placeholder="Search by name or description"
                     prop:value=move || workspace.skill_list_query.get_untracked()

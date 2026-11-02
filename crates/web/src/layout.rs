@@ -184,6 +184,9 @@ pub enum Layer {
     Sidebar,
     /// A sheet (the session panel among them) over the view.
     Panel,
+    /// A small overlay over everything: a row's or a context menu, the
+    /// media viewer.
+    Transient,
 }
 
 /// What the page does to the browser's history so that it holds one entry

@@ -32,22 +32,21 @@ use crate::{
     workspace::{PANEL_POLL, RUNTIMES_POLL, Workspace},
 };
 
-pub(super) const FIELD: &str = "min-h-11 w-full rounded-md border border-line-2 bg-surface px-3 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
+pub(super) const FIELD: &str = "min-h-9 w-full rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none compact:min-h-11";
 /// A document's text: it fills what its page leaves.
-pub(super) const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-md border border-line-2 bg-surface p-2 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
+pub(super) const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-lg bg-surface-2 p-3 font-mono text-[0.8125rem] leading-relaxed shadow-[inset_0_0_0_1px_var(--color-line)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none";
 /// A small label for a thing's state.
-pub(super) const STATE: &str = "shrink-0 rounded-full bg-sunken px-2 py-0.5 text-xs";
+pub(super) const STATE: &str =
+    "shrink-0 rounded-full bg-sunken px-2 py-0.5 text-[0.6875rem] font-medium text-fg-2";
 /// An action of one row in a list, such as a runtime's MCP server: quiet
 /// text, so a row's several actions stay out of its way, on a full touch
 /// target.
-pub(super) const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 text-xs font-bold text-accent hover:bg-press active:bg-press";
+pub(super) const ROW_ACTION: &str = "inline-flex min-h-9 min-w-9 items-center justify-center gap-1 rounded-lg px-2 text-xs font-medium text-accent transition-colors hover:bg-accent-soft active:bg-press compact:min-h-11 compact:min-w-11";
 /// An editor's page: the text fills it and the actions stay at its foot.
 pub(super) const EDITOR_PAGE: &str = "flex min-h-full flex-1 flex-col gap-2";
-pub(super) const EDITOR_ACTIONS: &str =
-    "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-line bg-surface px-3 py-2";
+pub(super) const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-line bg-surface/90 px-3 py-2 backdrop-blur";
 /// A confirmation before something cannot be undone.
-pub(super) const CONFIRM: &str =
-    "flex flex-col gap-2 rounded-lg border border-accent bg-surface-2 p-3";
+pub(super) const CONFIRM: &str = "flex flex-col gap-2 rounded-xl bg-raised p-3 shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-bad)_40%,transparent),0_0_0_4px_var(--color-bad-soft)]";
 
 /// Calls `poll` every `every` while the sheet is open, as the TUI polls
 /// its open `/runtime` and `/mcp` panels.
@@ -1065,7 +1064,7 @@ fn provider_models_list(workspace: Workspace, provider: ProviderDescriptor) -> i
                     <h3 class="text-xs font-bold uppercase tracking-wide text-muted">
                         {format!("Models ({})", listed.len())}
                     </h3>
-                    <ul class="max-h-64 overflow-y-auto rounded-md border border-line-2 px-3 py-1">
+                    <ul class="max-h-64 overflow-y-auto rounded-lg px-3 py-1 shadow-[inset_0_0_0_1px_var(--color-line-2)]">
                         {rows}
                     </ul>
                 </section>

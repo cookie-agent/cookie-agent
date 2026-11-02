@@ -17,7 +17,7 @@ use leptos::{html, prelude::*};
 use super::{BUTTON, ERROR, NOTE, PRIMARY};
 use crate::{icons::Glyph, workspace::Workspace};
 
-const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface px-3 text-sm hover:border-accent focus:border-accent focus:outline-none";
+const FIELD: &str = "min-h-11 w-full min-w-0 rounded-lg bg-surface px-3 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
 /// A radio or checkbox row: the whole row is the hit area.
 const OPTION: &str =
     "flex min-h-11 cursor-pointer items-start gap-2 rounded-md px-2 py-2 hover:bg-hover";

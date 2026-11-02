@@ -125,7 +125,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                         <span class=NOTE>"This device's name in the list"</span>
                         <input
                             id="notifications-label"
-                            class="min-h-11 rounded-md border border-line-2 bg-surface px-3 text-sm"
+                            class="min-h-11 rounded-lg bg-surface px-3 text-sm shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                             maxlength="80"
                             prop:value=move || label_draft.get().unwrap_or_else(current_label)
                             on:input=move |event| label_draft.set(Some(event_target_value(&event)))
@@ -229,7 +229,7 @@ fn device_row(
     );
     let id = device.id.clone();
     view! {
-        <li class="flex items-center gap-2 rounded-md border border-line px-3 py-2" data-push-subscription=device.id.clone()>
+        <li class="flex items-center gap-2 rounded-xl px-3 py-2 bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]" data-push-subscription=device.id.clone()>
             <div class="flex min-w-0 flex-1 flex-col">
                 <span class="truncate text-sm font-bold">
                     {device.label.clone()}

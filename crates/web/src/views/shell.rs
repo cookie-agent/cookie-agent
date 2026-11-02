@@ -10,7 +10,7 @@
 use leptos::prelude::*;
 
 use super::{
-    ICON_BUTTON, NOTE, ROW,
+    ICON_BUTTON, NOTE,
     agents::agents_page,
     cron::cron_page,
     events_sheet,
@@ -131,14 +131,14 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                         <Glyph icon=icondata::LuArrowLeft class="text-lg" />
                     </button>
                 </Show>
-                <h1 class="min-w-0 flex-1 truncate px-1 text-lg font-bold" id="page-title">{title}</h1>
+                <h1 class="min-w-0 flex-1 truncate px-1 text-[0.9375rem] font-semibold tracking-tight" id="page-title">{title}</h1>
             </div>
             {move || match workspace.view.get() {
                 View::Settings => settings_page(workspace, connection).into_any(),
                 View::Agents => agents_page(workspace).into_any(),
                 view => view! {
-                    <div class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-page-body>
-                        <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-2">
+                    <div class="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-8 sm:py-6" data-page-body>
+                        <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3">
                             {match view {
                                 View::Machines => machines_page(workspace).into_any(),
                                 View::Memory => memory_sheet(workspace).into_any(),
@@ -157,6 +157,23 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
     }
 }
 
+/// A Settings section's icon in the section list.
+const fn section_icon(section: SettingsSection) -> crate::icons::Icon {
+    match section {
+        SettingsSection::Configuration => icondata::LuFileCode,
+        SettingsSection::Providers => icondata::LuKeyRound,
+        SettingsSection::Plugins => icondata::LuPuzzle,
+        SettingsSection::Notifications => icondata::LuBell,
+        SettingsSection::Display => icondata::LuEye,
+        SettingsSection::Browser => icondata::LuGlobe,
+        SettingsSection::About => icondata::LuInfo,
+    }
+}
+
+/// A Settings section's row: its icon and name; a phone, whose list is the
+/// page, says what it holds below.
+const SECTION_ROW: &str = "group flex w-full shrink-0 flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-hover active:bg-press aria-[current=page]:bg-sel compact:min-h-12 compact:px-3 compact:py-2";
+
 /// Settings: the section list beside the open section; on a phone the
 /// list, then one section at a time.
 fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView {
@@ -167,17 +184,17 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
             view! {
                 <button
                     type="button"
-                    class=format!("{ROW} min-h-12")
-                    class:bg-sel=current
+                    class=SECTION_ROW
                     aria-current=move || current().then_some("page")
                     data-section=section.id()
                     on:click=move |_| workspace.open_section(Some(section))
                 >
-                    <span class="flex w-full items-center gap-2">
-                        <span class="min-w-0 flex-1 text-sm font-bold">{section.label()}</span>
+                    <span class="flex w-full items-center gap-2.5">
+                        <Glyph icon=section_icon(section) class="text-base text-muted group-aria-[current=page]:text-accent" />
+                        <span class="min-w-0 flex-1 text-[0.8125rem] text-fg-2 group-aria-[current=page]:font-semibold group-aria-[current=page]:text-fg">{section.label()}</span>
                         <Glyph icon=icondata::LuChevronRight class="text-xs opacity-60 sm:hidden" />
                     </span>
-                    <span class=NOTE>{section.note()}</span>
+                    <span class="hidden pl-[1.625rem] text-xs text-muted compact:block">{section.note()}</span>
                 </button>
             }
         })
@@ -186,29 +203,29 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
         <div class="flex min-h-0 flex-1">
             <nav
                 aria-label="Settings sections"
-                class="flex w-full shrink-0 flex-col gap-1 overflow-y-auto p-2 sm:w-60 sm:border-r sm:border-line"
+                class="flex w-full shrink-0 flex-col gap-px overflow-y-auto p-2 sm:w-56 sm:border-r sm:border-line"
                 class:hidden=move || workspace.shown_section().is_some() && workspace.narrow.get()
             >
                 <Show when=move || workspace.onboarding.status.with(Option::is_some)>
                     <button
                         type="button"
                         id="settings-onboard"
-                        class=format!("{ROW} min-h-12")
+                        class=SECTION_ROW
                         on:click=move |_| workspace.open_onboarding()
                     >
-                        <span class="flex w-full items-center gap-2">
-                            <Glyph icon=icondata::LuWandSparkles />
-                            <span class="min-w-0 flex-1 text-sm font-bold">"Set up Cookie"</span>
+                        <span class="flex w-full items-center gap-2.5">
+                            <Glyph icon=icondata::LuWandSparkles class="text-base text-accent" />
+                            <span class="min-w-0 flex-1 text-[0.8125rem] font-medium text-fg-2">"Set up Cookie"</span>
                         </span>
-                        <span class=NOTE>"model providers or an ACP agent, and tools"</span>
+                        <span class="hidden pl-[1.625rem] text-xs text-muted compact:block">"model providers or an ACP agent, and tools"</span>
                     </button>
                 </Show>
                 {entries}
             </nav>
             {move || {
                 workspace.shown_section().map(|section| view! {
-                    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-3" data-page-body data-section-body=section.id()>
-                        <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-2">
+                    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-8 sm:py-6" data-page-body data-section-body=section.id()>
+                        <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3">
                             {match section {
                                 SettingsSection::Configuration => config_sheet(workspace).into_any(),
                                 SettingsSection::Providers => connect_sheet(workspace).into_any(),

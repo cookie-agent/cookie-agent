@@ -804,7 +804,7 @@ pub(crate) fn ConnectionStatus(
                             type="button"
                             id=primary.then_some("connection-restart")
                             data-connection-restart
-                            class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-line-2 px-3 text-sm hover:bg-hover active:bg-press"
+                            class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-lg px-3 text-sm hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
                             on:click=move |_| {
                                 close();
                                 connection.workspace.ask_restart();
@@ -841,7 +841,7 @@ pub(crate) fn ForgetDaemon(
                         type="button"
                         id=primary.then_some("forget")
                         data-forget
-                        class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-line-2 px-3 text-sm hover:bg-hover active:bg-press"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-lg px-3 text-sm hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
                         on:click=move |_| confirming.set(true)
                     >
                         <Glyph icon=icondata::LuLogOut />
@@ -850,7 +850,7 @@ pub(crate) fn ForgetDaemon(
                 }
             }
         >
-            <div class="flex flex-col gap-2 rounded-md border border-accent p-2 text-sm">
+            <div class="flex flex-col gap-2 rounded-xl p-2 text-sm bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]">
                 <p>"Delete this daemon's token from the browser, stop its notifications here, and disconnect? Connecting again takes a new link from `cookie web`."</p>
                 <div class="flex flex-wrap gap-2">
                     <button
@@ -867,7 +867,7 @@ pub(crate) fn ForgetDaemon(
                     </button>
                     <button
                         type="button"
-                        class="inline-flex min-h-11 items-center justify-center rounded-md border border-line-2 px-3 hover:bg-hover active:bg-press"
+                        class="inline-flex min-h-11 items-center justify-center rounded-lg px-3 hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
                         on:click=move |_| confirming.set(false)
                     >
                         "Keep it"
@@ -1034,7 +1034,7 @@ pub(crate) fn about_section(connection: Connection) -> impl IntoView {
     }
 }
 
-const FIELD: &str = "min-h-11 rounded-md border border-line-2 bg-surface px-3 py-2 font-mono text-fg hover:border-accent focus:border-accent focus:outline-none";
+const FIELD: &str = "min-h-11 rounded-lg bg-surface px-3 py-2 font-mono text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
 
 #[component]
 fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
@@ -1053,7 +1053,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
     view! {
         <div class="flex w-full max-w-xl flex-col gap-3">
             <form
-                class="flex flex-col gap-4 rounded-lg border border-line bg-surface-2 p-6"
+                class="flex flex-col gap-4 rounded-xl p-6 bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]"
                 on:submit=move |event| {
                     event.prevent_default();
                     connection.connect();
@@ -1102,7 +1102,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                         .filter(|status| starting.is_some() && daemon_status::is_starting(status))
                         .map(|status| {
                             view! {
-                                <div id="daemon-starting" role="status" class="flex flex-col gap-2 rounded-md border border-accent bg-surface p-3 text-sm">
+                                <div id="daemon-starting" role="status" class="flex flex-col gap-2 rounded-xl p-3 text-sm bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]">
                                     <p class="flex items-center gap-2">
                                         <Glyph icon=icondata::LuLoaderCircle class="animate-spin text-accent" />
                                         {daemon_status::starting_text(&status)}
@@ -1115,7 +1115,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                 {notice
                     .map(|(message, hint)| {
                         view! {
-                            <div role="alert" class="flex gap-2 rounded-md border border-accent bg-surface p-3 text-sm">
+                            <div role="alert" class="flex gap-2 rounded-xl p-3 text-sm bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]">
                                 <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 text-accent" />
                                 <div class="min-w-0">
                                     <p>{message}</p>
@@ -1138,7 +1138,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                     </button>
                     <button
                         type="button"
-                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line-2 px-4 hover:bg-hover active:bg-press"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
                         title="Delete the stored token for this URL"
                         on:click=move |_| connection.forget()
                     >
@@ -1264,13 +1264,13 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
                                 id="oauth-landing-address"
                                 readonly
                                 rows="2"
-                                class="w-full resize-none rounded-md border border-line-2 bg-surface p-2 font-mono text-xs break-all"
+                                class="w-full resize-none rounded-lg bg-surface p-2 font-mono text-xs break-all shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                                 prop:value=url
                             ></textarea>
                             <button
                                 type="button"
                                 id="oauth-landing-copy"
-                                class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-line-2 bg-surface px-3 text-sm hover:bg-hover active:bg-press"
+                                class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-lg px-3 text-sm hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
                                 on:click=move |_| {
                                     let text = copied.clone();
                                     spawn_local(async move {

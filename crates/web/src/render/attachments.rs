@@ -27,7 +27,7 @@ const CORNER: &str = "absolute top-1.5 right-1.5 z-20 inline-flex min-h-8 min-w-
 /// A small label of a card's file type.
 const PILL: &str =
     "shrink-0 rounded-full border border-line px-1.5 font-mono text-[0.6875rem] text-muted";
-const BUTTON: &str = "inline-flex min-h-9 items-center gap-1 rounded-md border border-line-2 px-2.5 text-xs hover:bg-hover active:bg-press";
+const BUTTON: &str = "inline-flex min-h-9 items-center gap-1 rounded-lg px-2.5 text-xs hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]";
 
 /// How a card shows its file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -499,7 +499,7 @@ fn title_row(file: &CardFile) -> String {
 fn chip_html(block: &AssetBlock) -> String {
     let handle = escape(block.handle.as_str());
     format!(
-        "<span role=\"button\" tabindex=\"0\" data-action=\"asset-chip\" data-asset-handle=\"{handle}\" title=\"{handle}\" class=\"asset-chip inline-flex max-w-full cursor-pointer items-center gap-1 rounded-full border border-line-2 bg-surface-2 px-2 align-baseline text-[0.8125rem] leading-snug hover:bg-hover\">{}<span class=\"truncate select-none\">{}</span><span class=\"sr-only\">{handle}</span></span>",
+        "<span role=\"button\" tabindex=\"0\" data-action=\"asset-chip\" data-asset-handle=\"{handle}\" title=\"{handle}\" class=\"asset-chip inline-flex max-w-full cursor-pointer items-center gap-1 rounded-full bg-surface-2 px-2 align-baseline text-[0.8125rem] leading-snug hover:bg-sunken bg-raised shadow-[0_0_0_1px_var(--color-line-2)]\">{}<span class=\"truncate select-none\">{}</span><span class=\"sr-only\">{handle}</span></span>",
         svg(
             crate::icons::asset_icon(AssetKind::of(&block.media_type)),
             "shrink-0 text-accent"

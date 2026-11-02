@@ -14,7 +14,7 @@ use crate::{
     workspace::{CardSet, Workspace},
 };
 
-const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface px-3 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
+const FIELD: &str = "min-h-11 w-full min-w-0 rounded-lg bg-surface px-3 font-mono text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
 
 /// A card's frame, with its selected look.
 fn card_class(selected: bool, offline: bool) -> String {

@@ -1753,12 +1753,20 @@ def session_depth(browser):
     browser.type("#goal-input", "finish the scenario slowly")
     browser.shot("goal-sheet")
     browser.click("#goal-set")
-    browser.wait("the goal bar", lambda: "finish the scenario" in browser.text("#goal-bar"))
+    # The title bar's badge shows the goal; it opens the goal's tab, whose
+    # controls follow its status.
+    browser.wait("the goal badge", lambda: "finish the scenario" in browser.script(
+        "const b = document.querySelector('#goal-badge'); return b ? b.title : ''"))
     browser.shot("goal")
-    browser.wait("the pause control", lambda: count(browser, "#goal-bar [data-goal-action=pause]") == 1)
+    close_sheet(browser)
+    browser.click("#goal-badge")
+    browser.wait("the pause control", lambda: count(browser, "#sheet [data-goal-action=pause]") == 1)
     browser.wait("the goal run's answer", lambda: "word3" in browser.text("#transcript"))
-    browser.click("#goal-bar [data-goal-action=pause]")
-    browser.wait("the paused goal", lambda: count(browser, "#goal-bar [data-goal-action=resume]") == 1)
+    browser.click("#sheet [data-goal-action=pause]")
+    browser.wait("the paused goal", lambda: count(browser, "#sheet [data-goal-action=resume]") == 1)
+    browser.wait("the paused badge", lambda: browser.script(
+        "return document.querySelector('#goal-badge').dataset.goalStatus") == "paused")
+    close_sheet(browser)
     print("set a goal and paused it")
     browser.shot("goal-paused")
     idle(browser, "the goal run's end")
@@ -1772,21 +1780,25 @@ def session_depth(browser):
     )
     browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
     print("goal control messages fold under their summary and open on a click")
-    # A cancelled goal leaves the bar; its details stay in the goal sheet.
-    browser.click("#goal-bar [data-goal-action=cancel]")
-    browser.wait("the bar gone with the cancelled goal", lambda: count(browser, "#goal-bar") == 0)
+    # A cancelled goal leaves the title bar; its details stay in the goal
+    # sheet.
+    browser.click("#goal-badge")
+    browser.wait("the cancel control", lambda: count(browser, "#sheet [data-goal-action=cancel]") == 1)
+    browser.click("#sheet [data-goal-action=cancel]")
+    browser.wait("the badge gone with the cancelled goal", lambda: count(browser, "#goal-badge") == 0)
+    close_sheet(browser)
     menu(browser, "goal")
     browser.wait("the cancelled goal's sheet", lambda: "cancelled" in browser.text("#sheet"))
     close_sheet(browser)
-    print("a cancelled goal leaves the bar and keeps its details")
+    print("a cancelled goal leaves the title bar and keeps its details")
 
     # Move a slow call to the background, list it, and stop it.
     send(browser, "be sleepy")
-    browser.wait("the approval", lambda: browser.text("#approvals-badge") != "")
-    browser.click("#approvals-badge")
-    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
-    browser.click("#sheet [data-decision=approve_once]")
-    browser.click("#sheet h2 ~ button")
+    # The approval takes the composer's place until it is answered.
+    browser.wait("the approval", lambda: count(browser, "#approval-dock [data-decision=approve_once]") > 0)
+    assert count(browser, "#composer") == 0, "the composer beside the approval"
+    browser.click("#approval-dock [data-decision=approve_once]")
+    browser.wait("the composer back", lambda: count(browser, "#composer") == 1)
     browser.wait("the background control", lambda: count(browser, "#transcript [data-action=background]") > 0)
     # The control shows once the call is approved, a moment before the call
     # starts and can move; until then the daemon refuses, and the user, like
@@ -1794,14 +1806,14 @@ def session_depth(browser):
     asked = [0.0]
 
     def in_background():
-        if "in background" in browser.text("#background-bar"):
+        if count(browser, "#background-badge") > 0:
             return True
         if time.time() - asked[0] >= 1:
             asked[0] = time.time()
             browser.click("#transcript [data-action=background]")
         return False
 
-    browser.wait("the background bar", in_background)
+    browser.wait("the background badge", in_background)
     browser.shot("background")
     # Once its run ends, the session waits on the call: its row has a clock,
     # and its tooltip says what it waits on.
@@ -1818,7 +1830,7 @@ def session_depth(browser):
     browser.wait("the background sheet", lambda: count(browser, "#sheet [data-stop]") > 0)
     browser.shot("background-sheet")
     browser.click("#sheet [data-stop]")
-    browser.wait("the stopped call", lambda: count(browser, "#background-bar") == 0, timeout=40)
+    browser.wait("the stopped call", lambda: count(browser, "#background-badge") == 0, timeout=40)
     print("moved a call to the background, listed it, and stopped it")
     browser.wait(
         "the background report row",

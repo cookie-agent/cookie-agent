@@ -197,7 +197,7 @@ pub(crate) fn InstallAction() -> impl IntoView {
             _ => ().into_any(),
         }}
         <Show when=move || steps.get() && install.offer() == InstallOffer::AddToHomeScreen>
-            <div class="w-full rounded-md border border-line bg-surface p-3">
+            <div class="w-full rounded-xl p-3 bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]">
                 {ios_steps()}
             </div>
         </Show>

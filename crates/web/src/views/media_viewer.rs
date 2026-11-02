@@ -31,6 +31,17 @@ const SPEEDS: [f64; 6] = [0.1, 0.25, 0.5, 1.0, 1.5, 2.0];
 /// The viewer, open while `workspace.media_viewer` holds a file.
 #[component]
 pub(crate) fn MediaViewer(workspace: Workspace) -> impl IntoView {
+    // Back closes the viewer before anything under it, however many items
+    // it stepped through.
+    Effect::new(move |was: Option<bool>| {
+        let open = workspace.media_viewer.with(Option::is_some);
+        if open && was != Some(true) {
+            workspace.open_transient(Callback::new(move |()| workspace.media_viewer.set(None)));
+        } else if !open && was == Some(true) {
+            workspace.transient_closed();
+        }
+        open
+    });
     move || {
         workspace
             .media_viewer

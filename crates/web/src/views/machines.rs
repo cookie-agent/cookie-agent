@@ -361,7 +361,7 @@ pub(super) fn shared_agents(workspace: Workspace, manage: Manage) -> impl IntoVi
     let global = RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a runtime ID");
     let listed = global.clone();
     view! {
-        <section class="flex flex-col gap-2 rounded-lg border border-line p-3" data-shared-acp>
+        <section class="flex flex-col gap-2 rounded-xl bg-raised p-4 shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]" data-shared-acp>
             <div class="flex flex-wrap items-center gap-2">
                 <h3 class="min-w-0 flex-1 text-sm font-bold">"ACP agents on every runtime"</h3>
                 <button
@@ -645,7 +645,7 @@ fn machine_cards(
                 .map(|card| runtime_row(workspace, card, names.clone(), form, dragging, manage))
                 .collect_view();
             view! {
-                <section class="rounded-xl border border-line" data-unplaced>
+                <section class="rounded-xl bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]" data-unplaced>
                     <div class="flex items-center gap-3 border-b border-line px-3 py-2">
                         <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sunken">
                             <Glyph icon=icondata::LuCircleHelp class="text-lg" />
@@ -754,14 +754,14 @@ fn machine_card(
     let form_entry = entry.clone();
     view! {
         <section
-            class="machine-card rounded-xl border border-line bg-surface-2 transition-colors"
+            class="machine-card rounded-xl border border-transparent bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)] transition-colors"
             class:ring-2=over_ring
             class:ring-accent=over.clone()
             class:border-dashed=target.clone()
             class:border-accent=target
             data-machine-drop=key.clone()
         >
-            <div class="machine-row flex items-center gap-3 border-b border-line py-1 pr-1 pl-3" data-machine-entry=key.clone()>
+            <div class="machine-row flex items-center gap-3 border-b border-line py-1.5 pr-1 pl-3" data-machine-entry=key.clone()>
                 <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sunken" title=platform.clone().unwrap_or_else(|| "operating system not reported".into())>
                     <Glyph icon=platform_icon(platform.as_deref()) class="text-lg" />
                 </span>
@@ -1287,6 +1287,76 @@ fn runtime_row(
         .as_ref()
         .and_then(connection_control)
         .map(|control| connection_button(workspace, card.id.clone(), control));
+    // A right-click offers the row's actions where the pointer is.
+    let context = RwSignal::new(None);
+    let context_items = {
+        let card = card.clone();
+        let control = card.listing.as_ref().and_then(connection_control);
+        move || {
+            use super::row_menu::MenuItem;
+            let mut items = Vec::new();
+            if let Some(control) = control.clone() {
+                let connect = control == ConnectionControl::Connect;
+                if !matches!(control, ConnectionControl::Busy(_)) {
+                    let id = card.id.clone();
+                    items.push(MenuItem {
+                        id: if connect { "connect" } else { "disconnect" },
+                        label: if connect { "Connect" } else { "Disconnect" },
+                        icon: if connect {
+                            icondata::LuPlug
+                        } else {
+                            icondata::LuUnplug
+                        },
+                        act: Callback::new(move |()| {
+                            workspace.set_runtime_connected(id.clone(), connect)
+                        }),
+                        danger: false,
+                    });
+                }
+            }
+            let moving = card.clone();
+            items.push(MenuItem {
+                id: "move",
+                label: "Move to…",
+                icon: icondata::LuArrowRightLeft,
+                act: Callback::new(move |()| form.set(Some(Form::Move(Box::new(moving.clone()))))),
+                danger: false,
+            });
+            if card.pinned {
+                let runtime = card.id.clone();
+                items.push(MenuItem {
+                    id: "unpin",
+                    label: "Unpin",
+                    icon: icondata::LuPinOff,
+                    act: Callback::new(move |()| {
+                        workspace.change_machines(
+                            cookie_agent_client_state::runtimes::MachineRequest::Unassign {
+                                runtime: runtime.clone(),
+                            },
+                        );
+                    }),
+                    danger: false,
+                });
+            }
+            if offline {
+                let runtime = card.id.clone();
+                items.push(MenuItem {
+                    id: "forget",
+                    label: "Forget",
+                    icon: icondata::LuTrash2,
+                    act: Callback::new(move |()| {
+                        workspace.change_machines(
+                            cookie_agent_client_state::runtimes::MachineRequest::ForgetRuntime {
+                                runtime: runtime.clone(),
+                            },
+                        );
+                    }),
+                    danger: true,
+                });
+            }
+            items
+        }
+    };
     let offline_note = (!card.connected && card.listing.is_some()).then(|| {
         view! {
             <span class=NOTE data-runtime-offline-note>
@@ -1296,7 +1366,7 @@ fn runtime_row(
     });
     view! {
         <li
-            class="runtime-entry no-callout relative flex cursor-grab touch-manipulation items-center gap-2 border-b border-line py-1 pr-1 pl-2 select-none last:border-b-0"
+            class="runtime-entry no-callout relative flex cursor-grab touch-manipulation items-center gap-2 border-b border-line py-1.5 pr-1 pl-2 transition-colors select-none last:border-b-0 hover:bg-hover"
             class:z-30=lifted.clone()
             class:rounded-lg=lifted.clone()
             class:shadow-xl=lifted.clone()
@@ -1324,9 +1394,12 @@ fn runtime_row(
                 // A long press lifts the row; it is not the browser's menu.
                 if dragging.pressed.with_value(Option::is_some) {
                     event.prevent_default();
+                    return;
                 }
+                super::row_menu::on_context(context)(event);
             }
         >
+            {super::row_menu::context_menu(context, (), id.to_string(), context_items)}
             <Glyph icon=icondata::LuGripVertical class="opacity-40" />
             <span
                 class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-sunken"
@@ -1639,7 +1712,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
         .collect_view();
     let heading = "flex items-center gap-2 text-sm font-bold";
     view! {
-        <section id="add-runtime" class="flex flex-col gap-3 rounded-xl border border-accent bg-surface-2 p-3">
+        <section id="add-runtime" class="rise-in flex flex-col gap-3 rounded-xl bg-raised p-4 shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]">
             <div class="flex items-center gap-2">
                 <h3 class="min-w-0 flex-1 font-bold">"Add a runtime"</h3>
                 <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=move |_| adding.set(false)>
@@ -1661,7 +1734,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                 {field("Only workspaces under (optional)", "ssh-root", "~/src", root)}
                 {move || match template() {
                     Ok(template) => view! {
-                        <pre id="ssh-preview" class="overflow-x-auto rounded-md border border-line-2 bg-surface p-2 font-mono text-xs">{template.toml()}</pre>
+                        <pre id="ssh-preview" class="overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-xs shadow-[inset_0_0_0_1px_var(--color-line)]">{template.toml()}</pre>
                     }
                     .into_any(),
                     Err(error) => view! {
@@ -1719,7 +1792,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     id="dial-in-command"
                     readonly
                     rows="2"
-                    class="w-full resize-none rounded-md border border-line-2 bg-surface p-2 font-mono text-xs"
+                    class="w-full resize-none rounded-lg bg-surface-2 p-3 font-mono text-xs shadow-[inset_0_0_0_1px_var(--color-line)]"
                     prop:value=shown_command
                 ></textarea>
                 <div class="flex flex-wrap gap-2">

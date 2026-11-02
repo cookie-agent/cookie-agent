@@ -76,7 +76,7 @@ pub(crate) fn RestartDialog(workspace: Workspace) -> impl IntoView {
                 role="alertdialog"
                 aria-modal="true"
                 aria-labelledby="restart-title"
-                class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col gap-3 overflow-y-auto rounded-t-xl border border-line bg-surface p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-sm shadow-lg sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
+                class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col gap-3 overflow-y-auto rounded-t-xl p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-sm sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl bg-raised ring-1 ring-line shadow-menu"
                 on:keydown=move |event| {
                     if event.key() == "Escape" {
                         close();

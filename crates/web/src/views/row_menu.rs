@@ -19,6 +19,8 @@ use crate::{
 
 /// An item's height in a wide window (36 px), for placing the menu.
 const ITEM_HEIGHT: f64 = 36.0;
+/// The menu's least width (`min-w-48`), for keeping it on the screen.
+const MENU_WIDTH: f64 = 192.0;
 /// The menu's padding and border, top and bottom together.
 const MENU_PADDING: f64 = 10.0;
 
@@ -62,6 +64,21 @@ pub(super) fn wants_context_menu(event: &ev::MouseEvent) -> bool {
         })
         .is_some();
     !inside_own
+}
+
+/// A row's `contextmenu` handler: a mouse's right-click opens the row's
+/// menu at the pointer in `open`, where [`wants_context_menu`] says so.
+pub(super) fn on_context(open: RwSignal<Option<((), f64, f64)>>) -> impl Fn(ev::MouseEvent) + Copy {
+    move |event: ev::MouseEvent| {
+        if !crate::browser::from_touch(&event) && wants_context_menu(&event) {
+            event.prevent_default();
+            open.set(Some((
+                (),
+                f64::from(event.client_x()),
+                f64::from(event.client_y()),
+            )));
+        }
+    }
 }
 
 /// The menu of `items` opened at the pointer by a right-click on the row
@@ -162,8 +179,14 @@ where
             let viewport = (size(window.inner_width()), size(window.inner_height()));
             #[allow(clippy::cast_precision_loss)]
             let height = listed().len() as f64 * ITEM_HEIGHT + MENU_PADDING;
+            // Right-aligned to the ⋮, but never past the window's left
+            // edge: the sidebar stands against it.
             let at = menu_place(
-                (frame.top(), frame.bottom(), frame.right()),
+                (
+                    frame.top(),
+                    frame.bottom(),
+                    frame.right().max(MENU_WIDTH + 8.0),
+                ),
                 viewport,
                 height,
             );
@@ -220,6 +243,11 @@ fn menu(
 ) -> impl IntoView {
     let list = NodeRef::<html::Div>::new();
     let heading = title.clone();
+    // Back closes the menu before anything under it.
+    if let Some(workspace) = use_context::<crate::workspace::Workspace>() {
+        workspace.open_transient(Callback::new(move |()| close(false)));
+        on_cleanup(move || workspace.transient_closed());
+    }
     // Escape closes it wherever the focus is; the keyboard starts on the
     // first item.
     let escape = window_event_listener(ev::keydown, move |event| {

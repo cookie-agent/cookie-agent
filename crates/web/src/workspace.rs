@@ -420,6 +420,10 @@ pub struct Workspace {
     /// The page went back in the history and waits for the browser to get
     /// there.
     traversing: StoredValue<bool>,
+    /// A small overlay is open (a row's menu, a context menu, the media
+    /// viewer): Back closes it first, with what it left here.
+    transient: RwSignal<bool>,
+    transient_close: StoredValue<Option<Callback<()>>>,
     /// Bumped by every connection the page adopts, so work for an older one
     /// stops.
     connection: StoredValue<u64>,
@@ -652,6 +656,8 @@ impl Workspace {
             project_error: RwSignal::new(None),
             history: StoredValue::new(Vec::new()),
             traversing: StoredValue::new(false),
+            transient: RwSignal::new(false),
+            transient_close: StoredValue::new(None),
             connection: StoredValue::new(0),
             can_restart: RwSignal::new(false),
             config_status: RwSignal::new(None),

@@ -88,18 +88,17 @@ const BAR_RETURN: Duration = Duration::from_millis(250);
 
 /// Every button is at least 44 px square, with a hover and a pressed state.
 /// A labelled button, bordered.
-const BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md border border-line-2 px-3 text-sm hover:bg-hover active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
+const BUTTON: &str = "inline-flex min-h-9 min-w-9 items-center justify-center gap-2 rounded-lg bg-raised px-3 text-[0.8125rem] font-medium text-fg shadow-[0_0_0_1px_var(--color-line-2),0_1px_2px_rgb(0_0_0/0.04)] transition-colors hover:bg-sunken active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-raised compact:min-h-11 compact:min-w-11";
 /// The main action of a form or the composer.
-const PRIMARY: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md bg-accent px-3 text-sm font-bold text-on-accent hover:bg-accent active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-accent";
+const PRIMARY: &str = "inline-flex min-h-9 min-w-9 items-center justify-center gap-2 rounded-lg bg-accent px-3 text-[0.8125rem] font-semibold text-on-accent shadow-[inset_0_1px_0_rgb(255_255_255/0.14),0_1px_2px_rgb(0_0_0/0.12)] transition-[filter,background-color] hover:brightness-110 active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100 compact:min-h-11 compact:min-w-11";
 /// A button that is only an icon: it has an `aria-label` and a `title`.
-const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
+const ICON_BUTTON: &str = "inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent compact:min-h-11 compact:min-w-11";
 /// A bottom bar control showing its current value: the agent, the model,
 /// and the permission mode share it. 32 px to see, 44 px to hit.
-const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-line-2 bg-surface px-3 text-sm hover:border-accent hover:bg-hover active:bg-press";
+const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[14rem] shrink-0 items-center gap-1.5 rounded-lg px-2 text-[0.8125rem] whitespace-nowrap text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press aria-expanded:bg-hover";
 /// A status bar indicator that does something when clicked.
 /// A small borderless icon button of the sidebar's session tools.
 const SIDEBAR_TOOL: &str = "hit-area inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press";
-const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-hover active:bg-press";
 /// A session row's buttons (move, rename, delete), which show only over
 /// the hovered (or focused) row: side by side, centred on its two lines,
 /// laid over the row's right end on the row's hover colour, which fades in
@@ -112,23 +111,26 @@ const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 round
 const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-sunken text-muted hover:bg-press hover:text-fg active:bg-press";
 /// A button of a row's actions a long press revealed: narrower than
 /// [`BUTTON`], so that ⋮, Rename, Delete, and ✕ share a phone's line.
-const REVEALED: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-line-2 px-2 text-sm hover:bg-hover active:bg-press";
+const REVEALED: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-lg bg-raised px-2 text-sm shadow-[0_0_0_1px_var(--color-line-2)] hover:bg-sunken active:bg-press";
 /// A session's title as a field: in a session row, and in the title bar.
-const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-md border border-accent bg-surface px-2 text-sm font-bold text-fg focus:outline-none";
+const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-lg bg-surface px-2 text-sm font-semibold text-fg shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none";
 /// "Use the automatic title", under an emptied title field.
 const AUTO_TITLE: &str = "inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-bold text-accent hover:bg-press active:bg-press";
 /// A row of a list: two lines, the second a note.
-const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left hover:bg-hover active:bg-press";
+const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-hover active:bg-press";
 const NOTE: &str = "text-xs text-muted";
 /// A message about something that went wrong.
-const ERROR: &str = "rounded-md border border-bad/30 bg-bad-soft px-3 py-2 text-sm whitespace-pre-wrap break-words text-bad";
+const ERROR: &str =
+    "rounded-lg bg-bad-soft px-3 py-2 text-[0.8125rem] whitespace-pre-wrap break-words text-bad";
 
 /// What a sheet shows when it has nothing to list.
 fn empty_state(icon: icons::Icon, text: &'static str) -> impl IntoView {
     view! {
-        <div class="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted">
-            <Glyph icon=icon class="text-2xl opacity-70" />
-            <p>{text}</p>
+        <div class="flex flex-col items-center gap-3 px-4 py-12 text-center text-[0.8125rem] text-muted">
+            <span class="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-sunken text-muted shadow-[inset_0_0_0_1px_var(--color-line)]">
+                <Glyph icon=icon class="text-xl" />
+            </span>
+            <p class="max-w-xs">{text}</p>
         </div>
     }
 }
@@ -162,6 +164,7 @@ pub fn WorkspaceView(
             workspace.sidebar_open.set(false);
         }
     });
+    provide_context(workspace);
     let history = workspace.follow_history();
     let listeners = StoredValue::new_local(vec![phone, desktop, history]);
     on_cleanup(move || {
@@ -233,14 +236,17 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 <div class="max-h-[60dvh] shrink-0 overflow-y-auto px-2 empty:hidden">
                     <questions::QuestionCard workspace=workspace />
                 </div>
-                <StatusLine workspace=workspace />
                 <cards::DraftNotice workspace=workspace />
-                // A phone puts the bottom bar above the composer, and a
-                // short window (a phone on its side) beside it.
-                <div class="relative flex flex-col short:flex-row short:items-end">
+                // An approval waiting takes the composer's place until it
+                // is answered.
+                <div class="relative">
                     <StatusTip workspace=workspace />
-                    <Composer workspace=workspace composing=composing />
-                    <BottomBar workspace=workspace composing=composing />
+                    <Show
+                        when=move || !workspace.approvals().is_empty()
+                        fallback=move || view! { <Composer workspace=workspace composing=composing /> }
+                    >
+                        <ApprovalDock workspace=workspace />
+                    </Show>
                 </div>
             </main>
     }
@@ -744,7 +750,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                 <input
                     type="date"
                     id=id
-                    class="min-h-11 w-full rounded-md border border-line-2 bg-surface px-2 text-sm font-normal text-fg hover:border-accent focus:border-accent focus:outline-none"
+                    class="min-h-11 w-full rounded-lg bg-surface px-2 text-sm font-normal text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                     max=move || crate::workspace::local_today().to_string()
                     prop:value=value
                     on:change=move |event| {
@@ -780,7 +786,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                     id="session-filter"
                     role="dialog"
                     aria-label="Filter sessions"
-                    class="flex flex-col gap-3 rounded-lg border border-line bg-surface p-3 text-fg lg:shadow-lg"
+                    class="flex flex-col gap-3 rounded-xl p-3 text-fg bg-raised ring-1 ring-line lg:shadow-menu"
                 >
                     <div class="flex flex-col gap-1.5">
                         <span class=heading id="filter-within">"Last active"</span>
@@ -904,7 +910,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                             <span class=heading>"Workspace"</span>
                             <select
                                 id="place-filter"
-                                class="min-h-11 rounded-md border border-line-2 bg-surface px-2 text-sm font-normal text-fg hover:border-accent"
+                                class="min-h-11 rounded-lg bg-surface px-2 text-sm font-normal text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                                 on:change=move |event| {
                                     let value = event_target_value(&event);
                                     workspace.directory_filter.set((!value.is_empty()).then_some(value));
@@ -1028,7 +1034,7 @@ fn selection_bar(workspace: Workspace, listed: Memo<Vec<SessionId>>) -> impl Int
                 </button>
             </div>
             <Show when=move || picking.confirming.get() fallback=actions>
-                <div class="flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-delete-picked-box>
+                <div class="flex flex-col gap-2 rounded-xl p-2 text-sm bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]" role="alertdialog" data-delete-picked-box>
                     <p>
                         {move || {
                             let sessions = match count() {
@@ -1520,7 +1526,7 @@ fn session_row(
             </div>
         </Show>
         <Show when=move || confirming.get() == Some(session_id)>
-            <div class="mx-2 mb-1 flex flex-col gap-2 rounded-lg border border-accent bg-surface p-2 text-sm" role="alertdialog" data-delete-confirm-box>
+            <div class="mx-2 mb-1 flex flex-col gap-2 rounded-xl p-2 text-sm bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]" role="alertdialog" data-delete-confirm-box>
                 <p>{format!("Delete “{confirm_label}” and its subagents? This cannot be undone.")}</p>
                 <div class="flex flex-wrap gap-2">
                     <button
@@ -1976,7 +1982,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                 <Show
                     when=move || workspace.title_edit.with(Option::is_some)
                     fallback=move || view! {
-                        <h1 class="flex min-w-0 text-lg font-bold" id="session-title" title=title>
+                        <h1 class="flex min-w-0 text-[0.9375rem] font-semibold tracking-tight" id="session-title" title=title>
                             // A session's title is a button that renames it.
                             <Show when=move || workspace.title_editable() fallback=move || view! {
                                 <span class="truncate">{title}</span>
@@ -2571,7 +2577,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         <div
             node_ref=container
             id="transcript"
-            class="min-h-0 flex-1 overflow-y-auto px-3 py-2"
+            class="min-h-0 flex-1 overflow-y-auto px-3 pt-4 pb-6 sm:px-6"
             on:click=on_click
             on:scroll=move |_| {
                 if let Some((element, at)) = metrics() {
@@ -2629,6 +2635,22 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 // A long press on a bubble is its menu, not the browser's.
                 if message_press.held() {
                     event.prevent_default();
+                    return;
+                }
+                // A mouse's right-click on one of your messages opens its
+                // menu too, outside its text's selection.
+                if crate::browser::from_touch(&event) || !row_menu::wants_context_menu(&event) {
+                    return;
+                }
+                let seq = event
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|target| target.closest(".user-message[data-seq]").ok().flatten())
+                    .and_then(|message| message.get_attribute("data-seq"))
+                    .and_then(|seq| seq.parse().ok());
+                if let Some(seq) = seq {
+                    event.prevent_default();
+                    workspace.open_user_menu(seq);
                 }
             }
         >
@@ -2638,7 +2660,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             // Over the top of the transcript, an open work row the view
             // scrolled past while its work is still in view; the row it
             // sits in takes no room.
-            <div class="pointer-events-none sticky top-0 z-10 mx-auto h-0 max-w-4xl" data-work-pin>
+            <div class="pointer-events-none sticky top-0 z-10 mx-auto h-0 max-w-[45rem]" data-work-pin>
                 <div
                     node_ref=pinned_work
                     class="pointer-events-auto overflow-hidden rounded-md shadow-md"
@@ -2646,7 +2668,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     hidden
                 ></div>
             </div>
-            <div node_ref=content class="mx-auto flex max-w-4xl flex-col gap-2">
+            <div node_ref=content class="mx-auto flex max-w-[45rem] flex-col gap-3">
                 <For
                     each=move || rows.with(|rows| rows.order.to_vec())
                     key=|id| *id
@@ -2689,14 +2711,14 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             </div>
             // Over the end of the transcript while it does not follow it;
             // the row it sits in takes no room.
-            <div class="pointer-events-none sticky bottom-0 mx-auto h-0 max-w-4xl">
+            <div class="pointer-events-none sticky bottom-0 mx-auto h-0 max-w-[45rem]">
                 <Show when=move || {
                     !following.get() && overflows.get() && workspace.selected.get().is_some()
                         && !workspace.new_session.get()
                 }>
                     <button
                         type="button"
-                        class="pointer-events-auto absolute right-0 bottom-1 inline-flex min-h-11 items-center gap-2 rounded-full border border-line-2 bg-surface px-3 text-sm shadow-md hover:bg-hover active:bg-press"
+                        class="pointer-events-auto absolute right-0 bottom-1 inline-flex min-h-11 items-center gap-2 rounded-full px-3 text-sm shadow-md hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
                         title="Jump to the latest and follow it"
                         data-jump-latest
                         on:click=jump
@@ -3340,48 +3362,15 @@ const COMPOSER_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-cente
 const COMPOSER_PRIMARY: &str =
     "bg-accent text-on-accent hover:bg-accent active:bg-accent-press disabled:hover:bg-accent";
 /// Its second action: Queue.
-const COMPOSER_SECONDARY: &str =
-    "border border-line-2 bg-surface-2 text-fg hover:border-accent hover:bg-hover active:bg-press";
+const COMPOSER_SECONDARY: &str = "bg-surface-2 text-fg hover:border-accent hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]";
 
 /// The composer's text sizes: a line, and the padding above and below.
-const COMPOSER_LINE: f64 = 20.0;
-const COMPOSER_PADDING: f64 = 24.0;
+const COMPOSER_LINE: f64 = 24.0;
+const COMPOSER_PADDING: f64 = 16.0;
 
-/// The composer's left padding for the attach buttons in the box's
-/// bottom left corner: 4 px in, 36 px a button, 2 px between, and 8 px of
-/// air; 12 px without one. A phone also has the camera, which wider
-/// windows (`md`) hide.
-fn attach_padding(buttons: crate::attach::AttachButtons) -> &'static str {
-    match buttons {
-        crate::attach::AttachButtons::None => "pl-3",
-        crate::attach::AttachButtons::File => "pl-12",
-        crate::attach::AttachButtons::FileAndCamera => "pl-[5.375rem] md:pl-12",
-    }
-}
-
-/// The composer's right padding for its buttons in the bottom right
-/// corner: one round button (Send or Stop), or Queue and Steer, 6 px
-/// apart.
-fn actions_padding(buttons: ComposerButtons) -> &'static str {
-    match buttons {
-        ComposerButtons::SteerAndQueue => "pr-[5.625rem]",
-        ComposerButtons::Send { .. } | ComposerButtons::Stop | ComposerButtons::Resume => "pr-12",
-    }
-}
-
-/// [`actions_padding`] as a length, for a scrollbar's room on top of it.
-fn actions_room(buttons: ComposerButtons) -> &'static str {
-    match buttons {
-        ComposerButtons::SteerAndQueue => "5.625rem",
-        ComposerButtons::Send { .. } | ComposerButtons::Stop | ComposerButtons::Resume => "3rem",
-    }
-}
-
-/// Sizes the composer to its text, from one line to five, and returns the
-/// room its scrollbar takes once the text scrolls, in pixels: the buttons
-/// in the box's corner move left of it. A scrollbar drawn over the text
-/// (a phone's) takes none, and gets [`OVERLAY_SCROLLBAR`].
-fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) -> i32 {
+/// Sizes the composer to its text, from one line to five, scrolling past
+/// that.
+fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) {
     let style = web_sys::HtmlElement::style(textarea);
     let _ = style.set_property("height", "auto");
     let (height, scrolls) = crate::keys::composer_height(
@@ -3391,22 +3380,12 @@ fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) -> i32 {
     );
     let _ = style.set_property("height", &format!("{height}px"));
     let _ = style.set_property("overflow-y", if scrolls { "auto" } else { "hidden" });
-    if !scrolls {
-        return 0;
-    }
-    let element: &web_sys::HtmlElement = textarea;
-    let inner = web_sys::Element::client_width(element);
-    (element.offset_width() - inner).max(OVERLAY_SCROLLBAR)
 }
-
-/// The room the composer's buttons leave a scrollbar drawn over the text.
-const OVERLAY_SCROLLBAR: i32 = 6;
 
 #[component]
 fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let textarea = NodeRef::<html::Textarea>::new();
     let blurred = StoredValue::new(0_u64);
-    let attach_buttons = Memo::new(move |_| crate::views::depth::attach_buttons(workspace));
     let buttons = Memo::new(move |_| {
         let has_input = workspace.composer.with(|text| !text.trim().is_empty())
             || !workspace.attachments.with(Vec::is_empty);
@@ -3416,22 +3395,15 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             workspace.held_line().is_some(),
         )
     });
-    // The box follows its text: typed, pasted, recalled, or sent away; and
-    // its buttons, whose number changes the room the text has. On the
-    // next frame the composer may be gone, with the view it was in.
-    // The room the box's scrollbar takes, which the buttons keep clear of.
-    let gutter = RwSignal::new(0);
+    // The box follows its text: typed, pasted, recalled, or sent away. On
+    // the next frame the composer may be gone, with the view it was in.
     let fit = move || {
         if let Some(textarea) = textarea.try_get_untracked().flatten() {
-            let room = fit_composer(&textarea);
-            if gutter.try_get_untracked() != Some(room) {
-                gutter.set(room);
-            }
+            fit_composer(&textarea);
         }
     };
     Effect::new(move |_| {
         workspace.composer.track();
-        buttons.track();
         workspace.selected.track();
         request_animation_frame(fit);
     });
@@ -3495,12 +3467,12 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
         }
     };
     view! {
-        <div class="relative min-w-0 px-3 pt-2 pb-1 short:flex-1 short:pb-2">
-            // One border, the box's: the text field inside has none, and
-            // the buttons sit in its bottom corners.
+        <div class="relative min-w-0 px-3 pt-1 pb-3 sm:px-6">
+            // One card: the text, then a row with the attach buttons, the
+            // session's chips, and the actions.
             <div
                 id="composer-box"
-                class="relative rounded-xl border border-line-2 bg-surface hover:border-accent focus-within:border-accent"
+                class="relative mx-auto flex max-w-[45rem] flex-col rounded-[1.125rem] bg-raised shadow-[0_0_0_1px_var(--color-line-2),0_10px_32px_-12px_rgb(0_0_0/0.16)] transition-shadow duration-200 focus-within:shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft),0_10px_32px_-12px_rgb(0_0_0/0.16)]"
                 class:opacity-60=disabled
             >
                 <textarea
@@ -3510,19 +3482,8 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     // Its sides keep clear of the buttons in the box's corners,
                     // from the first render: padding by which buttons show,
                     // not by measuring them once they have.
-                    class=move || {
-                        format!(
-                            "block w-full resize-none appearance-none border-0 bg-transparent py-3 font-mono text-sm leading-5 shadow-none outline-none focus:outline-none {} {}",
-                            attach_padding(attach_buttons.get()),
-                            actions_padding(buttons.get()),
-                        )
-                    }
-                    // A scrollbar takes room from the text's side too.
-                    style:padding-right=move || {
-                        let room = gutter.get();
-                        (room > 0).then(|| format!("calc({} + {room}px)", actions_room(buttons.get())))
-                    }
-                    placeholder="Message"
+                    class="block w-full resize-none appearance-none border-0 bg-transparent px-4 pt-3 pb-1 text-[0.9375rem] leading-6 text-fg shadow-none outline-none placeholder:text-faint focus:outline-none"
+                    placeholder="Ask cookie to…"
                     disabled=disabled
                     prop:value=move || workspace.composer.get()
                     on:input=move |event| {
@@ -3566,12 +3527,13 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         }
                     }
                 ></textarea>
-                <div class="absolute bottom-1 left-1 flex items-center gap-0.5" data-composer-left>
+                <div class="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
+                <div class="flex shrink-0 items-center gap-0.5" data-composer-left>
                     <AttachButtons workspace=workspace />
                 </div>
+                <ComposerChips workspace=workspace composing=composing />
                 <div
-                    class="absolute bottom-1 flex items-center gap-1.5"
-                    style:right=move || format!("calc(0.25rem + {}px)", gutter.get())
+                    class="flex shrink-0 items-center gap-1.5"
                     data-composer-actions
                 >
                     {move || match buttons.get() {
@@ -3611,6 +3573,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         .into_any(),
                     }}
                 </div>
+                </div>
             </div>
         </div>
     }
@@ -3648,7 +3611,7 @@ const STATUS_LIVE: Duration = Duration::from_secs(5);
 /// while the composer has focus. A status message shows over the composer
 /// ([`StatusTip`]), not in the bar.
 #[component]
-fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
+fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let cost = move || {
         workspace.selected.get().and_then(|session_id| {
             workspace
@@ -3691,53 +3654,54 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     view! {
         <div
             id="status-bar"
-            class="flex flex-wrap items-center gap-x-1 bg-surface-2 px-2 text-xs compact:-order-1 compact:flex-nowrap compact:bg-transparent short:order-none short:w-[22rem] short:shrink-0 compact:dark:bg-transparent"
-            class:compact:hidden=move || composing.get()
+            class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+            class:compact:invisible=move || composing.get()
         >
+            <span class="mx-1 h-4 w-px shrink-0 bg-line-2" aria-hidden="true"></span>
             <button
                 type="button"
                 id="agent-chip"
-                class=CHIP.replace("min-w-0", "min-w-11 justify-center")
+                class=CHIP
                 aria-label=move || format!("Agent: {}", agent())
                 title=move || format!("Agent: {} (click to change)", agent())
                 on:click=move |_| workspace.panel.set(Some(Panel::Agents))
             >
-                <Glyph icon=icondata::LuBot class="text-accent" />
+                <Glyph icon=icondata::LuBot class="text-sm text-muted" />
                 <span class="min-w-0 truncate max-[23.75rem]:sr-only">{agent}</span>
-                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-60 compact:hidden" />
+                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-50 compact:hidden" />
             </button>
             <button
                 type="button"
                 id="model-chip"
-                class=format!("{CHIP} compact:max-w-none compact:flex-1")
+                class=CHIP
                 aria-label=move || format!("Model: {}", model())
                 title=move || format!("Model: {} (click to change)", model())
                 on:click=move |_| workspace.panel.set(Some(Panel::Models))
             >
-                <Glyph icon=icondata::LuCpu class="text-accent" />
+                <Glyph icon=icondata::LuSparkles class="text-sm text-muted" />
                 <span class="min-w-0 flex-1 truncate text-left">{model}</span>
-                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-60 compact:hidden" />
+                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-50 compact:hidden" />
             </button>
             <button
                 type="button"
                 id="permission-mode"
-                class=CHIP.replace("min-w-0", "min-w-11 justify-center")
+                class=CHIP
                 aria-label=move || format!("Permission mode: {}", mode_label())
                 aria-haspopup="dialog"
                 title=move || format!("Permission mode: {} (click to change)", mode_label())
                 on:click=move |_| workspace.panel.set(Some(Panel::Modes))
             >
-                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-accent" />
+                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-sm text-muted" />
                 // A phone shows the shield alone.
                 <span class="min-w-0 truncate compact:sr-only">{mode_label}</span>
-                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-60 compact:hidden" />
+                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-50 compact:hidden" />
             </button>
             // Where the session works.
             {move || workspace.places_label().filter(|_| !workspace.new_session.get()).map(|places| view! {
                 <button
                     type="button"
                     id="places"
-                    class=format!("{STATUS_BUTTON} min-w-0 max-w-[12rem] compact:hidden")
+                    class=format!("{CHIP} compact:hidden")
                     aria-label=format!("Runtimes: {places}")
                     title=format!("Works in {places} (click for the runtimes)")
                     on:click=move |_| workspace.run_command(Command::Runtime)
@@ -3747,7 +3711,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     {move || {
                         let runtimes = workspace.places_runtimes();
                         if runtimes.is_empty() {
-                            view! { <Glyph icon=icondata::LuFolderOpen class="text-accent" /> }.into_any()
+                            view! { <Glyph icon=icondata::LuFolder class="text-sm text-muted" /> }.into_any()
                         } else {
                             view! {
                                 <span class="inline-flex shrink-0 items-center gap-0.5" data-places-dots>
@@ -3762,52 +3726,24 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                             .into_any()
                         }
                     }}
-                    <span class="min-w-0 truncate font-mono">{places.clone()}</span>
+                    <span class="min-w-0 truncate">{places.clone()}</span>
                 </button>
             })}
-            <span class="flex-1 compact:hidden" aria-hidden="true"></span>
+            <span class="flex-1" aria-hidden="true"></span>
             {move || cost().map(|cost| view! {
                 <button
                     type="button"
                     id="cost"
-                    class=STATUS_BUTTON
+                    class=format!("{CHIP} text-muted")
                     aria-label=format!("Session cost {}: usage", cost_label(cost))
                     title="Session cost: click for usage"
                     on:click=move |_| workspace.run_command(Command::Usage)
                 >
-                    <Glyph icon=icondata::LuCoins class="text-accent compact:hidden" />
-                    <span class="font-mono compact:hidden">{cost_label(cost)}</span>
-                    <span class="hidden font-mono compact:inline">{compact_cost(cost)}</span>
+                    <span class="tabular-nums compact:hidden">{cost_label(cost)}</span>
+                    <span class="hidden tabular-nums compact:inline">{compact_cost(cost)}</span>
                 </button>
             })}
         </div>
-    }
-}
-
-/// A phone's line above the composer: the approvals waiting; it shows only
-/// while some do. Wider windows have them in the bottom bar. The working
-/// spinner is the transcript's last row.
-#[component]
-fn StatusLine(workspace: Workspace) -> impl IntoView {
-    let approvals = Memo::new(move |_| workspace.approvals().len());
-    view! {
-        <Show when=move || { approvals.get() > 0 }>
-            <div
-                id="status-line"
-                class="hidden min-h-11 items-center gap-1 border-t border-line px-2 text-xs compact:flex"
-            >
-                <button
-                    type="button"
-                    data-approvals
-                    class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full bg-accent px-3 font-bold text-on-accent hover:bg-accent active:bg-accent-press"
-                    title="Approvals waiting: tap to answer"
-                    on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
-                >
-                    <Glyph icon=icondata::LuBell />
-                    {move || approvals_label(approvals.get())}
-                </button>
-            </div>
-        </Show>
     }
 }
 
@@ -3850,7 +3786,7 @@ fn StatusTip(workspace: Workspace) -> impl IntoView {
             id="status"
             role="status"
             aria-hidden=move || (!live()).then_some("true")
-            class="status-tip pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-md border border-line bg-surface-2 px-2 py-1 text-xs break-words text-muted shadow-md"
+            class="status-tip pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-lg bg-raised px-2.5 py-1.5 text-xs break-words text-muted shadow-menu ring-1 ring-line"
             class:status-tip-gone=move || !live()
         >
             {move || workspace.status.get()}
@@ -3861,6 +3797,16 @@ fn StatusTip(workspace: Workspace) -> impl IntoView {
 /// The session's cost as a wide window's bottom bar shows it.
 fn cost_label(cost: f64) -> String {
     format!("${cost:.4}")
+}
+
+/// The composer chip whose picker `panel` is, which it opens at.
+const fn chip_of(panel: Panel) -> Option<&'static str> {
+    match panel {
+        Panel::Agents => Some("agent-chip"),
+        Panel::Models => Some("model-chip"),
+        Panel::Modes => Some("permission-mode"),
+        _ => None,
+    }
 }
 
 /// The session panel's tabs (docs/site/specs/quiet-ink.md, D5): the sheets
@@ -3943,6 +3889,33 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
     };
     // The project editor fills a phone's screen.
     let tall = move || workspace.panel.get() == Some(Panel::Project);
+    // A chip's picker opens at its chip on a wider window, as a menu over
+    // the composer, instead of a sheet: where, as CSS (D7).
+    let anchor = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        let at = workspace
+            .panel
+            .get()
+            .and_then(chip_of)
+            .filter(|_| !workspace.narrow.get())
+            .and_then(|id| document().get_element_by_id(id))
+            .map(|chip| {
+                let frame = chip.get_bounding_client_rect();
+                let height = window()
+                    .inner_height()
+                    .ok()
+                    .and_then(|height| height.as_f64())
+                    .unwrap_or(0.0);
+                format!(
+                    "left: max(0.75rem, {:.0}px); bottom: {:.0}px; max-height: {:.0}px",
+                    frame.left() - 8.0,
+                    height - frame.top() + 8.0,
+                    (frame.top() - 24.0).max(160.0),
+                )
+            });
+        anchor.set(at);
+    });
+    let anchored = move || anchor.with(Option::is_some);
     let title = move || match workspace.panel.get() {
         _ if session_tab() => "Session",
         Some(Panel::Agents) => "Agent",
@@ -3979,26 +3952,44 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <Show when=move || workspace.panel.get().is_some()>
-            <div class="scrim-in fixed inset-0 z-10 bg-scrim sm:bg-scrim/40" on:click=close></div>
+            <div
+                class="scrim-in fixed inset-0 z-10 bg-scrim sm:bg-scrim/40"
+                class:sm:bg-transparent=anchored
+                on:click=close
+            ></div>
             // A phone's sheet rises from the bottom of what the keyboard
             // leaves; a wider window's stands on the right.
-            <div class=move || format!(
-                "sheet-frame pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-col justify-end sm:inset-y-0 sm:right-0 sm:left-auto sm:w-[28rem] sm:pt-0 {}",
-                if tall() { "pt-0" } else { "pt-12" },
-            )>
+            <div class=move || {
+                if anchored() {
+                    "pointer-events-none fixed inset-0 z-20".to_owned()
+                } else {
+                    format!(
+                        "sheet-frame pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-col justify-end sm:inset-y-0 sm:right-0 sm:left-auto sm:w-[28rem] sm:pt-0 {}",
+                        if tall() { "pt-0" } else { "pt-12" },
+                    )
+                }
+            }>
                 <section
                     id="sheet"
                     role="dialog"
                     aria-label=title
-                    class=move || format!(
-                        "sheet-in pointer-events-auto flex max-h-full flex-col overflow-y-auto border-line bg-raised shadow-sheet sm:h-full sm:rounded-none sm:border-t-0 sm:border-l {}",
-                        if tall() { "h-full" } else { "rounded-t-2xl border-t" },
-                    )
+                    data-anchored=move || anchored().to_string()
+                    style=move || anchor.get().unwrap_or_default()
+                    class=move || {
+                        if anchored() {
+                            "menu-in pointer-events-auto fixed flex w-[22rem] flex-col overflow-y-auto rounded-xl bg-raised shadow-menu ring-1 ring-line".to_owned()
+                        } else {
+                            format!(
+                                "sheet-in pointer-events-auto flex max-h-full flex-col overflow-y-auto border-line bg-raised shadow-sheet sm:h-full sm:rounded-none sm:border-t-0 sm:border-l {}",
+                                if tall() { "h-full" } else { "rounded-t-2xl border-t" },
+                            )
+                        }
+                    }
                 >
-                    <div class="sticky top-0 z-10 flex flex-col border-b border-line bg-raised">
+                    <div class="sticky top-0 z-10 flex flex-col border-b border-line bg-raised" class:border-b-0=anchored>
                         <span class="mx-auto mt-1.5 h-1 w-10 rounded-full bg-line-2 sm:hidden" aria-hidden="true"></span>
-                        <div class="flex items-center gap-2 py-1 pr-1 pl-4">
-                            <h2 class="flex-1 text-[0.9375rem] font-semibold">{title}</h2>
+                        <div class="flex items-center gap-2 py-1 pr-1 pl-4" class:pl-3=anchored class:py-0=anchored>
+                            <h2 class=move || if anchored() { "flex-1 text-xs font-semibold text-muted" } else { "flex-1 text-[0.9375rem] font-semibold" }>{title}</h2>
                             <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=close>
                                 <Glyph icon=icondata::LuX class="text-lg" />
                             </button>
@@ -4007,7 +3998,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             {session_tabs(workspace)}
                         </Show>
                     </div>
-                    <div class="flex flex-col gap-2 p-3">
+                    <div class=move || if anchored() { "flex flex-col gap-1 p-1.5" } else { "flex flex-col gap-2 p-3" }>
                         {move || match workspace.panel.get() {
                             Some(Panel::Agents) => agents_sheet(workspace).into_any(),
                             Some(Panel::Models) => models_sheet(workspace).into_any(),
@@ -4524,137 +4515,173 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
         }
         approvals
             .into_iter()
-            .map(|approval| {
-                let (title, preview, icon) = workspace.with_store(|store| {
-                    store
-                        .sessions
-                        .get(&approval.session_id)
-                        .and_then(|state| state.tools.get(&approval.tool_call_id))
-                        .map(|tool| {
-                            (
-                                cookie_agent_client_state::acp::approval_title(&tool.header_text())
-                                    .to_owned(),
-                                display_html(&tool.presentation.preview, BlockPlace::plain),
-                                icons::hint_icon(
-                                    tool.presentation.hint.as_ref().map(|hint| hint.rendered()),
-                                ),
-                            )
-                        })
-                        .unwrap_or_else(|| ("a tool call".into(), String::new(), icons::hint_icon(None)))
-                });
-                let reviewer = approval
-                    .reviewer
-                    .as_ref()
-                    .and_then(cookie_agent_client_state::ReviewerNote::escalation_line)
-                    .map(|line| view! { <p class=NOTE data-reviewer>{line}</p> });
-                // The note goes with a rejection, to the agent.
-                let note = RwSignal::new(String::new());
-                let decide = {
-                    let approval = approval.clone();
-                    move |decision: ApprovalUserDecision, option: Option<String>| {
-                        let approval = approval.clone();
-                        move |_| {
-                            workspace.respond(
-                                approval.clone(),
-                                decision,
-                                option.clone(),
-                                Some(note.get_untracked()),
-                            );
-                        }
-                    }
-                };
-                let buttons = if approval.agent_options.is_empty() {
-                    let tree = approval.constraints.allow_tree_grant.then(|| {
-                        view! {
-                            <button type="button" class=BUTTON data-decision="approve_tree" on:click=decide(ApprovalUserDecision::ApproveTree, None)>
-                                <Glyph icon=icondata::LuCheckCheck />
-                                "Approve for this session tree"
-                            </button>
-                        }
-                    });
-                    view! {
-                        <button type="button" class=PRIMARY data-decision="approve_once" on:click=decide(ApprovalUserDecision::ApproveOnce, None)>
-                            <Glyph icon=icondata::LuCheck />
-                            "Approve once"
-                        </button>
-                        {tree}
-                        <button type="button" class=BUTTON data-decision="reject" on:click=decide(ApprovalUserDecision::Reject, None)>
-                            <Glyph icon=icondata::LuX />
-                            "Reject"
-                        </button>
-                    }
-                    .into_any()
-                } else {
-                    // An ACP agent's own options, in its order.
-                    approval
-                        .agent_options
-                        .iter()
-                        .map(|option| {
-                            let allows = option.kind.allows();
-                            let decision = if allows {
-                                ApprovalUserDecision::ApproveOnce
-                            } else {
-                                ApprovalUserDecision::Reject
-                            };
-                            let icon = if allows {
-                                icondata::LuCheck
-                            } else {
-                                icondata::LuX
-                            };
-                            // The agent's allow-once option leads.
-                            let class = if option.kind
-                                == cookie_agent_protocol::ApprovalAgentOptionKind::AllowOnce
-                            {
-                                PRIMARY
-                            } else {
-                                BUTTON
-                            };
-                            view! {
-                                <button
-                                    type="button"
-                                    class=class
-                                    data-decision=if allows { "approve_once" } else { "reject" }
-                                    data-agent-answer=option.option_id.clone()
-                                    on:click=decide(decision, Some(option.option_id.clone()))
-                                >
-                                    <Glyph icon=icon />
-                                    {option.name.clone()}
-                                </button>
-                            }
-                        })
-                        .collect_view()
-                        .into_any()
-                };
-                let source = approval_source(workspace, &approval).map(|source| {
-                    view! {
-                        <span class="inline-flex shrink-0 items-center rounded-full bg-sunken px-2 py-0.5 text-xs font-normal" data-approval-source>
-                            {source}
-                        </span>
-                    }
-                });
+            .map(|approval| approval_card(workspace, approval))
+            .collect_view()
+            .into_any()
+    }
+}
+
+/// One approval: what the call wants, where, the reviewer's reason, a note
+/// for the agent, and the answers.
+fn approval_card(
+    workspace: Workspace,
+    approval: cookie_agent_client_state::ApprovalState,
+) -> impl IntoView {
+    let (title, preview, icon) = workspace.with_store(|store| {
+        store
+            .sessions
+            .get(&approval.session_id)
+            .and_then(|state| state.tools.get(&approval.tool_call_id))
+            .map(|tool| {
+                (
+                    cookie_agent_client_state::acp::approval_title(&tool.header_text()).to_owned(),
+                    display_html(&tool.presentation.preview, BlockPlace::plain),
+                    icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
+                )
+            })
+            .unwrap_or_else(|| ("a tool call".into(), String::new(), icons::hint_icon(None)))
+    });
+    let reviewer = approval
+        .reviewer
+        .as_ref()
+        .and_then(cookie_agent_client_state::ReviewerNote::escalation_line)
+        .map(|line| view! { <p class=NOTE data-reviewer>{line}</p> });
+    // The note goes with a rejection, to the agent.
+    let note = RwSignal::new(String::new());
+    let decide = {
+        let approval = approval.clone();
+        move |decision: ApprovalUserDecision, option: Option<String>| {
+            let approval = approval.clone();
+            move |_| {
+                workspace.respond(
+                    approval.clone(),
+                    decision,
+                    option.clone(),
+                    Some(note.get_untracked()),
+                );
+            }
+        }
+    };
+    let buttons = if approval.agent_options.is_empty() {
+        let tree = approval.constraints.allow_tree_grant.then(|| {
                 view! {
-                    <div class="approval flex flex-col gap-2 rounded-lg border border-accent bg-surface-2 p-3">
-                        <p class="flex items-center gap-2 font-mono text-sm font-bold">
-                            <Glyph icon=icon class="text-accent" />
-                            <span class="min-w-0 break-words">{title}</span>
-                            {source}
-                        </p>
-                        <div class="min-w-0" inner_html=preview></div>
-                        {reviewer}
-                        <input
-                            type="text"
-                            class="min-h-9 w-full min-w-0 rounded-md border border-line-2 bg-surface px-2 text-sm focus:border-accent focus:outline-none"
-                            data-approval-note
-                            placeholder="Note for the agent, sent with a rejection"
-                            prop:value=move || note.get()
-                            on:input=move |event| note.set(event_target_value(&event))
-                        />
-                        <div class="flex flex-wrap gap-2">{buttons}</div>
-                    </div>
+                    <button type="button" class=BUTTON data-decision="approve_tree" on:click=decide(ApprovalUserDecision::ApproveTree, None)>
+                        <Glyph icon=icondata::LuCheckCheck />
+                        "Approve for this session tree"
+                    </button>
+                }
+            });
+        view! {
+                <button type="button" class=PRIMARY data-decision="approve_once" on:click=decide(ApprovalUserDecision::ApproveOnce, None)>
+                    <Glyph icon=icondata::LuCheck />
+                    "Approve once"
+                </button>
+                {tree}
+                <button type="button" class=BUTTON data-decision="reject" on:click=decide(ApprovalUserDecision::Reject, None)>
+                    <Glyph icon=icondata::LuX />
+                    "Reject"
+                </button>
+            }
+            .into_any()
+    } else {
+        // An ACP agent's own options, in its order.
+        approval
+            .agent_options
+            .iter()
+            .map(|option| {
+                let allows = option.kind.allows();
+                let decision = if allows {
+                    ApprovalUserDecision::ApproveOnce
+                } else {
+                    ApprovalUserDecision::Reject
+                };
+                let icon = if allows {
+                    icondata::LuCheck
+                } else {
+                    icondata::LuX
+                };
+                // The agent's allow-once option leads.
+                let class =
+                    if option.kind == cookie_agent_protocol::ApprovalAgentOptionKind::AllowOnce {
+                        PRIMARY
+                    } else {
+                        BUTTON
+                    };
+                view! {
+                    <button
+                        type="button"
+                        class=class
+                        data-decision=if allows { "approve_once" } else { "reject" }
+                        data-agent-answer=option.option_id.clone()
+                        on:click=decide(decision, Some(option.option_id.clone()))
+                    >
+                        <Glyph icon=icon />
+                        {option.name.clone()}
+                    </button>
                 }
             })
             .collect_view()
             .into_any()
+    };
+    let source = approval_source(workspace, &approval).map(|source| {
+            view! {
+                <span class="inline-flex shrink-0 items-center rounded-full bg-sunken px-2 py-0.5 text-xs font-normal" data-approval-source>
+                    {source}
+                </span>
+            }
+        });
+    view! {
+        <div class="approval rise-in flex flex-col gap-2.5 rounded-[1.125rem] bg-raised p-4 shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-warn)_45%,transparent),0_0_0_4px_var(--color-warn-soft),0_14px_40px_-12px_rgb(0_0_0/0.2)]">
+            <p class="flex items-center gap-2.5 text-sm font-semibold">
+                <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-warn-soft text-warn">
+                    <Glyph icon=icon />
+                </span>
+                <span class="min-w-0 font-mono text-[0.8125rem] break-words">{title}</span>
+                {source}
+            </p>
+            <div class="min-w-0" inner_html=preview></div>
+            {reviewer}
+            <input
+                type="text"
+                class="h-9 w-full min-w-0 rounded-lg bg-surface px-3 text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] placeholder:text-faint focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none"
+                data-approval-note
+                placeholder="Note for the agent, sent with a rejection"
+                prop:value=move || note.get()
+                on:input=move |event| note.set(event_target_value(&event))
+            />
+            <div class="flex flex-wrap gap-2">{buttons}</div>
+        </div>
+    }
+}
+
+/// The approval that takes the composer's place while it waits
+/// (docs/site/specs/quiet-ink.md, D8): the oldest of the session's, and
+/// how many more wait behind it, which the approvals sheet lists.
+#[component]
+fn ApprovalDock(workspace: Workspace) -> impl IntoView {
+    view! {
+        <div class="px-3 pt-1 pb-3 sm:px-6" id="approval-dock">
+            <div class="mx-auto flex max-w-[45rem] flex-col gap-1.5">
+                {move || {
+                    let waiting = workspace.approvals();
+                    let more = waiting.len().saturating_sub(1);
+                    let first = waiting.into_iter().next();
+                    view! {
+                        {first.map(|approval| approval_card(workspace, approval))}
+                        {(more > 0).then(|| view! {
+                            <button
+                                type="button"
+                                class="self-start rounded-md px-2 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
+                                data-approvals-more
+                                on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
+                            >
+                                {format!("{more} more waiting")}
+                            </button>
+                        })}
+                    }
+                }}
+            </div>
+        </div>
     }
 }
 
@@ -4928,7 +4955,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
                         >
                             <span class="flex w-full min-w-0 flex-col">
                                 <span class="flex flex-wrap items-baseline gap-x-2">
-                                    <span class="agent-badge rounded border border-accent px-1 text-[0.625rem] uppercase">"agent"</span>
+                                    <span class="agent-badge rounded px-1 text-[0.625rem] uppercase bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]">"agent"</span>
                                     <span class="font-mono text-sm font-bold">{cookie_agent_client_state::acp::command_label(&name)}</span>
                                     <span class=format!("font-mono {NOTE}")>{hint}</span>
                                 </span>
@@ -4974,7 +5001,7 @@ fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
         .unwrap_or_else(|| "Input for the command".to_owned());
     view! {
         <p class="flex flex-wrap items-baseline gap-x-2">
-            <span class="agent-badge rounded border border-accent px-1 text-[0.625rem] uppercase">"agent"</span>
+            <span class="agent-badge rounded px-1 text-[0.625rem] uppercase bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]">"agent"</span>
             <span id="agent-command-name" class="font-mono text-sm font-bold">{cookie_agent_client_state::acp::command_label(&command.name)}</span>
         </p>
         <p class=NOTE>{command.description.clone()}</p>

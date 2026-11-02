@@ -475,10 +475,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             children,
             ..
         } => {
-            let mut html = format!(
-                "<div class=\"{NOTE} font-mono\">{}</div>",
-                escape(&attribution.header(view.names))
-            );
+            let mut html = agent_header_html(&attribution.header(view.names));
             for child in children {
                 html.push_str(&child_html(view, *id, child));
             }
@@ -747,7 +744,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 // The goal the user set, rebuilt from the activation event:
                 // shown like a message, with no message menu.
                 format!(
-                    "<div class=\"goal-activation ml-auto max-w-[90%] rounded-lg border border-accent px-3 py-2 text-sm whitespace-pre-wrap\">{}<span class=\"font-bold\">Goal:</span> {}</div>",
+                    "<div class=\"goal-activation ml-auto max-w-[90%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]\">{}<span class=\"font-bold\">Goal:</span> {}</div>",
                     svg(icondata::LuTarget, "mr-1.5 text-accent"),
                     escape(&goal.objective)
                 )
@@ -1090,10 +1087,7 @@ pub fn transcript_rows(
                                 header: Arc::from(if headless {
                                     String::new()
                                 } else {
-                                    format!(
-                                        "<div class=\"{NOTE} font-mono\">{}</div>",
-                                        escape(&attribution.header(view.names))
-                                    )
+                                    agent_header_html(&attribution.header(view.names))
                                 }),
                                 parts: reply,
                                 work: Arc::new(work),
@@ -1306,9 +1300,12 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
     // fold again, and the page pins a copy of it to the top while its work
     // (`[data-work-in]`) scrolls past.
     let (open_attribute, surface) = if open {
-        (" data-open", "rounded-md bg-sunken hover:bg-press/70")
+        (
+            " data-open",
+            "rounded-lg bg-surface text-fg-2 hover:bg-hover",
+        )
     } else {
-        ("", "rounded-md hover:bg-hover")
+        ("", "rounded-lg hover:bg-hover")
     };
     format!(
         "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-muted active:bg-press\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}</span>{lines}</button></div>",
@@ -1318,12 +1315,24 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
     )
 }
 
+/// A reply's header: the agent, then its model, `primary • GPT-5`, the
+/// agent's name the stronger.
+fn agent_header_html(header: &str) -> String {
+    let (agent, model) = header.split_once(" • ").unwrap_or((header, ""));
+    format!(
+        "<div class=\"flex min-w-0 items-center gap-2 text-xs text-muted\" data-agent-header><span class=\"inline-flex h-[1.125rem] w-[1.125rem] shrink-0 items-center justify-center rounded-md bg-accent text-[0.625rem] text-on-accent\" aria-hidden=\"true\">{}</span><span class=\"truncate font-medium text-fg-2\">{}</span><span class=\"truncate\">{}</span></div>",
+        svg(icondata::LuSparkles, ""),
+        escape(agent),
+        escape(model),
+    )
+}
+
 /// The line that closes a reply, as the TUI's footer reads: its generation
 /// speed, the context it left, its cost, and whether it was interrupted.
 fn reply_footer_html(state: &SessionState, item_id: u64) -> Option<String> {
     cookie_agent_client_state::reply::assistant_footer(state, item_id).map(|footer| {
         format!(
-            "<div class=\"{NOTE} font-mono\" data-reply-footer>{}</div>",
+            "<div class=\"text-xs text-faint tabular-nums\" data-reply-footer>{}</div>",
             escape(&footer)
         )
     })
@@ -1504,7 +1513,7 @@ fn pinned_row(
     };
     let width = if open { "w-full" } else { "min-w-0 max-w-full" };
     let mut html = format!(
-        "<div class=\"collapsible-row {width}\" data-pinned=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"hit-area flex h-7 max-w-full items-center gap-1.5 rounded-md px-2 text-left {NOTE} hover:bg-hover active:bg-press\">{}{}<span class=\"min-w-0 truncate\">{}</span></button>",
+        "<div class=\"collapsible-row {width}\" data-pinned=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"hit-area flex h-7 max-w-full items-center gap-1.5 rounded-full bg-sunken px-2.5 text-left {NOTE} transition-colors hover:bg-press hover:text-fg active:bg-press\">{}{}<span class=\"min-w-0 truncate\">{}</span></button>",
         svg(chevron, "text-[0.625rem] opacity-70"),
         svg(icon, ""),
         escape(header)
@@ -1677,8 +1686,8 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     // approvals from there.
     let approval = if view.waiting_approval(tool) {
         format!(
-            "<button type=\"button\" data-action=\"approvals\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-full bg-accent px-3 text-xs font-bold text-on-accent hover:bg-accent active:bg-accent-press\">{}approve?</button>",
-            svg(icondata::LuBell, "")
+            "<button type=\"button\" data-action=\"approvals\" class=\"mr-1 inline-flex min-h-9 shrink-0 items-center gap-1.5 self-center rounded-md bg-warn-soft px-2.5 text-xs font-medium text-warn hover:brightness-95\">{}waiting for you</button>",
+            svg(icondata::LuShield, "")
         )
     } else {
         String::new()
@@ -1712,7 +1721,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     ));
     let icon = line_box(svg(
         icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
-        "text-accent",
+        "text-muted",
     ));
     let header = tool_header_text(view, tool);
     // An open call's header wraps to show its whole title and argument, its
@@ -1731,7 +1740,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         .and_then(|url| header.find(url).map(|at| (at, url)));
     let toggle = match link {
         None => format!(
-            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-sm hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
+            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-[0.8125rem] hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
             escape(&id),
             escape(&header),
         ),
@@ -1754,7 +1763,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         }
     };
     let mut html = format!(
-        "<div class=\"rounded-lg border border-line\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex {align}\">{toggle}{approval}{background}</div>",
+        "<div class=\"rounded-[0.625rem] bg-raised ring-1 ring-line transition-shadow hover:ring-line-2\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex {align}\">{toggle}{approval}{background}</div>",
         escape(&id),
     );
     if let Some(delegate) = view.delegates.get(&tool.id) {

@@ -233,8 +233,36 @@ fn memory_row(
                         .with(|focus| focus.as_deref() == Some(url.as_str()))
                 })
             };
+            let context = RwSignal::new(None);
+            let context_items = {
+                let url = memory.url.clone();
+                let deleted = deleted.clone();
+                move || {
+                    let url = url.clone();
+                    let deleted = deleted.clone();
+                    vec![
+                        super::row_menu::MenuItem {
+                            id: "open",
+                            label: "Open",
+                            icon: icondata::LuFileText,
+                            act: Callback::new(move |()| workspace.edit_memory(url.clone())),
+                            danger: false,
+                        },
+                        super::row_menu::MenuItem {
+                            id: "delete",
+                            label: "Delete…",
+                            icon: icondata::LuTrash2,
+                            act: Callback::new(move |()| confirm_delete.set(Some(deleted.clone()))),
+                            danger: true,
+                        },
+                    ]
+                }
+            };
+            let context_title = memory_name(&memory).to_owned();
             view! {
+                {super::row_menu::context_menu(context, (), context_title, context_items)}
                 <div
+                    on:contextmenu=super::row_menu::on_context(context)
                     class=move || format!(
                         "memory-row flex items-center gap-2 rounded-md {indent} {}",
                         if focused.get() { "ring-2 ring-accent" } else { "" }

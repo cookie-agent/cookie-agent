@@ -89,7 +89,7 @@ fn filter_panel(workspace: Workspace) -> impl IntoView {
             id="assets-filter"
             role="dialog"
             aria-label="Filter assets"
-            class="flex flex-col gap-3 rounded-lg border border-line bg-surface p-3"
+            class="flex flex-col gap-3 rounded-xl p-3 bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]"
         >
             <div class="flex flex-col gap-1.5">
                 <span class=heading>"Project"</span>
@@ -281,7 +281,7 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
                     type="text"
                     role="searchbox"
                     id="assets-search"
-                    class="min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface pr-3 pl-9 text-sm text-fg hover:border-accent focus:border-accent focus:outline-none"
+                    class="min-h-11 w-full min-w-0 rounded-lg bg-surface pr-3 pl-9 text-sm text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                     aria-label="Search assets by title or file name"
                     placeholder="Search by title or file name"
                     prop:value=move || workspace.asset_query.get_untracked()
@@ -389,8 +389,57 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
             </button>
         }
     });
+    // A right-click offers the asset's actions where the pointer is.
+    let context = RwSignal::new(None);
+    let context_items = {
+        let title = title.clone();
+        let download_asset = download_asset.clone();
+        move || {
+            use super::row_menu::MenuItem;
+            let (title, download_asset) = (title.clone(), download_asset.clone());
+            vec![
+                MenuItem {
+                    id: "open",
+                    label: "Open",
+                    icon: icondata::LuEye,
+                    act: Callback::new(move |()| workspace.asset_open.set(Some(id))),
+                    danger: false,
+                },
+                MenuItem {
+                    id: "rename",
+                    label: "Rename",
+                    icon: icondata::LuPencil,
+                    act: Callback::new(move |()| {
+                        workspace.asset_renaming.set(Some((id, title.clone())))
+                    }),
+                    danger: false,
+                },
+                MenuItem {
+                    id: "download",
+                    label: "Download",
+                    icon: icondata::LuDownload,
+                    act: Callback::new(move |()| {
+                        crate::assets::download(workspace, download_asset.clone())
+                    }),
+                    danger: false,
+                },
+                MenuItem {
+                    id: "delete",
+                    label: "Delete…",
+                    icon: icondata::LuTrash2,
+                    act: Callback::new(move |()| workspace.asset_deleting.set(Some(id))),
+                    danger: true,
+                },
+            ]
+        }
+    };
     view! {
-        <div class="flex flex-col gap-1 border-b border-line py-2" data-asset-row=asset.handle.to_string()>
+        {super::row_menu::context_menu(context, (), title.clone(), context_items)}
+        <div
+            class="flex flex-col gap-1 border-b border-line py-2"
+            data-asset-row=asset.handle.to_string()
+            on:contextmenu=super::row_menu::on_context(context)
+        >
             <div class="flex min-w-0 flex-wrap items-center gap-2">
                 <Glyph icon=crate::icons::asset_icon(kind) class="text-accent" />
                 <span class="min-w-0 flex-1 truncate text-sm font-bold" data-asset-row-title>{title.clone()}</span>
@@ -471,7 +520,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                             <input
                                 type="text"
                                 id="asset-rename-title"
-                                class="min-h-11 min-w-0 flex-1 rounded-md border border-line-2 bg-surface px-3 text-sm"
+                                class="min-h-11 min-w-0 flex-1 rounded-lg bg-surface px-3 text-sm shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                                 maxlength="200"
                                 aria-label="The asset's title"
                                 prop:value=move || {

@@ -27,7 +27,7 @@ use crate::{
 /// to see, 44 px to hit.
 const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-40";
 const BAR: &str = "flex flex-wrap items-center gap-2 border-t border-line px-3 py-1 text-sm";
-pub(super) const FIELD: &str = "min-h-11 rounded-md border border-line-2 bg-surface px-3 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
+pub(super) const FIELD: &str = "min-h-9 rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none compact:min-h-11";
 
 /// The draft's files as chips, and an offer to downscale an image too
 /// large to attach.
@@ -90,15 +90,6 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
             </div>
         </Show>
     }
-}
-
-/// Which attach buttons [`AttachButtons`] shows for the draft's model.
-pub(super) fn attach_buttons(workspace: Workspace) -> crate::attach::AttachButtons {
-    workspace
-        .accepted_media()
-        .map_or(crate::attach::AttachButtons::None, |accepted| {
-            crate::attach::attach_buttons(&accepted.media)
-        })
 }
 
 /// The attach and camera buttons and their hidden file inputs, once a model
@@ -292,6 +283,7 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=BUTTON
+                            data-goal-action=action_label(action).to_lowercase()
                             on:click=move |_| workspace.goal_command(GoalCommand::Lifecycle(action))
                         >
                             {action_label(action)}

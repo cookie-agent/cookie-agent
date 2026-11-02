@@ -24,6 +24,10 @@ pub(super) const NAV_ROW: &str = "hit-area group relative flex h-8 w-full items-
 /// An icon-only button of the sidebar's foot.
 const FOOT_BUTTON: &str = "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press";
 
+/// A view's entry on a phone, where the views are a grid of tiles so the
+/// sessions keep the room.
+const NAV_TILE: &str = "group flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl text-[0.6875rem] text-fg-2 transition-colors hover:bg-hover active:bg-press aria-[current=page]:bg-sel aria-[current=page]:text-fg";
+
 /// The views the sidebar lists under *Workspace*: every view but Chat,
 /// which is the session list itself, and Settings, at the foot.
 const WORKSPACE_VIEWS: [View; 7] = [
@@ -51,7 +55,7 @@ fn nav_entry(workspace: Workspace, view: View) -> impl IntoView {
     view! {
         <button
             type="button"
-            class=NAV_ROW
+            class=move || if workspace.narrow.get() { NAV_TILE } else { NAV_ROW }
             data-view=view.id()
             aria-current=move || current().then_some("page")
             class:hidden=move || !offered()
@@ -61,7 +65,7 @@ fn nav_entry(workspace: Workspace, view: View) -> impl IntoView {
                 icon=view_icon(view)
                 class="text-base text-muted transition-colors group-hover:text-fg-2 group-aria-[current=page]:text-accent"
             />
-            <span class="truncate">{label}</span>
+            <span class="max-w-full truncate px-1">{label}</span>
         </button>
     }
 }
@@ -114,7 +118,7 @@ pub fn Sidebar(
                     <span class="truncate">"New session"</span>
                 </button>
                 <p class="px-2 pt-4 pb-1 text-[0.6875rem] font-semibold text-muted">"Workspace"</p>
-                {nav}
+                <div class=move || if workspace.narrow.get() { "grid grid-cols-4 gap-1" } else { "flex flex-col gap-px" }>{nav}</div>
             </nav>
             <SessionList workspace=workspace />
             <div class="flex shrink-0 items-center gap-1 border-t border-line px-2 py-1.5">

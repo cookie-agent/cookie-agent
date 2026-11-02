@@ -57,7 +57,7 @@ pub fn media_html(sha256: &str, media_type: &str, byte_length: u64, label: Optio
 /// until then.
 pub fn asset_html(asset: &cookie_agent_protocol::AssetBlock) -> String {
     format!(
-        "<div class=\"asset-figure flex min-w-0 flex-col gap-1 rounded-md border border-line p-2\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\"><div class=\"flex min-w-0 items-center gap-2\" data-asset-head><span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span></div><div class=\"min-w-0\" data-asset-body><span class=\"{NOTE}\">{} ({}, {})</span></div></div>",
+        "<div class=\"asset-figure flex min-w-0 flex-col gap-1 rounded-xl p-2 bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\"><div class=\"flex min-w-0 items-center gap-2\" data-asset-head><span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span></div><div class=\"min-w-0\" data-asset-body><span class=\"{NOTE}\">{} ({}, {})</span></div></div>",
         escape(&asset.asset.to_string()),
         escape(&serde_json::to_string(&asset.store).unwrap_or_default()),
         escape(&asset.sha256),
@@ -250,7 +250,7 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             short_id,
             label,
         } => format!(
-            "<button type=\"button\" data-action=\"open-session\" data-session=\"{session_id}\" class=\"rounded border border-line-2 px-2 py-1 font-mono text-sm hover:bg-hover active:bg-press\">{}</button>",
+            "<button type=\"button\" data-action=\"open-session\" data-session=\"{session_id}\" class=\"rounded px-2 py-1 font-mono text-sm hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]\">{}</button>",
             escape(
                 label
                     .as_deref()
@@ -274,7 +274,7 @@ fn full_content_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
     };
     let action = |label: &str| {
         format!(
-            "<button type=\"button\" data-action=\"full\" data-call=\"{}\" data-block=\"{}\" class=\"mt-1 min-h-11 rounded border border-line-2 px-3 py-1 text-sm hover:bg-hover active:bg-press\">{label}</button>",
+            "<button type=\"button\" data-action=\"full\" data-call=\"{}\" data-block=\"{}\" class=\"mt-1 min-h-11 rounded px-3 py-1 text-sm hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]\">{label}</button>",
             escape(call_id),
             place.index
         )
