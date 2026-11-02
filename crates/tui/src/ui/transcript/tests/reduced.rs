@@ -244,6 +244,7 @@ fn a_cached_live_row_counts_the_calls_once_its_call_ends() {
             },
             0,
             &crate::state::ModelDisplayNames::default(),
+            None,
         );
         snapshot_lines(&cache.layout.lines.to_vec())
     };

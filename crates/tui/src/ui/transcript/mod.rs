@@ -412,6 +412,12 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         block: u32,
     },
+    /// The link of a figure, the `asset` block at this index, that opens it
+    /// in the web page.
+    ToolAsset {
+        call_id: cookie_agent_protocol::ToolCallId,
+        block: u32,
+    },
     CommittedTool {
         turn_seq: u64,
         content_index: u32,
@@ -767,6 +773,7 @@ impl LayoutCache {
                                 | BlockId::History(_)
                                 | BlockId::ToolSession { .. }
                                 | BlockId::ToolMemory { .. }
+                                | BlockId::ToolAsset { .. }
                         )
                     })
                     .flat_map(|region| {
@@ -1063,6 +1070,27 @@ struct TranscriptRenderContext<'a> {
     defer_highlights: bool,
     /// The item's rows rendering code plain.
     deferred_highlights: &'a mut Vec<DeferredRows>,
+    /// Where a figure's link points.
+    figure_links: FigureLinks<'a>,
+}
+
+/// What a figure's link into the web page is made of: the page's address,
+/// when the TUI knows one, and the session shown.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct FigureLinks<'a> {
+    pub(super) page_url: Option<&'a str>,
+    pub(super) session: Option<SessionId>,
+}
+
+impl FigureLinks<'_> {
+    /// The link that shows the asset `handle`, when there is a page.
+    pub(super) fn link(&self, handle: &cookie_agent_protocol::AssetHandle) -> Option<String> {
+        Some(cookie_agent_client_state::assets::asset_link(
+            self.page_url?,
+            self.session?,
+            handle,
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1159,6 +1187,7 @@ pub(super) fn ensure_cached_transcript_layout(
         TranscriptView::full(minimum_event_level),
         clock_bucket,
         model_names,
+        None,
     )
 }
 
@@ -1206,6 +1235,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
     view: TranscriptView,
     clock_bucket: u8,
     model_names: &ModelDisplayNames,
+    page_url: Option<&str>,
 ) -> bool {
     let TranscriptView {
         minimum_event_level,
@@ -1390,6 +1420,10 @@ pub(super) fn ensure_cached_transcript_layout_in(
                 assistant_child_lines: &mut assistant_child_lines,
                 defer_highlights: true,
                 deferred_highlights: &mut deferred,
+                figure_links: FigureLinks {
+                    page_url,
+                    session: Some(session_id),
+                },
             };
             // Unchanged parts and tool rows come back from their caches by
             // reference, so this re-renders only what changed.
@@ -2310,6 +2344,7 @@ impl App {
             view,
             clock_bucket,
             self.runtime.model_names(),
+            self.page_url.as_deref(),
         );
         // A fresh session greets with guidance instead of a blank pane; a
         // filtered-down transcript (lines hidden by the event level) keeps
@@ -2370,6 +2405,28 @@ impl App {
             }
             BlockId::ToolSession { session, .. } => {
                 self.watch_session(session);
+                return;
+            }
+            BlockId::ToolAsset { call_id, block } => {
+                let handle = self
+                    .store
+                    .sessions
+                    .get(&session_id)
+                    .and_then(|state| state.tools.get(&call_id))
+                    .and_then(|tool| match tool.shown_display().get(block as usize) {
+                        Some(cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::DisplayBlock::Asset(asset),
+                        )) => Some(asset.handle.clone()),
+                        _ => None,
+                    });
+                if let (Some(handle), Some(page)) = (handle, self.page_url.as_deref()) {
+                    let link =
+                        cookie_agent_client_state::assets::asset_link(page, session_id, &handle);
+                    self.status = match crate::ui::open_link::open(&link) {
+                        Ok(()) => format!("Opened {handle} in the browser"),
+                        Err(error) => format!("The browser did not open ({error}): {link}"),
+                    };
+                }
                 return;
             }
             BlockId::ToolMemory { call_id, block } => {
@@ -2830,6 +2887,7 @@ pub(super) fn transcript_layout_viewed(
                 assistant_child_lines: &mut assistant_child_lines,
                 defer_highlights: false,
                 deferred_highlights: &mut deferred_highlights,
+                figure_links: FigureLinks::default(),
             },
         );
         append_item_layout(&mut layout, item_layout);
@@ -3084,6 +3142,7 @@ pub(super) fn block_hit_at<'a>(
                 | BlockId::History(_)
                 | BlockId::ToolSession { .. }
                 | BlockId::ToolMemory { .. }
+                | BlockId::ToolAsset { .. }
         ) {
             // Action regions are single clickable rows of a tool body.
             (region.start_line >= scroll_offset).then(|| {

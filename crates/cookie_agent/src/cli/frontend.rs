@@ -98,6 +98,7 @@ pub(super) async fn run_local_frontend(
             cookie_agent_tui::ConnectionView {
                 label: Some("standalone".into()),
                 notices,
+                page_url: None,
             },
         )
         .await
@@ -200,6 +201,12 @@ pub(super) async fn run_daemon_tui(
     .into_iter()
     .collect();
     let address = local_daemon::daemon_address(url);
+    // Figures link into the daemon's web page: where its configuration
+    // says it is, else where this TUI reached it.
+    let page_url = hello
+        .page_url
+        .clone()
+        .or_else(|| cookie_agent_server::page_url(url));
     let (url, token) = (url.to_owned(), token.to_owned());
     let reconnector: cookie_agent_tui::Reconnector = std::sync::Arc::new(move |progress| {
         let (url, token, identity) = (url.clone(), token.clone(), identity.clone());
@@ -232,6 +239,7 @@ pub(super) async fn run_daemon_tui(
         cookie_agent_tui::ConnectionView {
             label: Some(address),
             notices,
+            page_url,
         },
     )
     .await

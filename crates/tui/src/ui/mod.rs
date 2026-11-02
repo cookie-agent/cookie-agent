@@ -4,6 +4,7 @@ mod app;
 mod events;
 mod input;
 mod management;
+mod open_link;
 mod pickers;
 mod provider;
 mod slash;

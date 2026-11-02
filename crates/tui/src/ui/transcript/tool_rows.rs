@@ -229,9 +229,11 @@ pub(super) fn tool_child_layout(
         output_block_id(section)
             .is_some_and(|id| context.expanded.is_some_and(|blocks| blocks.contains(&id)))
     };
+    // A figure shows what it shows, folded or open (assets spec 9).
+    let figure = is_figure(tool) && !tool.shown_display().is_empty();
     let has_body = tool.failure.is_some()
         || tool.shown_progress().is_some()
-        || !tool.shown_display().is_empty();
+        || (!figure && !tool.shown_display().is_empty());
     let any_output_expanded = [
         ToolOutputSection::Detail,
         ToolOutputSection::Stdout,
@@ -320,6 +322,9 @@ pub(super) fn tool_child_layout(
         for line in &mut body {
             line.band = Some(ToolBand::Title);
         }
+        if figure {
+            panel.extend(figure_lines(tool, context.figure_links, context.theme));
+        }
         if padded && !panel.is_empty() {
             panel.insert(0, ToolBodyLine::wrapped(Line::default()));
             panel.push(ToolBodyLine::wrapped(Line::default()));
@@ -343,6 +348,9 @@ pub(super) fn tool_child_layout(
             _ => Line::from(header),
         };
         body.push(ToolBodyLine::wrapped(line));
+        if figure {
+            body.extend(figure_lines(tool, context.figure_links, context.theme));
+        }
     }
     // Collapsed rows are muted body text; expanded blocks are ordinary text
     // whose header suffix still names a failure.
@@ -381,6 +389,65 @@ pub(super) fn tool_child_layout(
         lines: rendered.lines,
         user_seq: None,
     }
+}
+
+/// Whether `tool` shows the user something: its hint is `figure`.
+fn is_figure(tool: &crate::state::ToolCallState) -> bool {
+    tool.presentation
+        .hint
+        .as_ref()
+        .is_some_and(|hint| hint.as_str() == cookie_agent_protocol::ToolHint::FIGURE)
+}
+
+/// A figure's rows: its caption, then each asset with its link into the web
+/// page, which opens it; without a page to link to, where to see it.
+fn figure_lines(
+    tool: &crate::state::ToolCallState,
+    links: FigureLinks<'_>,
+    theme: &Theme,
+) -> Vec<ToolBodyLine> {
+    let mut lines = Vec::new();
+    for (index, block) in tool.shown_display().iter().enumerate() {
+        match block {
+            cookie_agent_protocol::Open::Known(cookie_agent_protocol::DisplayBlock::Text {
+                text,
+                ..
+            }) => lines.push(ToolBodyLine::wrapped(Line::raw(format!(
+                "  {}",
+                flatten_header_argument(text)
+            )))),
+            cookie_agent_protocol::Open::Known(cookie_agent_protocol::DisplayBlock::Asset(
+                asset,
+            )) => {
+                lines.push(ToolBodyLine::wrapped(Line::from(vec![
+                    Span::raw(format!("  {} ", flatten_header_argument(&asset.title))),
+                    Span::styled(
+                        format!(
+                            "— {} ({}, {})",
+                            flatten_header_argument(
+                                asset.filename.as_deref().unwrap_or(asset.handle.as_str())
+                            ),
+                            asset.media_type,
+                            cookie_agent_protocol::human_bytes(asset.byte_length)
+                        ),
+                        theme.muted(),
+                    ),
+                ])));
+                match links.link(&asset.handle) {
+                    Some(link) => lines.push(
+                        ToolBodyLine::wrapped(Line::styled(format!("    ↗ {link}"), theme.link()))
+                            .with_action(ToolRowAction::OpenAsset(index)),
+                    ),
+                    None => lines.push(ToolBodyLine::wrapped(Line::styled(
+                        format!("    Open the web client to see {}", asset.handle),
+                        theme.muted(),
+                    ))),
+                }
+            }
+            _ => {}
+        }
+    }
+    lines
 }
 
 /// Bytes of argument rows the expanded title panel shows before eliding.
@@ -600,6 +667,8 @@ pub(super) enum ToolRowAction {
     OpenMemory(usize),
     /// Reads the result the display view cut, whole.
     LoadCut,
+    /// Opens the figure of the `asset` block at this index in the web page.
+    OpenAsset(usize),
 }
 
 impl ToolRowAction {
@@ -617,6 +686,10 @@ impl ToolRowAction {
                 block: u32::try_from(block).unwrap_or(u32::MAX),
             },
             Self::LoadCut => BlockId::ToolCut(call_id),
+            Self::OpenAsset(block) => BlockId::ToolAsset {
+                call_id,
+                block: u32::try_from(block).unwrap_or(u32::MAX),
+            },
         }
     }
 }

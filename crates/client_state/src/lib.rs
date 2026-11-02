@@ -11,6 +11,7 @@
 
 pub mod acp;
 pub mod activity;
+pub mod assets;
 pub mod badges;
 pub mod config;
 pub mod cron;

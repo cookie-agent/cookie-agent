@@ -184,6 +184,7 @@ async fn bottom_bar_leads_with_where_the_daemon_runs_and_its_notices_stay_shown(
     app.show_connection(crate::ConnectionView {
         label: Some("standalone".into()),
         notices: Vec::new(),
+        page_url: None,
     });
     let standalone = rendered_row(&mut app, 100, 24, 23);
     assert!(
@@ -194,6 +195,7 @@ async fn bottom_bar_leads_with_where_the_daemon_runs_and_its_notices_stay_shown(
 
     app.show_connection(crate::ConnectionView {
         label: Some("127.0.0.1:7419".into()),
+        page_url: None,
         notices: vec![
             "The daemon runs 0.5.0, this is 0.6.0; restart the daemon to upgrade.".into(),
         ],

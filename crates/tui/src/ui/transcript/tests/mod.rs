@@ -15,6 +15,7 @@ mod diffs;
 mod display_blocks;
 mod drafts;
 mod event_order;
+mod figures;
 mod goal;
 mod hit_regions;
 mod hover;

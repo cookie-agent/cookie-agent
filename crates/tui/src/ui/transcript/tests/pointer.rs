@@ -272,6 +272,10 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
             .insert(BlockId::Tool(search_id));
         state.transcript.extend(search.transcript);
         state.tools.extend(search.tools);
+        // A figure, whose link opens it in the web page.
+        let figure = super::figures::figure_call();
+        state.transcript.extend(figure.transcript);
+        state.tools.extend(figure.tools);
         // A result the display view cut, and history it has not loaded.
         state.tools.get_mut(&search_id).expect("search").cut =
             Some(cookie_agent_client_state::history::CutResult {
@@ -341,6 +345,7 @@ async fn every_clickable_element_hovers_visibly() {
     let mut seen = BTreeSet::new();
 
     let (mut app, session, _) = content_app().await;
+    app.page_url = Some("http://127.0.0.1:7419/".into());
     seen.extend(sweep(&mut app, "content"));
     // The reduced transcript's work rows open and fold their blocks.
     app.tui_config.transcript = cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced;

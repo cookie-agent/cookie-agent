@@ -766,6 +766,8 @@ pub struct App {
     pub(in crate::ui) client_capability: Option<cookie_agent_protocol::CapabilityName>,
     /// The bottom bar's leading label: where the daemon runs.
     pub(in crate::ui) connection_label: Option<String>,
+    /// Where the daemon's web page is, which figures link to.
+    pub(in crate::ui) page_url: Option<String>,
     /// The home directory each runtime reported, which its paths show
     /// under as `~/…`; empty before `runtimes.list` answers, and from a
     /// daemon before client protocol 1.7.0.
@@ -1638,6 +1640,7 @@ impl App {
             client_runtime: placement.runtime,
             client_capability: placement.capability,
             connection_label: None,
+            page_url: None,
             runtime_homes: Default::default(),
             deliveries: Some(deliveries),
             rpc_updates_tx,
@@ -2132,6 +2135,7 @@ impl App {
     /// notices stay below the transcript.
     pub(in crate::ui) fn show_connection(&mut self, connection: ConnectionView) {
         self.connection_label = connection.label;
+        self.page_url = connection.page_url;
         self.transient_notices.extend(connection.notices);
     }
 }
@@ -2196,6 +2200,11 @@ pub struct ConnectionView {
     /// Notices shown below the transcript from the start, such as why a
     /// daemon could not be used.
     pub notices: Vec<String>,
+    /// Where the daemon's web page can be reached: its `[server] page_url`,
+    /// or the page derived from the address the TUI reached it at; `None`
+    /// for a daemon inside this process, which serves no page. Figures link
+    /// to it (`docs/site/specs/assets.md` section 9).
+    pub page_url: Option<String>,
 }
 
 /// Run the terminal UI against a daemon it reconnects to with

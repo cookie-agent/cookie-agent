@@ -335,6 +335,7 @@ fn layout_check(app: &mut App, root: SessionId, width: u16) -> bool {
         view,
         clock,
         app.runtime.model_names(),
+        None,
     )
 }
 

@@ -21,6 +21,7 @@ pub fn hint_icon(hint: Option<&str>) -> &'static str {
         ToolHint::MESSAGE => "📨",
         ToolHint::SKILL => "✨",
         ToolHint::GOAL => "🎯",
+        ToolHint::FIGURE => "🎨",
         _ => "🔨",
     }
 }
