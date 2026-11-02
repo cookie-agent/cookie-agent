@@ -63,17 +63,19 @@ stop_set() {
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
+    stop_browsers "$browsers"
 }
 
 # Runs scenarios $2... in a set of their own under directory $1: the mock
 # model, the daemons and their homes, chromedriver, and one browser. Run it
 # in a subshell: its exit stops them. (`pids` is not local, as the exit
-# trap runs after the function's variables are gone.)
+# trap runs after the function's variables are gone; nor is `browsers`.)
 run_set() {
     local scratch="$1"
     shift
     mkdir -p "$scratch"
     pids=()
+    browsers="$scratch/browsers"
     trap stop_set EXIT
     trap 'exit 143' TERM
 
@@ -374,7 +376,7 @@ TOML
     other_link="$link"
 
     driver_port="$(free_port)"
-    "$CHROMEDRIVER" --port="$driver_port" >"$scratch/chromedriver.log" 2>&1 &
+    start_chromedriver "$driver_port" "$browsers" "$scratch/chromedriver.log"
     pids+=("$!")
 
     COOKIE="$cookie" OAUTH_SERVER="http://127.0.0.1:$oauth_port" python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \

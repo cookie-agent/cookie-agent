@@ -102,6 +102,21 @@ PY
     echo "$cache/$version/chromedriver"
 }
 
+# Starts chromedriver on port $1 with its own TMPDIR, directory $2, where
+# its browsers keep their profiles, logging to $3.
+start_chromedriver() {
+    mkdir -p "$2"
+    TMPDIR="$2" "$CHROMEDRIVER" --port="$1" >"$3" 2>&1 &
+}
+
+# Stops the browsers still running from directory $1, the TMPDIR given to
+# start_chromedriver: stopping chromedriver leaves a browser running when its
+# session was never closed, as when a scenario dies or times out.
+stop_browsers() {
+    [[ -n "$1" ]] || return 0
+    pkill -f -- "$1/" 2>/dev/null || true
+}
+
 # The browser's command-line switches: headless, and without the sandbox
 # only on CI, whose runners cannot give Chrome its user namespaces.
 chrome_args_json() {

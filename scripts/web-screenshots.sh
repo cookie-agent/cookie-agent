@@ -55,6 +55,7 @@ cleanup() {
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
+    stop_browsers "$scratch/browsers"
     rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -188,6 +189,6 @@ HOME="$home" "$cookie" machine assign labpc labpc >/dev/null
 HOME="$home" "$cookie" machine assign studio studio >/dev/null
 
 driver_port="$(free_port)"
-"$CHROMEDRIVER" --port="$driver_port" >"$scratch/chromedriver.log" 2>&1 &
+start_chromedriver "$driver_port" "$scratch/browsers" "$scratch/chromedriver.log"
 pids+=("$!")
 python3 -I scripts/web-e2e/showcase.py "$driver_port" "$link" "$out" $mode
