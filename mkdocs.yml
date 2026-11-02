@@ -199,6 +199,7 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
+          - Onboarding with ACP agents: specs/acp-onboarding.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md
           - Projects: specs/projects.md
