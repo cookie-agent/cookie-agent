@@ -229,7 +229,8 @@ pub(super) fn tool_child_layout(
         output_block_id(section)
             .is_some_and(|id| context.expanded.is_some_and(|blocks| blocks.contains(&id)))
     };
-    // A figure shows what it shows, folded or open (assets spec 9).
+    // A figure's assets show on its shelf; open, its row lists them too,
+    // with their links.
     let figure = is_figure(tool) && !tool.shown_display().is_empty();
     let has_body = tool.failure.is_some()
         || tool.shown_progress().is_some()
@@ -323,7 +324,7 @@ pub(super) fn tool_child_layout(
             line.band = Some(ToolBand::Title);
         }
         if figure {
-            panel.extend(figure_lines(tool, context.figure_links, context.theme));
+            panel.extend(figure_lines(tool, context.theme));
         }
         if padded && !panel.is_empty() {
             panel.insert(0, ToolBodyLine::wrapped(Line::default()));
@@ -348,9 +349,6 @@ pub(super) fn tool_child_layout(
             _ => Line::from(header),
         };
         body.push(ToolBodyLine::wrapped(line));
-        if figure {
-            body.extend(figure_lines(tool, context.figure_links, context.theme));
-        }
     }
     // Collapsed rows are muted body text; expanded blocks are ordinary text
     // whose header suffix still names a failure.
@@ -399,15 +397,11 @@ fn is_figure(tool: &crate::state::ToolCallState) -> bool {
         .is_some_and(|hint| hint.as_str() == cookie_agent_protocol::ToolHint::FIGURE)
 }
 
-/// A figure's rows: its caption, then each asset with its link into the web
-/// page, which opens it; without a page to link to, where to see it.
-fn figure_lines(
-    tool: &crate::state::ToolCallState,
-    links: FigureLinks<'_>,
-    theme: &Theme,
-) -> Vec<ToolBodyLine> {
+/// An open figure's rows: its caption, then a line for each asset, which
+/// its shelf shows with its link.
+fn figure_lines(tool: &crate::state::ToolCallState, theme: &Theme) -> Vec<ToolBodyLine> {
     let mut lines = Vec::new();
-    for (index, block) in tool.shown_display().iter().enumerate() {
+    for block in tool.shown_display() {
         match block {
             cookie_agent_protocol::Open::Known(cookie_agent_protocol::DisplayBlock::Text {
                 text,
@@ -418,32 +412,20 @@ fn figure_lines(
             )))),
             cookie_agent_protocol::Open::Known(cookie_agent_protocol::DisplayBlock::Asset(
                 asset,
-            )) => {
-                lines.push(ToolBodyLine::wrapped(Line::from(vec![
-                    Span::raw(format!("  {} ", flatten_header_argument(&asset.title))),
-                    Span::styled(
-                        format!(
-                            "— {} ({}, {})",
-                            flatten_header_argument(
-                                asset.filename.as_deref().unwrap_or(asset.handle.as_str())
-                            ),
-                            asset.media_type,
-                            cookie_agent_protocol::human_bytes(asset.byte_length)
+            )) => lines.push(ToolBodyLine::wrapped(Line::from(vec![
+                Span::raw(format!("  {} ", flatten_header_argument(&asset.title))),
+                Span::styled(
+                    format!(
+                        "— {} ({}, {}) · shown below",
+                        flatten_header_argument(
+                            asset.filename.as_deref().unwrap_or(asset.handle.as_str())
                         ),
-                        theme.muted(),
+                        asset.media_type,
+                        cookie_agent_protocol::human_bytes(asset.byte_length)
                     ),
-                ])));
-                match links.link(&asset.handle) {
-                    Some(link) => lines.push(
-                        ToolBodyLine::wrapped(Line::styled(format!("    ↗ {link}"), theme.link()))
-                            .with_action(ToolRowAction::OpenAsset(index)),
-                    ),
-                    None => lines.push(ToolBodyLine::wrapped(Line::styled(
-                        format!("    Open the web client to see {}", asset.handle),
-                        theme.muted(),
-                    ))),
-                }
-            }
+                    theme.muted(),
+                ),
+            ]))),
             _ => {}
         }
     }
@@ -667,8 +649,6 @@ pub(super) enum ToolRowAction {
     OpenMemory(usize),
     /// Reads the result the display view cut, whole.
     LoadCut,
-    /// Opens the figure of the `asset` block at this index in the web page.
-    OpenAsset(usize),
 }
 
 impl ToolRowAction {
@@ -686,10 +666,6 @@ impl ToolRowAction {
                 block: u32::try_from(block).unwrap_or(u32::MAX),
             },
             Self::LoadCut => BlockId::ToolCut(call_id),
-            Self::OpenAsset(block) => BlockId::ToolAsset {
-                call_id,
-                block: u32::try_from(block).unwrap_or(u32::MAX),
-            },
         }
     }
 }

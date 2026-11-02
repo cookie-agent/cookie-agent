@@ -260,6 +260,10 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
             .extend(tall_transcript_state(40).transcript);
         state.transcript.extend(done.transcript);
         state.tools.extend(done.tools);
+        // A figure, whose shelf's link opens it in the web page.
+        let figure = super::figures::figure_call();
+        state.transcript.extend(figure.transcript);
+        state.tools.extend(figure.tools);
         // A memory call, whose title row links to the memory, and an open
         // search whose results open theirs.
         let (memory, search) = memory_calls();
@@ -272,10 +276,6 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
             .insert(BlockId::Tool(search_id));
         state.transcript.extend(search.transcript);
         state.tools.extend(search.tools);
-        // A figure, whose link opens it in the web page.
-        let figure = super::figures::figure_call();
-        state.transcript.extend(figure.transcript);
-        state.tools.extend(figure.tools);
         // A result the display view cut, and history it has not loaded.
         state.tools.get_mut(&search_id).expect("search").cut =
             Some(cookie_agent_client_state::history::CutResult {
@@ -377,6 +377,30 @@ async fn every_clickable_element_hovers_visibly() {
     app.handle_click(details.x, details.y).await;
     assert_eq!(app.modal, Modal::GoalDetail);
     seen.extend(sweep(&mut app, "goal detail"));
+
+    // A shelf's link to its asset.
+    let (mut shelved, shelved_session, _) = app_with_active_run().await;
+    shelved.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+    shelved.page_url = Some("http://127.0.0.1:7419/".into());
+    {
+        let figure = super::figures::figure_call();
+        let state = shelved
+            .store
+            .sessions
+            .get_mut(&shelved_session)
+            .expect("session");
+        state.transcript.extend(figure.transcript);
+        state.tools.extend(figure.tools);
+    }
+    seen.extend(sweep(&mut shelved, "shelf"));
+    assert!(
+        shelved
+            .hit_map
+            .blocks
+            .iter()
+            .any(|hit| matches!(hit.id, BlockId::ToolAsset { .. })),
+        "a shelf's link on screen"
+    );
 
     // The expanded tools row's link opens the deferred tools prompt.
     let (mut deferred, _) = deferred_tools_app().await;

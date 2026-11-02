@@ -412,8 +412,8 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         block: u32,
     },
-    /// The link of a figure, the `asset` block at this index, that opens it
-    /// in the web page.
+    /// A shelf's link to the asset the call's `asset` block at this index
+    /// showed, which opens it in the web page.
     ToolAsset {
         call_id: cookie_agent_protocol::ToolCallId,
         block: u32,
@@ -644,11 +644,54 @@ pub(super) struct LayoutCache {
     /// Each live work row's lines, by its fold's lead and line (0 the
     /// text, 1 the call), with when each was first drawn.
     work_lines: HashMap<(WorkKey, u8), (String, jiff::Timestamp)>,
+    /// The transcript's shelves, and the projection's generation and
+    /// version they were found at.
+    shelves: Option<(u64, u64, std::sync::Arc<Shelves>)>,
     #[cfg(test)]
     pub(super) item_layout_passes: u64,
     #[cfg(test)]
     pub(super) item_assembly_passes: u64,
     pub(super) assistant_part_layout_passes: u64,
+}
+
+/// A transcript's shelves, by the block each shows in.
+type Shelves = HashMap<u64, Vec<cookie_agent_client_state::assets::Shelf>>;
+
+impl LayoutCache {
+    /// `state`'s shelves, found again only once its version moved.
+    fn shelves(&mut self, state: &SessionState) -> std::sync::Arc<Shelves> {
+        match &self.shelves {
+            Some((generation, version, shelves))
+                if *generation == state.generation && *version == state.version =>
+            {
+                std::sync::Arc::clone(shelves)
+            }
+            _ => {
+                let shelves =
+                    std::sync::Arc::new(cookie_agent_client_state::assets::shelves(state));
+                self.shelves = Some((
+                    state.generation,
+                    state.version,
+                    std::sync::Arc::clone(&shelves),
+                ));
+                shelves
+            }
+        }
+    }
+}
+
+/// A hash of the shelves the block `item_id` shows, for its layout key; 0
+/// for none.
+fn shelf_key(shelves: &Shelves, item_id: u64) -> u64 {
+    use std::hash::Hasher as _;
+    let Some(shelves) = shelves.get(&item_id) else {
+        return 0;
+    };
+    let mut hasher = std::hash::DefaultHasher::new();
+    for shelf in shelves {
+        shelf.hash_shown(&mut hasher);
+    }
+    hasher.finish()
 }
 
 #[derive(Clone, Copy)]
@@ -1072,6 +1115,8 @@ struct TranscriptRenderContext<'a> {
     deferred_highlights: &'a mut Vec<DeferredRows>,
     /// Where a figure's link points.
     figure_links: FigureLinks<'a>,
+    /// The shelves the item shows.
+    shelves: &'a [cookie_agent_client_state::assets::Shelf],
 }
 
 /// What a figure's link into the web page is made of: the page's address,
@@ -1261,7 +1306,10 @@ pub(super) fn ensure_cached_transcript_layout_in(
         folds: &folds,
         live,
     };
-    let fold_key = |item: &TranscriptItem| item_fold_key(&folds, &work_rows, item, expanded);
+    let shelves = cache.shelves(state);
+    let fold_key = |item: &TranscriptItem| {
+        item_fold_key(&folds, &work_rows, item, expanded) ^ shelf_key(&shelves, item.id())
+    };
     let key = LayoutCacheKey {
         session_id,
         session_generation: state.generation,
@@ -1424,6 +1472,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
                     page_url,
                     session: Some(session_id),
                 },
+                shelves: shelves.get(&item.id()).map_or(&[], Vec::as_slice),
             };
             // Unchanged parts and tool rows come back from their caches by
             // reference, so this re-renders only what changed.
@@ -2840,6 +2889,7 @@ pub(super) fn transcript_layout_viewed(
             .collect(),
     };
     let mut layout = TranscriptLayout::default();
+    let shelves = cookie_agent_client_state::assets::shelves(state);
     let mut assistant_parts = HashMap::new();
     let mut tool_rows = HashMap::new();
     let mut assistant_part_layout_passes = 0;
@@ -2888,6 +2938,7 @@ pub(super) fn transcript_layout_viewed(
                 defer_highlights: false,
                 deferred_highlights: &mut deferred_highlights,
                 figure_links: FigureLinks::default(),
+                shelves: shelves.get(&item.id()).map_or(&[], Vec::as_slice),
             },
         );
         append_item_layout(&mut layout, item_layout);

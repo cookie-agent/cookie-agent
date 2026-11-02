@@ -27,7 +27,7 @@ pub(super) fn assistant_item_layout(
     // block's footer.
     let Some(ItemFold::Block(fold)) = context.folds.get(item_id) else {
         layout.lines.push_lines(header(context));
-        for child in children {
+        for (index, child) in children.iter().enumerate() {
             push_assistant_child(
                 state,
                 item_id,
@@ -36,7 +36,15 @@ pub(super) fn assistant_item_layout(
                 &mut previous_is_prose,
                 context,
             );
+            push_shelves(
+                state,
+                Some(index),
+                &mut layout,
+                &mut previous_is_prose,
+                context,
+            );
         }
+        push_shelves(state, None, &mut layout, &mut previous_is_prose, context);
         return finish_assistant_layout(state, item_id, layout, context);
     };
     let fold = fold.clone();
@@ -60,6 +68,13 @@ pub(super) fn assistant_item_layout(
                 state,
                 item_id,
                 child,
+                &mut layout,
+                &mut previous_is_prose,
+                context,
+            );
+            push_shelves(
+                state,
+                Some(index),
                 &mut layout,
                 &mut previous_is_prose,
                 context,
@@ -110,7 +125,15 @@ pub(super) fn assistant_item_layout(
             // Rows spliced in before a folded child land below the row.
             context.assistant_child_lines.push(layout.lines.len());
         }
+        push_shelves(
+            state,
+            Some(index),
+            &mut layout,
+            &mut previous_is_prose,
+            context,
+        );
     }
+    push_shelves(state, None, &mut layout, &mut previous_is_prose, context);
     layout
         .regions
         .extend(bands.into_iter().map(|(key, start, end)| BlockRegion {
@@ -124,6 +147,164 @@ pub(super) fn assistant_item_layout(
         return finish_assistant_layout(state, item_id, layout, context);
     }
     layout
+}
+
+/// Appends the shelves the block shows after its child `after` (after its
+/// last, `None`): the assets its run's figures showed, under the text that
+/// follows them (assets spec section 9).
+fn push_shelves(
+    state: &SessionState,
+    after: Option<usize>,
+    layout: &mut ChunkedItem,
+    previous_is_prose: &mut Option<bool>,
+    context: &TranscriptRenderContext<'_>,
+) {
+    for shelf in context.shelves.iter().filter(|shelf| shelf.after == after) {
+        if previous_is_prose.is_some() {
+            layout.lines.push_lines(assistant_body_line(
+                Line::default(),
+                context.width,
+                context.theme,
+            ));
+        }
+        layout.push_layout(shelf_layout(state, shelf, context));
+        *previous_is_prose = Some(false);
+    }
+}
+
+/// A shelf: a muted label, then each asset with its link into the web
+/// page; images and video under one line naming them.
+fn shelf_layout(
+    state: &SessionState,
+    shelf: &cookie_agent_client_state::assets::Shelf,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    use cookie_agent_client_state::assets::ShelfEntry;
+    let (width, theme) = (context.width, context.theme);
+    let mut lines =
+        assistant_body_line(Line::styled("From this reply", theme.muted()), width, theme);
+    let mut regions = Vec::new();
+    let pictures = |entry: &&ShelfEntry| {
+        entry.block.media_type.starts_with("image/") || entry.block.media_type.starts_with("video/")
+    };
+    let deck = shelf.entries.iter().filter(pictures).collect::<Vec<_>>();
+    let mut link = |entry: &ShelfEntry, lines: &mut Vec<Line<'static>>| {
+        let start = lines.len();
+        match context.figure_links.link(&entry.block.handle) {
+            Some(link) => {
+                lines.extend(assistant_body_line(
+                    Line::styled(format!("   ↗ {link}"), theme.link()),
+                    width,
+                    theme,
+                ));
+                // The call's display block it is, which a click opens.
+                let block = state.tools.get(&entry.call_id).and_then(|tool| {
+                    tool.shown_display().iter().position(|block| {
+                        matches!(
+                            block,
+                            cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::DisplayBlock::Asset(asset)
+                            ) if asset.asset == entry.block.asset
+                        )
+                    })
+                });
+                if let Some(block) = block {
+                    regions.push(BlockRegion {
+                        id: BlockId::ToolAsset {
+                            call_id: entry.call_id,
+                            block: u32::try_from(block).unwrap_or(u32::MAX),
+                        },
+                        start_line: start,
+                        end_line: lines.len(),
+                        header_lines: None,
+                        header_gutter: Some(2),
+                    });
+                }
+            }
+            None => lines.extend(assistant_body_line(
+                Line::styled(
+                    format!("   Open the web client to see {}", entry.block.handle),
+                    theme.muted(),
+                ),
+                width,
+                theme,
+            )),
+        }
+    };
+    let caption = |caption: Option<&str>, lines: &mut Vec<Line<'static>>| {
+        if let Some(caption) = caption {
+            lines.extend(assistant_body_line(
+                Line::styled(
+                    format!("   {}", flatten_header_argument(caption)),
+                    theme.muted(),
+                ),
+                width,
+                theme,
+            ));
+        }
+    };
+    let mut decked = false;
+    for entry in &shelf.entries {
+        if pictures(&entry) {
+            if std::mem::replace(&mut decked, true) {
+                continue;
+            }
+            let what = if deck.len() == 1 {
+                String::new()
+            } else if deck
+                .iter()
+                .all(|entry| entry.block.media_type.starts_with("video/"))
+            {
+                format!("{} videos — ", deck.len())
+            } else {
+                format!("{} images — ", deck.len())
+            };
+            let titles = deck
+                .iter()
+                .map(|entry| flatten_header_argument(&entry.block.title))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            lines.extend(assistant_body_line(
+                Line::raw(format!(" {what}{titles}")),
+                width,
+                theme,
+            ));
+            caption(
+                deck.iter().find_map(|entry| entry.caption.as_deref()),
+                &mut lines,
+            );
+            for entry in &deck {
+                link(entry, &mut lines);
+            }
+            continue;
+        }
+        let block = &entry.block;
+        lines.extend(assistant_body_line(
+            Line::from(vec![
+                Span::raw(format!(" {} ", flatten_header_argument(&block.title))),
+                Span::styled(
+                    format!(
+                        "— {} ({}, {})",
+                        flatten_header_argument(
+                            block.filename.as_deref().unwrap_or(block.handle.as_str())
+                        ),
+                        block.media_type,
+                        cookie_agent_protocol::human_bytes(block.byte_length)
+                    ),
+                    theme.muted(),
+                ),
+            ]),
+            width,
+            theme,
+        ));
+        caption(entry.caption.as_deref(), &mut lines);
+        link(entry, &mut lines);
+    }
+    ItemLayout {
+        regions,
+        lines,
+        user_seq: None,
+    }
 }
 
 /// Closes an assistant block's layout with its footer.
