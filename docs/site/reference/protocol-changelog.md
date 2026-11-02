@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.77.0
+
+- `AgentsUpdateResult` gains `templates` (`OfficialTemplate`: `name`,
+  `version`), `updated_templates`, and `removed_templates`: the official
+  templates the refresh kept and changed, named without their `_` (the
+  `_acp` template is `acp`). A template's `_<name>` is no agent ID, so
+  before this the answer left templates out.
+
 ## 1.76.0
 
 - `EventsSubscribeResult` gains `view_events` on the first page (no

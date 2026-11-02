@@ -398,24 +398,7 @@ impl ServerProtocol for Server {
         &self,
         _params: cookie_agent_protocol::AgentsUpdateParams,
     ) -> Result<cookie_agent_protocol::AgentsUpdateResult> {
-        let report = self.engine.refresh_official_agents().await;
-        let id = |id: String| cookie_agent_protocol::AgentId::new(id).ok();
-        Ok(cookie_agent_protocol::AgentsUpdateResult {
-            enabled: report.enabled,
-            agents: report
-                .agents
-                .into_iter()
-                .filter_map(|(agent, version)| {
-                    Some(cookie_agent_protocol::OfficialAgent {
-                        id: id(agent)?,
-                        version,
-                    })
-                })
-                .collect(),
-            updated: report.updated.into_iter().filter_map(id).collect(),
-            removed: report.removed.into_iter().filter_map(id).collect(),
-            error: report.error,
-        })
+        Ok(update_result(self.engine.refresh_official_agents().await))
     }
 
     async fn update_skills(
@@ -1817,6 +1800,63 @@ fn forward_view(
     }
 }
 
+/// The answer to `agents.update` for a refresh's `report`. The report
+/// keeps a template under `_<name>`, which is no agent ID: templates go in
+/// fields of their own, by name.
+fn update_result(
+    report: cookie_agent_engine::OfficialAgentsReport,
+) -> cookie_agent_protocol::AgentsUpdateResult {
+    let id = |id: &str| cookie_agent_protocol::AgentId::new(id).ok();
+    let template = |id: &str| {
+        id.strip_prefix('_')
+            .and_then(|name| cookie_agent_protocol::AgentId::new(name).ok())
+    };
+    let (templates, agents): (Vec<_>, Vec<_>) = report
+        .agents
+        .into_iter()
+        .partition(|(agent, _)| agent.starts_with('_'));
+    let (updated_templates, updated): (Vec<_>, Vec<_>) = report
+        .updated
+        .into_iter()
+        .partition(|agent| agent.starts_with('_'));
+    let (removed_templates, removed): (Vec<_>, Vec<_>) = report
+        .removed
+        .into_iter()
+        .partition(|agent| agent.starts_with('_'));
+    cookie_agent_protocol::AgentsUpdateResult {
+        enabled: report.enabled,
+        agents: agents
+            .into_iter()
+            .filter_map(|(agent, version)| {
+                Some(cookie_agent_protocol::OfficialAgent {
+                    id: id(&agent)?,
+                    version,
+                })
+            })
+            .collect(),
+        updated: updated.iter().filter_map(|agent| id(agent)).collect(),
+        removed: removed.iter().filter_map(|agent| id(agent)).collect(),
+        error: report.error,
+        templates: templates
+            .into_iter()
+            .filter_map(|(name, version)| {
+                Some(cookie_agent_protocol::OfficialTemplate {
+                    name: template(&name)?,
+                    version,
+                })
+            })
+            .collect(),
+        updated_templates: updated_templates
+            .iter()
+            .filter_map(|name| template(name))
+            .collect(),
+        removed_templates: removed_templates
+            .iter()
+            .filter_map(|name| template(name))
+            .collect(),
+    }
+}
+
 /// `page`, the first of a forward history that has more pages, with how
 /// many events its view holds in all (`view_events`).
 fn count_view_events(
@@ -1852,4 +1892,47 @@ fn table_runtime(
     runtime_id: Option<cookie_agent_protocol::RuntimeId>,
 ) -> Option<cookie_agent_protocol::RuntimeId> {
     runtime_id.filter(|runtime| runtime.as_str() != cookie_agent_protocol::RuntimeId::GLOBAL)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_result;
+
+    #[test]
+    fn an_update_lists_templates_apart_by_name() {
+        let report = cookie_agent_engine::OfficialAgentsReport {
+            enabled: true,
+            agents: [("primary", "4"), ("_acp", "3")]
+                .into_iter()
+                .map(|(id, version)| (id.to_owned(), version.to_owned()))
+                .collect(),
+            updated: vec!["_acp".into()],
+            removed: vec!["explore".into(), "_old".into()],
+            ..Default::default()
+        };
+        let result = update_result(report);
+        let names = |ids: &[cookie_agent_protocol::AgentId]| {
+            ids.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            result
+                .agents
+                .iter()
+                .map(|agent| (agent.id.to_string(), agent.version.as_str()))
+                .collect::<Vec<_>>(),
+            [("primary".to_owned(), "4")]
+        );
+        assert_eq!(
+            result
+                .templates
+                .iter()
+                .map(|template| (template.name.to_string(), template.version.as_str()))
+                .collect::<Vec<_>>(),
+            [("acp".to_owned(), "3")]
+        );
+        assert!(result.updated.is_empty());
+        assert_eq!(names(&result.updated_templates), ["acp"]);
+        assert_eq!(names(&result.removed), ["explore"]);
+        assert_eq!(names(&result.removed_templates), ["old"]);
+    }
 }

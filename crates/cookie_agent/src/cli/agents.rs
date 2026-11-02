@@ -204,14 +204,36 @@ pub(crate) async fn agents_with(
                 return Ok(lines);
             }
             lines.extend(result.updated.iter().map(|id| format!("Updated {id}")));
+            lines.extend(
+                result
+                    .updated_templates
+                    .iter()
+                    .map(|name| format!("Updated template _{name}")),
+            );
             lines.extend(result.removed.iter().map(|id| format!("Removed {id}")));
+            lines.extend(
+                result
+                    .removed_templates
+                    .iter()
+                    .map(|name| format!("Removed template _{name}")),
+            );
             for agent in &result.agents {
                 lines.push(format!("{}\tofficial {}", agent.id, agent.version));
+            }
+            for template in &result.templates {
+                lines.push(format!(
+                    "_{}\tofficial template {}",
+                    template.name, template.version
+                ));
             }
             if let Some(error) = result.error {
                 anyhow::bail!("{}\n{error}", lines.join("\n"));
             }
-            if result.updated.is_empty() && result.removed.is_empty() {
+            if result.updated.is_empty()
+                && result.removed.is_empty()
+                && result.updated_templates.is_empty()
+                && result.removed_templates.is_empty()
+            {
                 lines.push("The official agents are up to date.".into());
             }
         }

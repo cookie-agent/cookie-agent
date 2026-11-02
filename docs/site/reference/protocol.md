@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.76.0",
+    "protocol_version": "1.77.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.76.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.77.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -312,7 +312,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `skills.list` | Session ID; optional since 1.22.0, without it the daemon's own user and official skills | Discovered skills with source (`user`, `project`, or `official` since 1.22.0), precedence, visibility, permission effect, and an official skill's `version` |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
 | `skills.update` | Empty object (since 1.22.0) | Refreshes the official skills now: `enabled` (`false` with `[skills] official = false`), the `skills` kept (`name`, `version`), the ones `updated` and `removed`, and the `error` when the refresh failed and the cached ones stayed |
-| `agents.update` | Empty object (since 1.56.0) | Refreshes the [official agents](../extend/agents.md#official-agents) now and reloads the configuration when they changed: `enabled` (`false` with `[agents] official = false`), the `agents` kept (`id`, `version`), the ones `updated` and `removed`, and the `error` when the refresh failed and the cached ones stayed |
+| `agents.update` | Empty object (since 1.56.0) | Refreshes the [official agents](../extend/agents.md#official-agents) now and reloads the configuration when they changed: `enabled` (`false` with `[agents] official = false`), the `agents` kept (`id`, `version`), the ones `updated` and `removed`, and the `error` when the refresh failed and the cached ones stayed; since 1.77.0 the official templates apart, named without their `_`: `templates` (`name`, `version`), `updated_templates`, and `removed_templates` |
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
 | `session.compact.cancel` | Session ID | Whether a running manual compaction was cancelled |
 | `session.held.resume` | Session ID | `resumed`: whether the session was [held](#held-sessions); its pending producer messages then run (since 1.34.0) |

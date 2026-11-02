@@ -1538,8 +1538,18 @@ pub struct OfficialAgent {
     pub version: String,
 }
 
+/// One official template the daemon keeps (client protocol 1.77.0): the
+/// file `_<name>.md`, named without its `_`.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OfficialTemplate {
+    pub name: AgentId,
+    pub version: String,
+}
+
 /// What `agents.update` did: the official agents kept afterwards, what
 /// changed, and why the refresh failed, if it did (the cached agents stay).
+/// Templates are listed apart, in the fields since 1.77.0: a template's
+/// `_<name>` is no agent ID.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AgentsUpdateResult {
     /// `false` when `[agents] official` is off: nothing was refreshed.
@@ -1554,6 +1564,16 @@ pub struct AgentsUpdateResult {
     pub removed: Vec<AgentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The official templates kept afterwards (client protocol 1.77.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub templates: Vec<OfficialTemplate>,
+    /// Templates added or changed by this refresh, by name (1.77.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updated_templates: Vec<AgentId>,
+    /// Templates removed by this refresh, by name (1.77.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_templates: Vec<AgentId>,
 }
 
 pub const AGENTS_DOCUMENTS_METHOD: &str = "agents.documents";

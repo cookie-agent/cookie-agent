@@ -18,10 +18,29 @@
         "version"
       ],
       "type": "object"
+    },
+    "OfficialTemplate": {
+      "description": "One official template the daemon keeps (client protocol 1.77.0): the\nfile `_<name>.md`, named without its `_`.",
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "What `agents.update` did: the official agents kept afterwards, what\nchanged, and why the refresh failed, if it did (the cached agents stay).",
+  "description": "What `agents.update` did: the official agents kept afterwards, what\nchanged, and why the refresh failed, if it did (the cached agents stay).\nTemplates are listed apart, in the fields since 1.77.0: a template's\n`_<name>` is no agent ID.",
   "properties": {
     "agents": {
       "items": {
@@ -50,8 +69,36 @@
       },
       "type": "array"
     },
+    "removed_templates": {
+      "description": "Templates removed by this refresh, by name (1.77.0).",
+      "items": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "templates": {
+      "description": "The official templates kept afterwards (client protocol 1.77.0).",
+      "items": {
+        "$ref": "#/$defs/OfficialTemplate"
+      },
+      "maxItems": 1024,
+      "type": "array"
+    },
     "updated": {
       "description": "Agents added or changed by this refresh.",
+      "items": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "updated_templates": {
+      "description": "Templates added or changed by this refresh, by name (1.77.0).",
       "items": {
         "maxLength": 64,
         "minLength": 1,

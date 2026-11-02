@@ -695,7 +695,8 @@ it is.
 #### `cookie agents update`
 
 `cookie agents update` refreshes the official agents now, as the daemon does
-at start and daily, and prints what changed and the agents it keeps. A
+at start and daily, and prints what changed and the agents and templates
+(such as `_acp`) it keeps. A
 refresh that fails keeps the agents it had and fails with the reason; with
 `[agents] official = false` it does nothing.
 
