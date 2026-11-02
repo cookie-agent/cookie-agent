@@ -234,7 +234,6 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                     <Transcript workspace=workspace />
                     <loader::TranscriptLoader workspace=workspace />
                 </div>
-                <QueueStrip workspace=workspace />
                 <DraftFiles workspace=workspace />
                 // An agent's question waits above the composer, scrolling
                 // within itself so the transcript keeps some room.
@@ -3241,51 +3240,92 @@ impl MessagePress {
     }
 }
 
+/// The messages waiting for the agent, as the top section of the
+/// composer's card (`#queue`): a steer its run takes at its next step,
+/// then those queued behind it, each taken back into the composer by its
+/// Edit, which shows with the pointer over it (and always on a touch
+/// screen). One another client sent says so when it cannot be taken back.
 #[component]
-fn QueueStrip(workspace: Workspace) -> impl IntoView {
-    let queue = Memo::new(move |_| workspace.queue());
+fn WaitingRows(workspace: Workspace) -> impl IntoView {
+    let waiting = Memo::new(move |_| workspace.queue());
     view! {
-        <Show when=move || !queue.with(Vec::is_empty)>
-            <div class="flex max-h-32 flex-col gap-1 overflow-y-auto border-t border-line px-3 py-1" id="queue" aria-label="Pending and queued messages">
-                {move || {
-                    queue
-                        .get()
-                        .into_iter()
-                        .map(|(seq, text, own, recallable)| {
-                            if recallable {
-                                view! {
-                                    <button
-                                        type="button"
-                                        class=format!("{ROW} font-mono text-xs")
-                                        title=if own {
-                                            "Take back into the composer"
-                                        } else {
-                                            "Take back into your composer (another client sent it)"
-                                        }
-                                        on:click=move |_| workspace.recall(seq)
-                                    >
-                                        <span class="flex w-full items-center gap-2">
-                                            <Glyph icon=icondata::LuClock class="text-accent" />
-                                            <span class="min-w-0 flex-1 truncate">{text}</span>
-                                            <Glyph icon=icondata::LuUndo2 class="opacity-60" />
-                                        </span>
-                                    </button>
-                                }
-                                    .into_any()
-                            } else {
-                                view! {
-                                    <div class="flex items-center gap-2 px-3 font-mono text-xs text-muted">
-                                        <Glyph icon=icondata::LuClock />
-                                        <span class="min-w-0 truncate">{text}</span>
-                                    </div>
-                                }
-                                    .into_any()
-                            }
-                        })
-                        .collect_view()
-                }}
+        <Show when=move || !waiting.with(Vec::is_empty)>
+            <div id="queue" aria-label="Messages waiting for the agent">
+                <div class="flex max-h-36 flex-col gap-0.5 overflow-y-auto px-2 pt-2 pb-1.5">
+                    <For
+                        each=move || waiting.get()
+                        key=|waiting| (waiting.seq, waiting.steer)
+                        children=move |waiting| waiting_row(workspace, waiting)
+                    />
+                </div>
+                <div class="mx-3.5 h-px bg-line" aria-hidden="true"></div>
             </div>
         </Show>
+    }
+}
+
+/// One waiting message: what it is, its text, and how to take it back.
+fn waiting_row(workspace: Workspace, waiting: crate::workspace::Waiting) -> impl IntoView {
+    let crate::workspace::Waiting {
+        seq,
+        steer,
+        text,
+        own,
+        recallable,
+    } = waiting;
+    let full = text.clone();
+    let (icon, icon_class, tag, tag_class) = if steer {
+        (
+            icondata::LuCornerDownRight,
+            "shrink-0 text-accent",
+            "Steer",
+            "text-accent bg-accent-soft shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
+        )
+    } else {
+        (
+            icondata::LuClock,
+            "shrink-0 text-muted",
+            "Queued",
+            "text-muted bg-sunken shadow-[inset_0_0_0_1px_var(--color-line-2)]",
+        )
+    };
+    let take_back = if recallable {
+        view! {
+            <button
+                type="button"
+                class="hit-area inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-muted opacity-0 transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover/waiting:opacity-100 [@media(hover:none)]:opacity-100"
+                title=if own {
+                    "Take back into the composer"
+                } else {
+                    "Take back into your composer (another client sent it)"
+                }
+                data-recall=seq
+                on:click=move |_| workspace.recall(seq)
+            >
+                <Glyph icon=icondata::LuUndo2 />
+                "Edit"
+            </button>
+        }
+        .into_any()
+    } else {
+        view! {
+            <span class="inline-flex shrink-0 items-center gap-1 pr-2 text-xs text-faint" title="Another client sent it">
+                <Glyph icon=icondata::LuMonitorSmartphone />
+                <span class="hidden sm:inline">"other client"</span>
+            </span>
+        }
+        .into_any()
+    };
+    view! {
+        <div
+            class="group/waiting rise-in flex min-h-8 items-center gap-2 rounded-lg pr-1 pl-2 text-[0.8125rem] text-fg-2 transition-colors hover:bg-hover"
+            data-waiting=if steer { "steer" } else { "queued" }
+        >
+            <Glyph icon=icon class=icon_class />
+            <span class=format!("shrink-0 rounded-full px-1.5 text-[0.6875rem] leading-[1.125rem] font-semibold {tag_class}")>{tag}</span>
+            <span class="min-w-0 flex-1 truncate" title=full>{text}</span>
+            {take_back}
+        </div>
     }
 }
 
@@ -3409,6 +3449,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 class="relative mx-auto flex max-w-[45rem] flex-col rounded-[1.125rem] bg-raised shadow-[0_0_0_1px_var(--color-line-2),0_10px_32px_-12px_rgb(0_0_0/0.16)] transition-shadow duration-200 focus-within:shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft),0_10px_32px_-12px_rgb(0_0_0/0.16)]"
                 class:opacity-60=disabled
             >
+                <WaitingRows workspace=workspace />
                 <textarea
                     node_ref=textarea
                     id="composer"

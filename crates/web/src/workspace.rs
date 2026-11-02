@@ -133,6 +133,20 @@ pub struct UsageView {
     pub tree: Result<(UsageRollup, u64), String>,
 }
 
+/// A message waiting for the agent: a steer its run takes at its next
+/// step, or one queued behind the run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Waiting {
+    /// Its sequence, which recalling it names.
+    pub seq: u64,
+    pub steer: bool,
+    pub text: String,
+    /// This client sent it.
+    pub own: bool,
+    /// This client may take it back into its composer.
+    pub recallable: bool,
+}
+
 /// The connected page's state. Every field is a handle, so the struct is
 /// `Copy` and closures capture it whole.
 #[derive(Clone, Copy)]
@@ -2298,9 +2312,9 @@ impl Workspace {
             .set("unsent message restored to the composer".into());
     }
 
-    /// This client's pending and queued inputs of the viewed session, as
-    /// `(seq, text, own)`, in order.
-    pub fn queue(self) -> Vec<(u64, String, bool, bool)> {
+    /// The viewed session's messages waiting for the agent, in order: the
+    /// steers its run takes at its next step, then those queued behind it.
+    pub fn queue(self) -> Vec<Waiting> {
         let Some(session_id) = self.selected.get() else {
             return Vec::new();
         };
@@ -2319,24 +2333,23 @@ impl Workspace {
                 .iter()
                 .map(|input| {
                     let mine = input.origin.as_ref() == own.as_ref();
-                    (
-                        input.admission_seq,
-                        format!("steering: {}", input.text),
-                        mine,
-                        mine || any,
-                    )
+                    Waiting {
+                        seq: input.admission_seq,
+                        steer: true,
+                        text: input.text.clone(),
+                        own: mine,
+                        recallable: mine || any,
+                    }
                 })
                 .chain(state.queued_inputs.entries().iter().map(|input| {
                     let mine = input.origin.as_ref() == own.as_ref();
-                    (
-                        input.queued_seq,
-                        format!(
-                            "queued: {}",
-                            cookie_agent_client_state::user_content_text(&input.content)
-                        ),
-                        mine,
-                        mine || any,
-                    )
+                    Waiting {
+                        seq: input.queued_seq,
+                        steer: false,
+                        text: cookie_agent_client_state::user_content_text(&input.content),
+                        own: mine,
+                        recallable: mine || any,
+                    }
                 }))
                 .collect()
         })
@@ -2347,8 +2360,8 @@ impl Workspace {
         match self
             .queue()
             .into_iter()
-            .filter(|(_, _, own, _)| *own)
-            .map(|(seq, _, _, _)| seq)
+            .filter(|waiting| waiting.own)
+            .map(|waiting| waiting.seq)
             .max()
         {
             Some(seq) => self.recall(seq),
