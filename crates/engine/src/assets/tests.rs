@@ -5,7 +5,7 @@ use cookie_agent_protocol::{AssetHandle, AssetStamp, AssetStore, SessionId};
 use super::{AssetError, AssetStores, AssetWrite, BLOBS_DIR, INDEX_FILE, media_type};
 
 fn stores(root: &Path) -> AssetStores {
-    AssetStores::new(root, &root.join("sessions"))
+    AssetStores::new(root)
 }
 
 fn stamp() -> AssetStamp {
@@ -218,13 +218,13 @@ fn an_index_that_does_not_read_is_refused_and_left_alone() {
 }
 
 #[test]
-fn stores_live_with_their_tree_their_project_or_the_data_root() {
+fn stores_live_apart_by_tree_with_their_project_or_in_the_data_root() {
     let root = tempfile::tempdir().unwrap();
     let stores = stores(root.path());
     let session = SessionId::new_v7();
     assert_eq!(
         stores.dir(&AssetStore::Session { session }),
-        crate::session::root_dir_in(&root.path().join("sessions"), session).join("assets")
+        root.path().join("session-assets").join(session.to_string())
     );
     let project =
         cookie_agent_protocol::ProjectId::new("0192f0c4-7d6e-7a1b-9c2d-3e4f5a6b7c8d").unwrap();
@@ -262,4 +262,75 @@ fn media_types_come_from_the_content_then_the_extension_of_text() {
         "application/octet-stream"
     );
     assert_eq!(media_type("blob", b"a\0b"), "application/octet-stream");
+}
+
+#[test]
+fn the_trees_with_assets_are_the_folders_of_session_assets() {
+    let root = tempfile::tempdir().unwrap();
+    let stores = stores(root.path());
+    assert!(stores.session_roots().unwrap().is_empty(), "no folder yet");
+    let none = HashSet::new();
+    let (first, second) = (SessionId::new_v7(), SessionId::new_v7());
+    for session in [first, second] {
+        stores
+            .write(
+                &AssetStore::Session { session },
+                new_asset(session.to_string().as_bytes(), "note.txt"),
+                &none,
+            )
+            .unwrap();
+    }
+    // A stray file is not a tree.
+    fs::write(root.path().join("session-assets").join("notes.txt"), "x").unwrap();
+    let mut expected = vec![first, second];
+    expected.sort();
+    assert_eq!(stores.session_roots().unwrap(), expected);
+
+    // Removing a tree's store removes its folder and says what it held.
+    assert_eq!(
+        stores
+            .remove(&AssetStore::Session { session: first })
+            .unwrap(),
+        1
+    );
+    assert_eq!(stores.session_roots().unwrap(), vec![second]);
+    assert!(
+        stores
+            .list(&AssetStore::Session { session: first })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        stores
+            .remove(&AssetStore::Session { session: first })
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn an_index_kept_in_memory_follows_writes_from_elsewhere() {
+    let root = tempfile::tempdir().unwrap();
+    // Two processes sharing a data root: each keeps its own indexes.
+    let (here, there) = (stores(root.path()), stores(root.path()));
+    let store = AssetStore::Shared;
+    let none = HashSet::new();
+    let (asset, _) = here
+        .write(&store, new_asset(b"one", "one.txt"), &none)
+        .unwrap();
+    assert_eq!(there.list(&store).unwrap().len(), 1);
+    // Kept, the same index answers again.
+    assert_eq!(there.get(&store, asset.id).unwrap().title, "one.txt");
+    here.rename(&store, asset.id, "Renamed".into()).unwrap();
+    assert_eq!(there.get(&store, asset.id).unwrap().title, "Renamed");
+    here.write(&store, new_asset(b"two", "two.txt"), &none)
+        .unwrap();
+    assert_eq!(there.list(&store).unwrap().len(), 2);
+    here.delete(&store, asset.id).unwrap();
+    assert_eq!(there.list(&store).unwrap().len(), 1);
+    // Its own writes it never misses.
+    there
+        .rename(&store, there.list(&store).unwrap()[0].id, "Mine".into())
+        .unwrap();
+    assert_eq!(there.list(&store).unwrap()[0].title, "Mine");
 }

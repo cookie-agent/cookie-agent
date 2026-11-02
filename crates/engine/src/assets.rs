@@ -2,13 +2,19 @@
 //! write for the user, kept by a session tree, a project, or the shared
 //! store of sessions in no project.
 //!
-//! Every store is a folder, `assets/`, holding `index.json` (every asset's
-//! fields) and `blobs/<sha256>`:
+//! Every store is a folder holding `index.json` (every asset's fields) and
+//! `blobs/<sha256>`:
 //!
-//! - a session tree's in its root's folder, so it goes with the tree;
-//! - a project's in `<data_root>/projects/<id>/`, so it goes with the
-//!   project;
+//! - a session tree's in `<data_root>/session-assets/<root-id>/`, apart
+//!   from the sessions, so listing that folder finds every tree that has
+//!   assets without reading a session; the tree's deletion removes it;
+//! - a project's in `<data_root>/projects/<id>/assets/`, so it goes with
+//!   the project;
 //! - the shared store in `<data_root>/assets/`.
+//!
+//! A store's index is kept in memory once read, and read again only when
+//! its file's modification time or length moved, so listing many stores
+//! costs a `stat` each.
 //!
 //! **The index is the only reference to a blob.** Session logs name an
 //! asset by its ID, never by its blob, so a blob is in use exactly when an
@@ -38,8 +44,10 @@ use sha2::{Digest as _, Sha256};
 #[cfg(test)]
 mod tests;
 
-/// The folder of a store.
+/// The folder of a project's store, and of the shared store.
 pub(crate) const ASSETS_DIR: &str = "assets";
+/// The folder of the session trees' stores, one per root.
+pub(crate) const SESSION_ASSETS_DIR: &str = "session-assets";
 const INDEX_FILE: &str = "index.json";
 const BLOBS_DIR: &str = "blobs";
 const INDEX_VERSION: u32 = 1;
@@ -121,11 +129,33 @@ pub(crate) struct AssetWrite {
 /// Every store of a data root.
 pub(crate) struct AssetStores {
     data_root: PathBuf,
-    sessions_dir: PathBuf,
     locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
     /// Stores whose leftovers this process removed.
     swept: Mutex<HashSet<PathBuf>>,
+    /// Each store's index as last read, with the stamp of its file then.
+    indexes: Mutex<HashMap<PathBuf, (IndexStamp, Arc<IndexFile>)>>,
     changes: tokio::sync::watch::Sender<u64>,
+}
+
+/// What says an index file changed: its modification time and length.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IndexStamp {
+    modified: Option<std::time::SystemTime>,
+    length: u64,
+}
+
+impl IndexStamp {
+    /// The stamp of the index at `path`; `None` when there is none.
+    fn of(path: &Path) -> Result<Option<Self>, AssetError> {
+        match fs::metadata(path) {
+            Ok(metadata) => Ok(Some(Self {
+                modified: metadata.modified().ok(),
+                length: metadata.len(),
+            })),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(store_error(path)(error)),
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -135,12 +165,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl AssetStores {
-    pub(crate) fn new(data_root: &Path, sessions_dir: &Path) -> Self {
+    pub(crate) fn new(data_root: &Path) -> Self {
         Self {
             data_root: data_root.to_owned(),
-            sessions_dir: sessions_dir.to_owned(),
             locks: Mutex::default(),
             swept: Mutex::default(),
+            indexes: Mutex::default(),
             changes: tokio::sync::watch::channel(0).0,
         }
     }
@@ -165,7 +195,74 @@ impl AssetStores {
     }
 
     fn session_dir(&self, root: SessionId) -> PathBuf {
-        crate::session::root_dir_in(&self.sessions_dir, root).join(ASSETS_DIR)
+        self.data_root
+            .join(SESSION_ASSETS_DIR)
+            .join(root.to_string())
+    }
+
+    /// The roots of the session trees that have a store: the folders of
+    /// `session-assets/`, read without touching any session.
+    pub(crate) fn session_roots(&self) -> Result<Vec<SessionId>, AssetError> {
+        let dir = self.data_root.join(SESSION_ASSETS_DIR);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(store_error(&dir)(error)),
+        };
+        let mut roots = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+            .collect::<Vec<SessionId>>();
+        roots.sort();
+        Ok(roots)
+    }
+
+    /// Removes the store `store` whole, as its owner's deletion does, and
+    /// says how many assets it held.
+    pub(crate) fn remove(&self, store: &AssetStore) -> Result<u64, AssetError> {
+        let removed = self.locked(store, |dir| {
+            let count = read_index(dir)?.assets.len() as u64;
+            match fs::remove_dir_all(dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(store_error(dir)(error)),
+            }
+            lock(&self.indexes).remove(dir);
+            Ok(count)
+        })?;
+        if removed > 0 {
+            self.changed();
+        }
+        Ok(removed)
+    }
+
+    /// The store's index, from memory while its file has not changed
+    /// since it was read. Called under the store's lock.
+    fn index(&self, dir: &Path) -> Result<Arc<IndexFile>, AssetError> {
+        let stamp = IndexStamp::of(&dir.join(INDEX_FILE))?;
+        if let Some(stamp) = stamp
+            && let Some((cached, index)) = lock(&self.indexes).get(dir)
+            && *cached == stamp
+        {
+            return Ok(Arc::clone(index));
+        }
+        let index = Arc::new(read_index(dir)?);
+        match stamp {
+            Some(stamp) => {
+                lock(&self.indexes).insert(dir.to_owned(), (stamp, Arc::clone(&index)));
+            }
+            None => {
+                lock(&self.indexes).remove(dir);
+            }
+        }
+        Ok(index)
+    }
+
+    /// Writes `index` as the store's, and forgets the one in memory.
+    fn write_index(&self, dir: &Path, index: &IndexFile) -> Result<(), AssetError> {
+        lock(&self.indexes).remove(dir);
+        write_index(dir, index)
     }
 
     fn project_dir(&self, project: &ProjectId) -> PathBuf {
@@ -199,7 +296,8 @@ impl AssetStores {
     /// The store's assets, newest first.
     pub(crate) fn list(&self, store: &AssetStore) -> Result<Vec<Asset>, AssetError> {
         self.locked(store, |dir| {
-            let mut assets = read_index(dir)?
+            let mut assets = self
+                .index(dir)?
                 .assets
                 .iter()
                 .map(|record| record.asset(store))
@@ -211,12 +309,12 @@ impl AssetStores {
 
     /// How many assets the store holds.
     pub(crate) fn count(&self, store: &AssetStore) -> Result<u64, AssetError> {
-        self.locked(store, |dir| Ok(read_index(dir)?.assets.len() as u64))
+        self.locked(store, |dir| Ok(self.index(dir)?.assets.len() as u64))
     }
 
     pub(crate) fn get(&self, store: &AssetStore, id: AssetId) -> Result<Asset, AssetError> {
         self.locked(store, |dir| {
-            read_index(dir)?
+            self.index(dir)?
                 .assets
                 .iter()
                 .find(|record| record.id == id)
@@ -235,7 +333,7 @@ impl AssetStores {
         length: u64,
     ) -> Result<(Vec<u8>, Asset), AssetError> {
         self.locked(store, |dir| {
-            let index = read_index(dir)?;
+            let index = self.index(dir)?;
             let record = index
                 .assets
                 .iter()
@@ -318,7 +416,7 @@ impl AssetStores {
                     (index.assets.len() - 1, None, true)
                 }
             };
-            write_index(dir, &index)?;
+            self.write_index(dir, &index)?;
             if let Some(old) = old {
                 release_blob(dir, &index, &old);
             }
@@ -344,7 +442,7 @@ impl AssetStores {
                 .ok_or(AssetError::NotFound(id))?;
             record.title = title;
             let asset = record.asset(store);
-            write_index(dir, &index)?;
+            self.write_index(dir, &index)?;
             Ok(asset)
         })?;
         self.changed();
@@ -362,7 +460,7 @@ impl AssetStores {
                 .position(|record| record.id == id)
                 .ok_or(AssetError::NotFound(id))?;
             let record = index.assets.remove(position);
-            write_index(dir, &index)?;
+            self.write_index(dir, &index)?;
             release_blob(dir, &index, &record.sha256);
             Ok(record.asset(store))
         })?;

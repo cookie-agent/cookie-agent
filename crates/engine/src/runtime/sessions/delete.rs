@@ -15,7 +15,7 @@ type DeletedTree = (
 
 impl Engine {
     /// Deletes the tree rooted at `session_id` (events, metadata, artifacts,
-    /// and every delegated session) and returns the deleted sessions, the
+    /// its own assets, and every delegated session) and returns the deleted sessions, the
     /// root first. Every connection is told through `sessions.changed`.
     ///
     /// Refused for a delegated session ([`EngineError::NotARootSession`]),
@@ -52,6 +52,14 @@ impl Engine {
         };
         let (deleted, acp_sessions) = deleted;
         self.forget_deleted_tree(root, &deleted);
+        // The tree's own assets go with it; the tree is gone either way.
+        let store = cookie_agent_protocol::AssetStore::Session { session: root };
+        if let Err(error) = self
+            .assets_blocking(move |_, stores| Ok(stores.remove(&store)?))
+            .await
+        {
+            eprintln!("cookie-agent: the assets of the deleted session {root} stay: {error}");
+        }
         // The agents' own transcripts go with the sessions: each session's
         // ACP sessions are closed and deleted where the agent can.
         for (session, records) in acp_sessions {

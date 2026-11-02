@@ -1265,10 +1265,7 @@ impl Engine {
             eprintln!("cookie-agent: projects: {error}");
         }
         let crons = Arc::new(crate::crons::CronStore::open(&options.data_dir)?);
-        let assets = Arc::new(crate::assets::AssetStores::new(
-            &options.data_dir,
-            store.sessions_dir_path(),
-        ));
+        let assets = Arc::new(crate::assets::AssetStores::new(&options.data_dir));
         drop(restoring);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
