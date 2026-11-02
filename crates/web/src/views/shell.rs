@@ -1,12 +1,11 @@
-//! The page's frame around the views: the rail that switches them, the
-//! sidebar button, and the full-page views other than Chat.
+//! The page's frame around the views: the sidebar button, and the
+//! full-page views other than Chat. The sidebar itself is
+//! [`super::sidebar`].
 //!
-//! Widths: below 640 px (Tailwind's `sm`) a phone, which shows the rail
-//! beside a view's first level (its list) only, and gives an item open
-//! the whole screen; from 640 px the rail stays on the left; below
-//! 1024 px (`lg`) the sessions (the agents, in Agents) show as the page in
-//! place of the transcript (the agent open), and from 1024 px they are
-//! pinned beside it.
+//! Widths: below 640 px (Tailwind's `sm`) a phone, which gives an item
+//! open in a view's list the whole screen; below 1024 px (`lg`) the
+//! sidebar shows as the page, over the view, and from 1024 px it is pinned
+//! beside every view.
 
 use leptos::prelude::*;
 
@@ -21,132 +20,72 @@ use super::{
     transcript_sheet,
 };
 use crate::{
-    app::{Connection, ConnectionStatus, ForgetDaemon, ThemeToggle},
+    app::{Connection, ForgetDaemon},
     icons::Glyph,
     layout::{Layer, SettingsSection, View},
-    theme::ThemePreference,
     workspace::Workspace,
 };
 
-/// A rail button: an icon in a 44 px square, its name in a tooltip beside
-/// it (`data-tip`).
-const RAIL_BUTTON: &str = "relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg active:bg-press";
-
-/// The icon of a view on the rail.
+/// The icon of a view in the sidebar.
 pub fn view_icon(view: View) -> crate::icons::Icon {
     match view {
-        View::Chat => icondata::FaCommentsSolid,
-        View::Agents => icondata::FaRobotSolid,
-        View::Skills => icondata::FaBookOpenSolid,
-        View::Assets => icondata::FaImagesSolid,
-        View::Mcp => icondata::FaPlugSolid,
-        View::Settings => icondata::FaGearSolid,
-        View::Machines => icondata::FaServerSolid,
-        View::Memory => icondata::FaBrainSolid,
-        View::Cron => icondata::FaClockSolid,
+        View::Chat => icondata::LuMessagesSquare,
+        View::Agents => icondata::LuBot,
+        View::Skills => icondata::LuBookOpen,
+        View::Assets => icondata::LuImages,
+        View::Mcp => icondata::LuPlug,
+        View::Settings => icondata::LuSettings,
+        View::Machines => icondata::LuServer,
+        View::Memory => icondata::LuBrain,
+        View::Cron => icondata::LuClock,
     }
 }
 
-/// The rail: the views, then the connection and the theme at its foot.
-/// A window too short for them all (a phone on its side) scrolls it.
-#[component]
-pub fn Rail(
-    workspace: Workspace,
-    connection: Connection,
-    theme: RwSignal<ThemePreference>,
-) -> impl IntoView {
-    let buttons = View::ALL
-        .into_iter()
-        .map(|view| {
-            let current = move || workspace.view.get() == view;
-            // Scheduled prompts need a daemon that keeps cron jobs.
-            let offered = move || view != View::Cron || workspace.has_crons.get();
-            view! {
-                <button
-                    type="button"
-                    class=RAIL_BUTTON
-                    class:bg-sel=current
-                    class:text-fg=current
-                    aria-label=view.label()
-                    data-tip=view.label()
-                    data-view=view.id()
-                    aria-current=move || current().then_some("page")
-                    class:hidden=move || !offered()
-                    on:click=move |_| workspace.open_from_rail(view)
-                >
-                    // The active view's mark: a bar at the rail's edge.
-                    <span
-                        class="absolute top-2 bottom-2 -left-1.5 w-1 rounded-r bg-accent"
-                        class:hidden=move || !current()
-                        aria-hidden="true"
-                    ></span>
-                    <Glyph icon=view_icon(view) class="text-lg" />
-                    // A session is unread: a dot on the Chat button.
-                    <Show when=move || view == View::Chat && workspace.any_unread()>
-                        <span
-                            class="absolute top-2 right-2 h-2 w-2 rounded-full bg-accent"
-                            data-unread-any
-                            aria-hidden="true"
-                        ></span>
-                    </Show>
-                </button>
-            }
-        })
-        .collect_view();
-    view! {
-        <nav
-            aria-label="Views"
-            class="rail flex w-14 shrink-0 flex-col items-center gap-1 border-r border-line bg-surface-2 py-2 short:overflow-y-auto"
-            data-rail="primary"
-        >
-            <img src="icons/icon.svg" alt="" class="mb-1 h-7 w-7 short:hidden" />
-            {buttons}
-            <span class="flex-1"></span>
-            <ConnectionStatus connection=connection compact=true primary=true />
-            <ThemeToggle theme=theme class=RAIL_BUTTON in_rail=true />
-        </nav>
-    }
-}
-
-/// What the sidebar holds in `view`: the sessions in Chat, else the
-/// view's list a phone's sidebar button goes back up to.
-fn sidebar_label(view: View) -> &'static str {
-    if view == View::Chat {
-        "Sessions"
-    } else {
-        view.label()
-    }
-}
-
-/// The sidebar button: it shows and hides the sessions, or the agents in
-/// Agents; in the other views, on a phone's second level, it goes back up
-/// to the view's list.
+/// The sidebar button: it shows and hides the sidebar; on a phone's second
+/// level (an item open in a view's list) it goes back up to the list. A
+/// dot on it says a session is unread while the sidebar is hidden.
 #[component]
 pub fn SidebarButton(workspace: Workspace) -> impl IntoView {
     let shown = move || {
-        workspace.sidebar_open.get()
-            || (workspace.view.get().has_sidebar() && workspace.sidebar_pinned.get())
+        workspace.sidebar_open.get() || (workspace.desktop.get() && workspace.sidebar_pinned.get())
+    };
+    let back_up = move || {
+        workspace.view.get() != View::Chat && workspace.narrow.get() && !workspace.at_list()
     };
     let title = move || {
-        let view = workspace.view.get();
-        let label = sidebar_label(view);
-        if view.has_sidebar() {
-            format!("Show or hide the {}", label.to_lowercase())
+        if back_up() {
+            format!("Back to {}", workspace.view.get().label())
+        } else if workspace.sidebar_open.get() {
+            "Hide the sidebar".to_owned()
         } else {
-            format!("Back to {label}")
+            "Show or hide the sidebar".to_owned()
         }
     };
     view! {
         <button
             type="button"
-            class=ICON_BUTTON
-            aria-label=move || sidebar_label(workspace.view.get())
+            class=format!("{ICON_BUTTON} relative")
+            aria-label=move || if back_up() { "Back" } else { "Sidebar" }
             title=title
             data-sidebar-toggle
             aria-expanded=move || shown().to_string()
             on:click=move |_| workspace.toggle_sidebar()
         >
-            <Glyph icon=icondata::FaTableColumnsSolid class="text-lg" />
+            <Glyph
+                icon=Signal::derive(move || {
+                    if back_up() { icondata::LuArrowLeft } else { icondata::LuPanelLeft }
+                })
+                class="text-lg"
+            />
+            // A session is unread and the sidebar, which would show it, is
+            // hidden.
+            <Show when=move || !shown() && workspace.any_unread()>
+                <span
+                    class="absolute top-2 right-2 h-2 w-2 rounded-full bg-accent ring-2 ring-surface"
+                    data-unread-any
+                    aria-hidden="true"
+                ></span>
+            </Show>
         </button>
     }
 }
@@ -157,14 +96,6 @@ pub fn SidebarButton(workspace: Workspace) -> impl IntoView {
 /// arrow, which on a phone only a third level needs.
 #[component]
 pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
-    let sidebar_button = move || {
-        let phone = workspace.narrow.get();
-        match workspace.view.get() {
-            // A phone with no agent open shows the agents anyway.
-            View::Agents => !phone || workspace.config_edit.with(Option::is_some),
-            _ => phone && !workspace.at_list(),
-        }
-    };
     let back = move || {
         let depth = workspace
             .open_layers()
@@ -187,9 +118,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
             data-view=move || workspace.view.get().id()
         >
             <div class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2">
-                <Show when=sidebar_button>
-                    <SidebarButton workspace=workspace />
-                </Show>
+                <SidebarButton workspace=workspace />
                 <Show when=back>
                     <button
                         type="button"
@@ -199,7 +128,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                         data-page-back
                         on:click=move |_| workspace.go_back()
                     >
-                        <Glyph icon=icondata::FaArrowLeftSolid class="text-lg" />
+                        <Glyph icon=icondata::LuArrowLeft class="text-lg" />
                     </button>
                 </Show>
                 <h1 class="min-w-0 flex-1 truncate px-1 text-lg font-bold" id="page-title">{title}</h1>
@@ -246,7 +175,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                 >
                     <span class="flex w-full items-center gap-2">
                         <span class="min-w-0 flex-1 text-sm font-bold">{section.label()}</span>
-                        <Glyph icon=icondata::FaChevronRightSolid class="text-xs opacity-60 sm:hidden" />
+                        <Glyph icon=icondata::LuChevronRight class="text-xs opacity-60 sm:hidden" />
                     </span>
                     <span class=NOTE>{section.note()}</span>
                 </button>
@@ -268,7 +197,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                         on:click=move |_| workspace.open_onboarding()
                     >
                         <span class="flex w-full items-center gap-2">
-                            <Glyph icon=icondata::FaWandMagicSparklesSolid />
+                            <Glyph icon=icondata::LuWandSparkles />
                             <span class="min-w-0 flex-1 text-sm font-bold">"Set up Cookie"</span>
                         </span>
                         <span class=NOTE>"model providers or an ACP agent, and tools"</span>

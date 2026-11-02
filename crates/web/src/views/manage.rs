@@ -94,7 +94,7 @@ pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
             class=format!("{BUTTON} mt-2 self-start")
             on:click=move |_| workspace.open_view(crate::layout::View::Machines, None)
         >
-            <Glyph icon=icondata::FaServerSolid />
+            <Glyph icon=icondata::LuServer />
             "Machines & runtimes"
         </button>
     }
@@ -127,7 +127,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">
                                 {format!("{} · {}", row.attachment.name, row.attachment.kind)}
                             </span>
-                            <span class=STATE class:text-bad=failed class:dark:text-red-400=failed>
+                            <span class=STATE class:text-bad=failed>
                                 {status_label(status)}
                             </span>
                         </div>
@@ -151,11 +151,11 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         {(!servers.is_empty()).then(|| runtime_mcp_servers(servers, None, None))}
                         <div class="flex gap-2">
                             <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone())>
-                                <Glyph icon=icondata::FaArrowsRotateSolid />
+                                <Glyph icon=icondata::LuRefreshCw />
                                 "Retry"
                             </button>
                             <button type="button" class=BUTTON data-detach on:click=move |_| workspace.detach_runtime(detach_name.clone())>
-                                <Glyph icon=icondata::FaLinkSlashSolid />
+                                <Glyph icon=icondata::LuUnlink />
                                 "Detach"
                             </button>
                         </div>
@@ -188,7 +188,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
             when=move || attaching.get()
             fallback=move || view! {
                 <button type="button" id="runtime-attach" class=PRIMARY on:click=move |_| attaching.set(true)>
-                    <Glyph icon=icondata::FaPlusSolid />
+                    <Glyph icon=icondata::LuPlus />
                     "Attach a runtime"
                 </button>
             }
@@ -355,10 +355,10 @@ pub(crate) fn runtime_mcp_servers(
         .map(|server| {
             let tone = server_tone(&server);
             let (dot, dot_class) = match tone {
-                StateTone::Ready => (icondata::FaCircleSolid, "text-ok"),
-                StateTone::Pending => (icondata::FaCircleHalfStrokeSolid, "text-warn"),
-                StateTone::Failed => (icondata::FaCircleExclamationSolid, "text-bad"),
-                StateTone::Off => (icondata::FaCircleRegular, "opacity-60"),
+                StateTone::Ready => (icondata::LuCircle, "text-ok text-[0.625rem] [&_svg]:fill-current"),
+                StateTone::Pending => (icondata::LuCircleDashed, "text-warn"),
+                StateTone::Failed => (icondata::LuCircleAlert, "text-bad"),
+                StateTone::Off => (icondata::LuCircle, "text-[0.625rem] opacity-60"),
             };
             let failed = tone == StateTone::Failed;
             let waiting = waits_for_workspace(&server);
@@ -382,7 +382,7 @@ pub(crate) fn runtime_mcp_servers(
                         <Glyph icon=dot class=format!("shrink-0 text-[0.6rem] {dot_class}") />
                         <span class="min-w-16 flex-1 truncate font-mono text-sm">{server.name.clone()}</span>
                         {(!waiting).then(|| view! { <span class=format!("shrink-0 {NOTE}")>{server_tools_label(&server)}</span> })}
-                        <span class=STATE class:text-bad=failed class:dark:text-red-400=failed>{server_state_label(&server)}</span>
+                        <span class=STATE class:text-bad=failed>{server_state_label(&server)}</span>
                     </div>
                     {scope_note(&server).map(|note| view! {
                         <span class=format!("pl-4 {NOTE}") data-mcp-scope-note>
@@ -458,8 +458,8 @@ pub(crate) fn edit_dialog(
         >
             <div class="sticky top-0 z-10 flex items-center border-b border-line bg-surface-2 p-1 sm:justify-end sm:border-0 sm:bg-surface">
                 <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" data-edit-dialog-close on:click=move |_| close()>
-                    <span class="inline-flex sm:hidden"><Glyph icon=icondata::FaArrowLeftSolid /></span>
-                    <span class="hidden sm:inline-flex"><Glyph icon=icondata::FaXmarkSolid /></span>
+                    <span class="inline-flex sm:hidden"><Glyph icon=icondata::LuArrowLeft /></span>
+                    <span class="hidden sm:inline-flex"><Glyph icon=icondata::LuX /></span>
                 </button>
             </div>
             <div class="flex flex-col gap-2 px-3 pt-3 pb-3 sm:pt-0">{body}</div>
@@ -480,7 +480,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
         None => loading("Reading MCP servers…").into_any(),
         Some(Err(message)) => view! { <p class=ERROR>{message}</p> }.into_any(),
         Some(Ok(servers)) if servers.is_empty() => {
-            empty_state(icondata::FaServerSolid, "No MCP servers are configured.").into_any()
+            empty_state(icondata::LuServer, "No MCP servers are configured.").into_any()
         }
         Some(Ok(servers)) => servers
             .into_iter()
@@ -564,7 +564,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                 form.set(Some(McpEdit::add(None)));
             }
         >
-            <Glyph icon=icondata::FaPlusSolid />
+            <Glyph icon=icondata::LuPlus />
             "New server"
         </button>
         {move || form.get().map(|edit| {
@@ -613,7 +613,7 @@ fn sign_in_offer(workspace: Workspace, server: &cookie_agent_protocol::McpServer
             </span>
             {warns.then(|| view! {
                 <p class=format!("{NOTE} flex items-start gap-1.5") data-https-warning>
-                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-accent" />
+                    <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0 text-accent" />
                     <span>
                         "This page is on plain http away from this machine, and most sign-in servers refuse to send you back to such an address. Put the daemon behind https, for example with "
                         <code>"tailscale serve"</code>
@@ -636,7 +636,7 @@ fn sign_in_offer(workspace: Workspace, server: &cookie_agent_protocol::McpServer
                 data-mcp-sign-in
                 on:click=move |_| workspace.sign_in_mcp(name.clone())
             >
-                <Glyph icon=icondata::FaRightToBracketSolid />
+                <Glyph icon=icondata::LuLogIn />
                 {if waiting { "Open the sign-in again" } else { "Sign in" }}
             </button>
         </div>
@@ -663,7 +663,7 @@ fn sign_in_outcome(workspace: Workspace) -> impl IntoView {
                     ERROR
                 }
             >
-                {ok.then(|| view! { <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-accent" /> })}
+                {ok.then(|| view! { <Glyph icon=icondata::LuCircleCheck class="mt-0.5 shrink-0 text-accent" /> })}
                 <span class="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
             </div>
         }
@@ -693,7 +693,7 @@ fn sign_ins(workspace: Workspace) -> impl IntoView {
                 view! {
                     <div class=format!("{CONFIRM} mb-2") data-sign-in=server.clone()>
                         <span class="flex items-center gap-2 text-sm font-bold">
-                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-accent" />
+                            <Glyph icon=icondata::LuRefreshCw class="animate-spin text-accent" />
                             {format!("Signing in to {server}")}
                         </span>
                         <span class=NOTE>
@@ -1010,7 +1010,7 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
                                             <span class=PROVIDER_ID>{provider.id.to_string()}</span>
                                         </span>
                                         {matches!(state, ProviderRowState::ConnectedReconnect | ProviderRowState::Configured).then(|| view! {
-                                            <Glyph icon=icondata::FaPlugSolid class="text-ok" />
+                                            <Glyph icon=icondata::LuPlug class="text-ok" />
                                         })}
                                     </span>
                                     <span class=NOTE>{detail}</span>
@@ -1165,7 +1165,7 @@ fn sign_in_view(
                 let provider = begin_provider.clone();
                 move |_| workspace.sign_in_provider(provider.clone(), state)
             }>
-                <Glyph icon=icondata::FaPlugSolid />
+                <Glyph icon=icondata::LuPlug />
                 {if connected { format!("{} again", method.display_name) } else { method.display_name.to_string() }}
             </button>
             <button type="button" class=BUTTON on:click=move |_| {
@@ -1405,7 +1405,7 @@ fn provider_view(
         {move || error.get().map(|message| view! { <p class=ERROR id="provider-error">{message}</p> })}
         <div class="flex flex-wrap gap-2">
             <button type="button" id="provider-connect" class=PRIMARY on:click=move |_| submit()>
-                <Glyph icon=icondata::FaPlugSolid />
+                <Glyph icon=icondata::LuPlug />
                 {if stores_only {
                     "Store a connection"
                 } else if reconnect {
@@ -1503,7 +1503,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
             <div class="flex items-center gap-2" data-config-path="config.toml">
                 <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_config("config.toml")>
                     <span class="flex items-center gap-2 font-mono text-sm whitespace-pre">
-                        <Glyph icon=icondata::FaFileLinesRegular class="opacity-70" />
+                        <Glyph icon=icondata::LuFileText class="opacity-70" />
                         {label}
                     </span>
                     {draft.then(|| view! { <span class="text-xs text-accent">"not applied"</span> })}
@@ -1512,7 +1512,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
             <div class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
                 <div class="flex flex-wrap gap-2">
                     <button type="button" id="config-reload" class=BUTTON on:click=move |_| workspace.reload_config()>
-                        <Glyph icon=icondata::FaArrowsRotateSolid />
+                        <Glyph icon=icondata::LuRefreshCw />
                         "Reload from disk"
                     </button>
                     // Beside the reload, so the parts it cannot apply are
@@ -1530,7 +1530,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                                 data-restart-needed=move || needed().then_some("")
                                 on:click=move |_| workspace.ask_restart()
                             >
-                                <Glyph icon=icondata::FaPowerOffSolid />
+                                <Glyph icon=icondata::LuPower />
                                 "Restart daemon"
                             </button>
                         }
@@ -1564,7 +1564,7 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
         None => loading("Reading plugins…").into_any(),
         Some(Err(error)) => view! { <p class=ERROR>{error}</p> }.into_any(),
         Some(Ok(plugins)) if plugins.is_empty() => empty_state(
-            icondata::FaPuzzlePieceSolid,
+            icondata::LuPuzzle,
             "No plugins are configured. Add one under [plugins.<name>] in the config.",
         )
         .into_any(),
@@ -1580,7 +1580,7 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
                         </div>
                         <pre class=format!("{NOTE} whitespace-pre-wrap font-mono")>{plugin_detail(&plugin)}</pre>
                         <button type="button" class=format!("{BUTTON} self-start") data-plugin-restart on:click=move |_| workspace.restart_plugin(name.clone())>
-                            <Glyph icon=icondata::FaArrowsRotateSolid />
+                            <Glyph icon=icondata::LuRefreshCw />
                             "Restart"
                         </button>
                     </div>

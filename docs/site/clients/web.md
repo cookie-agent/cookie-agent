@@ -52,7 +52,7 @@ address bar.
   refuses or closes its connection before the handshake, or nothing answers.
   The page says so and asks you to check the daemon URL and that the daemon
   is running.
-- **Once connected**, the foot of the rail (see [Layout](#layout)) shows
+- **Once connected**, the foot of the sidebar (see [Layout](#layout)) shows
   the connection's state: connected, connecting, reconnecting, or offline.
   Hover over it for the daemon's address and version, or click it for a
   panel with them, **Restart daemon** (see
@@ -64,7 +64,7 @@ address bar.
   - **Background tab.** When it becomes visible again, the page checks the
     connection.
   - **Separate clients.** Each browser tab is its own client.
-- **Theme.** The theme button at the foot of the rail (in the header of
+- **Theme.** The theme button at the foot of the sidebar (in the header of
   the connect screen) cycles through system (a half circle), light (a sun),
   and dark (a moon). The choice stays in the browser.
 
@@ -131,51 +131,61 @@ refreshes no longer change). Reset and Replace ask once more.
 
 ## Layout
 
-- **The rail.** An icon strip on the far left switches between nine
-  views (a window too short for them all scrolls it);
-  each icon names itself in a tooltip, and the view shown is marked by a
-  bar at the rail's edge:
-  - **Chat** (the default): the sessions sidebar and the transcript;
-  - **Assets** (the pictures): a project's assets (see [Assets](#assets));
-  - **Agents**: the agent documents and their presets, in a sidebar beside
-    the one open;
-  - **Skills** (the book): the skills sessions can use;
-  - **MCP servers** (the plug): every runtime's MCP servers;
-  - **Settings**: **Set up Cookie** (see [Setting up a daemon](#setting-up-a-daemon)), `config.toml`, providers, plugins, and this
-    browser's preferences;
-  - **Machines & runtimes**: the daemon's machines and its runtime
-    registry;
+- **The sidebar.** One column on the left holds the whole page's
+  navigation: **New session**, then under *Workspace* the views, then the
+  sessions by project (see [Sessions and chat](#sessions-and-chat)), and
+  at its foot **Settings**, the connection, and the theme button. The view
+  shown is tinted and marked. The views:
+  - **Agents**: the agent documents and their presets, listed beside the
+    one open;
+  - **Skills**: the skills sessions can use;
   - **Memory**;
-  - **Scheduled prompts** (the clock): the daemon's cron jobs, shown only
-    by a daemon of client protocol 1.15 or later (see
-    [Scheduled prompts](#scheduled-prompts)).
+  - **Assets**: a project's assets (see [Assets](#assets));
+  - **Machines**: the daemon's machines and its runtime registry;
+  - **MCP servers**: every runtime's MCP servers;
+  - **Schedules**: the daemon's cron jobs, shown only by a daemon of
+    client protocol 1.15 or later (see
+    [Scheduled prompts](#scheduled-prompts));
+  - **Settings**: **Set up Cookie** (see
+    [Setting up a daemon](#setting-up-a-daemon)), `config.toml`,
+    providers, plugins, and this browser's preferences.
 
-  The connection and the theme button are at its foot.
-- **Chat.** The title bar has the sidebar button, the session's title, and
-  the ⋮ menu of the session's commands. Click the title to rename the
+  Choosing a session (or New session) returns to the conversation, and so
+  does browser Back from another view.
+- **Chat.** The title bar has the sidebar button, the session's title,
+  the session's live badges, and the ⋮ menu of the session's commands.
+  The badges show what is live in the session, each only while it is: the
+  goal with its checklist done (such as `3/5`), the calls running in the
+  background, the approvals waiting, and, once a request has measured it,
+  the context's use as a ring. Click one for its tab in the session panel
+  (below). Click the title to rename the
   session (see [Renaming](#sessions-and-chat)). Below the transcript are
   the composer and the bottom bar. While a subagent's session is open, the
   title is a path from its root, such as
   `Fix the greeting › reviewer: check tests`: click a parent to go up to
   it. The ⋮ menu acts on the session shown.
 - **Widths.**
-  - **1024 px and wider:** the sessions sidebar is pinned beside the
-    transcript, and the agents beside the open agent. The sidebar button
-    hides and shows it, and the browser remembers the choice (one for
-    both views).
-  - **640 to 1023 px** (a tablet, an unfolded foldable): the rail stays;
-    the sidebar button shows the sessions as the page in place of the
-    transcript (the agents in place of the open agent), and hides them
-    again. Choosing one, or browser Back, hides them too. As on a phone,
-    the page opens on the sessions, and Chat on the rail shows them: only
-    a desktop's width has room for the rail, the sessions, and a new
-    session side by side.
+  - **1024 px and wider:** the sidebar is pinned beside every view. The
+    sidebar button hides and shows it, and the browser remembers the
+    choice.
+  - **640 to 1023 px** (a tablet, an unfolded foldable): the sidebar
+    button shows the sidebar as the page, over the view, and hides it
+    again. Choosing a session or a view, or browser Back, hides it too. As
+    on a phone, the page opens on the sidebar: only a desktop's width has
+    room for the sidebar and a new session side by side.
   - **Narrower, a phone:** see [Phones](#phones).
 - **Sheets.** The session's panels open as a sheet on the right (from the
   bottom on a phone): approvals, the agent, model, permission mode, and
-  preset pickers, usage, the diagnostics filter, compacting, the goal,
-  background calls, skills, permission rules, a message's actions, the
-  session's runtimes, and the ⋮ menu.
+  preset pickers, compacting, skills, a message's actions, and the ⋮ menu.
+  Usage, permission rules, the session's runtimes, the goal, background
+  calls, and the diagnostics filter are the tabs of one sheet, the
+  **session panel**, whose tabs carry the same counts as the badges.
+  Browser Back (a phone's Back gesture too) closes the sheet first.
+- **Right-click.** With a mouse, right-clicking a session's row opens its
+  actions at the pointer (rename, pin, move, mark read or unread, delete),
+  and right-clicking a project's header shows its buttons. Shift+right-click,
+  and right-clicking selected text, a link, a field, or code, keep the
+  browser's own menu.
 - **Long lines** in code, diffs, and terminal output scroll inside their
   block.
 
@@ -213,7 +223,8 @@ refreshes no longer change). Reset and Replace ask once more.
     the whole title when the row cuts it.
   - **Unread.** A session that finished, or that waits on an approval or
     a question, while you were away has a dot before its title, and the
-    rail's Chat button a dot while any session has one
+    sidebar button a dot while any session has one and the sidebar is
+    hidden
     ([unread sessions](../specs/unread-sessions.md)). "Away" is what
     suppresses a push: no client shows the session (or one of its
     subagents) in a visible, focused window used in the last 2 minutes.
@@ -608,10 +619,12 @@ refreshes no longer change). Reset and Replace ask once more.
   [Scheduled prompts](#scheduled-prompts) instead), **Skills**, **Background calls**, **Runtimes**, **Permission
   rules**, **Usage**, **Diagnostics**, and **Agent preset**. The others
   have their place in the page: the bottom bar picks the agent, model, and
-  permission mode and answers approvals; the composer attaches, sends, and
-  stops; the sidebar starts and opens sessions; and the rail has the
-  daemon's views.
-- **Approvals.** When a tool call needs an answer, the bottom bar says so.
+  permission mode; the composer attaches, sends, and stops; and the
+  sidebar starts and opens sessions and has the daemon's views. **Goal**,
+  **Background calls**, **Runtimes**, **Permission rules**, **Usage**, and
+  **Diagnostics** open the session panel at their tab.
+- **Approvals.** When a tool call needs an answer, the title bar's amber
+  badge says how many wait.
   Open it to approve once, approve for the session tree, or reject.
 - **Questions.** An [ACP agent's question](../extend/acp-agents.md#questions-from-the-agent)
   shows as a card above the composer, naming who asks (with *1 of N* when
@@ -866,7 +879,7 @@ download, or delete it (after asking).
       takes the real one. A page that keeps no token shows a placeholder.
     - **Guides:** links to the runtimes, ssh, dial-in, remote access, and
       service guides of the released documentation.
-- **Skills.** The rail's **Skills** view lists the skills every session
+- **Skills.** The sidebar's **Skills** view lists the skills every session
   can use: yours (`~/.cookie-agent/skills/`), then the official ones the
   daemon keeps, each with how to run it (`/greet <name>`), what it does and
   when, its version, where it lives, and whether a skill of the same name
@@ -876,7 +889,7 @@ download, or delete it (after asking).
   included. The search narrows them by name and description, and **Update
   official skills** refreshes the official ones now (`skills.update`) and
   says what changed.
-- **MCP servers.** The rail's **MCP servers** view lists every runtime's servers with their state,
+- **MCP servers.** The sidebar's **MCP servers** view lists every runtime's servers with their state,
   tools (with how many its `include_tools` and `exclude_tools` left out),
   and last error. The global runtime's servers can be added, edited,
   enabled or disabled, removed, and kept in your `config.toml`; a coding
@@ -970,7 +983,7 @@ download, or delete it (after asking).
 
 ## Scheduled prompts
 
-The clock in the rail opens **Scheduled prompts**, the daemon's
+**Schedules** in the sidebar opens **Scheduled prompts**, the daemon's
 [cron jobs](../sessions/scheduling.md); a daemon older than client
 protocol 1.15 keeps none, and the page hides the icon and the ⋮ menu's
 **Schedule a prompt**. The view reads `crons.list` again whenever a job
@@ -1034,30 +1047,30 @@ changes (`crons.changed`), from any client or agent.
   - **Status line:** a thin line above the bottom bar, only while
     approvals wait (tap the badge to answer).
 - **Two levels.** Each view has a first level, its list, and a second
-  level, the item open in it. The first level fills the screen beside the
-  rail, which stays an icon strip with the theme button at its foot; the
-  second level fills the whole screen, without the rail, and the sidebar
-  button at the left of its title bar goes back up to the list.
-- **The sessions.** The page opens on them, over a new session (a
-  notification's session opens instead). In a session, the sidebar button
-  shows them again with the rail, the open session's subagents nested
-  under its row; browser Back, the sidebar button in their title bar,
-  choosing a session, or choosing another view hides them. Choosing Chat
-  on the rail shows the sessions, and a tap on the open session's row
-  switches its tree and leaves them shown. A swipe from the edge is the
-  browser's Back. A long press on a session's row, let go in place,
-  reveals its **⋮**, a sheet with **Move to project…**, which lists the
-  projects, its **Rename**, which makes its title a field, and its
-  **Delete**, then the confirmation; held
+  level, the item open in it. Each fills the screen; the sidebar button at
+  the left of the title bar opens the sidebar from the first level and goes
+  back up to the list from the second.
+- **The sidebar.** The page opens on it, over a new session (a
+  notification's session opens instead). The sidebar button shows it again
+  as the page, the open session's subagents nested under its row; browser
+  Back (Android's Back gesture and button too), the sidebar button in its
+  title bar, or choosing a session or a view hides it, and a tap on the
+  open session's row switches its tree and leaves it shown. A long press
+  on a session's row, let go in place, reveals its **⋮**, a sheet with
+  **Move to project…**, which lists the projects, its **Rename**, which
+  makes its title a field, and its **Delete**, then the confirmation; held
   and moved, it drags the row onto a project's header. A long press on a
   project's header shows its pencil and trash.
-- **List first.** A view with a list shows the list when you choose it
-  on the rail, and opens an item only when you choose it there: Chat's
-  sessions, the agents, the Settings sections, the memories, and the
-  scheduled prompts. Skills, MCP servers, and Machines & runtimes have no
-  list: each opens at once, beside the rail.
-- **Agents:** the agent open fills the screen; the sidebar button shows
-  the agents with the rail, and browser Back returns to the agent.
+- **Back.** Back steps out of the innermost thing open: a sheet, then an
+  item open in a view, then the sidebar shown as the page, then a view
+  other than Chat, back to the conversation. Only Back from the
+  conversation, with nothing open, leaves the installed app.
+- **List first.** A view with a list shows the list when you choose it,
+  and opens an item only when you choose it there: the agents, the
+  Settings sections, the memories, and the scheduled prompts. Skills, MCP
+  servers, Machines, and Assets have no list: each opens at once.
+- **Agents:** the agent open fills the screen; the sidebar button goes
+  back to the agents, and so does browser Back.
 - **Other views** fill the screen under the same title bar. A Settings
   section, a memory, or a scheduled prompt open is the second level: the
   sidebar button, or browser Back, returns to the list. A document open
@@ -1066,7 +1079,7 @@ changes (`crons.changed`), from any client or agent.
   **Save** and **Cancel** at its foot. Only Chat has the composer and the
   bottom bar.
 - **On its side** (about 844×390), a phone gets the 640 px layout: the
-  rail stays, the sessions show as the page, and the bottom bar sits beside the
+  sidebar shows as the page, and the bottom bar sits beside the
   composer.
 - **The on-screen keyboard.** The page sizes itself to what the keyboard
   leaves visible, so the composer and an open sheet stay above it. While
@@ -1274,11 +1287,15 @@ run `cookie mcp auth <server>` instead.
 Settings › About credits what the page is built from, each with its
 licence:
 
-- the icons, [Font Awesome Free](https://fontawesome.com) by Fonticons,
-  Inc., under the [CC BY 4.0 licence](https://fontawesome.com/license/free):
-  inline SVG in the page's code (from the `icondata` crate, shown through
+- the icons, [Lucide](https://lucide.dev) by Lucide Icons and
+  Contributors, under the [ISC licence](https://lucide.dev/license), and
+  the brand logos of [Font Awesome Free](https://fontawesome.com) by
+  Fonticons, Inc., under the
+  [CC BY 4.0 licence](https://fontawesome.com/license/free): inline SVG in
+  the page's code (from the `icondata` crate, shown through
   `leptos_icons`), not a web font;
-- the code font, JetBrains Mono, under the SIL Open Font License 1.1;
+- the interface font, Inter, and the code font, JetBrains Mono, both
+  under the SIL Open Font License 1.1;
 - code highlighting, highlight.js, under the BSD 3-Clause licence.
 
 It also links cookie's own license and `THIRD-PARTY-NOTICES.txt`: every

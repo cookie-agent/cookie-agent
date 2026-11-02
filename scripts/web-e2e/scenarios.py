@@ -2068,12 +2068,10 @@ def close_sheet(browser):
         browser.click("#sheet h2 ~ button")
     browser.script(
         "const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click();"
-        "if (document.querySelector('#page'))"
-        "  document.querySelector('[data-rail=primary] [data-view=chat]').click()"
     )
+    if count(browser, "#page") > 0:
+        view(browser, "chat")
     browser.wait("the chat view", lambda: count(browser, "#page") == 0)
-    # A phone's rail opens Chat on its sessions, as the page.
-    browser.script("const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click()")
     browser.wait("the closed sessions", lambda: count(browser, SESSIONS_PAGE) == 0)
 
 
@@ -2125,8 +2123,18 @@ def cache_hit_rate(browser):
 
 
 def view(browser, name):
-    """Opens a view from the rail."""
-    browser.click("[data-rail=primary] [data-view=%s]" % name)
+    """Opens a view from the sidebar, shown as the page first where it is
+    hidden; "chat" goes back to the conversation, its session's row (or New
+    session) as a click on it would."""
+    if name == "chat":
+        browser.script(
+            "(document.querySelector('#sidebar [data-session][aria-current=true]')"
+            " || document.querySelector('#sidebar [data-new-session]')).click()"
+        )
+    else:
+        if not shown(browser, "#sidebar [data-view=%s]" % name):
+            browser.click("[data-sidebar-toggle]")
+        browser.click("#sidebar [data-view=%s]" % name)
     browser.wait("the %s view" % name, lambda: browser.script(
         "const p = document.querySelector('#page'); return p ? p.dataset.view : 'chat'") == name)
 
@@ -2253,7 +2261,7 @@ def menu(browser, command):
 
 
 def open_section(browser, name, section=None):
-    """Opens a view from the rail, and a Settings section in it."""
+    """Opens a view from the sidebar, and a Settings section in it."""
     view(browser, name)
     if section:
         browser.click("#page [data-section=%s]" % section)
@@ -2814,7 +2822,7 @@ def memory_changes(browser):
     big_row = '#page [data-memory="user://e2e-big"]'
     browser.wait("the memory over its limit", lambda: count(browser, big_row + "[data-memory-over]") == 1)
     assert "over its limit" in browser.text(big_row), browser.text(big_row)
-    assert count(browser, "#page [data-memory-focused]") == 0, "the rail kept the mark"
+    assert count(browser, "#page [data-memory-focused]") == 0, "the sidebar kept the mark"
     browser.shot("memory-over-limit")
     os.remove(big)
 
@@ -3362,8 +3370,8 @@ def unread_and_select(browser):
     """Select mode in the session list: a project section's checkbox
     selects all of its sessions and shows none, some, or all, Select all
     turns into Unselect all, rows toggle, Shift extends a range, the
-    selection is marked unread (a dot on each row and on the rail's Chat
-    button) and read again, and a batch delete skips the running session,
+    selection is marked unread (a dot on each row, and on the sidebar's
+    button while the sidebar hides) and read again, and a batch delete skips the running session,
     deletes the rest, and keeps the skipped one selected. The list's
     search shows only the sessions whose title matches."""
     made = []
@@ -3417,7 +3425,11 @@ def unread_and_select(browser):
     browser.wait("read", lambda: not dot(made[0]) and not dot(made[1]))
     browser.click("#mark-picked-unread")
     browser.wait("the dots", lambda: dot(made[0]) and dot(made[1]))
-    assert count(browser, "[data-rail=primary] [data-view=chat] [data-unread-any]") == 1
+    # Hidden, the sidebar's button carries the dot instead.
+    browser.click("main [data-sidebar-toggle]")
+    browser.wait("the dot on the sidebar button", lambda: count(browser, "main [data-sidebar-toggle] [data-unread-any]") == 1)
+    browser.click("main [data-sidebar-toggle]")
+    browser.wait("the sidebar", lambda: shown(browser, "#sidebar"))
     browser.shot("unread-selected")
     browser.click("#mark-picked-read")
     browser.wait("read again", lambda: not dot(made[0]) and not dot(made[1]))
@@ -3578,7 +3590,7 @@ def opens_on_sessions():
 
 
 def skills_view(browser):
-    """The rail's Skills view lists the daemon's skills by where they come
+    """The sidebar's Skills view lists the daemon's skills by where they come
     from, each with how to invoke it; its search narrows them, and its
     button refreshes the official skills and says how that went. MCP
     servers are a view of their own, no longer a Settings section."""
@@ -3601,7 +3613,7 @@ def skills_view(browser):
     assert count(browser, "#page [data-section=mcp]") == 0, "Settings still has an MCP section"
     open_section(browser, "mcp")
     browser.wait("the MCP servers", lambda: count(browser, "#mcp-new") == 1)
-    print("MCP servers open from the rail, not from Settings")
+    print("MCP servers open from the sidebar, not from Settings")
     view(browser, "chat")
 
 
@@ -3866,23 +3878,22 @@ def renaming(browser):
 
 
 def desktop_layout(browser):
-    """The rail's views, the session menu, the sidebar toggle, the theme
+    """The sidebar's views, the session menu, the sidebar toggle, the theme
     toggle, and the bottom bar's pickers."""
-    # The rail switches views and marks the one shown.
-    for name in ("agents", "settings", "machines", "memory", "cron", "chat"):
+    # The sidebar switches views and marks the one shown, beside every
+    # view; Back returns to the conversation.
+    for name in ("agents", "settings", "machines", "memory", "cron"):
         view(browser, name)
         current = browser.script(
-            "return document.querySelector('[data-rail=primary] [aria-current=page]').dataset.view"
+            "return document.querySelector('#sidebar [data-view][aria-current=page]').dataset.view"
         )
         assert current == name, (current, name)
-        assert shown(browser, "#composer") == (name == "chat"), "the composer outside Chat"
-    unnamed = browser.script(
-        "return [...document.querySelectorAll('[data-rail=primary] button')]"
-        ".filter((b) => !b.getAttribute('aria-label') || !(b.dataset.tip || b.title)).length"
-    )
-    assert unnamed == 0, "%s rail buttons lack a name or a tooltip" % unnamed
-    print("the rail switches views and marks the current one")
-    browser.shot("rail-settings")
+        assert shown(browser, "#sidebar"), "the sidebar left beside %s" % name
+        assert not shown(browser, "#composer"), "the composer outside Chat"
+    browser.script("history.back()")
+    browser.wait("Back to the conversation", lambda: page_view(browser) == "chat" and shown(browser, "#composer"))
+    print("the sidebar switches views and marks the current one; Back returns to the conversation")
+    browser.shot("sidebar-views")
 
     # The ⋮ menu: every session command by name, icon, and description, no
     # slash syntax; each opens a sheet.
@@ -3935,14 +3946,15 @@ def desktop_layout(browser):
     browser.wait("the sidebar after a reload", lambda: shown(browser, "#sidebar"))
     print("the sidebar toggles and the choice outlasts a reload")
 
-    # The theme button at the rail's foot cycles system, light, and dark.
-    theme = "[data-rail=primary] button[aria-label=Theme]"
+    # The theme button at the sidebar's foot cycles system, light, and
+    # dark.
+    theme = "#sidebar button[aria-label=Theme]"
     assert browser.script(
-        "const r = document.querySelector('[data-rail=primary]').getBoundingClientRect();"
+        "const r = document.querySelector('#sidebar').getBoundingClientRect();"
         "const t = document.querySelector(arguments[0]).getBoundingClientRect();"
         "return r.bottom - t.bottom < 24",
         theme,
-    ), "the theme button is not at the rail's foot"
+    ), "the theme button is not at the sidebar's foot"
     seen = []
     for _ in range(3):
         browser.click(theme)
@@ -3953,7 +3965,7 @@ def desktop_layout(browser):
         seen.append(name)
     assert sorted(seen) == ["dark", "light", "system"], seen
     assert count(browser, "header button[aria-label=Theme]") == 0, "the header kept a theme button"
-    print("the rail's theme button cycles", " → ".join(seen))
+    print("the sidebar's theme button cycles", " → ".join(seen))
 
     # The bottom bar's pickers.
     click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
@@ -3993,7 +4005,7 @@ def desktop_layout(browser):
 
 
 def phone_layout():
-    """The phone's two levels (a view's list beside the rail, an item open
+    """The phone's levels (the sidebar as the page, a view's list, an item open
     on the whole screen), Back, the bottom sheets, the mode picker, and the
     bottom bar that gives way to the keyboard. A page opened on a phone
     shows its sessions first, over a new session."""
@@ -4010,110 +4022,44 @@ def phone_layout():
         print("phone: the page opens on its sessions, over a new session")
         composer_clear(phone, "phone")
         phone.shot("phone-fresh-connect")
-        assert not shown(phone, "[data-rail=primary]"), "a phone shows the rail beside the transcript"
-        # The sessions: the page itself, the rail beside them.
+        # The sidebar button shows the sidebar as the page; Back closes it.
         phone.click("main [data-sidebar-toggle]")
-        phone.wait("the sessions", lambda: count(phone, SESSIONS_PAGE) == 1 and shown(phone, "[data-rail=primary]"))
-        rail = phone.script("return document.querySelector('[data-rail=primary]').getBoundingClientRect().right")
-        sessions = phone.script("const r = document.querySelector('#sidebar').getBoundingClientRect(); return [r.left, r.right]")
-        assert abs(sessions[0] - rail) <= 1 and abs(sessions[1] - 390) <= 1, "the sessions span %s beside a rail ending at %s" % (sessions, rail)
-        phone.shot("phone-sessions")
+        phone.wait("the sidebar", lambda: count(phone, SESSIONS_PAGE) == 1 and shown(phone, "#sidebar [data-view=agents]"))
+        phone.shot("phone-sidebar")
         phone.script("history.back()")
-        phone.wait("Back closing the sessions", lambda: count(phone, SESSIONS_PAGE) == 0 and not shown(phone, "[data-rail=primary]"))
+        phone.wait("Back closing the sidebar", lambda: count(phone, SESSIONS_PAGE) == 0)
 
-        # A rail button whose view has a list, its first level, shows the
-        # list first, the rail beside it. Choosing an item opens it on the
-        # whole screen; the sidebar button (and browser Back) returns to
-        # the list.
+        # A view with a list shows the list; an item opens on the whole
+        # screen, and the sidebar button (or Back) returns to the list;
+        # Back from the list returns to the conversation.
         agent = '#agents-sidebar [data-config-path="agents/helper.md"]'
-        phone.click("main [data-sidebar-toggle]")
-        phone.click("[data-rail=primary] [data-view=agents]")
-        phone.wait(
-            "the agents",
-            lambda: page_view(phone) == "agents" and shown(phone, agent) and shown(phone, "[data-rail=primary]"),
-        )
-        assert count(phone, "#config-text") == 0 and not shown(phone, "[data-agents-empty]"), "the rail opened an agent"
-        assert phone.text("#page-title") == "Agents" and not shown(phone, "[data-page-back]")
-        assert count(phone, "#page [data-sidebar-toggle]") == 0, "the agents list has a sidebar button"
-        phone.shot("phone-rail-agents")
+        view(phone, "agents")
+        phone.wait("the agents", lambda: shown(phone, agent) and count(phone, SESSIONS_PAGE) == 0)
+        assert count(phone, "#config-text") == 0, "opening Agents opened an agent"
         phone.click(agent + " button")
         phone.wait("the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
-        assert not shown(phone, "[data-rail=primary]"), "the rail shows beside the agent"
-        assert not shown(phone, "[data-page-back]"), "the agent has a back arrow beside the sidebar button"
-        phone.shot("phone-rail-agents-open")
+        phone.shot("phone-agent-open")
         phone.click("#page [data-sidebar-toggle]")
-        phone.wait("the agents over the agent", lambda: shown(phone, agent) and shown(phone, "[data-rail=primary]"))
-        phone.script("history.back()")
-        phone.wait("Back to the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
-        phone.click("#page [data-sidebar-toggle]")
+        phone.wait("back up to the agents", lambda: shown(phone, agent) and count(phone, "#config-text") == 0)
         phone.click(agent + " button")
-        phone.wait("the agent again", lambda: shown(phone, "#config-text") and not shown(phone, agent))
+        phone.wait("the agent again", lambda: shown(phone, "#config-text"))
         phone.script("history.back()")
         phone.wait("Back closing the agent", lambda: count(phone, "#config-text") == 0 and shown(phone, agent))
-
-        phone.click("[data-rail=primary] [data-view=memory]")
-        phone.wait(
-            "the memories",
-            lambda: page_view(phone) == "memory"
-            and shown(phone, "[data-rail=primary]")
-            and "Reading memories" not in phone.text("#page"),
-        )
-        assert count(phone, "#memory-text") == 0, "the rail opened a memory"
-        phone.shot("phone-rail-memory")
-        # Run on its own, the daemon may have no memory to open yet.
-        if count(phone, "#page .memory-row button") > 0:
-            phone.click("#page .memory-row button")
-            phone.wait("the memory", lambda: count(phone, "#memory-text") == 1 and not shown(phone, "[data-rail=primary]"))
-            phone.click("#page [data-sidebar-toggle]")
-            phone.wait("Back to the memories", lambda: count(phone, "#memory-text") == 0 and count(phone, "#page .memory-row") > 0)
-
-        # Machines has no list: its page at once, the rail beside it.
-        phone.click("[data-rail=primary] [data-view=machines]")
-        phone.wait("the machines", lambda: page_view(phone) == "machines" and shown(phone, "[data-rail=primary]"))
-
-        phone.click("[data-rail=primary] [data-view=chat]")
-        phone.wait(
-            "the sessions",
-            lambda: page_view(phone) == "chat" and count(phone, "#sidebar nav[aria-label=Sessions] [data-session]") > 0,
-        )
-        phone.shot("phone-rail-chat")
         phone.script("history.back()")
-        phone.wait("Back closing the sessions", lambda: count(phone, SESSIONS_PAGE) == 0 and page_view(phone) == "chat")
-        print("phone: a rail button shows its view's list beside the rail; the sidebar button returns from an item")
+        phone.wait("Back leaving Agents", lambda: page_view(phone) == "chat")
+        print("phone: the sidebar as the page, a view's list, its items, and Back through them")
 
-        # Settings' list is its page too: no section until one is chosen.
-        phone.click("main [data-sidebar-toggle]")
-        phone.click("[data-rail=primary] [data-view=settings]")
-        phone.wait("the settings view", lambda: page_view(phone) == "settings" and count(phone, SESSIONS_PAGE) == 0)
-        assert shown(phone, "[data-section=providers]") and count(phone, "[data-section-body]") == 0, "the rail opened a section"
-        # List, then detail; Back leaves the detail.
+        # Settings: the section list, then a section; Back leaves it.
+        view(phone, "settings")
+        phone.wait("the settings view", lambda: shown(phone, "[data-section=providers]") and count(phone, "[data-section-body]") == 0)
         phone.click("#page [data-section=configuration]")
         phone.wait("the section", lambda: shown(phone, "[data-section-body=configuration]"))
-        assert not shown(phone, "[data-section=providers]"), "the list stays beside the detail"
-        assert not shown(phone, "[data-rail=primary]"), "the rail shows beside the section"
-        assert phone.text("#page-title") == "Configuration", phone.text("#page-title")
         phone.script("history.back()")
-        phone.wait("Back leaving the section", lambda: shown(phone, "[data-section=providers]") and shown(phone, "[data-rail=primary]"))
-        # A third level, an editor in a section, has the back arrow up one
-        # level; an editor fills the screen with its actions at the foot.
-        phone.click("#page [data-section=configuration]")
-        phone.click('#page [data-config-path="config.toml"] button')
-        phone.wait("the editor", lambda: count(phone, "#config-text") == 1)
-        bottom = phone.script("return innerHeight - document.querySelector('#config-apply').getBoundingClientRect().bottom")
-        assert 0 <= bottom < 70, "the editor's actions are %s px above its foot" % bottom
-        phone.shot("phone-editor")
-        phone.click("[data-page-back]")
-        phone.wait("the closed editor", lambda: count(phone, "#config-text") == 0 and shown(phone, "[data-section-body=configuration]"))
-        assert not shown(phone, "[data-page-back]"), "the section has a back arrow beside the sidebar button"
-        # The sidebar button goes up to the list from any depth.
-        phone.click('#page [data-config-path="config.toml"] button')
-        phone.wait("the editor again", lambda: count(phone, "#config-text") == 1)
-        phone.click("#page [data-sidebar-toggle]")
-        phone.wait("the section list", lambda: shown(phone, "[data-section=providers]") and count(phone, "#config-text") == 0)
-        print("phone: a view's list shows beside the rail; Back and the sidebar button leave a detail")
+        phone.wait("Back leaving the section", lambda: shown(phone, "[data-section=providers]"))
+        view(phone, "chat")
 
         # A subagent's title bar: ‹ goes back to its parent.
-        phone.click("[data-rail=primary] [data-view=chat]")
+        phone.click("main [data-sidebar-toggle]")
         phone.click("#sidebar [data-new-session]")
         phone.wait("the new session", lambda: page_view(phone) == "chat" and count(phone, SESSIONS_PAGE) == 0)
         # The cards stack in one column above the composer, which stays at
@@ -4317,7 +4263,7 @@ return Math.max(page, inner);
 
 # What the audit opens at each size: the chat's sheets by their commands,
 # the ⋮ menu and the sessions by a click, then every view, Settings section,
-# and editor by a script click (a phone's rail hides beside a transcript).
+# and editor by a script click (a phone's sidebar hides beside a transcript).
 SHEETS = [
     ("agent", ["#agent-chip"]),
     ("model", ["#model-chip"]),
@@ -4327,30 +4273,30 @@ SHEETS = [
     for name in ("compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset")
 ]
 SCRIPTED = [
-    ("view-%s" % name, ["[data-rail=primary] [data-view=%s]" % name])
+    ("view-%s" % name, ["#sidebar [data-view=%s]" % name])
     for name in ("agents", "skills", "mcp", "settings", "machines", "memory", "cron")
 ] + [
-    ("cron-form", ["[data-rail=primary] [data-view=cron]", "#cron-new"]),
+    ("cron-form", ["#sidebar [data-view=cron]", "#cron-new"]),
 ] + [
     ("new-session-cards", ["[data-new-session]"]),
 ] + [
-    ("settings-%s" % section, ["[data-rail=primary] [data-view=settings]", "[data-section=%s]" % section])
+    ("settings-%s" % section, ["#sidebar [data-view=settings]", "[data-section=%s]" % section])
     for section in ("configuration", "providers", "plugins", "notifications", "display", "browser", "about")
 ] + [
     ("editor-config", [
-        "[data-rail=primary] [data-view=settings]", "[data-section=configuration]",
+        "#sidebar [data-view=settings]", "[data-section=configuration]",
         '[data-config-path="config.toml"] button',
     ]),
-    ("editor-agent", ["[data-rail=primary] [data-view=agents]", '[data-config-path^="agents/"] button']),
-    ("editor-memory", ["[data-rail=primary] [data-view=memory]", "#page .memory-row button"]),
-    ("agents-open", ["[data-rail=primary] [data-view=agents]", '[data-config-path="agents/helper.md"] button']),
+    ("editor-agent", ["#sidebar [data-view=agents]", '[data-config-path^="agents/"] button']),
+    ("editor-memory", ["#sidebar [data-view=memory]", "#page .memory-row button"]),
+    ("agents-open", ["#sidebar [data-view=agents]", '[data-config-path="agents/helper.md"] button']),
     ("agents-list", [
-        "[data-rail=primary] [data-view=agents]", '[data-config-path="agents/helper.md"] button',
+        "#sidebar [data-view=agents]", '[data-config-path="agents/helper.md"] button',
         "#page [data-sidebar-toggle]",
     ]),
-    ("machines-add", ["[data-rail=primary] [data-view=machines]", "#machines-add"]),
-    ("machines-move", ["[data-rail=primary] [data-view=machines]", '#page [data-machine-action="move to machine"]']),
-    ("memory-agent", ["[data-rail=primary] [data-view=memory]", '[data-memory="agent://helper"] button']),
+    ("machines-add", ["#sidebar [data-view=machines]", "#machines-add"]),
+    ("machines-move", ["#sidebar [data-view=machines]", '#page [data-machine-action="move to machine"]']),
+    ("memory-agent", ["#sidebar [data-view=memory]", '[data-memory="agent://helper"] button']),
 ]
 
 
@@ -4485,7 +4431,7 @@ def reconnects():
         assert listeners == 0, "%s popstate listeners were added and not removed" % listeners
         agent = '#agents-sidebar [data-config-path="agents/helper.md"]'
         phone.click("main [data-sidebar-toggle]")
-        phone.click("[data-rail=primary] [data-view=agents]")
+        phone.click("#sidebar [data-view=agents]")
         phone.wait("the agents", lambda: page_view(phone) == "agents" and shown(phone, agent))
         phone.click(agent + " button")
         phone.wait("the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
@@ -4839,7 +4785,7 @@ def restart_daemon(browser):
     browser.resize(1280, 900)
     print("on a phone the confirmation fits and its buttons are 44 px tall")
 
-    # The connection panel (the rail's green dot) offers the same restart:
+    # The connection panel (the sidebar's green dot) offers the same restart:
     # the panel closes and the confirmation opens.
     browser.click("#connection")
     browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
@@ -4915,9 +4861,9 @@ def offer(browser):
 
 
 def browser_section(browser):
-    """Opens Settings › This browser by script clicks (a phone's rail hides
+    """Opens Settings › This browser by script clicks (a phone's sidebar hides
     beside a transcript)."""
-    for selector in ("[data-rail=primary] [data-view=settings]", "[data-section=browser]"):
+    for selector in ("#sidebar [data-view=settings]", "[data-section=browser]"):
         browser.script("document.querySelector(arguments[0]).click()", selector)
         time.sleep(0.4)
     browser.wait("the install section", lambda: offer(browser) != "")
@@ -6542,7 +6488,7 @@ def runtime_mcp(browser):
 def choose_transcript(browser, mode):
     """Chooses transcript mode `mode` in Settings › Display, then goes back
     to the chat."""
-    browser.click("[data-rail=primary] [data-view=settings]")
+    browser.click("#sidebar [data-view=settings]")
     browser.click("[data-section=display]")
     browser.wait("the transcript modes", lambda: count(browser, "[data-transcript-mode]") == 2)
     browser.click("[data-transcript-mode=%s]" % mode)
@@ -6550,7 +6496,7 @@ def choose_transcript(browser, mode):
         "the stored mode",
         lambda: browser.script("return localStorage.getItem('cookie.transcript')") == mode,
     )
-    browser.click("[data-rail=primary] [data-view=chat]")
+    browser.click("#sidebar [data-view=chat]")
 
 
 def stored_elsewhere(browser, mode):
@@ -6568,7 +6514,7 @@ def reduced_transcript(browser):
     row that says what it does while it runs and spins in place of the
     working row, the row opens the work, and another tab's choice applies
     here."""
-    browser.click("[data-rail=primary] [data-view=settings]")
+    browser.click("#sidebar [data-view=settings]")
     browser.click("[data-section=display]")
     browser.wait("the display section", lambda: "Diagnostics in the transcript" in browser.text())
     browser.click("[data-section=browser]")

@@ -39,7 +39,7 @@ fn chip(
             on:click=move |_| choose()
         >
             <Show when=move || chosen.get()>
-                <Glyph icon=icondata::FaCheckSolid class="text-xs" />
+                <Glyph icon=icondata::LuCheck class="text-xs" />
             </Show>
             <span class="truncate">{label}</span>
         </button>
@@ -171,7 +171,7 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
         None => loading("Reading the assets…").into_any(),
         Some(Err(message)) => view! { <p class=ERROR>{message}</p> }.into_any(),
         Some(Ok(found)) if found.assets.is_empty() => empty_state(
-            icondata::FaImagesSolid,
+            icondata::LuImages,
             "No assets here yet. Agents save them with write_asset.",
         )
         .into_any(),
@@ -182,8 +182,7 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
                 .cloned()
                 .collect::<Vec<_>>();
             if shown.is_empty() {
-                return empty_state(icondata::FaMagnifyingGlassSolid, "No assets match.")
-                    .into_any();
+                return empty_state(icondata::LuSearch, "No assets match.").into_any();
             }
             let total = view! {
                 <p class=NOTE data-assets-total>
@@ -259,7 +258,7 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
                     aria-controls="assets-filter"
                     on:click=move |_| workspace.asset_filter_open.update(|open| *open = !*open)
                 >
-                    <Glyph icon=icondata::FaFilterSolid />
+                    <Glyph icon=icondata::LuListFilter />
                     // A dot while the filter narrows the list.
                     <Show when=narrowed>
                         <span class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-surface" data-filter-dot></span>
@@ -277,7 +276,7 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
                 {AssetKind::ALL.into_iter().map(|kind| kind_button(Some(kind))).collect_view()}
             </div>
             <label class="relative flex items-center">
-                <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-muted" />
+                <Glyph icon=icondata::LuSearch class="pointer-events-none absolute left-3 text-xs text-muted" />
                 <input
                     type="text"
                     role="searchbox"
@@ -399,7 +398,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
             </div>
             <div class="flex min-w-0 items-center gap-1" data-asset-place=level>
                 <Glyph
-                    icon=if level == "session" { icondata::FaCommentsSolid } else { icondata::FaFolderSolid }
+                    icon=if level == "session" { icondata::LuMessagesSquare } else { icondata::LuFolder }
                     class="text-xs text-muted"
                 />
                 <span class=format!("{NOTE} shrink-0") data-asset-project>{place.project}</span>
@@ -415,7 +414,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                     aria-expanded=move || open().to_string()
                     on:click=move |_| workspace.asset_open.set(if open() { None } else { Some(id) })
                 >
-                    <Glyph icon=icondata::FaEyeSolid />
+                    <Glyph icon=icondata::LuEye />
                     {move || if open() { "Close" } else { "Open" }}
                 </button>
                 <button
@@ -427,7 +426,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                         move |_| workspace.asset_renaming.set(Some((id, title.clone())))
                     }
                 >
-                    <Glyph icon=icondata::FaPenSolid />
+                    <Glyph icon=icondata::LuPencil />
                     "Rename"
                 </button>
                 <button
@@ -436,7 +435,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                     data-asset-action="download"
                     on:click=move |_| crate::assets::download(workspace, download_asset.clone())
                 >
-                    <Glyph icon=icondata::FaDownloadSolid />
+                    <Glyph icon=icondata::LuDownload />
                     "Download"
                 </button>
                 <button
@@ -445,7 +444,7 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                     data-asset-action="delete"
                     on:click=move |_| workspace.asset_deleting.set(Some(id))
                 >
-                    <Glyph icon=icondata::FaTrashSolid />
+                    <Glyph icon=icondata::LuTrash2 />
                     "Delete"
                 </button>
             </div>

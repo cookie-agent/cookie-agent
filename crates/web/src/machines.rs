@@ -415,10 +415,10 @@ pub const fn lifetime_label(lifetime: RuntimeLifetime) -> &'static str {
 /// registry does not list (pinned, never seen) has a generic one.
 pub fn lifetime_icon(lifetime: Option<RuntimeLifetime>) -> icondata::Icon {
     match lifetime {
-        Some(RuntimeLifetime::Builtin) => icondata::FaCubeSolid,
-        Some(RuntimeLifetime::DialIn) => icondata::FaPlugSolid,
-        Some(RuntimeLifetime::Spawned) => icondata::FaTerminalSolid,
-        None => icondata::FaCircleQuestionRegular,
+        Some(RuntimeLifetime::Builtin) => icondata::LuBox,
+        Some(RuntimeLifetime::DialIn) => icondata::LuPlug,
+        Some(RuntimeLifetime::Spawned) => icondata::LuTerminal,
+        None => icondata::LuCircleHelp,
     }
 }
 
@@ -428,7 +428,7 @@ pub fn platform_icon(platform: Option<&str>) -> icondata::Icon {
         Some("linux") => icondata::FaLinuxBrands,
         Some("macos" | "ios") => icondata::FaAppleBrands,
         Some("windows") => icondata::FaWindowsBrands,
-        _ => icondata::FaDesktopSolid,
+        _ => icondata::LuMonitor,
     }
 }
 

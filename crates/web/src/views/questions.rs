@@ -135,7 +135,7 @@ fn question_card(
             class="flex flex-col gap-2 rounded-lg border-2 border-accent bg-surface-2 p-3"
         >
             <p class="flex items-center gap-2 text-sm font-bold">
-                <Glyph icon=icondata::FaCircleQuestionSolid class="text-accent" />
+                <Glyph icon=icondata::LuCircleHelp class="text-accent" />
                 <span class="min-w-0 flex-1 break-words" data-question-heading>{heading}</span>
                 {move || queue_label(count.get()).map(|label| view! { <span class=NOTE>{label}</span> })}
             </p>
@@ -145,7 +145,7 @@ fn question_card(
             <div class="flex flex-wrap gap-2">
                 {accept_label.map(|label| view! {
                     <button type="button" class=PRIMARY data-answer="accept" disabled=move || sending.get() on:click=accept>
-                        <Glyph icon=icondata::FaCheckSolid />
+                        <Glyph icon=icondata::LuCheck />
                         {label}
                     </button>
                 })}
@@ -156,7 +156,7 @@ fn question_card(
                     disabled=move || sending.get()
                     on:click=move |_| send(ElicitationAction::Decline, None)
                 >
-                    <Glyph icon=icondata::FaXmarkSolid />
+                    <Glyph icon=icondata::LuX />
                     "Decline"
                 </button>
                 <button
@@ -190,7 +190,7 @@ fn url_view(url: &str) -> impl IntoView {
             <ul class="flex flex-col gap-1 text-sm text-bad" data-question-warnings>
                 {warnings.into_iter().map(|warning| view! {
                     <li class="flex items-start gap-2">
-                        <Glyph icon=icondata::FaTriangleExclamationSolid />
+                        <Glyph icon=icondata::LuTriangleAlert />
                         <span>{format!("Careful: {warning}.")}</span>
                     </li>
                 }).collect_view()}
@@ -204,7 +204,7 @@ fn url_view(url: &str) -> impl IntoView {
             rel="noopener noreferrer"
             data-question-open
         >
-            <Glyph icon=icondata::FaArrowUpRightFromSquareSolid />
+            <Glyph icon=icondata::LuExternalLink />
             {format!("Open {host_label}")}
         </a>
     }

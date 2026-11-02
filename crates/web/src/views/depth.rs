@@ -8,12 +8,11 @@ use cookie_agent_client_state::{
     attachment_chip,
     format::format_clock_elapsed,
     permissions::{PermissionRow, parse_rule_key, rule_runtimes, takes_runtime},
-    rows::goal_bar_shows,
 };
 use leptos::{ev, prelude::*};
 
 use super::{
-    BUTTON, Command, EFFECTS, GoalCommand, ICON_BUTTON, NOTE, PRIMARY, PermissionEffect,
+    BUTTON, EFFECTS, GoalCommand, ICON_BUTTON, NOTE, PRIMARY, PermissionEffect,
     PermissionRuleSource, ROW, action_label, effect_label, empty_state, goal_actions, loading,
     permission_actions, permission_rows, source_label, status_name,
 };
@@ -30,94 +29,6 @@ const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center 
 const BAR: &str = "flex flex-wrap items-center gap-2 border-t border-line px-3 py-1 text-sm";
 pub(super) const FIELD: &str = "min-h-11 rounded-md border border-line-2 bg-surface px-3 font-mono text-sm hover:border-accent focus:border-accent focus:outline-none";
 
-/// The root session's goal, with the controls its status allows.
-#[component]
-pub fn GoalBar(workspace: Workspace) -> impl IntoView {
-    let goal = Memo::new(move |_| workspace.goal());
-    view! {
-        {move || {
-            goal.get()
-                .filter(|goal| goal_bar_shows(goal.status))
-                .map(|goal| {
-                    let read_only = !workspace.writable();
-                    let summary = goal.objective.split_whitespace().collect::<Vec<_>>().join(" ");
-                    let controls = goal_actions(goal.status, read_only)
-                        .iter()
-                        .map(|action| {
-                            let action = *action;
-                            view! {
-                                <button
-                                    type="button"
-                                    class=BUTTON
-                                    data-goal-action=action_label(action).to_lowercase()
-                                    on:click=move |_| {
-                                        workspace.goal_command(GoalCommand::Lifecycle(action))
-                                    }
-                                >
-                                    {action_label(action)}
-                                </button>
-                            }
-                        })
-                        .collect_view();
-                    view! {
-                        <div id="goal-bar" class=BAR>
-                            <button
-                                type="button"
-                                class=format!("{ROW} min-w-0 flex-1 justify-center")
-                                on:click=move |_| workspace.panel.set(Some(crate::workspace::Panel::Goal))
-                            >
-                                <span class="flex w-full items-center gap-2">
-                                    <Glyph icon=icondata::FaBullseyeSolid class="text-accent" />
-                                    <span class="min-w-0 flex-1 truncate">{summary}</span>
-                                </span>
-                            </button>
-                            {controls}
-                        </div>
-                    }
-                })
-        }}
-    }
-}
-
-/// The calls running in the background, while there are any.
-#[component]
-pub fn BackgroundBar(workspace: Workspace) -> impl IntoView {
-    let calls = Memo::new(move |_| workspace.background_calls());
-    view! {
-        <Show when=move || !calls.with(Vec::is_empty)>
-            <div id="background-bar" class=BAR>
-                <button
-                    type="button"
-                    class=format!("{ROW} min-w-0 flex-1 justify-center")
-                    on:click=move |_| workspace.run_command(Command::Background)
-                >
-                    <span class="flex w-full items-center gap-2">
-                    <Glyph icon=icondata::FaHourglassHalfSolid class="text-accent" />
-                    <span class="min-w-0 flex-1 truncate">
-                        {move || {
-                            let calls = calls.get();
-                            let summary = calls
-                                .iter()
-                                .map(|call| match &call.display {
-                                    Some(display) => format!(
-                                        "{}: {}",
-                                        call.tool,
-                                        display.split_whitespace().collect::<Vec<_>>().join(" ")
-                                    ),
-                                    None => call.tool.clone(),
-                                })
-                                .collect::<Vec<_>>()
-                                .join(" · ");
-                            format!("{} in background: {summary}", calls.len())
-                        }}
-                    </span>
-                    </span>
-                </button>
-            </div>
-        </Show>
-    }
-}
-
 /// The draft's files as chips, and an offer to downscale an image too
 /// large to attach.
 #[component]
@@ -130,7 +41,7 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                 .map(|offer| {
                     view! {
                         <div id="downscale-offer" class=format!("{BAR} bg-surface-2")>
-                            <Glyph icon=icondata::FaTriangleExclamationSolid class="text-accent" />
+                            <Glyph icon=icondata::LuTriangleAlert class="text-accent" />
                             <span class="min-w-0 flex-1">
                                 {format!("{}. Downscale and attach?", offer.reason.trim_end_matches('.'))}
                             </span>
@@ -160,7 +71,7 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                             let sha256 = artifact.sha256.clone();
                             view! {
                                 <span class="attachment-chip flex items-center gap-1 rounded-full bg-sunken pl-3 font-mono text-xs">
-                                    <Glyph icon=icondata::FaPaperclipSolid class="opacity-70" />
+                                    <Glyph icon=icondata::LuPaperclip class="opacity-70" />
                                     {attachment_chip(&artifact)}
                                     <button
                                         type="button"
@@ -169,7 +80,7 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                                         title="Remove"
                                         on:click=move |_| workspace.remove_attachment(&sha256)
                                     >
-                                        <Glyph icon=icondata::FaXmarkSolid />
+                                        <Glyph icon=icondata::LuX />
                                     </button>
                                 </span>
                             }
@@ -231,7 +142,7 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
                 disabled=move || !workspace.writable()
                 on:click=move |_| pick_files(false)
             >
-                <Glyph icon=icondata::FaPaperclipSolid class="text-base" />
+                <Glyph icon=icondata::LuPaperclip class="text-base" />
             </button>
             <Show when=move || accepts_images(&media.get())>
                 <input
@@ -250,7 +161,7 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
                     disabled=move || !workspace.writable()
                     on:click=move |_| pick_files(true)
                 >
-                    <Glyph icon=icondata::FaCameraSolid class="text-base" />
+                    <Glyph icon=icondata::LuCamera class="text-base" />
                 </button>
             </Show>
         </Show>
@@ -289,12 +200,12 @@ pub fn compact_sheet(workspace: Workspace) -> impl IntoView {
                     workspace.compact(focus.get_untracked());
                 }
             >
-                <Glyph icon=icondata::FaCompressSolid />
+                <Glyph icon=icondata::LuMinimize2 />
                 "Compact"
             </button>
             <Show when=compacting>
                 <span class="inline-flex min-h-11 items-center gap-2 text-sm" role="status">
-                    <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-accent" />
+                    <Glyph icon=icondata::LuLoaderCircle class="animate-spin text-accent" />
                     "Compacting…"
                 </span>
                 <button
@@ -351,7 +262,7 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                         view! {
                             <li class="flex items-start gap-2">
                                 <Glyph
-                                    icon=if item.finished { icondata::FaSquareCheckRegular } else { icondata::FaSquareRegular }
+                                    icon=if item.finished { icondata::LuSquareCheck } else { icondata::LuSquare }
                                     class="mt-0.5"
                                 />
                                 <span class="sr-only">{if item.finished { "finished: " } else { "open: " }}</span>
@@ -362,7 +273,7 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                     .collect_view();
                 view! {
                     <p class="flex items-center gap-2 text-sm font-bold">
-                        <Glyph icon=icondata::FaBullseyeSolid class="text-accent" />
+                        <Glyph icon=icondata::LuTarget class="text-accent" />
                         {format!("Goal ({})", status_name(goal.status))}
                     </p>
                     <p id="goal-objective" class="text-sm whitespace-pre-wrap">{goal.objective.clone()}</p>
@@ -370,7 +281,7 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                 }
                     .into_any()
             }
-            None => empty_state(icondata::FaBullseyeSolid, "No goal is set.").into_any(),
+            None => empty_state(icondata::LuTarget, "No goal is set.").into_any(),
         };
         let controls = goal.map(|goal| {
             goal_actions(goal.status, !workspace.writable())
@@ -445,7 +356,7 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
         let calls = workspace.background_calls();
         if calls.is_empty() {
             return empty_state(
-                icondata::FaHourglassHalfSolid,
+                icondata::LuHourglass,
                 "No calls are running in the background.",
             )
             .into_any();
@@ -479,7 +390,7 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
                                     data-stop=call.job.clone()
                                     on:click=move |_| workspace.stop_background(job.clone())
                                 >
-                                    <Glyph icon=icondata::FaCircleStopSolid />
+                                    <Glyph icon=icondata::LuCircleStop />
                                     "Stop"
                                 </button>
                             }
@@ -504,8 +415,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                 .cloned()
                 .collect::<Vec<_>>();
             if shown.is_empty() {
-                return empty_state(icondata::FaWandMagicSparklesSolid, "No matching skill.")
-                    .into_any();
+                return empty_state(icondata::LuWandSparkles, "No matching skill.").into_any();
             }
             shown
                 .into_iter()
@@ -576,7 +486,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                                 }
                             />
                             <button type="button" id="skill-run" class=PRIMARY on:click=move |_| workspace.run_skill()>
-                                <Glyph icon=icondata::FaPlaySolid />
+                                <Glyph icon=icondata::LuPlay />
                                 "Run the skill"
                             </button>
                         </div>
@@ -734,7 +644,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                                 data-edit=name.clone()
                                 on:click=move |_| form.edit(&edited)
                             >
-                                <Glyph icon=icondata::FaPenSolid />
+                                <Glyph icon=icondata::LuPencil />
                             </button>
                             <button
                                 type="button"
@@ -744,7 +654,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                                 data-remove=name.clone()
                                 on:click=move |_| workspace.clear_permission(rule.clone())
                             >
-                                <Glyph icon=icondata::FaXmarkSolid />
+                                <Glyph icon=icondata::LuX />
                             </button>
                         }
                     });
@@ -891,9 +801,9 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                         on:click=move |_| form.submit(workspace)
                     >
                         {move || if form.editing.get().is_some() {
-                            view! { <Glyph icon=icondata::FaCheckSolid />"Save the rule" }.into_any()
+                            view! { <Glyph icon=icondata::LuCheck />"Save the rule" }.into_any()
                         } else {
-                            view! { <Glyph icon=icondata::FaPlusSolid />"Add the rule" }.into_any()
+                            view! { <Glyph icon=icondata::LuPlus />"Add the rule" }.into_any()
                         }}
                     </button>
                     <Show when=move || form.editing.get().is_some()>
@@ -921,7 +831,7 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
                 </p>
                 <div class="flex flex-wrap gap-2">
                     <button type="button" id="revert-confirm" class=PRIMARY on:click=move |_| workspace.revert()>
-                        <Glyph icon=icondata::FaArrowRotateLeftSolid />
+                        <Glyph icon=icondata::LuRotateCcw />
                         "Revert"
                     </button>
                     <button type="button" class=BUTTON on:click=move |_| workspace.confirm_revert(false)>
@@ -934,7 +844,7 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
             view! {
                 <button type="button" id="message-copy" class=ROW on:click=move |_| workspace.copy_message()>
                     <span class="flex items-center gap-2 text-sm font-bold">
-                        <Glyph icon=icondata::FaCopyRegular />
+                        <Glyph icon=icondata::LuCopy />
                         "Copy"
                     </span>
                     <span class=format!("pl-6 {NOTE}")>"copy the message text"</span>
@@ -942,14 +852,14 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
                 <Show when=move || writable>
                     <button type="button" id="message-revert" class=ROW on:click=move |_| workspace.confirm_revert(true)>
                         <span class="flex items-center gap-2 text-sm font-bold">
-                            <Glyph icon=icondata::FaArrowRotateLeftSolid />
+                            <Glyph icon=icondata::LuRotateCcw />
                             "Revert"
                         </span>
                         <span class=format!("pl-6 {NOTE}")>"remove this message and every later turn; edit and resend it"</span>
                     </button>
                     <button type="button" id="message-fork" class=ROW on:click=move |_| workspace.fork()>
                         <span class="flex items-center gap-2 text-sm font-bold">
-                            <Glyph icon=icondata::FaCodeBranchSolid />
+                            <Glyph icon=icondata::LuGitBranch />
                             "Fork"
                         </span>
                         <span class=format!("pl-6 {NOTE}")>"a new session with the conversation up to this message"</span>

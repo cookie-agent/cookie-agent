@@ -135,13 +135,13 @@ impl CardFile {
                 let handle = escape(block.handle.as_str());
                 format!(
                     "<button type=\"button\" data-action=\"asset-copy\" data-asset-handle=\"{handle}\" class=\"{CORNER}\" aria-label=\"Copy the handle {handle}\" title=\"Copy {handle}\">{}</button>",
-                    svg(icondata::FaCopyRegular, ""),
+                    svg(icondata::LuCopy, ""),
                 )
             }
             CardSource::Artifact { key, .. } => format!(
                 "<button type=\"button\" data-action=\"attachment-save\" data-attach-key=\"{}\" class=\"{CORNER}\" aria-label=\"Save as asset\" title=\"Save as asset\">{}</button>",
                 key.attribute(),
-                svg(icondata::FaBookmarkRegular, ""),
+                svg(icondata::LuBookmark, ""),
             ),
         }
     }
@@ -353,14 +353,14 @@ fn row_html(states: &[CardState]) -> String {
 fn waiting_html(state: &CardState) -> String {
     let (icon, label, line, actions, status) = match state {
         CardState::Attaching { label } => (
-            icondata::FaPaperclipSolid,
+            icondata::LuPaperclip,
             label,
             "Attaching…".to_owned(),
             String::new(),
             "attaching",
         ),
         CardState::Asking { label, key } => (
-            icondata::FaShieldHalvedSolid,
+            icondata::LuShieldHalf,
             label,
             "The agent wants to attach this file.".to_owned(),
             format!(
@@ -370,7 +370,7 @@ fn waiting_html(state: &CardState) -> String {
             "asking",
         ),
         CardState::Failed { label, reason } => (
-            icondata::FaCircleExclamationSolid,
+            icondata::LuCircleAlert,
             label,
             reason.clone(),
             String::new(),
@@ -476,7 +476,7 @@ fn file_html(file: &CardFile) -> String {
         escape(name),
         escape(&cookie_agent_protocol::human_bytes(file.byte_length)),
         escape(name),
-        svg(icondata::FaDownloadSolid, ""),
+        svg(icondata::LuDownload, ""),
         file.corner(),
     )
 }

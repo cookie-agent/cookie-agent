@@ -92,11 +92,11 @@ fn ios_steps() -> impl IntoView {
         <div data-install-steps class="flex flex-col gap-2 text-sm">
             <ol class="flex flex-col gap-1">
                 <li class="flex items-center gap-2">
-                    <Glyph icon=icondata::FaArrowUpFromBracketSolid class="w-4 justify-center text-accent" />
+                    <Glyph icon=icondata::LuShare class="w-4 justify-center text-accent" />
                     <span>"Tap " <b>"Share"</b> " in the browser's toolbar."</span>
                 </li>
                 <li class="flex items-center gap-2">
-                    <Glyph icon=icondata::FaSquarePlusRegular class="w-4 justify-center text-accent" />
+                    <Glyph icon=icondata::LuSquarePlus class="w-4 justify-center text-accent" />
                     <span>"Choose " <b>"Add to Home Screen"</b> ", then " <b>"Add"</b> "."</span>
                 </li>
             </ol>
@@ -111,7 +111,7 @@ fn ios_steps() -> impl IntoView {
 fn prompt_button(install: Install, class: &'static str) -> impl IntoView {
     view! {
         <button type="button" data-install-action class=class on:click=move |_| install.prompt()>
-            <Glyph icon=icondata::FaDownloadSolid />
+            <Glyph icon=icondata::LuDownload />
             "Install app"
         </button>
     }
@@ -131,7 +131,7 @@ pub(crate) fn install_section() -> impl IntoView {
             };
             view! {
                 <p class="flex items-center gap-2 text-sm">
-                    <Glyph icon=icondata::FaCircleCheckSolid class="text-ok" />
+                    <Glyph icon=icondata::LuCircleCheck class="text-ok" />
                     {text}
                 </p>
             }
@@ -147,7 +147,7 @@ pub(crate) fn install_section() -> impl IntoView {
         InstallOffer::AddToHomeScreen => ios_steps().into_any(),
         InstallOffer::NeedsHttps => view! {
             <p class="flex items-start gap-2 text-sm">
-                <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-accent" />
+                <Glyph icon=icondata::LuLock class="mt-0.5 text-accent" />
                 <span>
                     "Installing needs HTTPS, e.g. "
                     <code class="font-mono text-xs">"tailscale serve --bg 7419"</code>
@@ -189,7 +189,7 @@ pub(crate) fn InstallAction() -> impl IntoView {
                     aria-expanded=move || steps.get().to_string()
                     on:click=move |_| steps.update(|shown| *shown = !*shown)
                 >
-                    <Glyph icon=icondata::FaMobileScreenButtonSolid />
+                    <Glyph icon=icondata::LuSmartphone />
                     "Install app"
                 </button>
             }
@@ -234,7 +234,7 @@ pub(crate) fn InstallBanner() -> impl IntoView {
             >
                 <div class="flex min-w-0 flex-1 flex-col gap-1 py-2">
                     <p class="flex items-center gap-2 font-bold">
-                        <Glyph icon=icondata::FaMobileScreenButtonSolid class="text-accent" />
+                        <Glyph icon=icondata::LuSmartphone class="text-accent" />
                         "Install Cookie Agent"
                     </p>
                     {move || (install.offer() == InstallOffer::AddToHomeScreen).then(ios_steps)}
@@ -248,7 +248,7 @@ pub(crate) fn InstallBanner() -> impl IntoView {
                     title="Dismiss"
                     on:click=move |_| install.dismiss()
                 >
-                    <Glyph icon=icondata::FaXmarkSolid />
+                    <Glyph icon=icondata::LuX />
                 </button>
             </div>
         </Show>

@@ -476,9 +476,9 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                 >
                     {move || {
                         if playing.get() {
-                            view! { <Glyph icon=icondata::FaPauseSolid /> }
+                            view! { <Glyph icon=icondata::LuPause /> }
                         } else {
-                            view! { <Glyph icon=icondata::FaPlaySolid /> }
+                            view! { <Glyph icon=icondata::LuPlay /> }
                         }
                     }}
                 </button>
@@ -490,7 +490,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     title="Back a frame (,)"
                     on:click=move |_| step(-FRAME)
                 >
-                    <Glyph icon=icondata::FaBackwardStepSolid />
+                    <Glyph icon=icondata::LuSkipBack />
                 </button>
                 <button
                     type="button"
@@ -500,7 +500,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     title="Forward a frame (.)"
                     on:click=move |_| step(FRAME)
                 >
-                    <Glyph icon=icondata::FaForwardStepSolid />
+                    <Glyph icon=icondata::LuSkipForward />
                 </button>
                 <span class="shrink-0 px-1 font-mono text-xs tabular-nums" id="media-viewer-time">
                     {move || clock(position.get())}
@@ -560,9 +560,9 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                 >
                     {move || {
                         if muted.get() {
-                            view! { <Glyph icon=icondata::FaVolumeXmarkSolid /> }
+                            view! { <Glyph icon=icondata::LuVolumeX /> }
                         } else {
-                            view! { <Glyph icon=icondata::FaVolumeHighSolid /> }
+                            view! { <Glyph icon=icondata::LuVolume2 /> }
                         }
                     }}
                 </button>
@@ -601,7 +601,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     title="Zoom out (-)"
                     on:click=move |_| zoom_by(0.8)
                 >
-                    <Glyph icon=icondata::FaMagnifyingGlassMinusSolid />
+                    <Glyph icon=icondata::LuZoomOut />
                 </button>
                 <button
                     type="button"
@@ -621,7 +621,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     title="Zoom in (+)"
                     on:click=move |_| zoom_by(1.25)
                 >
-                    <Glyph icon=icondata::FaMagnifyingGlassPlusSolid />
+                    <Glyph icon=icondata::LuZoomIn />
                 </button>
                 {viewing.handle.clone().map(|handle| view! {
                     <button
@@ -632,7 +632,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                         title=format!("Copy {handle}")
                         on:click=move |_| crate::assets::copy_handle(handle.clone(), workspace)
                     >
-                        <Glyph icon=icondata::FaCopyRegular />
+                        <Glyph icon=icondata::LuCopy />
                     </button>
                 })}
                 <a
@@ -643,7 +643,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     aria-label="Download"
                     title="Download"
                 >
-                    <Glyph icon=icondata::FaDownloadSolid />
+                    <Glyph icon=icondata::LuDownload />
                 </a>
                 <button
                     type="button"
@@ -653,7 +653,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     title="Close (Esc)"
                     on:click=move |_| close()
                 >
-                    <Glyph icon=icondata::FaXmarkSolid />
+                    <Glyph icon=icondata::LuX />
                 </button>
             </div>
             <div
@@ -678,7 +678,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     title="Previous (←)"
                     on:click=move |_| turn(-1)
                 >
-                    <Glyph icon=icondata::FaChevronLeftSolid />
+                    <Glyph icon=icondata::LuChevronLeft />
                 </button>
                 <button
                     type="button"
@@ -688,7 +688,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     title="Next (→)"
                     on:click=move |_| turn(1)
                 >
-                    <Glyph icon=icondata::FaChevronRightSolid />
+                    <Glyph icon=icondata::LuChevronRight />
                 </button>
                 <div id="media-viewer-strip" class="flex shrink-0 justify-center gap-2 overflow-x-auto px-2 pb-2">
                     {group
@@ -697,7 +697,7 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                         .map(|(index, shown)| {
                             let current = Some(index) == at;
                             let picture = if shown.is_video() {
-                                view! { <Glyph icon=icondata::FaFilmSolid /> }.into_any()
+                                view! { <Glyph icon=icondata::LuFilm /> }.into_any()
                             } else {
                                 view! {
                                     <img src=shown.url.clone() alt="" draggable="false" class="h-full w-full object-cover" />

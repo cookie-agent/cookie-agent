@@ -67,7 +67,7 @@ pub fn cron_page(workspace: Workspace) -> impl IntoView {
         };
         let rows = if listing.jobs.is_empty() {
             empty_state(
-                icondata::FaClockRegular,
+                icondata::LuClock,
                 "No scheduled prompts. Schedule one here, or from a session's ⋮ menu.",
             )
             .into_any()
@@ -85,7 +85,7 @@ pub fn cron_page(workspace: Workspace) -> impl IntoView {
                     "Cron times are the daemon host's local time; the times shown here are this browser's."
                 </p>
                 <button type="button" id="cron-new" class=PRIMARY on:click=move |_| workspace.new_cron_job()>
-                    <Glyph icon=icondata::FaPlusSolid />
+                    <Glyph icon=icondata::LuPlus />
                     "New"
                 </button>
             </div>
@@ -168,7 +168,7 @@ fn job_row(
             >
                 <span class="flex w-full items-center gap-2">
                     <Glyph
-                        icon=if enabled { icondata::FaClockSolid } else { icondata::FaClockRegular }
+                        icon=if enabled { icondata::LuClock } else { icondata::LuTimerOff }
                         class=if enabled { "text-accent" } else { "opacity-50" }
                     />
                     <span class="min-w-0 flex-1 truncate text-sm font-bold" data-cron-title>{title.clone()}</span>
@@ -268,7 +268,7 @@ fn job_details(
             </div>
             <div class="flex flex-wrap gap-2" data-cron-actions>
                 <button type="button" class=BUTTON data-cron-action="edit" on:click=move |_| workspace.edit_cron(edited.clone())>
-                    <Glyph icon=icondata::FaPenSolid />
+                    <Glyph icon=icondata::LuPencil />
                     "Edit"
                 </button>
                 <button
@@ -277,11 +277,11 @@ fn job_details(
                     data-cron-action=if enabled { "disable" } else { "enable" }
                     on:click=move |_| workspace.set_cron_enabled(toggled.clone(), !enabled)
                 >
-                    <Glyph icon=if enabled { icondata::FaPauseSolid } else { icondata::FaPlaySolid } />
+                    <Glyph icon=if enabled { icondata::LuPause } else { icondata::LuPlay } />
                     {if enabled { "Disable" } else { "Enable" }}
                 </button>
                 <button type="button" class=BUTTON data-cron-action="run" on:click=move |_| workspace.run_cron(ran.clone())>
-                    <Glyph icon=icondata::FaForwardStepSolid />
+                    <Glyph icon=icondata::LuSkipForward />
                     "Run now"
                 </button>
                 <button
@@ -290,7 +290,7 @@ fn job_details(
                     data-cron-action="delete"
                     on:click=move |_| confirm_delete.set(Some(asked.clone()))
                 >
-                    <Glyph icon=icondata::FaTrashCanRegular />
+                    <Glyph icon=icondata::LuTrash2 />
                     "Delete"
                 </button>
             </div>
@@ -342,7 +342,7 @@ fn fire_line(workspace: Workspace, fire: &CronFire) -> impl IntoView {
                         workspace.open_session(session);
                     }
                 >
-                    <Glyph icon=icondata::FaArrowUpRightFromSquareSolid />
+                    <Glyph icon=icondata::LuExternalLink />
                     "Open session"
                 </button>
             })}
@@ -656,7 +656,7 @@ pub fn clock_mark(workspace: Workspace, cron: cookie_agent_protocol::SessionCron
                 workspace.open_cron_job(job.clone());
             }
         >
-            <Glyph icon=icondata::FaClockSolid class="text-xs" />
+            <Glyph icon=icondata::LuClock class="text-xs" />
         </span>
     }
 }

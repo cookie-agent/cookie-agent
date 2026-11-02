@@ -582,6 +582,15 @@ pub fn matches(query: &str) -> bool {
     media_query(query).is_some_and(|list| list.matches())
 }
 
+/// Whether `event` (a `contextmenu`, say) came from a finger, whose long
+/// press the page handles itself, rather than a mouse or a pen.
+pub fn from_touch(event: &web_sys::MouseEvent) -> bool {
+    js_sys::Reflect::get(event, &"pointerType".into())
+        .ok()
+        .and_then(|kind| kind.as_string())
+        .is_some_and(|kind| kind == "touch")
+}
+
 /// Calls `changed` with whether the page matches `query` whenever that
 /// changes, until the returned listener is removed.
 pub fn on_media_change(query: &str, changed: impl Fn(bool) + 'static) -> Option<Listener> {

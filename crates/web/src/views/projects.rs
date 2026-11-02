@@ -401,10 +401,10 @@ pub(super) fn project_list(
     move || {
         if nothing_matches.get() {
             if !searching.get() {
-                return empty_state(icondata::FaFilterSolid, "No sessions match the filter.")
+                return empty_state(icondata::LuListFilter, "No sessions match the filter.")
                     .into_any();
             }
-            return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
+            return empty_state(icondata::LuSearch, "No sessions match.").into_any();
         }
         view! {
             <For
@@ -699,9 +699,9 @@ fn project_header(
                     }
                 >
                     <Glyph icon=Signal::derive(move || match pick_state.get() {
-                        PickState::None => icondata::FaSquareRegular,
-                        PickState::Some => icondata::FaSquareMinusSolid,
-                        PickState::All => icondata::FaSquareCheckSolid,
+                        PickState::None => icondata::LuSquare,
+                        PickState::Some => icondata::LuSquareMinus,
+                        PickState::All => icondata::LuSquareCheck,
                     }) />
                 </button>
             </Show>
@@ -724,9 +724,14 @@ fn project_header(
                 }
                 on:contextmenu=move |event: ev::MouseEvent| {
                     // A long press shows the header's buttons, not the
-                    // browser's menu.
+                    // browser's menu; so does a mouse's right-click.
                     if revealed.get_untracked().as_deref() == Some(menu_key.as_str()) {
                         event.prevent_default();
+                    } else if !crate::browser::from_touch(&event)
+                        && super::row_menu::wants_context_menu(&event)
+                    {
+                        event.prevent_default();
+                        revealed.set(Some(menu_key.clone()));
                     }
                 }
                 on:click=move |_| {
@@ -739,12 +744,12 @@ fn project_header(
                 // lie over it when they show, without moving it.
                 <span class="flex min-h-11 w-full items-center gap-2 pr-12 pl-2">
                     <span class="inline-flex shrink-0 opacity-70 transition-transform" class:rotate-90=move || open.get()>
-                        <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
+                        <Glyph icon=icondata::LuChevronRight class="text-[0.625rem]" />
                     </span>
                     {match emoji.clone() {
                         Some(emoji) => view! { <span class="w-5 shrink-0 text-center text-base leading-none" data-project-emoji>{emoji}</span> }.into_any(),
-                        None if editable => view! { <Glyph icon=icondata::FaFolderSolid class="w-5 justify-center text-accent" /> }.into_any(),
-                        None => view! { <Glyph icon=icondata::FaFolderOpenRegular class="w-5 justify-center opacity-70" /> }.into_any(),
+                        None if editable => view! { <Glyph icon=icondata::LuFolder class="w-5 justify-center text-accent" /> }.into_any(),
+                        None => view! { <Glyph icon=icondata::LuFolderOpen class="w-5 justify-center opacity-70" /> }.into_any(),
                     }}
                     <span class=move || format!("min-w-0 flex-1 truncate text-sm font-bold {}", if editable { "" } else { "text-muted" }) data-project-name>
                         {label.clone()}
@@ -775,7 +780,7 @@ fn project_header(
                             }
                         }
                     >
-                        <Glyph icon=icondata::FaPenSolid />
+                        <Glyph icon=icondata::LuPencil />
                     </button>
                     <button
                         type="button"
@@ -791,7 +796,7 @@ fn project_header(
                             }
                         }
                     >
-                        <Glyph icon=icondata::FaTrashCanRegular />
+                        <Glyph icon=icondata::LuTrash2 />
                     </button>
                 </Show>
                 <button
@@ -802,7 +807,7 @@ fn project_header(
                     data-header-new
                     on:click=move |_| workspace.new_session_in(new_in.clone())
                 >
-                    <Glyph icon=icondata::FaPlusSolid />
+                    <Glyph icon=icondata::LuPlus />
                 </button>
             </div>
         </div>
@@ -898,9 +903,18 @@ pub(super) fn move_sheet(workspace: Workspace) -> impl IntoView {
 /// A project's mark before its name: its emoji, or a folder.
 fn project_mark(emoji: Option<String>, project: bool) -> impl IntoView {
     match emoji {
-        Some(emoji) => view! { <span class="w-5 shrink-0 text-center text-base leading-none">{emoji}</span> }.into_any(),
-        None if project => view! { <Glyph icon=icondata::FaFolderSolid class="w-5 justify-center text-accent" /> }.into_any(),
-        None => view! { <Glyph icon=icondata::FaFolderOpenRegular class="w-5 justify-center opacity-70" /> }.into_any(),
+        Some(emoji) => {
+            view! { <span class="w-5 shrink-0 text-center text-base leading-none">{emoji}</span> }
+                .into_any()
+        }
+        None if project => {
+            view! { <Glyph icon=icondata::LuFolder class="w-5 justify-center text-accent" /> }
+                .into_any()
+        }
+        None => {
+            view! { <Glyph icon=icondata::LuFolderOpen class="w-5 justify-center opacity-70" /> }
+                .into_any()
+        }
     }
 }
 
@@ -1062,7 +1076,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                             <p>{error}</p>
                             {reload.map(|project| view! {
                                 <button type="button" class=format!("{BUTTON} self-start") data-editor-reload on:click=move |_| workspace.load_editor(project.clone())>
-                                    <Glyph icon=icondata::FaRotateRightSolid />
+                                    <Glyph icon=icondata::LuRedo2 />
                                     "Reload"
                                 </button>
                             })}
@@ -1105,11 +1119,11 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                             workspace.project_editor.with(|editor| {
                                 match editor.as_ref().and_then(|editor| editor.emoji.clone()) {
                                     Some(emoji) => view! { <span data-chosen-emoji>{emoji}</span> }.into_any(),
-                                    None => view! { <Glyph icon=icondata::FaFolderSolid class="text-base text-accent" /> }.into_any(),
+                                    None => view! { <Glyph icon=icondata::LuFolder class="text-base text-accent" /> }.into_any(),
                                 }
                             })
                         }}
-                        <Glyph icon=icondata::FaChevronDownSolid class="text-xs opacity-70" />
+                        <Glyph icon=icondata::LuChevronDown class="text-xs opacity-70" />
                     </button>
                     <span class=NOTE>"Shown before the name in every client."</span>
                 </div>
@@ -1122,7 +1136,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                     <span class="min-w-0 flex-1 text-sm font-bold">"New sessions attach"</span>
                     <Show when=session_attachments>
                         <button type="button" class=BUTTON id="editor-use-session" on:click=move |_| workspace.editor_use_session()>
-                            <Glyph icon=icondata::FaCopyRegular />
+                            <Glyph icon=icondata::LuCopy />
                             "Use this session's attachments"
                         </button>
                     </Show>
@@ -1150,10 +1164,10 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| agents_open.update(|open| *open = !*open)
                 >
                     <span class="flex min-w-0 items-center gap-2">
-                        <Glyph icon=icondata::FaRobotSolid class="text-accent" />
+                        <Glyph icon=icondata::LuBot class="text-accent" />
                         <span class="truncate font-mono" data-project-agent>{agent_label}</span>
                     </span>
-                    <Glyph icon=icondata::FaChevronDownSolid class="text-xs opacity-70" />
+                    <Glyph icon=icondata::LuChevronDown class="text-xs opacity-70" />
                 </button>
                 <Show when=move || agents_open.get()>
                     {agent_choices(workspace, agents_open)}
@@ -1197,7 +1211,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                             workspace.open_view(View::Memory, None);
                         }
                     >
-                        <Glyph icon=icondata::FaBrainSolid />
+                        <Glyph icon=icondata::LuBrain />
                         "Open its memory folder"
                     </button>
                 }
@@ -1211,11 +1225,11 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| workspace.save_editor()
                 >
                     {move || if saving() {
-                        view! { <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" /> "Saving…" }.into_any()
+                        view! { <Glyph icon=icondata::LuLoaderCircle class="animate-spin" /> "Saving…" }.into_any()
                     } else if existing().is_some() {
-                        view! { <Glyph icon=icondata::FaCheckSolid /> "Save" }.into_any()
+                        view! { <Glyph icon=icondata::LuCheck /> "Save" }.into_any()
                     } else {
-                        view! { <Glyph icon=icondata::FaPlusSolid /> "Create" }.into_any()
+                        view! { <Glyph icon=icondata::LuPlus /> "Create" }.into_any()
                     }}
                 </button>
                 <button type="button" class=BUTTON on:click=move |_| workspace.close_panel()>"Cancel"</button>
@@ -1349,7 +1363,7 @@ fn EmojiPicker(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                     on:input=move |event| query.set(event_target_value(&event))
                 />
                 <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=move |_| open.set(false)>
-                    <Glyph icon=icondata::FaXmarkSolid />
+                    <Glyph icon=icondata::LuX />
                 </button>
             </div>
             <div class="min-h-0 flex-1 overflow-y-auto" data-emoji-grid on:pointerleave=move |_| pointed.set(None)>

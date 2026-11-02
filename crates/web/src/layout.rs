@@ -1,9 +1,9 @@
-//! Where the page is, independent of the browser: the rail's views, the
+//! Where the page is, independent of the browser: the sidebar's views, the
 //! Settings sections, the history entries browser Back closes, and the
 //! press that offers to delete a session row on a touch screen, and where
 //! a row's ⋮ menu opens. The session's ⋮ menu is [`crate::commands`].
 
-/// A full view the rail switches to.
+/// A full view the sidebar switches to.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum View {
     /// The sessions and the transcript.
@@ -29,8 +29,8 @@ pub enum View {
 }
 
 impl View {
-    /// The rail's order.
-    /// The rail's order: Settings comes after every other view.
+    /// The views in the sidebar's order: Chat is the session list itself,
+    /// and Settings comes at the sidebar's foot, after every other view.
     pub const ALL: [Self; 9] = [
         Self::Chat,
         Self::Assets,
@@ -43,7 +43,7 @@ impl View {
         Self::Settings,
     ];
 
-    /// The view's name, as its rail button and title bar say it.
+    /// The view's name, as its sidebar entry and title bar say it.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Chat => "Chat",
@@ -58,20 +58,12 @@ impl View {
         }
     }
 
-    /// Whether the view has a list beside it that the sidebar button shows
-    /// and hides: Chat's sessions, and Agents' agents. A desktop pins it
-    /// beside the transcript (the agent open); a narrower window shows it
-    /// as the page in their place.
-    pub const fn has_sidebar(self) -> bool {
-        matches!(self, Self::Chat | Self::Agents)
-    }
-
-    /// Where a phone shows the view's list, its first level, which a tap
-    /// on its rail button shows before any of its items: Chat's sessions
-    /// in its sidebar, shown as the page; the agents, the Settings
-    /// sections, the memories, and the cron jobs as the page itself until
-    /// one opens. Skills, MCP servers, and Machines have no list: each is
-    /// one page.
+    /// Where a phone shows the view's list, its first level, which opening
+    /// the view shows before any of its items: Chat's sessions in the
+    /// sidebar, shown as the page; the agents, the Settings sections, the
+    /// memories, and the cron jobs as the page itself until one opens.
+    /// Skills, MCP servers, Machines, and Assets have no list: each is one
+    /// page.
     pub const fn phone_list(self) -> Option<PhoneList> {
         match self {
             Self::Chat => Some(PhoneList::Sidebar),
@@ -80,17 +72,7 @@ impl View {
         }
     }
 
-    /// Whether a tap on the view's rail button opens its sidebar, when the
-    /// window is narrower than a desktop's (`paged`: a phone, a tablet, an
-    /// unfolded foldable), where the sidebar shows as the page: for a list
-    /// the sidebar holds. Only a desktop has room for the rail, the list,
-    /// and what it opens side by side. Anywhere else the tap closes the
-    /// sidebar.
-    pub const fn rail_opens_sidebar(self, paged: bool) -> bool {
-        paged && matches!(self.phone_list(), Some(PhoneList::Sidebar))
-    }
-
-    /// The `data-view` value of its rail button and page.
+    /// The `data-view` value of its sidebar entry and page.
     pub const fn id(self) -> &'static str {
         match self {
             Self::Chat => "chat",
@@ -109,7 +91,7 @@ impl View {
 /// Where a phone shows a view's list; see [`View::phone_list`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhoneList {
-    /// In the sidebar, which fills the page beside the rail.
+    /// In the sidebar, which fills the page below desktop widths.
     Sidebar,
     /// As the page, until one of its items opens over it.
     Page,
@@ -191,13 +173,17 @@ impl SettingsSection {
 /// Something open that browser Back closes, innermost last.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Layer {
-    /// The sidebar shown as the page below desktop widths: the sessions in
-    /// place of the transcript, or the agents in place of the agent open.
-    Sidebar,
+    /// A view other than Chat: Back returns to the conversation.
+    View,
     /// A phone's Settings section, opened from the section list.
     Section,
     /// A document, memory, or cron job open in its editor.
     Editor,
+    /// The sidebar shown as the page below desktop widths, in place of
+    /// the view.
+    Sidebar,
+    /// A sheet (the session panel among them) over the view.
+    Panel,
 }
 
 /// What the page does to the browser's history so that it holds one entry
@@ -337,12 +323,32 @@ pub fn menu_place(
     }
 }
 
+/// The widest a context menu is drawn, for keeping it on the screen.
+pub const CONTEXT_MENU_WIDTH: f64 = 224.0;
+
+/// Places a context menu `height` px tall for a right-click at `x`, `y`:
+/// its top left at the pointer, as a desktop's menus open, flipped left of
+/// the pointer where it would run past the right edge and above it where
+/// it would run past the bottom.
+pub fn context_place(
+    (x, y): (f64, f64),
+    (width, viewport_height): (f64, f64),
+    height: f64,
+) -> MenuPlace {
+    let right_edge = if x + CONTEXT_MENU_WIDTH + MENU_GAP <= width {
+        x + CONTEXT_MENU_WIDTH
+    } else {
+        x
+    };
+    menu_place((y, y, right_edge), (width, viewport_height), height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn settings_is_the_last_view_on_the_rail() {
+    fn settings_is_the_last_view() {
         assert_eq!(View::ALL.last(), Some(&View::Settings));
     }
 
@@ -383,50 +389,48 @@ mod tests {
     }
 
     #[test]
-    fn a_phone_rail_tap_shows_the_views_list_and_back_returns_to_it() {
-        use Layer::{Editor, Section, Sidebar};
-        // A tap on Chat opens a phone's sessions as the page, a tap on a
-        // view whose list is its page closes them.
-        assert!(View::Chat.rail_opens_sidebar(true));
-        assert!(
-            !View::Chat.rail_opens_sidebar(false),
-            "a desktop opens on the transcript"
-        );
-        let after_tap = |view: View| -> Vec<Layer> {
-            if view.rail_opens_sidebar(true) {
-                vec![Sidebar]
-            } else {
-                Vec::new()
-            }
-        };
-        assert_eq!(
-            reconcile(&[Sidebar], &after_tap(View::Chat)),
-            HistoryStep::Keep
-        );
-        for view in [
-            View::Agents,
-            View::Skills,
-            View::Mcp,
-            View::Settings,
-            View::Memory,
-            View::Cron,
-            View::Machines,
-        ] {
-            assert!(!view.rail_opens_sidebar(true), "{view:?}");
-            assert_eq!(
-                reconcile(&[Sidebar], &after_tap(view)),
-                HistoryStep::Back(1)
-            );
-        }
+    fn back_closes_the_innermost_layer_and_returns_to_the_conversation() {
+        use Layer::{Editor, Panel, Section, Sidebar, View as Away};
+        // A sheet over a view's open item: Back closes the sheet, then the
+        // item, then leaves the view for the conversation.
+        let open = [Away, Editor, Panel];
+        assert_eq!(reconcile(&[], &open), HistoryStep::Push(open.to_vec()));
+        assert_eq!(reconcile(&open, &open[..2]), HistoryStep::Back(1));
+        assert_eq!(reconcile(&open[..2], &open[..1]), HistoryStep::Back(1));
+        assert_eq!(reconcile(&open[..1], &[]), HistoryStep::Back(1));
+        // Choosing another view from the sidebar shown as the page keeps
+        // one entry for being away from the conversation.
+        assert_eq!(reconcile(&[Away, Sidebar], &[Away]), HistoryStep::Back(1));
         // Choosing an item of a page list opens a detail Back closes, back
         // to the list.
         for detail in [Section, Editor] {
-            assert_eq!(reconcile(&[], &[detail]), HistoryStep::Push(vec![detail]));
-            assert_eq!(reconcile(&[detail], &[]), HistoryStep::Back(1));
+            assert_eq!(
+                reconcile(&[Away], &[Away, detail]),
+                HistoryStep::Push(vec![detail])
+            );
+            assert_eq!(reconcile(&[Away, detail], &[Away]), HistoryStep::Back(1));
         }
-        for view in [View::Skills, View::Mcp, View::Machines] {
+        for view in [View::Skills, View::Mcp, View::Machines, View::Assets] {
             assert_eq!(view.phone_list(), None, "{view:?}");
         }
+        assert_eq!(View::Chat.phone_list(), Some(PhoneList::Sidebar));
+        assert_eq!(View::Agents.phone_list(), Some(PhoneList::Page));
+    }
+
+    #[test]
+    fn a_context_menu_opens_at_the_pointer_and_stays_on_the_screen() {
+        let viewport = (1280.0, 800.0);
+        // Room to the right and below: its left edge at the pointer.
+        let place = context_place((100.0, 100.0), viewport, 200.0);
+        assert_eq!(place.right, 1280.0 - 100.0 - CONTEXT_MENU_WIDTH);
+        assert_eq!(place.top, Some(100.0 + MENU_GAP));
+        // Near the right edge: its right edge at the pointer.
+        let place = context_place((1200.0, 100.0), viewport, 200.0);
+        assert_eq!(place.right, 80.0);
+        // Near the bottom: above the pointer.
+        let place = context_place((100.0, 750.0), viewport, 200.0);
+        assert_eq!(place.top, None);
+        assert_eq!(place.bottom, Some(800.0 - 750.0 + MENU_GAP));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use cookie_agent_client_state::{
     EventLevel, ToolStatus,
     badges::{badges_tooltip, session_badges},
-    format::{compact_cost, compact_count, format_cost, format_count, relative_time},
+    format::{compact_cost, format_cost, format_count, relative_time},
     permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
     usage::{CacheHit, models_by_cost},
 };
@@ -43,6 +43,7 @@ mod cards;
 mod cron;
 mod depth;
 mod install;
+mod live;
 mod machines;
 mod manage;
 mod media_viewer;
@@ -55,6 +56,7 @@ mod restart;
 mod row_menu;
 mod session_rows;
 mod shell;
+mod sidebar;
 mod skills;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
@@ -62,12 +64,13 @@ pub(crate) use media_viewer::MediaViewer;
 pub(crate) use restart::{RestartBanner, RestartDialog};
 
 use depth::{
-    AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, compact_sheet,
-    deferred_prompt_sheet, goal_sheet, message_sheet, permissions_sheet, skills_sheet,
+    AttachButtons, DraftFiles, background_sheet, compact_sheet, deferred_prompt_sheet, goal_sheet,
+    message_sheet, permissions_sheet, skills_sheet,
 };
 
 use manage::runtimes_sheet;
-use shell::{PageView, Rail, SidebarButton};
+use shell::{PageView, SidebarButton};
+use sidebar::Sidebar;
 
 use crate::{
     app::Connection,
@@ -94,6 +97,8 @@ const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center j
 /// and the permission mode share it. 32 px to see, 44 px to hit.
 const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-line-2 bg-surface px-3 text-sm hover:border-accent hover:bg-hover active:bg-press";
 /// A status bar indicator that does something when clicked.
+/// A small borderless icon button of the sidebar's session tools.
+const SIDEBAR_TOOL: &str = "hit-area inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press";
 const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-hover active:bg-press";
 /// A session row's buttons (move, rename, delete), which show only over
 /// the hovered (or focused) row: side by side, centred on its two lines,
@@ -132,7 +137,7 @@ fn empty_state(icon: icons::Icon, text: &'static str) -> impl IntoView {
 fn loading(text: &'static str) -> impl IntoView {
     view! {
         <p class="flex items-center gap-2 py-4 text-sm text-muted">
-            <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
+            <Glyph icon=icondata::LuLoaderCircle class="animate-spin" />
             {text}
         </p>
     }
@@ -152,6 +157,7 @@ pub fn WorkspaceView(
     });
     // A window that grows to a desktop's pins the sidebar instead.
     let desktop = crate::browser::on_media_change(crate::browser::DESKTOP_QUERY, move |desktop| {
+        workspace.desktop.set(desktop);
         if desktop {
             workspace.sidebar_open.set(false);
         }
@@ -169,39 +175,25 @@ pub fn WorkspaceView(
         }
     });
     let chat = move || workspace.view.get() == View::Chat;
-    // Below desktop widths the sessions are the page, over the transcript,
-    // which keeps its place under them.
-    let sessions_page = move || workspace.sidebar_open.get();
+    // Below desktop widths the sidebar is the page, over the view, which
+    // keeps its place under it.
+    let paged = move || workspace.sidebar_open.get();
     view! {
-        <div class="flex min-h-0 flex-1">
-            // A phone shows the rail beside a view's first level only.
-            <div class="flex" class:hidden=move || workspace.narrow.get() && !workspace.at_list()>
-                <Rail workspace=workspace connection=connection theme=theme />
-            </div>
-            <div class="flex min-w-0 flex-1" class:relative=sessions_page class:hidden=move || !chat()>
-                <aside
-                    class="shrink-0 flex-col border-r border-line bg-surface-2"
-                    class:hidden=move || !sessions_page()
-                    class:flex=sessions_page
-                    class:absolute=sessions_page
-                    class:inset-0=sessions_page
-                    class:w-72=move || !sessions_page()
-                    class:lg:flex=move || workspace.sidebar_pinned.get()
-                    id="sidebar"
-                >
-                    <Show when=sessions_page>
-                        <div class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2">
-                            <SidebarButton workspace=workspace />
-                            <h1 class="min-w-0 flex-1 truncate px-1 text-lg font-bold">"Sessions"</h1>
-                        </div>
-                    </Show>
-                    <SessionList workspace=workspace />
-                </aside>
+        <div class="relative flex min-h-0 flex-1">
+            <Sidebar workspace=workspace connection=connection theme=theme />
+            <div
+                class="flex min-w-0 flex-1"
+                class:hidden=move || !chat()
+                class:invisible=paged
+                inert=move || paged().then_some("")
+            >
                 <ChatView workspace=workspace />
                 <asset_panel::AssetPanel workspace=workspace />
             </div>
             <Show when=move || !chat()>
-                <PageView workspace=workspace connection=connection />
+                <div class="flex min-w-0 flex-1" class:invisible=paged inert=move || paged().then_some("")>
+                    <PageView workspace=workspace connection=connection />
+                </div>
             </Show>
             <Sheet workspace=workspace />
             <onboarding::OnboardingSheet workspace=workspace />
@@ -219,9 +211,6 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
     view! {
             <main
                 class="flex min-w-0 flex-1 flex-col"
-                // Under the sessions shown as the page.
-                class:invisible=move || workspace.sidebar_open.get()
-                inert=move || workspace.sidebar_open.get().then_some("")
                 on:dragover=move |event: ev::DragEvent| event.prevent_default()
                 on:drop=move |event: ev::DragEvent| {
                     event.prevent_default();
@@ -237,8 +226,6 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 // A new session shows its runtime cards where the
                 // transcript will be, above the composer.
                 <Transcript workspace=workspace />
-                <GoalBar workspace=workspace />
-                <BackgroundBar workspace=workspace />
                 <QueueStrip workspace=workspace />
                 <DraftFiles workspace=workspace />
                 // An agent's question waits above the composer, scrolling
@@ -340,6 +327,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         draft: RwSignal::new(String::new()),
         fresh: StoredValue::new(false),
         menu: RwSignal::new(None),
+        context: RwSignal::new(None),
     };
     // Dragging a session onto a project's header, and the headers' own
     // buttons.
@@ -370,30 +358,13 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     view! {
         // `relative`: a desktop's filter opens over the list, under its
         // button.
-        <div class="relative flex flex-col gap-2 p-3">
+        <div class="relative flex shrink-0 flex-col gap-1 px-2 pt-3">
             <Show when=move || !workspace.picking.active.get() fallback=move || selection_bar(workspace, listed)>
-            <div class="flex gap-1.5">
-                <button type="button" class=format!("{PRIMARY} min-w-0 flex-1 whitespace-nowrap") data-new-session on:click=move |_| workspace.start_new_session()>
-                    <span class="truncate">"New session"</span>
-                </button>
-                <Show when=move || workspace.has_projects.get()>
-                    <button
-                        type="button"
-                        class=BUTTON
-                        id="new-project"
-                        aria-label="New project…"
-                        title="New project…"
-                        on:click=move |_| workspace.open_project_editor(None, false)
-                    >
-                        <Glyph icon=icondata::FaFolderPlusSolid />
-                    </button>
-                </Show>
-            </div>
-            <SessionTools workspace=workspace />
+                <SessionTools workspace=workspace />
             </Show>
             <SessionFilterPanel workspace=workspace />
         </div>
-        <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-x-hidden overflow-y-auto px-2 pb-3" aria-label="Sessions" node_ref=list>
+        <nav class="flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto px-2 pb-3" aria-label="Sessions" node_ref=list>
             {move || {
                 if workspace.has_projects.get() {
                     // The filter left every section empty: say so above
@@ -402,24 +373,24 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                         && projects::sections_hold_none(sections)
                         && (workspace.filter_changes() > 0 || workspace.has_older_sessions.get());
                     return view! {
-                        {offer.then(|| filter_offer(workspace, icondata::FaFilterSolid, "No sessions in this time range or filter."))}
+                        {offer.then(|| filter_offer(workspace, icondata::LuListFilter, "No sessions in this time range or filter."))}
                         {projects::project_list(rows, sections, searching, headers)}
                     }
                     .into_any();
                 }
                 if nothing_shown.get() {
                     if searching.get() {
-                        return empty_state(icondata::FaMagnifyingGlassSolid, "No sessions match.").into_any();
+                        return empty_state(icondata::LuSearch, "No sessions match.").into_any();
                     }
                     if workspace.filter_changes() > 0 {
-                        return filter_offer(workspace, icondata::FaFilterSolid, "No sessions match the filter.").into_any();
+                        return filter_offer(workspace, icondata::LuListFilter, "No sessions match the filter.").into_any();
                     }
                     // Older sessions than the window reaches: a longer date
                     // in the filter lists them.
                     if workspace.has_older_sessions.get() {
-                        return filter_offer(workspace, icondata::FaClockRotateLeftSolid, "No sessions in this time range; older ones are a longer date away.").into_any();
+                        return filter_offer(workspace, icondata::LuHistory, "No sessions in this time range; older ones are a longer date away.").into_any();
                     }
-                    return empty_state(icondata::FaFolderOpenSolid, "No sessions yet. Start one with New session.")
+                    return empty_state(icondata::LuFolderOpen, "No sessions yet. Start one with New session.")
                         .into_any();
                 }
                 session_rows::keyed_rows(rows, move || shown.get()).into_any()
@@ -516,17 +487,26 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
     let tool_inert = move || searching().then_some("");
     view! {
         <div
-            class="session-tools relative flex h-11 items-center gap-1.5"
+            class="session-tools relative flex h-8 items-center gap-0.5 pl-2"
             data-searching=move || searching().to_string()
             style=move || origin.get()
             node_ref=row
         >
+            <p class="session-tool shrink-0 text-[0.6875rem] font-semibold text-muted" data-tool="heading">"Sessions"</p>
+            <span
+                class="session-tool min-w-0 flex-1 truncate pr-1 pl-2 text-[0.6875rem] text-faint"
+                data-tool="summary"
+                data-filter-summary
+                title=summary
+            >
+                {summary}
+            </span>
             // Several sessions at once: mark them read or unread, or
             // delete them.
             <Show when=move || workspace.keeps_unread.get() || workspace.can_delete.get()>
                 <button
                     type="button"
-                    class=format!("{BUTTON} session-tool")
+                    class=format!("{SIDEBAR_TOOL} session-tool")
                     data-tool="select"
                     id="select-sessions"
                     aria-label="Select sessions"
@@ -537,12 +517,12 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                         workspace.start_selecting();
                     }
                 >
-                    <Glyph icon=icondata::FaListCheckSolid />
+                    <Glyph icon=icondata::LuListChecks />
                 </button>
             </Show>
             <button
                 type="button"
-                class=format!("{BUTTON} session-tool")
+                class=format!("{SIDEBAR_TOOL} session-tool")
                 data-tool="search"
                 id="search-sessions"
                 aria-label="Search sessions"
@@ -553,11 +533,11 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                 node_ref=search_button
                 on:click=open
             >
-                <Glyph icon=icondata::FaMagnifyingGlassSolid />
+                <Glyph icon=icondata::LuSearch />
             </button>
             <button
                 type="button"
-                class=format!("{BUTTON} session-tool relative")
+                class=format!("{SIDEBAR_TOOL} session-tool relative")
                 data-tool="filter"
                 id="filter-sessions"
                 aria-label="Filter sessions"
@@ -568,28 +548,34 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                 inert=tool_inert
                 on:click=move |_| workspace.filter_open.update(|open| *open = !*open)
             >
-                <Glyph icon=icondata::FaFilterSolid />
+                <Glyph icon=icondata::LuListFilter />
                 // A dot while the filter narrows the list beyond its
                 // default.
                 <Show when=move || { filter_changes.get() > 0 }>
-                    <span class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-surface-2" data-filter-dot></span>
+                    <span class="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-accent ring-2 ring-surface-2" data-filter-dot></span>
                 </Show>
             </button>
-            <span
-                class=format!("session-tool min-w-0 flex-1 truncate text-right {NOTE}")
-                data-tool="summary"
-                data-filter-summary
-                title=summary
-            >
-                {summary}
-            </span>
+            <Show when=move || workspace.has_projects.get()>
+                <button
+                    type="button"
+                    class=format!("{SIDEBAR_TOOL} session-tool")
+                    data-tool="project"
+                    id="new-project"
+                    aria-label="New project…"
+                    title="New project…"
+                    inert=tool_inert
+                    on:click=move |_| workspace.open_project_editor(None, false)
+                >
+                    <Glyph icon=icondata::LuFolderPlus />
+                </button>
+            </Show>
             <div
                 class="session-search absolute inset-0 flex items-center gap-1.5"
                 role="search"
                 inert=move || (!searching()).then_some("")
             >
                 <label class="relative flex min-w-0 flex-1 items-center">
-                    <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-muted" />
+                    <Glyph icon=icondata::LuSearch class="pointer-events-none absolute left-2.5 text-sm text-muted" />
                     <input
                         // Text, not `search`: the browser's own clear
                         // button would sit beside the ×.
@@ -597,7 +583,7 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                         role="searchbox"
                         enterkeyhint="search"
                         id="session-search"
-                        class="min-h-11 w-full min-w-0 rounded-md border border-line-2 bg-surface pr-3 pl-9 text-sm text-fg hover:border-accent focus:border-accent focus:outline-none"
+                        class="h-8 w-full min-w-0 rounded-lg bg-surface pr-3 pl-8 text-[0.8125rem] text-fg shadow-[inset_0_0_0_1px_var(--color-line-2)] placeholder:text-faint focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none"
                         aria-label="Search sessions by title"
                         placeholder="Search by title"
                         node_ref=field
@@ -614,13 +600,13 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
                 </label>
                 <button
                     type="button"
-                    class=format!("{BUTTON} session-search-cancel")
+                    class=format!("{SIDEBAR_TOOL} session-search-cancel")
                     id="search-sessions-close"
                     aria-label="Close the search"
                     title="Close the search"
                     on:click=move |_| close()
                 >
-                    <Glyph icon=icondata::FaXmarkSolid />
+                    <Glyph icon=icondata::LuX />
                 </button>
             </div>
         </div>
@@ -729,7 +715,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                 on:click=move |_| toggle.run(())
             >
                 <Show when=move || chosen.get()>
-                    <Glyph icon=icondata::FaCheckSolid class="text-xs" />
+                    <Glyph icon=icondata::LuCheck class="text-xs" />
                 </Show>
                 <span class="truncate">{label}</span>
             </button>
@@ -850,7 +836,7 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                                     }
                                 }
                             >
-                                <Glyph icon=icondata::FaCalendarDaysSolid />
+                                <Glyph icon=icondata::LuCalendarDays />
                                 "Dates…"
                             </button>
                         </div>
@@ -865,13 +851,13 @@ fn SessionFilterPanel(workspace: Workspace) -> impl IntoView {
                             let newest = crate::workspace::date_label(crate::workspace::local_date(newest), today);
                             view! {
                                 <p class=format!("flex items-center gap-1.5 {NOTE}") data-rolled-back>
-                                    <Glyph icon=icondata::FaClockRotateLeftSolid class="text-accent" />
+                                    <Glyph icon=icondata::LuHistory class="text-accent" />
                                     {format!("Nothing in the last 7 days: listing the 7 days up to the newest session ({newest}), and on to now.")}
                                 </p>
                             }
                         })}
                         <p class=format!("flex items-center gap-1.5 {NOTE}")>
-                            <Glyph icon=icondata::FaThumbtackSolid class="text-accent" />
+                            <Glyph icon=icondata::LuPin class="text-accent" />
                             "Pinned, unread, and busy sessions always show."
                         </p>
                     </div>
@@ -974,7 +960,7 @@ fn filter_offer(workspace: Workspace, icon: icons::Icon, text: &'static str) -> 
                 class=BUTTON
                 on:click=move |_| workspace.filter_open.set(true)
             >
-                <Glyph icon=icondata::FaFilterSolid />
+                <Glyph icon=icondata::LuListFilter />
                 "Change the filter"
             </button>
         </div>
@@ -996,17 +982,17 @@ fn selection_bar(workspace: Workspace, listed: Memo<Vec<SessionId>>) -> impl Int
             <div class="flex flex-wrap gap-2">
                 <Show when=move || workspace.keeps_unread.get()>
                     <button type="button" class=BUTTON id="mark-picked-read" disabled=idle on:click=move |_| workspace.mark_picked(false)>
-                        <Glyph icon=icondata::FaEnvelopeOpenSolid />
+                        <Glyph icon=icondata::LuMailOpen />
                         "Mark read"
                     </button>
                     <button type="button" class=BUTTON id="mark-picked-unread" disabled=idle on:click=move |_| workspace.mark_picked(true)>
-                        <Glyph icon=icondata::FaEnvelopeSolid />
+                        <Glyph icon=icondata::LuMail />
                         "Mark unread"
                     </button>
                 </Show>
                 <Show when=move || workspace.can_delete.get()>
                     <button type="button" class=BUTTON id="delete-picked" disabled=idle on:click=move |_| picking.confirming.set(true)>
-                        <Glyph icon=icondata::FaTrashCanSolid />
+                        <Glyph icon=icondata::LuTrash2 />
                         {move || if picking.deleting.get() { "Deleting…" } else { "Delete" }}
                     </button>
                 </Show>
@@ -1087,6 +1073,8 @@ struct RowActions {
     /// The row whose ⋮ menu is open, and whether it is the ⋮ a long press
     /// revealed (or the one on hover).
     menu: RwSignal<Option<(SessionId, bool)>>,
+    /// The row a right-click opened its menu over, and where.
+    context: RwSignal<Option<(SessionId, f64, f64)>>,
 }
 
 impl RowActions {
@@ -1181,6 +1169,7 @@ fn session_row(
     let confirm_label = label.clone();
     let menu_label = label.clone();
     let reveal_label = label.clone();
+    let context_label = label.clone();
     let RowActions {
         hovered,
         revealed,
@@ -1208,26 +1197,28 @@ fn session_row(
                 items.push(row_menu::MenuItem {
                     id: if pinned { "unpin" } else { "pin" },
                     label: if pinned { "Unpin" } else { "Pin" },
-                    icon: icondata::FaThumbtackSolid,
+                    icon: icondata::LuPin,
                     act: Callback::new(move |()| {
                         if revealed_row {
                             revealed.set(None);
                         }
                         workspace.set_pinned(vec![session_id], !pinned);
                     }),
+                    danger: false,
                 });
             }
             if workspace.has_projects.get() {
                 items.push(row_menu::MenuItem {
                     id: "move",
                     label: "Move to project…",
-                    icon: icondata::FaFolderOpenSolid,
+                    icon: icondata::LuFolderOpen,
                     act: Callback::new(move |()| {
                         if revealed_row {
                             revealed.set(None);
                         }
                         workspace.ask_move(session_id);
                     }),
+                    danger: false,
                 });
             }
             if workspace.keeps_unread.get() {
@@ -1235,9 +1226,9 @@ fn session_row(
                     id: if unread { "mark-read" } else { "mark-unread" },
                     label: if unread { "Mark read" } else { "Mark unread" },
                     icon: if unread {
-                        icondata::FaEnvelopeOpenSolid
+                        icondata::LuMailOpen
                     } else {
-                        icondata::FaEnvelopeSolid
+                        icondata::LuMail
                     },
                     act: Callback::new(move |()| {
                         if revealed_row {
@@ -1245,10 +1236,37 @@ fn session_row(
                         }
                         workspace.set_unread(vec![session_id], !unread);
                     }),
+                    danger: false,
                 });
             }
             items
         }
+    };
+    // A right-click's menu: everything the row offers, Rename first and
+    // Delete last.
+    let context_items = move || {
+        let mut items = vec![row_menu::MenuItem {
+            id: "rename",
+            label: "Rename",
+            icon: icondata::LuPencil,
+            act: Callback::new(move |()| actions.begin_rename(workspace, session_id)),
+            danger: false,
+        }];
+        items.extend(menu_items(false)());
+        if workspace.can_delete.get() {
+            items.push(row_menu::MenuItem {
+                id: "delete",
+                label: "Delete…",
+                icon: icondata::LuTrash2,
+                act: Callback::new(move |()| {
+                    menu.set(None);
+                    revealed.set(None);
+                    confirming.set(Some(session_id));
+                }),
+                danger: true,
+            });
+        }
+        items
     };
     // A mouse drags the row onto a project's header at once; a finger
     // after a long press, which let go in place reveals the buttons.
@@ -1309,6 +1327,17 @@ fn session_row(
                     // its actions, not the browser's menu.
                     if lifted() || revealed.get_untracked() == Some(session_id) {
                         event.prevent_default();
+                        return;
+                    }
+                    // A mouse's right-click opens the row's menu there.
+                    if !crate::browser::from_touch(&event) && row_menu::wants_context_menu(&event) {
+                        event.prevent_default();
+                        menu.set(None);
+                        actions.context.set(Some((
+                            session_id,
+                            f64::from(event.client_x()),
+                            f64::from(event.client_y()),
+                        )));
                     }
                 }
                 // The open session's row switches its subagent tree between
@@ -1336,7 +1365,7 @@ fn session_row(
                     // In select mode, whether the row is selected.
                     <Show when=picking>
                         <span class="inline-flex shrink-0 text-accent" data-pick=move || picked().to_string()>
-                            <Glyph icon=Signal::derive(move || if picked() { icondata::FaSquareCheckSolid } else { icondata::FaSquareRegular }) />
+                            <Glyph icon=Signal::derive(move || if picked() { icondata::LuSquareCheck } else { icondata::LuSquare }) />
                         </span>
                     </Show>
                     // The status slot, only when there is a mark.
@@ -1362,7 +1391,7 @@ fn session_row(
                             data-pinned-session
                             title="Pinned: listed with the sessions at work, whatever its age"
                         >
-                            <Glyph icon=icondata::FaThumbtackSolid />
+                            <Glyph icon=icondata::LuPin />
                         </span>
                         <span class="sr-only">"pinned"</span>
                     })}
@@ -1393,7 +1422,7 @@ fn session_row(
                                 workspace.toggle_tree();
                             }
                         >
-                            <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
+                            <Glyph icon=icondata::LuChevronRight class="text-[0.625rem]" />
                         </span>
                     </Show>
                     <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" node_ref=badge_line data-session-badges>
@@ -1425,7 +1454,7 @@ fn session_row(
                     data-rename=session_id.to_string()
                     on:click=move |_| actions.begin_rename(workspace, session_id)
                 >
-                    <Glyph icon=icondata::FaPenSolid />
+                    <Glyph icon=icondata::LuPencil />
                 </button>
                 <Show when=move || workspace.can_delete.get()>
                     <button
@@ -1440,12 +1469,13 @@ fn session_row(
                             confirming.set(Some(session_id));
                         }
                     >
-                        <Glyph icon=icondata::FaTrashCanRegular />
+                        <Glyph icon=icondata::LuTrash2 />
                     </button>
                 </Show>
             </div>
             </Show>
         </div>
+        {row_menu::context_menu(actions.context, session_id, context_label.clone(), context_items)}
         <Show when=move || revealed.get() == Some(session_id) && confirming.get() != Some(session_id)>
             // Labels only where the line fits them: on a narrow phone
             // Rename and Delete are icons, named by their aria-labels, so
@@ -1460,7 +1490,7 @@ fn session_row(
                     data-rename-reveal=session_id.to_string()
                     on:click=move |_| actions.begin_rename(workspace, session_id)
                 >
-                    <Glyph icon=icondata::FaPenSolid />
+                    <Glyph icon=icondata::LuPencil />
                     <span class="hidden @[22rem]:inline">"Rename"</span>
                 </button>
                 <Show when=move || workspace.can_delete.get()>
@@ -1471,7 +1501,7 @@ fn session_row(
                         data-delete-reveal=session_id.to_string()
                         on:click=move |_| confirming.set(Some(session_id))
                     >
-                        <Glyph icon=icondata::FaTrashCanRegular />
+                        <Glyph icon=icondata::LuTrash2 />
                         <span class="hidden @[22rem]:inline">"Delete"</span>
                     </button>
                 </Show>
@@ -1484,7 +1514,7 @@ fn session_row(
                     data-actions-cancel
                     on:click=move |_| revealed.set(None)
                 >
-                    <Glyph icon=icondata::FaXmarkSolid />
+                    <Glyph icon=icondata::LuX />
                 </button>
             </div>
             </div>
@@ -1646,7 +1676,7 @@ fn rename_row<B: IntoView + 'static>(
                         workspace.rename_session(session_id, SessionRenameChange::Reset);
                     }
                 >
-                    <Glyph icon=icondata::FaWandMagicSparklesSolid />
+                    <Glyph icon=icondata::LuWandSparkles />
                     "Use the automatic title"
                 </button>
             </Show>
@@ -1694,7 +1724,7 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                                     on:click=move |_| workspace.toggle_folded(session_id)
                                 >
                                     <Glyph
-                                        icon=if row.collapsed { icondata::FaChevronRightSolid } else { icondata::FaChevronDownSolid }
+                                        icon=if row.collapsed { icondata::LuChevronRight } else { icondata::LuChevronDown }
                                         class="text-xs"
                                     />
                                 </button>
@@ -1847,7 +1877,7 @@ fn TitleField(workspace: Workspace) -> impl IntoView {
                         }
                     }
                 >
-                    <Glyph icon=icondata::FaWandMagicSparklesSolid />
+                    <Glyph icon=icondata::LuWandSparkles />
                     <span class="max-sm:sr-only">"Use the automatic title"</span>
                 </button>
             </Show>
@@ -1914,7 +1944,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                         data-crumb-back
                         on:click=move |_| workspace.open_session(parent)
                     >
-                        <Glyph icon=icondata::FaChevronLeftSolid class="text-lg" />
+                        <Glyph icon=icondata::LuChevronLeft class="text-lg" />
                     </button>
                 })
             }}
@@ -1935,7 +1965,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                             >
                                 <span class="truncate">{label}</span>
                             </button>
-                            <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem] opacity-60" />
+                            <Glyph icon=icondata::LuChevronRight class="text-[0.625rem] opacity-60" />
                             }
                         })
                         .collect_view()
@@ -1968,11 +1998,14 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                 </Show>
                 <Show when=read_only>
                     <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-sunken px-2 py-1 text-xs" title="read-only snapshot">
-                        <Glyph icon=icondata::FaLockSolid />
+                        <Glyph icon=icondata::LuLock />
                         <span class="max-sm:sr-only">"read-only snapshot"</span>
                     </span>
                 </Show>
             </div>
+            <Show when=move || !workspace.new_session.get()>
+                <live::LiveBadges workspace=workspace />
+            </Show>
             <button
                 type="button"
                 class=ICON_BUTTON
@@ -1981,7 +2014,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                 aria-haspopup="dialog"
                 on:click=move |_| workspace.panel.set(Some(Panel::Commands))
             >
-                <Glyph icon=icondata::FaEllipsisVerticalSolid class="text-lg" />
+                <Glyph icon=icondata::LuEllipsisVertical class="text-lg" />
             </button>
         </div>
     }
@@ -2637,7 +2670,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-accent"
                         role="status"
                     >
-                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
+                        <Glyph icon=icondata::LuLoaderCircle class="animate-spin" />
                         {move || working_label(workspace)}
                     </div>
                 </Show>
@@ -2649,7 +2682,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         role="status"
                         data-held
                     >
-                        <Glyph icon=icondata::FaPauseSolid />
+                        <Glyph icon=icondata::LuPause />
                         {move || workspace.held_line().unwrap_or_default()}
                     </div>
                 </Show>
@@ -2668,7 +2701,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         data-jump-latest
                         on:click=jump
                     >
-                        <Glyph icon=icondata::FaArrowDownSolid />
+                        <Glyph icon=icondata::LuArrowDown />
                         "Latest"
                     </button>
                 </Show>
@@ -3277,9 +3310,9 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
                                         on:click=move |_| workspace.recall(seq)
                                     >
                                         <span class="flex w-full items-center gap-2">
-                                            <Glyph icon=icondata::FaClockSolid class="text-accent" />
+                                            <Glyph icon=icondata::LuClock class="text-accent" />
                                             <span class="min-w-0 flex-1 truncate">{text}</span>
-                                            <Glyph icon=icondata::FaRotateLeftSolid class="opacity-60" />
+                                            <Glyph icon=icondata::LuUndo2 class="opacity-60" />
                                         </span>
                                     </button>
                                 }
@@ -3287,7 +3320,7 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
                             } else {
                                 view! {
                                     <div class="flex items-center gap-2 px-3 font-mono text-xs text-muted">
-                                        <Glyph icon=icondata::FaClockSolid />
+                                        <Glyph icon=icondata::LuClock />
                                         <span class="min-w-0 truncate">{text}</span>
                                     </div>
                                 }
@@ -3543,23 +3576,23 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 >
                     {move || match buttons.get() {
                         ComposerButtons::Send { .. } => button(
-                            "send", "Send", "Enter", icondata::FaPaperPlaneSolid, true,
+                            "send", "Send", "Enter", icondata::LuArrowUp, true,
                             |workspace| workspace.submit(InputDelivery::Steer),
                         )
                         .into_any(),
                         ComposerButtons::Stop => button(
-                            "stop", "Stop", "Esc", icondata::FaStopSolid, true,
+                            "stop", "Stop", "Esc", icondata::LuSquare, true,
                             Workspace::cancel,
                         )
                         .into_any(),
                         ComposerButtons::Resume => button(
-                            "resume", "Resume", "Enter", icondata::FaPlaySolid, true,
+                            "resume", "Resume", "Enter", icondata::LuPlay, true,
                             Workspace::resume_held,
                         )
                         .into_any(),
                         ComposerButtons::SteerAndQueue => view! {
                             {button(
-                                "queue-send", "Queue", "Alt+Enter", icondata::FaClockRegular, false,
+                                "queue-send", "Queue", "Alt+Enter", icondata::LuClock, false,
                                 |workspace| workspace.submit(InputDelivery::Queue),
                             )}
                             // An ACP agent without the steering extension
@@ -3571,7 +3604,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                                 } else {
                                     "Steer"
                                 },
-                                "Enter", icondata::FaPaperPlaneSolid, true,
+                                "Enter", icondata::LuArrowUp, true,
                                 |workspace| workspace.submit(InputDelivery::Steer),
                             )}
                         }
@@ -3605,22 +3638,6 @@ fn approvals_label(count: usize) -> String {
     }
 }
 
-/// The context chip's title: the tokens, and the window they fill when the
-/// session says it (an ACP agent's).
-fn context_title(tokens: u64, window: Option<u64>) -> String {
-    match window {
-        Some(window) => format!(
-            "Context: {} of {} tokens",
-            format_count(tokens),
-            format_count(window)
-        ),
-        None => format!(
-            "Context: {} tokens in the last request",
-            format_count(tokens)
-        ),
-    }
-}
-
 /// How long a new status message shows.
 const STATUS_LIVE: Duration = Duration::from_secs(5);
 
@@ -3637,13 +3654,6 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             workspace
                 .costs
                 .with(|costs| costs.get(&session_id).copied())
-        })
-    };
-    let context = move || {
-        workspace.viewed.with(|viewed| {
-            viewed
-                .context_tokens
-                .map(|tokens| (tokens, viewed.context_window))
         })
     };
     // An ACP agent names where it runs: `claude · on local`.
@@ -3670,7 +3680,6 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 .unwrap_or_else(|| "model".into())
         })
     };
-    let approvals = Memo::new(move |_| workspace.approvals().len());
     let mode = move || workspace.permission_mode();
     // An ACP agent's own mode is its session's permission mode.
     let mode_label = move || {
@@ -3693,9 +3702,9 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 title=move || format!("Agent: {} (click to change)", agent())
                 on:click=move |_| workspace.panel.set(Some(Panel::Agents))
             >
-                <Glyph icon=icondata::FaRobotSolid class="text-accent" />
+                <Glyph icon=icondata::LuBot class="text-accent" />
                 <span class="min-w-0 truncate max-[23.75rem]:sr-only">{agent}</span>
-                <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
+                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
             <button
                 type="button"
@@ -3705,9 +3714,9 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 title=move || format!("Model: {} (click to change)", model())
                 on:click=move |_| workspace.panel.set(Some(Panel::Models))
             >
-                <Glyph icon=icondata::FaMicrochipSolid class="text-accent" />
+                <Glyph icon=icondata::LuCpu class="text-accent" />
                 <span class="min-w-0 flex-1 truncate text-left">{model}</span>
-                <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
+                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
             <button
                 type="button"
@@ -3721,7 +3730,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-accent" />
                 // A phone shows the shield alone.
                 <span class="min-w-0 truncate compact:sr-only">{mode_label}</span>
-                <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
+                <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
             // Where the session works.
             {move || workspace.places_label().filter(|_| !workspace.new_session.get()).map(|places| view! {
@@ -3738,7 +3747,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     {move || {
                         let runtimes = workspace.places_runtimes();
                         if runtimes.is_empty() {
-                            view! { <Glyph icon=icondata::FaFolderOpenSolid class="text-accent" /> }.into_any()
+                            view! { <Glyph icon=icondata::LuFolderOpen class="text-accent" /> }.into_any()
                         } else {
                             view! {
                                 <span class="inline-flex shrink-0 items-center gap-0.5" data-places-dots>
@@ -3756,29 +3765,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     <span class="min-w-0 truncate font-mono">{places.clone()}</span>
                 </button>
             })}
-            <Show when=move || { approvals.get() > 0 }>
-                <button
-                    type="button"
-                    id="approvals-badge"
-                    class="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full bg-accent px-3 font-bold text-on-accent hover:bg-accent active:bg-accent-press compact:hidden"
-                    title="Approvals waiting: click to answer"
-                    on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
-                >
-                    <Glyph icon=icondata::FaBellSolid />
-                    {move || approvals_label(approvals.get())}
-                </button>
-            </Show>
             <span class="flex-1 compact:hidden" aria-hidden="true"></span>
-            {move || context().map(|(tokens, window)| view! {
-                <span
-                    id="context"
-                    class="inline-flex min-h-11 items-center gap-1.5 px-2 text-muted compact:hidden"
-                    title=context_title(tokens, window)
-                >
-                    <Glyph icon=icondata::FaGaugeSimpleHighSolid />
-                    <span class="font-mono">{format!("{} tokens", compact_count(tokens))}</span>
-                </span>
-            })}
             {move || cost().map(|cost| view! {
                 <button
                     type="button"
@@ -3788,7 +3775,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     title="Session cost: click for usage"
                     on:click=move |_| workspace.run_command(Command::Usage)
                 >
-                    <Glyph icon=icondata::FaCoinsSolid class="text-accent compact:hidden" />
+                    <Glyph icon=icondata::LuCoins class="text-accent compact:hidden" />
                     <span class="font-mono compact:hidden">{cost_label(cost)}</span>
                     <span class="hidden font-mono compact:inline">{compact_cost(cost)}</span>
                 </button>
@@ -3816,7 +3803,7 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
                     title="Approvals waiting: tap to answer"
                     on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
                 >
-                    <Glyph icon=icondata::FaBellSolid />
+                    <Glyph icon=icondata::LuBell />
                     {move || approvals_label(approvals.get())}
                 </button>
             </div>
@@ -3876,12 +3863,88 @@ fn cost_label(cost: f64) -> String {
     format!("${cost:.4}")
 }
 
+/// The session panel's tabs (docs/site/specs/quiet-ink.md, D5): the sheets
+/// about the open session, each opened through its command as the
+/// Session commands sheet opens it, with what it reads.
+const SESSION_TABS: [(Panel, Command, &str); 6] = [
+    (Panel::Usage, Command::Usage, "Usage"),
+    (Panel::Permissions, Command::Permissions, "Permissions"),
+    (Panel::Runtimes, Command::Runtime, "Runtimes"),
+    (Panel::Goal, Command::Goal, "Goal"),
+    (Panel::Background, Command::Background, "Background"),
+    (Panel::Events, Command::Events, "Events"),
+];
+
+/// The session panel's tab strip, each tab with what is live in it.
+fn session_tabs(workspace: Workspace) -> impl IntoView {
+    let goal = Memo::new(move |_| {
+        workspace
+            .goal()
+            .filter(|goal| cookie_agent_client_state::rows::goal_bar_shows(goal.status))
+            .map(|goal| {
+                (
+                    goal.items.iter().filter(|item| item.finished).count(),
+                    goal.items.len(),
+                )
+            })
+    });
+    let background = Memo::new(move |_| workspace.background_calls().len());
+    let tabs = SESSION_TABS
+        .into_iter()
+        .map(|(panel, command, label)| {
+            let current = move || workspace.panel.get() == Some(panel);
+            let count = move || match panel {
+                Panel::Goal => goal
+                    .get()
+                    .filter(|(_, total)| *total > 0)
+                    .map(|(done, total)| format!("{done}/{total}")),
+                Panel::Background => {
+                    Some(background.get()).filter(|count| *count > 0).map(|count| count.to_string())
+                }
+                _ => None,
+            };
+            view! {
+                <button
+                    type="button"
+                    role="tab"
+                    class="relative inline-flex h-9 shrink-0 items-center gap-1.5 px-2 text-[0.8125rem] text-muted transition-colors hover:text-fg aria-selected:font-semibold aria-selected:text-fg"
+                    aria-selected=move || current().to_string()
+                    data-session-tab=label.to_lowercase()
+                    on:click=move |_| workspace.run_command(command)
+                >
+                    {label}
+                    {move || count().map(|count| view! {
+                        <span class="text-xs font-normal text-muted tabular-nums">{count}</span>
+                    })}
+                    <span
+                        class="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent transition-opacity"
+                        class:opacity-0=move || !current()
+                        aria-hidden="true"
+                    ></span>
+                </button>
+            }
+        })
+        .collect_view();
+    view! {
+        <div role="tablist" aria-label="Session" class="flex overflow-x-auto px-2" data-session-tabs>
+            {tabs}
+        </div>
+    }
+}
+
 #[component]
 fn Sheet(workspace: Workspace) -> impl IntoView {
     let close = move |_| workspace.close_panel();
+    let session_tab = move || {
+        workspace
+            .panel
+            .get()
+            .is_some_and(|panel| SESSION_TABS.iter().any(|(tab, _, _)| *tab == panel))
+    };
     // The project editor fills a phone's screen.
     let tall = move || workspace.panel.get() == Some(Panel::Project);
     let title = move || match workspace.panel.get() {
+        _ if session_tab() => "Session",
         Some(Panel::Agents) => "Agent",
         Some(Panel::Models) => "Model",
         Some(Panel::AgentOptions) => "Agent options",
@@ -3916,7 +3979,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <Show when=move || workspace.panel.get().is_some()>
-            <div class="fixed inset-0 z-10 bg-scrim sm:bg-scrim" on:click=close></div>
+            <div class="scrim-in fixed inset-0 z-10 bg-scrim sm:bg-scrim/40" on:click=close></div>
             // A phone's sheet rises from the bottom of what the keyboard
             // leaves; a wider window's stands on the right.
             <div class=move || format!(
@@ -3928,18 +3991,21 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                     role="dialog"
                     aria-label=title
                     class=move || format!(
-                        "pointer-events-auto flex max-h-full flex-col overflow-y-auto border-line bg-surface shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l {}",
+                        "sheet-in pointer-events-auto flex max-h-full flex-col overflow-y-auto border-line bg-raised shadow-sheet sm:h-full sm:rounded-none sm:border-t-0 sm:border-l {}",
                         if tall() { "h-full" } else { "rounded-t-2xl border-t" },
                     )
                 >
-                    <div class="sticky top-0 z-10 flex flex-col border-b border-line bg-surface-2">
+                    <div class="sticky top-0 z-10 flex flex-col border-b border-line bg-raised">
                         <span class="mx-auto mt-1.5 h-1 w-10 rounded-full bg-line-2 sm:hidden" aria-hidden="true"></span>
                         <div class="flex items-center gap-2 py-1 pr-1 pl-4">
-                            <h2 class="flex-1 text-lg font-bold">{title}</h2>
+                            <h2 class="flex-1 text-[0.9375rem] font-semibold">{title}</h2>
                             <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=close>
-                                <Glyph icon=icondata::FaXmarkSolid class="text-lg" />
+                                <Glyph icon=icondata::LuX class="text-lg" />
                             </button>
                         </div>
+                        <Show when=session_tab>
+                            {session_tabs(workspace)}
+                        </Show>
                     </div>
                     <div class="flex flex-col gap-2 p-3">
                         {move || match workspace.panel.get() {
@@ -3978,7 +4044,7 @@ fn choice_line(label: String, current: bool, class: &'static str) -> impl IntoVi
         <span class="flex w-full items-center gap-2">
             <span class=format!("min-w-0 flex-1 truncate {class}")>{label}</span>
             {current.then(|| view! {
-                <Glyph icon=icondata::FaCheckSolid class="text-accent" />
+                <Glyph icon=icondata::LuCheck class="text-accent" />
                 <span class="sr-only">"(current)"</span>
             })}
         </span>
@@ -4006,7 +4072,7 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
     let current = workspace.draft.get_untracked().map(|draft| draft.agent);
     let agents = workspace.picker_agents();
     if agents.is_empty() {
-        return empty_state(icondata::FaRobotSolid, "No agent can start a session.").into_any();
+        return empty_state(icondata::LuBot, "No agent can start a session.").into_any();
     }
     // The agents that cannot run come last, below a divider.
     let divider = agents
@@ -4166,7 +4232,7 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
             } else {
                 NO_AGENT_OPTIONS
             };
-            return empty_state(icondata::FaSlidersSolid, message).into_any();
+            return empty_state(icondata::LuSlidersHorizontal, message).into_any();
         }
         options
             .into_iter()
@@ -4324,7 +4390,7 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                 "The agent offers no model option."
             };
             return view! {
-                {empty_state(icondata::FaMicrochipSolid, message)}
+                {empty_state(icondata::LuCpu, message)}
                 {(!options.is_empty()).then(|| view! {
                     <button
                         type="button"
@@ -4363,7 +4429,7 @@ fn models_sheet(workspace: Workspace) -> impl IntoView {
     let models = workspace.models();
     if models.is_empty() {
         return empty_state(
-            icondata::FaMicrochipSolid,
+            icondata::LuCpu,
             "No model is available. Connect a provider in Settings › Providers.",
         )
         .into_any();
@@ -4454,8 +4520,7 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
     move || {
         let approvals = workspace.approvals();
         if approvals.is_empty() {
-            return empty_state(icondata::FaCircleCheckRegular, "No approval is waiting.")
-                .into_any();
+            return empty_state(icondata::LuCircleCheck, "No approval is waiting.").into_any();
         }
         approvals
             .into_iter()
@@ -4502,19 +4567,19 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                     let tree = approval.constraints.allow_tree_grant.then(|| {
                         view! {
                             <button type="button" class=BUTTON data-decision="approve_tree" on:click=decide(ApprovalUserDecision::ApproveTree, None)>
-                                <Glyph icon=icondata::FaCheckDoubleSolid />
+                                <Glyph icon=icondata::LuCheckCheck />
                                 "Approve for this session tree"
                             </button>
                         }
                     });
                     view! {
                         <button type="button" class=PRIMARY data-decision="approve_once" on:click=decide(ApprovalUserDecision::ApproveOnce, None)>
-                            <Glyph icon=icondata::FaCheckSolid />
+                            <Glyph icon=icondata::LuCheck />
                             "Approve once"
                         </button>
                         {tree}
                         <button type="button" class=BUTTON data-decision="reject" on:click=decide(ApprovalUserDecision::Reject, None)>
-                            <Glyph icon=icondata::FaXmarkSolid />
+                            <Glyph icon=icondata::LuX />
                             "Reject"
                         </button>
                     }
@@ -4532,9 +4597,9 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                                 ApprovalUserDecision::Reject
                             };
                             let icon = if allows {
-                                icondata::FaCheckSolid
+                                icondata::LuCheck
                             } else {
-                                icondata::FaXmarkSolid
+                                icondata::LuX
                             };
                             // The agent's allow-once option leads.
                             let class = if option.kind
@@ -4670,7 +4735,7 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
             view! {
                 {context.map(|tokens| view! {
                     <p class="flex items-center gap-2 text-sm" id="usage-context">
-                        <Glyph icon=icondata::FaGaugeSimpleHighSolid class="text-accent" />
+                        <Glyph icon=icondata::LuGauge class="text-accent" />
                         {format!("Context: {} tokens in the last request", format_count(tokens))}
                     </p>
                 })}
@@ -4938,7 +5003,7 @@ fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
                 disabled=move || !workspace.writable()
                 on:click=move |_| send()
             >
-                <Glyph icon=icondata::FaPaperPlaneSolid />
+                <Glyph icon=icondata::LuArrowUp />
                 "Send to the agent"
             </button>
         </div>
@@ -4983,7 +5048,7 @@ fn modes_sheet(workspace: Workspace) -> impl IntoView {
             })
             .collect_view()}
         <p class=format!("mt-2 flex items-start gap-2 border-t border-line px-3 pt-3 {NOTE}")>
-            <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5" />
+            <Glyph icon=icondata::LuInfo class="mt-0.5" />
             {FOOTNOTE}
         </p>
     }
@@ -5031,7 +5096,7 @@ fn agent_modes_sheet(
     view! {
         {rows}
         <p class=format!("mt-2 flex items-start gap-2 border-t border-line px-3 pt-3 {NOTE}")>
-            <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5" />
+            <Glyph icon=icondata::LuInfo class="mt-0.5" />
             "The agent decides in this mode what it asks you. Cookie still refuses what your deny rules deny and allows what your allow rules allow."
         </p>
     }

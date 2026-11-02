@@ -17,9 +17,9 @@ use crate::{icons::Glyph, workspace::Workspace};
 /// A group's icon.
 fn source_icon(source: SkillSource) -> crate::icons::Icon {
     match source {
-        SkillSource::User => icondata::FaUserSolid,
-        SkillSource::Project => icondata::FaFolderSolid,
-        SkillSource::Official => icondata::FaCertificateSolid,
+        SkillSource::User => icondata::LuUser,
+        SkillSource::Project => icondata::LuFolder,
+        SkillSource::Official => icondata::LuBadgeCheck,
     }
 }
 
@@ -79,13 +79,12 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
             None => loading("Reading the skills…").into_any(),
             Some(Err(message)) => view! { <p class=ERROR>{message}</p> }.into_any(),
             Some(Ok(skills)) if skills.is_empty() => {
-                empty_state(icondata::FaBookOpenSolid, "No skills yet.").into_any()
+                empty_state(icondata::LuBookOpen, "No skills yet.").into_any()
             }
             Some(Ok(skills)) => {
                 let groups = skill_groups(&skills, &query);
                 if groups.is_empty() {
-                    return empty_state(icondata::FaMagnifyingGlassSolid, "No skills match.")
-                        .into_any();
+                    return empty_state(icondata::LuSearch, "No skills match.").into_any();
                 }
                 let home = home();
                 groups
@@ -131,7 +130,7 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| workspace.update_official_skills()
                 >
                     <span class="inline-flex" class:animate-spin=move || workspace.skills_updating.get()>
-                        <Glyph icon=icondata::FaArrowsRotateSolid />
+                        <Glyph icon=icondata::LuRefreshCw />
                     </span>
                     {move || if workspace.skills_updating.get() { "Updating…" } else { "Update official skills" }}
                 </button>
@@ -140,7 +139,7 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
                 view! { <p class=if failed { ERROR } else { NOTE } data-skills-update-note>{text}</p> }
             })}
             <label class="relative flex items-center">
-                <Glyph icon=icondata::FaMagnifyingGlassSolid class="pointer-events-none absolute left-3 text-xs text-muted" />
+                <Glyph icon=icondata::LuSearch class="pointer-events-none absolute left-3 text-xs text-muted" />
                 <input
                     type="text"
                     role="searchbox"

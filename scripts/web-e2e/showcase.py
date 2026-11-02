@@ -10,7 +10,7 @@ It starts a session, sends one request the scripted model
 reply, opens both tool calls, and saves `web-light.png` and `web-dark.png`
 at 1280×800, and `web-phone-light.png` and `web-phone-dark.png` at 390×844.
 
-With `all`, it also opens every view of the rail, every Settings section,
+With `all`, it also opens every view of the sidebar, every Settings section,
 an editor, every sheet and menu, and the phone's sessions, at desktop,
 phone, and phone-landscape sizes, and saves each in light and dark under
 `<output-dir>/all/`, then the connect screen, for reviewing the page's look
@@ -232,16 +232,24 @@ COMMANDS = [
 CLICKS = [
     ("commands", "button[aria-label=Commands]"),
     ("message-menu", "#transcript [data-action=user-menu]"),
-    ("connection", "[data-rail] button[aria-haspopup=dialog]"),
+    ("connection", "#sidebar button[aria-haspopup=dialog]"),
     ("sessions", "main [data-sidebar-toggle]"),
 ]
-# The rail's views, and the Settings sections.
+# The sidebar's views, and the Settings sections.
 VIEWS = ["agents", "skills", "mcp", "settings", "machines", "memory"]
 SECTIONS = ["configuration", "providers", "plugins", "browser"]
 
 
 def view(name):
-    browser.script("document.querySelector('[data-rail] [data-view=%s]').click()" % name)
+    """Opens a view by its sidebar entry; "chat" goes back to the
+    conversation by its session's row (or New session)."""
+    if name == "chat":
+        browser.script(
+            "(document.querySelector('#sidebar [data-session][aria-current=true]')"
+            " || document.querySelector('#sidebar [data-new-session]')).click()"
+        )
+    else:
+        browser.script("document.querySelector('#sidebar [data-view=%s]').click()" % name)
     time.sleep(1.2)
 
 
@@ -256,7 +264,6 @@ def close_all():
     )
     time.sleep(0.3)
     view("chat")
-    # A phone's rail opens Chat on its sessions, as the page.
     browser.script("const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click();")
     time.sleep(0.3)
     browser.script(
@@ -628,12 +635,6 @@ if ALL:
             close_all()
             view(name)
             both_themes("%s-view-%s" % (size, name))
-        if width < 640:
-            # A phone's rail shows Chat's sessions first, from another view.
-            close_all()
-            view("memory")
-            view("chat")
-            both_themes("%s-view-chat" % size)
         for section in SECTIONS:
             close_all()
             view("settings")
@@ -648,7 +649,7 @@ if ALL:
         view("agents")
         click("[data-config-path=\"agents/reviewer.md\"] button")
         both_themes("%s-agents-open" % size)
-        if width < 1024:
+        if width < 640:
             click("#page [data-sidebar-toggle]")
             both_themes("%s-agents-list" % size)
         close_all()
@@ -687,8 +688,9 @@ if ALL:
             if name == "sessions" and width >= 1024:
                 # A desktop pins the sidebar instead (photographed below).
                 continue
-            if name == "connection" and width < 640:
-                # A phone's rail shows beside the sessions.
+            if name == "connection" and width < 1024:
+                # The connection is at the foot of the sidebar, which is
+                # the page below desktop widths.
                 browser.script("document.querySelector('main [data-sidebar-toggle]').click()")
                 time.sleep(0.3)
             if browser.count(selector):

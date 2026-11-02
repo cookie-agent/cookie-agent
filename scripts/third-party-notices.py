@@ -34,7 +34,13 @@ LICENSE_PREFIXES = ("license", "licence", "copying", "notice", "unlicense")
 # repository holding its license, or None, and where it comes from).
 ASSETS = [
     (
-        "Font Awesome Free (icons), by Fonticons, Inc.",
+        "Lucide (icons), by Lucide Icons and Contributors",
+        "ISC",
+        "crates/web/assets/vendor/lucide-LICENSE.txt",
+        "https://lucide.dev/license",
+    ),
+    (
+        "Font Awesome Free (brand logos), by Fonticons, Inc.",
         "CC-BY-4.0",
         None,
         "https://fontawesome.com/license/free",

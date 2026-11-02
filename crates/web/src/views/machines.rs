@@ -293,7 +293,7 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
                     adding.update(|adding| *adding = !*adding);
                 }
             >
-                <Glyph icon=Signal::derive(move || if adding.get() { icondata::FaMinusSolid } else { icondata::FaPlusSolid }) />
+                <Glyph icon=Signal::derive(move || if adding.get() { icondata::LuMinus } else { icondata::LuPlus }) />
                 "Add a runtime"
             </button>
         </div>
@@ -314,7 +314,7 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
                     class=BUTTON
                     on:click=move |_| workspace.open_view(crate::layout::View::Agents, None)
                 >
-                    <Glyph icon=icondata::FaRobotSolid />
+                    <Glyph icon=icondata::LuBot />
                     "Open Agents"
                 </button>
             </div>
@@ -377,7 +377,7 @@ pub(super) fn shared_agents(workspace: Workspace, manage: Manage) -> impl IntoVi
                         }));
                     }
                 >
-                    <Glyph icon=icondata::FaPlusSolid />
+                    <Glyph icon=icondata::LuPlus />
                     "ACP agent"
                 </button>
             </div>
@@ -648,7 +648,7 @@ fn machine_cards(
                 <section class="rounded-xl border border-line" data-unplaced>
                     <div class="flex items-center gap-3 border-b border-line px-3 py-2">
                         <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sunken">
-                            <Glyph icon=icondata::FaCircleQuestionRegular class="text-lg" />
+                            <Glyph icon=icondata::LuCircleHelp class="text-lg" />
                         </span>
                         <div class="min-w-0 flex-1">
                             <p class="text-sm font-bold">"On no machine yet"</p>
@@ -708,9 +708,9 @@ fn machine_card(
         .map(|action| {
             let entry = entry.clone();
             let (icon, label) = match action {
-                MachineAction::Rename => (icondata::FaPenSolid, "Rename the machine"),
-                MachineAction::Merge => (icondata::FaCodeMergeSolid, "Merge into another machine"),
-                _ => (icondata::FaTrashCanRegular, "Forget the machine"),
+                MachineAction::Rename => (icondata::LuPencil, "Rename the machine"),
+                MachineAction::Merge => (icondata::LuGitMerge, "Merge into another machine"),
+                _ => (icondata::LuTrash2, "Forget the machine"),
             };
             view! {
                 <button
@@ -842,7 +842,7 @@ fn runtime_manage_buttons(manage: Manage, runtime: RuntimeId) -> impl IntoView {
                     manage.mcp.set(Some(McpEdit::add(Some(for_server.clone()))));
                 }
             >
-                <Glyph icon=icondata::FaPlusSolid />
+                <Glyph icon=icondata::LuPlus />
                 "MCP server"
             </button>
             {agents.then(|| view! {
@@ -859,7 +859,7 @@ fn runtime_manage_buttons(manage: Manage, runtime: RuntimeId) -> impl IntoView {
                         }));
                     }
                 >
-                    <Glyph icon=icondata::FaPlusSolid />
+                    <Glyph icon=icondata::LuPlus />
                     "ACP agent"
                 </button>
             })}
@@ -934,9 +934,12 @@ fn runtime_acp_agent_list(
     }
     let dot = |available: bool| {
         if available {
-            (icondata::FaCircleSolid, "text-ok")
+            (
+                icondata::LuCircle,
+                "text-ok text-[0.625rem] [&_svg]:fill-current",
+            )
         } else {
-            (icondata::FaCircleRegular, "opacity-60")
+            (icondata::LuCircle, "text-[0.625rem] opacity-60")
         }
     };
     let declared = declarations
@@ -1183,15 +1186,19 @@ fn runtime_row(
         })
         .unwrap_or_default();
     let (status_icon, status_class, status) = if card.connected {
-        (icondata::FaCircleSolid, "text-ok", "connected")
-    } else if message.is_some() {
         (
-            icondata::FaCircleExclamationSolid,
-            "text-bad",
+            icondata::LuCircle,
+            "text-ok text-[0.625rem] [&_svg]:fill-current",
+            "connected",
+        )
+    } else if message.is_some() {
+        (icondata::LuCircleAlert, "text-bad", "not connected")
+    } else {
+        (
+            icondata::LuCircle,
+            "text-[0.625rem] opacity-60",
             "not connected",
         )
-    } else {
-        (icondata::FaCircleRegular, "opacity-60", "not connected")
     };
     // An offline runtime the machine remembers: when it was last seen.
     let remembered = card.remembered.clone().filter(|_| !card.connected);
@@ -1320,7 +1327,7 @@ fn runtime_row(
                 }
             }
         >
-            <Glyph icon=icondata::FaGripVerticalSolid class="opacity-40" />
+            <Glyph icon=icondata::LuGripVertical class="opacity-40" />
             <span
                 class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-sunken"
                 class:opacity-60=!card.connected
@@ -1333,7 +1340,7 @@ fn runtime_row(
                     <span class="min-w-0 truncate font-mono text-sm font-bold">{id.to_string()}</span>
                     {card.pinned.then(|| view! {
                         <span class=format!("{STATE} inline-flex items-center gap-1") title="Pinned to this machine, whatever it reports">
-                            <Glyph icon=icondata::FaThumbtackSolid />
+                            <Glyph icon=icondata::LuPin />
                             "pinned"
                         </span>
                     })}
@@ -1351,7 +1358,7 @@ fn runtime_row(
                 })}
                 {card.mcp.clone().map(|mcp| view! {
                     <span class=format!("flex min-w-0 items-center gap-1.5 {NOTE}") data-runtime-mcp-count>
-                        <Glyph icon=icondata::FaServerSolid class="text-[0.6rem] opacity-70" />
+                        <Glyph icon=icondata::LuServer class="text-[0.6rem] opacity-70" />
                         <span class="min-w-0 truncate">{mcp}</span>
                     </span>
                 })}
@@ -1382,7 +1389,7 @@ fn runtime_row(
                 data-machine-action=MachineAction::Move.label()
                 on:click=move |_| form.set(Some(Form::Move(Box::new(moving.clone()))))
             >
-                <Glyph icon=icondata::FaArrowRightArrowLeftSolid />
+                <Glyph icon=icondata::LuArrowRightLeft />
                 <span class="hidden sm:inline">"Move to…"</span>
             </button>
             {card.pinned.then(|| view! {
@@ -1396,7 +1403,7 @@ fn runtime_row(
                         cookie_agent_client_state::runtimes::MachineRequest::Unassign { runtime: unpinned.clone() },
                     )
                 >
-                    <Glyph icon=icondata::FaThumbtackSlashSolid />
+                    <Glyph icon=icondata::LuPinOff />
                 </button>
             })}
             {offline.then(|| view! {
@@ -1410,7 +1417,7 @@ fn runtime_row(
                         cookie_agent_client_state::runtimes::MachineRequest::ForgetRuntime { runtime: forgotten.clone() },
                     )
                 >
-                    <Glyph icon=icondata::FaTrashCanRegular />
+                    <Glyph icon=icondata::LuTrash2 />
                     <span class="hidden sm:inline">"Forget"</span>
                 </button>
             })}
@@ -1471,11 +1478,11 @@ fn connection_button(
         >
             {
                 move || if icon() {
-                    view! { <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" /> }.into_any()
+                    view! { <Glyph icon=icondata::LuLoaderCircle class="animate-spin" /> }.into_any()
                 } else if connect {
-                    view! { <Glyph icon=icondata::FaPlugSolid /> }.into_any()
+                    view! { <Glyph icon=icondata::LuPlug /> }.into_any()
                 } else {
-                    view! { <Glyph icon=icondata::FaPlugCircleXmarkSolid /> }.into_any()
+                    view! { <Glyph icon=icondata::LuUnplug /> }.into_any()
                 }
             }
             <span class="hidden sm:inline">{move || label(pending())}</span>
@@ -1508,7 +1515,7 @@ fn move_picker(
                         workspace.change_machines(request.clone());
                     }
                 >
-                    <Glyph icon=icondata::FaServerSolid />
+                    <Glyph icon=icondata::LuServer />
                     <span class="font-mono">{name.to_string()}</span>
                 </button>
             }
@@ -1620,7 +1627,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                         class="flex min-h-11 items-start gap-2 rounded-md px-2 py-1.5 hover:bg-hover active:bg-press"
                         data-guide
                     >
-                        <Glyph icon=icondata::FaArrowUpRightFromSquareSolid class="mt-1 text-xs opacity-70" />
+                        <Glyph icon=icondata::LuExternalLink class="mt-1 text-xs opacity-70" />
                         <span class="flex min-w-0 flex-col">
                             <span class="text-sm font-bold text-accent underline-offset-2 hover:underline">{guide.title}</span>
                             <span class=NOTE>{guide.note}</span>
@@ -1636,12 +1643,12 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
             <div class="flex items-center gap-2">
                 <h3 class="min-w-0 flex-1 font-bold">"Add a runtime"</h3>
                 <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=move |_| adding.set(false)>
-                    <Glyph icon=icondata::FaXmarkSolid class="text-lg" />
+                    <Glyph icon=icondata::LuX class="text-lg" />
                 </button>
             </div>
             <div class="flex flex-col gap-2" data-add="ssh">
                 <h4 class=heading>
-                    <Glyph icon=icondata::FaTerminalSolid />
+                    <Glyph icon=icondata::LuTerminal />
                     "Start one over ssh"
                 </h4>
                 <p class=NOTE>
@@ -1680,14 +1687,14 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                             }
                         }
                     >
-                        <Glyph icon=icondata::FaFileCodeSolid />
+                        <Glyph icon=icondata::LuFileCode />
                         "Add to config.toml"
                     </button>
                 </div>
                 {move || outcome.get().map(|outcome| match outcome {
                     Ok(done) => view! {
                         <p id="ssh-outcome" class="flex items-start gap-2 text-sm text-ok">
-                            <Glyph icon=icondata::FaCheckSolid class="mt-1" />
+                            <Glyph icon=icondata::LuCheck class="mt-1" />
                             {done}
                         </p>
                     }
@@ -1697,7 +1704,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
             </div>
             <div class="flex flex-col gap-2 border-t border-line pt-3" data-add="dial-in">
                 <h4 class=heading>
-                    <Glyph icon=icondata::FaPlugSolid />
+                    <Glyph icon=icondata::LuPlug />
                     "Let one dial in"
                 </h4>
                 <p class=NOTE>
@@ -1735,7 +1742,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                         });
                     }
                 >
-                    <Glyph icon=icondata::FaCopyRegular />
+                    <Glyph icon=icondata::LuCopy />
                     "Copy"
                 </button>
                 <Show when=move || token.with_value(Option::is_some)>
@@ -1746,7 +1753,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                         aria-pressed=move || show_token.get().to_string()
                         on:click=move |_| show_token.update(|shown| *shown = !*shown)
                     >
-                        <Glyph icon=Signal::derive(move || if show_token.get() { icondata::FaEyeSlashRegular } else { icondata::FaEyeRegular }) />
+                        <Glyph icon=Signal::derive(move || if show_token.get() { icondata::LuEyeOff } else { icondata::LuEye }) />
                         {move || if show_token.get() { "Hide token" } else { "Show token" }}
                     </button>
                 </Show>
@@ -1754,7 +1761,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
             </div>
             <div class="flex flex-col gap-1 border-t border-line pt-3" data-add="guides">
                 <h4 class=heading>
-                    <Glyph icon=icondata::FaBookOpenSolid />
+                    <Glyph icon=icondata::LuBookOpen />
                     "Guides"
                 </h4>
                 <ul class="flex flex-col">{guides}</ul>

@@ -1,6 +1,7 @@
-//! The page's icons: Font Awesome Free 6, whose artwork is CC BY 4.0, from
-//! the `icondata` crate. Components show them through `leptos_icons`; the
-//! transcript, which renders to HTML text, inlines the same SVG. Each icon
+//! The page's icons: Lucide (ISC), and Font Awesome Free 6's brand logos
+//! (CC BY 4.0), which Lucide does not draw, from the `icondata` crate.
+//! Components show them through `leptos_icons`; the transcript, which
+//! renders to HTML text, inlines the same SVG. Each icon
 //! is a static the linker keeps only when the page names it.
 //!
 //! Icons inherit the text colour (`currentColor`) and are hidden from
@@ -85,8 +86,9 @@ fn add_symbol(id: &str, icon: Icon) {
     let _ = sprite.insert_adjacent_html(
         "beforeend",
         &format!(
-            "<symbol id=\"{id}\" viewBox=\"{}\">{}</symbol>",
+            "<symbol id=\"{id}\" viewBox=\"{}\"{}>{}</symbol>",
             icon.view_box.unwrap_or("0 0 512 512"),
+            symbol_paint(icon),
             icon.data
         ),
     );
@@ -95,21 +97,38 @@ fn add_symbol(id: &str, icon: Icon) {
 #[cfg(not(target_arch = "wasm32"))]
 fn add_symbol(_: &str, _: Icon) {}
 
+/// A symbol's own paint: a stroked icon (Lucide's) draws its outline in the
+/// text colour and fills nothing; a filled one (a brand's) takes the
+/// `<svg>`'s fill. The stroke is a little lighter than Lucide's 2, as the
+/// components draw it (`main.css`).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn symbol_paint(icon: Icon) -> String {
+    if icon.stroke.is_none() {
+        return String::new();
+    }
+    format!(
+        " fill=\"{}\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"{}\" stroke-linejoin=\"{}\"",
+        icon.fill.unwrap_or("none"),
+        icon.stroke_linecap.unwrap_or("round"),
+        icon.stroke_linejoin.unwrap_or("round"),
+    )
+}
+
 /// The icon of a tool call's presentation hint, by the hint and never by
 /// the tool's name; a hint this build does not know is generic.
 pub fn hint_icon(hint: Option<&str>) -> Icon {
     match hint.unwrap_or(ToolHint::GENERIC) {
-        ToolHint::SHELL => icondata::FaTerminalSolid,
-        ToolHint::FILE_READ => icondata::FaFileLinesSolid,
-        ToolHint::FILE_WRITE | ToolHint::FILE_EDIT => icondata::FaPenToSquareSolid,
-        ToolHint::FETCH => icondata::FaGlobeSolid,
-        ToolHint::SEARCH => icondata::FaMagnifyingGlassSolid,
-        ToolHint::DELEGATE => icondata::FaRobotSolid,
-        ToolHint::MESSAGE => icondata::FaEnvelopeSolid,
-        ToolHint::SKILL => icondata::FaWandMagicSparklesSolid,
-        ToolHint::GOAL => icondata::FaBullseyeSolid,
-        ToolHint::FIGURE => icondata::FaImageSolid,
-        _ => icondata::FaWrenchSolid,
+        ToolHint::SHELL => icondata::LuTerminal,
+        ToolHint::FILE_READ => icondata::LuFileText,
+        ToolHint::FILE_WRITE | ToolHint::FILE_EDIT => icondata::LuSquarePen,
+        ToolHint::FETCH => icondata::LuGlobe,
+        ToolHint::SEARCH => icondata::LuSearch,
+        ToolHint::DELEGATE => icondata::LuBot,
+        ToolHint::MESSAGE => icondata::LuMail,
+        ToolHint::SKILL => icondata::LuWandSparkles,
+        ToolHint::GOAL => icondata::LuTarget,
+        ToolHint::FIGURE => icondata::LuImage,
+        _ => icondata::LuWrench,
     }
 }
 
@@ -117,11 +136,11 @@ pub fn hint_icon(hint: Option<&str>) -> Icon {
 pub fn asset_icon(kind: cookie_agent_client_state::assets::AssetKind) -> Icon {
     use cookie_agent_client_state::assets::AssetKind;
     match kind {
-        AssetKind::Image => icondata::FaImageSolid,
-        AssetKind::Page => icondata::FaCodeSolid,
-        AssetKind::Document => icondata::FaFileLinesSolid,
-        AssetKind::Media => icondata::FaFilmSolid,
-        AssetKind::Other => icondata::FaFileSolid,
+        AssetKind::Image => icondata::LuImage,
+        AssetKind::Page => icondata::LuCode,
+        AssetKind::Document => icondata::LuFileText,
+        AssetKind::Media => icondata::LuFilm,
+        AssetKind::Other => icondata::LuFile,
     }
 }
 
@@ -151,17 +170,14 @@ const QUIET: &str = "text-muted";
 /// A tool call's status.
 pub fn tool_status(status: &ToolStatus, backgrounded: bool) -> StatusMark {
     let (icon, label, tone, spins) = match status {
-        ToolStatus::Running if backgrounded => (
-            icondata::FaHourglassHalfSolid,
-            "in the background",
-            QUIET,
-            false,
-        ),
-        ToolStatus::Running => (icondata::FaCircleNotchSolid, "running", RUNNING, true),
-        ToolStatus::Completed => (icondata::FaCircleCheckSolid, "done", DONE, false),
-        ToolStatus::Failed => (icondata::FaCircleXmarkSolid, "failed", FAILED, false),
-        ToolStatus::Cancelled => (icondata::FaBanSolid, "cancelled", QUIET, false),
-        ToolStatus::Interrupted => (icondata::FaCirclePauseSolid, "interrupted", QUIET, false),
+        ToolStatus::Running if backgrounded => {
+            (icondata::LuHourglass, "in the background", QUIET, false)
+        }
+        ToolStatus::Running => (icondata::LuLoaderCircle, "running", RUNNING, true),
+        ToolStatus::Completed => (icondata::LuCircleCheck, "done", DONE, false),
+        ToolStatus::Failed => (icondata::LuCircleX, "failed", FAILED, false),
+        ToolStatus::Cancelled => (icondata::LuBan, "cancelled", QUIET, false),
+        ToolStatus::Interrupted => (icondata::LuCirclePause, "interrupted", QUIET, false),
     };
     StatusMark {
         icon,
@@ -174,13 +190,13 @@ pub fn tool_status(status: &ToolStatus, backgrounded: bool) -> StatusMark {
 /// A session's status in the session list.
 pub fn session_status(status: SessionStatus) -> StatusMark {
     let (icon, label, tone, spins) = match status {
-        SessionStatus::Running => (icondata::FaCircleNotchSolid, "running", RUNNING, true),
-        SessionStatus::Idle => (icondata::FaCircleRegular, "idle", QUIET, false),
-        SessionStatus::Completed => (icondata::FaCircleCheckSolid, "completed", DONE, false),
-        SessionStatus::Failed => (icondata::FaCircleXmarkSolid, "failed", FAILED, false),
-        SessionStatus::Cancelled => (icondata::FaBanSolid, "cancelled", QUIET, false),
-        SessionStatus::Interrupted => (icondata::FaCirclePauseSolid, "interrupted", QUIET, false),
-        SessionStatus::Unknown => (icondata::FaCircleQuestionRegular, "unknown", QUIET, false),
+        SessionStatus::Running => (icondata::LuLoaderCircle, "running", RUNNING, true),
+        SessionStatus::Idle => (icondata::LuCircle, "idle", QUIET, false),
+        SessionStatus::Completed => (icondata::LuCircleCheck, "completed", DONE, false),
+        SessionStatus::Failed => (icondata::LuCircleX, "failed", FAILED, false),
+        SessionStatus::Cancelled => (icondata::LuBan, "cancelled", QUIET, false),
+        SessionStatus::Interrupted => (icondata::LuCirclePause, "interrupted", QUIET, false),
+        SessionStatus::Unknown => (icondata::LuCircleHelp, "unknown", QUIET, false),
     };
     StatusMark {
         icon,
@@ -203,7 +219,7 @@ pub fn row_status(activity: &SessionActivity) -> Option<StatusMark> {
         // A pause, as the held line in the transcript shows; red when its
         // runs kept failing.
         SessionActivity::Held(reason) => Some(StatusMark {
-            icon: icondata::FaPauseSolid,
+            icon: icondata::LuPause,
             label: "held",
             tone: match reason {
                 cookie_agent_protocol::Open::Known(
@@ -214,7 +230,7 @@ pub fn row_status(activity: &SessionActivity) -> Option<StatusMark> {
             spins: false,
         }),
         SessionActivity::Waiting(_) => Some(StatusMark {
-            icon: icondata::FaClockRegular,
+            icon: icondata::LuClock,
             label: "waiting",
             tone: RUNNING,
             spins: false,
@@ -244,9 +260,9 @@ pub fn row_status_of(status: SessionStatus) -> Option<StatusMark> {
 /// the system's.
 pub fn theme_icon(preference: ThemePreference) -> Icon {
     match preference {
-        ThemePreference::System => icondata::FaCircleHalfStrokeSolid,
-        ThemePreference::Light => icondata::FaSunRegular,
-        ThemePreference::Dark => icondata::FaMoonSolid,
+        ThemePreference::System => icondata::LuSunMoon,
+        ThemePreference::Light => icondata::LuSun,
+        ThemePreference::Dark => icondata::LuMoon,
     }
 }
 
@@ -255,23 +271,23 @@ pub fn theme_icon(preference: ThemePreference) -> Icon {
 pub fn permission_mode(mode: PermissionMode) -> (Icon, &'static str) {
     match mode {
         PermissionMode::AutoApprove => (
-            icondata::FaShieldHalvedSolid,
+            icondata::LuShieldHalf,
             "the classifier approves safe calls and asks you about the rest",
         ),
         PermissionMode::AutoApproveN => (
-            icondata::FaShieldSolid,
+            icondata::LuShield,
             "the classifier approves safe calls and rejects the rest without asking",
         ),
         PermissionMode::AutoApproveY => (
-            icondata::FaShieldHeartSolid,
+            icondata::LuShieldCheck,
             "the classifier approves safe calls and approves the rest without asking",
         ),
         PermissionMode::Ask => (
-            icondata::FaUserShieldSolid,
+            icondata::LuUserCheck,
             "every call that needs approval asks you",
         ),
         PermissionMode::Yolo => (
-            icondata::FaShieldVirusSolid,
+            icondata::LuShieldAlert,
             "every call that would ask is approved",
         ),
     }
@@ -324,14 +340,14 @@ mod tests {
 
     #[test]
     fn inline_svg_is_hidden_and_points_into_the_sprite() {
-        let markup = svg(icondata::FaCheckSolid, "text-xs");
+        let markup = svg(icondata::LuCheck, "text-xs");
         assert!(markup.contains("aria-hidden=\"true\""));
         // The paths are in the sprite, once, under one ID per icon.
-        assert!(!markup.contains(icondata::FaCheckSolid.data));
-        assert_eq!(markup, svg(icondata::FaCheckSolid, "text-xs"));
+        assert!(!markup.contains(icondata::LuCheck.data));
+        assert_eq!(markup, svg(icondata::LuCheck, "text-xs"));
         assert_ne!(
             markup,
-            svg(icondata::FaBanSolid, "text-xs"),
+            svg(icondata::LuBan, "text-xs"),
             "two icons share a symbol"
         );
     }

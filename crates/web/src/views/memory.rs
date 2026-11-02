@@ -30,11 +30,11 @@ use crate::{
 /// The icon of a layer's heading.
 fn layer_icon(layer: MemoryLayer) -> crate::icons::Icon {
     match layer {
-        MemoryLayer::User => icondata::FaUserSolid,
-        MemoryLayer::Agent => icondata::FaRobotSolid,
-        MemoryLayer::Machine => icondata::FaServerSolid,
-        MemoryLayer::Project => icondata::FaFolderSolid,
-        MemoryLayer::Unknown => icondata::FaBoxSolid,
+        MemoryLayer::User => icondata::LuUser,
+        MemoryLayer::Agent => icondata::LuBot,
+        MemoryLayer::Machine => icondata::LuServer,
+        MemoryLayer::Project => icondata::LuFolder,
+        MemoryLayer::Unknown => icondata::LuBox,
     }
 }
 
@@ -162,7 +162,7 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                     />
                 </label>
                 <button type="button" id="memory-new" class=PRIMARY on:click=move |_| workspace.new_memory(&new_url.get_untracked())>
-                    <Glyph icon=icondata::FaPlusSolid />
+                    <Glyph icon=icondata::LuPlus />
                     "Create"
                 </button>
             </div>
@@ -206,7 +206,7 @@ fn memory_row(
                 on:click=move |_| new_url.set(prefix.clone())
             >
                 <span class="flex items-center gap-2 font-mono text-sm">
-                    <Glyph icon=icondata::FaServerSolid class="opacity-70" />
+                    <Glyph icon=icondata::LuServer class="opacity-70" />
                     {name}
                 </span>
             </button>
@@ -246,7 +246,7 @@ fn memory_row(
                 >
                     <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_memory(url.clone())>
                         <span class="flex w-full items-center gap-2 font-mono text-sm">
-                            <Glyph icon=icondata::FaFileLinesRegular class="opacity-60" />
+                            <Glyph icon=icondata::LuFileText class="opacity-60" />
                             <span class="min-w-0 truncate">{memory_name(&memory).to_owned()}</span>
                             {over.then(|| view! {
                                 <span class="shrink-0 rounded bg-bad-soft px-1.5 font-sans text-xs text-bad" title=OVER_LIMIT_NOTE>
@@ -268,7 +268,7 @@ fn memory_row(
                         data-memory-delete
                         on:click=move |_| confirm_delete.set(Some(deleted.clone()))
                     >
-                        <Glyph icon=icondata::FaTrashCanRegular />
+                        <Glyph icon=icondata::LuTrash2 />
                     </button>
                 </div>
             }
@@ -366,11 +366,11 @@ fn project_folder(
             >
                 <span class="flex w-full items-center gap-2 font-mono text-sm">
                     <Glyph
-                        icon=if open { icondata::FaChevronDownSolid } else { icondata::FaChevronRightSolid }
+                        icon=if open { icondata::LuChevronDown } else { icondata::LuChevronRight }
                         class="w-3 text-xs opacity-60"
                     />
                     <Glyph
-                        icon=if open { icondata::FaFolderOpenSolid } else { icondata::FaFolderSolid }
+                        icon=if open { icondata::LuFolderOpen } else { icondata::LuFolder }
                         class="text-accent"
                     />
                     <span class="min-w-0 flex-1 truncate font-bold">{name.clone()}</span>
@@ -385,7 +385,7 @@ fn project_folder(
                 data-project-new
                 on:click=move |_| new_url.set(prefix.clone())
             >
-                <Glyph icon=icondata::FaPlusSolid />
+                <Glyph icon=icondata::LuPlus />
             </button>
             <button
                 type="button"
@@ -395,7 +395,7 @@ fn project_folder(
                 data-project-delete
                 on:click=move |_| confirm_project.set(Some(asked.clone()))
             >
-                <Glyph icon=icondata::FaTrashCanRegular />
+                <Glyph icon=icondata::LuTrash2 />
             </button>
         </div>
         <Show when=confirming>
@@ -452,7 +452,7 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
                         class="flex items-start gap-2 rounded-md border border-dashed border-line-2 px-3 py-2 text-sm"
                         title="The daemon keeps it: the agent's own description"
                     >
-                        <Glyph icon=icondata::FaLockSolid class="mt-1 text-xs opacity-60" />
+                        <Glyph icon=icondata::LuLock class="mt-1 text-xs opacity-60" />
                         <span>{parts.description.clone()}</span>
                     </p>
                 }
@@ -475,7 +475,7 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
                 <div class="flex flex-wrap items-center gap-1.5">
                     {parts.fixed.iter().map(|keyword| view! {
                         <span class=format!("{STATE} inline-flex items-center gap-1 font-mono") title="The daemon keeps it" data-fixed-keyword>
-                            <Glyph icon=icondata::FaLockSolid class="text-[0.6rem] opacity-60" />
+                            <Glyph icon=icondata::LuLock class="text-[0.6rem] opacity-60" />
                             {keyword.clone()}
                         </span>
                     }).collect_view()}
@@ -530,7 +530,7 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
                 class=format!("flex items-start gap-2 {NOTE}")
                 title=format!("{}\nThe daemon keeps these.", stamps.exact_times())
             >
-                <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-xs opacity-60" />
+                <Glyph icon=icondata::LuLock class="mt-0.5 text-xs opacity-60" />
                 <span>{ages}</span>
             </p>
             {over.then(|| view! { <p class=ERROR data-memory-over-note>{OVER_LIMIT_NOTE}</p> })}

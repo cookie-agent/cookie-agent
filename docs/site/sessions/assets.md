@@ -113,7 +113,7 @@ from, so your `read` rules decide which files can become assets. See
 - **Handles.** A handle the agent names in its reply is a chip that opens
   the asset, and every card can copy its handle, to give the asset back
   to an agent.
-- **The Assets view** on the rail lists every project's and every
+- **The Assets view** in the sidebar lists every project's and every
   session's assets, newest first. Its filter narrows them to a project (or
   no project) and to a level: a session's own, or those kept for a
   project. Chips by kind and a search of titles and file names narrow

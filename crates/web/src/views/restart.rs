@@ -28,7 +28,7 @@ pub(crate) fn RestartBanner(workspace: Workspace) -> impl IntoView {
                             data-restarting
                             class="flex shrink-0 items-center gap-2 border-b border-accent bg-sunken px-3 py-2 text-sm"
                         >
-                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-accent" />
+                            <Glyph icon=icondata::LuRefreshCw class="animate-spin text-accent" />
                             <span class="min-w-0 flex-1">{text}</span>
                         </div>
                     }
@@ -43,7 +43,7 @@ pub(crate) fn RestartBanner(workspace: Workspace) -> impl IntoView {
                         aria-label="Restart needed"
                         class="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface-2 py-1 pr-1 pl-3 text-sm"
                     >
-                        <Glyph icon=icondata::FaTriangleExclamationSolid class="text-accent" />
+                        <Glyph icon=icondata::LuTriangleAlert class="text-accent" />
                         <span class="min-w-0 flex-1 py-2" id="restart-needed">{text}</span>
                         <button
                             type="button"

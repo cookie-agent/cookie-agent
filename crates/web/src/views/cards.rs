@@ -90,7 +90,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                     <p id="start-blocker" class=NOTE>{blocker}</p>
                 })}
                 <p class="flex items-start gap-2 text-sm" id="draft-places">
-                    <Glyph icon=icondata::FaFolderOpenSolid class="mt-0.5 text-accent" />
+                    <Glyph icon=icondata::LuFolderOpen class="mt-0.5 text-accent" />
                     <span class="min-w-0 break-words font-mono" data-draft-places>
                         {move || workspace.places_label().unwrap_or_default()}
                     </span>
@@ -110,7 +110,7 @@ pub fn DraftNotice(workspace: Workspace) -> impl IntoView {
                 if workspace.creating.get() {
                     Some(view! {
                         <p id="draft-creating" role="status" class="mx-3 mt-2 flex items-center gap-2 text-sm text-accent">
-                            <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
+                            <Glyph icon=icondata::LuLoaderCircle class="animate-spin" />
                             "Creating the session…"
                         </p>
                     }.into_any())
@@ -153,9 +153,9 @@ pub(super) fn group_view(workspace: Workspace, group: Group, set: CardSet) -> im
                     class="inline-flex transition-transform"
                     class:rotate-90=move || shown.get()
                 >
-                    <Glyph icon=icondata::FaChevronRightSolid class="text-xs" />
+                    <Glyph icon=icondata::LuChevronRight class="text-xs" />
                 </span>
-                <Glyph icon=if group.daemon { icondata::FaHouseSolid } else { icondata::FaComputerSolid } class="text-accent" />
+                <Glyph icon=if group.daemon { icondata::LuHouse } else { icondata::LuMonitor } class="text-accent" />
                 <span class="min-w-0 flex-1 truncate text-sm" data-group-summary>{summary}</span>
             </button>
             <Show when=move || shown.get()>
@@ -216,7 +216,7 @@ fn card_view(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
                     on:click=move |_| workspace.toggle_card(&toggle, set)
                 >
                     <Glyph
-                        icon=Signal::derive(move || if selected.get() { icondata::FaCircleCheckSolid } else { icondata::FaCircleRegular })
+                        icon=Signal::derive(move || if selected.get() { icondata::LuCircleCheck } else { icondata::LuCircle })
                         class="mt-0.5 text-lg text-accent"
                     />
                     <span class="flex min-w-0 flex-1 flex-col">
@@ -315,7 +315,7 @@ fn workspace_fields(workspace: Workspace, card: Card, set: CardSet) -> impl Into
                                             selection.remove_workspace(&removed, index);
                                         })
                                     >
-                                        <Glyph icon=icondata::FaXmarkSolid />
+                                        <Glyph icon=icondata::LuX />
                                     </button>
                                 })}
                             </div>

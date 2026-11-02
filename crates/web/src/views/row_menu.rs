@@ -3,15 +3,22 @@
 //! bottom of the screen); a phone shows it as a sheet from the bottom, as
 //! the session's sheets are. Escape, a click outside, or an item closes
 //! it, and nothing in it presses the row under it.
+//!
+//! The same menu opens at the pointer on a right-click
+//! ([`context_menu`], docs/site/specs/quiet-ink.md, D15), with every
+//! action the row has.
 
 use icondata::Icon;
 use leptos::{ev, html, prelude::*};
 use wasm_bindgen::JsCast as _;
 
-use crate::{icons::Glyph, layout::menu_place};
+use crate::{
+    icons::Glyph,
+    layout::{context_place, menu_place},
+};
 
-/// An item's height in a wide window (44 px), for placing the menu.
-const ITEM_HEIGHT: f64 = 44.0;
+/// An item's height in a wide window (36 px), for placing the menu.
+const ITEM_HEIGHT: f64 = 36.0;
 /// The menu's padding and border, top and bottom together.
 const MENU_PADDING: f64 = 10.0;
 
@@ -24,6 +31,90 @@ pub(super) struct MenuItem {
     pub icon: Icon,
     /// What it does; the menu has closed by then.
     pub act: Callback<()>,
+    /// It destroys something: drawn in the error colour.
+    pub danger: bool,
+}
+
+/// Whether a right-click should open the page's context menu rather than
+/// the browser's: not with Shift held, not over selected text, and not
+/// over a link, a field, or code, where the browser's own menu is the
+/// useful one.
+pub(super) fn wants_context_menu(event: &ev::MouseEvent) -> bool {
+    if event.shift_key() {
+        return false;
+    }
+    let selected = window()
+        .get_selection()
+        .ok()
+        .flatten()
+        .is_some_and(|selection| !selection.is_collapsed());
+    if selected {
+        return false;
+    }
+    let inside_own = event
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .and_then(|element| {
+            element
+                .closest("a[href], input, textarea, select, code, pre, [contenteditable]")
+                .ok()
+                .flatten()
+        })
+        .is_some();
+    !inside_own
+}
+
+/// The menu of `items` opened at the pointer by a right-click on the row
+/// `key` names: `open` holds which row's, and where.
+pub(super) fn context_menu<K>(
+    open: RwSignal<Option<(K, f64, f64)>>,
+    key: K,
+    title: String,
+    items: impl Fn() -> Vec<MenuItem> + Send + Sync + Clone + 'static,
+) -> impl IntoView
+where
+    K: Clone + PartialEq + Send + Sync + 'static,
+{
+    let place = RwSignal::new(String::new());
+    let items = StoredValue::new(items);
+    let listed = move || items.with_value(|items| items());
+    let title = StoredValue::new(title);
+    let at = Memo::new(move |_| {
+        open.with(|open| {
+            open.as_ref()
+                .filter(|(shown, _, _)| *shown == key)
+                .map(|(_, x, y)| (*x, *y))
+        })
+    });
+    // Placed when it opens: the CSS variables the ⋮'s menu uses.
+    Effect::new(move |_| {
+        let Some(point) = at.get() else {
+            return;
+        };
+        let window = window();
+        let size = |value: Result<wasm_bindgen::JsValue, _>| {
+            value.ok().and_then(|value| value.as_f64()).unwrap_or(0.0)
+        };
+        let viewport = (size(window.inner_width()), size(window.inner_height()));
+        #[allow(clippy::cast_precision_loss)]
+        let height = untrack(listed).len() as f64 * ITEM_HEIGHT + MENU_PADDING;
+        let at = context_place(point, viewport, height);
+        let px = |value: Option<f64>| {
+            value.map_or_else(|| "auto".to_owned(), |value| format!("{value}px"))
+        };
+        place.set(format!(
+            "--menu-top: {}; --menu-bottom: {}; --menu-right: {}px",
+            px(at.top),
+            px(at.bottom),
+            at.right,
+        ));
+    });
+    let close = move |_refocus: bool| open.set(None);
+    view! {
+        <Show when=move || at.with(Option::is_some) && !listed().is_empty()>
+            {move || menu(listed(), title.get_value(), place, close)}
+        </Show>
+    }
 }
 
 /// A row's ⋮, styled `class`, and the menu of `items` it opens; no ⋮ while
@@ -111,7 +202,7 @@ where
                 node_ref=trigger
                 on:click=toggle.clone()
             >
-                <Glyph icon=icondata::FaEllipsisVerticalSolid />
+                <Glyph icon=icondata::LuEllipsisVertical />
             </button>
             <Show when=is_open.clone()>
                 {move || menu(listed(), title.get_value(), place, close)}
@@ -189,7 +280,7 @@ fn menu(
         <div
             role="menu"
             aria-label=title
-            class="fixed top-(--menu-top) right-(--menu-right) bottom-(--menu-bottom) z-50 flex min-w-48 flex-col rounded-lg border border-line bg-surface p-1 text-fg shadow-lg compact:top-auto compact:right-0 compact:bottom-0 compact:left-0 compact:min-w-0 compact:rounded-none compact:rounded-t-2xl compact:border-x-0 compact:border-b-0 compact:p-2 compact:pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+            class="menu-in fixed top-(--menu-top) right-(--menu-right) bottom-(--menu-bottom) z-50 flex min-w-48 flex-col rounded-xl bg-raised p-1 text-fg shadow-menu ring-1 ring-line compact:top-auto compact:right-0 compact:bottom-0 compact:left-0 compact:min-w-0 compact:rounded-none compact:rounded-t-2xl compact:border-x-0 compact:border-b-0 compact:p-2 compact:pb-[max(0.5rem,env(safe-area-inset-bottom))]"
             style=move || place.get()
             data-row-menu-list
             node_ref=list
@@ -205,14 +296,21 @@ fn menu(
                         <button
                             type="button"
                             role="menuitem"
-                            class="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm whitespace-nowrap hover:bg-hover focus-visible:bg-hover active:bg-press compact:min-h-12"
+                            class=if item.danger {
+                                "flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[0.8125rem] whitespace-nowrap text-bad outline-none hover:bg-bad-soft focus-visible:bg-bad-soft active:bg-bad-soft compact:min-h-12 compact:text-sm"
+                            } else {
+                                "flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[0.8125rem] whitespace-nowrap outline-none hover:bg-hover focus-visible:bg-hover active:bg-press compact:min-h-12 compact:text-sm"
+                            }
                             data-menu-item=item.id
                             on:click=move |_| {
                                 close(false);
                                 act.run(());
                             }
                         >
-                            <Glyph icon=item.icon class="w-5 justify-center text-accent" />
+                            <Glyph
+                                icon=item.icon
+                                class=if item.danger { "w-5 justify-center text-bad" } else { "w-5 justify-center text-muted" }
+                            />
                             <span>{item.label}</span>
                         </button>
                     }

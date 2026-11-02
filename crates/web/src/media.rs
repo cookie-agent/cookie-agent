@@ -157,7 +157,7 @@ fn opener(
             &format!(
                 "<span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\">{}</span>",
                 crate::icons::svg(
-                    icondata::FaCirclePlaySolid,
+                    icondata::LuCirclePlay,
                     "text-5xl text-white/90 drop-shadow group-hover:text-white",
                 )
             ),

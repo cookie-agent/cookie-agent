@@ -184,7 +184,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                             on:click=move |_| step.set(each)
                                         >
                                             {move || if done() {
-                                                view! { <Glyph icon=icondata::FaCircleCheckSolid class="text-ok" /> }.into_any()
+                                                view! { <Glyph icon=icondata::LuCircleCheck class="text-ok" /> }.into_any()
                                             } else {
                                                 view! { <span class="inline-flex size-5 items-center justify-center rounded-full border border-current text-xs">{index + 1}</span> }.into_any()
                                             }}
@@ -219,7 +219,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                         }
                                     }
                                 >
-                                    <Glyph icon=icondata::FaArrowLeftSolid />
+                                    <Glyph icon=icondata::LuArrowLeft />
                                     "Back"
                                 </button>
                                 <span class=format!("min-w-0 flex-1 {NOTE}") id="onboarding-refusal">
@@ -229,7 +229,7 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                     Some(next) => view! {
                                         <button type="button" id="onboarding-next" class=PRIMARY on:click=move |_| step.set(next)>
                                             "Next"
-                                            <Glyph icon=icondata::FaChevronRightSolid />
+                                            <Glyph icon=icondata::LuChevronRight />
                                         </button>
                                     }
                                     .into_any(),
@@ -300,9 +300,9 @@ fn start_step(paths: RwSignal<PathChoice>) -> impl IntoView {
             >
                 <span class="flex w-full items-center gap-2">
                     {move || if on() {
-                        view! { <Glyph icon=icondata::FaSquareCheckRegular /> }.into_any()
+                        view! { <Glyph icon=icondata::LuSquareCheck /> }.into_any()
                     } else {
-                        view! { <Glyph icon=icondata::FaSquareRegular /> }.into_any()
+                        view! { <Glyph icon=icondata::LuSquare /> }.into_any()
                     }}
                     <span class="text-sm font-bold">{title}</span>
                 </span>
@@ -647,9 +647,9 @@ fn tools_step(
                         >
                             <span class="flex w-full items-center gap-2">
                                 {move || if on.get() {
-                                    view! { <Glyph icon=icondata::FaSquareCheckRegular /> }.into_any()
+                                    view! { <Glyph icon=icondata::LuSquareCheck /> }.into_any()
                                 } else {
-                                    view! { <Glyph icon=icondata::FaSquareRegular /> }.into_any()
+                                    view! { <Glyph icon=icondata::LuSquare /> }.into_any()
                                 }}
                                 <span class="text-sm font-bold">{preset.name.clone()}</span>
                                 <span class=NOTE>{preset.category.clone()}</span>
@@ -746,7 +746,7 @@ fn provider_step(workspace: Workspace) -> impl IntoView {
                             .into_iter()
                             .map(|line| view! {
                                 <li class="flex items-center gap-2 text-sm">
-                                    <Glyph icon=icondata::FaPlugSolid class="text-ok" />
+                                    <Glyph icon=icondata::LuPlug class="text-ok" />
                                     {line}
                                 </li>
                             })

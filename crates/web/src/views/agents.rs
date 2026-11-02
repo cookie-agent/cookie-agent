@@ -26,10 +26,10 @@ use crate::{
 /// The icon of an agent by the mode its document gives it.
 fn mode_icon(mode: Option<&str>) -> crate::icons::Icon {
     match mode {
-        Some("primary") => icondata::FaRobotSolid,
-        Some("subagent") => icondata::FaUserGearSolid,
-        Some("all") => icondata::FaUsersGearSolid,
-        _ => icondata::FaFileLinesRegular,
+        Some("primary") => icondata::LuBot,
+        Some("subagent") => icondata::LuUserCog,
+        Some("all") => icondata::LuUsers,
+        _ => icondata::LuFileText,
     }
 }
 
@@ -43,23 +43,23 @@ fn is_agent(path: &str) -> bool {
 /// the sidebar is open, and on a phone until one opens; the title bar's
 /// sidebar button returns to them.
 pub fn agents_page(workspace: Workspace) -> impl IntoView {
-    let listing = move || {
-        workspace.sidebar_open.get()
-            || (workspace.narrow.get()
-                && !workspace
-                    .config_edit
-                    .with(|edit| edit.as_ref().is_some_and(|edit| is_agent(&edit.path))))
+    // A phone shows the list until an agent opens, then the agent alone;
+    // a wider window both, side by side.
+    let phone = move || workspace.narrow.get();
+    let editing = move || {
+        workspace
+            .config_edit
+            .with(|edit| edit.as_ref().is_some_and(|edit| is_agent(&edit.path)))
     };
+    let listing = move || phone() && !editing();
     view! {
         <div class="flex min-h-0 flex-1">
             <aside
                 id="agents-sidebar"
-                class="shrink-0 flex-col border-r border-line bg-surface-2"
-                class:hidden=move || !listing()
-                class:flex=listing
-                class:w-full=listing
-                class:w-72=move || !listing()
-                class:lg:flex=move || workspace.sidebar_pinned.get()
+                class="flex shrink-0 flex-col border-r border-line"
+                class:hidden=move || phone() && editing()
+                class:w-full=phone
+                class:w-72=move || !phone()
             >
                 {move || listing().then(|| {
                     workspace.config_error.get().map(|error| view! { <p class=format!("{ERROR} mx-3 mt-3") id="config-error">{error}</p> })
@@ -113,7 +113,7 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
                     aria-expanded=move || creating.get().to_string()
                     on:click=move |_| creating.update(|creating| *creating = !*creating)
                 >
-                    <Glyph icon=icondata::FaPlusSolid />
+                    <Glyph icon=icondata::LuPlus />
                     "New agent"
                 </button>
                 <button
@@ -124,7 +124,7 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
                     title="Reload the documents from disk, after editing them by hand"
                     on:click=move |_| workspace.reload_config()
                 >
-                    <Glyph icon=icondata::FaArrowsRotateSolid />
+                    <Glyph icon=icondata::LuRefreshCw />
                 </button>
             </div>
             <Show when=move || creating.get()>
@@ -164,15 +164,15 @@ pub fn AgentList(workspace: Workspace) -> impl IntoView {
                 };
                 let groups = agent_groups(&config);
                 if groups.is_empty() {
-                    return empty_state(icondata::FaRobotSolid, "No agent documents yet. Create one with New agent.")
+                    return empty_state(icondata::LuBot, "No agent documents yet. Create one with New agent.")
                         .into_any();
                 }
                 groups
                     .into_iter()
                     .map(|group| {
                         let (icon, heading) = match &group.preset {
-                            None => (icondata::FaUsersSolid, "Shared agents".to_owned()),
-                            Some(preset) => (icondata::FaLayerGroupSolid, format!("Preset {preset}")),
+                            None => (icondata::LuUsers, "Shared agents".to_owned()),
+                            Some(preset) => (icondata::LuLayers, format!("Preset {preset}")),
                         };
                         let empty = group.agents.is_empty();
                         let rows = group
@@ -383,7 +383,7 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
             return view! {
                 {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
                 <div class="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted" data-agents-empty>
-                    <Glyph icon=icondata::FaRobotSolid class="text-3xl opacity-70" />
+                    <Glyph icon=icondata::LuBot class="text-3xl opacity-70" />
                     <p>"Pick an agent to edit its document, or create one with New agent."</p>
                     <button
                         type="button"
@@ -392,7 +392,7 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
                         data-show-agents
                         on:click=move |_| workspace.toggle_sidebar()
                     >
-                        <Glyph icon=icondata::FaTableColumnsSolid />
+                        <Glyph icon=icondata::LuPanelLeft />
                         "Show the agents"
                     </button>
                 </div>
@@ -465,7 +465,7 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
                             data-config-delete
                             on:click=move |_| confirm_delete.set(true)
                         >
-                            <Glyph icon=icondata::FaTrashCanRegular />
+                            <Glyph icon=icondata::LuTrash2 />
                             "Delete"
                         </button>
                     </Show>

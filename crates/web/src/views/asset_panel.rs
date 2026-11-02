@@ -148,7 +148,7 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                             move |_| crate::assets::copy_handle(copy.clone(), workspace)
                         }
                     >
-                        <Glyph icon=icondata::FaCopyRegular />
+                        <Glyph icon=icondata::LuCopy />
                     </button>
                 </Show>
                 <button
@@ -162,9 +162,9 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                 >
                     <Glyph icon=Signal::derive(move || {
                         if full.get() {
-                            icondata::FaCompressSolid
+                            icondata::LuMinimize2
                         } else {
-                            icondata::FaExpandSolid
+                            icondata::LuMaximize2
                         }
                     }) />
                 </button>
@@ -176,7 +176,7 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                     aria-label="Download"
                     on:click=move |_| crate::assets::download_source(workspace, origin.clone(), file_title.clone())
                 >
-                    <Glyph icon=icondata::FaDownloadSolid />
+                    <Glyph icon=icondata::LuDownload />
                 </button>
                 <button
                     type="button"
@@ -186,7 +186,7 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                     aria-label="Close"
                     on:click=move |_| close()
                 >
-                    <Glyph icon=icondata::FaXmarkSolid />
+                    <Glyph icon=icondata::LuX />
                 </button>
             </div>
             <div node_ref=body class="flex min-h-0 flex-1 flex-col overflow-auto" id="asset-panel-body"></div>

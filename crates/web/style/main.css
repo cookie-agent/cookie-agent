@@ -49,6 +49,11 @@ html.dark {
   :where(button:not(:disabled), summary, select, a[href]) {
     cursor: pointer;
   }
+  /* Lucide's outline icons, a little lighter than their 2 px at the
+     page's small sizes. */
+  svg[stroke="currentColor"] {
+    stroke-width: 1.75;
+  }
   /* Monospace text is literal: JetBrains Mono's ligatures would draw
      `--` as a dash and `://` with a gap, which commands and paths must
      not. The class outranks the preflight's `font: inherit` on form
@@ -660,7 +665,9 @@ body {
 }
 
 .session-tools[data-searching="true"] [data-tool="filter"],
-.session-tools[data-searching="true"] [data-tool="summary"] {
+.session-tools[data-searching="true"] [data-tool="summary"],
+.session-tools[data-searching="true"] [data-tool="heading"],
+.session-tools[data-searching="true"] [data-tool="project"] {
   translate: -0.75rem 0;
 }
 
@@ -785,5 +792,70 @@ body {
   .status-tip,
   .status-tip-gone {
     translate: none;
+  }
+}
+
+/* A live badge settles in as its state starts (views/live.rs). */
+@keyframes badge-in {
+  from {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+.badge-in {
+  animation: badge-in 260ms var(--ease-out-quint) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .badge-in {
+    animation: none;
+  }
+}
+
+/* Sheets and menus come in rather than appear: a sheet slides from the
+   right of a wide window and rises on a phone, a menu settles from just
+   above where it stands, and the scrim behind them fades. */
+@keyframes sheet-in-right {
+  from {
+    opacity: 0.4;
+    translate: 1.5rem 0;
+  }
+}
+@keyframes sheet-in-up {
+  from {
+    translate: 0 30%;
+  }
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    translate: 0 -0.25rem;
+    scale: 0.98;
+  }
+}
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+.sheet-in {
+  animation: sheet-in-up 320ms var(--ease-out-quint) both;
+}
+@media (min-width: 40rem) {
+  .sheet-in {
+    animation-name: sheet-in-right;
+    animation-duration: 280ms;
+  }
+}
+.menu-in {
+  animation: menu-in 180ms var(--ease-out-quint) both;
+}
+.scrim-in {
+  animation: scrim-in 200ms ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet-in,
+  .menu-in,
+  .scrim-in {
+    animation: none;
   }
 }

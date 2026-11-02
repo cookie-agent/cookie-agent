@@ -522,7 +522,7 @@ pub fn App() -> impl IntoView {
                 view! {
                     <Show when=move || reconnecting_reason.get().is_some()>
                         <div id="reconnecting" role="status" class="flex items-center gap-2 border-b border-accent bg-sunken px-3 py-2 text-sm">
-                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-accent" />
+                            <Glyph icon=icondata::LuRefreshCw class="animate-spin text-accent" />
                             <span class="min-w-0 flex-1">
                                 {move || {
                                     match connection.daemon.get().filter(daemon_status::is_starting) {
@@ -566,7 +566,7 @@ fn DaemonNotice(connection: Connection) -> impl IntoView {
     view! {
         <Show when=move || notice.get().is_some()>
             <div id="daemon-status" role="status" class="flex items-center gap-2 border-b border-accent bg-sunken px-3 py-2 text-sm">
-                <Glyph icon=icondata::FaGearsSolid class="text-accent" />
+                <Glyph icon=icondata::LuCog class="text-accent" />
                 <span class="min-w-0 flex-1">{move || notice.get().unwrap_or_default()}</span>
             </div>
             <StartingProgress connection=connection />
@@ -677,20 +677,22 @@ pub(crate) fn ConnectionStatus(
     };
     let indicator = move || {
         let (icon, label, class) = match connection.phase.get() {
-            Phase::Connected { .. } => (icondata::FaCircleSolid, "connected", "text-[0.5rem]"),
+            Phase::Connected { .. } => (
+                icondata::LuCircle,
+                "connected",
+                "text-[0.5rem] [&_svg]:fill-current",
+            ),
             Phase::Connecting => (
-                icondata::FaCircleNotchSolid,
+                icondata::LuLoaderCircle,
                 "connecting",
                 "animate-spin text-sm",
             ),
             Phase::Reconnecting { .. } => (
-                icondata::FaArrowsRotateSolid,
+                icondata::LuRefreshCw,
                 "reconnecting",
                 "animate-spin text-sm",
             ),
-            Phase::Idle | Phase::Failed { .. } => {
-                (icondata::FaPlugCircleXmarkSolid, "offline", "text-sm")
-            }
+            Phase::Idle | Phase::Failed { .. } => (icondata::LuUnplug, "offline", "text-sm"),
         };
         view! {
             <Glyph icon=icon class=class />
@@ -775,7 +777,7 @@ pub(crate) fn ConnectionStatus(
                             title="Close"
                             on:click=move |_| close()
                         >
-                            <Glyph icon=icondata::FaXmarkSolid />
+                            <Glyph icon=icondata::LuX />
                         </button>
                     </div>
                     <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
@@ -808,7 +810,7 @@ pub(crate) fn ConnectionStatus(
                                 connection.workspace.ask_restart();
                             }
                         >
-                            <Glyph icon=icondata::FaPowerOffSolid />
+                            <Glyph icon=icondata::LuPower />
                             "Restart daemon"
                         </button>
                     </Show>
@@ -842,7 +844,7 @@ pub(crate) fn ForgetDaemon(
                         class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-line-2 px-3 text-sm hover:bg-hover active:bg-press"
                         on:click=move |_| confirming.set(true)
                     >
-                        <Glyph icon=icondata::FaRightFromBracketSolid />
+                        <Glyph icon=icondata::LuLogOut />
                         "Forget this daemon"
                     </button>
                 }
@@ -886,9 +888,14 @@ const LINKS: [(&str, &str); 3] = [
 
 /// What the page is built from and under which licences, as Settings ›
 /// About lists it: each with a link to its licence.
-const ATTRIBUTIONS: [(&str, &str, &str); 4] = [
+const ATTRIBUTIONS: [(&str, &str, &str); 5] = [
     (
-        "Icons: Font Awesome Free by Fonticons, Inc.",
+        "Icons: Lucide by Lucide Icons and Contributors",
+        "ISC",
+        "lucide-LICENSE.txt",
+    ),
+    (
+        "Brand logos: Font Awesome Free by Fonticons, Inc.",
         "CC BY 4.0",
         "https://fontawesome.com/license/free",
     ),
@@ -1097,7 +1104,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                             view! {
                                 <div id="daemon-starting" role="status" class="flex flex-col gap-2 rounded-md border border-accent bg-surface p-3 text-sm">
                                     <p class="flex items-center gap-2">
-                                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-accent" />
+                                        <Glyph icon=icondata::LuLoaderCircle class="animate-spin text-accent" />
                                         {daemon_status::starting_text(&status)}
                                     </p>
                                     <StartingProgress connection=connection />
@@ -1109,7 +1116,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                     .map(|(message, hint)| {
                         view! {
                             <div role="alert" class="flex gap-2 rounded-md border border-accent bg-surface p-3 text-sm">
-                                <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 text-accent" />
+                                <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 text-accent" />
                                 <div class="min-w-0">
                                     <p>{message}</p>
                                     {hint.map(|hint| view! { <p class="mt-2 font-mono break-words">{hint}</p> })}
@@ -1124,7 +1131,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                         class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-accent px-4 font-bold text-on-accent hover:bg-accent active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         <Glyph
-                            icon=if busy { icondata::FaCircleNotchSolid } else { icondata::FaPlugSolid }
+                            icon=if busy { icondata::LuLoaderCircle } else { icondata::LuPlug }
                             class=if busy { "animate-spin" } else { "" }
                         />
                         {if busy { "Connecting…" } else { "Connect" }}
@@ -1135,7 +1142,7 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                         title="Delete the stored token for this URL"
                         on:click=move |_| connection.forget()
                     >
-                        <Glyph icon=icondata::FaRightFromBracketSolid />
+                        <Glyph icon=icondata::LuLogOut />
                         <span class="sm:hidden">"Forget"</span>
                         <span class="hidden sm:inline">"Forget this daemon"</span>
                     </button>
@@ -1211,7 +1218,7 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
                 title="Dismiss"
                 on:click=move |_| landing.set(None)
             >
-                <Glyph icon=icondata::FaXmarkSolid />
+                <Glyph icon=icondata::LuX />
             </button>
         }
     };
@@ -1219,14 +1226,14 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
         landing.get().map(|shown| match shown {
             Landing::HandingOver => view! {
                 <div id="oauth-landing" data-landing="handing-over" role="status" class=BANNER>
-                    <Glyph icon=icondata::FaArrowsRotateSolid class="mt-0.5 shrink-0 animate-spin text-accent" />
+                    <Glyph icon=icondata::LuRefreshCw class="mt-0.5 shrink-0 animate-spin text-accent" />
                     <span class="min-w-0 flex-1">"Finishing the sign-in…"</span>
                 </div>
             }
             .into_any(),
             Landing::HandedOver { server } => view! {
                 <div id="oauth-landing" data-landing="handed-over" role="status" class=BANNER>
-                    <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-accent" />
+                    <Glyph icon=icondata::LuCircleCheck class="mt-0.5 shrink-0 text-accent" />
                     <span class="min-w-0 flex-1">
                         {format!("The sign-in to {server} finishes in the tab that started it. You can close this tab.")}
                     </span>
@@ -1236,7 +1243,7 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
             .into_any(),
             Landing::Expired { server } => view! {
                 <div id="oauth-landing" data-landing="expired" role="alert" class=BANNER>
-                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-accent" />
+                    <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0 text-accent" />
                     <span class="min-w-0 flex-1">
                         {format!("The sign-in to {server} waited too long and was not finished. Start it again from Settings › MCP servers.")}
                     </span>
@@ -1248,7 +1255,7 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
                 let copied = url.clone();
                 view! {
                     <div id="oauth-landing" data-landing="unknown" role="alert" class=BANNER>
-                        <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-accent" />
+                        <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0 text-accent" />
                         <div class="flex min-w-0 flex-1 flex-col gap-2">
                             <span>
                                 "This sign-in was not started in this browser, or it has already ended, so it was not finished here. If you started it in the installed app or another browser, copy this address and paste it there, under Settings › MCP servers."
@@ -1273,7 +1280,7 @@ fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
                                     });
                                 }
                             >
-                                <Glyph icon=icondata::FaCopyRegular />
+                                <Glyph icon=icondata::LuCopy />
                                 "Copy the address"
                             </button>
                         </div>

@@ -388,14 +388,15 @@ pub struct Workspace {
     /// The Settings section open; `None` for the section list on a phone,
     /// the first section on a wider window.
     pub settings_section: RwSignal<Option<crate::layout::SettingsSection>>,
-    /// Below desktop widths, the sidebar shown as the page: the sessions in
-    /// place of the transcript (the agents, in Agents, in place of the
-    /// agent open).
+    /// Below desktop widths, the sidebar shown as the page, over the view.
     pub sidebar_open: RwSignal<bool>,
-    /// A desktop window shows the sessions sidebar; kept in the browser.
+    /// A desktop window shows the sidebar beside the view; kept in the
+    /// browser.
     pub sidebar_pinned: RwSignal<bool>,
     /// The window is phone-sized.
     pub narrow: RwSignal<bool>,
+    /// The window is a desktop's: the sidebar can stand beside the view.
+    pub desktop: RwSignal<bool>,
     /// Whether the daemon keeps projects (client protocol 1.8).
     pub has_projects: RwSignal<bool>,
     /// `projects.list`, in name order.
@@ -640,6 +641,7 @@ impl Workspace {
                 browser::load(crate::connect::SIDEBAR_KEY).as_deref(),
             )),
             narrow: RwSignal::new(browser::matches(browser::PHONE_QUERY)),
+            desktop: RwSignal::new(browser::matches(browser::DESKTOP_QUERY)),
             has_projects: RwSignal::new(false),
             projects: RwSignal::new(Vec::new()),
             sections_open: RwSignal::new(HashMap::new()),
@@ -779,8 +781,8 @@ impl Workspace {
         self.refresh_onboarding(!reconnected);
         // Below desktop widths the page opens on its sessions, over a new
         // session: what it is opened for is mostly a session already going,
-        // and only a desktop has room for the rail, the sessions, and the
-        // new session side by side. A notification's session, opened next,
+        // and only a desktop has room for the sidebar and the new session
+        // side by side. A notification's session, opened next,
         // closes them.
         if !reconnected
             && !browser::matches(browser::DESKTOP_QUERY)

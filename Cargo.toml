@@ -79,7 +79,7 @@ insta = { version = "1.48.0", features = ["json", "redactions"] }
 tempfile = "3.27.0"
 http = "1.4.0"
 # The web client's icons: Font Awesome Free (CC BY 4.0 artwork) as inline SVG.
-icondata = { version = "=0.7.0", default-features = false, features = ["font-awesome"] }
+icondata = { version = "=0.7.0", default-features = false, features = ["font-awesome", "lucide"] }
 leptos_icons = "=0.7.1"
 url = "2.5.7"
 windows-sys = "0.61.2"

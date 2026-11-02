@@ -81,17 +81,17 @@ pub fn plan_html(entries: &[cookie_agent_protocol::PlanEntry]) -> String {
     for entry in entries {
         let (icon, state, text) = match entry.status {
             PlanEntryStatus::Completed => (
-                icondata::FaSquareCheckRegular,
+                icondata::LuSquareCheck,
                 "completed",
                 "line-through opacity-70",
             ),
             PlanEntryStatus::InProgress => (
-                icondata::FaSquareCaretRightRegular,
+                icondata::LuSquareChevronRight,
                 "in_progress",
                 "font-semibold",
             ),
             PlanEntryStatus::Pending | PlanEntryStatus::Unknown => {
-                (icondata::FaSquareRegular, "pending", "")
+                (icondata::LuSquare, "pending", "")
             }
         };
         let priority = match entry.priority {

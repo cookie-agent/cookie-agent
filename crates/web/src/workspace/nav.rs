@@ -1,6 +1,6 @@
-//! Moving around the page: the rail's views, the Settings sections, the
-//! sessions sidebar, and the history entries that let browser Back close
-//! what is open, one layer at a time.
+//! Moving around the page: the sidebar's views, the Settings sections,
+//! the sidebar itself, and the history entries that let browser Back (and
+//! a phone's Back gesture) close what is open, one layer at a time.
 
 use leptos::prelude::*;
 
@@ -31,14 +31,10 @@ impl Workspace {
         self.view.set(view);
     }
 
-    /// A tap on `view`'s rail button: below desktop widths, where the
-    /// sidebar shows as the page, a view with a list shows the list first
-    /// (see [`View::phone_list`]); choosing one of its items opens it.
-    pub fn open_from_rail(self, view: View) {
+    /// A tap on one of the sidebar's views: the view, at its list where it
+    /// has one; the sidebar shown as the page gives way to it.
+    pub fn open_from_sidebar(self, view: View) {
         self.open_view(view, None);
-        if view.rail_opens_sidebar(!browser::matches(browser::DESKTOP_QUERY)) {
-            self.sidebar_open.set(true);
-        }
     }
 
     /// Opens a Settings section (`None`: the list, on a phone), reading
@@ -126,33 +122,31 @@ impl Workspace {
             && (section.is_none() || untrack(|| self.shown_section()) == section)
     }
 
-    /// The sidebar button: a desktop pins or hides the sidebar of Chat and
-    /// Agents, remembered in the browser; a narrower window shows the
-    /// sessions (the agents, in Agents) as the page, or hides them. In the
-    /// other views only a phone's second level has it, and it goes back up
-    /// to the view's list.
+    /// The sidebar button: a desktop pins or hides the sidebar, remembered
+    /// in the browser. A narrower window shows the sidebar as the page, or
+    /// hides it; on a phone's second level (an item open in a view's list)
+    /// it goes back up to the list instead.
     pub fn toggle_sidebar(self) {
         let view = self.view.get_untracked();
-        if !view.has_sidebar() {
-            self.close_layer(Layer::Editor);
-            self.close_layer(Layer::Section);
-        } else if browser::matches(browser::DESKTOP_QUERY) {
+        if self.desktop.get_untracked() {
             let shown = !self.sidebar_pinned.get_untracked();
             browser::store(SIDEBAR_KEY, if shown { "shown" } else { "hidden" });
             self.sidebar_pinned.set(shown);
+        } else if view != View::Chat && self.narrow.get_untracked() && !untrack(|| self.at_list()) {
+            self.close_layer(Layer::Editor);
+            self.close_layer(Layer::Section);
         } else {
             self.sidebar_open.update(|open| *open = !*open);
         }
     }
 
     /// Whether the open view shows its first level: its list (Skills, MCP
-    /// servers, Machines, and Assets, which have none, at once). A phone shows the rail beside the first
-    /// level only; an item open fills its screen, and the sidebar button
-    /// goes back up.
+    /// servers, Machines, and Assets, which have none, at once). On a phone
+    /// an item open fills the screen, and the sidebar button goes back up.
     pub fn at_list(self) -> bool {
         match self.view.get() {
             View::Chat => self.sidebar_open.get(),
-            View::Agents => self.sidebar_open.get() || self.config_edit.with(Option::is_none),
+            View::Agents => self.config_edit.with(Option::is_none),
             View::Settings => self.settings_section.get().is_none(),
             View::Memory => {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
@@ -166,6 +160,9 @@ impl Workspace {
     pub fn open_layers(self) -> Vec<Layer> {
         let mut layers = Vec::new();
         let view = self.view.get();
+        if view != View::Chat {
+            layers.push(Layer::View);
+        }
         if view == View::Settings && self.narrow.get() && self.settings_section.get().is_some() {
             layers.push(Layer::Section);
         }
@@ -186,6 +183,9 @@ impl Workspace {
         }
         if self.sidebar_open.get() {
             layers.push(Layer::Sidebar);
+        }
+        if self.panel.with(Option::is_some) {
+            layers.push(Layer::Panel);
         }
         layers
     }
@@ -234,6 +234,8 @@ impl Workspace {
 
     fn close_layer(self, layer: Layer) {
         match layer {
+            Layer::View => self.open_view(View::Chat, None),
+            Layer::Panel => self.close_panel(),
             Layer::Sidebar => self.sidebar_open.set(false),
             Layer::Section => self.settings_section.set(None),
             Layer::Editor => {

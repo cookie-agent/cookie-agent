@@ -41,7 +41,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
         match offer {
             PushOffer::NeedsHttps => view! {
                 <p class="flex items-start gap-2 text-sm">
-                    <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-accent" />
+                    <Glyph icon=icondata::LuLock class="mt-0.5 text-accent" />
                     <span>"Notifications need HTTPS, as installing the app does."</span>
                 </p>
             }
@@ -74,7 +74,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                         disabled=busy
                         on:click=move |_| workspace.turn_on_notifications(url())
                     >
-                        <Glyph icon=icondata::FaBellSolid />
+                        <Glyph icon=icondata::LuBell />
                         "Turn on notifications"
                     </button>
                 </div>
@@ -92,7 +92,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                         disabled=busy
                         on:click=move |_| workspace.turn_on_notifications(url())
                     >
-                        <Glyph icon=icondata::FaBellSolid />
+                        <Glyph icon=icondata::LuBell />
                         "Switch to this daemon"
                     </button>
                 </div>
@@ -118,7 +118,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                 };
                 view! {
                     <p class="flex items-center gap-2 text-sm">
-                        <Glyph icon=icondata::FaCircleCheckSolid class="text-ok" />
+                        <Glyph icon=icondata::LuCircleCheck class="text-ok" />
                         "Notifications are on in this browser."
                     </p>
                     <label class="flex flex-col gap-1 text-sm">
@@ -145,7 +145,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                                 class=BUTTON
                                 on:click=move |_| workspace.test_subscription(id.clone())
                             >
-                                <Glyph icon=icondata::FaPaperPlaneSolid />
+                                <Glyph icon=icondata::LuArrowUp />
                                 "Send test"
                             </button>
                         })}
@@ -156,7 +156,7 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                             disabled=busy
                             on:click=move |_| workspace.turn_off_notifications(url())
                         >
-                            <Glyph icon=icondata::FaBellSlashSolid />
+                            <Glyph icon=icondata::LuBellOff />
                             "Turn off"
                         </button>
                     </div>

@@ -465,7 +465,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 // over it shows the ⋯ (style/main.css), whose room stays;
                 // a touch screen long-presses the bubble instead.
                 "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover active:bg-press\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div></div>",
-                svg(icondata::FaEllipsisSolid, ""),
+                svg(icondata::LuEllipsis, ""),
                 document_html(markdown)
             )
         }
@@ -527,7 +527,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             collapsible(
                 view.expanded.block(&key),
                 &key,
-                icondata::FaBroomSolid,
+                icondata::LuEraser,
                 "compacting context…",
                 None,
                 &body,
@@ -564,7 +564,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             collapsible(
                 view.expanded.block(&key),
                 &key,
-                icondata::FaBroomSolid,
+                icondata::LuEraser,
                 &header,
                 None,
                 &body,
@@ -575,7 +575,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             collapsible(
                 view.expanded.block(&key),
                 &key,
-                icondata::FaBroomSolid,
+                icondata::LuEraser,
                 AGENT_COMPACTION_HEADER,
                 None,
                 summary.as_deref().unwrap_or("the agent kept no summary"),
@@ -584,9 +584,9 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         TranscriptItem::AgentSessionMessage { message, .. } => {
             let key = block_key(item).unwrap_or_default();
             let icon = if message.direction == AcpMessageDirection::Sent {
-                icondata::FaPaperPlaneSolid
+                icondata::LuArrowUp
             } else {
-                icondata::FaInboxSolid
+                icondata::LuInbox
             };
             collapsible(
                 view.expanded.block(&key),
@@ -604,7 +604,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             collapsible(
                 view.expanded.block(&key),
                 &key,
-                icondata::FaTerminalSolid,
+                icondata::LuTerminal,
                 &agent_background_ended_summary(ended),
                 Some(&agent_background_ended_details(ended, *ended_at)),
                 ended.display.as_deref().unwrap_or_default(),
@@ -625,7 +625,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             collapsible(
                 view.expanded.block(&key),
                 &key,
-                icondata::FaPuzzlePieceSolid,
+                icondata::LuPuzzle,
                 &header,
                 None,
                 input,
@@ -647,7 +647,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             collapsible(
                 view.expanded.block(&key),
                 &key,
-                icondata::FaBookSolid,
+                icondata::LuBook,
                 &header,
                 None,
                 text,
@@ -661,11 +661,11 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             use cookie_agent_client_state::model_input::ModelInputKind;
             let key = block_key(item).unwrap_or_default();
             let icon = match kind {
-                ModelInputKind::Memory => icondata::FaBrainSolid,
-                ModelInputKind::PromptBlocks => icondata::FaPenToSquareSolid,
-                ModelInputKind::InheritedContext => icondata::FaTurnDownSolid,
-                ModelInputKind::Refresh => icondata::FaArrowsRotateSolid,
-                ModelInputKind::ReasoningCut => icondata::FaScissorsSolid,
+                ModelInputKind::Memory => icondata::LuBrain,
+                ModelInputKind::PromptBlocks => icondata::LuSquarePen,
+                ModelInputKind::InheritedContext => icondata::LuCornerDownRight,
+                ModelInputKind::Refresh => icondata::LuRefreshCw,
+                ModelInputKind::ReasoningCut => icondata::LuScissors,
             };
             let row = collapsible(view.expanded.block(&key), &key, icon, header, None, text);
             format!("<div data-model-input=\"{}\">{row}</div>", kind.as_str())
@@ -676,7 +676,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             let url = escape(url);
             format!(
                 "<div class=\"{NOTE}\" data-memory-change><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-left hover:bg-hover active:bg-press\">{}<span>{}</span><span class=\"font-mono underline decoration-dotted underline-offset-2\">{url}</span></button></div>",
-                svg(icondata::FaBrainSolid, "opacity-70"),
+                svg(icondata::LuBrain, "opacity-70"),
                 change.verb()
             )
         }
@@ -699,7 +699,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             collapsible(
                 view.expanded.block(&key),
                 &key,
-                icondata::FaWandMagicSparklesSolid,
+                icondata::LuWandSparkles,
                 &header,
                 Some(&detail),
                 rendered_body,
@@ -708,10 +708,10 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         TranscriptItem::AcpNotice { notice, .. } => {
             use cookie_agent_protocol::AcpNoticeSeverity;
             let (class, icon) = match notice.severity {
-                AcpNoticeSeverity::Error => ("text-bad", icondata::FaCircleExclamationSolid),
-                AcpNoticeSeverity::Warning => ("text-accent", icondata::FaTriangleExclamationSolid),
+                AcpNoticeSeverity::Error => ("text-bad", icondata::LuCircleAlert),
+                AcpNoticeSeverity::Warning => ("text-accent", icondata::LuTriangleAlert),
                 AcpNoticeSeverity::Info | AcpNoticeSeverity::Unknown => {
-                    ("text-muted", icondata::FaCircleInfoSolid)
+                    ("text-muted", icondata::LuInfo)
                 }
             };
             let description = notice
@@ -737,7 +737,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         }
         TranscriptItem::Plan { entries, .. } => format!(
             "<div class=\"agent-plan rounded border-l-4 border-accent px-3 py-1\"><div class=\"mb-1 flex items-center gap-2 text-sm font-bold\">{}<span>Plan</span></div>{}</div>",
-            svg(icondata::FaListCheckSolid, "text-accent"),
+            svg(icondata::LuListChecks, "text-accent"),
             super::blocks::plan_html(entries)
         ),
         TranscriptItem::Goal {
@@ -748,7 +748,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 // shown like a message, with no message menu.
                 format!(
                     "<div class=\"goal-activation ml-auto max-w-[90%] rounded-lg border border-accent px-3 py-2 text-sm whitespace-pre-wrap\">{}<span class=\"font-bold\">Goal:</span> {}</div>",
-                    svg(icondata::FaBullseyeSolid, "mr-1.5 text-accent"),
+                    svg(icondata::LuTarget, "mr-1.5 text-accent"),
                     escape(&goal.objective)
                 )
             } else {
@@ -760,9 +760,9 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                         .iter()
                         .map(|item| {
                             let (icon, state) = if item.finished {
-                                (icondata::FaSquareCheckRegular, "finished")
+                                (icondata::LuSquareCheck, "finished")
                             } else {
-                                (icondata::FaSquareRegular, "open")
+                                (icondata::LuSquare, "open")
                             };
                             format!(
                                 "<div class=\"flex items-start gap-2 {NOTE}\">{}<span class=\"sr-only\">{state}:</span><span>{}</span></div>",
@@ -774,7 +774,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 };
                 format!(
                     "<div class=\"goal-state rounded border-l-4 border-accent px-3 py-1\"><div class=\"flex items-start gap-2 text-sm whitespace-pre-wrap\">{}<span>{}</span></div><div class=\"{NOTE}\">status: {} · {finished}/{} finished</div>{checklist}</div>",
-                    svg(icondata::FaBullseyeSolid, "mt-1 text-accent"),
+                    svg(icondata::LuTarget, "mt-1 text-accent"),
                     escape(&goal.objective),
                     goal_status_label(goal.status),
                     goal.items.len()
@@ -808,7 +808,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 collapsible(
                     view.expanded.block(&key),
                     &key,
-                    icondata::FaInboxSolid,
+                    icondata::LuInbox,
                     &producer_summary(producer_owner, *mode, summary.as_deref()),
                     Some(&detail),
                     body,
@@ -1237,9 +1237,9 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
     let summary = &row.summary;
     let block = work_key(key);
     let chevron = if open {
-        icondata::FaChevronDownSolid
+        icondata::LuChevronDown
     } else {
-        icondata::FaChevronRightSolid
+        icondata::LuChevronRight
     };
     let failed = summary
         .failed_label()
@@ -1298,7 +1298,7 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
     // A live row spins in place of the trailing working row, which the page
     // hides while the run's latest work is this row's.
     let spinner = if summary.live {
-        svg(icondata::FaCircleNotchSolid, "animate-spin text-accent")
+        svg(icondata::LuLoaderCircle, "animate-spin text-accent")
     } else {
         String::new()
     };
@@ -1389,7 +1389,7 @@ pub fn pinned_rows(
     if cookie_agent_client_state::rows::shows_system_prompt(state) {
         rows.push(pinned_row(
         SYSTEM_PROMPT_KEY,
-        icondata::FaScrollSolid,
+        icondata::LuScrollText,
         &system_prompt_summary(state, snapshot, from_run, draft_agent),
         expanded,
         || {
@@ -1415,7 +1415,7 @@ pub fn pinned_rows(
     if let Some(tools) = state.model_tools.as_deref() {
         rows.push(pinned_row(
             MODEL_TOOLS_KEY,
-            icondata::FaToolboxSolid,
+            icondata::LuWrench,
             &model_tools_summary(state, tools),
             expanded,
             || {
@@ -1498,9 +1498,9 @@ fn pinned_row(
 ) -> String {
     let open = expanded.block(key);
     let chevron = if open {
-        icondata::FaChevronDownSolid
+        icondata::LuChevronDown
     } else {
-        icondata::FaChevronRightSolid
+        icondata::LuChevronRight
     };
     let width = if open { "w-full" } else { "min-w-0 max-w-full" };
     let mut html = format!(
@@ -1534,9 +1534,9 @@ fn collapsible(
     body: &str,
 ) -> String {
     let chevron = if expanded {
-        icondata::FaChevronDownSolid
+        icondata::LuChevronDown
     } else {
-        icondata::FaChevronRightSolid
+        icondata::LuChevronRight
     };
     let mut html = format!(
         "<div class=\"collapsible-row\" data-block-key=\"{}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left {NOTE} hover:bg-hover active:bg-press\">{}{}<span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
@@ -1574,7 +1574,7 @@ fn child_html(view: &TranscriptView<'_>, item_id: u64, child: &AssistantChild) -
         AssistantChild::Thinking { id, text, .. } => collapsible(
             view.expanded.thinking(*id),
             &thinking_key(*id),
-            icondata::FaLightbulbRegular,
+            icondata::LuLightbulb,
             &thinking_status(view.state, item_id, *id),
             None,
             text,
@@ -1585,7 +1585,7 @@ fn child_html(view: &TranscriptView<'_>, item_id: u64, child: &AssistantChild) -
         },
         AssistantChild::CommittedTool { name, .. } => format!(
             "<div class=\"flex items-center gap-2 {NOTE} font-mono\">{}{} (not started)</div>",
-            svg(icondata::FaHammerSolid, ""),
+            svg(icondata::LuHammer, ""),
             escape(name.as_str())
         ),
         AssistantChild::MediaFile { file, .. } => match &file.source {
@@ -1678,7 +1678,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     let approval = if view.waiting_approval(tool) {
         format!(
             "<button type=\"button\" data-action=\"approvals\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-full bg-accent px-3 text-xs font-bold text-on-accent hover:bg-accent active:bg-accent-press\">{}approve?</button>",
-            svg(icondata::FaBellSolid, "")
+            svg(icondata::LuBell, "")
         )
     } else {
         String::new()
@@ -1692,7 +1692,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         format!(
             "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs hover:bg-hover active:bg-press\">{}background</button>",
             escape(&id),
-            svg(icondata::FaLayerGroupSolid, "")
+            svg(icondata::LuLayers, "")
         )
     } else {
         String::new()
@@ -1704,9 +1704,9 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     };
     let chevron = line_box(svg(
         if expanded {
-            icondata::FaChevronDownSolid
+            icondata::LuChevronDown
         } else {
-            icondata::FaChevronRightSolid
+            icondata::LuChevronRight
         },
         "text-[0.625rem] opacity-60",
     ));
@@ -1889,7 +1889,7 @@ fn delegate_html(delegate: &Delegate, running: bool) -> String {
         .map(|activity| {
             format!(
                 "<span class=\"inline-flex items-center gap-1 text-accent\" data-delegate-activity>{}{}</span>",
-                svg(icondata::FaCircleNotchSolid, "animate-spin"),
+                svg(icondata::LuLoaderCircle, "animate-spin"),
                 activity.label()
             )
         })
@@ -1904,7 +1904,7 @@ fn delegate_html(delegate: &Delegate, running: bool) -> String {
             .map(|handle| format!(" {}", escape(handle)))
             .unwrap_or_default(),
         delegate.session_id,
-        svg(icondata::FaArrowUpRightFromSquareSolid, ""),
+        svg(icondata::LuExternalLink, ""),
     )
 }
 
