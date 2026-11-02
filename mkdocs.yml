@@ -169,6 +169,7 @@ nav:
           - ACP agents across several machines: specs/acp-several-runtimes.md
           - ACP agent permissions: specs/acp-permissions.md
           - "Assets: files agents give the user": specs/assets.md
+          - "Attachments in assistant messages": specs/message-attachments.md
           - Session pins and filters: specs/session-pins-and-filters.md
           - Daemon startup and status: specs/daemon-startup.md
           - "`cookie update`: self-update by channel": specs/self-update.md
