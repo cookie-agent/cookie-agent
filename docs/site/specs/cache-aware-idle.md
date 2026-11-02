@@ -129,7 +129,8 @@ Section 10 records the answers to the remaining questions.
   confirms that Claude Code compacts on its own while idle. If the probe
   shows it does not, the preset sets `cache_ttl = "1h"` instead.
   *Phase 0 showed it does not (section 11.1), so the preset sets
-  `cache_ttl = "1h"`.*
+  `cache_ttl = "1h"`. The Codex preset sets `cache_ttl = "30m"` (section
+  11.2; user decision of 2026-11-02).*
 - **D7. The checkpoint records why it was made.** Clients show
   "Compacted before the cache expired · next scheduled prompt 03:00".
   Section 4.4.
@@ -493,8 +494,11 @@ backend with Codex's sign-in token was not made.
 
 **What cookie does:**
 
-- **The Codex preset** leaves `cache_ttl` unset, so cookie never compacts
-  Codex sessions (D6).
+- **The Codex preset** sets `cache_ttl = "30m"`, to be safe *(user
+  decision of 2026-11-02)*. Cookie compacts an idle Codex session about 24
+  minutes after its last turn: the slack is capped at a fifth of 30
+  minutes, so 6 minutes before expiry. It uses the `compact` command that
+  codex-acp 2.5.0 advertises.
 - **The `chatgpt` provider**, which uses the same backend and sign-in,
   assumes `30m`, to be safe *(user decision of 2026-11-02)*. The announced
   "forever" is not relied on until it is documented. A model override's
