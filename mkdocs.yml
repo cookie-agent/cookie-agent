@@ -166,6 +166,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - "Quiet Ink: a new look for both clients": specs/quiet-ink.md
           - Onboarding with ACP agents: specs/acp-onboarding.md
           - ACP agents across several machines: specs/acp-several-runtimes.md
           - ACP agent permissions: specs/acp-permissions.md
@@ -201,7 +202,6 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - "Quiet Ink: a new look for both clients": specs/quiet-ink.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md
           - Projects: specs/projects.md

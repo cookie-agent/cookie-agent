@@ -1,6 +1,6 @@
 # Quiet Ink: a new look for both clients
 
-Status: **approved** (2026-11-02), being implemented in the phases of
+Status: **implemented** (2026-11-02), in the phases of
 [section 7](#7-phases), with the user's decisions of 2026-11-02 in
 [section 2](#2-decisions). Client-only: no client, plugin, or runtime
 protocol change, no session history change, no `config.toml` change. One
@@ -266,3 +266,7 @@ Each phase is looked at in light and dark (`scripts/web-screenshots.sh
   the accent, its hint `ctrl+p commands`. Every modal and the command
   palette dim the screen behind them (`Theme::dimmed`, a blend toward the
   surface in true colour, `DIM` elsewhere).
+- **Phase 7 (2026-11-02).** The install manifest's screenshots show the
+  new look; the landing page keeps its pictures (D13). Below desktop
+  widths every control keeps a finger's 44 px, since tablets take touch
+  too; only a desktop's are 36 px.
